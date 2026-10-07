@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.58.3](https://github.com/Heey-Global/verity/compare/mobile-v1.58.2...mobile-v1.58.3) (2026-10-07)
+
+
+### Bug Fixes
+
+* **mobile:** avoid overview renders during settings navigation ([#1299](https://github.com/Heey-Global/verity/issues/1299)) ([c91c8e6](https://github.com/Heey-Global/verity/commit/c91c8e64f04de18b4fc281349b3846a59fdcb0c2))
+
 ## [1.58.2](https://github.com/Heey-Global/verity/compare/mobile-v1.58.1...mobile-v1.58.2) (2026-10-07)
 
 
