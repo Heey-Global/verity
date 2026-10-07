@@ -75,16 +75,3 @@ export function mergeSessionPreviewUrls(
   }
   return merged;
 }
-
-/** Sessions with an unexpired public share — reachable from the internet, which the
- * session row marks even when its icon opens the local link instead. */
-export function publicPreviewSessionIds(
-  publicLinks: ProjectPreviewLinks,
-  now: number,
-): Set<string> {
-  const ids = new Set<string>();
-  for (const links of publicLinks.values()) {
-    for (const link of links) if (link.expiresAt > now) ids.add(link.sessionId);
-  }
-  return ids;
-}

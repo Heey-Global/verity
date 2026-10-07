@@ -7,38 +7,34 @@ import {
 } from '../components/SessionMarkerEdge';
 
 describe('sessionMarkers', () => {
-  it('keeps a fixed order so each stripe position always means the same thing', () => {
-    expect(sessionMarkers({ favorite: true, automation: 'paused', preview: 'public' })).toEqual([
+  it('keeps a fixed order so each segment position always means the same thing', () => {
+    expect(sessionMarkers({ favorite: true, automation: 'paused', shared: true })).toEqual([
       { kind: 'favorite' },
       { kind: 'automation', paused: true },
-      { kind: 'shared', public: true },
+      { kind: 'shared' },
     ]);
   });
 
   it('leaves out what a session does not have', () => {
-    expect(sessionMarkers({ favorite: false, automation: undefined, preview: undefined })).toEqual(
-      [],
-    );
-    expect(sessionMarkers({ favorite: false, automation: 'enabled', preview: 'local' })).toEqual([
+    expect(sessionMarkers({ favorite: false, automation: undefined, shared: false })).toEqual([]);
+    expect(sessionMarkers({ favorite: false, automation: 'enabled', shared: true })).toEqual([
       { kind: 'automation', paused: false },
-      { kind: 'shared', public: false },
+      { kind: 'shared' },
     ]);
   });
 
   it('spells the markers out for screen readers, since color alone carries them', () => {
     expect(
-      sessionMarkersLabel(
-        sessionMarkers({ favorite: true, automation: 'enabled', preview: 'local' }),
-      ),
-    ).toBe('favorite, automation active, shared locally');
+      sessionMarkersLabel(sessionMarkers({ favorite: true, automation: 'enabled', shared: true })),
+    ).toBe('favorite, automation active, shared');
   });
 });
 
 describe('SessionMarkerEdge', () => {
-  it('draws one stripe per marker', () => {
+  it('draws one segment per marker', () => {
     render(
       <SessionMarkerEdge
-        markers={sessionMarkers({ favorite: true, automation: undefined, preview: 'public' })}
+        markers={sessionMarkers({ favorite: true, automation: undefined, shared: true })}
       />,
     );
     expect(screen.getByTestId('session-marker-favorite')).toBeTruthy();

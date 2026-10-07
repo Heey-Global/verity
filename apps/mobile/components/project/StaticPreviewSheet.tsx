@@ -987,7 +987,7 @@ export function StaticPreviewSheet({
         ) : null}
         {pub ? (
           <View style={[styles.badge, styles.badgePublic]}>
-            <Icon name="globe" size={11} color={theme.colors.primary} />
+            <Icon name="globe" size={11} color={theme.colors.tone.done} />
             <Text style={styles.badgeText}>{`Online ${expiryLabel(pub.expiresAt)}`}</Text>
           </View>
         ) : null}
@@ -1815,7 +1815,11 @@ export function StaticPreviewSheet({
           </>
         )}
         <View style={styles.accessRow}>
-          <Icon name="wifi" size={20} color={theme.colors.textMuted} />
+          <Icon
+            name="wifi"
+            size={20}
+            color={local ? theme.colors.tone.done : theme.colors.textMuted}
+          />
           <View style={styles.rowText}>
             <Text style={styles.cardTitle}>Local</Text>
             {local ? (
@@ -1865,7 +1869,11 @@ export function StaticPreviewSheet({
           </Pressable>
         </View>
         <View style={styles.accessRow}>
-          <Icon name="globe" size={20} color={theme.colors.textMuted} />
+          <Icon
+            name="globe"
+            size={20}
+            color={online ? theme.colors.tone.done : theme.colors.textMuted}
+          />
           <View style={styles.rowText}>
             <Text style={styles.cardTitle}>Shared online</Text>
             {online?.publicOrigin ? (
@@ -2219,12 +2227,16 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.tone.done,
     backgroundColor: `${theme.colors.tone.done}22`,
   },
-  badgePublic: { borderColor: theme.colors.primary, backgroundColor: `${theme.colors.primary}22` },
+  // Shared is green whether on the network or online; the icon and text tell them apart.
+  badgePublic: {
+    borderColor: theme.colors.tone.done,
+    backgroundColor: `${theme.colors.tone.done}22`,
+  },
   badgePremium: { borderColor: theme.colors.accent, backgroundColor: `${theme.colors.accent}22` },
   badgeMuted: { borderColor: theme.colors.border, backgroundColor: theme.colors.surface },
   badgeDot: { width: 7, height: 7, borderRadius: 4 },
   badgeDotLocal: { backgroundColor: theme.colors.tone.done },
-  badgeDotPublic: { backgroundColor: theme.colors.primary },
+  badgeDotPublic: { backgroundColor: theme.colors.tone.done },
   badgeDotPending: { backgroundColor: theme.colors.tone.attention },
   badgeDotPremium: { backgroundColor: theme.colors.accent },
   badgeDotMuted: { backgroundColor: theme.colors.textFaint },
@@ -2278,7 +2290,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   cardTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
   cardLocalActive: { borderColor: theme.colors.tone.done },
-  cardPublicActive: { borderColor: theme.colors.primary },
+  cardPublicActive: { borderColor: theme.colors.tone.done },
   cardDimmed: { opacity: 0.7 },
   actions: { flexDirection: 'row', gap: theme.spacing.sm },
   // Buttons in a card row share the width evenly and use one text size, so the

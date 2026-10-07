@@ -1,29 +1,27 @@
-// The session row's leading edge: one thin stripe per standing property, side
-// by side, always in the same order and color — favorite (accent), automation
-// (primary) and shared preview (done, wider when public). The edge never tints
-// the row itself, so the selected background stays the only fill.
+// The session row's leading edge: one segment per standing property, stacked
+// top to bottom, always in the same order and color — favorite (accent),
+// automation (primary) and shared preview (done, local or online alike). The
+// edge never tints the row itself, so the selected background stays the only fill.
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 export type SessionMarker =
-  | { kind: 'favorite' }
-  | { kind: 'automation'; paused: boolean }
-  | { kind: 'shared'; public: boolean };
+  { kind: 'favorite' } | { kind: 'automation'; paused: boolean } | { kind: 'shared' };
 
 export function sessionMarkers({
   favorite,
   automation,
-  preview,
+  shared,
 }: {
   favorite: boolean;
   automation: 'enabled' | 'paused' | undefined;
-  /** `public` when an unexpired public (Uplink) share exists, else `local`. */
-  preview: 'local' | 'public' | undefined;
+  /** A preview is shared, on the local network or online. */
+  shared: boolean;
 }): SessionMarker[] {
   const markers: SessionMarker[] = [];
   if (favorite) markers.push({ kind: 'favorite' });
   if (automation) markers.push({ kind: 'automation', paused: automation === 'paused' });
-  if (preview) markers.push({ kind: 'shared', public: preview === 'public' });
+  if (shared) markers.push({ kind: 'shared' });
   return markers;
 }
 
@@ -34,7 +32,7 @@ export function sessionMarkersLabel(markers: readonly SessionMarker[]): string {
       if (marker.kind === 'favorite') return 'favorite';
       if (marker.kind === 'automation')
         return marker.paused ? 'automation paused' : 'automation active';
-      return marker.public ? 'shared publicly' : 'shared locally';
+      return 'shared';
     })
     .join(', ');
 }
@@ -56,15 +54,10 @@ export function SessionMarkerEdge({ markers }: { markers: readonly SessionMarker
             key={marker.kind}
             testID={`session-marker-${marker.kind}`}
             style={[
-              styles.stripe,
+              styles.segment,
               { backgroundColor: color },
               // A paused automation is still configured, just quieter.
               marker.kind === 'automation' && marker.paused ? styles.paused : null,
-              // A public share is reachable from the internet: a wider stripe on
-              // every platform, plus a glow where shadows render (iOS, web).
-              marker.kind === 'shared' && marker.public
-                ? [styles.public, { shadowColor: color, shadowOpacity: 0.9, shadowRadius: 4 }]
-                : null,
             ]}
           />
         );
@@ -76,21 +69,18 @@ export function SessionMarkerEdge({ markers }: { markers: readonly SessionMarker
 const styles = StyleSheet.create({
   edge: {
     position: 'absolute',
-    top: 0,
-    bottom: 0,
+    top: 4,
+    bottom: 4,
     left: 0,
-    flexDirection: 'row',
+    width: 4,
     gap: 2,
   },
-  stripe: {
-    width: 3,
-    height: '100%',
-    shadowOffset: { width: 0, height: 0 },
+  segment: {
+    flex: 1,
+    borderTopRightRadius: 2,
+    borderBottomRightRadius: 2,
   },
   paused: {
     opacity: 0.4,
-  },
-  public: {
-    width: 5,
   },
 });

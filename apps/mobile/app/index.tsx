@@ -89,7 +89,6 @@ import {
   mergeSessionPreviewUrls,
   nextProjectPreviewLinks,
   publicPreviewLinks,
-  publicPreviewSessionIds,
   type ProjectPreviewLinks,
 } from '../lib/sessionPreviewLinks';
 import { prefetchBranches } from '../lib/branchesPrefetch';
@@ -227,7 +226,6 @@ function SessionList({ client }: { client: VerityClient }) {
     devServersByProject,
     detectionsByProject,
     previewUrls,
-    publicPreviews,
   } = useProjects(client);
   // Returning to the overview refetches the sessions too, not just the projects
   // (`useProjects` does its own). Deleting a project takes its sessions with it,
@@ -590,7 +588,6 @@ function SessionList({ client }: { client: VerityClient }) {
           defaultNewSessionProject={defaultNewSessionProject}
           unread={unread}
           previewUrls={previewUrls}
-          publicPreviews={publicPreviews}
           selectedId={wide ? selectedId : null}
           renamingId={renaming?.sessionId ?? null}
           updatingProjectIds={updatingProjectIds}
@@ -608,7 +605,6 @@ function SessionList({ client }: { client: VerityClient }) {
       selectedId,
       unread,
       previewUrls,
-      publicPreviews,
       onOpenSession,
       createSessionInPane,
       renaming,
@@ -869,9 +865,6 @@ function useProjects(client: VerityClient) {
   const [previewUrls, setPreviewUrls] = useState<ReadonlyMap<string, string | null>>(
     () => new Map(),
   );
-  // Sessions with an unexpired public share, marked on the row's edge even when
-  // the icon opens the local link.
-  const [publicPreviews, setPublicPreviews] = useState<ReadonlySet<string>>(() => new Set());
   const publicPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
   const localPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
   const [loading, setLoading] = useState(true);
@@ -930,11 +923,13 @@ function useProjects(client: VerityClient) {
           projectIds,
           localResults,
         );
-        const now = Date.now();
         setPreviewUrls(
-          mergeSessionPreviewUrls(publicPreviewLinksRef.current, localPreviewLinksRef.current, now),
+          mergeSessionPreviewUrls(
+            publicPreviewLinksRef.current,
+            localPreviewLinksRef.current,
+            Date.now(),
+          ),
         );
-        setPublicPreviews(publicPreviewSessionIds(publicPreviewLinksRef.current, now));
         const pending = new Map(
           [...pendingProjectMutations.current].filter(
             ([, entry]) => entry.generation >= generation,
@@ -993,7 +988,6 @@ function useProjects(client: VerityClient) {
     devServersByProject,
     detectionsByProject,
     previewUrls,
-    publicPreviews,
     loading,
     error,
     refresh: () => load(),
@@ -1128,7 +1122,6 @@ function ProjectGroup({
   defaultNewSessionProject,
   unread,
   previewUrls,
-  publicPreviews,
   selectedId,
   renamingId,
   updatingProjectIds,
@@ -1158,7 +1151,6 @@ function ProjectGroup({
   defaultNewSessionProject?: ProjectRecord | undefined;
   unread: ReadonlySet<string>;
   previewUrls: ReadonlyMap<string, string | null>;
-  publicPreviews: ReadonlySet<string>;
   selectedId?: string | null;
   renamingId?: string | null;
   updatingProjectIds?: ReadonlySet<string>;
@@ -1437,7 +1429,6 @@ function ProjectGroup({
                     onOpen={() => onOpenSession(session)}
                     unread={unread.has(session.sessionId)}
                     previewActive={previewUrls.has(session.sessionId)}
-                    previewPublic={publicPreviews.has(session.sessionId)}
                     previewUrl={previewUrls.get(session.sessionId) ?? null}
                     repo={group.project?.kind === 'github' ? group.project : undefined}
                     selected={selectedId === session.sessionId}
@@ -1741,7 +1732,6 @@ function SessionRow({
   onOpen,
   unread,
   previewActive,
-  previewPublic,
   previewUrl,
   repo,
   selected,
@@ -1755,8 +1745,6 @@ function SessionRow({
   onOpen?: () => void;
   unread?: boolean;
   previewActive?: boolean;
-  /** An unexpired public (Uplink) share exists, whichever link the icon opens. */
-  previewPublic?: boolean;
   /** Where the preview icon leads; null while a public share has no origin yet. */
   previewUrl?: string | null;
   /** The GitHub repo the issue number links into; absent for local projects. */
@@ -1793,7 +1781,7 @@ function SessionRow({
   const edgeMarkers = sessionMarkers({
     favorite,
     automation: session.automation?.status,
-    preview: previewActive ? (previewPublic ? 'public' : 'local') : undefined,
+    shared: previewActive === true,
   });
   const a11yLabel = edgeMarkers.length
     ? `Open session ${label}, ${sessionMarkersLabel(edgeMarkers)}`
@@ -1891,7 +1879,7 @@ function SessionRow({
                   accessibilityLabel="Open preview"
                   accessibilityState={{ disabled: !previewUrl }}
                 >
-                  <Icon name="monitor" size={14} color={theme.colors.primary} />
+                  <Icon name="monitor" size={14} color={theme.colors.tone.done} />
                 </Pressable>
               ) : null}
             </View>
