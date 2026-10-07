@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.24.1](https://github.com/Heey-Global/verity/compare/v4.24.0...v4.24.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **web:** restore layouts and composer behavior and optimize loading ([#1273](https://github.com/Heey-Global/verity/issues/1273)) ([ba34bbb](https://github.com/Heey-Global/verity/commit/ba34bbb6118e5ee92d23ae027dca886c40e94a01))
+
 ## [4.24.0](https://github.com/Heey-Global/verity/compare/v4.23.0...v4.24.0) (2026-10-07)
 
 
