@@ -19,7 +19,7 @@
   "dependencies": {
     "@fastify/compress": "9.2.0",
     "@fastify/rate-limit": "11.2.0",
-    "@fastify/websocket": "11.3.1",
+    "@fastify/websocket": "11.3.3",
     "@napi-rs/canvas": "1.0.10",
     "@verity/events": "*",
     "@verity/preview-tunnel": "*",
