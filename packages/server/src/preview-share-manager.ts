@@ -1628,10 +1628,6 @@ async function assertEligibleSandbox(
     ['VERITY_GH_BROKER_CAPABILITY_FILE', '/run/verity/gh-token-capability'],
     ['VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE', '/run/verity/claude-egress/client.key'],
   ]);
-  const nonSecretBrokerCoordinates = new Set([
-    'VERITY_GH_TOKEN_URL',
-    'VERITY_GH_TOKEN_DOCKER_CONTAINER',
-  ]);
   if (sandbox.env === undefined) {
     throw new PreviewShareConflictError('sandbox environment metadata is incomplete');
   }
@@ -1641,7 +1637,6 @@ async function assertEligibleSandbox(
     const value = separator < 0 ? '' : entry.slice(separator + 1);
     const allowedPath = allowedSensitivePathEnv.get(name);
     if (allowedPath !== undefined) return value !== allowedPath;
-    if (nonSecretBrokerCoordinates.has(name)) return false;
     return (
       /(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_KEY|API_KEY|ACCESS_KEY|CREDENTIALS?)(_|$)/.test(
         name,

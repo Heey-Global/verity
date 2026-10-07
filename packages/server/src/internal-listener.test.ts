@@ -147,10 +147,9 @@ describe('startProjectInternalUnixListener', () => {
 
   it('binds identity and permits only the project broker route set', async () => {
     app = Fastify();
-    app.post('/internal/github/token', (request) => ({
+    app.post('/internal/project/memory', (request) => ({
       identity: internalConnectionIdentity(request),
     }));
-    app.post('/internal/project/memory', () => ({ ok: true }));
     app.post('/internal/git/sign', () => ({ unsafe: true }));
     app.get('/projects', () => ({ unsafe: true }));
     await app.ready();
@@ -170,7 +169,7 @@ describe('startProjectInternalUnixListener', () => {
       gid: TEST_GID,
     });
     expect(statSync(listener.socketPath).mode & 0o777).toBe(0o660);
-    const allowed = await unixRequest(listener.socketPath, 'POST', '/internal/github/token');
+    const allowed = await unixRequest(listener.socketPath, 'POST', '/internal/project/memory');
     expect(allowed.status).toBe(200);
     expect(JSON.parse(allowed.body)).toEqual({ identity });
     await expect(
@@ -183,7 +182,10 @@ describe('startProjectInternalUnixListener', () => {
     ).rejects.toThrow('socket is already active');
 
     await expect(
-      unixRequest(listener.socketPath, 'GET', '/internal/github/token'),
+      unixRequest(listener.socketPath, 'POST', '/internal/github/token'),
+    ).resolves.toMatchObject({ status: 404 });
+    await expect(
+      unixRequest(listener.socketPath, 'GET', '/internal/project/memory'),
     ).resolves.toMatchObject({
       status: 404,
     });

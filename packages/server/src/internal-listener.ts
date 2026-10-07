@@ -144,7 +144,6 @@ export function projectSocketBindingName(identity: InternalConnectionIdentity): 
  *  it: the relay is the only hop a Sandbox has to this socket. */
 export const PROJECT_UDS_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/git/sign',
-  'POST /internal/github/token',
   'POST /internal/project/memory',
   // `verity-dev-server`: managed dev servers (concept 2.6), same capability as memory.
   'POST /internal/dev-servers',

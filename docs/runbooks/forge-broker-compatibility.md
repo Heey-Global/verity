@@ -2,7 +2,7 @@
 
 The forge transport extends the HTTP secret broker. GitHub credentials and GHCR
 registry bearers remain on the server. Sandboxes use project/container-bound
-capabilities. The legacy token endpoint remains available during migration.
+capabilities. The legacy token endpoint no longer issues credentials.
 
 ## Workflow matrix
 
@@ -89,7 +89,7 @@ Deploy updated server, relay and toolkit images. Existing broker CAs remain vali
 new leaf certificates include uploads and GHCR. Recreate project containers for
 updated client helpers.
 
-Before removing legacy token output, verify disposable Git/PR operations, default
+For live acceptance, verify disposable Git/PR operations, default
 and JSON Issue/PR output, checks and paginated Actions reads, a dedicated workflow
 dispatch/rerun/cancel, temporary Release asset upload/download and cleanup, and
 mapped public/private image reads through the audit and real ORAS client.

@@ -650,7 +650,6 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
     ),
     ...copy('VERITY_SIGNING_URL'),
     ...copy('VERITY_SIGNING_TOKEN_FILE'),
-    ...copy('VERITY_GH_TOKEN_URL'),
     ...copy('VERITY_GH_BROKER_CAPABILITY_FILE'),
     ...copy('VERITY_PROJECT_MEMORY_URL'),
   };

@@ -59,7 +59,7 @@ describe('broker relay', () => {
 
     const response = await httpCall(port, {
       method: 'POST',
-      path: '/internal/github/token',
+      path: '/internal/project/memory',
       headers: { authorization: 'Bearer project-cap', 'content-type': 'application/json' },
       body: '{"request":true}',
     });
@@ -68,7 +68,7 @@ describe('broker relay', () => {
     expect(seen).toEqual([
       {
         method: 'POST',
-        url: '/internal/github/token',
+        url: '/internal/project/memory',
         authorization: 'Bearer project-cap',
         body: '{"request":true}',
       },
@@ -299,9 +299,10 @@ describe('broker relay', () => {
     const port = await listenTcp(relay);
 
     for (const candidate of [
-      { method: 'GET', path: '/internal/github/token' },
-      { method: 'POST', path: '/internal/github/token?target=other' },
-      { method: 'POST', path: 'http://example.test/internal/github/token' },
+      { method: 'POST', path: '/internal/github/token' },
+      { method: 'GET', path: '/internal/project/memory' },
+      { method: 'POST', path: '/internal/project/memory?target=other' },
+      { method: 'POST', path: 'http://example.test/internal/project/memory' },
       { method: 'DELETE', path: '/internal/mcp' },
       { method: 'POST', path: '/projects' },
     ]) {
@@ -313,20 +314,20 @@ describe('broker relay', () => {
     expect(
       await rawCall(
         port,
-        'GET /internal/github/token HTTP/1.1\r\nHost: relay\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n',
+        'GET /internal/project/memory HTTP/1.1\r\nHost: relay\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n',
       ),
     ).toContain('405 Method Not Allowed');
     expect(
       await rawCall(
         port,
-        'POST /internal/github/token HTTP/1.1\r\nHost: relay\r\nConnection: authorization\r\nAuthorization: Bearer secret\r\nContent-Length: 0\r\n\r\n',
+        'POST /internal/project/memory HTTP/1.1\r\nHost: relay\r\nConnection: authorization\r\nAuthorization: Bearer secret\r\nContent-Length: 0\r\n\r\n',
       ),
     ).toContain('400 Bad Request');
     expect(
       (
         await httpCall(port, {
           method: 'POST',
-          path: '/internal/github/token',
+          path: '/internal/project/memory',
           headers: { 'x-caller-selected-upstream': 'http://example.test' },
         })
       ).status,
@@ -375,7 +376,7 @@ describe('broker relay', () => {
     });
     const port = await listenTcp(relay);
     const requestText =
-      'POST /internal/github/token HTTP/1.1\r\nHost: relay\r\nContent-Length: 0\r\n\r\n';
+      'POST /internal/project/memory HTTP/1.1\r\nHost: relay\r\nContent-Length: 0\r\n\r\n';
     const responses = rawCall(port, requestText.repeat(6));
 
     await waitFor(() => calls === 2);
@@ -514,7 +515,7 @@ describe('broker relay', () => {
 
     const response = await httpCall(port, {
       method: 'POST',
-      path: '/internal/github/token',
+      path: '/internal/project/memory',
     }).catch(() => undefined);
 
     await closed;
