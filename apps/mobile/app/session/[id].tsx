@@ -3581,6 +3581,14 @@ export function SessionChat({
     };
   }, []);
 
+  // Navigation can retain the session screen, so mounting alone misses return visits.
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== 'web') return;
+      return focusComposer();
+    }, [focusComposer, sessionId]),
+  );
+
   // Composer autofocus on iPad with a hardware keyboard (#98): drop the operator
   // straight into the input (blinking cursor, ready to type) when a session opens, so
   // they don't have to tap the field first. "Unknown" gets one probe attempt because
