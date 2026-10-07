@@ -7659,20 +7659,25 @@ function EventRow({ message }: { message: ModeSwitchMessage }) {
   const { theme } = useUnistyles();
   const descriptor = agentEventDescriptor(message.event);
   const color = theme.colors.tone[eventToneColor(descriptor.tone)];
+  // A task change is bookkeeping, not conversation: one muted line that opens
+  // the panel when tapped, so it never competes with the reply around it.
+  if (descriptor.action === 'tasks') {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${descriptor.label}. Open Tasks`}
+        onPress={openTasksPanel}
+        style={({ pressed }) => [styles.eventRow, pressed ? styles.eventActionPressed : null]}
+      >
+        <Text style={styles.eventDetail}>{descriptor.label}</Text>
+        <Text style={styles.eventTasksLink}>Tasks ›</Text>
+      </Pressable>
+    );
+  }
   return (
     <View style={[styles.eventRow, descriptor.action ? styles.eventRowActionable : null]}>
       <Text style={[styles.eventLabel, { color }]}>{descriptor.label}</Text>
       {descriptor.detail ? <Text style={styles.eventDetail}>{descriptor.detail}</Text> : null}
-      {descriptor.action === 'tasks' ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Open Tasks"
-          style={styles.eventAction}
-          onPress={openTasksPanel}
-        >
-          <Text style={styles.eventActionLabel}>Open Tasks</Text>
-        </Pressable>
-      ) : null}
       {descriptor.action === 'claude-login' ? (
         <Pressable
           style={({ pressed }) => [styles.eventAction, pressed ? styles.eventActionPressed : null]}
@@ -11243,6 +11248,11 @@ const styles = StyleSheet.create((theme) => ({
   eventDetail: {
     color: theme.colors.textFaint,
     fontSize: theme.text.xs,
+  },
+  eventTasksLink: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.xs,
+    fontWeight: '600',
   },
   eventAction: {
     alignSelf: 'flex-start',

@@ -1,4 +1,5 @@
 import { QuickCaptureBubble } from '../components/QuickCaptureBubble';
+import { openTasksPanel } from '../lib/taskPanelEvents';
 // Root layout: configures Unistyles (side-effect import, must run first), then
 // mounts the provider stack (gesture handler + safe area) and the themed router
 // Stack. The header colors come from the live theme via useUnistyles; the app is
@@ -427,6 +428,19 @@ function AppHeader({
         </Text>
         <View style={[styles.headerSide, styles.headerSideRight]}>
           {options.headerRight?.({ canGoBack: back !== undefined, tintColor: theme.colors.text })}
+          {isHome && !isDemoMode() ? (
+            <Pressable
+              style={({ pressed }) => [
+                styles.headerIconButton,
+                pressed ? styles.headerPressed : null,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Tasks"
+              onPress={openTasksPanel}
+            >
+              <Icon name="check-square" size={19} color={theme.colors.textMuted} />
+            </Pressable>
+          ) : null}
           {showMessageSearch ? (
             <>
               <Link

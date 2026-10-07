@@ -64,5 +64,21 @@ export function taskContext(
     projectId: pathname.startsWith('/project/') ? (params.id ?? null) : null,
   };
 }
+/** "just now", "5 min ago", "2 h ago", "yesterday", "3 days ago": the age a task
+ *  row shows. Coarse on purpose; the exact time is not what the list is for. */
+export function taskAge(createdAt: string, now = Date.now()): string {
+  const elapsed = Math.max(0, now - Date.parse(createdAt));
+  const minutes = Math.floor(elapsed / 60_000);
+  if (Number.isNaN(minutes) || minutes < 1) return 'just now';
+  if (minutes < 60) return `${String(minutes)} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${String(hours)} h ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return 'yesterday';
+  if (days < 30) return `${String(days)} days ago`;
+  const months = Math.floor(days / 30);
+  return months === 1 ? '1 month ago' : `${String(months)} months ago`;
+}
+
 export const TASK_SILENCE_MS = 1500;
 export const TASK_SAVE_DELAY_MS = 3000;

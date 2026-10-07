@@ -539,6 +539,7 @@ export { selectedOpenCodeModels } from '@verity/events';
 
 export {
   taskSchema,
+  taskAge,
   taskContext,
   TASK_SILENCE_MS,
   TASK_SAVE_DELAY_MS,

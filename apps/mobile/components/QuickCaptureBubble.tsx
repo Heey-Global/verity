@@ -39,6 +39,9 @@ import { useCallback } from 'react';
 import { QuickCaptureCard } from './QuickCaptureCard';
 import { TasksPanel } from './TasksPanel';
 
+/** Bubble diameter; half of it sits outside the screen edge. */
+const BUBBLE = 44;
+
 export function QuickCaptureBubble() {
   const hintRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshFromHint = useCallback(() => {
@@ -104,7 +107,7 @@ export function QuickCaptureBubble() {
   const bottom = height - insets.bottom - 100;
   useEffect(() => {
     origin.current = {
-      x: preferences.side === 'left' ? -26 : width - 26,
+      x: preferences.side === 'left' ? -BUBBLE / 2 : width - BUBBLE / 2,
       y: Math.max(top, Math.min(bottom, height * preferences.fraction)),
     };
     position.setValue(origin.current);
@@ -116,8 +119,8 @@ export function QuickCaptureBubble() {
         onPanResponderGrant: () => setDragging(true),
         onPanResponderMove: (_, g) =>
           position.setValue({
-            x: Math.max(-26, Math.min(width - 26, origin.current.x + g.dx)),
-            y: Math.max(top, Math.min(height - 52, origin.current.y + g.dy)),
+            x: Math.max(-BUBBLE / 2, Math.min(width - BUBBLE / 2, origin.current.x + g.dx)),
+            y: Math.max(top, Math.min(height - BUBBLE, origin.current.y + g.dy)),
           }),
         onPanResponderRelease: (_, g) => {
           setDragging(false);
@@ -125,9 +128,9 @@ export function QuickCaptureBubble() {
             setHidden(true);
             return;
           }
-          const side = origin.current.x + g.dx + 26 < width / 2 ? 'left' : 'right';
+          const side = origin.current.x + g.dx + BUBBLE / 2 < width / 2 ? 'left' : 'right';
           const y = Math.max(top, Math.min(bottom, origin.current.y + g.dy));
-          origin.current = { x: side === 'left' ? -26 : width - 26, y };
+          origin.current = { x: side === 'left' ? -BUBBLE / 2 : width - BUBBLE / 2, y };
           position.setValue(origin.current);
           void saveTaskPreferences({ side, fraction: y / height });
           void Haptics.selectionAsync();
@@ -263,37 +266,59 @@ export function QuickCaptureBubble() {
             transform: position.getTranslateTransform(),
           }}
         >
+          {/* Half tucked into the edge and translucent, so it reads as a handle
+              rather than a button; it only comes forward while being dragged. */}
           <Pressable
+            accessibilityRole="button"
             accessibilityLabel="Capture task"
+            accessibilityHint="Double tap to record a task; long press to open the task list"
             onPress={() => setCapture(true)}
             onLongPress={() => setPanel(true)}
             style={{
-              width: 52,
-              height: 52,
-              borderRadius: 26,
-              backgroundColor: theme.colors.accent,
-              opacity: 0.6,
+              width: BUBBLE,
+              height: BUBBLE,
+              borderRadius: BUBBLE / 2,
+              backgroundColor: theme.colors.surfaceAlt,
+              borderWidth: 1,
+              borderColor: theme.colors.border,
+              opacity: dragging ? 1 : 0.55,
               justifyContent: 'center',
               alignItems: 'center',
+              // Keep the glyph on the visible half.
+              paddingLeft: preferences.side === 'right' ? 0 : BUBBLE / 2 - 2,
+              paddingRight: preferences.side === 'right' ? BUBBLE / 2 - 2 : 0,
             }}
           >
-            <Icon name="mic" size={24} color="#fff" />
+            <Icon name="mic" size={16} color={theme.colors.textMuted} />
           </Pressable>
           {count > 0 ? (
             <Pressable
-              accessibilityLabel={`Open Tasks, ${count} open`}
+              accessibilityRole="button"
+              accessibilityLabel={`Open Tasks, ${String(count)} open`}
+              hitSlop={6}
               onPress={() => setPanel(true)}
               style={{
                 position: 'absolute',
-                top: -10,
-                [preferences.side === 'right' ? 'left' : 'right']: -7,
-                borderRadius: 12,
-                minWidth: 24,
-                padding: 4,
-                backgroundColor: theme.colors.accent,
+                top: -6,
+                [preferences.side === 'right' ? 'left' : 'right']: -4,
+                minWidth: 18,
+                height: 18,
+                paddingHorizontal: 5,
+                borderRadius: 9,
+                backgroundColor: theme.colors.primary,
+                justifyContent: 'center',
               }}
             >
-              <Text style={{ color: '#fff', textAlign: 'center', fontSize: 12 }}>{count}</Text>
+              <Text
+                style={{
+                  color: theme.colors.onPrimary,
+                  textAlign: 'center',
+                  fontSize: 11,
+                  fontWeight: '700',
+                }}
+              >
+                {count}
+              </Text>
             </Pressable>
           ) : null}
         </Animated.View>

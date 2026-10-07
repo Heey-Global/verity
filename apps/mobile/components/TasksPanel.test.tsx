@@ -52,7 +52,22 @@ it('offers both actions only in the matching project session', () => {
   expect(ui.getByText('+ New Session')).toBeTruthy();
   expect(ui.getByText('↳ This Session')).toBeTruthy();
   ui.rerender(<TasksPanel {...props} context={{ projectId: 'other', sessionId: 's2' }} />);
-  fireEvent.press(ui.getByText('› Project · 1'));
+  fireEvent.press(ui.getByLabelText('Project · 1'));
   expect(ui.getByText('+ New Session')).toBeTruthy();
   expect(ui.queryByText('↳ This Session')).toBeNull();
+});
+it('shows where an assigned task went instead of offering to assign it again', () => {
+  jest.mocked(useTasks).mockReturnValue({
+    tasks: [
+      { ...task, id: 'mine', title: 'Already here', projectId: 'p', sessionId: 's' },
+      { ...task, id: 'theirs', title: 'Elsewhere', projectId: 'p', sessionId: 'other' },
+    ],
+    pending: [],
+    conflicts: [],
+  });
+  const ui = render(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 's' }} />);
+  expect(ui.getByText('This session')).toBeTruthy();
+  expect(ui.queryByText(/New Session/)).toBeNull();
+  expect(ui.queryByText(/This Session/)).toBeNull();
+  expect(ui.getAllByText('↳ Open session')).toHaveLength(1);
 });
