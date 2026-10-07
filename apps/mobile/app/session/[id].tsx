@@ -1005,21 +1005,32 @@ export function SessionChat({
         })
         .catch(() => undefined);
     }
-    void client
+    // Shared means shared on the local network or online alike: either lights the
+    // preview button. A failed read counts as "not shared" for that source only.
+    const now = Date.now();
+    const publicShared = client
       .listPublicPreviewShares(projectId)
-      .then((shares) => {
-        setHasActiveStaticPreview(
-          shares.some(
-            (share) =>
-              (share.targetKind === 'static-folder' ||
-                (share.targetKind === 'dev-server' && share.devServerId === null)) &&
-              share.sessionId === sessionId &&
-              share.state === 'active' &&
-              new Date(share.expiresAt).getTime() > Date.now(),
-          ),
-        );
-      })
-      .catch(() => undefined);
+      .then((shares) =>
+        shares.some(
+          (share) =>
+            (share.targetKind === 'static-folder' ||
+              (share.targetKind === 'dev-server' && share.devServerId === null)) &&
+            share.sessionId === sessionId &&
+            share.state === 'active' &&
+            new Date(share.expiresAt).getTime() > now,
+        ),
+      )
+      .catch(() => false);
+    const localShared =
+      typeof client.listSessionLocalPreviewShares === 'function'
+        ? client
+            .listSessionLocalPreviewShares(sessionId)
+            .then((shares) => shares.some((share) => share.expiresAt.getTime() > now))
+            .catch(() => false)
+        : Promise.resolve(false);
+    void Promise.all([publicShared, localShared]).then(([online, local]) =>
+      setHasActiveStaticPreview(online || local),
+    );
   }, [client, projectId, sessionId]);
   useEffect(() => {
     if (!loaded) return;
@@ -3717,6 +3728,7 @@ export function SessionChat({
                 hasRunningDevServer ? 'Share preview. A dev server is running.' : 'Share preview'
               }
               active={hasActiveStaticPreview}
+              activeColor={theme.colors.tone.done}
               dot={hasRunningDevServer}
               dotTestID="preview-server-dot"
               onHint={showHeaderHint}
@@ -4521,6 +4533,7 @@ function HeaderActionButton({
   dot = false,
   dotTestID,
   badge,
+  activeColor,
 }: {
   icon: IconName;
   label: string;
@@ -4531,6 +4544,8 @@ function HeaderActionButton({
   dot?: boolean;
   dotTestID?: string;
   badge?: number;
+  /** Icon color while `active`; defaults to the primary blue. */
+  activeColor?: string;
 }) {
   const { theme } = useUnistyles();
   return (
@@ -4542,7 +4557,11 @@ function HeaderActionButton({
       accessibilityLabel={accessibilityLabel}
       style={({ pressed }) => [styles.headerActionBtn, pressed ? styles.copyBtnPressed : null]}
     >
-      <Icon name={icon} size={20} color={active ? theme.colors.primary : theme.colors.textMuted} />
+      <Icon
+        name={icon}
+        size={20}
+        color={active ? (activeColor ?? theme.colors.primary) : theme.colors.textMuted}
+      />
       {dot ? <View testID={dotTestID} style={styles.headerActionDot} /> : null}
       {badge !== undefined ? (
         <View style={styles.headerActionBadge}>

@@ -1,6 +1,11 @@
 import { subscribeLiveRefresh } from '../lib/liveConnection';
 import { SessionIssueRef } from '../components/SessionIssueRef';
 import { SwipeableSessionRow } from '../components/SessionRowActions';
+import {
+  SessionMarkerEdge,
+  sessionMarkers,
+  sessionMarkersLabel,
+} from '../components/SessionMarkerEdge';
 import { SessionSettingsDialog } from '../components/SessionSettingsDialog';
 // Sessions home screen: the live list of Claude Code sessions, bound to
 // @verity/mobile's SessionListModel via useSessionList. Renders loading / error /
@@ -1773,7 +1778,14 @@ function SessionRow({
   // would have used is not the thing to say — and the row keeps its height, which
   // this list re-measures on every poll.
   const notice = attentionNotice(session.attention);
-  const automationActive = session.automation?.status === 'enabled';
+  const edgeMarkers = sessionMarkers({
+    favorite,
+    automation: session.automation?.status,
+    shared: previewActive === true,
+  });
+  const a11yLabel = edgeMarkers.length
+    ? `Open session ${label}, ${sessionMarkersLabel(edgeMarkers)}`
+    : `Open session ${label}`;
   const hasIssue = parseBranchIssue(session.branch) !== null;
   // Accent wash marking the row whose rename sheet is open. Driven by an animated
   // value so that on close it lingers a beat and fades out (rather than vanishing)
@@ -1795,14 +1807,9 @@ function SessionRow({
     <View style={styles.rowInner}>
       {/* Accent wash overlay (behind the content) that fades out when the rename
           sheet closes. pointerEvents none so it never intercepts row taps. */}
-      {/* Favorites stay in their project and are marked by an accent edge over a
-          faint accent wash, so they hold up against the hover/selected surfaces. */}
-      {favorite ? (
-        <>
-          <View pointerEvents="none" style={styles.favoriteWash} />
-          <View pointerEvents="none" style={styles.favoriteEdge} />
-        </>
-      ) : null}
+      {/* Favorite, automation and sharing are stripes on the leading edge; they
+          never tint the row, so the selected background stays unambiguous. */}
+      <SessionMarkerEdge markers={edgeMarkers} />
       <Animated.View pointerEvents="none" style={[styles.renamingWash, { opacity: wash }]} />
       {/* Same [chevron col | dot col | title block] grid as the project header, so a
           session's dot + name line up under the project's. The chevron column is empty
@@ -1853,17 +1860,12 @@ function SessionRow({
           >
             {notice ? attentionNoticeText(notice) : subtitle}
           </Text>
-          {hasIssue || automationActive || previewActive ? (
+          {hasIssue || previewActive ? (
             <View style={styles.sessionFeatures}>
               <Text style={styles.rowSub} accessible={false} importantForAccessibility="no">
                 ·
               </Text>
               <SessionIssueRef branch={session.branch} repo={repo} />
-              {automationActive ? (
-                <View accessible accessibilityLabel="Automation active">
-                  <Icon name="repeat" size={14} color={theme.colors.primary} />
-                </View>
-              ) : null}
               {previewActive ? (
                 <Pressable
                   // openURL rejects only if no handler can open the URL; swallow it.
@@ -1877,7 +1879,7 @@ function SessionRow({
                   accessibilityLabel="Open preview"
                   accessibilityState={{ disabled: !previewUrl }}
                 >
-                  <Icon name="monitor" size={14} color={theme.colors.primary} />
+                  <Icon name="monitor" size={14} color={theme.colors.tone.done} />
                 </Pressable>
               ) : null}
             </View>
@@ -1920,7 +1922,7 @@ function SessionRow({
         delayLongPress={300}
         accessibilityRole="button"
         accessibilityState={{ selected: !!selected }}
-        accessibilityLabel={`Open session ${label}`}
+        accessibilityLabel={a11yLabel}
         accessibilityHint="Long press to edit session settings"
       >
         {rowBody}
@@ -1931,7 +1933,7 @@ function SessionRow({
   return swipeable(
     <Link
       href={{ pathname: '/session/[id]', params: { id: session.sessionId } }}
-      accessibilityLabel={`Open session ${label}`}
+      accessibilityLabel={a11yLabel}
       asChild
     >
       <Pressable
@@ -2508,22 +2510,6 @@ const styles = StyleSheet.create((theme) => ({
     right: 0,
     bottom: 0,
     backgroundColor: `${theme.colors.accent}4d`,
-  },
-  favoriteWash: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: `${theme.colors.accent}12`,
-  },
-  favoriteEdge: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    bottom: 0,
-    width: 3,
-    backgroundColor: theme.colors.accent,
   },
   rowPressed: {
     opacity: 0.6,

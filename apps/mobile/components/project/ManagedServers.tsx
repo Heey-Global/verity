@@ -139,7 +139,7 @@ export function ManagedServerBlock({
             <Icon
               name="wifi"
               size={18}
-              color={localOn ? theme.colors.text : theme.colors.textMuted}
+              color={localOn ? theme.colors.tone.done : theme.colors.textMuted}
             />
           </View>
           <View style={styles.rowText}>
@@ -177,7 +177,7 @@ export function ManagedServerBlock({
             <Icon
               name="globe"
               size={18}
-              color={onlineOn ? theme.colors.text : theme.colors.textMuted}
+              color={onlineOn ? theme.colors.tone.done : theme.colors.textMuted}
             />
           </View>
           <View style={styles.rowText}>
