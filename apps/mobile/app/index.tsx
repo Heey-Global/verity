@@ -2,10 +2,10 @@ import { subscribeLiveRefresh } from '../lib/liveConnection';
 import { SessionIssueRef } from '../components/SessionIssueRef';
 import { SwipeableSessionRow } from '../components/SessionRowActions';
 import {
-  SessionMarkerEdge,
+  SessionMarkerColumn,
   sessionMarkers,
   sessionMarkersLabel,
-} from '../components/SessionMarkerEdge';
+} from '../components/SessionMarkerColumn';
 import { SessionSettingsDialog } from '../components/SessionSettingsDialog';
 // Sessions home screen: the live list of Claude Code sessions, bound to
 // @verity/mobile's SessionListModel via useSessionList. Renders loading / error /
@@ -89,6 +89,7 @@ import {
   mergeSessionPreviewUrls,
   nextProjectPreviewLinks,
   publicPreviewLinks,
+  publicPreviewSessionIds,
   type ProjectPreviewLinks,
 } from '../lib/sessionPreviewLinks';
 import { prefetchBranches } from '../lib/branchesPrefetch';
@@ -226,6 +227,7 @@ function SessionList({ client }: { client: VerityClient }) {
     devServersByProject,
     detectionsByProject,
     previewUrls,
+    publicPreviews,
   } = useProjects(client);
   // Returning to the overview refetches the sessions too, not just the projects
   // (`useProjects` does its own). Deleting a project takes its sessions with it,
@@ -588,6 +590,7 @@ function SessionList({ client }: { client: VerityClient }) {
           defaultNewSessionProject={defaultNewSessionProject}
           unread={unread}
           previewUrls={previewUrls}
+          publicPreviews={publicPreviews}
           selectedId={wide ? selectedId : null}
           renamingId={renaming?.sessionId ?? null}
           updatingProjectIds={updatingProjectIds}
@@ -605,6 +608,7 @@ function SessionList({ client }: { client: VerityClient }) {
       selectedId,
       unread,
       previewUrls,
+      publicPreviews,
       onOpenSession,
       createSessionInPane,
       renaming,
@@ -865,6 +869,9 @@ function useProjects(client: VerityClient) {
   const [previewUrls, setPreviewUrls] = useState<ReadonlyMap<string, string | null>>(
     () => new Map(),
   );
+  // Sessions with an unexpired public share: their row shows "online" even when
+  // the preview entry opens the local link.
+  const [publicPreviews, setPublicPreviews] = useState<ReadonlySet<string>>(() => new Set());
   const publicPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
   const localPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
   const [loading, setLoading] = useState(true);
@@ -923,13 +930,11 @@ function useProjects(client: VerityClient) {
           projectIds,
           localResults,
         );
+        const now = Date.now();
         setPreviewUrls(
-          mergeSessionPreviewUrls(
-            publicPreviewLinksRef.current,
-            localPreviewLinksRef.current,
-            Date.now(),
-          ),
+          mergeSessionPreviewUrls(publicPreviewLinksRef.current, localPreviewLinksRef.current, now),
         );
+        setPublicPreviews(publicPreviewSessionIds(publicPreviewLinksRef.current, now));
         const pending = new Map(
           [...pendingProjectMutations.current].filter(
             ([, entry]) => entry.generation >= generation,
@@ -988,6 +993,7 @@ function useProjects(client: VerityClient) {
     devServersByProject,
     detectionsByProject,
     previewUrls,
+    publicPreviews,
     loading,
     error,
     refresh: () => load(),
@@ -1122,6 +1128,7 @@ function ProjectGroup({
   defaultNewSessionProject,
   unread,
   previewUrls,
+  publicPreviews,
   selectedId,
   renamingId,
   updatingProjectIds,
@@ -1151,6 +1158,7 @@ function ProjectGroup({
   defaultNewSessionProject?: ProjectRecord | undefined;
   unread: ReadonlySet<string>;
   previewUrls: ReadonlyMap<string, string | null>;
+  publicPreviews: ReadonlySet<string>;
   selectedId?: string | null;
   renamingId?: string | null;
   updatingProjectIds?: ReadonlySet<string>;
@@ -1429,6 +1437,7 @@ function ProjectGroup({
                     onOpen={() => onOpenSession(session)}
                     unread={unread.has(session.sessionId)}
                     previewActive={previewUrls.has(session.sessionId)}
+                    previewPublic={publicPreviews.has(session.sessionId)}
                     previewUrl={previewUrls.get(session.sessionId) ?? null}
                     repo={group.project?.kind === 'github' ? group.project : undefined}
                     selected={selectedId === session.sessionId}
@@ -1732,6 +1741,7 @@ function SessionRow({
   onOpen,
   unread,
   previewActive,
+  previewPublic,
   previewUrl,
   repo,
   selected,
@@ -1745,6 +1755,8 @@ function SessionRow({
   onOpen?: () => void;
   unread?: boolean;
   previewActive?: boolean;
+  /** An unexpired public share exists, whichever link the preview entry opens. */
+  previewPublic?: boolean;
   /** Where the preview icon leads; null while a public share has no origin yet. */
   previewUrl?: string | null;
   /** The GitHub repo the issue number links into; absent for local projects. */
@@ -1781,7 +1793,7 @@ function SessionRow({
   const edgeMarkers = sessionMarkers({
     favorite,
     automation: session.automation?.status,
-    shared: previewActive === true,
+    shared: previewActive ? (previewPublic ? 'online' : 'local') : undefined,
   });
   const a11yLabel = edgeMarkers.length
     ? `Open session ${label}, ${sessionMarkersLabel(edgeMarkers)}`
@@ -1807,9 +1819,6 @@ function SessionRow({
     <View style={styles.rowInner}>
       {/* Accent wash overlay (behind the content) that fades out when the rename
           sheet closes. pointerEvents none so it never intercepts row taps. */}
-      {/* Favorite, automation and sharing are stripes on the leading edge; they
-          never tint the row, so the selected background stays unambiguous. */}
-      <SessionMarkerEdge markers={edgeMarkers} />
       <Animated.View pointerEvents="none" style={[styles.renamingWash, { opacity: wash }]} />
       {/* Same [chevron col | dot col | title block] grid as the project header, so a
           session's dot + name line up under the project's. The chevron column is empty
@@ -1860,32 +1869,19 @@ function SessionRow({
           >
             {notice ? attentionNoticeText(notice) : subtitle}
           </Text>
-          {hasIssue || previewActive ? (
+          {hasIssue ? (
             <View style={styles.sessionFeatures}>
               <Text style={styles.rowSub} accessible={false} importantForAccessibility="no">
                 ·
               </Text>
               <SessionIssueRef branch={session.branch} repo={repo} />
-              {previewActive ? (
-                <Pressable
-                  // openURL rejects only if no handler can open the URL; swallow it.
-                  // Enabled even without a URL yet: a disabled Pressable lets the tap
-                  // fall through to the row, which would open the session instead.
-                  onPress={() =>
-                    previewUrl && void Linking.openURL(previewUrl).catch(() => undefined)
-                  }
-                  hitSlop={8}
-                  accessibilityRole="link"
-                  accessibilityLabel="Open preview"
-                  accessibilityState={{ disabled: !previewUrl }}
-                >
-                  <Icon name="monitor" size={14} color={theme.colors.tone.done} />
-                </Pressable>
-              ) : null}
             </View>
           ) : null}
         </View>
       </View>
+      {/* Favorite, automation and sharing: icon + short bar on the trailing edge,
+          so the leading edge stays with the working/unread dot. */}
+      <SessionMarkerColumn markers={edgeMarkers} previewUrl={previewUrl ?? null} />
     </View>
   );
 
