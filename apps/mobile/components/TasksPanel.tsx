@@ -62,9 +62,6 @@ export function TasksPanel({
   const { tasks, pending, conflicts, errors } = useTasks();
   const [showDone, setShowDone] = useState(false);
   const [expanded, setExpanded] = useState<string[]>([]);
-  const [selected, setSelected] = useState<string[]>([]);
-  const [edit, setEdit] = useState<Task | null>(null);
-  const [text, setText] = useState('');
   const [moving, setMoving] = useState<Task | null>(null);
   const [busy, setBusy] = useState(false);
   const [undo, setUndo] = useState<string[]>([]);
@@ -201,7 +198,6 @@ export function TasksPanel({
       },
     });
     const isDone = task.status === 'done';
-    const isSelected = selected.includes(task.id);
     const syncing = pending.some((op) => op.id === task.id);
     const meta = [
       taskAge(task.createdAt),
@@ -239,25 +235,20 @@ export function TasksPanel({
               color={isDone ? theme.colors.tone.done : theme.colors.textFaint}
             />
           </Pressable>
-          <Pressable
-            style={styles.rowBody}
-            onLongPress={() => {
-              setEdit(task);
-              setText(task.title);
-            }}
-            onPress={() =>
-              setSelected((ids) =>
-                ids.includes(task.id) ? ids.filter((id) => id !== task.id) : [...ids, task.id],
-              )
-            }
-            accessibilityState={{ selected: isSelected }}
-          >
-            <Text style={[styles.title, isDone ? styles.titleDone : null]}>
-              {isSelected ? '☑ ' : ''}
-              {task.title}
-            </Text>
+          {/* The text is the editor: tap to change it, leave the field to save. */}
+          <View style={styles.rowBody}>
+            {isDone ? (
+              <Text style={[styles.title, styles.titleDone]}>{task.title}</Text>
+            ) : (
+              <TaskTitleInput
+                task={task}
+                onSave={(title) => {
+                  void run(() => patchTask(task, { title }));
+                }}
+              />
+            )}
             <Text style={styles.meta}>{meta}</Text>
-          </Pressable>
+          </View>
           <Pressable
             ref={(node) => {
               if (node) anchors.current.set(task.id, node);
@@ -442,15 +433,6 @@ export function TasksPanel({
         onPress: close(() => complete(task)),
       },
       {
-        icon: 'edit-2',
-        title: 'Edit',
-        subtitle: 'Change the text',
-        onPress: close(() => {
-          setEdit(task);
-          setText(task.title);
-        }),
-      },
-      {
         icon: 'folder',
         title: 'Move',
         subtitle: 'To another project or General',
@@ -465,14 +447,6 @@ export function TasksPanel({
       },
     ];
   };
-  const selectedTasks = tasks.filter((task) => selected.includes(task.id));
-  const dispatchable = selectedTasks.filter(implementable);
-  const bulkProject =
-    dispatchable.length === selectedTasks.length &&
-    dispatchable.length > 0 &&
-    dispatchable.every((task) => task.projectId === dispatchable[0]?.projectId)
-      ? dispatchable[0]!.projectId
-      : null;
   const headerButton = (label: string, icon: 'mic' | 'x', onPress: () => void) => (
     <Pressable
       accessibilityRole="button"
@@ -512,30 +486,7 @@ export function TasksPanel({
             {headerButton('Capture task', 'mic', onCapture)}
             {headerButton('Close', 'x', onClose)}
           </View>
-          {edit ? (
-            <View style={styles.editor}>
-              <TextInput
-                accessibilityLabel="Edit task text"
-                value={text}
-                onChangeText={setText}
-                multiline
-                style={styles.editorInput}
-              />
-              <View style={styles.chips}>
-                {chip(
-                  'Save',
-                  () => {
-                    void run(async () => {
-                      await patchTask(edit, { title: text.trim() });
-                      setEdit(null);
-                    });
-                  },
-                  { accent: true, disabled: text.trim().length === 0 },
-                )}
-                {chip('Cancel', () => setEdit(null), { whileBusy: true })}
-              </View>
-            </View>
-          ) : moving ? (
+          {moving ? (
             <ScrollView>
               <Text style={styles.sectionLabel}>Move to</Text>
               {[
@@ -651,24 +602,6 @@ export function TasksPanel({
               ) : null}
             </ScrollView>
           )}
-          {selectedTasks.length ? (
-            <View style={styles.footer}>
-              <Text style={styles.meta}>{String(selectedTasks.length)} selected</Text>
-              <View style={styles.chips}>
-                {chip('Clear', () => setSelected([]), { whileBusy: true })}
-                {bulkProject !== null ? (
-                  <>
-                    {context.sessionId && bulkProject === context.projectId
-                      ? chip('↳ This Session', () => implement(dispatchable, context.sessionId!), {
-                          accent: true,
-                        })
-                      : null}
-                    {chip('+ New Session', () => implement(dispatchable))}
-                  </>
-                ) : null}
-              </View>
-            </View>
-          ) : null}
           <Pressable
             onPress={() => setShowDone(!showDone)}
             accessibilityRole="button"
@@ -689,6 +622,40 @@ export function TasksPanel({
         />
       ) : null}
     </Modal>
+  );
+}
+
+/**
+ * A task's text, editable in place. It saves when the field loses focus and
+ * the text actually changed; an emptied field snaps back instead of saving.
+ */
+function TaskTitleInput({ task, onSave }: { task: Task; onSave(title: string): void }) {
+  const [value, setValue] = useState(task.title);
+  const focused = useRef(false);
+  // Follow edits from elsewhere (another device, the agent) unless typing.
+  useEffect(() => {
+    if (!focused.current) setValue(task.title);
+  }, [task.title]);
+  return (
+    <TextInput
+      accessibilityLabel="Task text"
+      value={value}
+      onChangeText={setValue}
+      onFocus={() => {
+        focused.current = true;
+      }}
+      onBlur={() => {
+        focused.current = false;
+        const next = value.trim();
+        if (!next) setValue(task.title);
+        else if (next !== task.title) onSave(next);
+      }}
+      multiline
+      scrollEnabled={false}
+      blurOnSubmit
+      returnKeyType="done"
+      style={[styles.title, styles.titleInput]}
+    />
   );
 }
 
@@ -806,6 +773,11 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.text.md,
     lineHeight: 21 * theme.fontScale,
   },
+  titleInput: {
+    padding: 0,
+    margin: 0,
+    textAlignVertical: 'top',
+  },
   titleDone: {
     color: theme.colors.textFaint,
     textDecorationLine: 'line-through',
@@ -857,19 +829,6 @@ const styles = StyleSheet.create((theme) => ({
   chipLabelAccent: {
     color: theme.colors.primary,
     fontWeight: '600',
-  },
-  editor: {
-    gap: theme.spacing.sm,
-  },
-  editorInput: {
-    color: theme.colors.text,
-    fontSize: theme.text.md,
-    minHeight: 80,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
   },
   moveTarget: {
     paddingVertical: theme.spacing.md,

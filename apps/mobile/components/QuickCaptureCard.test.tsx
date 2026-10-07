@@ -35,36 +35,39 @@ const props = {
   onClose: jest.fn(),
   onSaved: jest.fn(),
 };
-it('waits for recognition end and then saves after three seconds', async () => {
+it('never saves on its own; Save stores the text after dictation ends', async () => {
   const ui = render(<QuickCaptureCard {...props} />);
   // Recognition updates the value without a user edit.
   act(() => {
     jest.mocked(useVoiceInput).mock.calls.at(-1)![1]('Captured outcome');
   });
-  act(() => jest.advanceTimersByTime(4000));
-  expect(captureTask).not.toHaveBeenCalled();
+  // While recording there is no Save, only Stop.
+  expect(ui.queryByText('Save')).toBeNull();
+  expect(ui.getByLabelText('Stop recording')).toBeTruthy();
   jest
     .mocked(useVoiceInput)
     .mockReturnValue({ ...voice, state: 'idle' } as unknown as ReturnType<typeof useVoiceInput>);
   ui.rerender(<QuickCaptureCard {...props} />);
-  act(() => jest.advanceTimersByTime(2999));
+  // The card waits for the operator, however long it stays open.
+  act(() => jest.advanceTimersByTime(60_000));
   expect(captureTask).not.toHaveBeenCalled();
-  await act(async () => jest.advanceTimersByTime(1));
+  await act(async () => fireEvent.press(ui.getByText('Save')));
   expect(captureTask).toHaveBeenCalledWith(
     expect.objectContaining({ title: 'Captured outcome', projectId: 'p', sourceSessionId: 's' }),
   );
   expect(props.onSaved).toHaveBeenCalledWith('saved-id', expect.any(String));
 });
-it('pauses autosave when editing and saves immediately to a project chip', async () => {
+it('a project chip selects the target without saving', async () => {
   const ui = render(<QuickCaptureCard {...props} />);
   fireEvent.changeText(ui.getByLabelText('Task text'), 'Edited thought');
+  // Chips are there while recording too, so the layout never jumps.
+  fireEvent.press(ui.getByText('General'));
+  expect(captureTask).not.toHaveBeenCalled();
   jest
     .mocked(useVoiceInput)
     .mockReturnValue({ ...voice, state: 'idle' } as unknown as ReturnType<typeof useVoiceInput>);
   ui.rerender(<QuickCaptureCard {...props} />);
-  act(() => jest.advanceTimersByTime(6000));
-  expect(captureTask).not.toHaveBeenCalled();
-  await act(async () => fireEvent.press(ui.getByText('General')));
+  await act(async () => fireEvent.press(ui.getByText('Save')));
   expect(captureTask).toHaveBeenCalledWith(
     expect.objectContaining({ title: 'Edited thought', projectId: null }),
   );

@@ -1,7 +1,7 @@
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 import { render, fireEvent } from '@testing-library/react-native';
 import { TasksPanel } from './TasksPanel';
-import { useTasks } from '../lib/tasksStore';
+import { patchTask, useTasks } from '../lib/tasksStore';
 import type { Task } from '@verity/mobile';
 jest.mock('../lib/tasksStore', () => ({
   useTasks: jest.fn(),
@@ -37,10 +37,9 @@ const props = {
   onClose: jest.fn(),
   onCapture: jest.fn(),
 };
-it('offers no session action for General, including multi-selection', () => {
+it('offers no session action for General', () => {
   jest.mocked(useTasks).mockReturnValue({ tasks: [task], pending: [], conflicts: [] });
   const ui = render(<TasksPanel {...props} />);
-  fireEvent.press(ui.getByText('General outcome'));
   expect(ui.queryByText(/New Session/)).toBeNull();
   expect(ui.queryByText(/This Session/)).toBeNull();
 });
@@ -114,20 +113,22 @@ it('keeps the agent’s steps in a collapsed section without implement buttons',
   expect(ui.queryByText('Move to my tasks')).toBeNull();
   expect(ui.getAllByA11yHint('Opens step actions')).toHaveLength(1);
 });
-it('never dispatches a selection that includes assigned or done tasks', () => {
-  jest.mocked(useTasks).mockReturnValue({
-    tasks: [
-      { ...task, id: 'free', title: 'Free', projectId: 'p' },
-      { ...task, id: 'busy', title: 'Busy', projectId: 'p', sessionId: 'other' },
-    ],
-    pending: [],
-    conflicts: [],
-  });
-  const ui = render(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 's' }} />);
-  fireEvent.press(ui.getByText('Free'));
-  expect(ui.getAllByText('+ New Session')).toHaveLength(2);
-  fireEvent.press(ui.getByText('Busy'));
-  expect(ui.getAllByText('+ New Session')).toHaveLength(1);
+it('edits the text in place and saves it when the field is left', () => {
+  jest.mocked(useTasks).mockReturnValue({ tasks: [task], pending: [], conflicts: [] });
+  const ui = render(<TasksPanel {...props} />);
+  const field = ui.getByDisplayValue('General outcome');
+  fireEvent(field, 'focus');
+  fireEvent.changeText(field, '  Sharper outcome ');
+  expect(patchTask).not.toHaveBeenCalled();
+  fireEvent(field, 'blur');
+  expect(patchTask).toHaveBeenCalledWith(task, { title: 'Sharper outcome' });
+  // Emptying the field restores the text instead of saving nothing.
+  jest.mocked(patchTask).mockClear();
+  fireEvent(field, 'focus');
+  fireEvent.changeText(field, '   ');
+  fireEvent(field, 'blur');
+  expect(patchTask).not.toHaveBeenCalled();
+  expect(ui.getByDisplayValue('General outcome')).toBeTruthy();
 });
 it('keeps steps of ended sessions out of the operator list', () => {
   jest.mocked(useTasks).mockReturnValue({
@@ -146,7 +147,7 @@ it('keeps steps of ended sessions out of the operator list', () => {
     conflicts: [],
   });
   const ui = render(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 's' }} />);
-  expect(ui.getByText('My capture')).toBeTruthy();
+  expect(ui.getByDisplayValue('My capture')).toBeTruthy();
   // Their session is gone, so they were dropped server-side; never list them.
   expect(ui.queryByText('Orphaned step')).toBeNull();
 });

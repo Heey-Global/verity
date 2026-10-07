@@ -1,5 +1,4 @@
 import {
-  TASK_SAVE_DELAY_MS,
   TASK_SILENCE_MS,
   projectDisplayName,
   type AttachmentUpload,
@@ -55,11 +54,9 @@ export function QuickCaptureCard({
   const [editing, setEditing] = useState(false);
   const [other, setOther] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [remaining, setRemaining] = useState(TASK_SAVE_DELAY_MS);
   const voice = useVoiceInput(text, setText, undefined, { silenceMs: TASK_SILENCE_MS });
   const started = useRef(false);
   const recorded = useRef(false);
-  const saveRef = useRef<() => void>(() => undefined);
   const savingRef = useRef(false);
   useEffect(() => {
     if (!started.current) {
@@ -101,29 +98,6 @@ export function QuickCaptureCard({
       setSaving(false);
     }
   };
-  saveRef.current = () => {
-    void save();
-  };
-  // One predicate drives both the auto-save timer and the countdown UI.
-  const autoSaving =
-    voice.state === 'idle' && recorded.current && text.trim().length > 0 && !editing && !saving;
-  useEffect(() => {
-    // Reset while paused, so the bar is already full when the countdown resumes.
-    if (!autoSaving) {
-      setRemaining(TASK_SAVE_DELAY_MS);
-      return;
-    }
-    const start = Date.now();
-    const timer = setInterval(() => {
-      const next = Math.max(0, TASK_SAVE_DELAY_MS - (Date.now() - start));
-      setRemaining(next);
-      if (next === 0) {
-        clearInterval(timer);
-        saveRef.current();
-      }
-    }, 100);
-    return () => clearInterval(timer);
-  }, [autoSaving]);
   const dismiss = () => {
     if (!savingRef.current) {
       voice.abort();
@@ -162,8 +136,6 @@ export function QuickCaptureCard({
       : projectDisplayName(
           projects.find((p) => p.id === id) ?? { owner: '', repo: id, kind: 'local' },
         );
-  const counting = autoSaving;
-  const shown = remaining;
   const chip = (id: string | null) => {
     const selected = projectId === id;
     return (
@@ -171,10 +143,7 @@ export function QuickCaptureCard({
         key={id ?? 'general'}
         accessibilityRole="button"
         accessibilityState={{ selected }}
-        onPress={() => {
-          setProjectId(id);
-          void save(id);
-        }}
+        onPress={() => setProjectId(id)}
         style={({ pressed }) => [
           styles.chip,
           selected ? styles.chipSelected : null,
@@ -205,9 +174,7 @@ export function QuickCaptureCard({
             ) : (
               <Text style={styles.headLabel}>{saving ? 'Saving…' : 'New task'}</Text>
             )}
-            <Text style={styles.target} numberOfLines={1}>
-              → <Text style={styles.targetName}>{label(projectId)}</Text>
-            </Text>
+            <View style={styles.headSpacer} />
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Discard capture"
@@ -306,10 +273,60 @@ export function QuickCaptureCard({
               ))}
             </ScrollView>
           ) : null}
-          {!settled ? (
-            <View style={styles.toolsRow}>
-              <AttachButton onPick={pick} />
-              <Text style={styles.hint}>Stops when you pause</Text>
+          {/* One layout throughout: the project is picked here while or after
+              speaking, and only the footer's main button changes. Nothing is
+              saved until the operator taps Save. */}
+          <View style={styles.chips}>
+            {chips.map(chip)}
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setOther(!other)}
+              style={({ pressed }) => [styles.chip, pressed ? styles.pressed : null]}
+            >
+              <Text style={[styles.chipLabel, styles.chipLabelMuted]}>Other…</Text>
+            </Pressable>
+          </View>
+          {other ? (
+            <ScrollView style={styles.otherList}>
+              {projects.map((project) => (
+                <Pressable
+                  key={project.id}
+                  style={({ pressed }) => [styles.otherRow, pressed ? styles.pressed : null]}
+                  onPress={() => {
+                    setProjectId(project.id);
+                    setOther(false);
+                  }}
+                >
+                  <Text style={styles.chipLabel}>{projectDisplayName(project)}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          ) : null}
+          <View style={styles.footer}>
+            <AttachButton onPick={pick} />
+            <Text style={[styles.hint, styles.footerHint]} numberOfLines={1}>
+              {settled ? '' : 'Stops when you pause'}
+            </Text>
+            {settled ? (
+              <Pressable
+                accessibilityRole="button"
+                disabled={!text.trim() || saving}
+                onPress={() => {
+                  void save();
+                }}
+                style={({ pressed }) => [
+                  styles.save,
+                  !text.trim() ? styles.saveDisabled : null,
+                  pressed ? styles.pressed : null,
+                ]}
+              >
+                {saving ? (
+                  <ActivityIndicator color={theme.colors.onPrimary} />
+                ) : (
+                  <Text style={styles.saveLabel}>Save</Text>
+                )}
+              </Pressable>
+            ) : (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Stop recording"
@@ -323,81 +340,8 @@ export function QuickCaptureCard({
               >
                 <View style={styles.stopSquare} />
               </Pressable>
-            </View>
-          ) : (
-            <>
-              <View style={styles.chips}>
-                {chips.map(chip)}
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => {
-                    setEditing(true);
-                    setOther(!other);
-                  }}
-                  style={({ pressed }) => [styles.chip, pressed ? styles.pressed : null]}
-                >
-                  <Text style={[styles.chipLabel, styles.chipLabelMuted]}>Other…</Text>
-                </Pressable>
-              </View>
-              {other ? (
-                <ScrollView style={styles.otherList}>
-                  {projects.map((project) => (
-                    <Pressable
-                      key={project.id}
-                      style={({ pressed }) => [styles.otherRow, pressed ? styles.pressed : null]}
-                      onPress={() => {
-                        setProjectId(project.id);
-                        void save(project.id);
-                      }}
-                    >
-                      <Text style={styles.chipLabel}>{projectDisplayName(project)}</Text>
-                    </Pressable>
-                  ))}
-                </ScrollView>
-              ) : null}
-              <View style={styles.footer}>
-                <AttachButton onPick={pick} />
-                {counting ? (
-                  <View style={styles.countdown}>
-                    <View style={styles.countdownTrack}>
-                      <View
-                        style={[
-                          styles.countdownFill,
-                          {
-                            width:
-                              `${String(Math.round((shown / TASK_SAVE_DELAY_MS) * 100))}%` as `${number}%`,
-                          },
-                        ]}
-                      />
-                    </View>
-                    <Text style={styles.hint}>
-                      Saving to {label(projectId)} · swipe down to discard
-                    </Text>
-                  </View>
-                ) : (
-                  <View style={styles.footerSpacer} />
-                )}
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={!text.trim() || saving}
-                  onPress={() => {
-                    void save();
-                  }}
-                  style={({ pressed }) => [
-                    styles.save,
-                    !text.trim() ? styles.saveDisabled : null,
-                    pressed ? styles.pressed : null,
-                  ]}
-                >
-                  {saving ? (
-                    <ActivityIndicator color={theme.colors.onPrimary} />
-                  ) : (
-                    <Text style={styles.saveLabel}>{counting ? 'Save now' : 'Save'}</Text>
-                  )}
-                </Pressable>
-              </View>
-            </>
-          )}
+            )}
+          </View>
         </View>
       </KeyboardAvoidingView>
     </Modal>
@@ -465,13 +409,6 @@ const styles = StyleSheet.create((theme) => ({
   recDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: theme.colors.tone.danger },
   recLabel: { color: theme.colors.tone.danger, fontSize: theme.text.sm, fontWeight: '600' },
   headLabel: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '600' },
-  target: {
-    marginLeft: 'auto',
-    color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    flexShrink: 1,
-  },
-  targetName: { color: theme.colors.text, fontWeight: '600' },
   bars: { flexDirection: 'row', alignItems: 'center', gap: 3, height: 22, marginLeft: 4 },
   bar: { width: 3, borderRadius: 2 },
   error: { color: theme.colors.tone.danger, fontSize: theme.text.sm },
@@ -545,7 +482,6 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  toolsRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
   tool: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -558,7 +494,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   toolGroup: { flexDirection: 'row', gap: theme.spacing.sm },
   stop: {
-    marginLeft: 'auto',
     width: 44,
     height: 44,
     borderRadius: 22,
@@ -592,16 +527,9 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
-  footer: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
-  countdown: { flex: 1, gap: 6 },
-  countdownTrack: {
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: theme.colors.surfaceAlt,
-    overflow: 'hidden',
-  },
-  countdownFill: { height: '100%', borderRadius: 2, backgroundColor: theme.colors.primary },
-  footerSpacer: { flex: 1 },
+  footer: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md, minHeight: 44 },
+  headSpacer: { flex: 1 },
+  footerHint: { flex: 1 },
   save: {
     minHeight: 40,
     minWidth: 88,
