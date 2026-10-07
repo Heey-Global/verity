@@ -29,7 +29,7 @@ export function isWebAppRequest(request: FastifyRequest): boolean {
 export function registerWebAppRoutes(app: FastifyInstance, buildDir?: string): void {
   if (!buildDir) return;
   app.get('/app', async (_request, reply) => reply.redirect('/app/'));
-  app.get('/app/*', async (request, reply) => {
+  app.get('/app/*', { compress: { encodings: ['gzip', 'deflate'] } }, async (request, reply) => {
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('X-Frame-Options', 'DENY');
     reply.header(
@@ -60,6 +60,10 @@ export function registerWebAppRoutes(app: FastifyInstance, buildDir?: string): v
       }
       const canonical = await realpath(file);
       if (!canonical.startsWith(root + sep)) return notFound();
+      // Only content-addressed exports can survive a deployment without revalidation.
+      if (extname(canonical) !== '.html' && /[.-][a-f0-9]{32}\.[a-z0-9]+$/i.test(canonical)) {
+        reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+      }
       reply.type(CONTENT_TYPES[extname(canonical)] ?? 'application/octet-stream');
       return reply.send(await readFile(canonical));
     } catch {

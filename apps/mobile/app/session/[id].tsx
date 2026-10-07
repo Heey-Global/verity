@@ -1,3 +1,4 @@
+import { shouldSendWebKey } from '../../lib/composerWebKey';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { openTasksPanel } from '../../lib/taskPanelEvents';
 import { FileTextEditor } from '../../components/files/FileTextEditor';
@@ -2783,8 +2784,10 @@ export function SessionChat({
     // previously fell back to `software`, but the operator has since focused the
     // composer with a hardware keyboard attached.
     const preserveFocus =
-      isIpadFocusTarget &&
-      (shouldPreserveComposerFocus() || (composerFocusedRef.current && !keyboardShownRef.current));
+      Platform.OS === 'web' ||
+      (isIpadFocusTarget &&
+        (shouldPreserveComposerFocus() ||
+          (composerFocusedRef.current && !keyboardShownRef.current)));
     preserveFocusAfterSendRef.current = preserveFocus;
     if (!preserveFocus) Keyboard.dismiss();
   }, [
@@ -9300,8 +9303,18 @@ function InputBar({
 }) {
   const { theme } = useUnistyles();
   const [dropActive, setDropActive] = useState(false);
+  const [inputFocused, setInputFocused] = useState(false);
   const attachBtnRef = useRef<View>(null);
   const openAttachMenu = useAttachmentMenuAnchor(attachBtnRef, onAttach);
+  const onComposerKeyPress = useCallback(
+    (event: Parameters<NonNullable<React.ComponentProps<typeof TextInput>['onKeyPress']>>[0]) => {
+      if (Platform.OS === 'web' && !dead && shouldSendWebKey(event.nativeEvent)) {
+        event.preventDefault();
+        onSend();
+      }
+    },
+    [dead, onSend],
+  );
   // Auto-grow: let the native multiline TextInput size to its content (it grows up
   // to `maxHeight`, then scrolls). We deliberately do NOT set an explicit `height`
   // from `onContentSizeChange` — on Fabric that event only fires once at mount
@@ -9309,7 +9322,7 @@ function InputBar({
   // text padding lives on the `inputCard`, not the TextInput, so the input's content
   // width is clean and lines wrap correctly.
   return (
-    <DropZone
+    <View
       style={[
         styles.inputBarWrap,
         {
@@ -9319,142 +9332,157 @@ function InputBar({
         },
       ]}
       onLayout={(e) => onHeightChange(e.nativeEvent.layout.height)}
-      enabled={!dead && attachments.length < MAX_ATTACHMENTS_PER_TURN}
-      maxFiles={Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length)}
-      onFiles={onDropFiles}
-      onRejected={onDropRejected}
-      onActiveChange={setDropActive}
     >
-      <InputActivityLine running={running && !dead} />
-      {dropActive ? (
-        <View pointerEvents="none" style={styles.inputDropHint}>
-          <Icon name="paperclip" size={18} color={theme.colors.primary} />
-          <Text style={styles.inputDropHintText}>Drop files to attach</Text>
-        </View>
-      ) : null}
-      {attachments.length > 0 ? (
-        <>
-          <AttachmentPreviews attachments={attachments} onRemove={onRemoveAttachment} />
-          {knowledgeEnabled ? (
-            <Pressable
-              onPress={onToggleSaveAttachmentsToKnowledge}
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked: saveAttachmentsToKnowledge }}
-              style={styles.knowledgeAttachmentToggle}
-            >
-              <Icon
-                name={saveAttachmentsToKnowledge ? 'check-square' : 'square'}
-                size={16}
-                color={saveAttachmentsToKnowledge ? theme.colors.primary : theme.colors.textMuted}
-              />
-              <Text style={styles.knowledgeAttachmentToggleText}>Save to Project Knowledge</Text>
-            </Pressable>
-          ) : null}
-        </>
-      ) : null}
-      {/* Two-tier layout (like the Claude app): the text field spans the FULL width
+      <DropZone
+        enabled={!dead && attachments.length < MAX_ATTACHMENTS_PER_TURN}
+        maxFiles={Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length)}
+        onFiles={onDropFiles}
+        onRejected={onDropRejected}
+        onActiveChange={setDropActive}
+      >
+        <InputActivityLine running={running && !dead} />
+        {dropActive ? (
+          <View pointerEvents="none" style={styles.inputDropHint}>
+            <Icon name="paperclip" size={18} color={theme.colors.primary} />
+            <Text style={styles.inputDropHintText}>Drop files to attach</Text>
+          </View>
+        ) : null}
+        {attachments.length > 0 ? (
+          <>
+            <AttachmentPreviews attachments={attachments} onRemove={onRemoveAttachment} />
+            {knowledgeEnabled ? (
+              <Pressable
+                onPress={onToggleSaveAttachmentsToKnowledge}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: saveAttachmentsToKnowledge }}
+                style={styles.knowledgeAttachmentToggle}
+              >
+                <Icon
+                  name={saveAttachmentsToKnowledge ? 'check-square' : 'square'}
+                  size={16}
+                  color={saveAttachmentsToKnowledge ? theme.colors.primary : theme.colors.textMuted}
+                />
+                <Text style={styles.knowledgeAttachmentToggleText}>Save to Project Knowledge</Text>
+              </Pressable>
+            ) : null}
+          </>
+        ) : null}
+        {/* Two-tier layout (like the Claude app): the text field spans the FULL width
           on top, and the action buttons sit in a row UNDERNEATH it — so the field is
           never squeezed between inline buttons. Padding lives on this card (not the
           TextInput) so the input's content-size measurement isn't skewed (RN#35234). */}
-      <View
-        style={[
-          styles.inputCard,
-          compact && styles.inputCardCompact,
-          dropActive ? styles.inputCardDropActive : null,
-        ]}
-      >
-        <PromptComposerInput
-          key={sendNonce}
-          ref={inputRef}
-          style={[styles.input, compact && styles.inputCompact]}
-          value={value}
-          onChangeText={onChangeText}
-          containerStyle={compact ? styles.inputContainerCompact : undefined}
-          submitOnReturn={shouldSubmitOnReturn(keyboardHeight)}
-          onSend={onSend}
-          onFocus={onFocus}
-          onBlur={onBlur}
-          placeholder={
-            dead
-              ? 'This session can’t be resumed'
-              : voiceState === 'recording'
-                ? 'Listening…'
-                : 'Message this agent…'
-          }
-          placeholderTextColor={theme.colors.textFaint}
-          editable={!dead}
-          keyboardAppearance="dark"
-          accessibilityLabel="Message input"
-        />
-        <View style={[styles.actionRow, compact && styles.actionRowCompact]}>
-          {/* Left: attach + the engine/model chip (moved here from the header, like
-              the Claude app — it sits with the composer instead of the nav bar). */}
-          <View style={styles.actionRowLeft}>
-            <Pressable
-              ref={attachBtnRef}
-              style={styles.iconButton}
-              onPress={openAttachMenu}
-              disabled={dead}
-              hitSlop={4}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: dead }}
-              accessibilityLabel="Add content or connect a service"
-            >
-              <Icon
-                name="plus"
-                size={22}
-                color={dead ? theme.colors.textFaint : theme.colors.textMuted}
-              />
-            </Pressable>
-            <EngineChip
-              engine={engineLabel}
-              busy={engineBusy}
-              onPress={onEnginePress}
-              style={styles.inputEngineChip}
-              textStyle={styles.inputEngineChipText}
-            />
-          </View>
-          {/* Right: the persistent mic, then the Send/Stop slot. */}
-          <View style={styles.actionRowRight}>
-            {/* The mic is ALWAYS a mic (never a stop glyph) and always pressable —
-                dictation is tap-to-toggle; recording gets its own active treatment.
-                A separate button keeps it from ever "mutating" into Send/Stop. */}
-            <MicButton
-              voiceState={voiceState}
-              autoMode={voiceAutoMode}
-              countdown={voiceCountdown}
-              onMic={onMic}
-              onLongPress={onMicLongPress}
-              onPauseCountdown={onPauseVoiceCountdown}
-              disabled={dead}
-            />
-            {running && !canSend && !sending && !dead ? (
-              // Empty field while a turn runs → Stop is available, while the top
-              // activity line carries the "agent is working" cue.
-              <StopButton onStop={onStop} />
-            ) : (
-              // Otherwise the Send button — active when there's something to send,
-              // greyed when idle/empty or dead. Sending while a turn runs queues/steers
-              // it, so Send keeps priority over Stop whenever the field is sendable.
+        <View
+          style={[
+            styles.inputCard,
+            compact && styles.inputCardCompact,
+            dropActive ? styles.inputCardDropActive : null,
+            Platform.OS === 'web' && inputFocused ? { borderColor: theme.colors.accent } : null,
+          ]}
+        >
+          <PromptComposerInput
+            key={Platform.OS === 'web' ? 'web-composer' : sendNonce}
+            ref={inputRef}
+            style={[
+              styles.input,
+              compact && styles.inputCompact,
+              Platform.OS === 'web' ? { outlineWidth: 0 } : null,
+            ]}
+            value={value}
+            onChangeText={onChangeText}
+            containerStyle={compact ? styles.inputContainerCompact : undefined}
+            submitOnReturn={shouldSubmitOnReturn(keyboardHeight)}
+            onSend={onSend}
+            onKeyPress={onComposerKeyPress}
+            onFocus={() => {
+              setInputFocused(true);
+              onFocus?.();
+            }}
+            onBlur={() => {
+              setInputFocused(false);
+              onBlur?.();
+            }}
+            placeholder={
+              dead
+                ? 'This session can’t be resumed'
+                : voiceState === 'recording'
+                  ? 'Listening…'
+                  : 'Message this agent…'
+            }
+            placeholderTextColor={theme.colors.textFaint}
+            editable={!dead}
+            keyboardAppearance="dark"
+            accessibilityLabel="Message input"
+          />
+          <View style={[styles.actionRow, compact && styles.actionRowCompact]}>
+            {/* Left: attach + the engine/model chip (moved here from the header, like
+the Claude app — it sits with the composer instead of the nav bar). */}
+            <View style={styles.actionRowLeft}>
               <Pressable
-                style={[styles.sendButton, canSend ? null : styles.sendButtonDisabled]}
-                onPress={onSend}
-                disabled={!canSend}
-                hitSlop={8}
+                ref={attachBtnRef}
+                style={styles.iconButton}
+                onPress={openAttachMenu}
+                disabled={dead}
+                hitSlop={4}
                 accessibilityRole="button"
-                accessibilityLabel="Send message"
+                accessibilityState={{ disabled: dead }}
+                accessibilityLabel="Add content or connect a service"
               >
                 <Icon
-                  name="arrow-up"
+                  name="plus"
                   size={22}
-                  color={canSend ? theme.colors.onPrimary : theme.colors.textMuted}
+                  color={dead ? theme.colors.textFaint : theme.colors.textMuted}
                 />
               </Pressable>
-            )}
+              <EngineChip
+                engine={engineLabel}
+                busy={engineBusy}
+                onPress={onEnginePress}
+                style={styles.inputEngineChip}
+                textStyle={styles.inputEngineChipText}
+              />
+            </View>
+            {/* Right: the persistent mic, then the Send/Stop slot. */}
+            <View style={styles.actionRowRight}>
+              {/* The mic is ALWAYS a mic (never a stop glyph) and always pressable —
+                dictation is tap-to-toggle; recording gets its own active treatment.
+                A separate button keeps it from ever "mutating" into Send/Stop. */}
+              <MicButton
+                voiceState={voiceState}
+                autoMode={voiceAutoMode}
+                countdown={voiceCountdown}
+                onMic={onMic}
+                onLongPress={onMicLongPress}
+                onPauseCountdown={onPauseVoiceCountdown}
+                disabled={dead}
+              />
+              {running && !canSend && !sending && !dead ? (
+                // Empty field while a turn runs → Stop is available, while the top
+                // activity line carries the "agent is working" cue.
+                <StopButton onStop={onStop} />
+              ) : (
+                // Otherwise the Send button — active when there's something to send,
+                // greyed when idle/empty or dead. Sending while a turn runs queues/steers
+                // it, so Send keeps priority over Stop whenever the field is sendable.
+                <Pressable
+                  style={[styles.sendButton, canSend ? null : styles.sendButtonDisabled]}
+                  onPress={onSend}
+                  disabled={!canSend}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Send message"
+                >
+                  <Icon
+                    name="arrow-up"
+                    size={22}
+                    color={canSend ? theme.colors.onPrimary : theme.colors.textMuted}
+                  />
+                </Pressable>
+              )}
+            </View>
           </View>
         </View>
-      </View>
-    </DropZone>
+      </DropZone>
+    </View>
   );
 }
 
@@ -9739,6 +9767,7 @@ function AttachmentPreviews({
 }
 
 function InputActivityLine({ running }: { running: boolean }) {
+  const { theme } = useUnistyles();
   const [width, setWidth] = useState(0);
   const progress = useRef(new Animated.Value(0)).current;
   const isPad = Platform.OS === 'ios' && Platform.isPad;
@@ -9764,7 +9793,7 @@ function InputActivityLine({ running }: { running: boolean }) {
         toValue: 1,
         duration,
         easing: Easing.linear,
-        useNativeDriver: true,
+        useNativeDriver: Platform.OS !== 'web',
       }),
     );
     loop.start();
@@ -9785,7 +9814,14 @@ function InputActivityLine({ running }: { running: boolean }) {
       {running ? (
         <Animated.View
           style={[
-            styles.inputActivitySegment,
+            Platform.OS === 'web'
+              ? {
+                  height: 2,
+                  borderRadius: theme.radius.pill,
+                  backgroundColor: theme.colors.accent,
+                  opacity: 0.8,
+                }
+              : styles.inputActivitySegment,
             isPad ? { opacity: 0.55 } : null,
             { width: segmentWidth, transform: [{ translateX }] },
           ]}

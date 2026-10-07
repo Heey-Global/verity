@@ -110,7 +110,11 @@ describe('composer Return handling', () => {
     expect(input?.[0]).toContain('onSend={onSend}');
     expect(input?.[0]).toContain('onChangeText={onChangeText}');
     // RN keypress has no modifiers: restoring it submits Shift+Enter too.
-    expect(source).not.toContain('onComposerKeyPress');
+    const webHandler = source.match(/const onComposerKeyPress = useCallback\([\s\S]*?\n  \);/);
+    expect(webHandler).not.toBeNull();
+    expect(webHandler?.[0]).toMatch(
+      /if \(Platform\.OS === 'web' && !dead && shouldSendWebKey\(event\.nativeEvent\)\)/,
+    );
     expect(source).not.toContain('suppressReturnChangeRef');
   });
 
