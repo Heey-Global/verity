@@ -3228,6 +3228,20 @@ export class EventStore implements EventSink {
         .where('session_id', '=', sessionId)
         .where('state', '=', 'active')
         .execute();
+      // The agent's unfinished steps were its plan for this session and end with
+      // it; the operator's own tasks only lose the assignment (FK set null).
+      await tx
+        .updateTable('tasks')
+        .set((eb) => ({
+          status: 'dropped',
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          revision: eb('revision', '+', 1),
+        }))
+        .where('session_id', '=', sessionId)
+        .where('origin', '=', 'agent')
+        .where('status', 'in', ['open', 'in_progress'])
+        .execute();
       const result = await tx
         .deleteFrom('sessions')
         .where('session_id', '=', sessionId)

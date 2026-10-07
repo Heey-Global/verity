@@ -1,6 +1,7 @@
 import { shouldSendWebKey } from '../../lib/composerWebKey';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { openTasksPanel } from '../../lib/taskPanelEvents';
+import { ActionMenu } from '../../components/ActionMenu';
 import { FileTextEditor } from '../../components/files/FileTextEditor';
 import { FileContentPreview } from '../../components/files/FileContentPreview';
 // Session chat screen: the live transcript for one Claude Code session plus the
@@ -6709,8 +6710,6 @@ function MessageActionsMenu({
   knowledge: { saved: boolean; save: () => Promise<void> } | null;
   bookmark: { bookmarked: boolean; toggle: () => void } | null;
 }) {
-  const { width: winW, height: winH } = useWindowDimensions();
-  const insets = useSafeAreaInsets();
   const [saving, setSaving] = useState(false);
   const saveKnowledge = (): void => {
     if (!knowledge || knowledge.saved || saving) return;
@@ -6725,114 +6724,37 @@ function MessageActionsMenu({
       )
       .finally(() => setSaving(false));
   };
-  const rows = 1 + (knowledge ? 1 : 0) + (bookmark ? 1 : 0);
-  const gap = 6;
-  const margin = 12;
-  const width = Math.min(300, winW - 2 * margin);
-  const right = Math.min(Math.max(margin, winW - (anchor.x + anchor.width)), winW - width - margin);
-  // Only used to pick a side; the card itself sizes to its content.
-  const estimatedHeight = rows * MESSAGE_MENU_ROW_HEIGHT + 2 * gap;
-  // Keep the card clear of the status bar / notch and the home indicator.
-  const minTop = insets.top + margin;
-  const maxBottom = winH - insets.bottom - margin;
-  const below = anchor.y + anchor.height + gap + estimatedHeight <= maxBottom;
-  const top = anchor.y + anchor.height + gap;
-  const bottom = Math.min(
-    Math.max(insets.bottom + margin, winH - anchor.y + gap),
-    winH - minTop - estimatedHeight,
-  );
-  // The estimate can undershoot (large text grows the rows), so the card is also
-  // capped to the room on its side and scrolls instead of running off screen.
-  const position = below
-    ? { top, maxHeight: maxBottom - top }
-    : { bottom, maxHeight: winH - bottom - minTop };
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessible={false} />
-      <View
-        style={[styles.msgMenu, { width, right }, position]}
-        accessibilityRole="menu"
-        accessibilityLabel="Message actions"
-        accessibilityViewIsModal
-        onAccessibilityEscape={onClose}
-      >
-        <ScrollView bounces={false}>
-          <MessageActionRow
-            icon="copy"
-            title="Copy text"
-            subtitle="Copy the whole message"
-            onPress={onCopy}
-          />
-          {knowledge ? (
-            <MessageActionRow
-              icon={knowledge.saved ? 'check' : KNOWLEDGE_ICON}
-              title={knowledge.saved ? 'Added to Project Knowledge' : 'Save to Project Knowledge'}
-              subtitle="Keep it as a project insight"
-              busy={saving}
-              disabled={knowledge.saved}
-              onPress={saveKnowledge}
-            />
-          ) : null}
-          {bookmark ? (
-            <MessageActionRow
-              icon="bookmark"
-              title={bookmark.bookmarked ? 'Remove bookmark' : 'Bookmark'}
-              subtitle="Find it again via the header"
-              onPress={bookmark.toggle}
-            />
-          ) : null}
-        </ScrollView>
-      </View>
-    </Modal>
-  );
-}
-
-const MESSAGE_MENU_ROW_HEIGHT = 56;
-
-// One menu entry. Every icon shares the same muted tint — state shows in the icon
-// (a check once saved) and the title, never in a colour that singles one action out.
-function MessageActionRow({
-  icon,
-  title,
-  subtitle,
-  onPress,
-  busy = false,
-  disabled = false,
-}: {
-  icon: IconName;
-  title: string;
-  subtitle: string;
-  onPress: () => void;
-  busy?: boolean;
-  disabled?: boolean;
-}) {
-  const { theme } = useUnistyles();
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled || busy}
-      accessibilityRole="menuitem"
-      accessibilityLabel={title}
-      accessibilityHint={subtitle}
-      accessibilityState={{ disabled: disabled || busy }}
-      style={({ pressed }) => [styles.msgMenuRow, pressed ? styles.sheetRowPressed : null]}
-    >
-      <View style={styles.msgMenuIcon}>
-        {busy ? (
-          <ActivityIndicator size="small" color={theme.colors.accent} />
-        ) : (
-          <Icon name={icon} size={18} color={theme.colors.textMuted} />
-        )}
-      </View>
-      <View style={styles.msgMenuText}>
-        <Text style={styles.msgMenuTitle} numberOfLines={1}>
-          {title}
-        </Text>
-        <Text style={styles.msgMenuSubtitle} numberOfLines={1}>
-          {subtitle}
-        </Text>
-      </View>
-    </Pressable>
+    <ActionMenu
+      anchor={anchor}
+      label="Message actions"
+      onClose={onClose}
+      items={[
+        { icon: 'copy', title: 'Copy text', subtitle: 'Copy the whole message', onPress: onCopy },
+        ...(knowledge
+          ? [
+              {
+                icon: knowledge.saved ? ('check' as const) : KNOWLEDGE_ICON,
+                title: knowledge.saved ? 'Added to Project Knowledge' : 'Save to Project Knowledge',
+                subtitle: 'Keep it as a project insight',
+                busy: saving,
+                disabled: knowledge.saved,
+                onPress: saveKnowledge,
+              },
+            ]
+          : []),
+        ...(bookmark
+          ? [
+              {
+                icon: 'bookmark' as const,
+                title: bookmark.bookmarked ? 'Remove bookmark' : 'Bookmark',
+                subtitle: 'Find it again via the header',
+                onPress: bookmark.toggle,
+              },
+            ]
+          : []),
+      ]}
+    />
   );
 }
 
@@ -10916,46 +10838,6 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
     borderColor: theme.colors.border,
-  },
-  // The anchored "…" menu card: same surface + border language as the action chips,
-  // lifted off the transcript with a shadow.
-  msgMenu: {
-    position: 'absolute',
-    paddingVertical: 6,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    shadowColor: '#000000',
-    shadowOpacity: 0.35,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
-  },
-  msgMenuRow: {
-    minHeight: 56,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.md,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-  },
-  msgMenuIcon: {
-    width: 22,
-    alignItems: 'center',
-  },
-  msgMenuText: {
-    flex: 1,
-    gap: 1,
-  },
-  msgMenuTitle: {
-    color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
-  },
-  msgMenuSubtitle: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
   },
   // The persistent dog-ear on a bookmarked message: pinned top-right, quiet, and
   // non-interactive — a scanning cue while scrolling, not a control.

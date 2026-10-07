@@ -153,6 +153,7 @@ export function QuickCaptureBubble() {
         onPanResponderRelease: (_, g) => {
           setDragging(false);
           if (origin.current.y + g.dy > height - 110) {
+            setLoose(false);
             setHidden(true);
             return;
           }

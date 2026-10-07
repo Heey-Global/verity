@@ -3926,6 +3926,21 @@ const migrations: Record<string, Migration> = {
       await sql`alter table sessions drop column favorite`.execute(db);
     },
   },
+  '0143_drop_orphaned_agent_steps': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // An agent's steps are its plan for one session. Steps whose session was
+      // deleted before deletion started dropping them would otherwise linger,
+      // unassigned, with nowhere sensible to show them.
+      await sql`update tasks
+        set status = 'dropped', completed_at = now(), updated_at = now(), revision = revision + 1
+        where origin = 'agent' and session_id is null and status in ('open', 'in_progress')`.execute(
+        db,
+      );
+    },
+    async down(): Promise<void> {
+      // Data repair only; the dropped steps are not restored.
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

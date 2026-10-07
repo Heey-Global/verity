@@ -160,6 +160,8 @@ export function QuickCaptureCard({
           projects.find((p) => p.id === id) ?? { owner: '', repo: id, kind: 'local' },
         );
   const counting = autoSaving;
+  // Until the timer's first tick the bar starts full rather than from a stale value.
+  const shown = counting && remaining === 0 ? TASK_SAVE_DELAY_MS : remaining;
   const chip = (id: string | null) => {
     const selected = projectId === id;
     return (
@@ -361,7 +363,7 @@ export function QuickCaptureCard({
                           styles.countdownFill,
                           {
                             width:
-                              `${String(Math.round((remaining / TASK_SAVE_DELAY_MS) * 100))}%` as `${number}%`,
+                              `${String(Math.round((shown / TASK_SAVE_DELAY_MS) * 100))}%` as `${number}%`,
                           },
                         ]}
                       />

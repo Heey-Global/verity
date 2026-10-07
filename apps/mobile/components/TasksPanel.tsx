@@ -7,7 +7,7 @@ import {
   type TaskContext,
 } from '@verity/mobile';
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -21,14 +21,10 @@ import {
 } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { openTaskAttachment } from '../lib/taskAttachments';
+import type { AttachAnchor } from '../lib/attachMenu';
+import { ActionMenu, type ActionMenuItem } from './ActionMenu';
 import { dispatchTasks } from '../lib/taskDispatch';
-import {
-  patchTask,
-  refreshTasks,
-  removeTask,
-  resolveTaskConflict,
-  useTasks,
-} from '../lib/tasksStore';
+import { patchTask, removeTask, resolveTaskConflict, useTasks } from '../lib/tasksStore';
 
 interface TaskGroup {
   key: string;
@@ -72,9 +68,16 @@ export function TasksPanel({
   const [moving, setMoving] = useState<Task | null>(null);
   const [busy, setBusy] = useState(false);
   const [undo, setUndo] = useState<string[]>([]);
-  const [actions, setActions] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{ task: Task; anchor: AttachAnchor } | null>(null);
+  const anchors = useRef(new Map<string, View>());
+  // The "…" card opens pinned to the row's own button, like the chat's message menu.
+  const openMenu = (task: Task) =>
+    anchors.current
+      .get(task.id)
+      ?.measureInWindow((x, y, width, height) =>
+        setMenu({ task, anchor: { x, y, width, height } }),
+      );
   const [agentOpen, setAgentOpen] = useState(false);
-  const [leftoversOpen, setLeftoversOpen] = useState(false);
   const wide = width >= 900;
   const run = async (work: () => Promise<unknown>) => {
     setBusy(true);
@@ -129,11 +132,6 @@ export function TasksPanel({
   const agentSteps = visible.filter(agentScope);
   const agentAll = tasks.filter((task) => agentScope(task) && task.status !== 'dropped');
   const agentDone = agentAll.filter((task) => task.status === 'done').length;
-  // Steps left behind by ended sessions that this view does not already show
-  // get their own collapsed line, so none becomes unreachable.
-  const leftovers = visible.filter(
-    (task) => isStep(task) && task.sessionId === null && !agentScope(task),
-  );
   const groups: TaskGroup[] = [
     ...(context.projectId
       ? [
@@ -199,7 +197,7 @@ export function TasksPanel({
     const pan = PanResponder.create({
       onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 20 && Math.abs(g.dx) > Math.abs(g.dy),
       onPanResponderRelease: (_, g) => {
-        if (Math.abs(g.dx) > 40) setActions(task.id);
+        if (Math.abs(g.dx) > 40) openMenu(task);
       },
     });
     const isDone = task.status === 'done';
@@ -261,10 +259,14 @@ export function TasksPanel({
             <Text style={styles.meta}>{meta}</Text>
           </Pressable>
           <Pressable
+            ref={(node) => {
+              if (node) anchors.current.set(task.id, node);
+              else anchors.current.delete(task.id);
+            }}
             accessibilityRole="button"
             accessibilityLabel="Task actions"
             hitSlop={8}
-            onPress={() => setActions(actions === task.id ? null : task.id)}
+            onPress={() => openMenu(task)}
             style={styles.more}
           >
             <Icon name="more-horizontal" size={18} color={theme.colors.textMuted} />
@@ -324,42 +326,23 @@ export function TasksPanel({
             {chip('+ New Session', () => implement([task]))}
           </View>
         ) : null}
-        {actions === task.id ? (
-          <View style={[styles.chips, styles.indent]}>
-            {chip(isDone ? 'Reopen' : 'Done', () => complete(task))}
-            {chip('Move', () => setMoving(task))}
-            {chip('Edit', () => {
-              setEdit(task);
-              setText(task.title);
-            })}
-            {chip('Delete', () =>
-              Alert.alert('Delete task?', task.title, [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Delete',
-                  style: 'destructive',
-                  onPress: () => {
-                    void run(() => removeTask(task.id));
-                  },
-                },
-              ]),
-            )}
-          </View>
-        ) : null}
       </View>
     );
   };
   // An agent step: compact, muted, no implement buttons — the agent is already
-  // on it. Tap toggles a small action row; adopting moves it into the list above.
+  // on it. Tap opens the same "…" card; adopting moves it into the list above.
   const agentRow = (task: Task) => {
     const isDone = task.status === 'done';
-    const open = actions === task.id;
     return (
       <View key={task.id} style={styles.agentRow}>
         <Pressable
+          ref={(node) => {
+            if (node) anchors.current.set(task.id, node);
+            else anchors.current.delete(task.id);
+          }}
           accessibilityRole="button"
-          accessibilityState={{ expanded: open }}
-          onPress={() => setActions(open ? null : task.id)}
+          accessibilityHint="Opens step actions"
+          onPress={() => openMenu(task)}
           style={styles.agentMain}
         >
           <Icon
@@ -385,35 +368,87 @@ export function TasksPanel({
             <Text style={styles.link}>Undo</Text>
           </Pressable>
         ) : null}
-        {open ? (
-          <View style={[styles.chips, styles.agentIndent]}>
-            {isDone ? null : chip('Done', () => complete(task))}
-            {chip('Move to my tasks', () => {
-              void run(() =>
-                patchTask(task, {
-                  origin: 'user',
-                  sessionId: null,
-                  // Adopted work starts fresh in the operator's list.
-                  ...(isDone ? {} : { status: 'open' as const }),
-                }),
-              );
-            })}
-            {chip('Drop', () =>
-              Alert.alert('Drop this step?', task.title, [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Drop',
-                  style: 'destructive',
-                  onPress: () => {
-                    void run(() => patchTask(task, { status: 'dropped' }));
-                  },
-                },
-              ]),
-            )}
-          </View>
-        ) : null}
       </View>
     );
+  };
+  const confirm = (title: string, verb: string, task: Task, work: () => Promise<unknown>) =>
+    Alert.alert(title, task.title, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: verb, style: 'destructive', onPress: () => void run(work) },
+    ]);
+  const menuItems = (task: Task): ActionMenuItem[] => {
+    const isDone = task.status === 'done';
+    const close = (work: () => void) => () => {
+      setMenu(null);
+      work();
+    };
+    if (task.origin === 'agent')
+      return [
+        ...(isDone
+          ? []
+          : [
+              {
+                icon: 'check-circle' as const,
+                title: 'Mark done',
+                subtitle: 'The agent no longer needs to do this',
+                onPress: close(() => complete(task)),
+              },
+            ]),
+        {
+          icon: 'corner-up-left',
+          title: 'Move to my tasks',
+          subtitle: 'Keep it in your own list',
+          onPress: close(() => {
+            void run(() =>
+              patchTask(task, {
+                origin: 'user',
+                sessionId: null,
+                // Adopted work starts fresh in the operator's list.
+                ...(isDone ? {} : { status: 'open' as const }),
+              }),
+            );
+          }),
+        },
+        {
+          icon: 'x-circle',
+          title: 'Drop step',
+          subtitle: 'Remove it from the agent’s plan',
+          destructive: true,
+          onPress: close(() =>
+            confirm('Drop this step?', 'Drop', task, () => patchTask(task, { status: 'dropped' })),
+          ),
+        },
+      ];
+    return [
+      {
+        icon: isDone ? 'rotate-ccw' : 'check-circle',
+        title: isDone ? 'Reopen' : 'Mark done',
+        subtitle: isDone ? 'Put it back on your list' : 'Tick it off your list',
+        onPress: close(() => complete(task)),
+      },
+      {
+        icon: 'edit-2',
+        title: 'Edit',
+        subtitle: 'Change the text',
+        onPress: close(() => {
+          setEdit(task);
+          setText(task.title);
+        }),
+      },
+      {
+        icon: 'folder',
+        title: 'Move',
+        subtitle: 'To another project or General',
+        onPress: close(() => setMoving(task)),
+      },
+      {
+        icon: 'trash-2',
+        title: 'Delete',
+        subtitle: 'Remove the task for good',
+        destructive: true,
+        onPress: close(() => confirm('Delete task?', 'Delete', task, () => removeTask(task.id))),
+      },
+    ];
   };
   const selectedTasks = tasks.filter((task) => selected.includes(task.id));
   const dispatchable = selectedTasks.filter(implementable);
@@ -423,7 +458,7 @@ export function TasksPanel({
     dispatchable.every((task) => task.projectId === dispatchable[0]?.projectId)
       ? dispatchable[0]!.projectId
       : null;
-  const headerButton = (label: string, icon: 'mic' | 'refresh-cw' | 'x', onPress: () => void) => (
+  const headerButton = (label: string, icon: 'mic' | 'x', onPress: () => void) => (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
@@ -460,9 +495,6 @@ export function TasksPanel({
               Tasks
             </Text>
             {headerButton('Capture task', 'mic', onCapture)}
-            {headerButton('Refresh Tasks', 'refresh-cw', () => {
-              void run(() => refreshTasks(true));
-            })}
             {headerButton('Close', 'x', onClose)}
           </View>
           {edit ? (
@@ -595,29 +627,7 @@ export function TasksPanel({
                   ) : null}
                 </View>
               ) : null}
-              {leftovers.length ? (
-                <View style={agentAll.length ? null : styles.agentSection}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ expanded: leftoversOpen }}
-                    accessibilityLabel={`Steps from ended sessions · ${String(leftovers.length)}`}
-                    onPress={() => setLeftoversOpen(!leftoversOpen)}
-                    style={styles.section}
-                  >
-                    <Icon
-                      name={leftoversOpen ? 'chevron-down' : 'chevron-right'}
-                      size={16}
-                      color={theme.colors.textFaint}
-                    />
-                    <Text style={styles.agentLabel}>Steps from ended sessions</Text>
-                    <View style={styles.count}>
-                      <Text style={styles.countLabel}>{String(leftovers.length)}</Text>
-                    </View>
-                  </Pressable>
-                  {leftoversOpen ? leftovers.map(agentRow) : null}
-                </View>
-              ) : null}
-              {!mine.length && !done.length && !leftovers.length ? (
+              {!mine.length && !done.length ? (
                 <Text style={styles.empty}>
                   {agentAll.length
                     ? 'Nothing captured yet. Tap the bubble to add a task.'
@@ -655,6 +665,14 @@ export function TasksPanel({
           </Pressable>
         </View>
       </View>
+      {menu ? (
+        <ActionMenu
+          anchor={menu.anchor}
+          label="Task actions"
+          items={menuItems(menu.task)}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
     </Modal>
   );
 }
