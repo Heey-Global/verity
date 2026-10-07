@@ -1,18 +1,25 @@
 {
   "schema": 1,
-  "version": "1.53.1",
-  "runtime": "1.53.0",
+  "version": "1.58.4",
+  "runtime": "1.58.0",
   "channel": "production",
-  "commit": "6295153442b688218c2d7bc33aec341a255331ba",
-  "tag": "mobile-v1.53.1",
-  "branch": "staging-mobile-v1.53.1-6295153442b688218c2d7bc33aec341a255331ba",
-  "baseline": "mobile-v1.53.0",
-  "group": "3cc94933-6a59-4f0e-ae0c-ce7a9ae192fe",
+  "commit": "a4830dc57010a8d096cfa36351c82e533893df97",
+  "tag": "mobile-v1.58.4",
+  "branch": "staging-mobile-v1.58.4-a4830dc57010a8d096cfa36351c82e533893df97",
+  "baseline": "mobile-v1.58.0",
+  "group": "74b5d401-cfc5-46c6-9496-ee954d0571ea",
   "notes": [
-    "manage session servers from Preview and chat (#1175)",
-    "keep chat-enabled Google services scoped to the session (#1171)",
-    "add persistent planning with synchronized plan approvals (#1163)",
-    "even out preview cards and name running servers by state (#1167)",
-    "pin session row icons to the row's right edge (#1166)"
+    "require actionable next steps for unfinished outcomes (#1303)",
+    "stabilize meeting UI and isolate research replies (#1308)",
+    "move session markers to a trailing icon-and-bar column (#1307)",
+    "subscribe to PR updates after branch prefetch (#1305)",
+    "avoid overview renders during settings navigation (#1299)",
+    "match browser sign-in to the preview code page (#1295)",
+    "mark sessions on the row edge and show sharing in green (#1296)",
+    "capture card redesign, shared action menu, agent steps end with their session (#1292)",
+    "style the composer input and support drag and drop in the browser (#1297)",
+    "keep session swipe actions opaque and add Edit beside Delete (#1293)",
+    "restore layouts and composer behavior and optimize loading (#1273)",
+    "initialize Unistyles before loading routes (#1288)"
   ]
 }
