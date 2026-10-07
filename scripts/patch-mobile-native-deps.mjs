@@ -137,9 +137,11 @@ class VerityUnistylesLifecycle {
     std::mutex mutex;
     const void* owner = nullptr;
 public:
-    template <typename Install>
-    void install(const void* nextOwner, Install install) {
+    template <typename Install, typename Destroy>
+    void install(const void* nextOwner, Install install, Destroy destroy) {
         std::lock_guard<std::mutex> lock(mutex);
+        // Drop JSI styles and shadow entries before the next runtime can use them.
+        if (owner != nullptr && owner != nextOwner) destroy();
         install();
         owner = nextOwner;
     }
@@ -194,6 +196,8 @@ RCT_EXPORT_MODULE(Unistyles)
         HybridObjectRegistry::registerHybridObjectConstructor("UnistylesShadowRegistry", [unistylesRuntime]() -> std::shared_ptr<HybridObject>{
             return std::make_shared<HybridShadowRegistry>(unistylesRuntime);
         });
+    }, [] {
+        core::UnistylesRegistry::get().destroy();
     });
 }
 

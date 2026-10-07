@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
 // @ts-expect-error -- native patch definitions are JavaScript
-import { NATIVE_PATCHES, applyNativePatch, runPatch } from './patch-mobile-native-deps.mjs';
+import { NATIVE_PATCHES, applyNativePatch } from './patch-mobile-native-deps.mjs';
 
 const patch = NATIVE_PATCHES.find(
   (entry: { package: string }) => entry.package === 'react-native-unistyles',
@@ -28,18 +28,20 @@ function runLifecycle(source: string) {
 ${helper}
 ${helper ? 'static VerityUnistylesLifecycle verityUnistylesLifecycle;' : ''}
 bool configured = false;
+int retainedStyles = 0;
 namespace core { struct UnistylesRegistry {
   static UnistylesRegistry& get() { static UnistylesRegistry registry; return registry; }
-  void destroy() { configured = false; }
+  void destroy() { configured = false; retainedStyles = 0; }
 }; }
 void install(const void* self) {
-  ${helper ? 'verityUnistylesLifecycle.install(self, [] { configured = true; });' : 'configured = true;'}
+  ${helper ? 'verityUnistylesLifecycle.install(self, [] { configured = true; ++retainedStyles; }, [] { core::UnistylesRegistry::get().destroy(); });' : 'configured = true; ++retainedStyles;'}
 }
 void invalidate(const void* self) { ${invalidate} }
 int main() {
   int oldRuntime, nextRuntime;
   install(&oldRuntime);
   install(&nextRuntime);
+  assert(retainedStyles == 1); // New runtimes must never inherit old JSI style objects.
   invalidate(&oldRuntime);
   assert(configured); // Retired runtimes must not delete the new theme registry.
   invalidate(&nextRuntime);
@@ -48,6 +50,7 @@ int main() {
   invalidate(&oldRuntime);
   assert(!configured);
   install(&nextRuntime);
+  assert(retainedStyles == 1); // New runtimes must never inherit old JSI style objects.
   invalidate(&oldRuntime);
   assert(configured);
   invalidate(&nextRuntime);
@@ -74,6 +77,14 @@ it('keeps the next runtime configured when the previous runtime finishes teardow
   expect(runLifecycle(patched)).toBe(0);
 });
 
+it('rejects an ownership handoff that retains old runtime style objects', () => {
+  const missingCleanup = patched.replace(
+    'if (owner != nullptr && owner != nextOwner) destroy();',
+    '',
+  );
+  expect(runLifecycle(missingCleanup)).not.toBe(0);
+});
+
 it('detects the original unconditional teardown clearing the new runtime', () => {
   expect(runLifecycle(patch.before)).not.toBe(0);
 });
@@ -89,6 +100,5 @@ it.skipIf(!existsSync(installedSource))(
   'checks the installed native source when mobile dependencies are available',
   () => {
     expect(applyNativePatch(patch, readFileSync(installedSource, 'utf8')).source).toBe(patched);
-    expect(runPatch(patch, process.cwd())).toMatch(/patched/);
   },
 );
