@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.25.0](https://github.com/Heey-Global/verity/compare/v4.24.1...v4.25.0) (2026-10-07)
+
+
+### Features
+
+* **tasks:** capture card redesign, shared action menu, agent steps end with their session ([#1292](https://github.com/Heey-Global/verity/issues/1292)) ([bed9367](https://github.com/Heey-Global/verity/commit/bed93677b8d93bf68f12c3d60651394a99ebf995))
+
 ## [4.24.1](https://github.com/Heey-Global/verity/compare/v4.24.0...v4.24.1) (2026-10-07)
 
 
