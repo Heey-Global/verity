@@ -226,11 +226,14 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
 
   useEffect(() => {
     if (!focused || !appActive || !enabled || workspaceMissing) return undefined;
+    const path = `/sessions/${encodeURIComponent(sessionId)}/branches`;
+    // A prefetch from another client does not register this client's read observation.
     // Live hints queue a fresh read behind any request already in flight.
     return subscribeLiveRefresh(
       client,
       () => load({ silent: true }),
-      (path) => path.split('?')[0] === `/sessions/${encodeURIComponent(sessionId)}/branches`,
+      (resourcePath) => resourcePath.split('?')[0] === path,
+      [{ path }],
     );
   }, [client, sessionId, load, focused, appActive, workspaceMissing, enabled]);
 
