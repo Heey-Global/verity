@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.22.0](https://github.com/Heey-Global/verity/compare/v4.21.1...v4.22.0) (2026-10-07)
+
+
+### Features
+
+* **live:** replace app polling with shared socket updates ([#1262](https://github.com/Heey-Global/verity/issues/1262)) ([bff9df1](https://github.com/Heey-Global/verity/commit/bff9df116a8175ba29edc07b3c2ba0014213c99f))
+
+
+### Bug Fixes
+
+* **server:** migrate host diagnostics mounts during managed updates ([#1263](https://github.com/Heey-Global/verity/issues/1263)) ([9935c4a](https://github.com/Heey-Global/verity/commit/9935c4a56aecd955b3276854f56e1aeb32fd9f87))
+
 ## [4.21.1](https://github.com/Heey-Global/verity/compare/v4.21.0...v4.21.1) (2026-10-07)
 
 
