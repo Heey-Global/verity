@@ -426,14 +426,19 @@ describe('managed companion reconciliation', () => {
     ).rejects.toThrow(/did not become healthy/);
   });
 
-  it.each(['updater', 'gateway'])(
-    'rediscovers a %s predecessor removed after listing',
+  it.each(['updater', 'gateway', 'agent-gateway'])(
+    'skips a %s predecessor removed after listing',
     async (role) => {
       const state = fake({ gateway: targetImage, updater: targetImage });
+      state.docker.listContainers = vi.fn(async () => [...state.summaries]);
       const predecessor = state.summaries.find(
         (item) =>
           item.labels['com.docker.compose.service'] ===
-          (role === 'updater' ? 'verity-updater' : 'verity-managed-gateway'),
+          (role === 'updater'
+            ? 'verity-updater'
+            : role === 'gateway'
+              ? 'verity-managed-gateway'
+              : 'verity-agent-gateway'),
       )!;
       const successor = service(
         '9'.repeat(64),
@@ -458,11 +463,33 @@ describe('managed companion reconciliation', () => {
         reconcileRunner: async () => undefined,
         sleep: async () => undefined,
       });
-      expect(state.docker.listContainers).toHaveBeenCalledTimes(3);
+      expect(state.docker.listContainers).toHaveBeenCalledTimes(2);
       expect(state.replacements).toEqual([]);
       expect(state.specs).toEqual([]);
     },
   );
+
+  it('skips a vanished Server summary without retrying reconciliation', async () => {
+    const state = fake({ gateway: targetImage, updater: targetImage });
+    const gone = service('8'.repeat(64), 'old-server', 'verity-server');
+    gone.labels['verity.managed-role'] = 'server';
+    gone.labels['verity.managed-deployment-id'] = journal.deploymentId;
+    state.summaries.push(gone);
+    const inspect = state.docker.inspectContainer;
+    state.docker.inspectContainer = vi.fn(async (id: string) => {
+      if (id === gone.id) throw new DockerError({ kind: 'container_not_found', id });
+      return inspect(id);
+    });
+    await reconcileManagedCompanions({
+      managedRoot: '/managed',
+      docker: state.docker,
+      journal,
+      reconcileRunner: async () => undefined,
+      sleep: async () => undefined,
+    });
+    expect(state.docker.inspectContainer).toHaveBeenCalledWith(gone.id);
+    expect(state.docker.listContainers).toHaveBeenCalledTimes(2);
+  });
 
   it('rediscovers a gateway removed after successful service discovery', async () => {
     const state = fake({ gateway: targetImage, updater: targetImage });
@@ -491,7 +518,7 @@ describe('managed companion reconciliation', () => {
     expect(state.docker.listContainers).toHaveBeenCalledTimes(3);
   });
 
-  it('bounds rediscovery when a listed container remains missing', async () => {
+  it('fails when the required Updater is genuinely missing', async () => {
     const state = fake({ gateway: targetImage, updater: targetImage });
     const error = new DockerError({ kind: 'container_not_found', id: 'gone' });
     state.docker.inspectContainer = vi.fn(async () => {
@@ -504,8 +531,8 @@ describe('managed companion reconciliation', () => {
         journal,
         sleep: async () => undefined,
       }),
-    ).rejects.toBe(error);
-    expect(state.docker.listContainers).toHaveBeenCalledTimes(3);
+    ).rejects.toThrow('managed companion service verity-updater must have exactly one container');
+    expect(state.docker.listContainers).toHaveBeenCalledTimes(1);
   });
 
   it('does not retry unrelated Docker errors', async () => {
