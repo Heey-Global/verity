@@ -201,12 +201,8 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         <SettingsListPanel>
           <SettingsNavRow
             icon="file-text"
-            title="Export update diagnostics"
-            subtitle={
-              exportingDiagnostics
-                ? 'Preparing…'
-                : 'Share update logs to investigate failed updates'
-            }
+            title="Diagnostics"
+            subtitle={exportingDiagnostics ? 'Preparing…' : 'Export app update logs'}
             onPress={() => void exportDiagnostics()}
           />
           {!isDemoMode() ? (
