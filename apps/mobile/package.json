@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Verity mobile app (Expo / React Native, Happy fork) — renders the @verity/mobile data layer. Built/run in the operator's Expo environment; this repo keeps it typecheck-green.",
-  "main": "expo-router/entry",
+  "main": "./entry.js",
   "scripts": {
     "start": "expo start",
     "build:web": "expo export --platform web",
