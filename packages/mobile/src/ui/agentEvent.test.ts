@@ -136,5 +136,5 @@ it('describes durable task updates as an actionable Tasks row', () => {
       change: 'completed',
       taskIds: ['one'],
     }),
-  ).toMatchObject({ label: 'You finished 1 task', action: 'tasks' });
+  ).toMatchObject({ label: 'You completed 1 task', action: 'tasks' });
 });

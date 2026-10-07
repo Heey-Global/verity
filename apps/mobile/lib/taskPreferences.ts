@@ -7,6 +7,8 @@ let state = {
   fraction: 0.65,
   /** The first tap explains the bubble before it records. */
   introSeen: false,
+  /** Stored preferences have been read; until then the intro is not offered. */
+  loaded: false,
 };
 const listeners = new Set<() => void>();
 function notify(): void {
@@ -25,9 +27,12 @@ export function useTaskPreferences(): typeof state {
             side: value.side === 'left' ? 'left' : 'right',
             fraction: Math.max(0.1, Math.min(0.9, value.fraction || 0.65)),
             introSeen: value.introSeen === true,
+            loaded: true,
           };
-          notify();
+        } else {
+          state = { ...state, loaded: true };
         }
+        notify();
       })
       .catch(() => undefined);
   }

@@ -40,9 +40,9 @@ export function agentEventDescriptor(event: AgentEvent): AgentEventDescriptor {
       // The agent's entries are its own working steps, kept apart from the
       // operator's task list in the panel; the wording keeps that apart too.
       const verb = {
-        added: 'planned',
+        added: event.origin === 'agent' ? 'planned' : 'added',
         updated: 'updated',
-        completed: 'finished',
+        completed: event.origin === 'agent' ? 'finished' : 'completed',
         dropped: 'dropped',
         deleted: 'deleted',
       }[event.change];

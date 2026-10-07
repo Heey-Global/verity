@@ -332,8 +332,6 @@ export function QuickCaptureBubble() {
             position: 'absolute',
             left: 0,
             top: 0,
-            paddingLeft: preferences.side === 'right' ? EXTEND : 0,
-            paddingRight: preferences.side === 'left' ? EXTEND : 0,
             transform: [
               {
                 translateX: Animated.subtract(
@@ -353,24 +351,35 @@ export function QuickCaptureBubble() {
             accessibilityRole="button"
             accessibilityLabel="Capture task"
             accessibilityHint="Double tap to record a task; long press to open the task list"
-            onPress={() => (preferences.introSeen ? setCapture(true) : setIntro(true))}
+            onPress={() =>
+              preferences.introSeen || !preferences.loaded ? setCapture(true) : setIntro(true)
+            }
             onLongPress={() => setPanel(true)}
+            // The pressable spans the bubble plus the extension on the visible
+            // side, so the whole 44pt the finger can reach records on tap.
             style={{
-              width: BUBBLE,
-              height: BUBBLE,
-              borderRadius: BUBBLE / 2,
-              backgroundColor: theme.colors.surfaceAlt,
-              borderWidth: 1,
-              borderColor: theme.colors.border,
-              opacity: dragging ? 1 : 0.55,
-              justifyContent: 'center',
-              alignItems: 'center',
-              // Keep the glyph on the visible half.
-              paddingLeft: preferences.side === 'right' ? 0 : BUBBLE / 2 - 2,
-              paddingRight: preferences.side === 'right' ? BUBBLE / 2 - 2 : 0,
+              paddingLeft: preferences.side === 'right' ? EXTEND : 0,
+              paddingRight: preferences.side === 'left' ? EXTEND : 0,
             }}
           >
-            <Icon name="mic" size={16} color={theme.colors.textMuted} />
+            <View
+              style={{
+                width: BUBBLE,
+                height: BUBBLE,
+                borderRadius: BUBBLE / 2,
+                backgroundColor: theme.colors.surfaceAlt,
+                borderWidth: 1,
+                borderColor: theme.colors.border,
+                opacity: dragging ? 1 : 0.55,
+                justifyContent: 'center',
+                alignItems: 'center',
+                // Keep the glyph on the visible half.
+                paddingLeft: preferences.side === 'right' ? 0 : BUBBLE / 2 - 2,
+                paddingRight: preferences.side === 'right' ? BUBBLE / 2 - 2 : 0,
+              }}
+            >
+              <Icon name="mic" size={16} color={theme.colors.textMuted} />
+            </View>
           </Pressable>
           {count > 0 ? (
             <Pressable
