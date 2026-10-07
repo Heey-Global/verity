@@ -1,7 +1,7 @@
 import { lookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { Transform } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 import {
@@ -56,7 +56,16 @@ export const brokeredHttpStreamTransport: BrokeredHttpStreamTransport = async (i
     else {
       input.body.once('aborted', () => outgoing.destroy());
       input.body.once('error', () => outgoing.destroy());
-      input.body.pipe(outgoing);
+      let bytes = 0;
+      const limit = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          bytes += chunk.length;
+          callback(bytes > 2 * 1024 ** 3 ? new Error('broker upload too large') : null, chunk);
+        },
+      });
+      void pipeline(input.body, limit, outgoing, { signal: input.signal }).catch(() =>
+        outgoing.destroy(),
+      );
     }
   });
 };
@@ -109,7 +118,15 @@ export function credentialSafeStream(
   });
 }
 
-const RESPONSE_HEADERS = ['content-type', 'link', 'retry-after', 'x-github-request-id'] as const;
+const RESPONSE_HEADERS = [
+  'content-type',
+  'link',
+  'retry-after',
+  'x-github-request-id',
+  'content-disposition',
+  'docker-content-digest',
+  'docker-distribution-api-version',
+] as const;
 
 export async function relayBrokeredHttpResponse(
   upstream: IncomingMessage,
@@ -137,6 +154,113 @@ export async function relayBrokeredHttpResponse(
       response.setHeader(name, redactAllSecretForms(value, credentials, needles));
     }
   }
+  // HEAD carries the resource size without a body; registry clients need it for descriptors.
+  const length = upstream.headers['content-length'];
+  if (response.req.method === 'HEAD' && typeof length === 'string') {
+    if (!/^(?:0|[1-9][0-9]{0,15})$/.test(length) || !Number.isSafeInteger(Number(length))) {
+      upstream.destroy();
+      throw new Error('invalid broker response length');
+    }
+    response.setHeader('content-length', length);
+  }
   response.statusCode = status;
-  await pipeline(upstream, credentialSafeStream(credentials), response, { signal });
+  let bytes = 0;
+  const limit = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      bytes += chunk.length;
+      callback(bytes > 2 * 1024 ** 3 ? new Error('broker response too large') : null, chunk);
+    },
+  });
+  await pipeline(upstream, limit, credentialSafeStream(credentials), response, { signal });
+}
+
+/** Follow only broker-originated download redirects. Never return signed URLs to clients. */
+export async function brokeredDownload(
+  transport: BrokeredHttpStreamTransport,
+  initial: Parameters<BrokeredHttpStreamTransport>[0],
+  allowed: boolean,
+): Promise<IncomingMessage> {
+  let input = initial;
+  for (let hop = 0; hop <= 5; hop++) {
+    const response = await transport(input);
+    if (![301, 302, 303, 307, 308].includes(response.statusCode ?? 0)) return response;
+    const location = response.headers.location;
+    response.destroy();
+    if (!allowed || !location || hop === 5) throw new Error('broker redirect rejected');
+    const target = new URL(location, `https://${input.hostname}${input.path}`);
+    const hostname = target.hostname;
+    if (
+      target.protocol !== 'https:' ||
+      target.username ||
+      target.password ||
+      (target.port && target.port !== '443') ||
+      target.hash ||
+      !(
+        hostname === 'release-assets.githubusercontent.com' ||
+        hostname === 'objects.githubusercontent.com' ||
+        hostname === 'pkg-containers.githubusercontent.com' ||
+        hostname.endsWith('.actions.githubusercontent.com') ||
+        hostname.endsWith('.blob.core.windows.net')
+      )
+    )
+      throw new Error('broker redirect rejected');
+    input = {
+      ...initial,
+      hostname,
+      path: target.pathname + target.search,
+      headers: { 'user-agent': 'verity-forge-broker', 'accept-encoding': 'identity' },
+      body: Buffer.alloc(0),
+    };
+  }
+  throw new Error('broker redirect rejected');
+}
+
+/** Related Issue entities can live in other repositories; validate before any bytes escape. */
+export async function verifyRelatedIssueResponse(
+  upstream: IncomingMessage,
+  owner: string,
+  repo: string,
+): Promise<IncomingMessage> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const value of upstream) {
+    const chunk = Buffer.from(value as Uint8Array);
+    bytes += chunk.length;
+    if (bytes > 16 * 1024 ** 2) {
+      upstream.destroy();
+      throw new Error('broker GraphQL response too large');
+    }
+    chunks.push(chunk);
+  }
+  const body = Buffer.concat(chunks);
+  const data: unknown = JSON.parse(body.toString('utf8'));
+  const expected = `${owner}/${repo}`.toLowerCase();
+  const verify = (entity: unknown): void => {
+    if (entity === null || entity === undefined) return;
+    if (typeof entity !== 'object') throw new Error('broker related issue rejected');
+    const item = entity as { repository?: { nameWithOwner?: unknown } };
+    if (
+      typeof item.repository?.nameWithOwner !== 'string' ||
+      item.repository.nameWithOwner.toLowerCase() !== expected
+    )
+      throw new Error('broker related issue rejected');
+  };
+  const walk = (value: unknown, depth = 0): void => {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, entry] of Object.entries(value)) {
+      if (['subIssues', 'blockedBy', 'blocking'].includes(key) && entry) {
+        const connection = entry as { nodes?: unknown[]; edges?: { node: unknown }[] };
+        for (const node of connection.nodes ?? []) verify(node);
+        for (const edge of connection.edges ?? []) verify(edge.node);
+      }
+      // A top-level repository's parent is fork metadata, not an Issue relationship.
+      if (key === 'parent' && depth !== 2) verify(entry);
+      walk(entry, depth + 1);
+    }
+  };
+  walk(data);
+  return Object.assign(Readable.from([body]), {
+    statusCode: upstream.statusCode,
+    headers: upstream.headers,
+  }) as IncomingMessage;
 }

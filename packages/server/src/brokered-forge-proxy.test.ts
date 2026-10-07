@@ -1,3 +1,4 @@
+import { createGhcrForgeAdapter } from './brokered-forge-ghcr.js';
 import { parse, Kind } from 'graphql';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -52,6 +53,11 @@ const allActions = new Set<ForgeAction>([
   'issues-write',
   'pulls-read',
   'pulls-write',
+  'checks-read',
+  'actions-read',
+  'actions-write',
+  'releases-read',
+  'releases-write',
 ]);
 let ca: EgressCa;
 let certificate: PemCertificate;
@@ -65,7 +71,7 @@ beforeAll(async () => {
   ca = await createProjectEgressCa();
   certificate = await issueGatewayServerCertificate(ca, {
     serverName: 'github.com',
-    additionalServerNames: ['api.github.com'],
+    additionalServerNames: ['api.github.com', 'uploads.github.com', 'ghcr.io'],
   });
   await writeFile(join(dir, 'ca.crt'), ca.caCertPem);
   await writeFile(join(dir, 'cap'), cap);
@@ -91,7 +97,12 @@ async function listen(server: Server | NetServer): Promise<number> {
 }
 async function harness(
   handler: (...args: Parameters<RequestListener>) => unknown,
-  options: { generation?: string; actions?: Set<ForgeAction>; enabled?: boolean } = {},
+  options: {
+    generation?: string;
+    actions?: Set<ForgeAction>;
+    enabled?: boolean;
+    registry?: boolean;
+  } = {},
 ) {
   const upstreamPort = await listen(
     createServer((req, res) => {
@@ -125,7 +136,13 @@ async function harness(
     });
   };
   const mint = vi.fn(async () => token);
-  const adapter = createGitHubForgeAdapter({ mint, transport });
+  const adapter = options.registry
+    ? createGhcrForgeAdapter({
+        packages: async () => ['acme/app/server'],
+        mint: async () => token,
+        transport,
+      })
+    : createGitHubForgeAdapter({ mint, transport });
   const proxy = createBrokeredForgeProxy({
     certificate,
     capabilities,
@@ -172,7 +189,8 @@ async function call(
   host = 'api.github.com',
   body?: string,
   connection?: string,
-): Promise<{ status: number; body: string }> {
+  method?: string,
+): Promise<{ status: number; body: string; length?: string }> {
   return await new Promise((done, reject) => {
     const outer = request({ hostname: '127.0.0.1', port, method: 'CONNECT', path: `${host}:443` });
     outer.on('error', reject);
@@ -188,7 +206,7 @@ async function call(
         {
           hostname: host,
           path,
-          method: body === undefined ? 'GET' : 'POST',
+          method: method ?? (body === undefined ? 'GET' : 'POST'),
           headers: {
             host,
             authorization: auth,
@@ -205,7 +223,15 @@ async function call(
             result += value.toString();
           });
           response.on('error', reject);
-          response.on('end', () => done({ status: response.statusCode ?? 0, body: result }));
+          response.on('end', () =>
+            done({
+              status: response.statusCode ?? 0,
+              body: result,
+              ...(response.headers['content-length'] === undefined
+                ? {}
+                : { length: response.headers['content-length'] }),
+            }),
+          );
         },
       );
       inner.on('error', reject);
@@ -300,7 +326,9 @@ describe('brokered forge TLS boundary', () => {
       ['/repos/acme/app/issues', 'Bearer stolen-token'],
       ['/repos/acme/app/../other/issues', `Bearer verity-broker-${cap}`],
     ]) {
-      expect((await call(h.port, path!, auth)).status).toBeGreaterThanOrEqual(400);
+      expect((await call(h.port, path!, auth)).status).toBe(
+        auth === 'Bearer stolen-token' ? 401 : 403,
+      );
     }
     expect((await call(h.port, '/', undefined, 'example.com')).status).toBe(403);
     expect(h.mint).not.toHaveBeenCalled();
@@ -309,6 +337,18 @@ describe('brokered forge TLS boundary', () => {
     expect(old.mint).not.toHaveBeenCalled();
     const disabled = await harness((_req, res) => res.end('ok'), { enabled: false });
     expect((await call(disabled.port, '/repos/acme/app/issues')).status).toBe(403);
+  });
+  it('relays Release and Actions evidence reads with server-side credentials', async () => {
+    const h = await harness((_req, res) => res.end('{"evidence":true}'), {
+      actions: new Set<ForgeAction>(['releases-read', 'actions-read']),
+    });
+    for (const path of [
+      '/repos/acme/app/releases/tags/v1.56.0',
+      '/repos/acme/app/actions/runs/123/jobs',
+    ]) {
+      expect(await call(h.port, path)).toEqual({ status: 200, body: '{"evidence":true}' });
+    }
+    expect(h.mint).toHaveBeenCalledTimes(2);
   });
   it('does not follow redirects or expose upstream errors and echoed credentials', async () => {
     const h = await harness((req, res) => {
@@ -327,6 +367,193 @@ describe('brokered forge TLS boundary', () => {
     });
     await expect(call(h.port, '/repos/acme/app/pulls')).rejects.toThrow();
     expect(h.received).toHaveLength(2);
+  });
+  it('keeps registry exchange bearers outside TLS clients and rejects unmapped packages', async () => {
+    const registryBearer = 'server-only-registry-bearer';
+    const h = await harness(
+      (req, res) => {
+        res.setHeader('content-type', 'application/json');
+        if (req.url?.startsWith('/token?')) res.end(JSON.stringify({ token: registryBearer }));
+        else res.end(JSON.stringify({ tags: ['v1.56.0'] }));
+      },
+      { registry: true, actions: new Set<ForgeAction>(['packages-read']) },
+    );
+    const issued = await call(
+      h.port,
+      '/token?service=ghcr.io&scope=repository:acme/app/server:pull',
+      undefined,
+      'ghcr.io',
+    );
+    expect(issued).toEqual({
+      status: 200,
+      body: JSON.stringify({ token: 'verity-broker-' + cap }),
+    });
+    expect(h.received).toHaveLength(0);
+    expect(await call(h.port, '/v2/acme/app/server/tags/list', undefined, 'ghcr.io')).toEqual({
+      status: 200,
+      body: JSON.stringify({ tags: ['v1.56.0'] }),
+    });
+    expect(h.received.at(-1)?.auth).toBe('Bearer ' + registryBearer);
+    expect((await call(h.port, '/v2/acme/other/tags/list', undefined, 'ghcr.io')).status).toBe(403);
+    expect(h.received).toHaveLength(2);
+  });
+  it('preserves manifest size for registry HEAD reads', async () => {
+    const h = await harness(
+      (req, res) => {
+        if (req.url?.startsWith('/token?')) res.end(JSON.stringify({ token: 'registry-bearer' }));
+        else {
+          res.setHeader('content-type', 'application/vnd.oci.image.manifest.v1+json');
+          res.setHeader('content-length', '1234');
+          res.end();
+        }
+      },
+      { registry: true, actions: new Set<ForgeAction>(['packages-read']) },
+    );
+    const result = await call(
+      h.port,
+      '/v2/acme/app/server/manifests/v1',
+      undefined,
+      'ghcr.io',
+      undefined,
+      undefined,
+      'HEAD',
+    );
+    expect(result).toEqual({ status: 200, body: '', length: '1234' });
+  });
+  it('streams Release uploads and follows authorized asset redirects without forwarding credentials', async () => {
+    const payload = 'x'.repeat(2 * 1024 * 1024);
+    const h = await harness((req, res) => {
+      if (req.url === '/repos/acme/app/releases/assets/123') {
+        res.writeHead(302, { location: 'https://release-assets.githubusercontent.com/download' });
+        res.end();
+      } else if (req.url === '/download') res.end('asset-bytes');
+      else {
+        let bytes = 0;
+        req.on('data', (chunk: Buffer) => {
+          bytes += chunk.length;
+        });
+        req.on('end', () => res.end(JSON.stringify({ bytes })));
+      }
+    });
+    expect(
+      await call(
+        h.port,
+        '/repos/acme/app/releases/1/assets?name=test.bin',
+        undefined,
+        'uploads.github.com',
+        payload,
+      ),
+    ).toEqual({
+      status: 200,
+      body: JSON.stringify({ bytes: payload.length }),
+    });
+    expect(await call(h.port, '/repos/acme/app/releases/assets/123')).toEqual({
+      status: 200,
+      body: 'asset-bytes',
+    });
+    expect(h.received.at(-1)?.auth).toBeUndefined();
+    expect(h.received[0]?.auth).toBe(`Bearer ${token}`);
+  });
+  it('runs real gh Release asset upload and download', async () => {
+    const asset = {
+      id: 7,
+      name: 'evidence.bin',
+      size: 8,
+      url: 'https://api.github.com/repos/acme/app/releases/assets/7',
+      browser_download_url: 'https://github.com/acme/app/releases/download/v1.56.0/evidence.bin',
+      content_type: 'application/octet-stream',
+    };
+    const h = await harness((req, res) => {
+      if (req.url?.includes('/releases/tags/')) {
+        res.setHeader('content-type', 'application/json');
+        res.end(
+          JSON.stringify({
+            id: 123,
+            tag_name: 'v1.56.0',
+            assets: [asset],
+            upload_url:
+              'https://uploads.github.com/repos/acme/app/releases/123/assets{?name,label}',
+          }),
+        );
+      } else if (req.url?.startsWith('/repos/acme/app/releases/123/assets?')) {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ ...asset, id: 8, name: 'new.bin' }));
+      } else {
+        res.setHeader('content-type', 'application/octet-stream');
+        res.end('fixture-binary');
+      }
+    });
+    const env = cliEnv(h.port);
+    const file = join(dir, 'new.bin');
+    await writeFile(file, randomBytes(2 * 1024 * 1024));
+    await exec(join(seed, 'gh'), ['release', 'upload', 'v1.56.0', file, '--repo', 'acme/app'], {
+      env,
+    });
+    const downloaded = await exec(
+      join(seed, 'gh'),
+      [
+        'release',
+        'download',
+        'v1.56.0',
+        '--pattern',
+        'evidence.bin',
+        '--output',
+        '-',
+        '--repo',
+        'acme/app',
+      ],
+      { env },
+    );
+    expect(downloaded.stdout).toBe('fixture-binary');
+    expect(
+      h.received.some(
+        (entry) => entry.path.includes('/assets?') && entry.body.length === 2 * 1024 * 1024,
+      ),
+    ).toBe(true);
+  });
+  it('runs real gh Release and Actions reads and dispatch through placeholders', async () => {
+    const h = await harness((req, res) => {
+      res.setHeader('content-type', 'application/json');
+      if (req.url?.includes('/releases/tags/'))
+        res.end(
+          JSON.stringify({
+            id: 123,
+            tag_name: 'v1.56.0',
+            name: 'Release',
+            draft: false,
+            prerelease: true,
+            assets: [],
+          }),
+        );
+      else if (req.url?.includes('/actions/runs'))
+        res.end(JSON.stringify({ total_count: 0, workflow_runs: [] }));
+      else if (req.url?.includes('/actions/workflows/ci.yml') && req.method === 'GET')
+        res.end(
+          JSON.stringify({ id: 12, name: 'CI', path: '.github/workflows/ci.yml', state: 'active' }),
+        );
+      else {
+        res.writeHead(204);
+        res.end();
+      }
+    });
+    const env = cliEnv(h.port);
+    await exec(
+      join(seed, 'gh'),
+      ['release', 'view', 'v1.56.0', '--repo', 'acme/app', '--json', 'tagName,assets'],
+      { env },
+    );
+    await exec(
+      join(seed, 'gh'),
+      ['run', 'list', '--repo', 'acme/app', '--json', 'databaseId,status'],
+      { env },
+    );
+    await exec(
+      join(seed, 'gh'),
+      ['workflow', 'run', 'ci.yml', '--repo', 'acme/app', '--ref', 'test'],
+      { env },
+    );
+    expect(h.received.some((entry) => entry.path.endsWith('/dispatches'))).toBe(true);
+    expect(h.received.every((entry) => entry.auth === `Bearer ${token}`)).toBe(true);
   });
   it('withholds a Git Basic credential echo even when the upstream strips the scheme', async () => {
     const h = await harness((req, res) => {
@@ -354,7 +581,24 @@ describe('brokered forge TLS boundary', () => {
         variables: Record<string, unknown>;
       };
 
-      if (/__type\s*\(/.test(query)) {
+      if (query.includes('ProjectItems')) {
+        const kind = query.includes('pullRequest(') ? 'pullRequest' : 'issue';
+        res.end(
+          JSON.stringify({
+            data: {
+              repository: {
+                [kind]: {
+                  projectItems: {
+                    totalCount: 0,
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: '' },
+                  },
+                },
+              },
+            },
+          }),
+        );
+      } else if (/__type\s*\(/.test(query)) {
         const operation = parse(query).definitions.find(
           (node) => node.kind === Kind.OPERATION_DEFINITION,
         );
@@ -450,12 +694,23 @@ describe('brokered forge TLS boundary', () => {
                   pageInfo: { hasNextPage: false, endCursor: '' },
                 },
                 issue: {
+                  __typename: 'Issue',
                   id: 'I_1',
                   number: variables.number ?? 1,
                   title: 'Test issue',
+                  projectItems: {
+                    totalCount: 0,
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: '' },
+                  },
+                  comments: { nodes: [], totalCount: 0 },
+                  reactionGroups: [],
+                  assignees: { nodes: [] },
+                  labels: { nodes: [] },
                   url: 'https://github.com/acme/app/issues/1',
                 },
                 pullRequest: {
+                  __typename: 'PullRequest',
                   id: 'PR_2',
                   state: 'OPEN',
                   isDraft: false,
@@ -467,6 +722,15 @@ describe('brokered forge TLS boundary', () => {
                   headRepository: { id: 'R_app', name: 'app', owner: { login: 'acme' } },
                   number: 2,
                   title: 'Test PR',
+                  projectItems: {
+                    totalCount: 0,
+                    nodes: [],
+                    pageInfo: { hasNextPage: false, endCursor: '' },
+                  },
+                  comments: { nodes: [], totalCount: 0 },
+                  reactionGroups: [],
+                  assignees: { nodes: [] },
+                  labels: { nodes: [] },
                   url: 'https://github.com/acme/app/pull/2',
                 },
               },
@@ -486,6 +750,12 @@ describe('brokered forge TLS boundary', () => {
       );
       expect(JSON.parse(result.stdout)).toEqual({ number: Number(number), title });
       expect(result.stdout + result.stderr).not.toContain(token);
+    }
+    for (const [kind, number] of [
+      ['issue', '1'],
+      ['pr', '2'],
+    ]) {
+      await exec(join(seed, 'gh'), [kind!, 'view', number!, '--repo', 'acme/app'], { env });
     }
     const result = await exec(
       join(seed, 'gh'),

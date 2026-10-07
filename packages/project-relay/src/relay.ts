@@ -225,7 +225,9 @@ export function createBrokerRelayServer(options: BrokerRelayOptions = {}): HttpS
   server.on('connect', (request, socket, head) => {
     if (
       options.forgeProxy !== true ||
-      !['github.com:443', 'api.github.com:443'].includes(request.url ?? '') ||
+      !['github.com:443', 'api.github.com:443', 'uploads.github.com:443', 'ghcr.io:443'].includes(
+        request.url ?? '',
+      ) ||
       head.length ||
       request.headers['transfer-encoding'] ||
       (request.headers['content-length'] !== undefined && request.headers['content-length'] !== '0')

@@ -117,3 +117,48 @@ describe.each(roots)('%s forge test mode', (seed) => {
     }
   });
 });
+
+describe.each(roots)('ORAS broker wrapper: %s', (seed) => {
+  it('gives the client a temporary placeholder registry config and removes it afterwards', async () => {
+    const { dir, env } = await fixture(seed);
+    const output = join(dir, 'registry-observed.json');
+    const real = join(dir, 'oras-real');
+    await writeFile(
+      real,
+      `#!/usr/bin/env node
+const fs = require('fs');
+const path = process.argv[process.argv.indexOf('--registry-config')+1];
+fs.writeFileSync(process.env.VERITY_TEST_ORAS_OUTPUT,JSON.stringify({
+  path, config:JSON.parse(fs.readFileSync(path,'utf8')),
+  proxy:process.env.HTTPS_PROXY,ca:process.env.SSL_CERT_FILE,
+  noProxy:process.env.NO_PROXY,lowerNoProxy:process.env.no_proxy
+}));
+`,
+      { mode: 0o755 },
+    );
+    await exec(join(seed, 'oras'), ['manifest', 'fetch', 'ghcr.io/acme/app/server:test'], {
+      env: {
+        ...env,
+        VERITY_ORAS_REAL_BIN: real,
+        VERITY_TEST_ORAS_OUTPUT: output,
+        NO_PROXY: 'ghcr.io',
+        no_proxy: '*',
+      },
+    });
+    const observed = JSON.parse(await readFile(output, 'utf8')) as {
+      path: string;
+      config: { auths: { 'ghcr.io': { auth: string } } };
+      proxy: string;
+      ca: string;
+      noProxy: string;
+      lowerNoProxy: string;
+    };
+    expect(Buffer.from(observed.config.auths['ghcr.io'].auth, 'base64').toString()).toBe(
+      'x-access-token:verity-broker-' + 'c'.repeat(43),
+    );
+    expect(observed.proxy).toBe(env.VERITY_FORGE_PROXY_URL);
+    expect(observed.ca).toBe(env.VERITY_FORGE_PROXY_CA_FILE);
+    expect(observed.noProxy + observed.lowerNoProxy).toBe('');
+    await expect(readFile(observed.path)).rejects.toThrow();
+  });
+});
