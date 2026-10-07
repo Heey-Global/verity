@@ -74,6 +74,7 @@ export function TasksPanel({
   const [undo, setUndo] = useState<string[]>([]);
   const [actions, setActions] = useState<string | null>(null);
   const [agentOpen, setAgentOpen] = useState(false);
+  const [leftoversOpen, setLeftoversOpen] = useState(false);
   const wide = width >= 900;
   const run = async (work: () => Promise<unknown>) => {
     setBusy(true);
@@ -107,16 +108,16 @@ export function TasksPanel({
     const project = projects.find((p) => p.id === id);
     return project ? projectDisplayName(project) : 'Project';
   };
-  // An agent step belongs to a session; a step whose session is gone is backlog.
-  const isStep = (task: Task) => task.origin === 'agent' && task.sessionId !== null;
+  // Everything the agent recorded is its working plan, never the operator's
+  // list — also after its session has ended. Adopting moves a step across.
+  const isStep = (task: Task) => task.origin === 'agent';
   const done = tasks.filter((t) => t.status === 'done' && !isStep(t));
   const visible = tasks.filter(
     (task) =>
       task.status !== 'dropped' && (task.status !== 'done' || showDone || undo.includes(task.id)),
   );
-  // The operator's own captures are the list. The agent's steps are its working
-  // plan for a request and stay in a separate, quieter section below — but only
-  // while they belong to a session; a step whose session is gone is backlog.
+  // The operator's own captures are the list; the agent's steps sit in a
+  // separate, quieter section below.
   const mine = visible.filter((task) => !isStep(task));
   const agentScope = (task: Task) =>
     isStep(task) &&
@@ -128,6 +129,18 @@ export function TasksPanel({
   const agentSteps = visible.filter(agentScope);
   const agentAll = tasks.filter((task) => agentScope(task) && task.status !== 'dropped');
   const agentDone = agentAll.filter((task) => task.status === 'done').length;
+  // In a session, steps left behind by ended sessions of this project get their
+  // own collapsed line instead of mixing with this session's plan.
+  const leftovers =
+    context.sessionId === null
+      ? []
+      : visible.filter(
+          (task) =>
+            isStep(task) &&
+            task.sessionId === null &&
+            task.status !== 'done' &&
+            task.projectId === context.projectId,
+        );
   const groups: TaskGroup[] = [
     ...(context.projectId
       ? [
@@ -200,7 +213,6 @@ export function TasksPanel({
     const isSelected = selected.includes(task.id);
     const syncing = pending.some((op) => op.id === task.id);
     const meta = [
-      ...(task.origin === 'agent' ? ['from agent'] : []),
       taskAge(task.createdAt),
       ...(task.attachments.length
         ? [
@@ -588,6 +600,28 @@ export function TasksPanel({
                   {agentOpen && agentSteps.length === 0 ? (
                     <Text style={styles.agentMeta}>Every step is done.</Text>
                   ) : null}
+                </View>
+              ) : null}
+              {leftovers.length ? (
+                <View style={agentAll.length ? null : styles.agentSection}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded: leftoversOpen }}
+                    accessibilityLabel={`Steps from ended sessions · ${String(leftovers.length)}`}
+                    onPress={() => setLeftoversOpen(!leftoversOpen)}
+                    style={styles.section}
+                  >
+                    <Icon
+                      name={leftoversOpen ? 'chevron-down' : 'chevron-right'}
+                      size={16}
+                      color={theme.colors.textFaint}
+                    />
+                    <Text style={styles.agentLabel}>Steps from ended sessions</Text>
+                    <View style={styles.count}>
+                      <Text style={styles.countLabel}>{String(leftovers.length)}</Text>
+                    </View>
+                  </Pressable>
+                  {leftoversOpen ? leftovers.map(agentRow) : null}
                 </View>
               ) : null}
               {!mine.length && !done.length ? (

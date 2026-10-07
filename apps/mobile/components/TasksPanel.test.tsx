@@ -128,3 +128,25 @@ it('never dispatches a selection that includes assigned or done tasks', () => {
   fireEvent.press(ui.getByText('Busy'));
   expect(ui.getAllByText('+ New Session')).toHaveLength(1);
 });
+it('keeps steps of ended sessions out of the operator list', () => {
+  jest.mocked(useTasks).mockReturnValue({
+    tasks: [
+      { ...task, id: 'mine', title: 'My capture', projectId: 'p' },
+      {
+        ...task,
+        id: 'orphan',
+        title: 'Orphaned step',
+        origin: 'agent',
+        projectId: 'p',
+        status: 'in_progress',
+      },
+    ],
+    pending: [],
+    conflicts: [],
+  });
+  const ui = render(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 's' }} />);
+  expect(ui.getByText('My capture')).toBeTruthy();
+  expect(ui.queryByText('Orphaned step')).toBeNull();
+  fireEvent.press(ui.getByLabelText('Steps from ended sessions · 1'));
+  expect(ui.getByText('Orphaned step')).toBeTruthy();
+});

@@ -109,7 +109,7 @@ export function QuickCaptureBubble() {
   // their own section of the panel and must not nag from the badge.
   const count = tasks.filter(
     (task) =>
-      (task.origin === 'user' || task.sessionId === null) &&
+      task.origin === 'user' &&
       (task.status === 'open' || task.status === 'in_progress') &&
       (context.sessionId
         ? task.sessionId === context.sessionId ||
