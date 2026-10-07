@@ -146,6 +146,9 @@ export function QuickCaptureCard({
     }
   };
   const recording = voice.state === 'recording';
+  // Chips and Save only once dictation has fully settled, so a late final
+  // result is never cut off by an early save.
+  const settled = voice.state === 'idle';
   const chips = [...new Set([context.projectId, null, ...projects.slice(0, 3).map((p) => p.id)])];
   const label = (id: string | null) =>
     id === null
@@ -153,7 +156,8 @@ export function QuickCaptureCard({
       : projectDisplayName(
           projects.find((p) => p.id === id) ?? { owner: '', repo: id, kind: 'local' },
         );
-  const counting = !recording && recorded.current && !editing && !saving && text.trim().length > 0;
+  // Same predicate as the auto-save timer above.
+  const counting = settled && recorded.current && !editing && !saving && text.trim().length > 0;
   const chip = (id: string | null) => {
     const selected = projectId === id;
     return (
@@ -292,13 +296,14 @@ export function QuickCaptureCard({
               ))}
             </ScrollView>
           ) : null}
-          {recording ? (
+          {!settled ? (
             <View style={styles.toolsRow}>
               <AttachButton onPick={pick} />
               <Text style={styles.hint}>Stops when you pause</Text>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Stop recording"
+                disabled={!recording}
                 onPress={voice.toggle}
                 style={({ pressed }) => [styles.stop, pressed ? styles.pressed : null]}
               >
@@ -356,25 +361,26 @@ export function QuickCaptureCard({
                     </Text>
                   </View>
                 ) : (
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={!text.trim() || saving}
-                    onPress={() => {
-                      void save();
-                    }}
-                    style={({ pressed }) => [
-                      styles.save,
-                      !text.trim() ? styles.saveDisabled : null,
-                      pressed ? styles.pressed : null,
-                    ]}
-                  >
-                    {saving ? (
-                      <ActivityIndicator color={theme.colors.onPrimary} />
-                    ) : (
-                      <Text style={styles.saveLabel}>Save</Text>
-                    )}
-                  </Pressable>
+                  <View style={styles.footerSpacer} />
                 )}
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={!text.trim() || saving}
+                  onPress={() => {
+                    void save();
+                  }}
+                  style={({ pressed }) => [
+                    styles.save,
+                    !text.trim() ? styles.saveDisabled : null,
+                    pressed ? styles.pressed : null,
+                  ]}
+                >
+                  {saving ? (
+                    <ActivityIndicator color={theme.colors.onPrimary} />
+                  ) : (
+                    <Text style={styles.saveLabel}>{counting ? 'Save now' : 'Save'}</Text>
+                  )}
+                </Pressable>
               </View>
             </>
           )}
@@ -386,11 +392,13 @@ export function QuickCaptureCard({
 
 /** Live input level as a row of bars, newest on the right. */
 function LevelBars({ level, color }: { level: number; color: string }) {
-  const history = useRef<number[]>(Array.from({ length: 12 }, () => 0));
-  history.current = [...history.current.slice(1), level];
+  const [history, setHistory] = useState<number[]>(() => Array.from({ length: 12 }, () => 0));
+  useEffect(() => {
+    setHistory((previous) => [...previous.slice(1), level]);
+  }, [level]);
   return (
     <View style={styles.bars}>
-      {history.current.map((value, index) => (
+      {history.map((value, index) => (
         <View
           key={index}
           style={[styles.bar, { height: 4 + Math.min(1, value) * 16, backgroundColor: color }]}
@@ -556,7 +564,7 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  chipSelected: { borderColor: theme.colors.primary, backgroundColor: 'rgba(42,176,255,0.14)' },
+  chipSelected: { borderColor: theme.colors.primary },
   chipDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.primary },
   chipLabel: { color: theme.colors.text, fontSize: theme.text.sm },
   chipLabelSelected: { color: theme.colors.primary, fontWeight: '600' },
@@ -576,8 +584,8 @@ const styles = StyleSheet.create((theme) => ({
     overflow: 'hidden',
   },
   countdownFill: { height: '100%', borderRadius: 2, backgroundColor: theme.colors.primary },
+  footerSpacer: { flex: 1 },
   save: {
-    marginLeft: 'auto',
     minHeight: 40,
     minWidth: 88,
     paddingHorizontal: theme.spacing.lg,
