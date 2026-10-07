@@ -96,6 +96,9 @@ export const sessionSummarySchema = z.object({
   name: z.string().nullable(),
   /** Project binding for multi-repo fleet sessions (#174). Older servers omit it. */
   projectId: z.string().nullable().optional(),
+  /** Operator-marked favorite, highlighted in the session list. ABSENT means not a
+   * favorite — servers omit it for unmarked sessions, and older servers never send it. */
+  favorite: z.boolean().optional(),
   status: sessionStatusSchema,
   /** Tool-use ids currently waiting for permission. Optional for compatibility
    * with older servers. */
@@ -1384,6 +1387,12 @@ const sessionRenamedSchema = z.object({
   name: z.string().nullable(),
 });
 export type SessionRenamed = z.infer<typeof sessionRenamedSchema>;
+
+const sessionFavoriteSchema = z.object({
+  sessionId: z.string().min(1),
+  favorite: z.boolean(),
+});
+export type SessionFavorite = z.infer<typeof sessionFavoriteSchema>;
 
 const sessionModelSwitchedSchema = z.object({
   sessionId: z.string().min(1),
@@ -4019,6 +4028,17 @@ export class VerityClient {
       body: JSON.stringify({ name }),
     });
     return sessionRenamedSchema.parse(await res.json());
+  }
+
+  /** Mark or unmark a session as a favorite; the mark is stored server-side so it
+   * syncs across devices. */
+  async setSessionFavorite(id: string, favorite: boolean): Promise<SessionFavorite> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ favorite }),
+    });
+    return sessionFavoriteSchema.parse(await res.json());
   }
 
   /** Switch the engine/model a session uses (the operator's pick is persisted, not a

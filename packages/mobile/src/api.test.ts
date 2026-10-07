@@ -1963,6 +1963,30 @@ describe('VerityClient.renameSession', () => {
   });
 });
 
+describe('VerityClient.setSessionFavorite', () => {
+  it('PATCHes only the favorite flag and returns the echoed value', async () => {
+    const { fetch, calls } = fakeFetch(json({ sessionId: 's1', favorite: true }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    const res = await client.setSessionFavorite('s1', true);
+
+    expect(res).toEqual({ sessionId: 's1', favorite: true });
+    expect(calls[0]?.url).toBe('http://host/sessions/s1');
+    expect(calls[0]?.init?.method).toBe('PATCH');
+    // A stray `name` key would rename (or clear the name of) the session.
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ favorite: true }));
+  });
+
+  it('maps a 404 to a VerityApiError', async () => {
+    const { fetch } = fakeFetch(json({ error: 'session s9 not found' }, 404));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await expect(client.setSessionFavorite('s9', false)).rejects.toMatchObject({
+      name: 'VerityApiError',
+      status: 404,
+    });
+  });
+});
+
 describe('VerityClient.setSessionSeen (#387)', () => {
   it('PATCHes the seen event count and returns the resolved mark', async () => {
     const { fetch, calls } = fakeFetch(json({ sessionId: 's1', lastSeenEventCount: 7 }));

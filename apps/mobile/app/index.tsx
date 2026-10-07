@@ -1,5 +1,6 @@
 import { subscribeLiveRefresh } from '../lib/liveConnection';
 import { SessionIssueRef } from '../components/SessionIssueRef';
+import { SwipeableSessionRow } from '../components/SessionRowActions';
 import { SessionSettingsDialog } from '../components/SessionSettingsDialog';
 // Sessions home screen: the live list of Claude Code sessions, bound to
 // @verity/mobile's SessionListModel via useSessionList. Renders loading / error /
@@ -40,7 +41,7 @@ import {
   parseBranchIssue,
 } from '@verity/mobile';
 import { Link, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -189,8 +190,24 @@ function SessionList({ client }: { client: VerityClient }) {
       });
     }
   }, [selected, selectedId, wide]);
-  const { sessions, loading, error, refresh, remove, providerLimitRows, serverAttention } =
-    useSessionList(client);
+  const {
+    sessions,
+    loading,
+    error,
+    refresh,
+    remove,
+    setFavorite,
+    providerLimitRows,
+    serverAttention,
+  } = useSessionList(client);
+  const onToggleFavoriteSession = useCallback(
+    (session: SessionSummary) => setFavorite(session.sessionId, session.favorite !== true),
+    [setFavorite],
+  );
+  const onDeleteSession = useCallback(
+    (session: SessionSummary) => confirmDeleteSession(session, remove),
+    [remove],
+  );
   const authRequired = error !== undefined && isAuthRequiredError(error);
   const { unread, markSeen } = useUnread(client, sessions);
   useEffect(() => {
@@ -556,6 +573,8 @@ function SessionList({ client }: { client: VerityClient }) {
           dragging={draggingProjectId === item.id}
           reordering={draggingProjectId !== null}
           onRenameSession={setRenaming}
+          onToggleFavoriteSession={onToggleFavoriteSession}
+          onDeleteSession={onDeleteSession}
           onSelectSession={wide ? setSelectedId : undefined}
           onNewSession={wide ? createSessionInPane : undefined}
           onOpenSession={onOpenSession}
@@ -590,6 +609,8 @@ function SessionList({ client }: { client: VerityClient }) {
       repairingProjectIds,
       defaultNewSessionProject,
       refreshProjects,
+      onToggleFavoriteSession,
+      onDeleteSession,
     ],
   );
   const renderItem = useCallback(
@@ -1086,6 +1107,8 @@ function ProjectGroup({
   dragging,
   reordering,
   onRenameSession,
+  onToggleFavoriteSession,
+  onDeleteSession,
   onSelectSession,
   onNewSession,
   onOpenSession,
@@ -1111,6 +1134,8 @@ function ProjectGroup({
   dragging: boolean;
   reordering: boolean;
   onRenameSession: (session: SessionSummary) => void;
+  onToggleFavoriteSession: (session: SessionSummary) => void;
+  onDeleteSession: (session: SessionSummary) => void;
   onSelectSession?: (id: string) => void;
   // Wide layout only: create a session inline for this project (no /new route).
   // Undefined on narrow, where the "+" falls back to navigating to /new.
@@ -1391,6 +1416,8 @@ function ProjectGroup({
                   <SessionRow
                     session={session}
                     onRename={() => onRenameSession(session)}
+                    onToggleFavorite={() => onToggleFavoriteSession(session)}
+                    onDelete={() => onDeleteSession(session)}
                     onSelect={
                       onSelectSession ? () => onSelectSession(session.sessionId) : undefined
                     }
@@ -1414,7 +1441,8 @@ function ProjectGroup({
 
 // Delete is destructive + irreversible (drops history, removes the worktree), so
 // confirm with a native alert before firing. Called from the rename modal (opened
-// by a row long-press); `onConfirmed` lets the modal close itself after the delete.
+// by a row long-press) and from the row's swipe/context-menu action; `onConfirmed`
+// lets the modal close itself after the delete.
 function confirmDeleteSession(
   session: SessionSummary,
   remove: (sessionId: string, opts?: { force?: boolean }) => Promise<void>,
@@ -1693,6 +1721,8 @@ function ProviderLimitSegment({
 function SessionRow({
   session,
   onRename,
+  onToggleFavorite,
+  onDelete,
   onSelect,
   onOpen,
   unread,
@@ -1704,6 +1734,8 @@ function SessionRow({
 }: {
   session: SessionSummary;
   onRename: () => void;
+  onToggleFavorite: () => void;
+  onDelete: () => void;
   onSelect?: () => void;
   onOpen?: () => void;
   unread?: boolean;
@@ -1720,6 +1752,7 @@ function SessionRow({
   const badge = sessionBadge(session.status);
   const toneColor = theme.colors.tone[badge.tone];
   const label = sessionLabel(session);
+  const favorite = session.favorite === true;
   const subtitle = modelDisplayName(session.model);
   const running = session.status === 'running';
   // "Done"/"Idle" are implicit from the ABSENCE of the working dot, so they get no
@@ -1762,6 +1795,14 @@ function SessionRow({
     <View style={styles.rowInner}>
       {/* Accent wash overlay (behind the content) that fades out when the rename
           sheet closes. pointerEvents none so it never intercepts row taps. */}
+      {/* Favorites stay in their project and are marked by an accent edge over a
+          faint accent wash, so they hold up against the hover/selected surfaces. */}
+      {favorite ? (
+        <>
+          <View pointerEvents="none" style={styles.favoriteWash} />
+          <View pointerEvents="none" style={styles.favoriteEdge} />
+        </>
+      ) : null}
       <Animated.View pointerEvents="none" style={[styles.renamingWash, { opacity: wash }]} />
       {/* Same [chevron col | dot col | title block] grid as the project header, so a
           session's dot + name line up under the project's. The chevron column is empty
@@ -1848,8 +1889,20 @@ function SessionRow({
 
   // Wide layout: select into the right pane instead of navigating. Narrow layout:
   // navigate to the full-screen session via the Link, exactly as before.
+  const swipeable = (row: ReactNode) => (
+    <SwipeableSessionRow
+      favorite={favorite}
+      label={label}
+      onToggleFavorite={onToggleFavorite}
+      onDelete={onDelete}
+      onEdit={onRename}
+    >
+      {row}
+    </SwipeableSessionRow>
+  );
+
   if (onSelect) {
-    return (
+    return swipeable(
       <Pressable
         style={({ pressed }) => [
           styles.row,
@@ -1871,11 +1924,11 @@ function SessionRow({
         accessibilityHint="Long press to edit session settings"
       >
         {rowBody}
-      </Pressable>
+      </Pressable>,
     );
   }
 
-  return (
+  return swipeable(
     <Link
       href={{ pathname: '/session/[id]', params: { id: session.sessionId } }}
       accessibilityLabel={`Open session ${label}`}
@@ -1896,7 +1949,7 @@ function SessionRow({
       >
         {rowBody}
       </Pressable>
-    </Link>
+    </Link>,
   );
 }
 
@@ -2455,6 +2508,22 @@ const styles = StyleSheet.create((theme) => ({
     right: 0,
     bottom: 0,
     backgroundColor: `${theme.colors.accent}4d`,
+  },
+  favoriteWash: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: `${theme.colors.accent}12`,
+  },
+  favoriteEdge: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    bottom: 0,
+    width: 3,
+    backgroundColor: theme.colors.accent,
   },
   rowPressed: {
     opacity: 0.6,

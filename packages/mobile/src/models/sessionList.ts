@@ -54,7 +54,10 @@ export interface SessionListState {
 export type CancelPoll = () => void;
 
 export interface SessionListModelOptions {
-  client: Pick<VerityClient, 'listSessions' | 'renameSession' | 'deleteSession'> & {
+  client: Pick<
+    VerityClient,
+    'listSessions' | 'renameSession' | 'setSessionFavorite' | 'deleteSession'
+  > & {
     listProviderLimits?: () => Promise<ProviderLimitSummary[]>;
     /** Optional like {@link listProviderLimits}: absent, the model falls back to
      * the plain list and simply reports no server-level attention. */
@@ -97,6 +100,10 @@ export class SessionListModel {
   private cancelTimeTick: CancelPoll | undefined;
   // Monotonic request id: a slower earlier load must not overwrite a newer one.
   private reqSeq = 0;
+  private favoriteMutations = new Map<string, number>();
+  private confirmedFavorites = new Map<string, boolean>();
+  private favoriteWrites = new Map<string, Promise<void>>();
+  private pendingFavorites = new Map<string, { favorite: boolean; maxRequest: number }>();
   private pendingAutomations = new Map<
     string,
     { automation: SessionSummary['automation']; maxRequest: number }
@@ -154,6 +161,17 @@ export class SessionListModel {
       this._sessions = sessions
         .filter((session) => !this.pendingDeletes.has(session.sessionId))
         .map((session) => {
+          const favorite = this.pendingFavorites.get(session.sessionId);
+          if (favorite !== undefined) {
+            if (req <= favorite.maxRequest) {
+              session = { ...session };
+              if (favorite.favorite) session.favorite = true;
+              else delete session.favorite;
+            } else {
+              this.pendingFavorites.delete(session.sessionId);
+              this.confirmedFavorites.delete(session.sessionId);
+            }
+          }
           const automation = this.pendingAutomations.get(session.sessionId);
           if (automation !== undefined) {
             this.pendingAutomations.delete(session.sessionId);
@@ -212,6 +230,44 @@ export class SessionListModel {
       this._error = error instanceof VerityApiError ? error.message : 'failed to rename session';
     }
     this.emit();
+  }
+
+  /**
+   * Mark or unmark a session as a favorite. Optimistic like {@link rename}: the
+   * highlight changes immediately, and on failure only this session's flag is
+   * reverted while the error surfaces until the next successful load.
+   */
+  async setFavorite(sessionId: string, favorite: boolean): Promise<void> {
+    const mutation = (this.favoriteMutations.get(sessionId) ?? 0) + 1;
+    this.favoriteMutations.set(sessionId, mutation);
+    const previous = this._sessions.find((s) => s.sessionId === sessionId)?.favorite === true;
+    if (!this.confirmedFavorites.has(sessionId)) this.confirmedFavorites.set(sessionId, previous);
+    this.pendingFavorites.set(sessionId, { favorite, maxRequest: Infinity });
+    this.applyFavorite(sessionId, favorite);
+    this.emit();
+    // Parallel requests can commit in reverse order even when stale responses are ignored.
+    const write = async (): Promise<void> => {
+      try {
+        const { favorite: stored } = await this.opts.client.setSessionFavorite(sessionId, favorite);
+        this.confirmedFavorites.set(sessionId, stored);
+        if (this.favoriteMutations.get(sessionId) !== mutation) return;
+        this.pendingFavorites.set(sessionId, { favorite: stored, maxRequest: this.reqSeq });
+        this.applyFavorite(sessionId, stored);
+        this._error = undefined;
+      } catch (error) {
+        if (this.favoriteMutations.get(sessionId) !== mutation) return;
+        const confirmed = this.confirmedFavorites.get(sessionId) ?? previous;
+        this.pendingFavorites.set(sessionId, { favorite: confirmed, maxRequest: this.reqSeq });
+        this.applyFavorite(sessionId, confirmed);
+        this._error = error instanceof VerityApiError ? error.message : 'failed to update favorite';
+      }
+      this.emit();
+    };
+    const previousWrite = this.favoriteWrites.get(sessionId);
+    const pending = previousWrite ? previousWrite.then(write) : write();
+    this.favoriteWrites.set(sessionId, pending);
+    await pending;
+    if (this.favoriteWrites.get(sessionId) === pending) this.favoriteWrites.delete(sessionId);
   }
 
   /** Retire one permission immediately after its decision POST settles. The next
@@ -320,6 +376,17 @@ export class SessionListModel {
       throw error;
     }
     this.emit();
+  }
+
+  /** Replace one session's favorite flag in the local list; `false` drops the
+   * field, matching the server, which omits it for unmarked sessions. */
+  private applyFavorite(sessionId: string, favorite: boolean): void {
+    this._sessions = this._sessions.map((s) => {
+      if (s.sessionId !== sessionId) return s;
+      const next: SessionSummary = { ...s, favorite: true };
+      if (!favorite) delete next.favorite;
+      return next;
+    });
   }
 
   /** Replace one session's name in the local list (no-op if it's not present). */

@@ -31,6 +31,11 @@ function makeClient(): {
   deleteSession: ReturnType<
     typeof vi.fn<(id: string, opts?: { force?: boolean }) => Promise<{ sessionId: string }>>
   >;
+  setSessionFavorite: ReturnType<
+    typeof vi.fn<
+      (id: string, favorite: boolean) => Promise<{ sessionId: string; favorite: boolean }>
+    >
+  >;
 } {
   const listSessions = vi.fn<() => Promise<SessionSummary[]>>();
   const listProviderLimits = vi.fn<() => Promise<SessionSummary['rateLimits']>>();
@@ -41,17 +46,21 @@ function makeClient(): {
     >();
   const deleteSession =
     vi.fn<(id: string, opts?: { force?: boolean }) => Promise<{ sessionId: string }>>();
+  const setSessionFavorite =
+    vi.fn<(id: string, favorite: boolean) => Promise<{ sessionId: string; favorite: boolean }>>();
   return {
     client: {
       listSessions,
       listProviderLimits,
       renameSession,
       deleteSession,
+      setSessionFavorite,
     } as unknown as VerityClient,
     listSessions,
     listProviderLimits,
     renameSession,
     deleteSession,
+    setSessionFavorite,
   };
 }
 
@@ -842,6 +851,151 @@ describe('SessionListModel.rename', () => {
     // The optimistic name showed mid-flight, then reverted to the original.
     expect(states[0]?.sessions[0]?.name).toBe('doomed');
     expect(model.state.sessions[0]?.name).toBe('original');
+    expect(model.state.error).toBe('session a not found');
+  });
+});
+
+describe('SessionListModel.setFavorite', () => {
+  it('highlights immediately, then keeps the server-confirmed flag', async () => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    listSessions.mockResolvedValue([session('a', 'idle'), session('b', 'idle')]);
+    setSessionFavorite.mockResolvedValueOnce({ sessionId: 'a', favorite: true });
+    const states: SessionListState[] = [];
+    const model = new SessionListModel({ client, onChange: (s) => states.push(s) });
+    await model.refresh();
+
+    states.length = 0;
+    await model.setFavorite('a', true);
+
+    expect(states[0]?.sessions.find((s) => s.sessionId === 'a')?.favorite).toBe(true);
+    expect(model.state.sessions.find((s) => s.sessionId === 'a')?.favorite).toBe(true);
+    expect(model.state.sessions.find((s) => s.sessionId === 'b')?.favorite).toBeUndefined();
+    expect(setSessionFavorite).toHaveBeenCalledWith('a', true);
+  });
+
+  it.each(['success', 'failure'])('ignores an older %s after a newer update', async (outcome) => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    listSessions.mockResolvedValue([session('a', 'idle')]);
+    let resolve!: (value: { sessionId: string; favorite: boolean }) => void;
+    let reject!: (error: Error) => void;
+    setSessionFavorite.mockImplementationOnce(
+      () =>
+        new Promise((yes, no) => {
+          resolve = yes;
+          reject = no;
+        }),
+    );
+    setSessionFavorite.mockResolvedValueOnce({ sessionId: 'a', favorite: false });
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    const older = model.setFavorite('a', true);
+    const newer = model.setFavorite('a', false);
+    expect(setSessionFavorite).toHaveBeenCalledTimes(1);
+    if (outcome === 'success') resolve({ sessionId: 'a', favorite: true });
+    else reject(new Error('older request failed'));
+    await older;
+    await newer;
+    expect(model.state.sessions[0]?.favorite).toBeUndefined();
+    expect(model.state.error).toBeUndefined();
+  });
+
+  it('preserves a confirmed favorite against an older refresh', async () => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    listSessions.mockResolvedValueOnce([session('a', 'idle')]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    let resolve!: (sessions: SessionSummary[]) => void;
+    listSessions.mockImplementationOnce(
+      () =>
+        new Promise((yes) => {
+          resolve = yes;
+        }),
+    );
+    const refresh = model.refresh({ silent: true });
+    setSessionFavorite.mockResolvedValueOnce({ sessionId: 'a', favorite: true });
+    await model.setFavorite('a', true);
+    resolve([session('a', 'idle')]);
+    await refresh;
+    expect(model.state.sessions[0]?.favorite).toBe(true);
+    listSessions.mockResolvedValueOnce([session('a', 'idle')]);
+    await model.refresh();
+    expect(model.state.sessions[0]?.favorite).toBeUndefined();
+  });
+
+  it('restores confirmed state when overlapping updates both fail', async () => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    listSessions.mockResolvedValueOnce([session('a', 'idle')]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    let reject!: (error: Error) => void;
+    setSessionFavorite.mockImplementationOnce(
+      () =>
+        new Promise((_yes, no) => {
+          reject = no;
+        }),
+    );
+    setSessionFavorite.mockRejectedValueOnce(new Error('second failed'));
+    const first = model.setFavorite('a', true);
+    const second = model.setFavorite('a', false);
+    reject(new Error('first failed'));
+    await first;
+    await second;
+    expect(model.state.sessions[0]?.favorite).toBeUndefined();
+    expect(model.state.error).toBe('failed to update favorite');
+  });
+
+  it('persists queued changes in order and restores the last successful value on failure', async () => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    let persisted = false;
+    listSessions.mockImplementation(async () => [
+      { ...session('a', 'idle'), ...(persisted ? { favorite: true } : {}) },
+    ]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    let finish!: () => void;
+    setSessionFavorite.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = () => {
+            persisted = true;
+            resolve({ sessionId: 'a', favorite: persisted });
+          };
+        }),
+    );
+    setSessionFavorite.mockImplementationOnce(async (_id, favorite) => {
+      persisted = favorite;
+      return { sessionId: 'a', favorite: persisted };
+    });
+    const first = model.setFavorite('a', true);
+    const second = model.setFavorite('a', false);
+    expect(setSessionFavorite).toHaveBeenCalledTimes(1);
+    expect(model.state.sessions[0]?.favorite).toBeUndefined();
+    finish();
+    await Promise.all([first, second]);
+    expect(persisted).toBe(false);
+    await model.refresh();
+    expect(model.state.sessions[0]?.favorite).toBeUndefined();
+
+    setSessionFavorite.mockResolvedValueOnce({ sessionId: 'a', favorite: true });
+    setSessionFavorite.mockRejectedValueOnce(new Error('latest failed'));
+    await Promise.all([model.setFavorite('a', true), model.setFavorite('a', false)]);
+    expect(model.state.sessions[0]?.favorite).toBe(true);
+    expect(model.state.error).toBe('failed to update favorite');
+  });
+
+  it('reverts only that flag and surfaces the error when the update fails', async () => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    listSessions.mockResolvedValue([{ ...session('a', 'idle'), favorite: true }]);
+    setSessionFavorite.mockRejectedValueOnce(new VerityApiError(404, 'session a not found'));
+    const states: SessionListState[] = [];
+    const model = new SessionListModel({ client, onChange: (s) => states.push(s) });
+    await model.refresh();
+
+    states.length = 0;
+    await model.setFavorite('a', false);
+
+    expect(states[0]?.sessions[0]?.favorite).toBeUndefined();
+    expect(model.state.sessions[0]?.favorite).toBe(true);
     expect(model.state.error).toBe('session a not found');
   });
 });

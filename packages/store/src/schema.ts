@@ -59,6 +59,8 @@ export interface SessionsTable {
   >;
   planning_revision: ColumnType<number, number | undefined, number>;
   planning_plan: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Operator-marked favorite; highlighted in the session list. */
+  favorite: ColumnType<boolean, boolean | undefined, boolean>;
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
