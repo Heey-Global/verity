@@ -12,6 +12,7 @@ const fixture = vi.hoisted(() => ({
     buildNumber: '12',
     releasePr: 42,
   },
+  previousVersion: undefined as string | undefined,
   recorded: undefined as Record<string, unknown> | undefined,
   evidenceMissing: false,
   evidenceBranchMissing: false,
@@ -51,6 +52,7 @@ vi.mock('node:child_process', () => ({
       if (args[0] === 'show')
         return JSON.stringify({
           ...fixture.candidate,
+          version: fixture.previousVersion ?? fixture.candidate.version,
           buildId: fixture.same ? 'approved-build' : 'previous-build',
         });
       return '';
@@ -149,6 +151,7 @@ import { propose } from './production-promotion.js';
 afterEach(() => {
   vi.clearAllMocks();
   fixture.calls = [];
+  fixture.previousVersion = undefined;
   fixture.same = false;
   fixture.merged = false;
   fixture.deleted = false;
@@ -345,4 +348,14 @@ describe('immutable staging release evidence', () => {
       fixture.calls.some((call) => call.args.includes('PUT') || call.args.includes('graphql')),
     ).toBe(false);
   });
+});
+
+it('rejects a delayed finalizer replacing a newer open production candidate', () => {
+  vi.stubEnv('GITHUB_REPOSITORY', 'example/repo');
+  fixture.previousVersion = '2.1.0';
+  expect(() => propose('candidate.json')).toThrow('roll back');
+  expect(fixture.calls.some((call) => call.command === 'git' && call.args[0] === 'push')).toBe(
+    false,
+  );
+  expect(fixture.calls.some((call) => call.args[0] === 'graphql')).toBe(false);
 });
