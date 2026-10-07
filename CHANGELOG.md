@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.25.1](https://github.com/Heey-Global/verity/compare/v4.25.0...v4.25.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **provisioner:** raise gVisor PID limits and report pressure ([#1301](https://github.com/Heey-Global/verity/issues/1301)) ([1e4d3a5](https://github.com/Heey-Global/verity/commit/1e4d3a5c49ff26f12fb7d853efca0fc91119161d))
+
 ## [4.25.0](https://github.com/Heey-Global/verity/compare/v4.24.1...v4.25.0) (2026-10-07)
 
 
