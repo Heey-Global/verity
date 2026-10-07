@@ -244,8 +244,7 @@ export async function verifyRelatedIssueResponse(
         for (const node of connection.nodes ?? []) verify(node);
         for (const edge of connection.edges ?? []) verify(edge.node);
       }
-      if (key === 'parent' && entry && typeof entry === 'object' && 'repository' in entry)
-        verify(entry);
+      if (key === 'parent') verify(entry);
       walk(entry);
     }
   };

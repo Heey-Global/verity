@@ -122,6 +122,25 @@ describe('broker-managed downloads and related entities', () => {
     ).rejects.toThrow();
     expect(count).toBe(6);
   });
+  it('rejects a parent issue without repository identity before emitting bytes', async () => {
+    const upstream = Object.assign(
+      Readable.from([
+        JSON.stringify({
+          data: {
+            repository: {
+              issue: {
+                parent: { number: 42, title: 'Parent', body: 'Private content' },
+              },
+            },
+          },
+        }),
+      ]),
+      { statusCode: 200, headers: {} },
+    ) as IncomingMessage;
+    await expect(verifyRelatedIssueResponse(upstream, 'acme', 'app')).rejects.toThrow(
+      'broker related issue rejected',
+    );
+  });
   it('validates the returned repository of related issues before emitting any response bytes', async () => {
     for (const repository of ['acme/app', 'other/repo']) {
       const upstream = Object.assign(
