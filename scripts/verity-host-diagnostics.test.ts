@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { hostDiagnosticSnapshotSchema } from '../packages/server/src/runtime-diagnostics.js';
+import { readHostDiagnosticsCapability } from '../packages/server/src/self-update/host-diagnostics.js';
 
 const script = resolve('deploy/host/verity-host-diagnostics');
 const hasTools = ['jq', 'timeout'].every(
@@ -16,6 +17,8 @@ function collect(options: { failRuntime?: boolean; many?: boolean; bytes?: boole
   const bin = join(root, 'bin');
   mkdirSync(bin);
   const state = join(root, 'state');
+  const runtime = join(root, 'runtime');
+  mkdirSync(runtime);
   writeFileSync(
     join(bin, 'journalctl'),
     `#!/usr/bin/env node
@@ -34,15 +37,35 @@ if (process.env.TEST_BYTES === '1') process.stdout.write(JSON.stringify({__REALT
       ...process.env,
       PATH: `${bin}:${process.env.PATH}`,
       VERITY_HOST_DIAGNOSTIC_DIR: state,
+      VERITY_HOST_RUNTIME_DIR: runtime,
       TEST_FAIL_RUNTIME: options.failRuntime ? '1' : '0',
       TEST_MANY: options.many ? '1' : '0',
       TEST_BYTES: options.bytes ? '1' : '0',
     },
     encoding: 'utf8',
   });
-  return { root, state, result };
+  return { root, state, runtime, result };
 }
 describeHost('host diagnostic exporter', () => {
+  it('publishes a mount capability matching the actual classified snapshot', async () => {
+    const host = collect({ failRuntime: true });
+    try {
+      expect(host.result.status, host.result.stderr).toBe(0);
+      const snapshot = hostDiagnosticSnapshotSchema.parse(
+        JSON.parse(readFileSync(join(host.state, 'snapshot.json'), 'utf8')),
+      );
+      const { records, ...metadata } = snapshot;
+      expect(records).toHaveLength(1);
+      expect(await readHostDiagnosticsCapability(host.runtime)).toEqual({
+        state: 'available',
+        hostPath: host.state,
+        snapshot: metadata,
+      });
+      expect(readFileSync(join(host.runtime, 'diagnostics.json'), 'utf8')).not.toContain('records');
+    } finally {
+      rmSync(host.root, { recursive: true, force: true });
+    }
+  });
   it('retains complete incident entries when a byte cap cuts through a large journal entry', () => {
     const host = collect({ bytes: true });
     try {

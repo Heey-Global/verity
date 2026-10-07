@@ -127,6 +127,8 @@ export function createOfficialImageVerifier(
 export type UpdateRunnerDocker = StandbyPromotionDocker & UpdatePreparationDocker;
 
 export interface UpdateRunnerOptions {
+  /** Host capability receipt directory; defaults to the installed status bind. */
+  readonly hostRuntimeDir?: string;
   /** Updater-owned root holding both the sealed spec and the update journal. */
   readonly managedRoot: string;
   readonly docker: UpdateRunnerDocker;
@@ -182,6 +184,7 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
   const shared = {
     managedRoot: options.managedRoot,
     docker: options.docker,
+    ...(options.hostRuntimeDir === undefined ? {} : { hostRuntimeDir: options.hostRuntimeDir }),
     ...(options.environment === undefined ? {} : { environment: options.environment }),
     ...(options.readFile === undefined ? {} : { readFile: options.readFile }),
   };
@@ -197,7 +200,7 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
     if (isPreparingPhase(journal.phase)) {
       const prepared = await resumeUpdatePreparation(
         options.managedRoot,
-        await dockerUpdatePreparation({ ...shared, verifyImage }),
+        await dockerUpdatePreparation({ ...shared, verifyImage, log }),
       );
       // Preparation reports failure by journalling it rather than by throwing,
       // so an unprepared operation has to be checked for, not caught.
@@ -210,7 +213,7 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
     let phase = journal.phase;
     if (phase !== 'committed' && phase !== 'reconciling-companions') {
       const state = await resumeUpdateCutover(
-        await dockerStandbyPromotion({ ...shared, ...(options.cutover ?? {}) }),
+        await dockerStandbyPromotion({ ...shared, log, ...(options.cutover ?? {}) }),
       );
       phase = state.phase;
     }

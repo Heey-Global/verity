@@ -135,6 +135,14 @@ For an existing installation, rerun the self-hosted installer to install the
 exporter and timer and apply the Server mount. A Server image update alone does
 not install a host service. Managed bootstrap seals the same read-only bind into
 new deployments and migrates existing specifications on an installer rerun.
+The installer-owned exporter also publishes a version-1 capability receipt in
+the host-runtime status directory, after atomically writing its snapshot. The
+receipt contains the configured host path and bounded snapshot metadata, without
+journal records. Normal managed update preparation automatically adds a missing
+mount when this receipt is valid and no older than five minutes. An absent,
+invalid or stale receipt defers the migration and logs the required recovery;
+it does not block unrelated Server updates. Journal source failures remain
+explicit and do not prevent mounting an otherwise valid snapshot.
 Other sealed fields and absent resource-limit fields are preserved; an already
 sealed diagnostic host path cannot be relocated implicitly. A running Server
 that exactly matches its recorded pre-migration authority keeps serving and is
@@ -147,11 +155,19 @@ the previous sealed authority as `server-deployment.before-host-diagnostics.json
 in the updater-owned deployment root, without overwriting it on retries. A
 rollback below that release requires compatible authority and its matching
 image, restored through the normal stopped-deployment maintenance workflow.
+The activated generation is checked for the sealed read-only bind; current
+receipt freshness and journal source states are reported separately from Server
+readiness. Hosts installed before capability receipts existed require one
+verified installer repair. Later updates reuse the provisioned exporter and
+timer; they do not execute arbitrary privileged commands or reinstall host code.
 
 On hosts without systemd, schedule the installed
 `/usr/local/libexec/verity/verity-host-diagnostics` yourself, for example once per
-minute using the host's scheduler. It requires Bash, GNU date/coreutils and jq;
-`journalctl` and permission to read system journals are needed for host evidence.
+minute using the host's scheduler. It requires Bash, GNU date/coreutils and jq.
+Set `VERITY_HOST_RUNTIME_DIR` to the installed host-runtime status directory in
+that scheduler, and preserve `VERITY_HOST_DIAGNOSTIC_DIR` for a custom snapshot
+directory, so capability receipts refresh alongside snapshots.
+Reading host evidence also requires `journalctl` and permission to read system journals.
 Hosts without those journals still retain local and Docker diagnostics.
 
 For containers with a custom hostname, set `VERITY_DIAGNOSTIC_SERVER_CONTAINER_ID`
@@ -160,8 +176,9 @@ to the Server's Docker container ID to anchor infrastructure selection.
 For a custom deployment, mount the classified snapshot directory read-only and
 set `VERITY_HOST_DIAGNOSTIC_SNAPSHOT` to its Server-visible snapshot path. An
 explicit `VERITY_HOST_DIAGNOSTIC_DIR` can select the exporter/Compose host path;
-configure the systemd service's environment and writable paths consistently
-when using a non-default directory. A bare local Server can read the snapshot
+the installer configures the systemd service's environment and writable paths
+consistently with that directory and the host-runtime receipt directory. Custom
+provisioning must configure those paths too. A bare local Server can read the snapshot
 from its host path using `VERITY_HOST_DIAGNOSTIC_SNAPSHOT`.
 
 Each report includes source availability, snapshot time, covered interval and

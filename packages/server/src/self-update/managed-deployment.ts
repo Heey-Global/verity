@@ -299,7 +299,7 @@ export async function migrateManagedControlPlaneRunner(
 }
 
 /** Add the installer's read-only diagnostic bind without changing other sealed authority.
- * Old specs remain parseable without it; only an explicit bootstrap rerun opts them in. */
+ * Old specs remain parseable without it; bootstrap or a verified host capability opts them in. */
 export async function migrateManagedHostDiagnostics(options: {
   root: string;
   deploymentId: string;

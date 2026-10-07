@@ -1,6 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import type { ContainerInspect, DockerClient } from '../docker.js';
-import { migrateManagedControlPlaneRunner, readManagedDeployment } from './managed-deployment.js';
+import {
+  migrateManagedControlPlaneRunner,
+  migrateManagedHostDiagnostics,
+  readManagedDeployment,
+} from './managed-deployment.js';
+import { readHostDiagnosticsCapability } from './host-diagnostics.js';
 import {
   MANAGED_DEPLOYMENT_LABEL,
   MANAGED_ROLE_LABEL,
@@ -55,6 +60,7 @@ export interface DockerUpdatePreparationOptions {
   readonly verifyImage: (journal: UpdateJournal) => Promise<void>;
   /** The host runtime request directory as the Updater sees it; tests only. */
   readonly hostRuntimeDir?: string;
+  readonly log?: (message: string) => void;
 }
 
 function candidateName(journal: UpdateJournal, role: string): string {
@@ -333,12 +339,31 @@ export async function dockerUpdatePreparation(
       // rebuild the candidate template so the standby is the first Server made
       // from the expanded spec. A crash is safe: the journal resumes from
       // `preflight` or `creating-standby` and this operation is idempotent.
-      const migrated = await migrateManagedControlPlaneRunner(
+      let migrated = await migrateManagedControlPlaneRunner(
         options.managedRoot,
         options.environment ?? process.env,
       );
       if (!migrated.managed)
         throw new Error(`managed Server authority unavailable: ${migrated.reason}`);
+      const diagnostics = await readHostDiagnosticsCapability(options.hostRuntimeDir);
+      if (diagnostics.state === 'available') {
+        migrated = await migrateManagedHostDiagnostics({
+          root: options.managedRoot,
+          deploymentId: migrated.spec.deploymentId,
+          image: migrated.spec.image,
+          hostPath: diagnostics.hostPath,
+        });
+        if (!migrated.managed) throw new Error(migrated.reason);
+        if (Object.values(diagnostics.snapshot.sources).some((source) => source !== 'available'))
+          (options.log ?? console.warn)('Host diagnostic journals have incomplete source coverage');
+      } else {
+        (options.log ?? console.warn)(
+          `Host diagnostics ${diagnostics.state}; automatic mount migration deferred. ` +
+            (diagnostics.state === 'unsupported'
+              ? 'Rerun the verified installer once to provision host diagnostics.'
+              : 'Check the host diagnostics exporter and timer.'),
+        );
+      }
       base = await managedServerContainerSpec(
         migrated.spec,
         options.environment ?? process.env,

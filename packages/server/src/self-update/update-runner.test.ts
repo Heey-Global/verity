@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DockerError } from '../docker.js';
 import { dockerUpdatePreparation } from './docker-update-preparation.js';
 import {
@@ -73,6 +76,82 @@ const runner = (root: string, daemon: FakeDaemon, log: string[] = []) =>
   createUpdateRunner(options(root, daemon, log));
 
 describe('update runner', () => {
+  it.each(['completed', 'probe-failed', 'mount-missing'] as const)(
+    'automatically migrates diagnostics through guarded cutover (%s)',
+    async (outcome) => {
+      const rollback = outcome !== 'completed';
+      const { root, daemon } = await adoptedDeployment('automatic-diagnostics');
+      const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'automatic-diagnostics-'));
+      const now = new Date().toISOString();
+      const log: string[] = [];
+      try {
+        await writeFile(
+          join(hostRuntimeDir, 'diagnostics.json'),
+          JSON.stringify({
+            version: 1,
+            hostPath: '/var/lib/verity/host-diagnostics',
+            snapshot: {
+              schemaVersion: 1,
+              observedAt: now,
+              since: now,
+              until: now,
+              sources: { kernel: 'available', runtime: 'failed' },
+              truncated: false,
+            },
+          }),
+        );
+        if (outcome === 'probe-failed') daemon.exitCodes.set('verity-managed-probe-ready-g1', 1);
+        await journalled(root);
+        const runtime = { ...options(root, daemon, log), hostRuntimeDir };
+        if (outcome === 'mount-missing') {
+          let activated = false;
+          runtime.cutover.activate = async () => {
+            activated = true;
+          };
+          const inspect = daemon.docker.inspectContainer.bind(daemon.docker);
+          daemon.docker.inspectContainer = async (id) => {
+            const container = await inspect(id);
+            return activated && id === daemon.find('verity-managed-server-g1')
+              ? {
+                  ...container,
+                  mounts: container.mounts?.filter(
+                    (mount) => mount.destination !== '/run/verity-host-diagnostics',
+                  ),
+                }
+              : container;
+          };
+        }
+        await createUpdateRunner(runtime).run();
+        expect(await readUpdateJournal(root)).toMatchObject({
+          phase: rollback ? 'rolled-back' : 'completed',
+        });
+        const deployment = await readManagedDeployment(root);
+        if (!deployment.managed) throw new Error(deployment.reason);
+        expect(deployment.spec.image).toBe(rollback ? oldImage : newImage);
+        expect(deployment.spec.mounts).toContainEqual({
+          source: { kind: 'bind', path: '/var/lib/verity/host-diagnostics' },
+          target: '/run/verity-host-diagnostics',
+          readOnly: true,
+        });
+        if (!rollback) {
+          expect(daemon.spec('verity-managed-server-g1')?.binds).toContain(
+            '/var/lib/verity/host-diagnostics:/run/verity-host-diagnostics:ro',
+          );
+          expect(log.some((entry) => entry.includes('kernel=available, runtime=failed'))).toBe(
+            true,
+          );
+        }
+        // Recovery must accept either routed generation after the migration.
+        expect((await recoverManagedUpdater(runtime)).reconcile).toEqual(
+          rollback
+            ? { status: 'drift', environment: [], diagnosticMountPending: true }
+            : { status: 'ok' },
+        );
+      } finally {
+        await rm(hostRuntimeDir, { recursive: true, force: true });
+      }
+    },
+  );
   it('logs the missing companion ID while keeping post-cutover failures resumable', async () => {
     const { root, daemon } = await adoptedDeployment('update-runner');
     await journalled(root);

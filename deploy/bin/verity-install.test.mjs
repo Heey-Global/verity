@@ -513,6 +513,34 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.match(calls, /^systemctl daemon-reload$/m);
     assert.match(calls, /^systemctl enable --now verity-host-runtime\.path$/m);
     assert.match(calls, /^systemctl enable --now verity-host-diagnostics\.timer$/m);
+    const override = readFileSync(
+      join(
+        host.hostRuntime.VERITY_SYSTEMD_UNIT_DIR,
+        'verity-host-diagnostics.service.d',
+        'paths.conf',
+      ),
+      'utf8',
+    );
+    assert.ok(
+      override.includes(
+        `Environment="VERITY_HOST_DIAGNOSTIC_DIR=${host.hostRuntime.VERITY_HOST_DIAGNOSTIC_DIR}"`,
+      ),
+    );
+    assert.ok(
+      override.includes(
+        `Environment="VERITY_HOST_RUNTIME_DIR=${host.hostRuntime.VERITY_HOST_RUNTIME_DIR}"`,
+      ),
+    );
+    assert.ok(
+      override.includes(
+        `ReadWritePaths="${host.hostRuntime.VERITY_HOST_DIAGNOSTIC_DIR}" "${host.hostRuntime.VERITY_HOST_RUNTIME_DIR}"`,
+      ),
+    );
+    assert.ok(
+      override.includes(
+        `ExecStart="${host.hostRuntime.VERITY_HOST_RUNTIME_LIBEXEC}/verity-host-diagnostics"`,
+      ),
+    );
     for (const unit of [
       'verity-host-runtime.path',
       'verity-host-runtime.service',
