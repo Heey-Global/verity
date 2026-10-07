@@ -33,7 +33,7 @@
     "graphql": "16.14.2",
     "ipaddr.js": "2.5.0",
     "minimatch": "10.2.6",
-    "pdfjs-dist": "6.3.289",
+    "pdfjs-dist": "6.4.299",
     "qrcode": "1.5.4",
     "sanitize-html": "2.18.0",
     "sharp": "0.35.5",
