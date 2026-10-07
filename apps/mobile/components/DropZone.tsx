@@ -43,6 +43,8 @@ type DropZoneProps = ViewProps & {
   onActiveChange: (active: boolean) => void;
 };
 
+const consumedDrops = new WeakSet<Event>();
+
 function hasFiles(event: DragEvent): boolean {
   return Array.from(event.dataTransfer?.types ?? []).includes('Files');
 }
@@ -103,13 +105,13 @@ function WebDropZone({
     };
     const drop = (event: DragEvent) => {
       if (!hasFiles(event) || !event.dataTransfer) return;
-      // Like the native target, only the innermost zone takes the files; outer
-      // zones still see the event so their drag state resets.
-      const handledInside = event.defaultPrevented;
       event.preventDefault();
       depth = 0;
       latest.current.onActiveChange(false);
-      if (handledInside || !accepting()) return;
+      // Like the native target, only the innermost accepting zone takes the files;
+      // outer zones still see the event so their drag state resets.
+      if (consumedDrops.has(event) || !accepting()) return;
+      consumedDrops.add(event);
       const { files, errors } = acceptWebDrop(webDroppedItems(event.dataTransfer), latest.current);
       if (files.length > 0) latest.current.onFiles(files);
       if (errors.length > 0) latest.current.onRejected(errors);
