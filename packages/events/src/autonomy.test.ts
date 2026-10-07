@@ -32,15 +32,15 @@ describe('AUTONOMY_SYSTEM_PROMPT', () => {
     expect(AUTONOMY_RESUME_SYSTEM_PROMPT).toContain('diagnosis is not completion');
     expect(AUTONOMY_RESUME_SYSTEM_PROMPT).toContain('Verity Quick Actions');
     expect(AUTONOMY_RESUME_SYSTEM_PROMPT).toContain('without asking again');
-    expect(AUTONOMY_RESUME_SYSTEM_PROMPT.length).toBeLessThan(1100);
+    expect(AUTONOMY_RESUME_SYSTEM_PROMPT.length).toBeLessThan(650);
   });
 
   it.each([AUTONOMY_SYSTEM_PROMPT, AUTONOMY_RESUME_SYSTEM_PROMPT])(
     'requires an actionable handoff whenever the requested outcome remains unfinished',
     (prompt) => {
-      expect(prompt).toContain('Never end with only a diagnosis or a list of unfinished work');
+      expect(prompt).toContain('Never end with only a diagnosis');
       expect(prompt).toContain('same reply');
-      expect(prompt).toContain('what it would authorize');
+      expect(prompt).toMatch(/what (it would authorize|each action authorizes)/);
       expect(prompt).toContain('Do not wait for the user to ask how to proceed');
     },
   );
