@@ -35,10 +35,13 @@ export const taskPatchSchema = taskSchema
     status: true,
     result: true,
     sort: true,
-    origin: true,
   })
   .partial()
-  .extend({ expectedRevision: z.number().int().nonnegative() });
+  .extend({
+    /** Adopting an agent step; the server accepts no other relabel. */
+    origin: z.literal('user').optional(),
+    expectedRevision: z.number().int().nonnegative(),
+  });
 export type TaskCapture = z.infer<typeof taskCaptureSchema>;
 export type TaskPatch = z.infer<typeof taskPatchSchema>;
 export interface TaskContext {

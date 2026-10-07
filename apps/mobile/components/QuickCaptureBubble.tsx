@@ -47,6 +47,8 @@ import { TasksPanel } from './TasksPanel';
 
 /** Bubble diameter; half of it sits outside the screen edge. */
 const BUBBLE = 44;
+/** Extra touch area on the visible side, so the target is a full 44pt. */
+const EXTEND = 22;
 
 export function QuickCaptureBubble() {
   const hintRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -193,11 +195,17 @@ export function QuickCaptureBubble() {
           );
         },
         onPanResponderTerminate: () => {
+          // Something else took the gesture: dock where the saved place says,
+          // not at whatever mid-flight point the grab froze.
           setDragging(false);
+          origin.current = {
+            x: preferences.side === 'left' ? -BUBBLE / 2 : width - BUBBLE / 2,
+            y: Math.max(top, Math.min(bottom, height * preferences.fraction)),
+          };
           Animated.spring(position, { toValue: origin.current, useNativeDriver: false }).start();
         },
       }),
-    [position, squash, width, height, top, bottom],
+    [position, squash, width, height, top, bottom, preferences.side, preferences.fraction],
   );
   useEffect(() => startTasksStore(), []);
   useEffect(() => {
@@ -317,12 +325,23 @@ export function QuickCaptureBubble() {
       {visible ? (
         <Animated.View
           {...pan.panHandlers}
+          // The wrapper extends 22pt onto the screen past the bubble so the
+          // touch target is 44pt wide where it can be hit; children outside
+          // a parent's bounds get no touches on Android, so slop would not do.
           style={{
             position: 'absolute',
             left: 0,
             top: 0,
+            paddingLeft: preferences.side === 'right' ? EXTEND : 0,
+            paddingRight: preferences.side === 'left' ? EXTEND : 0,
             transform: [
-              ...position.getTranslateTransform(),
+              {
+                translateX: Animated.subtract(
+                  position.x,
+                  preferences.side === 'right' ? EXTEND : 0,
+                ),
+              },
+              { translateY: position.y },
               { scaleX: squash },
               { scaleY: Animated.divide(1, squash) },
             ],
@@ -336,13 +355,6 @@ export function QuickCaptureBubble() {
             accessibilityHint="Double tap to record a task; long press to open the task list"
             onPress={() => (preferences.introSeen ? setCapture(true) : setIntro(true))}
             onLongPress={() => setPanel(true)}
-            // Half the bubble is off screen; slop on the inner edge keeps the target 44pt wide.
-            hitSlop={{
-              top: 4,
-              bottom: 4,
-              left: preferences.side === 'right' ? 22 : 0,
-              right: preferences.side === 'left' ? 22 : 0,
-            }}
             style={{
               width: BUBBLE,
               height: BUBBLE,
@@ -369,7 +381,7 @@ export function QuickCaptureBubble() {
               style={{
                 position: 'absolute',
                 top: -6,
-                [preferences.side === 'right' ? 'left' : 'right']: -4,
+                [preferences.side === 'right' ? 'left' : 'right']: EXTEND - 4,
                 minWidth: 18,
                 height: 18,
                 paddingHorizontal: 5,

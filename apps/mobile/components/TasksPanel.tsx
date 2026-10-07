@@ -374,6 +374,11 @@ export function TasksPanel({
             </Text>
           </View>
         </Pressable>
+        {undo.includes(task.id) ? (
+          <Pressable style={styles.agentIndent} onPress={() => complete(task)}>
+            <Text style={styles.link}>Undo</Text>
+          </Pressable>
+        ) : null}
         {open ? (
           <View style={[styles.chips, styles.agentIndent]}>
             {isDone ? null : chip('Done', () => complete(task))}
