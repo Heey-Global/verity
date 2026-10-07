@@ -38,8 +38,8 @@ export function isFullSwipe(side: SwipeSide, translation: number, threshold: num
 export function mixColor(tone: string, base: string, alpha: number): string {
   // Theme tokens are `#rrggbb` today; anything else would blend to `#NaNNaNNaN`
   // and leave the lane without a background, so fall back to the opaque base.
-  const hex = /^#[0-9a-f]{6}$/i;
-  if (!hex.test(tone) || !hex.test(base)) return base;
+  const rgbHex = /^#[0-9a-f]{6}$/i;
+  if (!rgbHex.test(tone) || !rgbHex.test(base)) return base;
   const channel = (hex: string, i: number) => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16);
   const mixed = [0, 1, 2].map((i) =>
     Math.round(channel(tone, i) * alpha + channel(base, i) * (1 - alpha))
@@ -74,8 +74,9 @@ export function SwipeableSessionRow({
   const [width, setWidth] = useState(0);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const fullSwipe = Math.max(SWIPE_ACTION_WIDTH * 1.5, width * FULL_SWIPE_RATIO);
-  // The trailing edge rests at two actions wide, so its full swipe lies further out.
-  const fullSwipeTrailing = Math.max(SWIPE_ACTION_WIDTH * 2.5, width * FULL_SWIPE_RATIO);
+  // The trailing edge rests two actions wide; keep a full action's margin past that
+  // rest, so dragging on to aim at Edit does not arm Delete.
+  const fullSwipeTrailing = Math.max(SWIPE_ACTION_WIDTH * 3, width * FULL_SWIPE_RATIO);
 
   const run = useCallback(
     (side: SwipeSide) => {
