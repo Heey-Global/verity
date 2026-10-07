@@ -61,7 +61,7 @@ separately by `TRADEMARKS.md`.
 | CC0-1.0 | 2 |
 | ISC | 66 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 1044 |
+| MIT | 1045 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -737,6 +737,7 @@ separately by `TRADEMARKS.md`.
 | expo-local-authentication | MIT | [source](https://www.npmjs.com/package/expo-local-authentication) |
 | expo-localization | MIT | [source](https://www.npmjs.com/package/expo-localization) |
 | expo-manifests | MIT | [source](https://www.npmjs.com/package/expo-manifests) |
+| expo-media-library | MIT | [source](https://www.npmjs.com/package/expo-media-library) |
 | expo-modules-autolinking | MIT | [source](https://www.npmjs.com/package/expo-modules-autolinking) |
 | expo-modules-core | MIT | [source](https://www.npmjs.com/package/expo-modules-core) |
 | expo-modules-jsi | MIT | [source](https://www.npmjs.com/package/expo-modules-jsi) |

@@ -110,6 +110,7 @@
         "expo-keep-awake",
         "expo-local-authentication",
         "expo-localization",
+        "expo-media-library",
         "expo-notifications",
         "expo-print",
         "expo-router",

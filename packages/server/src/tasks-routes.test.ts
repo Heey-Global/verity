@@ -688,3 +688,70 @@ describe('executeTasksTool', () => {
     ]);
   });
 });
+
+describe('task capture uploads', () => {
+  it('stores uploaded bytes and lets the owner read the referenced attachment', async () => {
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/tasks/${T1}`,
+      payload: {
+        title: 'Read context',
+        uploads: [{ kind: 'file', mediaType: 'text/plain', fileName: 'context.txt', data: 'aGk=' }],
+      },
+    });
+    expect(response.statusCode).toBe(201);
+    const saved = await store.tasks.get(T1, ADMIN);
+    expect(saved?.attachments[0]).toMatchObject({
+      filename: 'context.txt',
+      mimeType: 'text/plain',
+    });
+    const read = await app.inject({
+      method: 'GET',
+      url: `/tasks/${T1}/attachments/${saved!.attachments[0]!.hash}`,
+    });
+    expect(read.statusCode).toBe(200);
+    expect(read.body).toBe('hi');
+  });
+  it('does not upload replacement bytes on a capture retry', async () => {
+    await app.inject({ method: 'PUT', url: `/tasks/${T1}`, payload: { title: 'Original' } });
+    const put = vi.spyOn(store, 'putAttachment');
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/tasks/${T1}`,
+      payload: {
+        title: 'Replacement',
+        uploads: [{ kind: 'image', mediaType: 'image/png', data: 'aGk=' }],
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(put).not.toHaveBeenCalled();
+    expect((await store.tasks.get(T1, ADMIN))?.title).toBe('Original');
+  });
+  it('authorizes the project before ingesting bytes', async () => {
+    const put = vi.spyOn(store, 'putAttachment');
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/tasks/${T1}`,
+      headers: asMember,
+      payload: {
+        title: 'Private',
+        projectId: 'p1',
+        uploads: [{ kind: 'image', mediaType: 'image/png', data: 'aGk=' }],
+      },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(put).not.toHaveBeenCalled();
+  });
+  it('rejects invalid base64 before persisting a task', async () => {
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/tasks/${T1}`,
+      payload: {
+        title: 'Invalid',
+        uploads: [{ kind: 'image', mediaType: 'image/png', data: 'not base64!' }],
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(await store.tasks.get(T1, ADMIN)).toBeUndefined();
+  });
+});

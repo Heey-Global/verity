@@ -530,3 +530,15 @@ export type { LocalPreviewShare, ManagedDevServer } from './api.js';
 
 export { localPreviewReachable } from './localPreview.js';
 export { selectedOpenCodeModels } from '@verity/events';
+
+export {
+  taskSchema,
+  taskContext,
+  TASK_SILENCE_MS,
+  TASK_SAVE_DELAY_MS,
+  type Task,
+  type TaskCapture,
+  type TaskPatch,
+  type TaskContext,
+} from './tasks.js';
+export { TaskQueue, type TaskQueueState } from './taskQueue.js';
