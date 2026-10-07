@@ -57,9 +57,11 @@ export const hostDiagnosticSnapshotSchema = z.object({
   observedAt: timestamp,
   since: timestamp,
   until: timestamp,
-  sources: z.object({ kernel: sourceState, runtime: sourceState }),
+  sources: z.object({ kernel: sourceState, runtime: sourceState, docker: sourceState.optional() }),
   truncated: z.boolean(),
   records: z.array(runtimeEvidenceSchema).max(400),
+  truncatedUntil: timestamp.optional(),
+  dockerUntil: timestamp.optional(),
 });
 const containerSchema = z.object({
   id: containerId,
