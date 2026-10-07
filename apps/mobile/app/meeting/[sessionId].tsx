@@ -613,7 +613,8 @@ export default function MeetingScreen() {
         queueBehindActiveTurn: true,
       });
       // A retried card must not clear what is being typed in the composer.
-      if (kind === 'request' && question === insightQuestion) setInsightQuestion('');
+      if (kind === 'request')
+        setInsightQuestion((current) => (current === question ? '' : current));
     } catch (reason) {
       setLocalAnswers((current) => current.filter((card) => card.id !== local.id));
       setError(`Could not start meeting request: ${String(reason)}`);

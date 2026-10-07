@@ -662,6 +662,43 @@ it('starts a direct meeting request and stays put when the server rejects it', a
   expect(input).toHaveDisplayValue('What do you think?');
 });
 
+it('preserves a new question typed while the previous request is sending', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-pending-request',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: '',
+    error: null,
+  };
+  let resolveSend!: () => void;
+  const sendTurn = jest.fn().mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        resolveSend = resolve;
+      }),
+  );
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
+  jest.mocked(createVerityClient).mockReturnValue({
+    sendTurn,
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('Ask Verity'));
+  const input = screen.getByLabelText('Ask Verity about this meeting');
+  fireEvent.changeText(input, 'First question');
+  fireEvent.press(screen.getByLabelText('Ask Verity in meeting'));
+  await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(1));
+  fireEvent.changeText(input, 'Next question');
+  await act(async () => resolveSend());
+  expect(input).toHaveDisplayValue('Next question');
+});
+
 it.each([
   ['Pause meeting', 'pause'],
   ['End meeting', 'stop'],
