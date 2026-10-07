@@ -46,9 +46,9 @@ import { QuickCaptureIntro } from './QuickCaptureIntro';
 import { TasksPanel } from './TasksPanel';
 
 /** Bubble diameter; half of it sits outside the screen edge. */
-const BUBBLE = 44;
+const BUBBLE = 50;
 /** Extra touch area on the visible side, so the target is a full 44pt. */
-const EXTEND = 22;
+const EXTEND = 19;
 
 export function QuickCaptureBubble() {
   const hintRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -173,17 +173,19 @@ export function QuickCaptureBubble() {
           Animated.spring(position, {
             toValue: origin.current,
             velocity: { x: g.vx * 1000, y: g.vy * 1000 },
-            speed: 14,
-            bounciness: Math.min(18, 6 + Math.abs(g.vx) * 10),
+            // Soft and slightly underdamped: a gentle release glides home, a
+            // hard throw overshoots once and settles instead of snapping.
+            tension: 38,
+            friction: Math.max(5.5, 8.5 - Math.abs(g.vx) * 2),
             useNativeDriver: false,
           }).start(({ finished }) => {
             if (!finished) return;
             // Arrival: a short squash against the edge, like a ball landing.
-            squash.setValue(Math.max(0.82, 1 - Math.abs(g.vx) * 0.12));
+            squash.setValue(Math.max(0.88, 1 - Math.abs(g.vx) * 0.08));
             Animated.spring(squash, {
               toValue: 1,
-              speed: 30,
-              bounciness: 14,
+              tension: 120,
+              friction: 6,
               useNativeDriver: false,
             }).start();
           });
@@ -377,12 +379,13 @@ export function QuickCaptureBubble() {
                 opacity: dragging ? 1 : 0.55,
                 justifyContent: 'center',
                 alignItems: 'center',
-                // Keep the glyph on the visible half.
-                paddingLeft: preferences.side === 'right' ? 0 : BUBBLE / 2 - 2,
-                paddingRight: preferences.side === 'right' ? BUBBLE / 2 - 2 : 0,
+                // Docked, the glyph sits on the visible half; in the hand the
+                // whole bubble is on screen, so the glyph centres again.
+                paddingLeft: dragging || preferences.side === 'right' ? 0 : BUBBLE / 2 - 4,
+                paddingRight: !dragging && preferences.side === 'right' ? BUBBLE / 2 - 4 : 0,
               }}
             >
-              <Icon name="mic" size={16} color={theme.colors.textMuted} />
+              <Icon name="mic" size={19} color={theme.colors.textMuted} />
             </View>
           </Pressable>
           {count > 0 ? (
