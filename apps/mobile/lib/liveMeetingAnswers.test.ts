@@ -147,7 +147,13 @@ test('never gives a steered meeting request the answer meant for another', () =>
     { seq: 1, event: prompt('How tall is the Eiffel Tower?') },
     { seq: 2, event: { t: 'tool_call', id: 'search-1', name: 'WebSearch', input: {} } },
     { seq: 3, event: prompt('How many people live in Paris?', true) },
-    { seq: 4, event: { t: 'text', delta: '- About 2.1 million.' } },
+    {
+      seq: 4,
+      event: {
+        t: 'text',
+        delta: '- The tower is 330 metres tall. Paris has about 2.1 million residents.',
+      },
+    },
     { seq: 5, event: { t: 'result' } },
     { seq: 6, event: prompt('Who built it?') },
     { seq: 7, event: { t: 'text', delta: '- Gustave Eiffel’s company.' } },
@@ -163,8 +169,9 @@ test('never gives a steered meeting request the answer meant for another', () =>
     }),
     expect.objectContaining({
       request: 'How many people live in Paris?',
-      status: 'ready',
-      answer: '- About 2.1 million.',
+      status: 'failed',
+      combined: true,
+      answer: '',
     }),
     expect.objectContaining({ request: 'Who built it?', status: 'ready' }),
   ]);

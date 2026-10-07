@@ -40,21 +40,23 @@ export function meetingAnswerCards(events: SessionEvent[], meetingId: string): M
       const request = meetingRequestFromPrompt(event.text, meetingId);
       // A steered prompt joins the running turn: what follows answers the newer request.
       if (event.steered && !request) continue;
-      if (event.steered && current) {
-        if (current.answer.trim()) current.status = 'ready';
-        else Object.assign(current, { status: 'failed', combined: true });
+      if (event.steered && current && !current.combined) {
+        Object.assign(current, { status: 'failed', combined: true, answer: '' });
       }
       current = request ? { id: String(seq), ...request, status: 'working', answer: '' } : null;
-      if (current) cards.push(current);
-    } else if (event.t === 'text' && !event.parentToolId && current) {
+      if (current) {
+        if (event.steered) Object.assign(current, { status: 'failed', combined: true });
+        cards.push(current);
+      }
+    } else if (event.t === 'text' && !event.parentToolId && current && !current.combined) {
       current.answer += event.delta;
       if (current.answer.length > 20_000) current.answer = current.answer.slice(-20_000);
-    } else if (event.t === 'tool_call' && !event.parentToolId && current) {
+    } else if (event.t === 'tool_call' && !event.parentToolId && current && !current.combined) {
       // Progress before research tools is not the answer to show in the meeting card.
       current.answer = '';
-    } else if (event.t === 'result' && current) {
+    } else if (event.t === 'result' && current && !current.combined) {
       if (current.answer.trim()) current.status = 'ready';
-    } else if (event.t === 'interrupted' && current) {
+    } else if (event.t === 'interrupted' && current && !current.combined) {
       current.status = current.answer.trim() ? 'ready' : 'failed';
       current = null;
     }

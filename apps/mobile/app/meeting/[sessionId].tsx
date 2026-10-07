@@ -936,7 +936,7 @@ export default function MeetingScreen() {
           body={
             card.status === 'failed'
               ? card.combined
-                ? 'Verity answered it together with a later request.'
+                ? 'This reply combined requests. Retry for a separate answer.'
                 : 'Verity stopped before answering.'
               : undefined
           }
