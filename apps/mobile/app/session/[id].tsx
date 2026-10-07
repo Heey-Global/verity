@@ -1023,11 +1023,12 @@ export function SessionChat({
       client,
       refreshStaticPreview,
       (path) =>
-        path.startsWith(`/sessions/${encodeURIComponent(sessionId)}/`) &&
-        /preview|share|dev-server/u.test(path),
+        path === `/projects/${encodeURIComponent(projectId)}/public-shares` ||
+        (path.startsWith(`/sessions/${encodeURIComponent(sessionId)}/`) &&
+          /preview|share|dev-server/u.test(path)),
     );
     return () => detach();
-  }, [refreshStaticPreview, loaded]);
+  }, [refreshStaticPreview, loaded, client, projectId, sessionId]);
 
   useEffect(() => {
     if (session.devServers !== undefined) setHasRunningDevServer(session.devServers.length > 0);
