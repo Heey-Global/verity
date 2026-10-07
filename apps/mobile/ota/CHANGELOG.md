@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.57.2](https://github.com/Heey-Global/verity/compare/mobile-v1.57.1...mobile-v1.57.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* **session:** improve knowledge retrieval and concise progress guidance ([#1269](https://github.com/Heey-Global/verity/issues/1269)) ([2e1d901](https://github.com/Heey-Global/verity/commit/2e1d9010663405cdb463c080868ec9074361fd18))
+
 ## [1.57.1](https://github.com/Heey-Global/verity/compare/mobile-v1.57.0...mobile-v1.57.1) (2026-10-07)
 
 
