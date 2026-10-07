@@ -333,7 +333,7 @@ export async function dockerUpdatePreparation(
         ...(options.hostRuntimeDir === undefined ? {} : { requestDir: options.hostRuntimeDir }),
       });
     },
-    prepareStandby: async () => {
+    prepareStandby: async (journal) => {
       // A legacy Server cannot be reconciled in place after gaining these
       // mounts. Delay the authority migration until preflight succeeds, then
       // rebuild the candidate template so the standby is the first Server made
@@ -351,13 +351,22 @@ export async function dockerUpdatePreparation(
           (mount) => mount.target === '/run/verity-host-diagnostics',
         );
         if (sealedDiagnosticMount === undefined) {
-          migrated = await migrateManagedHostDiagnostics({
-            root: options.managedRoot,
-            deploymentId: migrated.spec.deploymentId,
-            image: migrated.spec.image,
-            hostPath: diagnostics.hostPath,
-          });
-          if (!migrated.managed) throw new Error(migrated.reason);
+          // A crash after Docker create but before the standby journal write
+          // must not change that generation's spec when the timer refreshes.
+          const existingStandby = await findNamed(docker, candidateName(journal, STANDBY_ROLE));
+          if (existingStandby === null) {
+            migrated = await migrateManagedHostDiagnostics({
+              root: options.managedRoot,
+              deploymentId: migrated.spec.deploymentId,
+              image: migrated.spec.image,
+              hostPath: diagnostics.hostPath,
+            });
+            if (!migrated.managed) throw new Error(migrated.reason);
+          } else {
+            (options.log ?? console.warn)(
+              'Host diagnostic mount migration deferred until the next update; this standby already exists',
+            );
+          }
         } else if (
           sealedDiagnosticMount.source.kind === 'bind' &&
           sealedDiagnosticMount.source.path !== diagnostics.hostPath

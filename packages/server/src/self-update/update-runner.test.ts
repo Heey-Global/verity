@@ -76,6 +76,58 @@ const runner = (root: string, daemon: FakeDaemon, log: string[] = []) =>
   createUpdateRunner(options(root, daemon, log));
 
 describe('update runner', () => {
+  it('retains a standby spec when evidence refreshes after creation but before journalling', async () => {
+    const { root, daemon } = await adoptedDeployment('diagnostics-retry');
+    const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'diagnostics-retry-'));
+    const log: string[] = [];
+    const receipt = (offset: number) => {
+      const at = new Date(Date.now() + offset).toISOString();
+      return JSON.stringify({
+        version: 1,
+        hostPath: '/var/lib/verity/host-diagnostics',
+        snapshot: {
+          schemaVersion: 1,
+          observedAt: at,
+          since: at,
+          until: at,
+          sources: { kernel: 'available', runtime: 'available' },
+          truncated: false,
+        },
+      });
+    };
+    const preparation = () =>
+      dockerUpdatePreparation({
+        managedRoot: root,
+        docker: daemon.docker,
+        environment: ENVIRONMENT,
+        verifyImage: async () => undefined,
+        hostRuntimeDir,
+        log: (message) => log.push(message),
+      });
+    try {
+      await journalled(root);
+      const journal = await readUpdateJournal(root);
+      if (journal === null) throw new Error('missing journal');
+      await writeFile(join(hostRuntimeDir, 'diagnostics.json'), receipt(-600_000));
+      const beforeCrash = await preparation();
+      await beforeCrash.prepareStandby!(journal);
+      const standby = await beforeCrash.ensureStandby(journal);
+      await writeFile(join(hostRuntimeDir, 'diagnostics.json'), receipt(0));
+      const resumed = await preparation();
+      await resumed.prepareStandby!(journal);
+      expect(await resumed.ensureStandby(journal)).toEqual(standby);
+      const deployment = await readManagedDeployment(root);
+      if (!deployment.managed) throw new Error(deployment.reason);
+      expect(
+        deployment.spec.mounts.some((mount) => mount.target === '/run/verity-host-diagnostics'),
+      ).toBe(false);
+      expect(log.some((message) => message.includes('this standby already exists'))).toBe(true);
+      await createUpdateRunner({ ...options(root, daemon, log), hostRuntimeDir }).run();
+      expect(await readUpdateJournal(root)).toMatchObject({ phase: 'completed' });
+    } finally {
+      await rm(hostRuntimeDir, { recursive: true, force: true });
+    }
+  });
   it.each(['completed', 'probe-failed', 'mount-missing'] as const)(
     'automatically migrates diagnostics through guarded cutover (%s)',
     async (outcome) => {

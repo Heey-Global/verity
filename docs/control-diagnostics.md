@@ -143,6 +143,9 @@ mount when this receipt is valid and no older than five minutes. An absent,
 invalid or stale receipt defers the migration and logs the required recovery;
 it does not block unrelated Server updates. Journal source failures remain
 explicit and do not prevent mounting an otherwise valid snapshot.
+If a standby already exists when preparation resumes, a newly refreshed
+receipt cannot add a mount to that generation. Migration waits for the next
+update, preserving the existing standby through crash recovery.
 Other sealed fields and absent resource-limit fields are preserved; an already
 sealed diagnostic host path cannot be relocated implicitly. A running Server
 with a different exporter path retains its sealed mount during image updates;

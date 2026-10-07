@@ -80,6 +80,11 @@ function inspectFromSpec(id: string, spec: ContainerSpec, status: string): Conta
     env: [...env].map(([name, value]) => `${name}=${value}`),
     entrypoint: spec.entrypoint,
     command: spec.command,
+    // Missing daemon ceilings falsely reject an exact standby after a crash.
+    ...(spec.memoryBytes === undefined ? {} : { memoryBytes: spec.memoryBytes }),
+    ...(spec.memorySwapBytes === undefined ? {} : { memorySwapBytes: spec.memorySwapBytes }),
+    ...(spec.nanoCpus === undefined ? {} : { nanoCpus: spec.nanoCpus }),
+    ...(spec.pidsLimit === undefined ? {} : { pidsLimit: spec.pidsLimit }),
     mounts: [
       ...(spec.binds ?? []).map((bind) => {
         const [source, destination, mode] = bind.split(':');
