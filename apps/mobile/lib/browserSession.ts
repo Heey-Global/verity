@@ -145,7 +145,7 @@ export async function authenticateBrowser(password: string, initialize: boolean)
   if ((bootstrap === null || bootstrap.expiresAt <= Date.now()) && session === null) {
     // The HttpOnly cookie survives a reload even though JavaScript session state does not.
     if (!(await refreshBrowserSession()))
-      throw new Error('Pairing expired. Paste a new installer code.');
+      throw new Error('Pairing expired. Paste a new pairing link.');
   }
   await request(
     initialize ? '/secret/init/browser' : '/secret/unlock/browser',
