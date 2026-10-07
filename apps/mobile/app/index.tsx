@@ -1,6 +1,11 @@
 import { subscribeLiveRefresh } from '../lib/liveConnection';
 import { SessionIssueRef } from '../components/SessionIssueRef';
 import { SwipeableSessionRow } from '../components/SessionRowActions';
+import {
+  SessionMarkerEdge,
+  sessionMarkers,
+  sessionMarkersLabel,
+} from '../components/SessionMarkerEdge';
 import { SessionSettingsDialog } from '../components/SessionSettingsDialog';
 // Sessions home screen: the live list of Claude Code sessions, bound to
 // @verity/mobile's SessionListModel via useSessionList. Renders loading / error /
@@ -82,6 +87,7 @@ import { createVerityClient, getVerityBaseUrl } from '../lib/client';
 import {
   localPreviewLinks,
   mergeSessionPreviewUrls,
+  publicPreviewSessionIds,
   nextProjectPreviewLinks,
   publicPreviewLinks,
   type ProjectPreviewLinks,
@@ -221,6 +227,7 @@ function SessionList({ client }: { client: VerityClient }) {
     devServersByProject,
     detectionsByProject,
     previewUrls,
+    publicPreviews,
   } = useProjects(client);
   // Returning to the overview refetches the sessions too, not just the projects
   // (`useProjects` does its own). Deleting a project takes its sessions with it,
@@ -583,6 +590,7 @@ function SessionList({ client }: { client: VerityClient }) {
           defaultNewSessionProject={defaultNewSessionProject}
           unread={unread}
           previewUrls={previewUrls}
+          publicPreviews={publicPreviews}
           selectedId={wide ? selectedId : null}
           renamingId={renaming?.sessionId ?? null}
           updatingProjectIds={updatingProjectIds}
@@ -600,6 +608,7 @@ function SessionList({ client }: { client: VerityClient }) {
       selectedId,
       unread,
       previewUrls,
+      publicPreviews,
       onOpenSession,
       createSessionInPane,
       renaming,
@@ -860,6 +869,9 @@ function useProjects(client: VerityClient) {
   const [previewUrls, setPreviewUrls] = useState<ReadonlyMap<string, string | null>>(
     () => new Map(),
   );
+  // Sessions with an unexpired public share, marked on the row's edge even when
+  // the icon opens the local link.
+  const [publicPreviews, setPublicPreviews] = useState<ReadonlySet<string>>(() => new Set());
   const publicPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
   const localPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
   const [loading, setLoading] = useState(true);
@@ -918,13 +930,11 @@ function useProjects(client: VerityClient) {
           projectIds,
           localResults,
         );
+        const now = Date.now();
         setPreviewUrls(
-          mergeSessionPreviewUrls(
-            publicPreviewLinksRef.current,
-            localPreviewLinksRef.current,
-            Date.now(),
-          ),
+          mergeSessionPreviewUrls(publicPreviewLinksRef.current, localPreviewLinksRef.current, now),
         );
+        setPublicPreviews(publicPreviewSessionIds(publicPreviewLinksRef.current, now));
         const pending = new Map(
           [...pendingProjectMutations.current].filter(
             ([, entry]) => entry.generation >= generation,
@@ -983,6 +993,7 @@ function useProjects(client: VerityClient) {
     devServersByProject,
     detectionsByProject,
     previewUrls,
+    publicPreviews,
     loading,
     error,
     refresh: () => load(),
@@ -1117,6 +1128,7 @@ function ProjectGroup({
   defaultNewSessionProject,
   unread,
   previewUrls,
+  publicPreviews,
   selectedId,
   renamingId,
   updatingProjectIds,
@@ -1146,6 +1158,7 @@ function ProjectGroup({
   defaultNewSessionProject?: ProjectRecord | undefined;
   unread: ReadonlySet<string>;
   previewUrls: ReadonlyMap<string, string | null>;
+  publicPreviews: ReadonlySet<string>;
   selectedId?: string | null;
   renamingId?: string | null;
   updatingProjectIds?: ReadonlySet<string>;
@@ -1424,6 +1437,7 @@ function ProjectGroup({
                     onOpen={() => onOpenSession(session)}
                     unread={unread.has(session.sessionId)}
                     previewActive={previewUrls.has(session.sessionId)}
+                    previewPublic={publicPreviews.has(session.sessionId)}
                     previewUrl={previewUrls.get(session.sessionId) ?? null}
                     repo={group.project?.kind === 'github' ? group.project : undefined}
                     selected={selectedId === session.sessionId}
@@ -1727,6 +1741,7 @@ function SessionRow({
   onOpen,
   unread,
   previewActive,
+  previewPublic,
   previewUrl,
   repo,
   selected,
@@ -1740,6 +1755,8 @@ function SessionRow({
   onOpen?: () => void;
   unread?: boolean;
   previewActive?: boolean;
+  /** An unexpired public (Uplink) share exists, whichever link the icon opens. */
+  previewPublic?: boolean;
   /** Where the preview icon leads; null while a public share has no origin yet. */
   previewUrl?: string | null;
   /** The GitHub repo the issue number links into; absent for local projects. */
@@ -1773,7 +1790,14 @@ function SessionRow({
   // would have used is not the thing to say — and the row keeps its height, which
   // this list re-measures on every poll.
   const notice = attentionNotice(session.attention);
-  const automationActive = session.automation?.status === 'enabled';
+  const edgeMarkers = sessionMarkers({
+    favorite,
+    automation: session.automation?.status,
+    preview: previewActive ? (previewPublic ? 'public' : 'local') : undefined,
+  });
+  const a11yLabel = edgeMarkers.length
+    ? `Open session ${label}, ${sessionMarkersLabel(edgeMarkers)}`
+    : `Open session ${label}`;
   const hasIssue = parseBranchIssue(session.branch) !== null;
   // Accent wash marking the row whose rename sheet is open. Driven by an animated
   // value so that on close it lingers a beat and fades out (rather than vanishing)
@@ -1795,14 +1819,9 @@ function SessionRow({
     <View style={styles.rowInner}>
       {/* Accent wash overlay (behind the content) that fades out when the rename
           sheet closes. pointerEvents none so it never intercepts row taps. */}
-      {/* Favorites stay in their project and are marked by an accent edge over a
-          faint accent wash, so they hold up against the hover/selected surfaces. */}
-      {favorite ? (
-        <>
-          <View pointerEvents="none" style={styles.favoriteWash} />
-          <View pointerEvents="none" style={styles.favoriteEdge} />
-        </>
-      ) : null}
+      {/* Favorite, automation and sharing are stripes on the leading edge; they
+          never tint the row, so the selected background stays unambiguous. */}
+      <SessionMarkerEdge markers={edgeMarkers} />
       <Animated.View pointerEvents="none" style={[styles.renamingWash, { opacity: wash }]} />
       {/* Same [chevron col | dot col | title block] grid as the project header, so a
           session's dot + name line up under the project's. The chevron column is empty
@@ -1853,17 +1872,12 @@ function SessionRow({
           >
             {notice ? attentionNoticeText(notice) : subtitle}
           </Text>
-          {hasIssue || automationActive || previewActive ? (
+          {hasIssue || previewActive ? (
             <View style={styles.sessionFeatures}>
               <Text style={styles.rowSub} accessible={false} importantForAccessibility="no">
                 ·
               </Text>
               <SessionIssueRef branch={session.branch} repo={repo} />
-              {automationActive ? (
-                <View accessible accessibilityLabel="Automation active">
-                  <Icon name="repeat" size={14} color={theme.colors.primary} />
-                </View>
-              ) : null}
               {previewActive ? (
                 <Pressable
                   // openURL rejects only if no handler can open the URL; swallow it.
@@ -1920,7 +1934,7 @@ function SessionRow({
         delayLongPress={300}
         accessibilityRole="button"
         accessibilityState={{ selected: !!selected }}
-        accessibilityLabel={`Open session ${label}`}
+        accessibilityLabel={a11yLabel}
         accessibilityHint="Long press to edit session settings"
       >
         {rowBody}
@@ -1931,7 +1945,7 @@ function SessionRow({
   return swipeable(
     <Link
       href={{ pathname: '/session/[id]', params: { id: session.sessionId } }}
-      accessibilityLabel={`Open session ${label}`}
+      accessibilityLabel={a11yLabel}
       asChild
     >
       <Pressable
@@ -2508,22 +2522,6 @@ const styles = StyleSheet.create((theme) => ({
     right: 0,
     bottom: 0,
     backgroundColor: `${theme.colors.accent}4d`,
-  },
-  favoriteWash: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: `${theme.colors.accent}12`,
-  },
-  favoriteEdge: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    bottom: 0,
-    width: 3,
-    backgroundColor: theme.colors.accent,
   },
   rowPressed: {
     opacity: 0.6,
