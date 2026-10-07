@@ -2596,6 +2596,9 @@ const turnBody = z
     // before the 202; a repeat key returns the prior result instead of a second
     // turn. Bounded length — it is an opaque token, not free text.
     clientReplyId: z.string().min(1).max(200).optional(),
+    // Run as its own turn after the active one instead of steering into it. A live
+    // meeting request needs its own answer; steered, it shares the running reply.
+    queueBehindActiveTurn: z.boolean().optional(),
   })
   .refine(
     (body) =>
@@ -9021,6 +9024,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // plain 3-arg dispatch.
         const dispatchOpts = {
           ...(body.clientReplyId !== undefined ? { clientReplyId: body.clientReplyId } : {}),
+          ...(body.queueBehindActiveTurn ? { queueBehindActiveTurn: true } : {}),
           ...(request.localUserId ? { initiatedBy: { userId: request.localUserId } } : {}),
         };
         ({ queued } =

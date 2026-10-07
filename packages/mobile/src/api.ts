@@ -1483,6 +1483,9 @@ export interface TurnRequest {
    * re-flushed from the push outbox after the app was suspended before the 202, so
    * the server dedupes the replay instead of dispatching a second turn. */
   clientReplyId?: string;
+  /** Wait for the active turn instead of steering into it, so this prompt gets its
+   * own reply. Older servers ignore it and steer as before. */
+  queueBehindActiveTurn?: boolean;
 }
 
 export interface MeetingTranscriptUpload {
