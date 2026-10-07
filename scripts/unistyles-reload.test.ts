@@ -13,7 +13,7 @@ const installedSource = 'node_modules/react-native-unistyles/ios/UnistylesModule
 const patched = applyNativePatch(patch, patch.before).source;
 
 function runLifecycle(source: string) {
-  const handoffCleanup = source.match(/}, \[\] \{([\s\S]*?)\n    \}\);/)?.[1] ?? '';
+  const handoffCleanup = source.match(/}, \[\] \{([\s\S]*?)\n {4}\}\);/)?.[1] ?? '';
   const helper = source.match(/class VerityUnistylesLifecycle \{[\s\S]*?\n};/)?.[0] ?? '';
   const invalidate = source
     .match(/- \(void\)invalidate \{([\s\S]*?)\n}/)![1]!
