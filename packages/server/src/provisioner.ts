@@ -195,6 +195,9 @@ const execFileAsync = promisify(execFile);
 // shmem), so the ceiling has to fit all of a project's concurrent turns, not a
 // single process. Override per-host with VERITY_SANDBOX_MEMORY (server-main.ts)
 // where the available RAM differs.
+// gVisor counts Sentry host threads as well as guest workload threads.
+export const DEFAULT_SANDBOX_PIDS_LIMIT = 4096;
+
 export const DEFAULT_SANDBOX_MEMORY_BYTES = 6 * 1024 * 1024 * 1024; // 6 GiB
 // Swap allowed per sandbox ON TOP of the memory ceiling (VERITY_SANDBOX_SWAP).
 // Off by default; see the `memorySwapBytes` comment at the container spec.
@@ -5596,7 +5599,7 @@ export class ProvisionerImpl implements Provisioner {
       // agent workloads. Such a devcontainer must be adapted to the outer sandbox.
       securityOpt:
         this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges:true'],
-      pidsLimit: this.opts.sandboxPidsLimit ?? 512,
+      pidsLimit: this.opts.sandboxPidsLimit ?? DEFAULT_SANDBOX_PIDS_LIMIT,
       memoryBytes: sandboxMemoryBytes,
       // `MemorySwap` is the COMBINED memory+swap ceiling, so it is always derived
       // from the memory ceiling: equal to it means no swap. Leaving it out is not

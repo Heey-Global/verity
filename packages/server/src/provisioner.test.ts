@@ -1101,7 +1101,7 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.restartPolicy).toBe('unless-stopped');
     // A hard memory ceiling is ALWAYS set so a runaway sandbox OOMs inside its own
     // cgroup instead of taking the whole host down.
-    expect(spec.pidsLimit).toBe(512);
+    expect(spec.pidsLimit).toBe(4096);
     expect(spec.memoryBytes).toBe(DEFAULT_SANDBOX_MEMORY_BYTES);
     // …and the combined ceiling matches it, so the container cannot swap. Omitting it
     // lets Docker default to twice the memory limit, which turns the OOM this cap
@@ -2547,6 +2547,26 @@ describe('ProvisionerImpl (#174)', () => {
     // to its memory: 6 GiB of host swap instead of the 2 GiB configured.
     expect(spec.memoryBytes).toBe(6 * 1024 ** 3);
     expect(spec.memorySwapBytes).toBe(8 * 1024 ** 3);
+  });
+
+  it('preserves an explicit sandbox PID limit', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker, calls } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/var/lib/verity-dev',
+      isDirectory: () => false,
+      sandboxPidsLimit: 8192,
+    });
+    await provisioner.provision(id);
+    const spec = calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
+    expect(spec.pidsLimit).toBe(8192);
   });
 
   it('weights a sandbox below the containers it shares the host with', async () => {

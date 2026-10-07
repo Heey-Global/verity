@@ -10,6 +10,7 @@ import {
   createRuntimeDiagnostics,
   hostDiagnosticSnapshotSchema,
   resolveRuntimeWindow,
+  runtimeDiagnosticSnapshotSchema,
 } from './runtime-diagnostics.js';
 
 const now = Date.parse('2026-10-06T18:15:00Z');
@@ -140,7 +141,7 @@ describe('runtime diagnostics', () => {
       oomKilled: false,
       finishedAt: null,
       memoryLimitBytes: 6000,
-      stats: { memoryUsageBytes: 2400, memoryPeakBytes: 5000 },
+      stats: { memoryUsageBytes: 2400, memoryPeakBytes: 5000, pids: 10, pidsPressure: 'normal' },
       logs: { state: 'unavailable' },
     });
     expect(result.docker.containers[1]?.logs.records[0]?.code).toBe('runner_reconcile_failed');
@@ -159,6 +160,59 @@ describe('runtime diagnostics', () => {
     expect(decodeURIComponent(paths.find((path) => path.startsWith('/events?'))!)).toContain(
       'verity.project-id=project',
     );
+  });
+  it.each([
+    [409, 512, 'normal'],
+    [410, 512, 'near_limit'],
+    [512, 512, 'at_limit'],
+    [513, 512, 'at_limit'],
+    [0, 512, 'normal'],
+    [410, 0, 'unknown'],
+    [410, -1, 'unknown'],
+    [410, null, 'unknown'],
+    [null, 512, 'unknown'],
+    [-1, 512, 'unknown'],
+  ])('reports PID pressure for current=%s and limit=%s', async (current, limit, pressure) => {
+    const deps = fixture();
+    const readDocker = async (path: string) => {
+      const response = await deps.readDocker(path);
+      if (!path.includes('/stats?') && !path.endsWith('/json')) return response;
+      const value = JSON.parse(response.bytes.toString()) as Record<string, unknown>;
+      if (path.includes('/stats?')) value.pids_stats = { current };
+      else value.HostConfig = { PidsLimit: limit };
+      return { ...response, bytes: Buffer.from(JSON.stringify(value)) };
+    };
+    const result = await createRuntimeDiagnostics({ ...deps, readDocker })({});
+    expect(result.docker.containers[0]?.stats).toMatchObject({
+      pids: current === null || current < 0 ? null : current,
+      pidsPressure: pressure,
+    });
+    expect(result.docker.events.records.every((record) => record.code !== 'resource_limit')).toBe(
+      true,
+    );
+  });
+  it('accepts older snapshots without PID pressure metadata', async () => {
+    const result = await createRuntimeDiagnostics(fixture())({});
+    const previous = JSON.parse(JSON.stringify(result)) as typeof result;
+    for (const container of previous.docker.containers) {
+      Reflect.deleteProperty(container.stats, 'pidsPressure');
+    }
+    expect(
+      runtimeDiagnosticSnapshotSchema.parse(previous).docker.containers[0]?.stats.pidsPressure,
+    ).toBe('unknown');
+  });
+  it('keeps PID pressure unknown when current stats cannot be read', async () => {
+    const deps = fixture();
+    const readDocker = async (path: string) => {
+      if (path.includes('/stats?')) throw new Error('unavailable');
+      return deps.readDocker(path);
+    };
+    const result = await createRuntimeDiagnostics({ ...deps, readDocker })({});
+    expect(result.docker.containers[0]?.stats).toMatchObject({
+      state: 'failed',
+      pids: null,
+      pidsPressure: 'unknown',
+    });
   });
   it.each([true, false])(
     'verifies managed Compose companions through the attached network (%s)',
@@ -348,6 +402,10 @@ describe('runtime diagnostics', () => {
     expect(classifyRuntimeLog('write failed: no space left on device')).toBe('disk_pressure');
     expect(classifyRuntimeLog('Daemon has completed initialization')).toBe('runtime_started');
     expect(classifyRuntimeLog('new unfamiliar operation failed')).toBe('runtime_error');
+    expect(
+      classifyRuntimeLog('runtime: failed to create new OS thread (have 512 already; errno=11)'),
+    ).toBe('resource_limit');
+    expect(classifyRuntimeLog('fatal error: newosproc')).toBe('resource_limit');
   });
   it('projects exported host metadata and rejects oversized snapshots', () => {
     const parsed = hostDiagnosticSnapshotSchema.parse({

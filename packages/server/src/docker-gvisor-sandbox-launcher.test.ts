@@ -152,6 +152,20 @@ function inspectFromSpec(
 }
 
 describe('Docker gVisor sandbox launcher', () => {
+  it('preserves an explicit PID limit', async () => {
+    const docker = fakeDocker();
+    const launcher = createDockerGvisorSandboxLauncher({
+      docker: docker.client,
+      channel: { run: fakeRun() },
+      resolveSecretJob: fakeResolveSecretJob(),
+      ...runtimeOptions,
+      executorImageRepository: 'ghcr.io/heey-global/verity-secret-executor',
+      pidsLimit: 8192,
+    });
+    await launcher.launch(spec);
+    expect(docker.specs[0]?.pidsLimit).toBe(8192);
+  });
+
   it('launches a secret-free, hardened container and drives it through the channel', async () => {
     const docker = fakeDocker();
     const run = fakeRun();
@@ -177,7 +191,7 @@ describe('Docker gVisor sandbox launcher', () => {
       restartPolicy: 'no',
       capDrop: ['ALL'],
       securityOpt: ['no-new-privileges:true'],
-      pidsLimit: 128,
+      pidsLimit: 4096,
       memoryBytes: 512 * 1024 * 1024,
       nanoCpus: 1_000_000_000,
       env: [],
