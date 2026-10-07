@@ -1,6 +1,6 @@
 // The session row's leading edge: one thin stripe per standing property, side
 // by side, always in the same order and color — favorite (accent), automation
-// (primary) and shared preview (done). The edge never tints the row itself, so
+// (primary) and shared preview (done, wider when public). The edge never tints the row itself, so
 // the selected background stays the only fill and remains readable.
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -60,9 +60,10 @@ export function SessionMarkerEdge({ markers }: { markers: readonly SessionMarker
               { backgroundColor: color },
               // A paused automation is still configured, just quieter.
               marker.kind === 'automation' && marker.paused ? styles.paused : null,
-              // A public share is reachable from the internet: it glows.
+              // A public share is reachable from the internet: a wider stripe on
+              // every platform, plus a glow where shadows render (iOS, web).
               marker.kind === 'shared' && marker.public
-                ? { shadowColor: color, shadowOpacity: 0.9, shadowRadius: 4 }
+                ? [styles.public, { shadowColor: color, shadowOpacity: 0.9, shadowRadius: 4 }]
                 : null,
             ]}
           />
@@ -88,5 +89,8 @@ const styles = StyleSheet.create({
   },
   paused: {
     opacity: 0.4,
+  },
+  public: {
+    width: 5,
   },
 });
