@@ -115,6 +115,7 @@ it('keeps the agent’s steps in a collapsed section without implement buttons',
 });
 it('edits the text in place and saves it when the field is left', () => {
   jest.mocked(useTasks).mockReturnValue({ tasks: [task], pending: [], conflicts: [] });
+  jest.mocked(patchTask).mockResolvedValue(undefined as never);
   const ui = render(<TasksPanel {...props} />);
   const field = ui.getByDisplayValue('General outcome');
   fireEvent(field, 'focus');

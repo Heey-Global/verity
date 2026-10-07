@@ -51,12 +51,10 @@ export function QuickCaptureCard({
   }, []);
   const [uploads, setUploads] = useState<AttachmentUpload[]>([]);
   const [projectId, setProjectId] = useState(context.projectId);
-  const [editing, setEditing] = useState(false);
   const [other, setOther] = useState(false);
   const [saving, setSaving] = useState(false);
   const voice = useVoiceInput(text, setText, undefined, { silenceMs: TASK_SILENCE_MS });
   const started = useRef(false);
-  const recorded = useRef(false);
   const savingRef = useRef(false);
   useEffect(() => {
     if (!started.current) {
@@ -64,13 +62,9 @@ export function QuickCaptureCard({
       voice.toggle();
     }
   }, [voice]);
-  useEffect(() => {
-    if (voice.state === 'recording') recorded.current = true;
-  }, [voice.state]);
   const save = async (target = projectId) => {
     if (!text.trim() || savingRef.current) return;
     if (uploads.reduce((total, upload) => total + upload.data.length, 0) > 45_000_000) {
-      setEditing(true);
       Alert.alert('Attachments too large', 'Keep the total attachment size below 33 MB.');
       return;
     }
@@ -91,7 +85,6 @@ export function QuickCaptureCard({
       );
       onClose();
     } catch (error) {
-      setEditing(true);
       Alert.alert('Could not save task', error instanceof Error ? error.message : 'Try again');
     } finally {
       savingRef.current = false;
@@ -111,8 +104,6 @@ export function QuickCaptureCard({
     },
   });
   const pick = async (kind: 'photo' | 'file') => {
-    const wasEditing = editing;
-    setEditing(true);
     if (uploads.length >= 8) return;
     try {
       const selected = await (kind === 'photo'
@@ -122,14 +113,16 @@ export function QuickCaptureCard({
     } catch (error) {
       Alert.alert('Could not attach', error instanceof Error ? error.message : 'Try again');
     } finally {
-      setEditing(wasEditing);
     }
   };
   const recording = voice.state === 'recording';
   // Chips and Save only once dictation has fully settled, so a late final
   // result is never cut off by an early save.
   const settled = voice.state === 'idle';
-  const chips = [...new Set([context.projectId, null, ...projects.slice(0, 3).map((p) => p.id)])];
+  // The picked project always shows as a selected chip, also when it came from Other….
+  const chips = [
+    ...new Set([projectId, context.projectId, null, ...projects.slice(0, 3).map((p) => p.id)]),
+  ];
   const label = (id: string | null) =>
     id === null
       ? 'General'
@@ -197,9 +190,7 @@ export function QuickCaptureCard({
             maxLength={2000}
             placeholder={recording ? 'Listening…' : 'What needs doing?'}
             placeholderTextColor={theme.colors.textFaint}
-            onFocus={() => setEditing(true)}
             onChangeText={(value) => {
-              setEditing(true);
               voice.onComposerEdit(value);
               setText(value);
             }}
@@ -222,7 +213,6 @@ export function QuickCaptureCard({
               <Pressable
                 accessibilityRole="button"
                 onPress={() => {
-                  setEditing(true);
                   void readTaskScreenshot(screenshot)
                     .then((items) => {
                       setUploads((previous) => [...previous, ...items]);
@@ -248,7 +238,6 @@ export function QuickCaptureCard({
                   key={index}
                   accessibilityLabel={`Remove attachment ${String(index + 1)}`}
                   onPress={() => {
-                    setEditing(true);
                     setUploads((items) => items.filter((_, i) => i !== index));
                   }}
                   style={styles.thumb}

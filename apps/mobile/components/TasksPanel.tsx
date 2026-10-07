@@ -242,9 +242,15 @@ export function TasksPanel({
             ) : (
               <TaskTitleInput
                 task={task}
-                onSave={(title) => {
-                  void run(() => patchTask(task, { title }));
-                }}
+                onSave={(title) =>
+                  patchTask(task, { title }).catch((error: unknown) => {
+                    Alert.alert(
+                      'Could not save task',
+                      error instanceof Error ? error.message : 'Try again',
+                    );
+                    throw error;
+                  })
+                }
               />
             )}
             <Text style={styles.meta}>{meta}</Text>
@@ -629,13 +635,37 @@ export function TasksPanel({
  * A task's text, editable in place. It saves when the field loses focus and
  * the text actually changed; an emptied field snaps back instead of saving.
  */
-function TaskTitleInput({ task, onSave }: { task: Task; onSave(title: string): void }) {
+function TaskTitleInput({ task, onSave }: { task: Task; onSave(title: string): Promise<unknown> }) {
   const [value, setValue] = useState(task.title);
   const focused = useRef(false);
+  // Latest text and title for the unmount flush below.
+  const latest = useRef({ value, title: task.title, onSave });
+  latest.current = { value, title: task.title, onSave };
   // Follow edits from elsewhere (another device, the agent) unless typing.
   useEffect(() => {
     if (!focused.current) setValue(task.title);
   }, [task.title]);
+  const commit = (next: string, title: string, save: (title: string) => Promise<unknown>) => {
+    const trimmed = next.trim();
+    if (!trimmed) {
+      setValue(title);
+      return;
+    }
+    if (trimmed === title) return;
+    // A failed save puts the stored text back rather than showing unsaved text.
+    save(trimmed).catch(() => setValue(title));
+  };
+  // Closing the panel or switching views can unmount a focused field before
+  // blur arrives; save what was typed instead of dropping it.
+  useEffect(
+    () => () => {
+      if (!focused.current) return;
+      const { value: next, title, onSave: save } = latest.current;
+      const trimmed = next.trim();
+      if (trimmed && trimmed !== title) void save(trimmed).catch(() => undefined);
+    },
+    [],
+  );
   return (
     <TextInput
       accessibilityLabel="Task text"
@@ -646,9 +676,7 @@ function TaskTitleInput({ task, onSave }: { task: Task; onSave(title: string): v
       }}
       onBlur={() => {
         focused.current = false;
-        const next = value.trim();
-        if (!next) setValue(task.title);
-        else if (next !== task.title) onSave(next);
+        commit(value, task.title, onSave);
       }}
       multiline
       scrollEnabled={false}
