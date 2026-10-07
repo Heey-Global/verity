@@ -1024,7 +1024,8 @@ export function SessionChat({
       client,
       refreshStaticPreview,
       (path) =>
-        path === `/projects/${encodeURIComponent(projectId)}/public-shares` ||
+        (projectId != null &&
+          path === `/projects/${encodeURIComponent(projectId)}/public-shares`) ||
         (path.startsWith(`/sessions/${encodeURIComponent(sessionId)}/`) &&
           /preview|share|dev-server/u.test(path)),
     );
