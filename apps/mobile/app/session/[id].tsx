@@ -217,7 +217,9 @@ import {
   type DroppedFileDescriptor,
   captureImage,
   pickMeetingAudioAsset,
+  droppedFileData,
   pickSessionFiles,
+  releaseDroppedFile,
   readMeetingAudioUpload,
   pickFiles,
   pickImagesFromLibrary,
@@ -5081,7 +5083,7 @@ function SessionFilesSheet({
               await client.uploadSessionFile(sessionId, {
                 path,
                 fileName: file.fileName,
-                data: new FsFile(file.uri),
+                data: await droppedFileData(file.uri),
                 root,
               });
               uploaded = true;
@@ -5103,7 +5105,7 @@ function SessionFilesSheet({
           // failure partway through must not strand the rest.
           for (const file of files) {
             try {
-              new FsFile(file.uri).delete();
+              releaseDroppedFile(file.uri);
             } catch {
               // Best effort; the OS also clears the app's temporary directory.
             }
@@ -9303,7 +9305,6 @@ function InputBar({
 }) {
   const { theme } = useUnistyles();
   const [dropActive, setDropActive] = useState(false);
-  const [inputFocused, setInputFocused] = useState(false);
   const attachBtnRef = useRef<View>(null);
   const openAttachMenu = useAttachmentMenuAnchor(attachBtnRef, onAttach);
   const onComposerKeyPress = useCallback(
@@ -9376,7 +9377,6 @@ function InputBar({
             styles.inputCard,
             compact && styles.inputCardCompact,
             dropActive ? styles.inputCardDropActive : null,
-            Platform.OS === 'web' && inputFocused ? { borderColor: theme.colors.accent } : null,
           ]}
         >
           <PromptComposerInput
@@ -9393,14 +9393,8 @@ function InputBar({
             submitOnReturn={shouldSubmitOnReturn(keyboardHeight)}
             onSend={onSend}
             onKeyPress={onComposerKeyPress}
-            onFocus={() => {
-              setInputFocused(true);
-              onFocus?.();
-            }}
-            onBlur={() => {
-              setInputFocused(false);
-              onBlur?.();
-            }}
+            onFocus={onFocus}
+            onBlur={onBlur}
             placeholder={
               dead
                 ? 'This session can’t be resumed'

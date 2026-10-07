@@ -8,6 +8,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File as FsFile } from 'expo-file-system';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
+import { Platform } from 'react-native';
 
 /** An image upload's media type — the 4 types every vision backend accepts. */
 type ImageUploadMediaType = Extract<AttachmentUpload, { kind: 'image' }>['mediaType'];
@@ -96,6 +97,33 @@ export function droppedImageMediaType(
 }
 
 /** Read temporary files emitted by the native iOS drop target into uploads. */
+/** Bytes of a dropped file: a native temporary copy, or a browser object URL. */
+export async function droppedFileData(uri: string): Promise<Blob> {
+  if (Platform.OS !== 'web') return new FsFile(uri);
+  return (await fetch(uri)).blob();
+}
+
+/** Dispose of a dropped file once it has been read or uploaded. */
+export function releaseDroppedFile(uri: string): void {
+  if (Platform.OS === 'web') {
+    URL.revokeObjectURL(uri);
+    return;
+  }
+  new FsFile(uri).delete();
+}
+
+async function droppedFileBase64(uri: string): Promise<string> {
+  if (Platform.OS !== 'web') return new FsFile(uri).base64();
+  const blob = await droppedFileData(uri);
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read the dropped file.'));
+    reader.readAsDataURL(blob);
+  });
+  return dataUrl.slice(dataUrl.indexOf(',') + 1);
+}
+
 export async function readDroppedAttachments(
   files: readonly DroppedFileDescriptor[],
   remaining: number,
@@ -105,8 +133,7 @@ export async function readDroppedAttachments(
   try {
     for (const [index, dropped] of files.entries()) {
       if (index >= remaining) continue;
-      const file = new FsFile(dropped.uri);
-      const data = await file.base64();
+      const data = await droppedFileBase64(dropped.uri);
       if (data.length === 0) {
         empty.push(dropped.fileName);
         continue;
@@ -145,10 +172,10 @@ export async function readDroppedAttachments(
     if (empty.length > 0) throw new Error(emptyAttachmentsMessage(empty));
     return uploads;
   } finally {
-    // A failure on one item must not strand later native temporary copies.
+    // A failure on one item must not strand later temporary copies or object URLs.
     for (const dropped of files) {
       try {
-        new FsFile(dropped.uri).delete();
+        releaseDroppedFile(dropped.uri);
       } catch {
         // Best effort; the OS also clears the app's temporary directory.
       }
