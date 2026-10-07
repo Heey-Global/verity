@@ -103,12 +103,13 @@ function WebDropZone({
     };
     const drop = (event: DragEvent) => {
       if (!hasFiles(event) || !event.dataTransfer) return;
+      // Like the native target, only the innermost zone takes the files; outer
+      // zones still see the event so their drag state resets.
+      const handledInside = event.defaultPrevented;
       event.preventDefault();
-      // Like the native target, only the innermost zone receives the drop.
-      event.stopPropagation();
       depth = 0;
       latest.current.onActiveChange(false);
-      if (!accepting()) return;
+      if (handledInside || !accepting()) return;
       const { files, errors } = acceptWebDrop(webDroppedItems(event.dataTransfer), latest.current);
       if (files.length > 0) latest.current.onFiles(files);
       if (errors.length > 0) latest.current.onRejected(errors);
