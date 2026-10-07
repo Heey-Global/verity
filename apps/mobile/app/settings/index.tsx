@@ -32,6 +32,7 @@ import {
   SettingsToggleRow,
 } from '../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
+import { shareUpdateDiagnostics } from '../../lib/updateDiagnostics';
 import { checkForAppUpdate } from '../../lib/automaticUpdates';
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
@@ -90,6 +91,19 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   const [checkingForUpdate, setCheckingForUpdate] = useState(false);
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
   const updateAwaits = useServerUpdateBadge(true);
+
+  const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
+  const exportDiagnostics = async () => {
+    if (exportingDiagnostics) return;
+    setExportingDiagnostics(true);
+    try {
+      await shareUpdateDiagnostics();
+    } catch {
+      Alert.alert('Export failed', 'Could not export update diagnostics. Try again later.');
+    } finally {
+      setExportingDiagnostics(false);
+    }
+  };
 
   const checkForManualUpdate = useCallback(() => {
     if (checkingForUpdate) return;
@@ -201,6 +215,16 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           reconfigure mode; the only way back to it once a non-null URL is persisted. */}
       <SettingsGroup title="This app">
         <SettingsListPanel>
+          <SettingsNavRow
+            icon="file-text"
+            title="Export update diagnostics"
+            subtitle={
+              exportingDiagnostics
+                ? 'Preparing…'
+                : 'Share update logs to investigate failed updates'
+            }
+            onPress={() => void exportDiagnostics()}
+          />
           <SettingsNavRow
             icon="server"
             title="Server"
