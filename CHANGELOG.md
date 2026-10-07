@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.25.2](https://github.com/Heey-Global/verity/compare/v4.25.1...v4.25.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* **mobile:** stabilize meeting UI and isolate research replies ([#1308](https://github.com/Heey-Global/verity/issues/1308)) ([66ec3d5](https://github.com/Heey-Global/verity/commit/66ec3d567c629c534a8674ae5124809969e1e80d))
+* **server:** ignore the legacy managed sandbox PID pin ([#1309](https://github.com/Heey-Global/verity/issues/1309)) ([af81ac0](https://github.com/Heey-Global/verity/commit/af81ac0a6261cf026f5df5957da1392c488a5ccf))
+* **session:** require actionable next steps for unfinished outcomes ([#1303](https://github.com/Heey-Global/verity/issues/1303)) ([1caf118](https://github.com/Heey-Global/verity/commit/1caf1184c24395765c3e06b3c8031f065d596b9c))
+
 ## [4.25.1](https://github.com/Heey-Global/verity/compare/v4.25.0...v4.25.1) (2026-10-07)
 
 
