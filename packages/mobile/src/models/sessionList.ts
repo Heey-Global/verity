@@ -102,6 +102,7 @@ export class SessionListModel {
   private reqSeq = 0;
   private favoriteMutations = new Map<string, number>();
   private confirmedFavorites = new Map<string, boolean>();
+  private confirmedFavoriteMutations = new Map<string, number>();
   private pendingFavorites = new Map<string, { favorite: boolean; maxRequest: number }>();
   private pendingAutomations = new Map<
     string,
@@ -246,8 +247,11 @@ export class SessionListModel {
     this.emit();
     try {
       const { favorite: stored } = await this.opts.client.setSessionFavorite(sessionId, favorite);
+      if (mutation > (this.confirmedFavoriteMutations.get(sessionId) ?? 0)) {
+        this.confirmedFavoriteMutations.set(sessionId, mutation);
+        this.confirmedFavorites.set(sessionId, stored);
+      }
       if (this.favoriteMutations.get(sessionId) !== mutation) return;
-      this.confirmedFavorites.set(sessionId, stored);
       this.pendingFavorites.set(sessionId, { favorite: stored, maxRequest: this.reqSeq });
       this.applyFavorite(sessionId, stored);
       this._error = undefined;
