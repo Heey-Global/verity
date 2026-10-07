@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.58.2](https://github.com/Heey-Global/verity/compare/mobile-v1.58.1...mobile-v1.58.2) (2026-10-07)
+
+
+### Features
+
+* **mobile:** mark sessions on the row edge and show sharing in green ([#1296](https://github.com/Heey-Global/verity/issues/1296)) ([495135a](https://github.com/Heey-Global/verity/commit/495135a54f409ce1ea8d8d08e207748349a4fc45))
+* **tasks:** capture card redesign, shared action menu, agent steps end with their session ([#1292](https://github.com/Heey-Global/verity/issues/1292)) ([bed9367](https://github.com/Heey-Global/verity/commit/bed93677b8d93bf68f12c3d60651394a99ebf995))
+
+
+### Bug Fixes
+
+* **mobile:** keep session swipe actions opaque and add Edit beside Delete ([#1293](https://github.com/Heey-Global/verity/issues/1293)) ([b7057b6](https://github.com/Heey-Global/verity/commit/b7057b6e7ced977faa8d2cc413c12ec7d7d86e79))
+* **web:** match browser sign-in to the preview code page ([#1295](https://github.com/Heey-Global/verity/issues/1295)) ([1e84862](https://github.com/Heey-Global/verity/commit/1e848627bbb218243ab9a4d29b41f187dfe56edb))
+* **web:** style the composer input and support drag and drop in the browser ([#1297](https://github.com/Heey-Global/verity/issues/1297)) ([dbc0368](https://github.com/Heey-Global/verity/commit/dbc03680831cec0b5dd95ab2112d324924787920))
+
 ## [1.58.1](https://github.com/Heey-Global/verity/compare/mobile-v1.58.0...mobile-v1.58.1) (2026-10-07)
 
 
