@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.57.5](https://github.com/Heey-Global/verity/compare/mobile-v1.57.4...mobile-v1.57.5) (2026-10-07)
+
+
+### Bug Fixes
+
+* **mobile:** use general diagnostics settings label ([#1285](https://github.com/Heey-Global/verity/issues/1285)) ([915723e](https://github.com/Heey-Global/verity/commit/915723e19fc9311b5667eb6bcf6c83d056a04485))
+
 ## [1.57.4](https://github.com/Heey-Global/verity/compare/mobile-v1.57.3...mobile-v1.57.4) (2026-10-07)
 
 
