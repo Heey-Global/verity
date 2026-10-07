@@ -5,7 +5,15 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
-type Workflow = { jobs: Record<string, { steps: { name?: string; run?: string }[] }> };
+type Workflow = {
+  jobs: Record<
+    string,
+    {
+      if?: string;
+      steps: { name?: string; run?: string; uses?: string; with?: Record<string, string> }[];
+    }
+  >;
+};
 const production = parse(
   readFileSync('.github/workflows/mobile-production-build.yml', 'utf8'),
 ) as Workflow;
@@ -146,5 +154,61 @@ exit 99`);
     expect(evidence.artifact.sha256).toMatch(/^[a-f0-9]{64}$/);
   } finally {
     rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+// Recovery must not re-enter the native builder or accept an unrelated workflow's output.
+it('recovers the existing production run with no binary rebuild', () => {
+  const workflow = parse(
+    readFileSync('.github/workflows/mobile-production-build.yml', 'utf8'),
+  ) as Workflow;
+  expect(workflow.jobs['publish-mobile-native']!.if).toBe("inputs.production-run-id == ''");
+  const finalizer = workflow.jobs['finalize-mobile-production']!;
+  expect(finalizer.if).toContain("needs.publish-mobile-native.result == 'skipped'");
+  const download = finalizer.steps.find((step: { uses?: string }) =>
+    step.uses?.startsWith('actions/download-artifact@'),
+  );
+  expect(download!.with!['run-id']).toBe('${{ inputs.production-run-id || github.run_id }}');
+  const check = finalizer.steps.find(
+    (step: { name?: string }) => step.name === 'Verify recovery build provenance',
+  )!.run!;
+  const root = mkdtempSync(join(tmpdir(), 'verity-recovery-run-'));
+  try {
+    mkdirSync(join(root, 'bin'));
+    const gh = join(root, 'bin/gh');
+    writeFileSync(
+      gh,
+      `#!/usr/bin/env bash
+set -euo pipefail
+jq -r "$4" "$RUNNER_TEMP/run.json"
+`,
+    );
+    chmodSync(gh, 0o755);
+    const valid = {
+      path: '.github/workflows/mobile-production-build.yml',
+      event: 'workflow_dispatch',
+      head_branch: 'main',
+    };
+    for (const run of [
+      valid,
+      { ...valid, path: 'another.yml' },
+      { ...valid, event: 'pull_request' },
+      { ...valid, head_branch: 'unreviewed' },
+    ]) {
+      writeFileSync(join(root, 'run.json'), JSON.stringify(run));
+      const result = spawnSync('bash', ['-c', check], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${root}/bin:${process.env.PATH}`,
+          RUNNER_TEMP: root,
+          GH_REPO: 'example/repo',
+          PRODUCTION_RUN_ID: '123',
+        },
+      });
+      expect(result.status, result.stderr).toBe(run === valid ? 0 : 1);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

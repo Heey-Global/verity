@@ -15,6 +15,7 @@ const fixture = vi.hoisted(() => ({
     releasePr: 42,
   },
   recorded: undefined as Record<string, unknown> | undefined,
+  evidenceMissing: false,
   approved: true,
   expired: false,
   root: '',
@@ -56,6 +57,16 @@ vi.mock('node:child_process', () => ({
         },
       ]);
     if (endpoint.includes('/reviews?')) return JSON.stringify([[]]);
+    if (endpoint.includes('/contents/releases/native-production/')) {
+      if (fixture.evidenceMissing)
+        throw Object.assign(new Error('Missing'), { stderr: 'HTTP 404' });
+      return JSON.stringify({
+        content: Buffer.from(JSON.stringify(fixture.recorded ?? fixture.candidate)).toString(
+          'base64',
+        ),
+        sha: 'e'.repeat(40),
+      });
+    }
     if (endpoint.includes('/contents/'))
       return JSON.stringify({
         content: Buffer.from(JSON.stringify(fixture.candidate)).toString('base64'),
@@ -80,6 +91,7 @@ afterEach(() => {
   fixture.candidate.schema = 1;
   fixture.candidate.artifact = undefined;
   fixture.recorded = undefined;
+  fixture.evidenceMissing = false;
   fixture.approved = true;
   fixture.expired = false;
   if (fixture.root) rmSync(fixture.root, { recursive: true, force: true });
@@ -222,5 +234,21 @@ describe('unuploaded native archives', () => {
     await promoteNative();
     expect(fixture.calls.some((call) => call.startsWith('xcrun '))).toBe(false);
     expect(fixture.calls.at(-1)).toContain('release edit');
+  });
+});
+
+describe('native evidence compatibility', () => {
+  it('accepts legacy release-attached evidence when no branch record exists', async () => {
+    setup();
+    fixture.evidenceMissing = true;
+    await promoteNative();
+    expect(fixture.calls.some((call) => call.includes('release download'))).toBe(true);
+  });
+  it('rejects stale approval against separately recorded evidence before Apple access', async () => {
+    const requests = setup();
+    fixture.recorded = { ...fixture.candidate, buildNumber: '99' };
+    await expect(promoteNative()).rejects.toThrow('differs from recorded release evidence');
+    expect(requests).toEqual([]);
+    expect(fixture.calls.some((call) => call.startsWith('xcrun '))).toBe(false);
   });
 });
