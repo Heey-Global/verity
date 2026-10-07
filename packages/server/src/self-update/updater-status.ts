@@ -454,7 +454,6 @@ async function acceptUpdateRequest(
   const state = await readManagedDeployment(options.managedRoot);
   if (!state.managed) throw new UpdaterRequestError(503, 'unmanaged');
   if (!OFFICIAL_DIGEST.test(state.spec.image)) throw new UpdaterRequestError(503, 'unmanaged');
-  if (state.spec.image === body.targetDigest) throw new UpdaterRequestError(409, 'already-current');
 
   const existing = await readUpdateJournal(journalRoot);
   if (
@@ -464,18 +463,15 @@ async function acceptUpdateRequest(
     existing.deploymentId === state.marker.deploymentId
   ) {
     const operation = projectUpdateOperation(existing);
-    // Retrying the same request is idempotent — and it is also the only way to
-    // restart an operation that stalled. A step that failed for a transient
-    // reason (a daemon hiccup, a pull that timed out) leaves durable intent
-    // behind that nothing is driving until the Updater itself restarts, so a
-    // retry re-arms execution rather than only reporting. Safe to do
-    // unconditionally: runs are serialized, every run re-reads the journal, and
-    // a run that finds nothing to do returns without touching anything.
+    // Matching retries can re-arm remaining work after cutover committed the image.
+    // Runs are serialized and re-read the journal before touching Docker.
     return {
       operation,
       accepted: isTerminalOperationState(operation.state) ? null : existing,
     };
   }
+
+  if (state.spec.image === body.targetDigest) throw new UpdaterRequestError(409, 'already-current');
 
   const begin = async (): Promise<UpdateJournal> => {
     // Preference writes use this same lease: a resolved target cannot cross a channel switch.
