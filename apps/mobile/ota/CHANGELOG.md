@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.57.4](https://github.com/Heey-Global/verity/compare/mobile-v1.57.3...mobile-v1.57.4) (2026-10-07)
+
+
+### Features
+
+* **mobile:** export update diagnostics from settings ([#1282](https://github.com/Heey-Global/verity/issues/1282)) ([b5046ab](https://github.com/Heey-Global/verity/commit/b5046ab5149546445ecd2294df688c65630f6637))
+
 ## [1.57.3](https://github.com/Heey-Global/verity/compare/mobile-v1.57.2...mobile-v1.57.3) (2026-10-07)
 
 
