@@ -4,10 +4,16 @@ import { TLSSocket, createSecureContext } from 'node:tls';
 import type { PemCertificate } from './claude-egress-ca.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { InternalConnectionIdentity } from './internal-listener.js';
-import type { BrokeredForgeAdapter, ForgeAction } from './brokered-forge-github.js';
+import {
+  ForgePolicyError,
+  type BrokeredForgeAdapter,
+  type ForgeAction,
+} from './brokered-forge-github.js';
 import {
   brokeredHttpStreamTransport,
   relayBrokeredHttpResponse,
+  brokeredDownload,
+  verifyRelatedIssueResponse,
   type BrokeredHttpStreamTransport,
 } from './brokered-http-stream.js';
 
@@ -33,6 +39,12 @@ const ALL_ACTIONS: ReadonlySet<ForgeAction> = new Set([
   'issues-write',
   'pulls-read',
   'pulls-write',
+  'releases-read',
+  'actions-read',
+  'actions-write',
+  'releases-write',
+  'checks-read',
+  'packages-read',
 ]);
 export const FORGE_PROXY_CA_FILE = '/run/verity/forge-proxy/ca.crt';
 const FORGE_PLACEHOLDER_PREFIX = 'verity-broker-';
@@ -120,6 +132,18 @@ export function createBrokeredForgeProxy(options: {
           abort.abort();
         });
         void (async () => {
+          if (
+            hostname === 'ghcr.io' &&
+            inner.url === '/v2/' &&
+            ['GET', 'HEAD'].includes(inner.method ?? '')
+          ) {
+            response.writeHead(401, {
+              'www-authenticate': 'Bearer realm="https://ghcr.io/token",service="ghcr.io"',
+              'docker-distribution-api-version': 'registry/2.0',
+            });
+            response.end();
+            return;
+          }
           const presented = capability(inner);
           const binding = presented ? await options.capabilities.resolve(presented) : undefined;
           if (
@@ -151,7 +175,7 @@ export function createBrokeredForgeProxy(options: {
           const body = options.adapter.streams({ hostname, method: inner.method ?? '', path })
             ? inner
             : await bufferedBody(inner);
-          if (Buffer.isBuffer(body) && inner.headers['content-encoding']) {
+          if (inner.headers['content-encoding']) {
             fail(response, 403);
             return;
           }
@@ -167,6 +191,11 @@ export function createBrokeredForgeProxy(options: {
             abort.signal,
           );
           if (abort.signal.aborted) return;
+          if (auth.registryTokenResponse) {
+            response.writeHead(200, { 'content-type': 'application/json' });
+            response.end(JSON.stringify({ token: FORGE_PLACEHOLDER_PREFIX + presented }));
+            return;
+          }
           const headers: Record<string, string> = {
             authorization: auth.authorization,
             'user-agent': 'verity-forge-broker',
@@ -176,14 +205,34 @@ export function createBrokeredForgeProxy(options: {
             if (FORWARDED_HEADERS.has(name) && typeof value === 'string') headers[name] = value;
           }
           if (Buffer.isBuffer(body)) headers['content-length'] = String(body.length);
-          const upstream = await transport({
+          else if (typeof inner.headers['content-length'] === 'string') {
+            if (
+              !/^\d+$/.test(inner.headers['content-length']) ||
+              Number(inner.headers['content-length']) > 2 * 1024 ** 3
+            ) {
+              fail(response, 413);
+              return;
+            }
+            headers['content-length'] = inner.headers['content-length'];
+          }
+          const input = {
             hostname,
             method: inner.method ?? '',
             path,
             headers,
             body,
             signal: abort.signal,
-          });
+          };
+          let upstream = await brokeredDownload(
+            transport,
+            input,
+            (inner.method === 'GET' || inner.method === 'HEAD') &&
+              ((hostname === 'ghcr.io' && path.includes('/blobs/')) ||
+                (hostname === 'api.github.com' &&
+                  /\/(?:logs|zip|releases\/assets\/\d+)$/.test(path.split('?')[0]!))),
+          );
+          if (auth.verifyRelatedIssues)
+            upstream = await verifyRelatedIssueResponse(upstream, binding.owner, binding.repo);
           await relayBrokeredHttpResponse(
             upstream,
             response,
@@ -191,7 +240,7 @@ export function createBrokeredForgeProxy(options: {
             abort.signal,
           );
         })()
-          .catch(() => fail(response, 502))
+          .catch((error: unknown) => fail(response, error instanceof ForgePolicyError ? 403 : 502))
           .finally(() => clearTimeout(timeout));
       });
       server.maxRequestsPerSocket = 1;

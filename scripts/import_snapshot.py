@@ -260,6 +260,16 @@ def apply(root, config, files, policy, trusted_provenance=None):
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("mode", choices=("verify", "apply")); ap.add_argument("--package", required=True); ap.add_argument("--digest", required=True); ap.add_argument("--policy", default="snapshot-policy.json"); ap.add_argument("--root", default="."); ap.add_argument("--provenance-state")
     args = ap.parse_args(); token = os.environ.get("GH_TOKEN"); username = os.environ.get("GH_USER")
+    if os.environ.get("VERITY_FORGE_MODE") == "proxy-test":
+        import subprocess
+        token = subprocess.check_output(["verity-gh-token"], text=True).strip()
+        username = "x-access-token"
+        proxy = os.environ["VERITY_FORGE_PROXY_URL"]
+        os.environ["https_proxy"] = proxy
+        os.environ["HTTPS_PROXY"] = proxy
+        os.environ["no_proxy"] = ""
+        os.environ["NO_PROXY"] = ""
+        os.environ["SSL_CERT_FILE"] = os.environ["VERITY_FORGE_PROXY_CA_FILE"]
     if not token or not username: ap.error("GH_TOKEN and GH_USER are required")
     policy = load_policy(pathlib.Path(args.policy))
     config_raw, layer_raw = pull(args.package, args.digest, token, username, policy)

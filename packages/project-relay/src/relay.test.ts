@@ -1045,6 +1045,25 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe('explicit forge proxy relay', () => {
+  it.each(['api.github.com:443', 'uploads.github.com:443', 'ghcr.io:443'])(
+    'forwards the supported target %s',
+    async (target) => {
+      const socketPath = join(temporaryDirectory(), 'broker.sock');
+      const upstream = createHttpServer();
+      let forwarded: string | undefined;
+      upstream.on('connect', (req, socket) => {
+        forwarded = req.url;
+        socket.end('HTTP/1.1 200 Connection Established\r\n\r\n');
+      });
+      servers.push(upstream);
+      await listenUnix(upstream, socketPath);
+      const port = await listenTcp(createBrokerRelayServer({ socketPath, forgeProxy: true }));
+      expect(
+        await rawCall(port, `CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`),
+      ).toContain('200 Connection Established');
+      expect(forwarded).toBe(target);
+    },
+  );
   it('tunnels only provider CONNECT targets to the fixed project socket with binary streaming', async () => {
     const socketPath = join(temporaryDirectory(), 'broker.sock');
     const upstream = createHttpServer();

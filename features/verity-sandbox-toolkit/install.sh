@@ -627,6 +627,14 @@ install -m 0755 "$FEATURE_DIR/agent-seed/hooks/pre-push" "$HOOKS_PATH/pre-push"
 # so the policy exists once.
 install -m 0755 "$FEATURE_DIR/agent-seed/hooks/pre-commit" "$HOOKS_PATH/pre-commit"
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/gh" /opt/agent-seed/bin/gh
+# Preserve an installed ORAS binary before adding the broker-aware wrapper.
+if [ -x /usr/local/bin/oras ] && [ ! -L /usr/local/bin/oras ]; then
+  mkdir -p /usr/local/lib/verity
+  mv /usr/local/bin/oras /usr/local/lib/verity/oras-real
+fi
+install -m 0755 "$FEATURE_DIR/agent-seed/bin/oras" /opt/agent-seed/bin/oras
+ln -sf /opt/agent-seed/bin/oras /usr/local/bin/oras
+
 # git wrapper: refuses `git worktree remove` on a Verity session worktree (a
 # session must not delete the tree it runs in). Transparent for every other git
 # invocation, so baking it first on PATH is inert on all other operations.

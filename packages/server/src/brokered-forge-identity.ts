@@ -61,7 +61,7 @@ export async function loadForgeProxyIdentity(
   }
   const certificate = await issueGatewayServerCertificate(ca, {
     serverName: 'github.com',
-    additionalServerNames: ['api.github.com'],
+    additionalServerNames: ['api.github.com', 'uploads.github.com', 'ghcr.io'],
   });
   return { ca, certificate };
 }

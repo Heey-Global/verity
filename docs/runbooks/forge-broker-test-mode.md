@@ -55,7 +55,10 @@ passed to the client, and compressed responses are rejected rather than bypass
 credential-output checks.
 
 The GitHub sandbox policy permits Git read/write, issue read/write, and PR
-read/write. The adapter also supports narrower action sets for future policy
+read/write, plus repository-bound Release and Actions metadata reads. Release
+and artifact downloads through redirects, workflow dispatch, and Release writes
+remain unsupported. Policy denials return HTTP 403; upstream transport failures
+return HTTP 502. The adapter also supports narrower action sets for future policy
 integration. The GitHub Issues REST API contains PRs too, so those routes
 conservatively require the corresponding PR authority as well. This stage does
 not add an action-policy settings UI.
@@ -111,3 +114,10 @@ credential resolution. A new adapter must define trusted instance addresses,
 authentication and API/action rules; its CLI and self-hosted destinations need
 separate tests. The relay target admission and certificate SANs must be extended
 alongside that adapter.
+
+## Extended workflow compatibility
+
+See [Forge broker compatibility](forge-broker-compatibility.md) for Checks,
+Actions writes, Release transfers, repository file operations and scoped GHCR
+image reads. The compatibility matrix separates local test coverage from the
+remaining deployment acceptance.

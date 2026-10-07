@@ -1,3 +1,4 @@
+import { githubRestAction } from './brokered-forge-rest.js';
 import {
   Kind,
   OperationTypeNode,
@@ -11,7 +12,18 @@ import type { IncomingMessage } from 'node:http';
 import type { BrokeredHttpStreamTransport } from './brokered-http-stream.js';
 
 export type ForgeAction =
-  'git-read' | 'git-write' | 'issues-read' | 'issues-write' | 'pulls-read' | 'pulls-write';
+  | 'git-read'
+  | 'git-write'
+  | 'issues-read'
+  | 'issues-write'
+  | 'pulls-read'
+  | 'pulls-write'
+  | 'releases-read'
+  | 'actions-read'
+  | 'actions-write'
+  | 'releases-write'
+  | 'checks-read'
+  | 'packages-read';
 interface ForgeBinding {
   projectId: string;
   owner: string;
@@ -25,6 +37,8 @@ export interface ForgeRequest {
   body?: Buffer;
 }
 interface ForgeAuthorization {
+  registryTokenResponse?: boolean;
+  verifyRelatedIssues?: boolean;
   action: ForgeAction;
   authorization: string;
   credentials: readonly { value: string; alias: string }[];
@@ -74,10 +88,18 @@ const MUTATIONS: Readonly<Record<string, { action: ForgeAction; id: string; type
   closePullRequest: { action: 'pulls-write', id: 'pullRequestId', type: 'PullRequest' },
   reopenPullRequest: { action: 'pulls-write', id: 'pullRequestId', type: 'PullRequest' },
   mergePullRequest: { action: 'pulls-write', id: 'pullRequestId', type: 'PullRequest' },
+  addLabelsToLabelable: { action: 'issues-write', id: 'labelableId', type: 'IssueOrPullRequest' },
+  removeLabelsFromLabelable: {
+    action: 'issues-write',
+    id: 'labelableId',
+    type: 'IssueOrPullRequest',
+  },
   addComment: { action: 'issues-write', id: 'subjectId', type: 'IssueOrPullRequest' },
 };
+export class ForgePolicyError extends Error {}
+
 function rejected(): never {
-  throw new Error('forge request rejected');
+  throw new ForgePolicyError('forge request rejected');
 }
 function assertAction(actions: ReadonlySet<ForgeAction>, action: ForgeAction): void {
   if (!actions.has(action)) rejected();
@@ -109,15 +131,30 @@ export function createGitHubForgeAdapter(options: {
   transport: BrokeredHttpStreamTransport;
 }): BrokeredForgeAdapter {
   return {
-    hosts: new Set(['github.com', 'api.github.com']),
-    streams: (request) => request.hostname === 'github.com',
+    hosts: new Set(['github.com', 'api.github.com', 'uploads.github.com']),
+    streams: (request) =>
+      request.hostname === 'github.com' || request.hostname === 'uploads.github.com',
     async authorize(request, binding, actions, signal) {
       if (!/^[A-Za-z0-9_.-]+$/.test(binding.owner) || !/^[A-Za-z0-9_.-]+$/.test(binding.repo))
         rejected();
       // Check the unnormalized target: URL normalization must not erase traversal before policy.
       if (
         !request.path.startsWith('/') ||
-        request.path.split('?', 1)[0]!.includes('%') ||
+        request.path
+          .split('?', 1)[0]!
+          .split('/')
+          .some((part) => {
+            try {
+              const decoded = decodeURIComponent(part);
+              return (
+                Array.from(decoded).some(
+                  (char) => char === '\\' || char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127,
+                ) || decoded.split('/').some((piece) => piece === '.' || piece === '..')
+              );
+            } catch {
+              return true;
+            }
+          }) ||
         request.path.includes('\\') ||
         request.path.split(/[/?]/).some((part) => part === '.' || part === '..')
       )
@@ -144,6 +181,17 @@ export function createGitHubForgeAdapter(options: {
           rejected();
         if (operation !== 'git-upload-pack' && operation !== 'git-receive-pack') rejected();
         action = operation === 'git-upload-pack' ? 'git-read' : 'git-write';
+      } else if (request.hostname === 'uploads.github.com') {
+        const prefix = `/repos/${repoPath}/releases/`;
+        if (
+          request.method !== 'POST' ||
+          !url.pathname.toLowerCase().startsWith(prefix) ||
+          !/^\d+\/assets$/.test(url.pathname.slice(prefix.length)) ||
+          !url.searchParams.get('name') ||
+          [...url.searchParams.keys()].some((key) => !['name', 'label'].includes(key))
+        )
+          rejected();
+        action = 'releases-write';
       } else if (request.hostname === 'api.github.com') {
         if (url.pathname === '/graphql' && request.method === 'POST' && !url.search) {
           const raw = JSON.parse(request.body?.toString('utf8') ?? '') as Record<string, unknown>;
@@ -168,18 +216,9 @@ export function createGitHubForgeAdapter(options: {
           const path = url.pathname.toLowerCase();
           if (path !== prefix && !path.startsWith(`${prefix}/`)) rejected();
           const suffix = path.slice(prefix.length);
-          const read = request.method === 'GET';
-          if (read && (suffix === '' || /^\/(branches|commits|compare)(\/[^/]+)?$/.test(suffix)))
-            action = 'git-read';
-          else if (
-            /^\/issues(?:\/\d+)?(?:\/comments)?$/.test(suffix) ||
-            /^\/issues\/comments\/\d+$/.test(suffix)
-          )
-            action = read ? 'issues-read' : 'issues-write';
-          else if (/^\/pulls(?:\/\d+)?(?:\/(commits|files|merge))?$/.test(suffix))
-            action = read ? 'pulls-read' : 'pulls-write';
-          else rejected();
-          if (!['GET', 'POST', 'PATCH', 'PUT'].includes(request.method)) rejected();
+          const permitted = githubRestAction(request.method, suffix);
+          if (!permitted) rejected();
+          action = permitted;
         }
       } else rejected();
       if (!graph) {
@@ -192,12 +231,12 @@ export function createGitHubForgeAdapter(options: {
         id: unknown,
         type: string,
         token: string,
-      ): Promise<'Issue' | 'PullRequest' | 'Repository'> => {
+      ): Promise<'Issue' | 'PullRequest' | 'Repository' | 'Label'> => {
         if (typeof id !== 'string' || id.length === 0 || id.length > 256) rejected();
         const body = Buffer.from(
           JSON.stringify({
             query:
-              'query($id:ID!){node(id:$id){__typename ... on Repository{nameWithOwner} ... on Issue{repository{nameWithOwner}} ... on PullRequest{repository{nameWithOwner}}}}',
+              'query($id:ID!){node(id:$id){__typename ... on Repository{nameWithOwner} ... on Issue{repository{nameWithOwner}} ... on PullRequest{repository{nameWithOwner}} ... on Label{repository{nameWithOwner}}}}',
             variables: { id },
           }),
         );
@@ -229,7 +268,7 @@ export function createGitHubForgeAdapter(options: {
         if (
           result.errors ||
           !node ||
-          !['Issue', 'PullRequest', 'Repository'].includes(node.__typename ?? '') ||
+          !['Issue', 'PullRequest', 'Repository', 'Label'].includes(node.__typename ?? '') ||
           (type === 'IssueOrPullRequest'
             ? !['Issue', 'PullRequest'].includes(node.__typename ?? '')
             : node.__typename !== type) ||
@@ -239,7 +278,7 @@ export function createGitHubForgeAdapter(options: {
           )
         )
           rejected();
-        return node.__typename as 'Issue' | 'PullRequest' | 'Repository';
+        return node.__typename as 'Issue' | 'PullRequest' | 'Repository' | 'Label';
       };
       const pendingNodes: Array<{ id: unknown; type: string; comment: boolean }> = [];
       if (graph) {
@@ -326,6 +365,7 @@ export function createGitHubForgeAdapter(options: {
                 'pullRequest',
                 'pullRequests',
                 'issueTypes',
+                'labels',
               ]);
               if (
                 !field.selectionSet ||
@@ -352,11 +392,13 @@ export function createGitHubForgeAdapter(options: {
                     ].includes(child.name.value)
                   )
                     rejected();
+                  if (['statusCheckRollup', 'checkSuite'].includes(child.name.value))
+                    assertAction(actions, 'checks-read');
                   if (child.name.value === 'issueOrPullRequest') {
                     assertAction(actions, 'issues-read');
                     assertAction(actions, 'pulls-read');
                   }
-                  if (['issue', 'issues', 'issueTypes'].includes(child.name.value))
+                  if (['issue', 'issues', 'issueTypes', 'labels'].includes(child.name.value))
                     assertAction(actions, 'issues-read');
                   if (
                     ['pullRequest', 'pullRequests', 'associatedPullRequests'].includes(
@@ -365,12 +407,42 @@ export function createGitHubForgeAdapter(options: {
                   )
                     assertAction(actions, 'pulls-read');
                   if (child.selectionSet && depth > 0) {
+                    if (child.name.value === 'fieldValueByName') {
+                      if (argument(child, 'name') !== 'Status') rejected();
+                      scalarFields(child.selectionSet, ['optionId', 'name', '__typename']);
+                      continue;
+                    }
+                    if (child.name.value === 'organization') {
+                      scalarFields(child.selectionSet, ['login', 'id', 'name', '__typename']);
+                      continue;
+                    }
+                    if (child.name.value === 'users') {
+                      scalarFields(child.selectionSet, ['totalCount']);
+                      continue;
+                    }
+                    if (['project', 'projectV2'].includes(child.name.value)) {
+                      scalarFields(child.selectionSet, [
+                        'id',
+                        'title',
+                        'name',
+                        'url',
+                        'number',
+                        '__typename',
+                      ]);
+                      continue;
+                    }
+
                     // Only relationships used by the supported CLI reads may inherit scope.
                     // Discovery via projects, timelines, actors, or new schema fields fails closed.
                     if (
-                      ['author', 'mergedBy', 'actor', 'headRepositoryOwner'].includes(
-                        child.name.value,
-                      )
+                      [
+                        'author',
+                        'mergedBy',
+                        'closedBy',
+                        'actor',
+                        'enabledBy',
+                        'headRepositoryOwner',
+                      ].includes(child.name.value)
                     ) {
                       scalarFields(child.selectionSet, [
                         'id',
@@ -417,6 +489,17 @@ export function createGitHubForgeAdapter(options: {
                         'reviewDecision',
                         'participants',
                         'issueType',
+                        'reactionGroups',
+                        'users',
+                        'subIssuesSummary',
+                        'parent',
+                        'subIssues',
+                        'blockedBy',
+                        'blocking',
+                        'projectCards',
+                        'project',
+                        'projectItems',
+                        'projectV2',
                       ].includes(child.name.value)
                     )
                       rejected();
@@ -480,6 +563,49 @@ export function createGitHubForgeAdapter(options: {
               assertAction(actions, 'git-read');
             } else rejected();
           } else {
+            if (name === 'createCommitOnBranch') {
+              assertAction(actions, 'git-write');
+              const input = argument(field, 'input') as Record<string, unknown> | undefined;
+              const branch = input?.branch as Record<string, unknown> | undefined;
+              if (
+                !input ||
+                !branch ||
+                !sameRepo(branch.repositoryNameWithOwner, binding) ||
+                typeof branch.branchName !== 'string' ||
+                !branch.branchName ||
+                Object.keys(branch).some(
+                  (key) => !['repositoryNameWithOwner', 'branchName'].includes(key),
+                ) ||
+                Object.keys(input).some(
+                  (key) =>
+                    ![
+                      'branch',
+                      'expectedHeadOid',
+                      'message',
+                      'fileChanges',
+                      'clientMutationId',
+                    ].includes(key),
+                ) ||
+                typeof input.expectedHeadOid !== 'string' ||
+                !/^[a-f0-9]{40}$/.test(input.expectedHeadOid) ||
+                !field.selectionSet
+              )
+                rejected();
+              for (const result of fields(field.selectionSet)) {
+                if (result.name.value !== 'commit' || !result.selectionSet) rejected();
+                for (const commit of fields(result.selectionSet)) {
+                  if (commit.name.value === 'signature')
+                    scalarFields(commit.selectionSet, ['isValid', '__typename']);
+                  else if (
+                    !['oid', 'url', '__typename'].includes(commit.name.value) ||
+                    commit.selectionSet
+                  )
+                    rejected();
+                }
+              }
+              action = 'git-write';
+              continue;
+            }
             const rule = MUTATIONS[name];
             if (!rule) rejected();
             const input = argument(field, 'input') as Record<string, unknown> | undefined;
@@ -491,7 +617,11 @@ export function createGitHubForgeAdapter(options: {
                   /ids?$/i.test(key) &&
                   key !== rule.id &&
                   key !== 'clientMutationId' &&
-                  key !== 'expectedHeadOid',
+                  key !== 'expectedHeadOid' &&
+                  !(
+                    key === 'labelIds' &&
+                    ['addLabelsToLabelable', 'removeLabelsFromLabelable'].includes(name)
+                  ),
               )
             )
               rejected();
@@ -501,10 +631,20 @@ export function createGitHubForgeAdapter(options: {
                 !/^[a-f0-9]{40}$/.test(input.expectedHeadOid))
             )
               rejected();
+            if (['addLabelsToLabelable', 'removeLabelsFromLabelable'].includes(name)) {
+              if (
+                !Array.isArray(input.labelIds) ||
+                !input.labelIds.length ||
+                input.labelIds.length > 100
+              )
+                rejected();
+              for (const id of input.labelIds)
+                pendingNodes.push({ id, type: 'Label', comment: false });
+            }
             // Mutation payloads return identifiers; they must not become an unrelated read channel.
             if (!field.selectionSet) rejected();
             for (const child of fields(field.selectionSet)) {
-              if (['issue', 'pullRequest'].includes(child.name.value)) {
+              if (['issue', 'pullRequest', 'labelable'].includes(child.name.value)) {
                 scalarFields(child.selectionSet, ['id', 'url', 'number', '__typename']);
               } else if (child.name.value === 'commentEdge') {
                 if (!child.selectionSet) rejected();
@@ -523,7 +663,9 @@ export function createGitHubForgeAdapter(options: {
             pendingNodes.push({
               id: input[rule.id],
               type: rule.type,
-              comment: name === 'addComment',
+              comment: ['addComment', 'addLabelsToLabelable', 'removeLabelsFromLabelable'].includes(
+                name,
+              ),
             });
             action = rule.action;
           }
@@ -531,6 +673,15 @@ export function createGitHubForgeAdapter(options: {
         // Block nested cross-repository discovery surfaces, including fragment-hidden ones.
         visit(document, {
           Field(node) {
+            if (['parent', 'subIssues', 'blockedBy', 'blocking'].includes(node.name.value)) {
+              const noAliases = (field: FieldNode): void => {
+                if (field.alias && field.alias.value !== field.name.value) rejected();
+                if (field.selectionSet)
+                  for (const child of fields(field.selectionSet)) noAliases(child);
+              };
+              noAliases(node);
+            }
+
             if (
               ['author', 'committer', 'mergedBy', 'closedBy', 'actor', 'user'].includes(
                 node.name.value,
@@ -545,9 +696,17 @@ export function createGitHubForgeAdapter(options: {
                 '__typename',
               ]);
             }
+            if (node.name.value === 'organization')
+              scalarFields(node.selectionSet, ['login', 'id', 'name', '__typename']);
             if (['owner', 'defaultBranchRef'].includes(node.name.value)) metadataSelection(node);
             if (
-              ['parent', 'headRepository', 'baseRepository'].includes(node.name.value) ||
+              ['headRepository', 'baseRepository'].includes(node.name.value) ||
+              (node.name.value === 'parent' &&
+                !node.selectionSet?.selections.some(
+                  (child) =>
+                    child.kind === Kind.FIELD &&
+                    ['number', 'repository'].includes(child.name.value),
+                )) ||
               (node.name.value === 'repository' && !node.arguments?.length)
             ) {
               if (
@@ -568,8 +727,7 @@ export function createGitHubForgeAdapter(options: {
               )
             )
               rejected();
-            if (['search', 'organization', 'repositories', '__schema'].includes(node.name.value))
-              rejected();
+            if (['search', 'repositories', '__schema'].includes(node.name.value)) rejected();
           },
         });
       }
@@ -590,6 +748,7 @@ export function createGitHubForgeAdapter(options: {
             ? [{ value: `x-access-token:${token}`, alias: 'FORGE_GIT_CREDENTIAL' }]
             : []),
         ],
+        ...(graph ? { verifyRelatedIssues: true } : {}),
         authorization:
           request.hostname === 'github.com'
             ? `Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`

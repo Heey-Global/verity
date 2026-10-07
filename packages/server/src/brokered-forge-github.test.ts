@@ -80,6 +80,39 @@ describe('GitHub forge policy', () => {
     expect(h.mint).not.toHaveBeenCalled();
     expect(h.transport).not.toHaveBeenCalled();
   });
+  it.each([
+    '/releases',
+    '/releases/latest',
+    '/releases/tags/v1.56.0',
+    '/releases/123/assets',
+    '/actions/runs?per_page=20',
+    '/actions/runs/123/jobs',
+    '/actions/runs/123/artifacts',
+    '/actions/workflows/release.yml/runs',
+    '/actions/jobs/123',
+  ])('permits repository-bound evidence reads with explicit permission: %s', async (suffix) => {
+    const h = harness();
+    const request = { hostname: 'api.github.com', method: 'GET', path: '/repos/acme/app' + suffix };
+    const permission = suffix.startsWith('/releases') ? 'releases-read' : 'actions-read';
+    await expect(
+      h.adapter.authorize(request, binding, actions, new AbortController().signal),
+    ).rejects.toThrow();
+    expect(h.mint).not.toHaveBeenCalled();
+    const allowed = new Set<ForgeAction>([permission]);
+    await expect(
+      h.adapter.authorize(request, binding, allowed, new AbortController().signal),
+    ).resolves.toMatchObject({ action: permission });
+    for (const denied of [
+      { ...request, method: 'POST' },
+      { ...request, path: request.path.replace('/acme/app', '/acme/other') },
+    ]) {
+      h.mint.mockClear();
+      await expect(
+        h.adapter.authorize(denied, binding, allowed, new AbortController().signal),
+      ).rejects.toThrow();
+      expect(h.mint).not.toHaveBeenCalled();
+    }
+  });
   it('bounds cyclic and exponentially expanded fragments before credential resolution', async () => {
     const h = harness();
     const fragments = Array.from(

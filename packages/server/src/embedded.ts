@@ -1,3 +1,5 @@
+import { createGhcrForgeAdapter } from './brokered-forge-ghcr.js';
+import { loadForgePackageMap } from './brokered-forge-package-map.js';
 import { createBrokeredForgeProxy } from './brokered-http-tool.js';
 import { createGitHubForgeAdapter } from './brokered-forge-github.js';
 import { brokeredHttpStreamTransport } from './brokered-http-stream.js';
@@ -3039,16 +3041,36 @@ export async function buildEmbeddedServer(
   const projectRelayEnabled = (config.projectRelayImage ?? '').trim().length > 0;
   const forgeIdentity = projectRelayEnabled ? await loadForgeProxyIdentity(secretRoot) : undefined;
   const forgeProxyEnabled = (): boolean => projectRelayEnabled;
+  const forgePackageMap = projectRelayEnabled
+    ? await loadForgePackageMap(secretRoot)
+    : new Map<string, readonly string[]>();
+  const githubForgeAdapter = createGitHubForgeAdapter({
+    mint: cachedProjectTokenMint,
+    transport: brokeredHttpStreamTransport,
+  });
+  const ghcrForgeAdapter = createGhcrForgeAdapter({
+    packages: (projectId) => Promise.resolve(forgePackageMap.get(projectId) ?? []),
+    mint: createGitHubAppInstallationTokenMint({
+      ...baseMintOpts,
+      permissions: REGISTRY_GITHUB_TOKEN_PERMISSIONS,
+    }),
+    transport: brokeredHttpStreamTransport,
+  });
   const forgeProxy =
     forgeIdentity === undefined
       ? undefined
       : createBrokeredForgeProxy({
           certificate: forgeIdentity.certificate,
           capabilities: ghTokenCapabilities,
-          adapter: createGitHubForgeAdapter({
-            mint: cachedProjectTokenMint,
-            transport: brokeredHttpStreamTransport,
-          }),
+          adapter: {
+            hosts: new Set([...githubForgeAdapter.hosts, ...ghcrForgeAdapter.hosts]),
+            streams: (request) => githubForgeAdapter.streams(request),
+            authorize: (request, ...args) =>
+              (request.hostname === 'ghcr.io' ? ghcrForgeAdapter : githubForgeAdapter).authorize(
+                request,
+                ...args,
+              ),
+          },
           enabled: forgeProxyEnabled,
         });
   if (
