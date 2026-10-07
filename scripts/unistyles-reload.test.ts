@@ -13,6 +13,7 @@ const installedSource = 'node_modules/react-native-unistyles/ios/UnistylesModule
 const patched = applyNativePatch(patch, patch.before).source;
 
 function runLifecycle(source: string) {
+  const handoffCleanup = source.match(/}, \[\] \{([\s\S]*?)\n    \}\);/)?.[1] ?? '';
   const helper = source.match(/class VerityUnistylesLifecycle \{[\s\S]*?\n};/)?.[0] ?? '';
   const invalidate = source
     .match(/- \(void\)invalidate \{([\s\S]*?)\n}/)![1]!
@@ -34,7 +35,7 @@ namespace core { struct UnistylesRegistry {
   void destroy() { configured = false; retainedStyles = 0; }
 }; }
 void install(const void* self) {
-  ${helper ? 'verityUnistylesLifecycle.install(self, [] { configured = true; ++retainedStyles; }, [] { core::UnistylesRegistry::get().destroy(); });' : 'configured = true; ++retainedStyles;'}
+  ${helper ? `verityUnistylesLifecycle.install(self, [] { configured = true; ++retainedStyles; }, [] { ${handoffCleanup} });` : 'configured = true; ++retainedStyles;'}
 }
 void invalidate(const void* self) { ${invalidate} }
 int main() {
@@ -83,6 +84,15 @@ it('rejects an ownership handoff that retains old runtime style objects', () => 
     '',
   );
   expect(runLifecycle(missingCleanup)).not.toBe(0);
+});
+
+it('detects a removed native handoff cleanup callback', () => {
+  const missingCallback = patched.replace(
+    /(}, \[\] \{\s*)core::UnistylesRegistry::get\(\)\.destroy\(\);/,
+    '$1',
+  );
+  expect(missingCallback).not.toBe(patched);
+  expect(runLifecycle(missingCallback)).not.toBe(0);
 });
 
 it('detects the original unconditional teardown clearing the new runtime', () => {
