@@ -54,7 +54,10 @@ export interface SessionListState {
 export type CancelPoll = () => void;
 
 export interface SessionListModelOptions {
-  client: Pick<VerityClient, 'listSessions' | 'renameSession' | 'deleteSession'> & {
+  client: Pick<
+    VerityClient,
+    'listSessions' | 'renameSession' | 'setSessionFavorite' | 'deleteSession'
+  > & {
     listProviderLimits?: () => Promise<ProviderLimitSummary[]>;
     /** Optional like {@link listProviderLimits}: absent, the model falls back to
      * the plain list and simply reports no server-level attention. */
@@ -214,6 +217,26 @@ export class SessionListModel {
     this.emit();
   }
 
+  /**
+   * Mark or unmark a session as a favorite. Optimistic like {@link rename}: the
+   * highlight changes immediately, and on failure only this session's flag is
+   * reverted while the error surfaces until the next successful load.
+   */
+  async setFavorite(sessionId: string, favorite: boolean): Promise<void> {
+    const previous = this._sessions.find((s) => s.sessionId === sessionId)?.favorite === true;
+    this.applyFavorite(sessionId, favorite);
+    this.emit();
+    try {
+      const { favorite: stored } = await this.opts.client.setSessionFavorite(sessionId, favorite);
+      this.applyFavorite(sessionId, stored);
+      this._error = undefined;
+    } catch (error) {
+      this.applyFavorite(sessionId, previous);
+      this._error = error instanceof VerityApiError ? error.message : 'failed to update favorite';
+    }
+    this.emit();
+  }
+
   /** Retire one permission immediately after its decision POST settles. The next
    * poll remains authoritative; this only removes the stale attention badge in
    * the gap before that poll arrives. */
@@ -320,6 +343,17 @@ export class SessionListModel {
       throw error;
     }
     this.emit();
+  }
+
+  /** Replace one session's favorite flag in the local list; `false` drops the
+   * field, matching the server, which omits it for unmarked sessions. */
+  private applyFavorite(sessionId: string, favorite: boolean): void {
+    this._sessions = this._sessions.map((s) => {
+      if (s.sessionId !== sessionId) return s;
+      const next: SessionSummary = { ...s, favorite: true };
+      if (!favorite) delete next.favorite;
+      return next;
+    });
   }
 
   /** Replace one session's name in the local list (no-op if it's not present). */

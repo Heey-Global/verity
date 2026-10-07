@@ -61,6 +61,9 @@ export interface SessionRecord {
   planning?: SessionPlanning | null;
   planningRevision?: number;
   planningPlan?: string | null;
+  /** Operator-marked favorite, highlighted in the session list. Global like the
+   *  unread mark, so it syncs across devices. Absent means not a favorite. */
+  favorite?: boolean;
 }
 
 /** `active`: turns run without permission to change files until the operator
@@ -1770,6 +1773,7 @@ export class EventStore implements EventSink {
         'planning',
         'planning_revision',
         'planning_plan',
+        'favorite',
       ])
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
@@ -1784,6 +1788,7 @@ export class EventStore implements EventSink {
       ...(row.planning !== null ? { planning: row.planning } : {}),
       planningRevision: row.planning_revision,
       planningPlan: row.planning_plan,
+      ...(row.favorite ? { favorite: true } : {}),
     };
   }
 
@@ -2327,6 +2332,7 @@ export class EventStore implements EventSink {
         'planning',
         'planning_revision',
         'planning_plan',
+        'favorite',
       ])
       // session_id tiebreaker: `created_at` is `now()` (tx-start), so rapid
       // inserts can share a timestamp — without this the order is unspecified.
@@ -2343,6 +2349,7 @@ export class EventStore implements EventSink {
       ...(r.planning !== null ? { planning: r.planning } : {}),
       planningRevision: r.planning_revision,
       planningPlan: r.planning_plan,
+      ...(r.favorite ? { favorite: true } : {}),
     }));
   }
 
@@ -2600,6 +2607,19 @@ export class EventStore implements EventSink {
     const result = await this.db
       .updateTable('sessions')
       .set({ name })
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    return result.numUpdatedRows > 0n;
+  }
+
+  /**
+   * Mark or unmark a session as an operator favorite. Returns `false` if the
+   * session id is unknown, like {@link renameSession}.
+   */
+  async setSessionFavorite(sessionId: string, favorite: boolean): Promise<boolean> {
+    const result = await this.db
+      .updateTable('sessions')
+      .set({ favorite })
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     return result.numUpdatedRows > 0n;

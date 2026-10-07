@@ -31,6 +31,11 @@ function makeClient(): {
   deleteSession: ReturnType<
     typeof vi.fn<(id: string, opts?: { force?: boolean }) => Promise<{ sessionId: string }>>
   >;
+  setSessionFavorite: ReturnType<
+    typeof vi.fn<
+      (id: string, favorite: boolean) => Promise<{ sessionId: string; favorite: boolean }>
+    >
+  >;
 } {
   const listSessions = vi.fn<() => Promise<SessionSummary[]>>();
   const listProviderLimits = vi.fn<() => Promise<SessionSummary['rateLimits']>>();
@@ -41,17 +46,21 @@ function makeClient(): {
     >();
   const deleteSession =
     vi.fn<(id: string, opts?: { force?: boolean }) => Promise<{ sessionId: string }>>();
+  const setSessionFavorite =
+    vi.fn<(id: string, favorite: boolean) => Promise<{ sessionId: string; favorite: boolean }>>();
   return {
     client: {
       listSessions,
       listProviderLimits,
       renameSession,
       deleteSession,
+      setSessionFavorite,
     } as unknown as VerityClient,
     listSessions,
     listProviderLimits,
     renameSession,
     deleteSession,
+    setSessionFavorite,
   };
 }
 
@@ -842,6 +851,41 @@ describe('SessionListModel.rename', () => {
     // The optimistic name showed mid-flight, then reverted to the original.
     expect(states[0]?.sessions[0]?.name).toBe('doomed');
     expect(model.state.sessions[0]?.name).toBe('original');
+    expect(model.state.error).toBe('session a not found');
+  });
+});
+
+describe('SessionListModel.setFavorite', () => {
+  it('highlights immediately, then keeps the server-confirmed flag', async () => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    listSessions.mockResolvedValue([session('a', 'idle'), session('b', 'idle')]);
+    setSessionFavorite.mockResolvedValueOnce({ sessionId: 'a', favorite: true });
+    const states: SessionListState[] = [];
+    const model = new SessionListModel({ client, onChange: (s) => states.push(s) });
+    await model.refresh();
+
+    states.length = 0;
+    await model.setFavorite('a', true);
+
+    expect(states[0]?.sessions.find((s) => s.sessionId === 'a')?.favorite).toBe(true);
+    expect(model.state.sessions.find((s) => s.sessionId === 'a')?.favorite).toBe(true);
+    expect(model.state.sessions.find((s) => s.sessionId === 'b')?.favorite).toBeUndefined();
+    expect(setSessionFavorite).toHaveBeenCalledWith('a', true);
+  });
+
+  it('reverts only that flag and surfaces the error when the update fails', async () => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    listSessions.mockResolvedValue([{ ...session('a', 'idle'), favorite: true }]);
+    setSessionFavorite.mockRejectedValueOnce(new VerityApiError(404, 'session a not found'));
+    const states: SessionListState[] = [];
+    const model = new SessionListModel({ client, onChange: (s) => states.push(s) });
+    await model.refresh();
+
+    states.length = 0;
+    await model.setFavorite('a', false);
+
+    expect(states[0]?.sessions[0]?.favorite).toBeUndefined();
+    expect(model.state.sessions[0]?.favorite).toBe(true);
     expect(model.state.error).toBe('session a not found');
   });
 });

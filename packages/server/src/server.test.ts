@@ -6445,6 +6445,60 @@ describe('PATCH /sessions/:id (rename + switch engine)', () => {
     expect(res.json()).toMatchObject({ error: expect.stringContaining('missing') });
   });
 
+  it('marks and unmarks a favorite, and lists it in GET /sessions', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const marked = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s1',
+      payload: { favorite: true },
+    });
+    expect(marked.statusCode).toBe(200);
+    expect(marked.json()).toEqual({ sessionId: 's1', favorite: true });
+    const listed = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(
+      listed.json<{ sessionId: string; favorite?: boolean }[]>().find((s) => s.sessionId === 's1')
+        ?.favorite,
+    ).toBe(true);
+
+    const unmarked = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s1',
+      payload: { favorite: false },
+    });
+    expect(unmarked.json()).toEqual({ sessionId: 's1', favorite: false });
+    expect((await ctx.store.getSession('s1'))?.favorite).toBeUndefined();
+  });
+
+  it('applies a favorite together with a rename', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s1',
+      payload: { name: 'Pinned', favorite: true },
+    });
+    expect(res.json()).toEqual({ sessionId: 's1', name: 'Pinned', favorite: true });
+    expect(await ctx.store.getSession('s1')).toMatchObject({ name: 'Pinned', favorite: true });
+  });
+
+  it('returns 404 when marking an unknown session as favorite', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/missing',
+      payload: { favorite: true },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('rejects a non-boolean favorite with 400', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s1',
+      payload: { favorite: 'yes' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
   it('rejects a whitespace-only name with 400', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const res = await app.inject({

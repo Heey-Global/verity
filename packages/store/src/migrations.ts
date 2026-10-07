@@ -3916,6 +3916,16 @@ const migrations: Record<string, Migration> = {
       await sql`alter table session_automations drop column sponsor_user_id`.execute(db);
     },
   },
+  '0142_session_favorite': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions add column favorite boolean not null default false`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table sessions drop column favorite`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {
