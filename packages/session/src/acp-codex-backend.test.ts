@@ -74,6 +74,8 @@ function largePng(): Buffer {
 function acpSpawner(
   behavior: {
     loadSession?: boolean;
+    startupFailure?: string;
+    promptFailure?: string;
     /** Refuse `session/load` the way the adapter refuses a rollout it cannot
      *  restore: JSON-RPC -32002 naming the requested id. */
     loadNotFound?: boolean;
@@ -151,7 +153,7 @@ function acpSpawner(
       stdout,
       pid: 321,
       exited: Promise.resolve(0),
-      stderr: () => '',
+      stderr: () => behavior.startupFailure ?? behavior.promptFailure ?? '',
       kill,
       closeStdin: close,
       writeStdin(data) {
@@ -161,6 +163,10 @@ function acpSpawner(
           const id = message['id'];
           const method = message['method'];
           if (method === 'initialize') {
+            if (behavior.startupFailure !== undefined) {
+              close();
+              return true;
+            }
             push({
               jsonrpc: '2.0',
               id,
@@ -218,6 +224,10 @@ function acpSpawner(
             behavior.cancel.operator?.abort();
             push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
           } else if (method === 'session/prompt') {
+            if (behavior.promptFailure !== undefined) {
+              close();
+              return true;
+            }
             if (behavior.generatedImage) {
               push(
                 {
@@ -374,6 +384,110 @@ describe('AcpCodexBackend', () => {
       await rm(outside, { recursive: true, force: true });
     }
   }, 60_000);
+  it('recovers a backfill initialization failure without replaying a prompt', async () => {
+    const failed = acpSpawner({
+      startupFailure: 'timed out waiting for state db backfill after 30s (status: running)',
+    });
+    const recovered = acpSpawner();
+    let attempts = 0;
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Do it',
+      spawner: (...args) => {
+        if (++attempts !== 1) return recovered.spawner(...args);
+        return {
+          ...failed.spawner(...args),
+          exited: new Promise<number>((resolve) => setTimeout(() => resolve(1), 50)),
+        };
+      },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(attempts).toBe(2);
+    expect(failed.writes.map((row) => row['method'])).toEqual(['initialize']);
+    expect(recovered.writes.filter((row) => row['method'] === 'session/prompt')).toHaveLength(1);
+    expect(failed.kill).toHaveBeenCalled();
+  }, 10_000);
+
+  it.each(['cancel', 'timeout'] as const)(
+    'stops waiting for stalled teardown on %s',
+    async (reason) => {
+      const controller = new AbortController();
+      const failed = acpSpawner({
+        startupFailure: 'timed out waiting for state db backfill after 30s (status: running)',
+      });
+      const spawn = vi.fn<Spawner>((...args) => ({
+        ...failed.spawner(...args),
+        exited: new Promise<number>(() => {}),
+      }));
+      const timer = reason === 'cancel' ? setTimeout(() => controller.abort(), 50) : undefined;
+      try {
+        const result = await new AcpCodexBackend().run({
+          store: ctx.store,
+          worktree: '/work/project',
+          cwd: '/work/project',
+          prompt: 'Do it',
+          spawner: spawn,
+          signal: controller.signal,
+          ...(reason === 'timeout' ? { timeoutMs: 50 } : {}),
+        });
+        expect(result.exitCode).toBe(reason === 'cancel' ? 143 : 1);
+        expect(spawn).toHaveBeenCalledTimes(1);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    },
+  );
+
+  it('does not replay a prompt when a later failure contains the backfill message', async () => {
+    const failed = acpSpawner({
+      promptFailure: 'timed out waiting for state db backfill after 30s (status: running)',
+    });
+    const spawn = vi.fn(failed.spawner);
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Do it',
+      spawner: spawn,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(failed.writes.filter((row) => row['method'] === 'session/prompt')).toHaveLength(1);
+  });
+
+  it.each(['cancel', 'timeout', 'unrelated'] as const)(
+    'does not retry startup after %s',
+    async (reason) => {
+      const controller = new AbortController();
+      const failed = acpSpawner({
+        startupFailure:
+          reason === 'unrelated'
+            ? 'failed to initialize sqlite state runtime'
+            : 'timed out waiting for state db backfill after 30s (status: running)',
+      });
+      const spawn = vi.fn(failed.spawner);
+      const timer = reason === 'cancel' ? setTimeout(() => controller.abort(), 50) : undefined;
+      try {
+        const result = await new AcpCodexBackend().run({
+          store: ctx.store,
+          worktree: '/work/project',
+          cwd: '/work/project',
+          prompt: 'Do it',
+          spawner: spawn,
+          signal: controller.signal,
+          ...(reason === 'timeout' ? { timeoutMs: 50 } : {}),
+        });
+        expect(result.exitCode).toBe(reason === 'cancel' ? 143 : 1);
+        expect(spawn).toHaveBeenCalledTimes(1);
+        expect(failed.writes.map((row) => row['method'])).toEqual(['initialize']);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    },
+  );
+
   it('runs a Codex turn through ACP, carrying the system directives in the prompt', async () => {
     const fake = acpSpawner();
     let steer: ((message: { text: string }) => boolean) | undefined;
