@@ -350,7 +350,11 @@ export function QuickCaptureBubble() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Capture task"
-            accessibilityHint="Double tap to record a task; long press to open the task list"
+            accessibilityHint={
+              preferences.introSeen
+                ? 'Double tap to record a task; long press to open the task list'
+                : 'Double tap to learn how task capture works; long press to open the task list'
+            }
             onPress={() =>
               preferences.introSeen || !preferences.loaded ? setCapture(true) : setIntro(true)
             }

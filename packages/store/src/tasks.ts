@@ -49,7 +49,7 @@ export interface TaskInput {
 export interface TaskPatch {
   /** Adopting an agent step into the operator's own list. Routes accept only
    *  `'user'`; the agent tool never patches origin. */
-  origin?: TaskOrigin | undefined;
+  origin?: 'user' | undefined;
   projectId?: string | null | undefined;
   sessionId?: string | null | undefined;
   title?: string | undefined;
