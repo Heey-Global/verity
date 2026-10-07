@@ -1324,4 +1324,7 @@ it('renders durable task updates without ending the running turn', () => {
     kind: 'agent-event',
     event: { t: 'tasks_updated' },
   });
+  // The operator ticking a task off in the panel is not transcript content.
+  reducer.apply(3, { t: 'tasks_updated', origin: 'user', change: 'completed', taskIds: ['one'] });
+  expect(reducer.messages).toHaveLength(1);
 });

@@ -47,6 +47,9 @@ export interface TaskInput {
 }
 
 export interface TaskPatch {
+  /** Adopting an agent step into the operator's own list. Routes accept only
+   *  `'user'`; the agent tool never patches origin. */
+  origin?: 'user' | undefined;
   projectId?: string | null | undefined;
   sessionId?: string | null | undefined;
   title?: string | undefined;
@@ -339,6 +342,7 @@ export class TaskStore {
       values.result = result === null ? null : this.cipher.encrypt(result);
     }
     if (patch.sort !== undefined) values.sort = patch.sort;
+    if (patch.origin !== undefined) values.origin = patch.origin;
     if (patch.status !== undefined) {
       values.status = patch.status;
       Object.assign(values, completedAtFor(existing.status, patch.status));

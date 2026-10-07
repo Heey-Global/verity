@@ -37,16 +37,19 @@ export function agentEventDescriptor(event: AgentEvent): AgentEventDescriptor {
   switch (event.t) {
     case 'tasks_updated': {
       const count = event.taskIds.length;
+      // The agent's entries are its own working steps, kept apart from the
+      // operator's task list in the panel; the wording keeps that apart too.
       const verb = {
-        added: 'added',
+        added: event.origin === 'agent' ? 'planned' : 'added',
         updated: 'updated',
-        completed: 'completed',
+        completed: event.origin === 'agent' ? 'finished' : 'completed',
         dropped: 'dropped',
         deleted: 'deleted',
       }[event.change];
+      const noun = event.origin === 'agent' ? 'step' : 'task';
       return {
         kind: 'tasks',
-        label: `${event.origin === 'agent' ? 'Agent' : 'You'} ${verb} ${count} ${count === 1 ? 'task' : 'tasks'}`,
+        label: `${event.origin === 'agent' ? 'Agent' : 'You'} ${verb} ${String(count)} ${count === 1 ? noun : `${noun}s`}`,
         tone: 'neutral',
         action: 'tasks',
       };

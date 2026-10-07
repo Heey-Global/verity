@@ -85,6 +85,8 @@ const patchBody = z
     status: taskStatus.optional(),
     result: z.string().trim().max(TASK_RESULT_MAX).nullable().optional(),
     sort: z.number().int().min(0).max(1_000_000).optional(),
+    /** Adopting an agent step into the operator's list; the reverse is not a client's call. */
+    origin: z.literal('user').optional(),
     expectedRevision: z.number().int().positive().optional(),
   })
   .strict()

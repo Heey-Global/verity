@@ -986,7 +986,7 @@ export interface TasksTable {
   project_id: ColumnType<string | null, string | null | undefined, string | null>;
   session_id: ColumnType<string | null, string | null | undefined, string | null>;
   source_session_id: ColumnType<string | null, string | null | undefined, never>;
-  origin: ColumnType<TaskOrigin, TaskOrigin, never>;
+  origin: ColumnType<TaskOrigin, TaskOrigin, TaskOrigin>;
   title: string;
   detail: ColumnType<string | null, string | null | undefined, string | null>;
   attachments: ColumnType<TaskAttachment[], string | undefined, string>;

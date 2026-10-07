@@ -539,6 +539,8 @@ export { selectedOpenCodeModels } from '@verity/events';
 
 export {
   taskSchema,
+  bubbleRestingPlace,
+  taskAge,
   taskContext,
   TASK_SILENCE_MS,
   TASK_SAVE_DELAY_MS,
@@ -546,5 +548,6 @@ export {
   type TaskCapture,
   type TaskPatch,
   type TaskContext,
+  type BubbleRest,
 } from './tasks.js';
 export { TaskQueue, type TaskQueueState } from './taskQueue.js';

@@ -390,6 +390,30 @@ describe('tasks routes', () => {
     expect(assigned.json().task).toMatchObject({ sessionId: 's1', status: 'in_progress' });
   });
 
+  it('lets the operator adopt an agent step but never relabel a task as the agent’s', async () => {
+    await store.tasks.upsert({
+      id: T1,
+      ownerUserId: ADMIN,
+      origin: 'agent',
+      title: 'Step',
+      projectId: 'p1',
+      sessionId: 's1',
+    });
+    const adopted = await app.inject({
+      method: 'PATCH',
+      url: `/tasks/${T1}`,
+      payload: { origin: 'user', sessionId: null },
+    });
+    expect(adopted.statusCode).toBe(200);
+    expect(adopted.json().task).toMatchObject({ origin: 'user', sessionId: null });
+    const relabel = await app.inject({
+      method: 'PATCH',
+      url: `/tasks/${T1}`,
+      payload: { origin: 'agent' },
+    });
+    expect(relabel.statusCode).toBe(400);
+  });
+
   it('refuses a session outside the task project', async () => {
     const res = await app.inject({
       method: 'PUT',
