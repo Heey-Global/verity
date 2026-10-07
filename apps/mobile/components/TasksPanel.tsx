@@ -371,11 +371,17 @@ export function TasksPanel({
       </View>
     );
   };
+  // iOS will not present an alert while the menu's modal is still fading out,
+  // so the confirmation waits for the dismissal to finish.
   const confirm = (title: string, verb: string, task: Task, work: () => Promise<unknown>) =>
-    Alert.alert(title, task.title, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: verb, style: 'destructive', onPress: () => void run(work) },
-    ]);
+    setTimeout(
+      () =>
+        Alert.alert(title, task.title, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: verb, style: 'destructive', onPress: () => void run(work) },
+        ]),
+      350,
+    );
   const menuItems = (task: Task): ActionMenuItem[] => {
     const isDone = task.status === 'done';
     const close = (work: () => void) => () => {
