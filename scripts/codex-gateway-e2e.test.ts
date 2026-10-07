@@ -25,7 +25,13 @@ import { codexGatewayConfig } from '../packages/server/src/provisioner.js';
 const roots: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  // Codex plugin-clone helpers can finish filesystem writes after the CLI exits.
+  // Retry transient ENOTEMPTY rather than failing a successful gateway probe.
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })),
+  );
 });
 
 describe('Codex gateway end-to-end cutover', () => {
