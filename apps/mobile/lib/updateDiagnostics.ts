@@ -38,6 +38,15 @@ function compactLog(log: UpdateLog) {
       : [...log.message.matchAll(/"(?:id|runtimeVersion)": [^,\n)]+/g)]
           .slice(0, 4)
           .map((match) => match[0]);
+  const contextErrors = Object.fromEntries(
+    [
+      ...log.message.matchAll(
+        /(checkError|downloadError): ([\s\S]*?)(?=, (?:downloadError|downloadProgress):|$)/g,
+      ),
+    ]
+      .filter((match) => match[2] !== 'nil')
+      .map((match) => [match[1], shorten(match[2]!, 2_048)]),
+  );
   const compacted = shorten(message, priority(log) === 0 ? 16_384 : 2_048);
   const stacktrace = log.stacktrace?.slice(0, 32).map((line) => shorten(line, 512));
   const truncated =
@@ -51,6 +60,7 @@ function compactLog(log: UpdateLog) {
     ...(identities.length
       ? { updateIdentity: identities.map((identity) => shorten(identity, 256)) }
       : {}),
+    ...(Object.keys(contextErrors).length ? { contextErrors } : {}),
     ...(stacktrace ? { stacktrace } : {}),
     ...(truncated ? { truncated: true } : {}),
   };

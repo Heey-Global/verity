@@ -107,3 +107,22 @@ it('bounds UTF-8 and JSON escaping for many long failures and stacktraces', asyn
   expect(report.logSummary.truncated).toBe(report.logs.length);
   expect(report.logSummary.exported + report.logSummary.omitted).toBe(100);
 });
+
+it('preserves bounded check and download errors while removing manifests', async () => {
+  readLogs.mockResolvedValue([
+    log(
+      'Updates state change: state = idle, event = checkError, context = UpdatesStateContext(latestManifest: ' +
+        'asset'.repeat(10000) +
+        ', checkError: Optional(Error Domain=Network Code=-1009, connection offline), downloadError: Optional(Asset download failed), downloadProgress: 0.0)',
+      1,
+    ),
+  ]);
+  await shareUpdateDiagnostics();
+  const report = sharedReport();
+  expect(report.logs[0].contextErrors).toEqual({
+    checkError: 'Optional(Error Domain=Network Code=-1009, connection offline)',
+    downloadError: 'Optional(Asset download failed)',
+  });
+  expect(report.logs[0].message).toBe('Updates state change: state = idle, event = checkError');
+  expect(JSON.stringify(report)).not.toContain('assetasset');
+});
