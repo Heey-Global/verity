@@ -266,6 +266,11 @@ export function propose(inputPath = process.argv[3] ?? '') {
   }
   const hasManifest = remote && run('git', 'ls-tree', '--name-only', `origin/${branch}`, manifest);
   const existing = hasManifest ? run('git', 'show', `origin/${branch}:${manifest}`) : '';
+  if (existing) {
+    const previous = JSON.parse(existing) as { version: string; source: string };
+    // A delayed finalizer must not replace a newer candidate awaiting approval.
+    assertPromotionOrder({ version: previous.version, revision: previous.source }, candidate);
+  }
   const sameCandidate =
     existing && JSON.stringify(JSON.parse(existing)) === JSON.stringify(candidate);
   if (!sameCandidate) {
