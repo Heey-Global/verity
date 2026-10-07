@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.58.4](https://github.com/Heey-Global/verity/compare/mobile-v1.58.3...mobile-v1.58.4) (2026-10-07)
+
+
+### Features
+
+* **mobile:** move session markers to a trailing icon-and-bar column ([#1307](https://github.com/Heey-Global/verity/issues/1307)) ([a4b4c22](https://github.com/Heey-Global/verity/commit/a4b4c22cf3713c76b865912d3645372ca5c5863c))
+
+
+### Bug Fixes
+
+* **mobile:** stabilize meeting UI and isolate research replies ([#1308](https://github.com/Heey-Global/verity/issues/1308)) ([66ec3d5](https://github.com/Heey-Global/verity/commit/66ec3d567c629c534a8674ae5124809969e1e80d))
+* **mobile:** subscribe to PR updates after branch prefetch ([#1305](https://github.com/Heey-Global/verity/issues/1305)) ([9c07247](https://github.com/Heey-Global/verity/commit/9c072477d40dc8fe2f20a61440d0a4ad21e4cc00))
+* **session:** require actionable next steps for unfinished outcomes ([#1303](https://github.com/Heey-Global/verity/issues/1303)) ([1caf118](https://github.com/Heey-Global/verity/commit/1caf1184c24395765c3e06b3c8031f065d596b9c))
+
 ## [1.58.3](https://github.com/Heey-Global/verity/compare/mobile-v1.58.2...mobile-v1.58.3) (2026-10-07)
 
 
