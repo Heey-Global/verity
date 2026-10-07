@@ -22,7 +22,7 @@ FROM python:${PYTHON_VERSION} AS python-source
 # Renovate's stock docker manager (parses FROM natively) bumps tag+digest
 # together. Digest reused from the legacy dev-base pin.
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4
+FROM node:24.21.0-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0
 
 # Build-time RUN shell with pipefail so `cmd1 | cmd2` failures aren't masked by
 # a successful cmd2 exit code. (Hadolint DL4006.)
