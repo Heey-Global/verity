@@ -99,6 +99,7 @@ const containerSchema = z.object({
     memoryLimitBytes: number.nullable(),
     memoryFailures: number.nullable(),
     pids: number.nullable(),
+    pidsPressure: z.enum(['unknown', 'normal', 'near_limit', 'at_limit']).default('unknown'),
   }),
   logs: z.object({
     state: sourceState,
@@ -268,7 +269,11 @@ export function classifyRuntimeLog(message: string): Evidence['code'] | undefine
   if (/memory pressure|memory allocation failed/iu.test(message)) return 'memory_pressure';
   if (/segfault|general protection fault|kernel panic/iu.test(message)) return 'kernel_fault';
   if (/no space left on device|\bENOSPC\b/iu.test(message)) return 'disk_pressure';
-  if (/too many open files|\bEMFILE\b|resource temporarily unavailable|pids limit/iu.test(message))
+  if (
+    /too many open files|\bEMFILE\b|resource temporarily unavailable|pids limit|failed to create new OS thread.*errno=11|fatal error: newosproc/iu.test(
+      message,
+    )
+  )
     return 'resource_limit';
   if (
     /daemon has completed initialization|starting docker application container engine/iu.test(
@@ -667,6 +672,7 @@ export function createRuntimeDiagnostics(deps: {
             memoryLimitBytes: null,
             memoryFailures: null,
             pids: null,
+            pidsPressure: 'unknown',
           };
           if (state.Running === true) {
             try {
@@ -681,6 +687,14 @@ export function createRuntimeDiagnostics(deps: {
               stats.memoryLimitBytes = numeric(memory.limit);
               stats.memoryFailures = numeric(memory.failcnt);
               stats.pids = numeric(object(sample.pids_stats).current);
+              const pidsLimit = numeric(config.PidsLimit);
+              if (stats.pids !== null && pidsLimit !== null && pidsLimit > 0)
+                stats.pidsPressure =
+                  stats.pids >= pidsLimit
+                    ? 'at_limit'
+                    : stats.pids >= pidsLimit * 0.8
+                      ? 'near_limit'
+                      : 'normal';
             } catch {
               stats.state = 'failed';
             }
@@ -857,6 +871,7 @@ export function createRuntimeDiagnostics(deps: {
         'Host records depend on the installed journal exporter, journal retention and source coverage. Stale or unavailable evidence cannot exclude OOM or runtime failure.',
         'Host reason directory_missing means the Server lacks the snapshot mount; snapshot_missing means the host exporter has not written a snapshot.',
         'Classified log records are evidence, not a root-cause verdict. Exit code 137 alone does not establish an OOM kill.',
+        'PID pressure is a current sample, not a historical peak. Under gVisor, Docker counts runtime host threads; near_limit (at least 80%) warns of resource-limit risk.',
       ],
     });
   };

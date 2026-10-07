@@ -16,7 +16,8 @@ import type { LaunchedSandbox, SandboxLauncher, SandboxLaunchSpec } from './secr
 
 const DEFAULT_MEMORY_BYTES = 512 * 1024 * 1024;
 const DEFAULT_NANO_CPUS = 1_000_000_000;
-const DEFAULT_PIDS_LIMIT = 128;
+// gVisor needs room for Sentry host threads even with few guest processes.
+const DEFAULT_PIDS_LIMIT = 4096;
 const DEFAULT_MAX_RUNTIME_MS = 30 * 60_000;
 
 /**
