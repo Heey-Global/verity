@@ -23,7 +23,14 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon } from './Icon';
 import { useVoiceInput } from '../hooks/useVoiceInput';
 import { pickFiles, pickImagesFromLibrary } from '../lib/attachments';
-import { recentTaskScreenshot, readTaskScreenshot } from '../lib/taskScreenshot';
+import {
+  enableTaskScreenshotSuggestions,
+  previewTaskScreenshot,
+  readTaskScreenshot,
+  recentTaskScreenshot,
+  screenshotAccess,
+} from '../lib/taskScreenshot';
+import { saveTaskPreferences, useTaskPreferences } from '../lib/taskPreferences';
 import { captureTask } from '../lib/tasksStore';
 
 export function QuickCaptureCard({
@@ -39,16 +46,32 @@ export function QuickCaptureCard({
 }) {
   const { theme } = useUnistyles();
   const [text, setText] = useState('');
+  const preferences = useTaskPreferences();
   const [screenshot, setScreenshot] = useState<{ uri: string; filename: string } | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  /** Show the one-line photo-access explainer instead of failing silently. */
+  const [askAccess, setAskAccess] = useState(false);
+  const lookForScreenshot = useRef(async (isActive: () => boolean) => {
+    const found = await recentTaskScreenshot();
+    if (!isActive() || !found) return;
+    setScreenshot(found);
+    const uri = await previewTaskScreenshot(found);
+    if (isActive()) setPreview(uri);
+  });
   useEffect(() => {
+    if (!preferences.loaded || !preferences.screenshots) return;
     let active = true;
-    void recentTaskScreenshot().then((value) => {
-      if (active) setScreenshot(value);
+    const isActive = () => active;
+    void screenshotAccess().then((access) => {
+      if (!active) return;
+      if (access === 'granted') void lookForScreenshot.current(isActive);
+      else if (access === 'undetermined' && !preferences.screenshotPromptDismissed)
+        setAskAccess(true);
     });
     return () => {
       active = false;
     };
-  }, []);
+  }, [preferences.loaded, preferences.screenshots, preferences.screenshotPromptDismissed]);
   const [uploads, setUploads] = useState<AttachmentUpload[]>([]);
   const [projectId, setProjectId] = useState(context.projectId);
   const [other, setOther] = useState(false);
@@ -201,10 +224,12 @@ export function QuickCaptureCard({
           ) : null}
           {screenshot ? (
             <View style={styles.suggest}>
-              {/* An icon rather than the asset itself: library URIs (ph://) do not
-                  render reliably in Image on every platform. */}
               <View style={styles.suggestThumb}>
-                <Icon name="image" size={18} color={theme.colors.textMuted} />
+                {preview ? (
+                  <Image source={{ uri: preview }} style={styles.suggestImage} />
+                ) : (
+                  <Icon name="image" size={18} color={theme.colors.textMuted} />
+                )}
               </View>
               <View style={styles.suggestBody}>
                 <Text style={styles.suggestTitle}>Screenshot from just now</Text>
@@ -229,6 +254,43 @@ export function QuickCaptureCard({
               >
                 <Text style={styles.attachLabel}>+ Attach</Text>
               </Pressable>
+            </View>
+          ) : null}
+          {askAccess && !screenshot ? (
+            <View style={styles.perm}>
+              <View style={styles.permIcon}>
+                <Icon name="image" size={16} color={theme.colors.textMuted} />
+              </View>
+              <View style={styles.suggestBody}>
+                <Text style={styles.suggestTitle}>Attach screenshots in one tap</Text>
+                <Text style={styles.hint}>
+                  Verity needs photo access to offer the screenshot you just took.
+                </Text>
+              </View>
+              <View style={styles.permActions}>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => {
+                    setAskAccess(false);
+                    void enableTaskScreenshotSuggestions()
+                      .then(() => lookForScreenshot.current(() => true))
+                      .catch(() => undefined);
+                  }}
+                  style={({ pressed }) => [styles.attach, pressed ? styles.pressed : null]}
+                >
+                  <Text style={styles.attachLabel}>Allow</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  hitSlop={6}
+                  onPress={() => {
+                    setAskAccess(false);
+                    void saveTaskPreferences({ screenshotPromptDismissed: true });
+                  }}
+                >
+                  <Text style={styles.hint}>Not now</Text>
+                </Pressable>
+              </View>
             </View>
           ) : null}
           {uploads.length ? (
@@ -380,9 +442,17 @@ function AttachButton({ onPick }: { onPick(kind: 'photo' | 'file'): Promise<void
 }
 
 const styles = StyleSheet.create((theme) => ({
-  backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.35)' },
+  backdrop: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    paddingHorizontal: theme.spacing.sm,
+  },
   card: {
-    marginHorizontal: theme.spacing.sm,
+    // Never the full width of a tablet: a capture card, not a sheet.
+    width: '100%',
+    maxWidth: 480,
+    alignSelf: 'center',
     marginBottom: theme.spacing.xl,
     paddingHorizontal: theme.spacing.lg,
     paddingBottom: theme.spacing.lg,
@@ -422,11 +492,34 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surfaceAlt,
   },
   suggestThumb: {
+    overflow: 'hidden',
     width: 34,
     height: 48,
     borderRadius: 6,
     backgroundColor: theme.colors.background,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
+  suggestImage: { width: '100%', height: '100%' },
+  perm: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    padding: theme.spacing.sm,
+    borderRadius: theme.radius.md + 4,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: theme.colors.border,
+  },
+  permIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: theme.colors.surfaceAlt,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  permActions: { alignItems: 'center', gap: 6 },
   suggestBody: { flex: 1, gap: 2 },
   suggestTitle: { color: theme.colors.text, fontSize: theme.text.sm },
   attach: {

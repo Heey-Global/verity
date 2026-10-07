@@ -1,6 +1,13 @@
+import { Image } from 'react-native';
 import { act, fireEvent, render } from '@testing-library/react-native';
 import { QuickCaptureCard } from './QuickCaptureCard';
 import { captureTask } from '../lib/tasksStore';
+import {
+  screenshotAccess,
+  recentTaskScreenshot,
+  previewTaskScreenshot,
+  enableTaskScreenshotSuggestions,
+} from '../lib/taskScreenshot';
 import { useVoiceInput } from '../hooks/useVoiceInput';
 
 jest.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: jest.fn() }));
@@ -9,6 +16,13 @@ jest.mock('../lib/attachments', () => ({ pickFiles: jest.fn(), pickImagesFromLib
 jest.mock('../lib/taskScreenshot', () => ({
   recentTaskScreenshot: jest.fn(async () => null),
   readTaskScreenshot: jest.fn(),
+  screenshotAccess: jest.fn(async () => 'granted'),
+  previewTaskScreenshot: jest.fn(async () => 'data:image/jpeg;base64,preview'),
+  enableTaskScreenshotSuggestions: jest.fn(async () => undefined),
+}));
+jest.mock('../lib/taskPreferences', () => ({
+  useTaskPreferences: () => ({ loaded: true, screenshots: true, screenshotPromptDismissed: false }),
+  saveTaskPreferences: jest.fn(async () => undefined),
 }));
 const toggle = jest.fn();
 const voice = {
@@ -23,6 +37,8 @@ const voice = {
 beforeEach(() => {
   jest.useFakeTimers();
   jest.clearAllMocks();
+  jest.mocked(screenshotAccess).mockResolvedValue('granted');
+  jest.mocked(recentTaskScreenshot).mockResolvedValue(null);
   jest.mocked(useVoiceInput).mockReturnValue(voice as unknown as ReturnType<typeof useVoiceInput>);
   jest
     .mocked(captureTask)
@@ -77,4 +93,25 @@ it('discards without saving', () => {
   fireEvent.press(ui.getByLabelText('Discard capture'));
   expect(voice.abort).toHaveBeenCalled();
   expect(captureTask).not.toHaveBeenCalled();
+});
+
+it('explains photo access and asks only when Allow is tapped', async () => {
+  jest.mocked(screenshotAccess).mockResolvedValue('undetermined');
+  const ui = render(<QuickCaptureCard {...props} />);
+  await act(async () => {});
+  expect(
+    ui.getByText('Verity needs photo access to offer the screenshot you just took.'),
+  ).toBeTruthy();
+  expect(enableTaskScreenshotSuggestions).not.toHaveBeenCalled();
+  await act(async () => fireEvent.press(ui.getByText('Allow')));
+  expect(enableTaskScreenshotSuggestions).toHaveBeenCalledTimes(1);
+});
+it('renders a converted screenshot preview instead of a library URI', async () => {
+  const screenshot = { uri: 'ph://screenshot', filename: 'Screenshot.png' };
+  jest.mocked(recentTaskScreenshot).mockResolvedValue(screenshot);
+  const ui = render(<QuickCaptureCard {...props} />);
+  await act(async () => {});
+  expect(previewTaskScreenshot).toHaveBeenCalledWith(screenshot);
+  expect(ui.getByText('Screenshot from just now')).toBeTruthy();
+  expect(ui.UNSAFE_getAllByType(Image)[0].props.source.uri).toBe('data:image/jpeg;base64,preview');
 });
