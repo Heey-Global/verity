@@ -71,6 +71,16 @@ and current container memory/PID statistics. Unsupported measurements are
 `null`; an unavailable counter is never reported as zero. Host memory and load
 may describe the whole machine rather than the container's allocation.
 
+Managed Server replacement ignores the historical env-source
+`VERITY_SANDBOX_PIDS_LIMIT=512` pin and uses the current 4096 default unless
+`VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY=1` is supplied to the Updater. Its log
+records the ignored pin, and reconciliation reports environment drift for a
+running Server still carrying it. Container diagnostics show the actual PID
+limit: existing sandboxes need recreation after guarded Server replacement;
+a restart does not apply the new limit. PID pressure alone does not establish
+the cause of an earlier crash. See [sandbox resource limits](../deploy/README.md)
+for explicit configuration and rollout requirements.
+
 The default window is the last hour. Select a historical interval with ISO
  timestamps including a timezone offset:
 

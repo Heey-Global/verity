@@ -851,11 +851,21 @@ and flag usage at or above 80% of a finite limit. A sample taken after restart
 does not establish PID usage before the crash; host runtime logs are needed to
 confirm the cause.
 
-An installation that pins `VERITY_SANDBOX_PIDS_LIMIT=512` must update that host
-environment value (or remove it to use the default), then replace the Server
-through its guarded deployment workflow so it reads the updated environment.
-Existing project sandboxes must also be recreated after active work finishes;
-restarting an existing container does not change its PID limit.
+Managed deployments treat an env-source `VERITY_SANDBOX_PIDS_LIMIT=512` as a
+legacy bootstrap default and pass an empty value to new Servers, which use the
+current default of 4096. The Updater logs when it ignores this pin. This also
+applies to older sealed deployments without editing the host `.env`. Other
+values and file-backed sources remain configurable. To deliberately retain 512,
+set `VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY=1` in the host `.env` and recreate the
+Updater through installation Repair so it receives that input; the opt-in works
+even with an older sealed deployment. Unmanaged Servers retain their configured
+value.
+
+Applying the migration requires an Updater version containing it and a guarded
+Server replacement. Existing project sandboxes must also be recreated after
+active work finishes; restarting an existing container does not change its PID
+limit. A running Server with the old pin remains available; reconciliation
+reports environment drift until replacement.
 
 Memory, swap, CPU, and PID ceilings are applied when a sandbox container is
 **created**. An existing sandbox keeps the limits it was created with until it
