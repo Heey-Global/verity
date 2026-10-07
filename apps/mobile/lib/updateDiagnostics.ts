@@ -30,7 +30,9 @@ function priority(log: UpdateLog): number {
 
 function compactLog(log: UpdateLog) {
   // Expo repeats entire manifests in every state transition, burying launch errors.
-  const context = log.message.indexOf(', context = UpdatesStateContext(');
+  const context = log.message.startsWith('Updates state change:')
+    ? log.message.indexOf(', context = ')
+    : -1;
   const message = context < 0 ? log.message : log.message.slice(0, context);
   const identities =
     context < 0
@@ -41,7 +43,7 @@ function compactLog(log: UpdateLog) {
   const contextErrors = Object.fromEntries(
     [
       ...log.message.matchAll(
-        /(checkError|downloadError): ([\s\S]*?)(?=, (?:downloadError|downloadProgress):|$)/g,
+        /(checkError|downloadError)[:=]\s*([\s\S]*?)(?=, (?:downloadError|downloadProgress|lastCheckForUpdateTime|downloadStartTime|downloadFinishTime)[:=]|$)/g,
       ),
     ]
       .filter((match) => match[2] !== 'nil')

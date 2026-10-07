@@ -126,3 +126,22 @@ it('preserves bounded check and download errors while removing manifests', async
   expect(report.logs[0].message).toBe('Updates state change: state = idle, event = checkError');
   expect(JSON.stringify(report)).not.toContain('assetasset');
 });
+
+it('compacts Android map contexts without losing errors after a large manifest', async () => {
+  readLogs.mockResolvedValue([
+    log(
+      'Updates state change: checkError, context = {isChecking=false, latestManifest=' +
+        'asset'.repeat(10000) +
+        ', checkError={message=Network unavailable}, downloadError={message=Asset missing}, lastCheckForUpdateTime=123}',
+      1,
+    ),
+  ]);
+  await shareUpdateDiagnostics();
+  const report = sharedReport();
+  expect(report.logs[0].message).toBe('Updates state change: checkError');
+  expect(report.logs[0].contextErrors).toEqual({
+    checkError: '{message=Network unavailable}',
+    downloadError: '{message=Asset missing}',
+  });
+  expect(JSON.stringify(report)).not.toContain('assetasset');
+});
