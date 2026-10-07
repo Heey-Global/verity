@@ -145,6 +145,9 @@ it does not block unrelated Server updates. Journal source failures remain
 explicit and do not prevent mounting an otherwise valid snapshot.
 Other sealed fields and absent resource-limit fields are preserved; an already
 sealed diagnostic host path cannot be relocated implicitly. A running Server
+with a different exporter path retains its sealed mount during image updates;
+the discrepancy is reported separately and requires explicit host maintenance.
+An existing Server
 that exactly matches its recorded pre-migration authority keeps serving and is
 reported as having a pending diagnostic mount. The next normal guarded Server
 update applies the bind; a stopped pre-migration Server is recreated with it.

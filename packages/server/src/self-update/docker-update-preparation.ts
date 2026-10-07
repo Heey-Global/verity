@@ -347,13 +347,25 @@ export async function dockerUpdatePreparation(
         throw new Error(`managed Server authority unavailable: ${migrated.reason}`);
       const diagnostics = await readHostDiagnosticsCapability(options.hostRuntimeDir);
       if (diagnostics.state === 'available') {
-        migrated = await migrateManagedHostDiagnostics({
-          root: options.managedRoot,
-          deploymentId: migrated.spec.deploymentId,
-          image: migrated.spec.image,
-          hostPath: diagnostics.hostPath,
-        });
-        if (!migrated.managed) throw new Error(migrated.reason);
+        const sealedDiagnosticMount = migrated.spec.mounts.find(
+          (mount) => mount.target === '/run/verity-host-diagnostics',
+        );
+        if (sealedDiagnosticMount === undefined) {
+          migrated = await migrateManagedHostDiagnostics({
+            root: options.managedRoot,
+            deploymentId: migrated.spec.deploymentId,
+            image: migrated.spec.image,
+            hostPath: diagnostics.hostPath,
+          });
+          if (!migrated.managed) throw new Error(migrated.reason);
+        } else if (
+          sealedDiagnosticMount.source.kind === 'bind' &&
+          sealedDiagnosticMount.source.path !== diagnostics.hostPath
+        ) {
+          (options.log ?? console.warn)(
+            'Host diagnostic exporter path differs from sealed authority; retaining the existing mount',
+          );
+        }
         if (Object.values(diagnostics.snapshot.sources).some((source) => source !== 'available'))
           (options.log ?? console.warn)('Host diagnostic journals have incomplete source coverage');
       } else {
