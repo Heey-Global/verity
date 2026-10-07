@@ -1,4 +1,9 @@
-import { type VerityClient, SessionListModel } from '@verity/mobile';
+import {
+  type VerityClient,
+  SessionListModel,
+  publishSettledPermission,
+  publishPullRequestStatusMutation,
+} from '@verity/mobile';
 import { act, renderHook } from '@testing-library/react-native';
 import { AppState, type AppStateStatus } from 'react-native';
 import { useSessionList } from './useSessionList';
@@ -12,6 +17,45 @@ jest.mock('expo-router', () => ({
 }));
 
 describe('useSessionList focus lifecycle', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('changes focus without adding overview renders or losing mutation refreshes', () => {
+    mockFocused = true;
+    jest.spyOn(SessionListModel.prototype, 'start').mockImplementation(() => {});
+    jest.spyOn(SessionListModel.prototype, 'stop').mockImplementation(() => {});
+    const refresh = jest.spyOn(SessionListModel.prototype, 'refresh').mockResolvedValue(undefined);
+    const renders = jest.fn();
+    const client = {} as VerityClient;
+    const hook = renderHook(() => {
+      renders();
+      return useSessionList(client);
+    });
+    renders.mockClear();
+
+    // Navigation already renders the route; focus must not schedule another
+    // full overview/transcript render while the transition is running.
+    mockFocused = false;
+    hook.rerender({});
+    expect(renders).toHaveBeenCalledTimes(1);
+    act(() => {
+      publishSettledPermission('session-1', 'tool-1');
+      publishPullRequestStatusMutation({ sessionId: 'session-1' });
+    });
+    expect(refresh).not.toHaveBeenCalled();
+
+    renders.mockClear();
+    mockFocused = true;
+    hook.rerender({});
+    expect(renders).toHaveBeenCalledTimes(1);
+    act(() => {
+      publishSettledPermission('session-1', 'tool-1');
+      publishPullRequestStatusMutation({ sessionId: 'session-1' });
+    });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenNthCalledWith(1, { silent: true });
+    expect(refresh).toHaveBeenNthCalledWith(2, { silent: true });
+    hook.unmount();
+  });
   it('stops on blur and only resumes on app activation while focused', () => {
     mockFocused = true;
     const start = jest.spyOn(SessionListModel.prototype, 'start').mockImplementation(() => {});
