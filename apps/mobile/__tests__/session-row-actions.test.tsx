@@ -3,6 +3,7 @@ import { Text } from 'react-native';
 
 import {
   isFullSwipe,
+  mixColor,
   SessionContextMenu,
   SwipeableSessionRow,
 } from '../components/SessionRowActions';
@@ -90,6 +91,16 @@ describe('SwipeableSessionRow', () => {
     expect(onDelete).toHaveBeenCalledTimes(1);
   });
 
+  it('opens the session settings from the Edit action beside Delete', () => {
+    const { onEdit, onDelete, onToggleFavorite } = renderRow(false);
+
+    fireEvent.press(screen.getByLabelText('Edit'));
+
+    expect(onEdit).toHaveBeenCalledTimes(1);
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(onToggleFavorite).not.toHaveBeenCalled();
+  });
+
   it('labels the leading action as unfavorite for a favorite', () => {
     renderRow(true);
 
@@ -106,5 +117,15 @@ describe('full swipe direction', () => {
     expect(isFullSwipe('delete', -200, 160)).toBe(true);
     expect(isFullSwipe('favorite', 100, 160)).toBe(false);
     expect(isFullSwipe('delete', -100, 160)).toBe(false);
+  });
+});
+
+describe('mixColor', () => {
+  it('blends to an opaque color, so lanes never let the row content show through', () => {
+    // A translucent `#rrggbbaa` here is what let the title and a second tint
+    // bleed through the delete lane.
+    expect(mixColor('#ff5c8a', '#0a0b16', 0.16)).toBe('#311829');
+    expect(mixColor('#ff5c8a', '#0a0b16', 1)).toBe('#ff5c8a');
+    expect(mixColor('#ff5c8a', '#0a0b16', 0)).toBe('#0a0b16');
   });
 });

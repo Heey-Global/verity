@@ -1,7 +1,7 @@
 // Quick actions on a session row in the overview list. Touch: swipe right to
-// reveal "favorite" on the leading edge, swipe left to reveal "delete" on the
-// trailing edge — a short swipe holds the action open for a tap, a long swipe
-// fires it directly. Browser: a right-click opens a small menu with the same
+// reveal "favorite" on the leading edge, swipe left to reveal "edit" and
+// "delete" on the trailing edge (iOS Mail style) — a short swipe holds the
+// actions open for a tap, a long swipe fires the outermost one directly. Browser: a right-click opens a small menu with the same
 // actions plus "Edit…" (the existing session settings). Long-press stays with
 // the row itself and keeps opening the settings directly.
 import * as Haptics from 'expo-haptics';
@@ -21,7 +21,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon, type IconName } from './Icon';
 
 /** Width an action rests at after a short swipe. */
-const SWIPE_ACTION_WIDTH = 96;
+const SWIPE_ACTION_WIDTH = 88;
 /** Share of the row width past which releasing fires the action directly. */
 const FULL_SWIPE_RATIO = 0.5;
 
@@ -30,6 +30,18 @@ type SwipeSide = 'favorite' | 'delete';
 export function isFullSwipe(side: SwipeSide, translation: number, threshold: number): boolean {
   'worklet';
   return side === 'favorite' ? translation >= threshold : translation <= -threshold;
+}
+
+/** `tone` laid over `base` at `alpha`, as an opaque color. The action lanes sit
+ *  under the row and must not let anything else show through them. */
+export function mixColor(tone: string, base: string, alpha: number): string {
+  const channel = (hex: string, i: number) => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16);
+  const mixed = [0, 1, 2].map((i) =>
+    Math.round(channel(tone, i) * alpha + channel(base, i) * (1 - alpha))
+      .toString(16)
+      .padStart(2, '0'),
+  );
+  return `#${mixed.join('')}`;
 }
 
 // Only one row may hold an action open; opening another closes it, like iOS lists.
@@ -51,11 +63,14 @@ export function SwipeableSessionRow({
   onEdit: () => void;
   children: ReactNode;
 }) {
+  const { theme } = useUnistyles();
   const swipeable = useRef<SwipeableMethods>(null);
   const armed = useRef<SwipeSide | null>(null);
   const [width, setWidth] = useState(0);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const fullSwipe = Math.max(SWIPE_ACTION_WIDTH * 1.5, width * FULL_SWIPE_RATIO);
+  // The trailing edge rests at two actions wide, so its full swipe lies further out.
+  const fullSwipeTrailing = Math.max(SWIPE_ACTION_WIDTH * 2.5, width * FULL_SWIPE_RATIO);
 
   const run = useCallback(
     (side: SwipeSide) => {
@@ -82,6 +97,11 @@ export function SwipeableSessionRow({
         rightThreshold={SWIPE_ACTION_WIDTH / 2}
         dragOffsetFromLeftEdge={12}
         dragOffsetFromRightEdge={12}
+        // The row slides over the action lanes, so it needs its own opaque
+        // surface: on narrow screens it is a `<Link asChild>`, which drops the
+        // row's style — background included — and would let the lanes and their
+        // labels show through the session title.
+        childrenContainerStyle={{ backgroundColor: theme.colors.surface }}
         onSwipeableWillOpen={() => {
           if (openRow && openRow !== swipeable.current) openRow.close();
           openRow = swipeable.current;
@@ -109,9 +129,17 @@ export function SwipeableSessionRow({
             label="Delete"
             icon="trash-2"
             translation={translation}
-            fullSwipe={fullSwipe}
+            fullSwipe={fullSwipeTrailing}
             onArm={onArm}
             onPress={() => run('delete')}
+            secondary={{
+              label: 'Edit',
+              icon: 'edit-2',
+              onPress: () => {
+                swipeable.current?.close();
+                onEdit();
+              },
+            }}
           />
         )}
       >
@@ -140,6 +168,7 @@ function SwipeAction({
   fullSwipe,
   onArm,
   onPress,
+  secondary,
 }: {
   side: SwipeSide;
   label: string;
@@ -148,6 +177,8 @@ function SwipeAction({
   fullSwipe: number;
   onArm: (side: SwipeSide, on: boolean) => void;
   onPress: () => void;
+  /** A second, non-destructive action resting between the row and this one. */
+  secondary?: { label: string; icon: IconName; onPress: () => void };
 }) {
   const { theme } = useUnistyles();
   const tone = side === 'favorite' ? theme.colors.accent : theme.colors.tone.danger;
@@ -166,32 +197,67 @@ function SwipeAction({
     },
     [fullSwipe, side],
   );
-  // The lane follows the finger past its resting width, so a long swipe fills the
-  // row with the action color instead of opening a gap.
+  const rest = SWIPE_ACTION_WIDTH * (secondary ? 2 : 1);
+  // The lane follows the finger past its resting width; the outermost action
+  // grows with it, so a long swipe fills the row with its color instead of
+  // opening a gap.
   const lane = useAnimatedStyle(() => ({
-    width: Math.max(SWIPE_ACTION_WIDTH, Math.abs(translation.value)),
+    width: Math.max(rest, Math.abs(translation.value)),
   }));
+  // Tinted like the status pill at rest; solid once a release would fire it.
+  // Opaque either way: the lane sits under the row and must not show through.
+  const tint = (color: string) => mixColor(color, theme.colors.surface, 0.16);
   const color = isArmed ? theme.colors.onPrimary : tone;
   return (
-    <Reanimated.View
-      style={[
-        styles.lane,
-        side === 'favorite' ? styles.laneLeading : styles.laneTrailing,
-        // Tinted like the status pill at rest; solid once a release would fire it.
-        { backgroundColor: isArmed ? tone : `${tone}24` },
-        lane,
-      ]}
-    >
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={label}
+    <Reanimated.View style={[styles.lane, lane]}>
+      {secondary && !isArmed ? (
+        <SwipeButton
+          label={secondary.label}
+          icon={secondary.icon}
+          color={theme.colors.primary}
+          background={tint(theme.colors.primary)}
+          onPress={secondary.onPress}
+        />
+      ) : null}
+      <SwipeButton
+        label={label}
+        icon={icon}
+        color={color}
+        background={isArmed ? tone : tint(tone)}
         onPress={onPress}
-        style={[styles.action, side === 'favorite' ? styles.actionLeading : styles.actionTrailing]}
-      >
-        <Icon name={icon} size={20} color={color} />
-        <Text style={[styles.actionLabel, { color }]}>{label}</Text>
-      </Pressable>
+        grow
+      />
     </Reanimated.View>
+  );
+}
+
+function SwipeButton({
+  label,
+  icon,
+  color,
+  background,
+  onPress,
+  grow = false,
+}: {
+  label: string;
+  icon: IconName;
+  color: string;
+  background: string;
+  onPress: () => void;
+  grow?: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={onPress}
+      style={[styles.action, grow ? styles.actionGrow : null, { backgroundColor: background }]}
+    >
+      <Icon name={icon} size={20} color={color} />
+      <Text style={[styles.actionLabel, { color }]} numberOfLines={1}>
+        {label}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -311,32 +377,24 @@ function MenuItem({
 const styles = StyleSheet.create((theme) => ({
   lane: {
     height: '100%',
-    justifyContent: 'center',
+    flexDirection: 'row',
   },
-  laneLeading: {
-    alignItems: 'flex-start',
-  },
-  laneTrailing: {
-    alignItems: 'flex-end',
-  },
+  // Icon above a short label, centered in the resting width (iOS list style):
+  // side by side, a label like "Unfavorite" does not fit and spills into the row.
   action: {
     height: '100%',
     width: SWIPE_ACTION_WIDTH,
-    flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.sm,
+    justifyContent: 'center',
+    gap: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.xs,
   },
-  actionLeading: {
-    justifyContent: 'flex-start',
-    paddingLeft: theme.spacing.lg,
-  },
-  actionTrailing: {
-    justifyContent: 'flex-end',
-    paddingRight: theme.spacing.lg,
+  actionGrow: {
+    flexGrow: 1,
   },
   actionLabel: {
     fontSize: theme.text.xs,
-    fontWeight: '800',
+    fontWeight: '700',
   },
   backdrop: {
     position: 'absolute',
