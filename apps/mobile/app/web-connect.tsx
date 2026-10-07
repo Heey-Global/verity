@@ -29,7 +29,11 @@ export default function WebConnectScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [focused, setFocused] = useState<string | null>(null);
+  // Return in any field and the button share this guard, so a pairing code is never
+  // redeemed twice or sent empty.
+  const canSubmit = !busy && (stage === 'code' ? code.trim() !== '' : password !== '');
   const submit = async (): Promise<void> => {
+    if (!canSubmit) return;
     setBusy(true);
     setError('');
     try {
@@ -171,7 +175,7 @@ export default function WebConnectScreen() {
               )}
               <Pressable
                 accessibilityRole="button"
-                disabled={busy || (stage === 'code' ? !code.trim() : !password)}
+                disabled={!canSubmit}
                 onPress={() => void submit()}
                 style={({ hovered }: PressableStateCallbackType & { hovered?: boolean }) => [
                   styles.button,
