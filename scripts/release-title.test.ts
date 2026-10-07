@@ -78,8 +78,15 @@ it.each([
   const titles = [...source.matchAll(/(?:message=|const title = `)(chore[^`]+)`/g)].map(
     (match) => match[1],
   );
-  expect(titles).toHaveLength(2);
-  expect(titles.every((title) => title === `chore(release): ${suffix}`)).toBe(true);
+  const evidenceTitles = titles.filter((title) => title.startsWith('chore(release): record '));
+  expect(evidenceTitles).toEqual(
+    file === 'scripts/production-promotion.ts'
+      ? ['chore(release): record native production ${candidate.version}']
+      : [],
+  );
+  const approvalTitles = titles.filter((title) => !evidenceTitles.includes(title));
+  expect(approvalTitles).toHaveLength(2);
+  expect(approvalTitles.every((title) => title === `chore(release): ${suffix}`)).toBe(true);
 });
 
 // Title-based recovery must keep finding approvals after the naming migration.
