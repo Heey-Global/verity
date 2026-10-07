@@ -1,5 +1,11 @@
-import { LiveConnection, type LiveHint } from '@verity/mobile';
+import {
+  LiveConnection,
+  type LiveHint,
+  type VerityClient,
+  type LiveResource,
+} from '@verity/mobile';
 import { useEffect } from 'react';
+import { AppState } from 'react-native';
 import { createVerityClient } from './client';
 import { createWebSocket } from './socket';
 
@@ -51,4 +57,101 @@ export function useLiveHints(
       if (relevant.length > 0) listener(relevant);
     });
   }, [baseUrl, listener, sessionId]);
+}
+
+/** Refresh mounted data on changes and reconnect. Read observations track the
+ * exact resources (including meeting cursors) requested by this client. */
+export function subscribeLiveRefresh(
+  client: VerityClient,
+  refresh: () => void | Promise<unknown>,
+  filter: (path: string) => boolean = () => true,
+  resources: readonly LiveResource[] = [],
+): () => void {
+  // Lightweight test/demo clients may implement only the API calls they use.
+  if (typeof client.observeReads !== 'function') return () => undefined;
+  const connection = liveConnectionFor(client.liveBaseUrl());
+  const subscriptions = new Map<string, { key: string; detach: () => void }>();
+  let disposed = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let refreshing = false;
+  let pending = false;
+  const run = async (): Promise<void> => {
+    if (disposed) return;
+    if (refreshing) {
+      pending = true;
+      return;
+    }
+    refreshing = true;
+    try {
+      await refresh();
+    } catch {
+      /* Existing screens own error presentation. */
+    } finally {
+      refreshing = false;
+      if (pending && !disposed) {
+        pending = false;
+        invalidate();
+      }
+    }
+  };
+  const invalidate = (): void => {
+    if (disposed || timer !== undefined) return;
+    timer = setTimeout(() => {
+      timer = undefined;
+      if (!disposed) void run();
+    }, 50);
+  };
+  const observe = (resource: LiveResource): void => {
+    if (!filter(resource.path)) return;
+    const path = resource.path.split('?')[0]!;
+    const key = JSON.stringify(resource);
+    const previous = subscriptions.get(path);
+    if (previous?.key === key) return;
+    previous?.detach();
+    subscriptions.set(path, { key, detach: connection.watchResource(resource, invalidate) });
+  };
+  for (const resource of resources) observe(resource);
+  const detachReads = client.observeReads(observe);
+  const detachHints = connection.onHints((hints) => {
+    if (
+      hints.some(({ sessionId }) => {
+        const prefix = `/sessions/${encodeURIComponent(sessionId)}/`;
+        return [...subscriptions.keys()].some(
+          (path) => path === `${prefix}activity` || path === `${prefix}live-meetings`,
+        );
+      })
+    )
+      invalidate();
+  });
+  let fallback: ReturnType<typeof setInterval> | undefined;
+  const syncFallback = (): void => {
+    clearInterval(fallback);
+    fallback = undefined;
+    // A disconnected or older server cannot deliver resource invalidations.
+    const state = connection.connectionState;
+    const preAuth = resources.some(
+      ({ path }) => path === '/onboarding/status' || path === '/secret/status',
+    );
+    if (
+      AppState.currentState === 'active' &&
+      (state !== 'paused' || preAuth) &&
+      (state !== 'unauthorized' || preAuth) &&
+      (state !== 'connected' || !connection.resourceWatching)
+    )
+      fallback = setInterval(invalidate, 15_000);
+  };
+  syncFallback();
+  const detachState = connection.onStateChange((state) => {
+    syncFallback();
+    if (state === 'connected') invalidate();
+  });
+  return () => {
+    disposed = true;
+    clearTimeout(timer);
+    clearInterval(fallback);
+    detachReads();
+    detachHints();
+    detachState();
+    for (const subscription of subscriptions.values()) subscription.detach();
+  };
 }

@@ -37,7 +37,13 @@ export {
   type LiveSocket,
   type LiveSocketFactory,
 } from './live/connection.js';
-export type { LiveAlert, LiveHint, LiveHintTopic, LiveServerFrame } from '@verity/events';
+export type {
+  LiveResource,
+  LiveAlert,
+  LiveHint,
+  LiveHintTopic,
+  LiveServerFrame,
+} from '@verity/events';
 export { decodeLiveServerFrame } from '@verity/events';
 export {
   needsAttention,

@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
 import {
   type VerityClient,
   SessionListModel,
@@ -38,7 +39,7 @@ export function useSessionList(client: VerityClient): UseSessionList {
   // (its `state` getter returns a new literal + a new array), so React never bails
   // out of a re-render on a same-reference no-op.
   const model = useMemo(
-    () => new SessionListModel({ client, onChange: (s) => setState(s) }),
+    () => new SessionListModel({ client, pollIntervalMs: 0, onChange: (s) => setState(s) }),
     [client],
   );
 
@@ -60,6 +61,15 @@ export function useSessionList(client: VerityClient): UseSessionList {
     [model],
   );
   useLiveHints(getVerityBaseUrl(), onHints);
+  useEffect(
+    () =>
+      subscribeLiveRefresh(
+        client,
+        () => model.applyHints([]),
+        (path) => path.split('?')[0] === '/sessions' || path === '/provider-limits',
+      ),
+    [client, model],
+  );
 
   const [focused, setFocused] = useState(false);
   useFocusEffect(

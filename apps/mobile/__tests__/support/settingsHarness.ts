@@ -78,6 +78,7 @@ export function clientMock(): Record<string, unknown> {
   return {
     createVerityClient: () => mockCreateVerityClient(),
     getVerityBaseUrl: () => VERITY_BASE_URL,
+    subscribeVerityBaseUrl: () => () => {},
   };
 }
 

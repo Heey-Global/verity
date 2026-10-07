@@ -168,6 +168,8 @@ export {
   liveClientFrameSchema,
   liveHintSchema,
   liveServerFrameSchema,
+  liveResourceSchema,
+  type LiveResource,
   type LiveAlert,
   type LiveAlertKind,
   type LiveClientFrame,
@@ -177,3 +179,5 @@ export {
   type LiveHintTopic,
   type LiveServerFrame,
 } from './live.js';
+
+export { liveResourceInterval } from './live-resources.js';

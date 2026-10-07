@@ -377,9 +377,12 @@ export class SessionListModel {
     };
     this.poll = poll;
     poll();
-    this.cancelPoll = this.opts.schedule
-      ? this.opts.schedule(poll, intervalMs)
-      : defaultSchedule(poll, intervalMs);
+    this.cancelPoll =
+      intervalMs === 0
+        ? undefined
+        : this.opts.schedule
+          ? this.opts.schedule(poll, intervalMs)
+          : defaultSchedule(poll, intervalMs);
     const tickIntervalMs = this.opts.timeTickMs ?? 30_000;
     const tick = (): void => this.emit();
     this.cancelTimeTick = this.opts.schedule

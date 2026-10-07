@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
 import {
   VerityApiError,
   type AgentLogin,
@@ -163,15 +164,24 @@ export function AgentLoginPanel({
     });
     onActiveChange?.(active.length > 0);
     if (active.length === 0) return;
-    const timer = setInterval(() => {
+    const refresh = () => {
       for (const provider of active) {
         const sessionId = logins[provider].login?.sessionId;
         if (!sessionId) continue;
         poll(provider, sessionId);
       }
-    }, 2500);
-    if (typeof timer === 'object' && 'unref' in timer) timer.unref();
-    return () => clearInterval(timer);
+    };
+    return subscribeLiveRefresh(
+      client,
+      refresh,
+      (path) => path.startsWith('/settings/agent-logins/'),
+      active.flatMap((provider) => {
+        const sessionId = logins[provider].login?.sessionId;
+        return sessionId
+          ? [{ path: `/settings/agent-logins/${encodeURIComponent(sessionId)}` }]
+          : [];
+      }),
+    );
   }, [logins, onActiveChange]);
 
   const start = useCallback(

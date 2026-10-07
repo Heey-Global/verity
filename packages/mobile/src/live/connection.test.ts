@@ -142,6 +142,36 @@ describe('LiveConnection', () => {
     },
   );
 
+  it('shares resource watches, invalidates their views, and restores them after reconnect', async () => {
+    const h = await harness();
+    const first = vi.fn();
+    const second = vi.fn();
+    const resource = { path: '/projects' };
+    const detachFirst = h.connection.watchResource(resource, first);
+    const detachSecond = h.connection.watchResource(resource, second);
+    h.sockets[0]!.serve({ k: 'ready', v: 1, maxSessions: 8, resources: true });
+    expect(h.sockets[0]!.sent.filter((frame) => frame.k === 'watch')).toEqual([
+      { k: 'watch', resource },
+    ]);
+    h.sockets[0]!.serve({ k: 'invalidate', path: '/projects' });
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
+    detachFirst();
+    expect(h.sockets[0]!.sent.filter((frame) => frame.k === 'unwatch')).toEqual([]);
+    h.sockets[0]!.drop();
+    h.runRetry();
+    await flush();
+    h.sockets[1]!.serve({ k: 'ready', v: 1, maxSessions: 8, resources: true });
+    expect(h.sockets[1]!.sent.filter((frame) => frame.k === 'watch')).toEqual([
+      { k: 'watch', resource },
+    ]);
+    detachSecond();
+    expect(h.sockets[1]!.sent.filter((frame) => frame.k === 'unwatch')).toEqual([
+      { k: 'unwatch', resource },
+    ]);
+    h.connection.stop();
+  });
+
   it('connects to /live with the ticket as a subprotocol, never in the URL', async () => {
     const h = await harness();
     expect(h.sockets[0]?.url).toBe('wss://core.example/live');

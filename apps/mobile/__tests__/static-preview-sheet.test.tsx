@@ -10,6 +10,15 @@ import type {
 import { openLocalPreview } from '../components/project/previewAccess';
 import { StaticPreviewSheet } from '../components/project/StaticPreviewSheet';
 
+const mockLiveRefresh = new Set<() => void | Promise<unknown>>();
+jest.mock('../lib/liveConnection', () => ({
+  subscribeLiveRefresh: (_client: unknown, refresh: () => void | Promise<unknown>) => {
+    mockLiveRefresh.add(refresh);
+    return () => mockLiveRefresh.delete(refresh);
+  },
+}));
+afterEach(() => mockLiveRefresh.clear());
+
 jest.mock('../components/project/previewAccess', () => ({
   openLocalPreview: jest.fn(async () => undefined),
 }));
@@ -958,7 +967,7 @@ it('checks the updated PIN lock when a delayed network-dialog action is selected
     await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
     const fallback = jest.mocked(openLocalPreview).mock.calls[0]![2];
     await act(async () => {
-      jest.advanceTimersByTime(4000);
+      for (const refresh of [...mockLiveRefresh]) await refresh();
     });
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Share link and PIN' })).toBeNull(),

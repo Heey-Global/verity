@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
 import { SessionIssueRef } from '../components/SessionIssueRef';
 import { SessionSettingsDialog } from '../components/SessionSettingsDialog';
 // Sessions home screen: the live list of Claude Code sessions, bound to
@@ -92,11 +93,7 @@ import { devServerUrl } from '../lib/devServerUrl';
 import { repairProject } from '../lib/projectRepair';
 import { sessionLoadError } from '../lib/sessionLoadError';
 import { mergeProjectStatusMutation } from '../lib/projectStatusMutation';
-import {
-  hasPendingProjectSetup,
-  projectOverviewStatus,
-  type ProjectOverviewStatus,
-} from '../lib/projectSetup';
+import { projectOverviewStatus, type ProjectOverviewStatus } from '../lib/projectSetup';
 import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
 
@@ -833,14 +830,7 @@ function RightPanePlaceholder() {
   );
 }
 
-// How often the overview silently re-fetches projects so the container-lifecycle
-// state and the GitHub release version stay current without a pull-to-refresh.
-// Coarser than the 2s session poll — project/release data changes slowly and the
-// server throttles the underlying GitHub calls (installation list ~60s, latest
-// release ~5min), so a tighter interval would only add no-op round-trips.
-const PROJECTS_POLL_MS = 15_000;
-const PROJECT_SETUP_POLL_MS = 2_000;
-
+// Project and preview changes arrive over the shared live connection.
 function useProjects(client: VerityClient) {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const devServersByProject = new Map<string, DevServer[]>();
@@ -957,14 +947,15 @@ function useProjects(client: VerityClient) {
     }, [load]),
   );
 
-  const setupRunning = hasPendingProjectSetup(projects);
-  useEffect(() => {
-    const timer = setInterval(
-      () => void load({ silent: true }),
-      setupRunning ? PROJECT_SETUP_POLL_MS : PROJECTS_POLL_MS,
-    );
-    return () => clearInterval(timer);
-  }, [load, setupRunning]);
+  useEffect(
+    () =>
+      subscribeLiveRefresh(
+        client,
+        () => load({ silent: true }),
+        (path) => path.startsWith('/projects'),
+      ),
+    [client, load],
+  );
 
   return {
     projects,

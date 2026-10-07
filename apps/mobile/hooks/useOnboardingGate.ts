@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
 // First-run onboarding gate (#320, PR 1). On mount, fetch `/onboarding/status`
 // (sealed-safe on the server) and, when setup is incomplete, redirect into the
 // wizard at the resume step. Deliberately FAIL-OPEN: a failed status fetch must
@@ -24,8 +25,6 @@ import {
 import { isDemoMode } from '../lib/demoMode';
 
 export type OnboardingGateState = { status: 'checking' } | { status: 'done'; redirectTo?: string };
-
-const SERVER_SECRET_CHECK_INTERVAL_MS = 15_000;
 
 function onboardingRoute(status: OnboardingStatus): string {
   if (isCoreOnboardingComplete(status)) return '/';
@@ -64,7 +63,7 @@ export function useOnboardingGate(): OnboardingGateState {
   useEffect(() => {
     let active = true;
     let inFlight = false;
-    let interval: ReturnType<typeof setInterval> | undefined;
+    let detachLive: (() => void) | undefined;
 
     const currentReturnTo = (): string => {
       const { pathname, searchParams } = route.current;
@@ -75,6 +74,16 @@ export function useOnboardingGate(): OnboardingGateState {
       }
       const encoded = query.toString();
       return encoded ? `${pathname}?${encoded}` : pathname;
+    };
+
+    const watch = (client: NonNullable<ReturnType<typeof createVerityClient>>): void => {
+      if (!active || detachLive) return;
+      detachLive = subscribeLiveRefresh(
+        client,
+        () => check(),
+        (path) => path === '/onboarding/status' || path === '/secret/status',
+        [{ path: '/onboarding/status' }, { path: '/secret/status' }],
+      );
     };
 
     const check = async (): Promise<void> => {
@@ -109,6 +118,7 @@ export function useOnboardingGate(): OnboardingGateState {
             return;
           }
           const client = createVerityClient()!;
+          watch(client);
           if ((await client.getSecretStatus()) === 'sealed') {
             if (active) setState({ status: 'done', redirectTo: '/web-connect?unlock=1' });
             return;
@@ -146,6 +156,7 @@ export function useOnboardingGate(): OnboardingGateState {
           return;
         }
 
+        watch(client);
         // This endpoint distinguishes a configured-but-sealed store from an
         // uninitialized one directly. Treat it as authoritative for the unlock
         // decision: onboarding metadata can be absent or redacted after an
@@ -256,7 +267,6 @@ export function useOnboardingGate(): OnboardingGateState {
     const unsubscribeBrowser =
       Platform.OS === 'web' ? subscribeBrowserSession(() => void check()) : undefined;
     void check();
-    interval = setInterval(() => void check(), SERVER_SECRET_CHECK_INTERVAL_MS);
     const subscription = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active') void check();
     });
@@ -264,7 +274,7 @@ export function useOnboardingGate(): OnboardingGateState {
     return () => {
       active = false;
       unsubscribeBrowser?.();
-      if (interval !== undefined) clearInterval(interval);
+      detachLive?.();
       subscription.remove();
     };
   }, [inOnboarding, inUnlockDevice, inGithubConnect, inWebConnect]);

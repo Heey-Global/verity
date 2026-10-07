@@ -6,6 +6,7 @@ import {
   type LiveClientFrame,
   type LiveEndedReason,
   type LiveHint,
+  type LiveResource,
 } from '@verity/events';
 import { VerityApiError } from '../api.js';
 
@@ -231,6 +232,31 @@ export class LiveConnection implements LiveSessionTransport {
     };
   }
 
+  private readonly resources = new Map<
+    string,
+    { resource: LiveResource; listeners: Set<() => void> }
+  >();
+
+  resourceWatching = false;
+
+  watchResource(resource: LiveResource, listener: () => void): () => void {
+    const key = JSON.stringify(resource);
+    let entry = this.resources.get(key);
+    if (entry === undefined) {
+      entry = { resource, listeners: new Set() };
+      this.resources.set(key, entry);
+      if (this.resourceWatching) this.sendFrame({ k: 'watch', resource });
+    }
+    entry.listeners.add(listener);
+    return () => {
+      entry.listeners.delete(listener);
+      if (entry.listeners.size === 0) {
+        this.resources.delete(key);
+        if (this.resourceWatching) this.sendFrame({ k: 'unwatch', resource });
+      }
+    };
+  }
+
   onAlert(listener: (alert: LiveAlert) => void): () => void {
     this.alertListeners.add(listener);
     return () => this.alertListeners.delete(listener);
@@ -350,13 +376,23 @@ export class LiveConnection implements LiveSessionTransport {
     const frame = decoded.frame;
     switch (frame.k) {
       case 'ready':
+        this.resourceWatching = frame.resources === true;
         this.ready = true;
         this.attempt = 0;
         this.unauthorizedCloses = 0;
         this.setState('connected');
         this.sendFrame({ k: 'state', foreground: this.foreground });
         if (this.overviewListeners.size > 0) this.sendFrame({ k: 'sub', ch: 'overview' });
+        if (this.resourceWatching)
+          for (const entry of this.resources.values())
+            this.sendFrame({ k: 'watch', resource: entry.resource });
         for (const sessionId of this.sessions.keys()) this.sendSubscription(sessionId);
+        return;
+      case 'invalidate':
+        for (const entry of this.resources.values()) {
+          if (entry.resource.path === frame.path)
+            for (const listener of [...entry.listeners]) listener();
+        }
         return;
       case 'event':
         for (const entry of this.sessions.get(frame.id) ?? []) {
@@ -375,8 +411,13 @@ export class LiveConnection implements LiveSessionTransport {
       case 'alert':
         for (const listener of [...this.alertListeners]) listener(frame.alert);
         return;
-      case 'pong':
       case 'error':
+        if (frame.message.startsWith('resource ')) {
+          this.resourceWatching = false;
+          for (const listener of [...this.stateListeners]) listener(this.state);
+        }
+        return;
+      case 'pong':
         return;
     }
   }

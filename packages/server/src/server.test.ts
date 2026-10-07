@@ -10445,6 +10445,44 @@ describe('GET /live (WebSocket)', () => {
     }
   });
 
+  it('synchronizes project collapse between live devices after a saved mutation', async () => {
+    await ctx.store.createProject({
+      id: 'p-live',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'live',
+      cloneDir: 'live',
+      containerName: 'live',
+      state: 'active',
+    });
+    const first = await connect(port, '/live');
+    const second = await connect(port, '/live');
+    try {
+      for (const connection of [first, second]) {
+        expect(await connection.next()).toMatchObject({ k: 'ready', resources: true });
+        connection.ws.send(JSON.stringify({ k: 'watch', resource: { path: '/projects' } }));
+        expect(await connection.next()).toEqual({ k: 'invalidate', path: '/projects' });
+      }
+      const response = await app.inject({
+        method: 'PATCH',
+        url: '/projects/p-live/collapsed',
+        payload: { collapsed: true },
+      });
+      expect(response.statusCode).toBe(200);
+      for (const connection of [first, second]) {
+        expect(await connection.next()).toEqual({ k: 'invalidate', path: '/projects' });
+        expect(
+          (await app.inject({ method: 'GET', url: '/projects' }))
+            .json<{ id: string; collapsed: boolean }[]>()
+            .find((project) => project.id === 'p-live')?.collapsed,
+        ).toBe(true);
+      }
+    } finally {
+      first.ws.close();
+      second.ws.close();
+    }
+  });
+
   it('streams a subscribed session: backlog -> caught_up -> live', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const { seq: backlogSeq, ts: backlogTs } = await ctx.store.appendEvent('s1', {

@@ -350,7 +350,7 @@ const unsupported = () =>
     400,
   );
 /** The local transport never forwards unknown routes or hosts to network fetch. */
-export const demoFetch: typeof fetch = async (input, init) => {
+const demoFetchImpl: typeof fetch = async (input, init) => {
   if (init?.signal?.aborted) {
     const error = new Error('Demo request aborted');
     error.name = 'AbortError';
@@ -748,18 +748,28 @@ export const demoFetch: typeof fetch = async (input, init) => {
   }
   return unsupported();
 };
+/** Demo changes use the same resource invalidations as a connected Core. */
+export const demoFetch: typeof fetch = async (input, init) => {
+  const response = await demoFetchImpl(input, init);
+  const method = init?.method ?? 'GET';
+  if (response.ok && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    for (const socket of sockets) socket.invalidateResources();
+  }
+  return response;
+};
 /** The live connection (`WS /live`) of the local demo: session subscriptions
  * replay from their cursor and then stream, and overview subscribers get hints. */
 class DemoSocket implements LiveSocket {
   private listeners = new Map<string, Array<(event: { data?: unknown }) => void>>();
   private closed = false;
   private overview = false;
+  private readonly resources = new Set<string>();
   /** Subscribed sessions; `true` once their replay has caught up. */
   private readonly subscriptions = new Map<string, boolean>();
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   constructor() {
     sockets.add(this);
-    this.later(() => this.deliver({ k: 'ready', v: 1, maxSessions: 8 }));
+    this.later(() => this.deliver({ k: 'ready', v: 1, maxSessions: 8, resources: true }));
   }
   private later(callback: () => void): void {
     const timer = setTimeout(() => {
@@ -784,7 +794,16 @@ class DemoSocket implements LiveSocket {
       id?: string;
       sinceSeq?: number;
       n?: number;
+      resource?: { path: string };
     };
+    if (frame.k === 'watch' && frame.resource) {
+      const path = frame.resource.path;
+      this.resources.add(path);
+      this.later(() => {
+        if (this.resources.has(path)) this.deliver({ k: 'invalidate', path });
+      });
+    }
+    if (frame.k === 'unwatch' && frame.resource) this.resources.delete(frame.resource.path);
     if (frame.k === 'ping') this.deliver({ k: 'pong', n: frame.n ?? 0 });
     if (frame.k === 'sub' && frame.ch === 'overview') this.overview = true;
     if (frame.k === 'unsub' && frame.ch === 'overview') this.overview = false;
@@ -821,10 +840,14 @@ class DemoSocket implements LiveSocket {
       for (const listener of this.listeners.get('message') ?? [])
         listener({ data: JSON.stringify(frame) });
   }
+  invalidateResources(): void {
+    for (const path of this.resources) this.deliver({ k: 'invalidate', path });
+  }
   deliverLive(sessionId: string, frame: StreamEventFrame): void {
     // A turn can start before the scheduled replay. Replay owns these events
     // until caught up; sending them early drops older history in the reducer.
     if (this.subscriptions.get(sessionId) === true) this.deliver({ ...frame, id: sessionId });
+    this.invalidateResources();
     if (this.overview) {
       this.deliver({
         k: 'hint',
