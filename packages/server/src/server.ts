@@ -214,6 +214,7 @@ import { authorizePairedRoute } from './paired-route-policy.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
 import { createPushFirePoints, type PushFirePoints } from './push-fire-points.js';
 import { createPushRouter, type PushRouter } from './push-router.js';
+import { ResourceObserver } from './live/resource-observer.js';
 import { LiveHub, type SessionChangeFeed } from './live/live-hub.js';
 import { startPullRequestReadyMonitor, type PushSessionContext } from './pr-ready-push.js';
 import { createSessionPrCache } from './session-pr-cache.js';
@@ -2987,11 +2988,15 @@ const BINARY_UPLOAD_ROUTES = new Set([
 ]);
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
-  const liveTickets = new Map<string, { expiresAt: number; deviceId: string; userId: string }>();
+  const liveTickets = new Map<
+    string,
+    { expiresAt: number; deviceId: string; userId: string; credential: string | undefined }
+  >();
   const liveTicketTtlMs = 30_000;
   const mintLiveTicket = (
     deviceId: string,
     userId: string,
+    credential?: string,
   ): { ticket: string; expiresAt: string } => {
     const now = Date.now();
     for (const [ticket, record] of liveTickets) {
@@ -3000,12 +3005,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     while (liveTickets.size >= 1024) liveTickets.delete(liveTickets.keys().next().value!);
     const ticket = randomBytes(32).toString('base64url');
     const expiresAt = now + liveTicketTtlMs;
-    liveTickets.set(ticket, { expiresAt, deviceId, userId });
+    liveTickets.set(ticket, { expiresAt, deviceId, userId, credential });
     return { ticket, expiresAt: new Date(expiresAt).toISOString() };
   };
   const consumeLiveTicket = (
     protocolHeader: string | undefined,
-  ): { deviceId: string; userId: string } | undefined => {
+  ): { deviceId: string; userId: string; credential: string | undefined } | undefined => {
     const offered = (protocolHeader ?? '')
       .split(',')
       .map((value) => value.trim())
@@ -3017,7 +3022,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     liveTickets.delete(ticket);
     if (record.expiresAt <= Date.now() || !deps.authRegistry?.isKnownId?.(record.deviceId))
       return undefined;
-    return { deviceId: record.deviceId, userId: record.userId };
+    return { deviceId: record.deviceId, userId: record.userId, credential: record.credential };
   };
   // A link keeps its original local identity reserved while the DB row
   // temporarily carries the GitHub target. This closes the only interval in
@@ -3378,7 +3383,41 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const session = await deps.eventStore.getSession(sessionId);
     return session ? describePushSession(session) : {};
   };
+  const resources = new ResourceObserver();
+  app.addHook('onClose', () => resources.close());
+  app.addHook('onResponse', (request, reply, done) => {
+    if (
+      reply.statusCode < 400 &&
+      (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) ||
+        request.url.startsWith('/github/app/manifest/callback') ||
+        request.url.startsWith('/github/app/manifest/installed'))
+    )
+      resources.invalidate(request.url);
+    done();
+  });
   const liveHub = new LiveHub({
+    watchResource: (identity, resource, changed) =>
+      resources.watch(
+        identity.userId ?? '',
+        resource,
+        async (target) => {
+          if (
+            deps.authRegistry?.isEnabled() === true &&
+            (!identity.credential || !deps.authRegistry.verify(identity.credential))
+          )
+            return { statusCode: 401, body: '' };
+          const response = await app.inject({
+            method: 'GET',
+            url: target.path,
+            headers: {
+              ...(identity.credential ? { authorization: `Bearer ${identity.credential}` } : {}),
+              ...(target.ownerToken ? { 'x-meeting-owner-token': target.ownerToken } : {}),
+            },
+          });
+          return { statusCode: response.statusCode, body: response.body };
+        },
+        changed,
+      ),
     bus: deps.bus,
     store: {
       getSession: async (sessionId) => {
@@ -9690,7 +9729,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (deviceId === undefined || !request.localUserId) {
         return reply.code(401).send({ error: 'unauthorized' });
       }
-      return mintLiveTicket(deviceId, request.localUserId);
+      return mintLiveTicket(deviceId, request.localUserId, requestCredential(request));
     });
 
     instance.get('/live', { websocket: true }, (socket: WebSocket, request) => {

@@ -1,3 +1,12 @@
+const mockLiveRefresh = new Set<() => void>();
+jest.mock('../lib/liveConnection', () => ({
+  subscribeLiveRefresh: (_client: unknown, refresh: () => void) => {
+    mockLiveRefresh.add(refresh);
+    return () => mockLiveRefresh.delete(refresh);
+  },
+}));
+afterEach(() => mockLiveRefresh.clear());
+
 // Smoke tests for the onboarding wizard SHELL (#320, PR 1). Two concerns:
 //   1. A step screen renders its "Step N of M" progress + placeholder note and the
 //      accessible Back/Next controls navigate (via router.replace) to the right
@@ -221,7 +230,9 @@ describe('onboarding first-run gate', () => {
       expect(fetchStatus).toHaveBeenCalledTimes(1);
       expect(secretStatus).toHaveBeenCalledTimes(1);
       secretStatus.mockResolvedValue('sealed');
-      await act(async () => jest.advanceTimersByTime(15_000));
+      await act(async () => {
+        for (const refresh of mockLiveRefresh) refresh();
+      });
       expect(
         screen.getByText(
           'gate:done:/unlock-device?returnTo=%2Fsession%2Fnew%3FtargetMessageId%3D42&serverSecret=1',

@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { openTasksPanel } from '../../lib/taskPanelEvents';
 import { FileTextEditor } from '../../components/files/FileTextEditor';
 import { FileContentPreview } from '../../components/files/FileContentPreview';
@@ -314,8 +315,6 @@ const AnimatedKeyboardAvoidingView = Reanimated.createAnimatedComponent(Keyboard
 // (Cross-app-restart persistence would need AsyncStorage — a follow-up.)
 const draftStore = new Map<string, string>();
 
-const MEETING_FOLLOW_UP_IDLE_POLL_MS = 1200;
-const MEETING_FOLLOW_UP_IDLE_ATTEMPTS = 100;
 const MAX_ATTACHMENTS_PER_TURN = 8;
 // Points at 72 PPI (~18 mm). iOS takes page margins only from this option; the
 // document's own `@page` rule covers Android.
@@ -329,19 +328,57 @@ const HISTORY_APPEND_SETTLE_FALLBACK_MS = 2000;
 /** Upper bound on the jump cover; the passes themselves finish in about two seconds. */
 const JUMP_FAIL_SAFE_MS = 4000;
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function waitForSessionIdle(client: VerityClient, sessionId: string): Promise<void> {
-  for (let attempt = 0; attempt < MEETING_FOLLOW_UP_IDLE_ATTEMPTS; attempt += 1) {
-    const activity = await client.getActivity(sessionId);
-    if (!activity.busy && activity.queued.length === 0) return;
-    await delay(MEETING_FOLLOW_UP_IDLE_POLL_MS);
-  }
-  throw new Error(
-    'The session is still busy. The meeting prompt will retry when this chat opens again.',
-  );
+  await new Promise<void>((resolve, reject) => {
+    let finished = false;
+    let reading = false;
+    let again = false;
+    let detach = () => {};
+    const timeout = setTimeout(
+      () =>
+        finish(
+          new Error(
+            'The session is still busy. The meeting prompt will retry when this chat opens again.',
+          ),
+        ),
+      120_000,
+    );
+    const finish = (error?: unknown): void => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      detach();
+      if (error) reject(error);
+      else resolve();
+    };
+    const read = async (): Promise<void> => {
+      if (finished) return;
+      if (reading) {
+        again = true;
+        return;
+      }
+      reading = true;
+      try {
+        const activity = await client.getActivity(sessionId);
+        if (!activity.busy && activity.queued.length === 0) finish();
+      } catch (error) {
+        finish(error);
+      } finally {
+        reading = false;
+        if (again && !finished) {
+          again = false;
+          void read();
+        }
+      }
+    };
+    detach = subscribeLiveRefresh(
+      client,
+      read,
+      (path) => path === `/sessions/${encodeURIComponent(sessionId)}/activity`,
+      [{ path: `/sessions/${encodeURIComponent(sessionId)}/activity` }],
+    );
+    void read();
+  });
 }
 
 interface LocalMeetingUploadActivity {
@@ -675,10 +712,14 @@ export function SessionChat({
           .catch(() => undefined);
       };
       refresh();
-      const interval = setInterval(refresh, 15_000);
+      const detach = subscribeLiveRefresh(
+        client,
+        refresh,
+        (path) => path === `/sessions/${encodeURIComponent(sessionId)}/links`,
+      );
       return () => {
         active = false;
-        clearInterval(interval);
+        detach();
       };
     }, [client, sessionId, loaded]),
   );
@@ -696,10 +737,14 @@ export function SessionChat({
           .catch(() => undefined);
       };
       refresh();
-      const interval = setInterval(refresh, 5_000);
+      const detach = subscribeLiveRefresh(
+        client,
+        refresh,
+        (path) => path === `/sessions/${encodeURIComponent(sessionId)}/linked-message-approvals`,
+      );
       return () => {
         active = false;
-        clearInterval(interval);
+        detach();
       };
     }, [client, sessionId, loaded]),
   );
@@ -975,9 +1020,17 @@ export function SessionChat({
   useEffect(() => {
     if (!loaded) return;
     refreshStaticPreview();
-    const timer = setInterval(refreshStaticPreview, 20_000);
-    return () => clearInterval(timer);
-  }, [refreshStaticPreview, loaded]);
+    const detach = subscribeLiveRefresh(
+      client,
+      refreshStaticPreview,
+      (path) =>
+        (projectId != null &&
+          path === `/projects/${encodeURIComponent(projectId)}/public-shares`) ||
+        (path.startsWith(`/sessions/${encodeURIComponent(sessionId)}/`) &&
+          /preview|share|dev-server/u.test(path)),
+    );
+    return () => detach();
+  }, [refreshStaticPreview, loaded, client, projectId, sessionId]);
 
   useEffect(() => {
     if (session.devServers !== undefined) setHasRunningDevServer(session.devServers.length > 0);

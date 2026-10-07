@@ -653,6 +653,7 @@ export class SessionModel {
     // once immediately; live hints refresh it as things change, and the interval
     // is only the safety net for a change that produced no hint.
     void this.loadActivity();
+    if (this.opts.activityPollMs === 0) return;
     this._activityTimer = setInterval(
       () => void this.loadActivity(),
       this.opts.activityPollMs ?? DEFAULT_ACTIVITY_POLL_MS,

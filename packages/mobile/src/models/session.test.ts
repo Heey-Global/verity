@@ -2624,3 +2624,23 @@ describe('SessionModel — planning', () => {
     }
   });
 });
+
+it('loads activity on demand without a recurring timer in live mode', async () => {
+  const client = stubClient();
+  const getActivity = vi.spyOn(client, 'getActivity');
+  const { connect } = recordingConnect();
+  const interval = vi.spyOn(globalThis, 'setInterval');
+  const model = new SessionModel({ client, sessionId: 's', transport: connect, activityPollMs: 0 });
+  try {
+    model.start();
+    await flush();
+    expect(getActivity).toHaveBeenCalledTimes(1);
+    expect(interval).not.toHaveBeenCalled();
+    model.refreshActivity();
+    await flush();
+    expect(getActivity).toHaveBeenCalledTimes(2);
+  } finally {
+    model.stop();
+    interval.mockRestore();
+  }
+});

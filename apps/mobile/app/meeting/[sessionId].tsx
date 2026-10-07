@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -234,11 +235,12 @@ export default function MeetingScreen() {
     if (!sessionId) return;
     let mounted = true;
     let polling = false;
+    const client = createVerityClient();
     const poll = async () => {
       if (polling) return;
       polling = true;
       try {
-        const sync = await syncMeetingSession(sessionId);
+        const sync = await syncMeetingSession(sessionId, client ?? undefined);
         if (!mounted) return;
         setSyncError(sync.pending);
         await refresh();
@@ -252,7 +254,7 @@ export default function MeetingScreen() {
                 if (note.meetingId === shown && !merged.has(note.id)) merged.set(note.id, note);
               return [...merged.values()].sort((a, b) => a.atSeconds - b.atSeconds);
             });
-          const control = await createVerityClient()?.getLiveMeetingCommands(sessionId, shown);
+          const control = await client?.getLiveMeetingCommands(sessionId, shown);
           if (mounted && control) {
             setRecorderOnline(control.recorderOnline);
             const latest = control.commands[0];
@@ -260,13 +262,12 @@ export default function MeetingScreen() {
             if (latest?.state === 'failed') setError(latest.error ?? 'Meeting control failed.');
           }
           try {
-            const found = await createVerityClient()?.getLiveMeetingInsights?.(sessionId, shown);
+            const found = await client?.getLiveMeetingInsights?.(sessionId, shown);
             if (mounted && displayedMeetingId.current === shown && found) setInsights(found);
           } catch {
             // An older server can still serve the meeting without insight support.
           }
           try {
-            const client = createVerityClient();
             if (client?.getHistory) {
               let page = await client.getHistory(sessionId, { limit: 200 });
               let events = page.events;
@@ -338,14 +339,19 @@ export default function MeetingScreen() {
       }
     };
     void poll();
-    const timer = setInterval(() => {
-      void poll();
-    }, 2000);
+    const detach = client
+      ? subscribeLiveRefresh(
+          client,
+          () => poll(),
+          (path) => path.startsWith(`/sessions/${encodeURIComponent(sessionId)}/`),
+          [{ path: `/sessions/${encodeURIComponent(sessionId)}/live-meetings` }],
+        )
+      : () => undefined;
     return () => {
       mounted = false;
-      clearInterval(timer);
+      detach();
     };
-  }, [sessionId, refresh]);
+  }, [sessionId, refresh, meeting?.id]);
 
   useEffect(() => {
     void refresh().catch((reason) => setError(String(reason)));

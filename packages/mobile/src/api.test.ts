@@ -996,6 +996,38 @@ describe('VerityClient meeting transcripts', () => {
   });
 });
 
+describe('live read observations', () => {
+  it('records eligible reads, replays them to a later subscriber and detaches', async () => {
+    const { fetch } = fakeFetchSequence(json([]), json([]));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.listProjects();
+    const observed = vi.fn();
+    const detach = client.observeReads(observed);
+    expect(observed).toHaveBeenCalledWith({ path: '/projects' });
+    detach();
+    await client.listProjects();
+    expect(observed).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains a resource subscription after an initial read fails', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('offline'));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await expect(client.listProjects()).rejects.toThrow('offline');
+    const observed = vi.fn();
+    client.observeReads(observed);
+    expect(observed).toHaveBeenCalledWith({ path: '/projects' });
+  });
+
+  it('watches a meeting feed independently of its incremental read cursor', async () => {
+    const { fetch } = fakeFetch(json({ cursor: 1, meetings: [], notes: [] }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    const observed = vi.fn();
+    client.observeReads(observed);
+    await client.getLiveMeetingChanges('s', 123);
+    expect(observed).toHaveBeenCalledWith({ path: '/sessions/s/live-meetings' });
+  });
+});
+
 describe('VerityClient.listProjects (#174)', () => {
   const project = {
     id: 'p1',

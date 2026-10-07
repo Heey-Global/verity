@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../../lib/liveConnection';
 /**
  * Verity updating itself (ADR 0008 D4). Two things make this panel different
  * from every other one in Settings: the server it talks to is the thing being
@@ -9,7 +10,6 @@ import {
   VerityApiError,
   describeServerUpdate,
   publishServerUpdateStatusMutation,
-  serverUpdatePollMs,
   showsServerUpdatePanel,
   type ServerUpdateStatus,
   type VerityClient,
@@ -31,7 +31,6 @@ import { SettingsGroup, SettingsPanel } from './SettingsChrome';
 import { settingsStyles as styles } from './settingsStyles';
 
 // Cadence for asking whether an unanswered install request started anything.
-const UNANSWERED_POLL_MS = 2_000;
 // How long an unchanged status may still be the Updater catching up with a
 // request whose answer was lost. The server gives the Updater 15 s to journal
 // the operation; a status read before that lands still shows the old one.
@@ -150,17 +149,24 @@ export function ServerUpdateSection({
     }, [refresh]),
   );
 
-  const operation = status?.operation ?? null;
-  const pollMs =
-    serverUpdatePollMs(operation) ??
-    (unanswered !== undefined || (channelNeedsRefresh && !changingChannel)
-      ? UNANSWERED_POLL_MS
-      : null);
+  useEffect(
+    () =>
+      subscribeLiveRefresh(
+        client,
+        () => refresh(),
+        (path) => path.startsWith('/server/'),
+      ),
+    [client, refresh],
+  );
+
   useEffect(() => {
-    if (pollMs === null) return;
-    const timer = setInterval(() => void refresh(), pollMs);
-    return () => clearInterval(timer);
-  }, [pollMs, refresh]);
+    const pending = unansweredRef.current;
+    if (unanswered === undefined || pending === undefined) return;
+    // An unchanged live snapshot cannot announce that the local request's
+    // grace period expired. Reconcile once at the deadline even without a hint.
+    const timer = setTimeout(() => void refresh(), Math.max(0, pending.deadline - Date.now()));
+    return () => clearTimeout(timer);
+  }, [unanswered, refresh]);
 
   const install = useCallback(
     (targetDigest: string, idempotencyKey: string) => {
@@ -193,7 +199,7 @@ export function ServerUpdateSection({
           // settles it. Anything else — a 503 because the Server stopped waiting
           // for the Updater, a dropped connection — may belong to a request the
           // Updater accepted anyway, and a status read right away can still show
-          // the previous operation. That one gets a grace period of polling.
+          // the previous operation. That one gets a grace period before reconciliation.
           const refused =
             caught instanceof VerityApiError && caught.status >= 400 && caught.status < 500;
           const current = await client.getServerUpdates().catch(() => undefined);
@@ -204,7 +210,7 @@ export function ServerUpdateSection({
             settle(current, idempotencyKey);
             return;
           }
-          // Keep the button busy and poll; a status that moves on — or the
+          // Keep the button busy; a status that moves on — or the
           // grace period running out — decides.
           unansweredRef.current = {
             key: idempotencyKey,

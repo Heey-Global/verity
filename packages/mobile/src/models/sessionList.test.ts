@@ -1229,3 +1229,17 @@ it.each([{ status: 'paused' as const }, undefined])(
     expect(model.state.sessions[0]?.automation).toEqual(previous.automation);
   },
 );
+
+it('retains the initial load and live invalidations when periodic polling is disabled', async () => {
+  const { client, listSessions } = makeClient();
+  listSessions.mockResolvedValue([]);
+  const schedule = vi.fn(() => () => {});
+  const model = new SessionListModel({ client, pollIntervalMs: 0, schedule });
+  model.start();
+  await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(1));
+  // The remaining timer updates relative timestamps without making requests.
+  expect(schedule).toHaveBeenCalledTimes(1);
+  model.applyHints([]);
+  await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
+  model.stop();
+});

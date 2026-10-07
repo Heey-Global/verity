@@ -37,6 +37,7 @@ jest.mock('../lib/liveConnection', () => ({
   useLiveHints: (_baseUrl: string, listener: (hints: unknown[]) => void) => {
     mockHintListeners.push(listener);
   },
+  subscribeLiveRefresh: () => () => {},
 }));
 jest.mock('expo-router', () => ({
   useFocusEffect: (callback: () => (() => void) | undefined) => {

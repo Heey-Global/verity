@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -264,8 +265,11 @@ export function StaticPreviewSheet({
   // move from starting to running without the user pulling.
   useEffect(() => {
     void loadManaged();
-    const timer = setInterval(() => void loadManaged(), 3_000);
-    return () => clearInterval(timer);
+    return subscribeLiveRefresh(
+      client,
+      () => loadManaged(),
+      (path) => path.endsWith('/managed-dev-servers'),
+    );
   }, [loadManaged, detectedServers]);
   const selectedManaged = managed?.find((server) => server.id === managedId);
   useEffect(() => {
@@ -279,10 +283,10 @@ export function StaticPreviewSheet({
         })
         .catch(() => undefined);
     load();
-    const timer = setInterval(load, 3_000);
+    const detach = subscribeLiveRefresh(client, load, (path) => path.endsWith('/logs'));
     return () => {
       active = false;
-      clearInterval(timer);
+      detach();
     };
   }, [client, managedId, sessionId]);
 
@@ -679,10 +683,12 @@ export function StaticPreviewSheet({
         });
     };
     loadShares();
-    const timer = setInterval(loadShares, 4_000);
+    const detach = subscribeLiveRefresh(client, loadShares, (path) =>
+      /shares|dev-servers/u.test(path),
+    );
     return () => {
       active = false;
-      clearInterval(timer);
+      detach();
     };
   }, [capabilitiesLoaded, client, projectId, publicSharing, sessionId]);
 

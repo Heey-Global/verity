@@ -1,3 +1,12 @@
+const mockLiveRefresh = new Set<() => void>();
+jest.mock('../lib/liveConnection', () => ({
+  subscribeLiveRefresh: (_client: unknown, refresh: () => void) => {
+    mockLiveRefresh.add(refresh);
+    return () => mockLiveRefresh.delete(refresh);
+  },
+}));
+afterEach(() => mockLiveRefresh.clear());
+
 // Server update: Verity replacing itself, plus the apply-settings banner every
 // settings screen carries while a saved change has not reached running containers.
 //
@@ -589,9 +598,15 @@ describe('settings/server-update', () => {
 
     fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
     expect(await screen.findByText('Starting…')).toBeOnTheScreen();
+    await waitFor(() => expect(mockLiveRefresh.size).toBeGreaterThan(0));
+    await act(async () => {});
     expect(screen.queryByText('Could not start the update.')).toBeNull();
 
-    await act(() => jest.advanceTimersByTimeAsync(4_000));
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(4_000);
+      for (const refresh of [...mockLiveRefresh]) await refresh();
+      for (const refresh of [...mockLiveRefresh]) await refresh();
+    });
 
     expect(await screen.findByText('Verity is up to date')).toBeOnTheScreen();
     expect(screen.queryByText('Could not start the update.')).toBeNull();
@@ -637,7 +652,13 @@ describe('settings/server-update', () => {
     render(<ServerUpdateScreen />);
 
     fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
-    await act(() => jest.advanceTimersByTimeAsync(2_000));
+    await screen.findByText('Starting…');
+    await waitFor(() => expect(mockLiveRefresh.size).toBeGreaterThan(0));
+    await act(async () => {});
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(2_000);
+      for (const refresh of [...mockLiveRefresh]) await refresh();
+    });
 
     expect(await screen.findByText('Step 2 of 14')).toBeOnTheScreen();
     expect(screen.queryByText('Could not start the update.')).toBeNull();
@@ -660,7 +681,9 @@ describe('settings/server-update', () => {
     await act(() => jest.advanceTimersByTimeAsync(10_000));
     expect(screen.queryByText('Could not start the update.')).toBeNull();
 
-    await act(() => jest.advanceTimersByTimeAsync(14_000));
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(14_000);
+    });
     expect(await screen.findByText('Could not start the update.')).toBeOnTheScreen();
     expect(screen.getByLabelText('Install 1.4.0')).toBeOnTheScreen();
     jest.useRealTimers();

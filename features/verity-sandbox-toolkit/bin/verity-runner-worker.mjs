@@ -24870,7 +24870,13 @@ var fileOperationRequestSchema = import_zod6.z.discriminatedUnion("action", [
 var import_zod7 = __toESM(require_zod(), 1);
 var sessionId = import_zod7.z.string().min(1).max(200);
 var seq = import_zod7.z.number().int().nonnegative();
+var liveResourceSchema = import_zod7.z.object({
+  path: import_zod7.z.string().min(1).max(1e3),
+  ownerToken: import_zod7.z.string().min(1).max(512).optional()
+});
 var liveClientFrameSchema = import_zod7.z.union([
+  import_zod7.z.object({ k: import_zod7.z.literal("watch"), resource: liveResourceSchema }),
+  import_zod7.z.object({ k: import_zod7.z.literal("unwatch"), resource: liveResourceSchema }),
   /** Whether the app is in front of the user: an active iOS app, a visible and
    * focused browser tab. Only a foreground connection receives in-app alerts in
    * place of a push. */
@@ -24915,7 +24921,8 @@ var liveServerFrameSchema = import_zod7.z.discriminatedUnion("k", [
   import_zod7.z.object({
     k: import_zod7.z.literal("ready"),
     v: import_zod7.z.number().int().positive(),
-    maxSessions: import_zod7.z.number().int().positive()
+    maxSessions: import_zod7.z.number().int().positive(),
+    resources: import_zod7.z.boolean().optional()
   }),
   import_zod7.z.object({
     k: import_zod7.z.literal("event"),
@@ -24928,6 +24935,7 @@ var liveServerFrameSchema = import_zod7.z.discriminatedUnion("k", [
   import_zod7.z.object({ k: import_zod7.z.literal("ended"), id: sessionId, reason: import_zod7.z.enum(LIVE_ENDED_REASONS) }),
   import_zod7.z.object({ k: import_zod7.z.literal("hint"), hints: import_zod7.z.array(liveHintSchema).min(1) }),
   import_zod7.z.object({ k: import_zod7.z.literal("alert"), alert: liveAlertSchema }),
+  import_zod7.z.object({ k: import_zod7.z.literal("invalidate"), path: import_zod7.z.string() }),
   import_zod7.z.object({ k: import_zod7.z.literal("pong"), n: import_zod7.z.number().int().nonnegative() }),
   import_zod7.z.object({ k: import_zod7.z.literal("error"), message: import_zod7.z.string() })
 ]);

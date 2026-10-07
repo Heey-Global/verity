@@ -9,6 +9,7 @@ import {
   type LiveAlert,
   type LiveEndedReason,
   type LiveHint,
+  type LiveResource,
   type LiveHintTopic,
   type LiveServerFrame,
 } from '@verity/events';
@@ -52,6 +53,7 @@ export interface LiveIdentity {
   deviceId?: string | undefined;
   /** The device's local user; undefined only while the auth gate is off. */
   userId?: string | undefined;
+  credential?: string | undefined;
 }
 
 export interface LiveSessionRef {
@@ -91,6 +93,11 @@ export interface LiveHubDeps {
   recheckMs?: number;
   pingIntervalMs?: number;
   pongTimeoutMs?: number;
+  watchResource?: (
+    identity: LiveIdentity,
+    resource: LiveResource,
+    changed: () => void,
+  ) => (() => void) | undefined;
   now?: () => number;
 }
 
@@ -131,6 +138,7 @@ class LiveConnection {
   foreground = false;
   overview = false;
   readonly subscriptions = new Map<string, SessionSubscription>();
+  private readonly resources = new Map<string, () => void>();
   private lastPongAt: number;
   private readonly timers: ReturnType<typeof setInterval>[] = [];
   private closed = false;
@@ -180,6 +188,7 @@ class LiveConnection {
       k: 'ready',
       v: LIVE_PROTOCOL_VERSION,
       maxSessions: LIVE_MAX_SESSION_SUBSCRIPTIONS,
+      ...(this.hub.deps.watchResource ? { resources: true } : {}),
     });
   }
 
@@ -200,6 +209,8 @@ class LiveConnection {
     for (const timer of this.timers) clearInterval(timer);
     for (const sub of this.subscriptions.values()) this.cancel(sub);
     this.subscriptions.clear();
+    for (const detach of this.resources.values()) detach();
+    this.resources.clear();
     this.hub.detach(this);
   }
 
@@ -211,6 +222,26 @@ class LiveConnection {
     }
     const frame = decoded.frame;
     switch (frame.k) {
+      case 'watch': {
+        const key = JSON.stringify(frame.resource);
+        if (this.resources.has(key)) return;
+        if (this.resources.size >= 64) {
+          this.send({ k: 'error', message: 'resource limit' });
+          return;
+        }
+        const detach = this.hub.deps.watchResource?.(this.identity, frame.resource, () =>
+          this.send({ k: 'invalidate', path: frame.resource.path }),
+        );
+        if (detach) this.resources.set(key, detach);
+        else this.send({ k: 'error', message: 'resource unavailable' });
+        return;
+      }
+      case 'unwatch': {
+        const key = JSON.stringify(frame.resource);
+        this.resources.get(key)?.();
+        this.resources.delete(key);
+        return;
+      }
       case 'ping':
         this.lastPongAt = this.hub.now();
         this.send({ k: 'pong', n: frame.n });
