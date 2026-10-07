@@ -102,6 +102,7 @@ export class SessionListModel {
   private reqSeq = 0;
   private favoriteMutations = new Map<string, number>();
   private confirmedFavorites = new Map<string, boolean>();
+  private failedFavoriteMutations = new Map<string, number>();
   private confirmedFavoriteMutations = new Map<string, number>();
   private pendingFavorites = new Map<string, { favorite: boolean; maxRequest: number }>();
   private pendingAutomations = new Map<
@@ -251,12 +252,23 @@ export class SessionListModel {
         this.confirmedFavoriteMutations.set(sessionId, mutation);
         this.confirmedFavorites.set(sessionId, stored);
       }
-      if (this.favoriteMutations.get(sessionId) !== mutation) return;
+      if (this.favoriteMutations.get(sessionId) !== mutation) {
+        if (
+          this.failedFavoriteMutations.get(sessionId) === this.favoriteMutations.get(sessionId) &&
+          this.confirmedFavoriteMutations.get(sessionId) === mutation
+        ) {
+          this.pendingFavorites.set(sessionId, { favorite: stored, maxRequest: this.reqSeq });
+          this.applyFavorite(sessionId, stored);
+          this.emit();
+        }
+        return;
+      }
       this.pendingFavorites.set(sessionId, { favorite: stored, maxRequest: this.reqSeq });
       this.applyFavorite(sessionId, stored);
       this._error = undefined;
     } catch (error) {
       if (this.favoriteMutations.get(sessionId) !== mutation) return;
+      this.failedFavoriteMutations.set(sessionId, mutation);
       const confirmed = this.confirmedFavorites.get(sessionId) ?? previous;
       this.pendingFavorites.set(sessionId, { favorite: confirmed, maxRequest: this.reqSeq });
       this.applyFavorite(sessionId, confirmed);
