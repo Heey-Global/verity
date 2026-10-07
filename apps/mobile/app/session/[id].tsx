@@ -2740,8 +2740,10 @@ export function SessionChat({
     // previously fell back to `software`, but the operator has since focused the
     // composer with a hardware keyboard attached.
     const preserveFocus =
-      isIpadFocusTarget &&
-      (shouldPreserveComposerFocus() || (composerFocusedRef.current && !keyboardShownRef.current));
+      Platform.OS === 'web' ||
+      (isIpadFocusTarget &&
+        (shouldPreserveComposerFocus() ||
+          (composerFocusedRef.current && !keyboardShownRef.current)));
     preserveFocusAfterSendRef.current = preserveFocus;
     if (!preserveFocus) Keyboard.dismiss();
   }, [
@@ -4711,7 +4713,6 @@ function SessionFilesSheet({
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [dropActive, setDropActive] = useState(false);
-  const [inputFocused, setInputFocused] = useState(false);
   const [driveActive, setDriveActive] = useState(false);
   const [driveCanWrite, setDriveCanWrite] = useState(false);
   const [driveFolderId, setDriveFolderId] = useState<string | null>(null);
@@ -9341,7 +9342,7 @@ function InputBar({
           ]}
         >
           <TextInput
-            key={sendNonce}
+            key={Platform.OS === 'web' ? 'web-composer' : sendNonce}
             ref={inputRef}
             style={[
               styles.input,
