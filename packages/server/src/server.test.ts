@@ -3286,7 +3286,7 @@ describe('GET /sessions', () => {
         usage: ZERO_USAGE,
         resumable: false, // fake worktree path → not on disk
         eventCount: 0,
-        eventCountVersion: 'agent-text-v2',
+        agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: expect.any(Number),
         lastSeenEventCount: null,
       },
@@ -3303,7 +3303,7 @@ describe('GET /sessions', () => {
         usage: ZERO_USAGE,
         resumable: false,
         eventCount: 0,
-        eventCountVersion: 'agent-text-v2',
+        agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: null,
         lastSeenEventCount: null,
       },
@@ -3475,7 +3475,7 @@ describe('GET /sessions', () => {
         },
         resumable: false,
         eventCount: 0,
-        eventCountVersion: 'agent-text-v2',
+        agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: expect.any(Number),
         lastSeenEventCount: null,
       },
@@ -4946,7 +4946,7 @@ describe('GET /projects (#174)', () => {
     expect(detail.json()).toMatchObject({
       eventCount: 1,
       lastSeenEventCount: 1,
-      eventCountVersion: 'agent-text-v2',
+      agentTextCounterVersion: 'agent-text-v2',
     });
     await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'new message' });
     const unread = await app.inject({ method: 'GET', url: `/sessions/${sessionId}` });
@@ -6371,7 +6371,7 @@ describe('GET /sessions/:id', () => {
       usage: ZERO_USAGE,
       resumable: false,
       eventCount: 0,
-      eventCountVersion: 'agent-text-v2',
+      agentTextCounterVersion: 'agent-text-v2',
       lastActivityAt: expect.any(Number),
       lastSeenEventCount: null,
       busy: false,

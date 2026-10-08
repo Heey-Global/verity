@@ -2832,7 +2832,7 @@ export interface SessionSummary extends SessionRecord {
    * read marker to show the overview unread dot. */
   eventCount: number;
   /** Version associated with eventCount; absent in summaries from older servers. */
-  eventCountVersion?: 'agent-text-v2';
+  agentTextCounterVersion?: 'agent-text-v2';
   /** Timestamp of the newest canonical event, for metadata-only recency displays. */
   lastActivityAt: number | null;
   /**
@@ -5027,7 +5027,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       resumable,
       ...(branch !== undefined ? { branch } : {}),
       eventCount: facts.eventCount,
-      eventCountVersion: 'agent-text-v2',
+      agentTextCounterVersion: 'agent-text-v2',
       // Omit entirely when unresolved/unconfigured (exactOptionalPropertyTypes): a
       // literal `undefined` isn't assignable to `pr?: … | null`, and absent reads as
       // "no marker" on the client anyway.
@@ -7565,7 +7565,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ...(rateLimits.length > 0 ? { rateLimits } : {}),
         resumable: await worktreeExists(session.worktree),
         eventCount: facts.eventCount,
-        eventCountVersion: 'agent-text-v2',
+        agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: facts.lastActivityAt,
         busy: conductor.isBusy(id) || hasMeetingJob(id),
         queued: conductor.queuedItems(id),

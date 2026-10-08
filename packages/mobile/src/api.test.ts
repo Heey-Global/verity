@@ -5,6 +5,7 @@ import {
   VerityClient,
   projectRecordSchema,
   sessionSummarySchema,
+  sessionDetailSchema,
   type TurnRequest,
 } from './api.js';
 
@@ -15,6 +16,26 @@ const ZERO_USAGE = {
   cacheCreationTokens: 0,
   turns: 0,
 };
+
+it('normalizes the additive agent-text counter version without breaking legacy readers', () => {
+  const wire = {
+    sessionId: 's1',
+    worktree: '/wt/s1',
+    model: 'm',
+    name: null,
+    status: 'idle',
+    usage: ZERO_USAGE,
+    eventCount: 2,
+    agentTextCounterVersion: 'agent-text-v2',
+    lastSeenEventCount: 1,
+  };
+  // Installed clients restrict the older field to a literal; a replacement value
+  // there would reject the entire session list rather than just the read marker.
+  const legacy = z.object({ eventCountVersion: z.literal('dev-servers-excluded-v1').optional() });
+  expect(() => legacy.parse(wire)).not.toThrow();
+  expect(sessionSummarySchema.parse(wire).eventCountVersion).toBe('agent-text-v2');
+  expect(sessionDetailSchema.parse(wire).eventCountVersion).toBe('agent-text-v2');
+});
 
 it.each([undefined, 'dev-servers-excluded-v1', 'agent-text-v2'])(
   'accepts summaries with counter version %s',
