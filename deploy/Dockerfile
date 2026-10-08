@@ -23,6 +23,7 @@ WORKDIR /app
 
 # Copy the manifests first so the dependency layer caches independently of source
 # churn. The lockfile + every workspace package.json are needed for `npm ci`.
+COPY vendor/expo-router-query-string ./vendor/expo-router-query-string
 COPY package.json package-lock.json ./
 COPY tsconfig.base.json tsconfig.json ./
 COPY packages/events/package.json packages/events/
@@ -89,6 +90,7 @@ FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc
 
 WORKDIR /app
 
+COPY vendor/expo-router-query-string ./vendor/expo-router-query-string
 COPY package.json package-lock.json ./
 COPY packages/events/package.json packages/events/
 COPY packages/secret-contracts/package.json packages/secret-contracts/
