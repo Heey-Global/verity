@@ -1,0 +1,10 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    # Renovate owns version updates; security updates ignore this limit.
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: fix(deps)
