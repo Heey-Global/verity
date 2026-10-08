@@ -13,6 +13,18 @@ type PairedRoutePolicy =
  * permission are declared here. Everything else remains administrator-only,
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
+  [
+    routeScopeKey('POST', '/sessions/:id/live-meetings/online'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/live-meetings/:meetingId/online/stop'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('PATCH', '/sessions/:id/live-meetings/:meetingId/online/speakers'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
   [routeScopeKey('GET', '/projects/:id'), { kind: 'project', parameter: 'id', permission: 'read' }],
   [routeScopeKey('GET', '/sessions/:id'), { kind: 'session', parameter: 'id', permission: 'read' }],
   [

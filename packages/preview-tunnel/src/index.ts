@@ -48,7 +48,17 @@ const SESSION_LIFETIME_SECONDS = 8 * 60 * 60;
 const MAX_LOGIN_IDENTITIES = 1024;
 const CONNECTOR_HEARTBEAT_MS = 15_000;
 
+export function validWebhookPath(value: string): boolean {
+  return (
+    value !== '/__verity' &&
+    !value.startsWith('/__verity/') &&
+    value.length <= 1024 &&
+    /^\/(?:[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*)$/.test(value)
+  );
+}
+
 export interface PreviewEdgeOptions {
+  webhookPath?: string;
   shareId: string;
   /** Open access is only enabled by the self-hosted local preview manager. */
   accessMode?: 'pin' | 'local-open';
@@ -199,8 +209,10 @@ export function hashPreviewPin(pin: string, salt = randomBytes(16).toString('hex
 }
 
 export class PreviewEdge {
-  private readonly options: Required<Omit<PreviewEdgeOptions, 'pinBudget' | 'requestBudget'>> &
-    Pick<PreviewEdgeOptions, 'pinBudget' | 'requestBudget'>;
+  private readonly options: Required<
+    Omit<PreviewEdgeOptions, 'pinBudget' | 'requestBudget' | 'webhookPath'>
+  > &
+    Pick<PreviewEdgeOptions, 'pinBudget' | 'requestBudget' | 'webhookPath'>;
   private readonly server: Server;
   private readonly websocketServer: WebSocketServer;
   private readonly clientSockets: WebSocketServer;
@@ -218,6 +230,11 @@ export class PreviewEdge {
   private expiryTimer: NodeJS.Timeout | undefined;
 
   constructor(options: PreviewEdgeOptions) {
+    if (
+      options.webhookPath !== undefined &&
+      (!validWebhookPath(options.webhookPath) || options.accessMode === 'local-open')
+    )
+      throw new Error('unsupported webhook path');
     validatePinHash(options.pinHash);
     validateHash(options.connectorTokenHash, 'connectorTokenHash');
     validateHash(options.sessionSecretHash, 'sessionSecretHash');
@@ -317,6 +334,10 @@ export class PreviewEdge {
       );
       return;
     }
+    if (this.options.webhookPath) {
+      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n', () => socket.destroy());
+      return;
+    }
     if (
       this.options.accessMode !== 'local-open' &&
       !previewBrowserOriginAllowed(request, this.options.publicOrigin)
@@ -336,7 +357,7 @@ export class PreviewEdge {
         .join('&');
       url.search = query ? `?${query}` : '';
     }
-    if (!this.sessionAuthorized(request)) {
+    if (!this.options.webhookPath && !this.sessionAuthorized(request)) {
       if (pin === null) {
         socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n', () =>
           socket.destroy(),
@@ -723,7 +744,30 @@ export class PreviewEdge {
     let budgetAcquired = false;
     try {
       const url = new URL(request.url ?? '/', this.options.publicOrigin);
-      if (url.pathname === LOGO_PATH) {
+      if (this.options.webhookPath) {
+        if (url.pathname !== this.options.webhookPath || request.method !== 'POST') {
+          response.writeHead(404, { 'cache-control': 'no-store' }).end();
+          return;
+        }
+        if (!url.searchParams.has('pin')) {
+          response
+            .writeHead(401, { 'X-Verity-Webhook-Mode': 'webhook-v1', 'cache-control': 'no-store' })
+            .end();
+          return;
+        }
+        if (
+          !(await this.authorizePin(
+            request,
+            () => Promise.resolve(url.searchParams.get('pin') ?? ''),
+            (status, message, retryAfter) =>
+              sendPreviewError(response, status, message, retryAfter),
+          ))
+        )
+          return;
+        url.searchParams.delete('pin');
+      }
+
+      if (!this.options.webhookPath && url.pathname === LOGO_PATH) {
         if (request.method !== 'GET' && request.method !== 'HEAD') {
           response.writeHead(405, { allow: 'GET, HEAD' }).end();
           return;
@@ -743,6 +787,7 @@ export class PreviewEdge {
         return;
       }
       if (
+        !this.options.webhookPath &&
         this.options.accessMode !== 'local-open' &&
         !['GET', 'HEAD', 'OPTIONS'].includes(request.method ?? 'GET') &&
         !previewBrowserOriginAllowed(request, this.options.publicOrigin)
@@ -762,11 +807,16 @@ export class PreviewEdge {
         response.end(JSON.stringify({ shareId: this.options.shareId }));
         return;
       }
-      if (this.options.accessMode !== 'local-open' && url.pathname === LOGIN_PATH) {
+      if (
+        !this.options.webhookPath &&
+        this.options.accessMode !== 'local-open' &&
+        url.pathname === LOGIN_PATH
+      ) {
         await this.handleLogin(request, response);
         return;
       }
       if (
+        !this.options.webhookPath &&
         request.method === 'GET' &&
         url.searchParams.has('pin') &&
         !this.sessionAuthorized(request)
@@ -776,7 +826,7 @@ export class PreviewEdge {
         await this.handleLogin(request, response, { pin, next: url.pathname + url.search });
         return;
       }
-      if (!this.sessionAuthorized(request)) {
+      if (!this.options.webhookPath && !this.sessionAuthorized(request)) {
         response.writeHead(303, {
           location: `${LOGIN_PATH}?next=${encodeURIComponent(url.pathname + url.search)}`,
           'cache-control': 'no-store',

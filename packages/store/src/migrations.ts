@@ -4059,7 +4059,17 @@ const migrations: Record<string, Migration> = {
       await sql`drop table session_overview_order`.execute(db);
     },
   },
-  '0146_project_allowed_agents': {
+  '0146_attendee_meetings': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`create table attendee_state (id text primary key, state_secret text not null)`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table attendee_state`.execute(db);
+    },
+  },
+  '0147_project_allowed_agents': {
     async up(db: Kysely<unknown>): Promise<void> {
       // Null keeps every connected agent available, so existing projects are unchanged.
       await sql`alter table project_settings add column allowed_agents jsonb

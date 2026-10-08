@@ -1855,7 +1855,13 @@ export type IntegrationSource = z.infer<typeof integrationSourceSchema>;
 const liveMeetingSchema = z.object({
   id: z.string(),
   sessionId: z.string(),
-  engine: z.enum(['apple-speech', 'apple-dictation', 'fluid-nemotron', 'fluid-parakeet']),
+  engine: z.enum([
+    'apple-speech',
+    'apple-dictation',
+    'fluid-nemotron',
+    'fluid-parakeet',
+    'attendee',
+  ]),
   startedAt: z.number(),
   endedAt: z.number().nullable(),
   state: z.enum(['active', 'interrupted', 'ended']),
@@ -1917,6 +1923,62 @@ export type LiveMeetingCommand = z.infer<typeof liveMeetingCommandSchema>;
 export type LiveMeetingInsight = z.infer<typeof liveMeetingInsightSchema>;
 
 export class VerityClient {
+  async getAttendeeSettings(): Promise<{ configured: boolean }> {
+    return z
+      .object({ configured: z.boolean() })
+      .parse(await (await this.request('/settings/attendee', { method: 'GET' })).json());
+  }
+  async saveAttendeeSettings(
+    config: { apiKey: string; webhookSecret: string } | null,
+  ): Promise<void> {
+    await this.request('/settings/attendee', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+  }
+  async testAttendee(): Promise<void> {
+    await this.request('/settings/attendee/test', { method: 'POST' });
+  }
+  async startOnlineMeeting(
+    sessionId: string,
+    meetingUrl: string,
+    listenForVerity = true,
+  ): Promise<{ meetingId: string }> {
+    return z.object({ meetingId: z.string() }).parse(
+      await (
+        await this.request(`/sessions/${encodeURIComponent(sessionId)}/live-meetings/online`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ meetingUrl, listenForVerity }),
+        })
+      ).json(),
+    );
+  }
+  async stopOnlineMeeting(sessionId: string, meetingId: string): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/stop`,
+      { method: 'POST' },
+    );
+  }
+  async editOnlineMeetingSpeakers(
+    sessionId: string,
+    meetingId: string,
+    edits: {
+      speakerNames?: Record<string, string>;
+      speakerCorrections?: Array<{ start: number; end: number; speaker: number | null }>;
+      speakerMerges?: Record<string, number>;
+    },
+  ): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/speakers`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(edits),
+      },
+    );
+  }
   private readonly observedReads = new Map<string, LiveResource>();
   private readonly readListeners = new Set<(resource: LiveResource) => void>();
 

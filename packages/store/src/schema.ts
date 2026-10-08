@@ -1341,7 +1341,13 @@ interface SessionOverviewOrderTable {
   ids: string[];
 }
 
+interface AttendeeStateTable {
+  id: string;
+  state_secret: string;
+}
+
 export interface Database {
+  attendee_state: AttendeeStateTable;
   session_overview_order: SessionOverviewOrderTable;
   live_meetings: LiveMeetingsTable;
   live_meeting_notes: LiveMeetingNotesTable;
