@@ -425,7 +425,7 @@ describe('SessionModel — loadOlderUntil (bookmark jump)', () => {
     await model.loadOlderUntil(42);
 
     // One fetch sized to the whole span (100 − 42), not a fixed 150 page.
-    expect(getHistory).toHaveBeenCalledWith('s1', { beforeSeq: 100, limit: 58 });
+    expect(getHistory).toHaveBeenCalledWith('s1', { beforeSeq: 100, limit: 58, timing: undefined });
     // The older event is prepended AHEAD of the tail — consecutive agent-text deltas
     // coalesce, so the merged 'old'+'tail' (not 'tail'+'old') confirms the order.
     expect(agentTexts(model.state)).toEqual(['oldtail']);

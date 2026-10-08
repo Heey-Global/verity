@@ -4000,3 +4000,15 @@ it.each([true, false])(
     expect(JSON.stringify(trace.phases)).not.toContain('private-tool-use');
   },
 );
+
+it('does not attach continued old-model pagination to a returning gesture', async () => {
+  const original = beginSessionSwitch('paginate');
+  beginSessionSwitch('other-page');
+  const returned = beginSessionSwitch('paginate');
+  const fetch = vi.fn(async () => json({ events: [], hasMore: false }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.getHistory('paginate', { beforeSeq: 10, timing: original });
+  await client.getHistory('paginate', { beforeSeq: 5, timing: undefined });
+  expect(returned.phases).toEqual([]);
+  expect(original.phases).toEqual([]);
+});

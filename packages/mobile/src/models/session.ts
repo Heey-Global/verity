@@ -803,6 +803,7 @@ export class SessionModel {
         const page = await this.opts.client.getHistory(this.opts.sessionId, {
           beforeSeq: cursor,
           limit: HISTORY_PAGE,
+          timing: this.timing,
         });
         fetchedPages.push(page.events);
         fetchedHasMore = page.hasMore;
@@ -872,6 +873,7 @@ export class SessionModel {
       const page = await this.opts.client.getHistory(this.opts.sessionId, {
         beforeSeq,
         limit: beforeSeq - targetSeq,
+        timing: this.timing,
       });
       this.installOlderHistory(page.events);
       this._hasOlder = page.hasMore;
