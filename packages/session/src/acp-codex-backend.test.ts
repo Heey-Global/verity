@@ -78,6 +78,8 @@ function acpSpawner(
     promptFailure?: string;
     processExit?: { code: number | null; signal: NodeJS.Signals | null };
     exitDelayMs?: number;
+    exitDetailsBeforeClose?: boolean;
+    setupFailure?: boolean;
     /** Refuse `session/load` the way the adapter refuses a rollout it cannot
      *  restore: JSON-RPC -32002 naming the requested id. */
     loadNotFound?: boolean;
@@ -168,7 +170,8 @@ function acpSpawner(
               resolveExit = resolve;
             }),
       exitDetails: () =>
-        closed && (behavior.exitDelayMs === undefined || exitReady)
+        closed &&
+        (behavior.exitDetailsBeforeClose || behavior.exitDelayMs === undefined || exitReady)
           ? behavior.processExit
           : undefined,
       stderr: () =>
@@ -217,6 +220,10 @@ function acpSpawner(
           } else if (method === 'session/set_mode' && behavior.refusePlanningMode) {
             push({ jsonrpc: '2.0', id, error: { code: -32602, message: 'mode refused' } });
           } else if (method === 'session/set_mode' || method === 'session/set_config_option') {
+            if (behavior.setupFailure) {
+              close();
+              return true;
+            }
             // Echoing nothing is the adapter shape Codex actually has today, and it
             // keeps the plain ack's meaning in `applySelectOption`. `echoStaleModel`
             // is the other half of that contract — an adapter that answers with the
@@ -428,6 +435,27 @@ describe('AcpCodexBackend', () => {
     });
   });
 
+  it('records native process termination even when stdio close exceeds the drain wait', async () => {
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({
+        promptFailure: 'fatal error',
+        processExit: { code: 1, signal: null },
+        exitDelayMs: 350,
+        exitDetailsBeforeClose: true,
+      }).spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: true,
+    });
+  });
+
   it('records a startup process failure with no active prompt', async () => {
     await ctx.store.createSession({
       sessionId: 'startup',
@@ -451,6 +479,22 @@ describe('AcpCodexBackend', () => {
       signal: null,
       turnActive: false,
       phase: 'initialize',
+    });
+  });
+
+  it('keeps the prompt inactive when the process exits during session configuration', async () => {
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({ setupFailure: true, processExit: { code: 1, signal: null } }).spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: false,
     });
   });
 

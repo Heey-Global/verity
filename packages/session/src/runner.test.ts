@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ALLOWED_PERMISSION_MODES, assertSafeArgs, nodeSpawner } from './runner.js';
 
 /** Drain a spawned child's stdout to a single string. */
@@ -94,6 +94,32 @@ describe('nodeSpawner (real child process, integration)', () => {
     await expect(proc.exited).resolves.toBe(3);
     expect(proc.stderr()).toContain('boom diag');
     expect(proc.exitDetails?.()).toEqual({ code: 3, signal: null });
+  });
+
+  it('preserves native exit details while an inherited stderr pipe remains open', async () => {
+    const script = `const {spawn}=require('node:child_process');
+      const child=spawn(process.execPath, ['-e', 'setTimeout(()=>{},60000)'],
+        {stdio:['ignore','ignore',2], detached:true});
+      console.log(child.pid); process.exit(1);`;
+    const proc = nodeSpawner('node', ['-e', script], { cwd: process.cwd(), env: process.env });
+    const descendant = Number((await collect(proc.stdout)).trim());
+    let closed = false;
+    void proc.exited.then(() => {
+      closed = true;
+    });
+    try {
+      await vi.waitFor(() => expect(proc.exitDetails?.()).toEqual({ code: 1, signal: null }));
+      expect(closed).toBe(false);
+    } finally {
+      if (Number.isInteger(descendant) && descendant > 0) {
+        try {
+          process.kill(descendant, 'SIGKILL');
+        } catch {
+          /* Already exited. */
+        }
+      }
+    }
+    await expect(proc.exited).resolves.toBe(1);
   });
 
   it('retains the latest 64 KiB of stderr bytes', async () => {

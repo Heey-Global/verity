@@ -58,14 +58,6 @@ export function redactProcessStderr(text: string, env: NodeJS.ProcessEnv = {}): 
   let out = Buffer.byteLength(text) >= 65_533 ? text.slice(text.indexOf('\n') + 1) : text;
   if (Buffer.byteLength(text) >= 65_533 && !text.includes('\n'))
     return '[truncated stderr line omitted]';
-  // Values supplied to the child can be opaque credentials without a known prefix.
-  const values = Object.entries(env)
-    .filter(
-      ([name, value]) => value && (value.length >= 4 || /TOKEN|SECRET|PASSWORD|KEY/u.test(name)),
-    )
-    .map(([, value]) => value as string)
-    .sort((a, b) => b.length - a.length);
-  for (const value of values) out = out.split(value).join(REDACTED);
   out = redactSecrets(out)
     // File-loaded credentials may have no recognizable value prefix. Omit the
     // remainder of a credential-bearing JSON line, including truncated values.
@@ -91,5 +83,13 @@ export function redactProcessStderr(text: string, env: NodeJS.ProcessEnv = {}): 
   ) {
     return '[REDACTED PARTIAL PRIVATE KEY]';
   }
+  // Substitute environment values last so they cannot erase credential field names.
+  const values = Object.entries(env)
+    .filter(
+      ([name, value]) => value && (value.length >= 4 || /TOKEN|SECRET|PASSWORD|KEY/u.test(name)),
+    )
+    .map(([, value]) => value as string)
+    .sort((a, b) => b.length - a.length);
+  for (const value of values) out = out.split(value).join(REDACTED);
   return out;
 }

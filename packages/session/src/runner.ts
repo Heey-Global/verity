@@ -181,6 +181,9 @@ export const nodeSpawner: Spawner = (command, args, options) => {
     child.stderr.on('data', (chunk: Buffer) => stderrTail.push(chunk));
   }
 
+  child.once('exit', (code, signal) => {
+    exitDetails = { code, signal };
+  });
   const exited = new Promise<number>((resolve, reject) => {
     child.once('error', reject);
     child.once('close', (code, signal) => {

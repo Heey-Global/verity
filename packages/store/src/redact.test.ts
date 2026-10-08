@@ -104,6 +104,19 @@ describe('redactProcessStderr', () => {
     const value = ['opaque', 'file', 'credential'].join('-');
     expect(redactProcessStderr(`{"password":"${value}`)).not.toContain(value);
   });
+  it('recognizes credentials before environment values can alter field names or token prefixes', () => {
+    const value = ['opaque', 'file', 'credential'].join('-');
+    const jwt = ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiJ1c2VyIn0', 'c2lnbmF0dXJl'].join('.');
+    const raw = `${JSON.stringify({ access_token: value })}\n${jwt}\nMODE=unknown`;
+    const redacted = redactProcessStderr(raw, {
+      AUTH_MODE: 'token',
+      SHORT_SECRET: 'eyJ',
+      MODE_NAME: 'MODE',
+    });
+    expect(redacted).not.toContain(value);
+    expect(redacted).not.toContain('eyJzdWIiOiJ1c2VyIn0');
+    expect(redacted).not.toContain('unknown');
+  });
   it('omits a leading partial credential line from a full capture', () => {
     const raw = 'partial-credential' + 'x'.repeat(65_536) + '\nlast failure';
     expect(redactProcessStderr(raw)).toBe('last failure');

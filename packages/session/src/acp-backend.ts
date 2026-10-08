@@ -597,7 +597,8 @@ export async function runAcpTurn(
   let loadRefused = false;
   let diagnosticPhase: 'spawn' | 'initialize' | 'session_load' | 'session_new' | 'prompt' = 'spawn';
   const isInitializing = (): boolean => diagnosticPhase === 'initialize';
-  const isPrompting = (): boolean => diagnosticPhase === 'prompt';
+  let promptDispatched = false;
+  const isPrompting = (): boolean => promptDispatched;
   const topLevelText = new AcpTextStream();
   let updateTail: Promise<void> = Promise.resolve();
   let updateError: unknown;
@@ -1049,6 +1050,7 @@ export async function runAcpTurn(
           // new prompt is the first point after which an agent_message_chunk can
           // belong to this turn rather than ACP's replay of canonical history.
           loadingSession = false;
+          promptDispatched = true;
           const prompt = await agent.request(acp.methods.agent.session.prompt, {
             sessionId: session.sessionId,
             prompt: promptBlocks(turnOpts, profile),
@@ -1209,7 +1211,7 @@ export async function runAcpTurn(
     // EOF can precede the process close event; wait briefly for drained stderr and
     // exit metadata, without stalling a failure on a wedged remote channel.
     let exitTimer: ReturnType<typeof setTimeout> | undefined;
-    const processExited = await Promise.race([
+    await Promise.race([
       child.exited.then(
         () => true,
         () => false,
@@ -1219,7 +1221,7 @@ export async function runAcpTurn(
       }),
     ]);
     if (exitTimer !== undefined) clearTimeout(exitTimer);
-    const exitDetails = processExited ? child.exitDetails?.() : undefined;
+    const exitDetails = child.exitDetails?.();
     const stderr = `${child.stderr()}\n${message}`;
     const processFailure =
       !aborted &&
