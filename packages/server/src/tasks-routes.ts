@@ -246,6 +246,8 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
     // PUT is capture creation/retry. Edits use PATCH with a revision.
     if (previous !== undefined) return { task: taskResponse(previous) };
     const projectId = body.projectId ?? null;
+    if (projectId === null)
+      return reply.code(400).send({ error: 'choose a project for this task' });
     const sessionId = body.sessionId ?? null;
     if (
       !(await canUseProject(
@@ -326,6 +328,8 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
       reply.code(404);
       return { error: 'task not found' };
     }
+    if (body.projectId === null)
+      return reply.code(400).send({ error: 'choose a project for this task' });
     const projectId = body.projectId === undefined ? previous.projectId : body.projectId;
     const sessionId = body.sessionId === undefined ? previous.sessionId : body.sessionId;
     if (
@@ -465,6 +469,7 @@ export async function executeTasksTool(input: {
     });
   };
   if (input.request.action === 'add') {
+    if (input.projectId === null) throw new Error('choose a project before adding tasks');
     const existing = await tasks.listAssigned(input.sessionId);
     let sort = existing.reduce((max, task) => Math.max(max, task.sort), 0);
     const added: TaskRecord[] = [];

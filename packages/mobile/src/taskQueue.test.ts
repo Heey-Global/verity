@@ -234,18 +234,18 @@ it('does not rebase a stale editor over an in-flight patch', async () => {
   expect(s.snapshot().conflicts).toContain(task.id);
 });
 
-it('can move a rejected capture to General and retry its original id', async () => {
+it('can assign a legacy projectless capture to a project and retry its original id', async () => {
   const s = setup(
     JSON.stringify({
-      tasks: [{ ...task, projectId: 'revoked' }],
-      pending: [{ kind: 'create', id: task.id, body: { title: task.title, projectId: 'revoked' } }],
+      tasks: [{ ...task, projectId: null }],
+      pending: [{ kind: 'create', id: task.id, body: { title: task.title, projectId: null } }],
       conflicts: [task.id],
     }),
   );
   await s.queue.restore();
-  await s.queue.patch(task.id, { projectId: null, sessionId: null, expectedRevision: 0 });
+  await s.queue.patch(task.id, { projectId: 'p', sessionId: null, expectedRevision: 0 });
   await s.queue.sync();
-  expect(s.api.saveTask).toHaveBeenCalledWith(task.id, { title: task.title, projectId: null });
+  expect(s.api.saveTask).toHaveBeenCalledWith(task.id, { title: task.title, projectId: 'p' });
   expect(s.snapshot().conflicts).toHaveLength(0);
 });
 

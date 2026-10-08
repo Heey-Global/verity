@@ -72,7 +72,10 @@ export function QuickCaptureCard({
     };
   }, [preferences.loaded, preferences.screenshots, preferences.screenshotPromptDismissed]);
   const [uploads, setUploads] = useState<AttachmentUpload[]>([]);
-  const [projectId, setProjectId] = useState(context.projectId);
+  const [projectId, setProjectId] = useState(
+    context.projectId ??
+      (projects.some((p) => p.id === preferences.projectId) ? preferences.projectId : null),
+  );
   const [other, setOther] = useState(false);
   const [saving, setSaving] = useState(false);
   const voice = useVoiceInput(text, setText);
@@ -86,7 +89,7 @@ export function QuickCaptureCard({
     }
   }, [voice]);
   const save = async (target = projectId) => {
-    if (!text.trim() || savingRef.current) return;
+    if (!text.trim() || savingRef.current || target === null) return;
     if (uploads.reduce((total, upload) => total + upload.data.length, 0) > 45_000_000) {
       Alert.alert('Attachments too large', 'Keep the total attachment size below 33 MB.');
       return;
@@ -119,7 +122,7 @@ export function QuickCaptureCard({
           task.id,
           projects.find((p) => p.id === target)
             ? projectDisplayName(projects.find((p) => p.id === target)!)
-            : 'General',
+            : 'Project',
         );
         onClose();
       } catch (error) {
@@ -164,25 +167,44 @@ export function QuickCaptureCard({
     } finally {
     }
   };
+  useEffect(() => {
+    if (
+      context.projectId === null &&
+      projectId === null &&
+      preferences.projectId &&
+      projects.some((project) => project.id === preferences.projectId)
+    )
+      setProjectId(preferences.projectId);
+  }, [context.projectId, projectId, preferences.projectId, projects]);
   const recording = voice.state === 'recording';
   // The picked project always shows as a selected chip, also when it came from Other….
   const chips = [
-    ...new Set([projectId, context.projectId, null, ...projects.slice(0, 3).map((p) => p.id)]),
+    ...new Set(
+      [projectId, context.projectId, ...projects.slice(0, 3).map((p) => p.id)].filter(
+        (id): id is string => id !== null,
+      ),
+    ),
   ];
   const label = (id: string | null) =>
     id === null
-      ? 'General'
+      ? 'Choose a project'
       : projectDisplayName(
           projects.find((p) => p.id === id) ?? { owner: '', repo: id, kind: 'local' },
         );
-  const chip = (id: string | null) => {
+  const selectProject = (id: string) => {
+    setProjectId(id);
+    void saveTaskPreferences({ projectId: id }).catch(() =>
+      Alert.alert('Could not remember project', 'Try again'),
+    );
+  };
+  const chip = (id: string) => {
     const selected = projectId === id;
     return (
       <Pressable
-        key={id ?? 'general'}
+        key={id}
         accessibilityRole="button"
         accessibilityState={{ selected }}
-        onPress={() => setProjectId(id)}
+        onPress={() => selectProject(id)}
         style={({ pressed }) => [
           styles.chip,
           selected ? styles.chipSelected : null,
@@ -351,6 +373,13 @@ export function QuickCaptureCard({
           {/* One layout throughout: the project is picked here while or after
               speaking, and only the footer's main button changes. Nothing is
               saved until the operator taps Save. */}
+          {projectId === null ? (
+            <Text style={styles.hint}>
+              {projects.length === 0
+                ? 'Create a project to save this task.'
+                : 'Choose a project to save this task.'}
+            </Text>
+          ) : null}
           <View style={styles.chips}>
             {chips.map(chip)}
             <Pressable
@@ -368,7 +397,7 @@ export function QuickCaptureCard({
                   key={project.id}
                   style={({ pressed }) => [styles.otherRow, pressed ? styles.pressed : null]}
                   onPress={() => {
-                    setProjectId(project.id);
+                    selectProject(project.id);
                     setOther(false);
                   }}
                 >
@@ -384,7 +413,7 @@ export function QuickCaptureCard({
             </Text>
             <Pressable
               accessibilityRole="button"
-              disabled={!text.trim() || saving}
+              disabled={!text.trim() || saving || projectId === null}
               onPress={() => void save()}
               style={({ pressed }) => [
                 styles.save,

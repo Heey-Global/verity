@@ -90,6 +90,7 @@ export async function captureTask(body: TaskCapture): Promise<Task> {
   await ready;
   if (scope !== startedScope) throw new Error('Your connection changed; reopen Tasks');
   if (!queue) throw new Error('Sign in to save tasks');
+  if (!body.projectId) throw new Error('Choose a project to save this task');
   const now = new Date().toISOString();
   const task: Task = {
     id: randomUUID(),

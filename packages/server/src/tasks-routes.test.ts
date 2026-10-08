@@ -78,28 +78,66 @@ async function grantMember(permissions: { read: boolean; execute: boolean }): Pr
 }
 
 describe('tasks routes', () => {
-  it('blocks member assignment to an administrator-only projectless session', async () => {
+  it('rejects assigning a project task to a projectless session', async () => {
+    await grantMember({ read: true, execute: true });
     const create = await app.inject({
       method: 'PUT',
       url: `/tasks/${T1}`,
       headers: asMember,
       payload: { title: 'Injected', sessionId: 'loose' },
     });
-    expect(create.statusCode).toBe(404);
-    await app.inject({
+    expect(create.statusCode).toBe(400);
+    const capture = await app.inject({
       method: 'PUT',
       url: `/tasks/${T1}`,
       headers: asMember,
-      payload: { title: 'Personal' },
+      payload: { title: 'Personal', projectId: 'p1' },
     });
+    expect(capture.statusCode).toBe(201);
     const assign = await app.inject({
       method: 'PATCH',
       url: `/tasks/${T1}`,
       headers: asMember,
       payload: { sessionId: 'loose' },
     });
-    expect(assign.statusCode).toBe(404);
+    expect(assign.statusCode).toBe(400);
+    expect((await store.tasks.get(T1, MEMBER))?.sessionId).toBeNull();
     expect(await store.tasks.listAssigned('loose')).toEqual([]);
+  });
+
+  it('requires projects for new tasks and rejects moving tasks back to General', async () => {
+    for (const projectId of [undefined, null]) {
+      expect(
+        (
+          await app.inject({
+            method: 'PUT',
+            url: `/tasks/${T1}`,
+            payload: { title: 'Capture', projectId },
+          })
+        ).statusCode,
+      ).toBe(400);
+    }
+    expect(await store.tasks.get(T1, ADMIN)).toBeUndefined();
+    await store.tasks.upsert({ id: T1, ownerUserId: ADMIN, origin: 'user', title: 'Legacy task' });
+    expect(
+      (
+        await app.inject({
+          method: 'PATCH',
+          url: `/tasks/${T1}`,
+          payload: { projectId: 'p1', expectedRevision: 1 },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: 'PATCH',
+          url: `/tasks/${T1}`,
+          payload: { projectId: null, expectedRevision: 2 },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect((await store.tasks.get(T1, ADMIN))?.projectId).toBe('p1');
   });
 
   it('saves a capture idempotently and lists it by bucket', async () => {
@@ -124,7 +162,7 @@ describe('tasks routes', () => {
     expect(again.statusCode).toBe(200);
     expect(again.json().task).toMatchObject({ title: 'Fix badge', revision: 1 });
 
-    await app.inject({ method: 'PUT', url: `/tasks/${T2}`, payload: { title: 'General idea' } });
+    await store.tasks.upsert({ id: T2, ownerUserId: ADMIN, origin: 'user', title: 'Legacy task' });
     const general = await app.inject({ method: 'GET', url: '/tasks?projectId=general' });
     expect(ids(general.json())).toEqual([T2]);
     const project = await app.inject({ method: 'GET', url: '/tasks?projectId=p1&status=open' });
@@ -328,7 +366,11 @@ describe('tasks routes', () => {
   });
 
   it("keeps one user from touching another user's task by id", async () => {
-    await app.inject({ method: 'PUT', url: `/tasks/${T1}`, payload: { title: 'Mine' } });
+    await app.inject({
+      method: 'PUT',
+      url: `/tasks/${T1}`,
+      payload: { title: 'Mine', projectId: 'p1' },
+    });
     const list = await app.inject({ method: 'GET', url: '/tasks', headers: asMember });
     expect(list.json().tasks).toEqual([]);
     const patch = await app.inject({
@@ -342,7 +384,7 @@ describe('tasks routes', () => {
       method: 'PUT',
       url: `/tasks/${T1}`,
       headers: asMember,
-      payload: { title: 'Hijack' },
+      payload: { title: 'Hijack', projectId: 'p1' },
     });
     expect(hijack.statusCode).toBe(404);
     const del = await app.inject({ method: 'DELETE', url: `/tasks/${T1}`, headers: asMember });
@@ -424,7 +466,11 @@ describe('tasks routes', () => {
   });
 
   it('reports a stale revision as a conflict and otherwise bumps it', async () => {
-    await app.inject({ method: 'PUT', url: `/tasks/${T1}`, payload: { title: 'T' } });
+    await app.inject({
+      method: 'PUT',
+      url: `/tasks/${T1}`,
+      payload: { title: 'T', projectId: 'p1' },
+    });
     const ok = await app.inject({
       method: 'PATCH',
       url: `/tasks/${T1}`,
@@ -720,6 +766,7 @@ describe('task capture uploads', () => {
       url: `/tasks/${T1}`,
       payload: {
         title: 'Read context',
+        projectId: 'p1',
         uploads: [{ kind: 'file', mediaType: 'text/plain', fileName: 'context.txt', data: 'aGk=' }],
       },
     });
@@ -737,7 +784,11 @@ describe('task capture uploads', () => {
     expect(read.body).toBe('hi');
   });
   it('does not upload replacement bytes on a capture retry', async () => {
-    await app.inject({ method: 'PUT', url: `/tasks/${T1}`, payload: { title: 'Original' } });
+    await app.inject({
+      method: 'PUT',
+      url: `/tasks/${T1}`,
+      payload: { title: 'Original', projectId: 'p1' },
+    });
     const put = vi.spyOn(store, 'putAttachment');
     const response = await app.inject({
       method: 'PUT',
