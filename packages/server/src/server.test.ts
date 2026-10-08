@@ -3282,6 +3282,7 @@ describe('GET /sessions', () => {
         planningPlan: null,
         planningRevision: 0,
         projectId: null,
+        sortOrder: null,
         status: 'awaiting_input',
         pendingPermissions: [],
         usage: ZERO_USAGE,
@@ -3299,6 +3300,7 @@ describe('GET /sessions', () => {
         planningPlan: null,
         planningRevision: 0,
         projectId: null,
+        sortOrder: null,
         status: 'idle',
         pendingPermissions: [],
         usage: ZERO_USAGE,
@@ -3465,6 +3467,7 @@ describe('GET /sessions', () => {
         planningPlan: null,
         planningRevision: 0,
         projectId: null,
+        sortOrder: null,
         status: 'completed',
         pendingPermissions: [],
         usage: {
