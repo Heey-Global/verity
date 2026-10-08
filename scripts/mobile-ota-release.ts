@@ -543,8 +543,12 @@ function stage(runtime: string, version: string) {
     // A prior run can stop after resetting this branch to the source but before
     // GraphQL creates its metadata commit. That source may have no manifest (or
     // an older schema). Only the immutable artifact record authorizes recovery.
-    const interruptedRecord = `ota-proposal-base/${candidate.tag}/${expectedHead}`;
-    const recorded = git('for-each-ref', '--format=%(contents)', `refs/tags/${interruptedRecord}`);
+    let interruptedRecord = `ota-proposal-base/${candidate.tag}/${expectedHead}`;
+    let recorded = git('for-each-ref', '--format=%(contents)', `refs/tags/${interruptedRecord}`);
+    if (!recorded) {
+      interruptedRecord = `ota-artifact/${candidate.tag}/${expectedHead}`;
+      recorded = git('for-each-ref', '--format=%(contents)', `refs/tags/${interruptedRecord}`);
+    }
     const previous = validateCandidate(
       JSON.parse(recorded || git('show', `FETCH_HEAD:${manifestPath}`)),
     );
@@ -588,11 +592,12 @@ function stage(runtime: string, version: string) {
         throw new Error('Invalid rolling branch ownership reservation');
       git('merge-base', '--is-ancestor', owner.commit, commit);
       git('fetch', 'origin', branch);
-      const sourceRecord = git(
-        'for-each-ref',
-        '--format=%(contents)',
-        `refs/tags/ota-proposal-base/${candidate.tag}/${remote}`,
-      );
+      let baseTag = `ota-proposal-base/${candidate.tag}/${remote}`;
+      let sourceRecord = git('for-each-ref', '--format=%(contents)', `refs/tags/${baseTag}`);
+      if (!sourceRecord) {
+        baseTag = `ota-artifact/${candidate.tag}/${remote}`;
+        sourceRecord = git('for-each-ref', '--format=%(contents)', `refs/tags/${baseTag}`);
+      }
       const previous = validateCandidate(
         JSON.parse(sourceRecord || git('show', `FETCH_HEAD:${manifestPath}`)),
       );
@@ -606,7 +611,6 @@ function stage(runtime: string, version: string) {
         throw new Error('Orphaned rolling branch has no matching immutable artifact');
       git('merge-base', '--is-ancestor', previous.commit, commit);
       if (sourceRecord) {
-        const baseTag = `ota-proposal-base/${candidate.tag}/${remote}`;
         if (git('rev-list', '-n', '1', baseTag) !== remote)
           throw new Error('Orphaned rolling source differs from its reservation');
         git('merge-base', '--is-ancestor', previous.commit, remote);
@@ -629,7 +633,10 @@ function stage(runtime: string, version: string) {
   }
   if (!remote && !ownerRecord) reserve(ownerTag, candidate);
   if (open[0] && remote !== expectedHead) throw new Error('Rolling PR changed during staging');
-  assertBaseline(candidate);
+  if (assertBaseline(candidate)) {
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, 'deferred=true\n');
+    return;
+  }
   reserve(`ota-proposal-base/${candidate.tag}/${proposalBase}`, candidate, proposalBase);
   git(
     'push',
@@ -738,6 +745,13 @@ function stage(runtime: string, version: string) {
       continue;
     }
     gh('pr', 'close', String(pr.number));
+  }
+  // An approval can merge after the last check. Keep recovery durable even
+  // when the proposal was written against a main tip that has since moved.
+  git('fetch', 'origin', 'main:refs/remotes/origin/main');
+  if (git('rev-parse', 'origin/main') !== proposalBase || assertBaseline(candidate)) {
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, 'deferred=true\n');
+    gh('workflow', 'run', 'mobile-ota.yml', '--ref', 'main');
   }
   appendFileSync(
     process.env.GITHUB_STEP_SUMMARY ?? '/dev/null',

@@ -214,6 +214,8 @@ interface ServiceState {
   modelMetadataCommit?: boolean;
   invalidMetadata?: boolean;
   approvedOnMain?: string;
+  approveAfterReads?: number;
+  moveProposalBase?: boolean;
   deliveredWork?: string;
   largeReleasePayload?: boolean;
   stagedVersion?: string;
@@ -236,6 +238,7 @@ function serviceFixture(changes: Partial<ServiceState> = {}) {
     ...changes,
   };
   writeFileSync(statePath, JSON.stringify(initial));
+  writeFileSync(join(cwd, 'output'), '');
   const mock = `#!${process.execPath}
 const fs = require('node:fs');
 const path = require('node:path');
@@ -251,13 +254,13 @@ const sha = candidate.commit;
 // main carries the last manifest that was merged: the delivered promotion,
 // or an approved one whose release has not published yet.
 const onMain = () => {
-  const version = s.approvedOnMain ?? s.released.replace('mobile-v','');
+  const version = (s.approveAfterReads && s.releaseReads>=s.approveAfterReads?'1.33.3':s.approvedOnMain) ?? s.released.replace('mobile-v','');
   const parts = version.split('.');
   const previous = parts[0]+'.'+parts[1]+'.'+(Number(parts[2])-1);
   return {...candidate, version, tag:'mobile-v'+version, branch:'staging-mobile-v'+version+'-'+sha, baseline:'mobile-v'+previous};
 };
 if(tool === 'git') {
-  if(args[0] === 'rev-parse') out(args[1]==='origin/main'?(s.proposalBase??sha):sha);
+  if(args[0] === 'rev-parse') {if(args[1]==='origin/main'){s.baseReads=(s.baseReads??0)+1;out(s.moveProposalBase && s.baseReads>1?'e'.repeat(40):(s.proposalBase??sha));}out(sha);}
   if(args[0] === 'merge-base' || args[0] === 'fetch') out('');
   if(args[0] === 'log') out(args.includes('--format=%s') ? (s.deliveredWork ?? 'fix(mobile): Show models (#451)') : sha);
   if(args[0] === 'ls-remote') {
@@ -346,11 +349,13 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
             GITHUB_REPOSITORY: 'example/repo',
             RUNNER_TEMP: cwd,
             GITHUB_STEP_SUMMARY: join(cwd, 'summary'),
+            GITHUB_OUTPUT: join(cwd, 'output'),
             STAGING_GOOGLE_AUTH_ID: '123-staging.apps.googleusercontent.com',
             ...overrides,
           },
         },
       ),
+    output: () => readFileSync(join(cwd, 'output'), 'utf8'),
     state: () => JSON.parse(readFileSync(statePath, 'utf8')) as ServiceState,
     update: (changes: Partial<ServiceState>) =>
       writeFileSync(
@@ -559,6 +564,14 @@ describe('OTA CLI interrupted external operations', () => {
     expect(first.status).not.toBe(0);
     expect(service.state().rollingHead).toBe(sha);
     expect(service.state().calls.some((call) => call.includes('graphql'))).toBe(true);
+    // Simulate a reset performed before proposal-base reservations existed.
+    service.update({
+      tags: Object.fromEntries(
+        Object.entries(service.state().tags).filter(
+          ([tag]) => !tag.startsWith('ota-proposal-base/'),
+        ),
+      ),
+    });
     const retry = service.run('stage');
     expect(retry.stderr).toBe('');
     expect(retry.status).toBe(0);
@@ -636,6 +649,24 @@ describe('OTA CLI interrupted external operations', () => {
     expect(result.stderr).toContain('owns this version');
     expect(service.state().calls.some((call) => call.includes('--force-with-lease'))).toBe(false);
     expect(service.state().calls.some((call) => call.startsWith('gh pr'))).toBe(false);
+  });
+
+  it('defers when approval merges immediately before the rolling branch reset', () => {
+    const service = serviceFixture({ approveAfterReads: 7 });
+    const result = service.run('stage', {}, '1.33.4');
+    expect(result.status, result.stderr).toBe(0);
+    expect(service.output()).toContain('deferred=true');
+    expect(service.state().calls.some((call) => call.includes('--force-with-lease'))).toBe(false);
+  });
+
+  it('requests durable recovery when main moves while the proposal is being written', () => {
+    const service = serviceFixture({ moveProposalBase: true });
+    const result = service.run('stage');
+    expect(result.status, result.stderr).toBe(0);
+    expect(service.output()).toContain('deferred=true');
+    expect(
+      service.state().calls.some((call) => call.startsWith('gh workflow run mobile-ota.yml')),
+    ).toBe(true);
   });
 
   it('does not demote Production when delivery completes during a Staging retry', () => {
