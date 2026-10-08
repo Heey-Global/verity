@@ -7,7 +7,7 @@ import {
   DEFAULT_MINIMUM_RESERVE_BYTES,
   descendantsOf,
   KILL_COOLDOWN_MS,
-  SUSPEND_MS,
+  REARM_GROWTH_FRACTION,
   listProcesses,
   MINIMUM_VICTIM_RSS_BYTES,
   probeMemoryGuard,
@@ -396,21 +396,37 @@ describe('createMemoryGuard', () => {
 
   it('stands down when a kill freed nothing, instead of taking one session after another', () => {
     // On cgroup v1 the usage counts page cache and tmpfs files, which no kill
-    // frees. Left alone the guard would kill a command every cooldown and then
-    // the agent CLIs: the project-wide outage it exists to prevent, by its own hand.
+    // frees. Left alone the guard would kill on every cooldown, or on every
+    // expiry of a timer, and work through the sessions one by one: the
+    // project-wide outage it exists to prevent, by its own hand.
     let clock = 0;
-    const { guard, kill, log } = guardAt(5.5 * GIB, { now: () => clock });
+    const files = { ...sandbox(), ...cgroup(5.5 * GIB) };
+    const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>();
+    const log = vi.fn<(record: MemoryGuardLogRecord) => void>();
+    const guard = createMemoryGuard({
+      readFile: reader(files),
+      listPids: listPids(files),
+      readLink: () => '/',
+      kill,
+      log,
+      agentUid: 1000,
+      now: () => clock,
+    });
+    const kills = () => kill.mock.calls.filter(([, signal]) => signal === 'SIGKILL').length;
     expect(guard.tick().outcome).toBe('kill');
     clock = KILL_COOLDOWN_MS;
     expect(guard.tick().outcome).toBe('suspended');
-    clock = KILL_COOLDOWN_MS + SUSPEND_MS - 1;
+    // No timer re-arms it: an hour at the same usage kills nothing more.
+    clock = 3_600_000;
     expect(guard.tick().outcome).toBe('suspended');
-    const kills = () => kill.mock.calls.filter(([, signal]) => signal === 'SIGKILL').length;
     expect(kills()).toBe(4);
     expect(log.mock.calls.map(([r]) => r.event)).toEqual(['armed', 'kill', 'suspended']);
-    // A suspension is bounded: a misjudged one must not disarm the guard for an
-    // episode that may never end. At most one kill per suspension, not per cooldown.
-    clock = KILL_COOLDOWN_MS + SUSPEND_MS;
+    // Growth past the suspension point by a share of the reserve is process memory
+    // rising again, and re-arms it — once per step, so kills stay bounded.
+    const step = Math.floor(6 * GIB * 0.2) * REARM_GROWTH_FRACTION;
+    Object.assign(files, cgroup(5.5 * GIB + step - 1));
+    expect(guard.tick().outcome).toBe('suspended');
+    Object.assign(files, cgroup(5.5 * GIB + step));
     expect(guard.tick().outcome).toBe('kill');
     expect(kills()).toBe(8);
   });

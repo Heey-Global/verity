@@ -43,7 +43,7 @@
  * quietly: there is nothing to defend.
  */
 
-import { readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { clearInterval, setInterval } from 'node:timers';
@@ -55,8 +55,8 @@ export const DEFAULT_RESERVE_FRACTION = 0.2;
 export const DEFAULT_MINIMUM_RESERVE_BYTES = 1024 ** 3;
 /** Time after a kill during which no second kill is attempted; freed pages take a moment to leave the cgroup. */
 export const KILL_COOLDOWN_MS = 2_000;
-/** How long the guard stands down after a kill that freed too little (see `tick`). */
-export const SUSPEND_MS = 60_000;
+/** Share of the reserve usage must grow by, past a suspension, to re-arm the guard (see `tick`). */
+export const REARM_GROWTH_FRACTION = 0.25;
 /** Below this RSS a process is not worth killing: it would not free enough to matter and is likely infrastructure. */
 export const MINIMUM_VICTIM_RSS_BYTES = 64 * 1024 ** 2;
 export const DEFAULT_AGENT_UID = 1000;
@@ -381,14 +381,17 @@ export function createMemoryGuard(options) {
    * keeps the cgroup full is likely not process memory the guard can reach —
    * page cache, tmpfs files, the Sentry itself — and killing on every cooldown
    * would take one session after another without helping. The guard then
-   * stands down for `SUSPEND_MS`, or until usage drops below the threshold. The
-   * quarter is lenient on purpose: summed RSS counts pages that forked workers
-   * share more than once, and a neighbour may grow during the cooldown. A
-   * misjudged suspension costs a minute of protection; a missed one, a session
-   * per cooldown.
+   * stands down until usage drops below the threshold, or until it grows by
+   * another `REARM_GROWTH_FRACTION` of the reserve past where it was suspended:
+   * growth is the one sign that process memory is rising again, and a timer
+   * would only space out the kills it should stop. Each re-arm needs fresh
+   * growth, so between the threshold and the ceiling the guard kills a bounded
+   * number of times. The quarter is lenient on purpose: summed RSS counts pages
+   * that forked workers share more than once, and a neighbour may grow during
+   * the cooldown.
    */
   let lastKill;
-  let suspendedUntil;
+  let suspendedAtBytes;
 
   /** One poll. Returns what happened, for `--once` and for the tests. */
   const tick = () => {
@@ -411,25 +414,26 @@ export function createMemoryGuard(options) {
     if (ceiling.usageBytes < thresholdBytes) {
       lastOutcome = 'below-threshold';
       lastKill = undefined;
-      suspendedUntil = undefined;
+      suspendedAtBytes = undefined;
       return result('below-threshold');
     }
     if (now() < cooldownUntil) return result('cooldown');
-    if (suspendedUntil !== undefined) {
-      if (now() < suspendedUntil) return result('suspended');
-      suspendedUntil = undefined;
+    if (suspendedAtBytes !== undefined) {
+      if (ceiling.usageBytes < suspendedAtBytes + reserveBytes * REARM_GROWTH_FRACTION) {
+        return result('suspended');
+      }
+      suspendedAtBytes = undefined;
       lastKill = undefined;
     }
     if (
       lastKill !== undefined &&
       lastKill.usageBytes - ceiling.usageBytes < lastKill.treeRssBytes / 4
     ) {
-      suspendedUntil = now() + SUSPEND_MS;
+      suspendedAtBytes = ceiling.usageBytes;
       log({
         event: 'suspended',
         reason:
           'the last kill freed too little; what fills the cgroup is likely not process memory',
-        suspendMs: SUSPEND_MS,
         usageBytes: ceiling.usageBytes,
         usageAtKillBytes: lastKill.usageBytes,
         victimTreeRssBytes: lastKill.treeRssBytes,
@@ -524,6 +528,13 @@ function claimPidFile(controlDir) {
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
       if (attempt > 0 || probeMemoryGuard(controlDir)) return false;
+      // `wx` creates the file before it writes the record: an empty or partial
+      // record is another guard mid-claim, not a stale one, unless it has stayed
+      // that way long enough that its writer cannot still be alive.
+      const existing = tryRead(readFsFile, path) ?? '';
+      if (!/^\d+ \d+\n$/u.test(existing) && Date.now() - statSync(path).mtimeMs < 10_000) {
+        return false;
+      }
       rmSync(path, { force: true });
     }
   }
@@ -559,7 +570,13 @@ function main() {
     writeLog({ event: 'already-running' });
     process.exit(0);
   }
-  const first = guard.tick();
+  let first;
+  try {
+    first = guard.tick();
+  } catch (error) {
+    writeLog({ event: 'error', message: error instanceof Error ? error.message : String(error) });
+    first = { outcome: 'error' };
+  }
   if (first.outcome === 'no-ceiling') {
     writeLog({ event: 'disabled', reason: 'no finite memory limit is readable' });
     process.exit(0);
