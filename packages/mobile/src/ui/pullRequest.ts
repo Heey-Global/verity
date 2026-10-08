@@ -75,6 +75,8 @@ export function pullRequestStatusText(pr: PullRequestStatusView): string {
   return `${String(checks.total)}/${String(checks.total)} ${unit} passed`;
 }
 
+export type PullRequestBlockReason = 'rejected' | 'conflict' | 'ci_failed' | 'blocked';
+
 /**
  * What the merge button shows. `waiting` covers every state that resolves on its
  * own (checks pending or running, GitHub computing mergeability): the button carries
@@ -82,8 +84,6 @@ export function pullRequestStatusText(pr: PullRequestStatusView): string {
  * so the button never just says "no" while the reason sits in a different line.
  * `closed` is a terminal PR, which has nothing left to merge.
  */
-export type PullRequestBlockReason = 'rejected' | 'conflict' | 'ci_failed' | 'blocked';
-
 export type PullRequestMergeButton =
   | { kind: 'merge'; label: 'Merge' }
   | { kind: 'merging' }
@@ -127,9 +127,10 @@ export function pullRequestMergeButton(
         };
   }
   // GitHub's own merge verdict outranks a CI status it could not report: a repository
-  // without checks still merges, and a confirmed block is still a block.
+  // without checks still merges. Anything short of that with no status is a status to
+  // re-read, not a block to explain.
   if (pr.mergeable === true) return { kind: 'merge', label: 'Merge' };
-  if (pr.mergeable === false) return blocked('blocked');
   if (pr.pipeline === 'unknown') return { kind: 'refresh', label: 'Refresh' };
+  if (pr.mergeable === false) return blocked('blocked');
   return { kind: 'waiting', label: 'Checking…' };
 }

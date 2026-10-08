@@ -8,6 +8,7 @@ import {
   type AttentionInput,
   type AttentionKind,
 } from './attention.js';
+import { pullRequestMergeButton } from './pullRequest.js';
 
 const ZERO_USAGE = {
   inputTokens: 0,
@@ -385,4 +386,32 @@ describe('sandbox_disconnected (server-reported)', () => {
     expect(attentionQueue(sessions).map((s) => s.sessionId)).toEqual(['b', 'a', 'c']);
     expect(attentionCount(sessions)).toBe(1);
   });
+});
+
+describe('parity with the PR bar merge button', () => {
+  // The list marker and the PR bar's button judge the same PR in two places. When they
+  // drifted, a row promised a merge (green ✓) that the bar's button refused, or showed
+  // a red ✕ beside a live Merge button.
+  const pipelines = ['unknown', 'pending', 'running', 'success', 'failure'] as const;
+  const mergeables = [true, false, null] as const;
+  const mergeStates = [undefined, 'clean', 'dirty', 'unstable', 'blocked', 'unknown'] as const;
+  for (const pipeline of pipelines)
+    for (const mergeable of mergeables)
+      for (const mergeState of mergeStates) {
+        const pr: SessionPr = {
+          phase: 'open',
+          pipeline,
+          mergeable,
+          ...(mergeState ? { mergeState } : {}),
+        };
+        it(`agrees for ${pipeline} / mergeable ${String(mergeable)} / ${String(mergeState)}`, () => {
+          const flag = markerAttention({ status: 'idle', pr })[0];
+          const button = pullRequestMergeButton(
+            { ...pr, checks: { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 } },
+            { merging: false, mergeRejected: false },
+          );
+          expect(flag?.kind === 'merge_ready').toBe(button.kind === 'merge');
+          expect(flag?.tone === 'danger').toBe(button.kind === 'blocked');
+        });
+      }
 });

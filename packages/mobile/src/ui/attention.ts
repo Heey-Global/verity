@@ -113,8 +113,16 @@ export function sessionAttention(input: AttentionInput): AttentionFlag[] {
     // checks for a PR it can't merge-ref. So flag it before the pipeline branches
     // below, which would otherwise leave such a session with no marker at all.
     if (pr.mergeState === 'dirty') kinds.add('merge_conflict');
-    if (pr.pipeline === 'unknown' && !kinds.has('merge_conflict')) kinds.add('pr_unknown');
-    if (pr.pipeline === 'failure') kinds.add('ci_failed');
+    // GitHub's merge verdict outranks a CI status it could not report (a repository
+    // without checks) or does not enforce (a failing check that is not required leaves
+    // the PR `unstable`). Mirrors `pullRequestMergeButton`, so the row never shows a
+    // red ✕ or a neutral marker beside a live Merge button.
+    const mergesAnyway =
+      pr.mergeable === true &&
+      (pr.pipeline === 'unknown' || (pr.pipeline === 'failure' && pr.mergeState === 'unstable'));
+    if (mergesAnyway && !kinds.has('merge_conflict')) kinds.add('merge_ready');
+    else if (pr.pipeline === 'unknown' && !kinds.has('merge_conflict')) kinds.add('pr_unknown');
+    else if (pr.pipeline === 'failure') kinds.add('ci_failed');
     else if (pr.pipeline === 'pending' || pr.pipeline === 'running') kinds.add('ci_running');
     else if (pr.pipeline === 'success') {
       if (pr.mergeable === true) kinds.add('merge_ready');
