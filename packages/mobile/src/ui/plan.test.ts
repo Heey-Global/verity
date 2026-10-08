@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ToolCall } from '../happy/message.js';
 import {
+  isPlanImplementationPermission,
   planHeadline,
   planProposalContent,
   planProposalFullyRepresented,
@@ -199,5 +200,24 @@ describe('planProposalFullyRepresented', () => {
       expect(planProposalFullyRepresented(plan + extra)).toBe(false);
     }
     expect(planProposalFullyRepresented('## Steps\n- Fix dragging.')).toBe(false);
+  });
+});
+
+describe('isPlanImplementationPermission', () => {
+  it('recognizes implementation requests across backend tool names', () => {
+    for (const tool of [
+      'verity_end_planning',
+      'mcp__verity__verity_end_planning',
+      'verity_verity_end_planning',
+    ]) {
+      expect(isPlanImplementationPermission({ tool, input: { action: 'implement' } })).toBe(true);
+    }
+  });
+  it('keeps exit and unrelated permissions visible', () => {
+    expect(
+      isPlanImplementationPermission({ tool: 'verity_end_planning', input: { action: 'discard' } }),
+    ).toBe(false);
+    expect(isPlanImplementationPermission({ tool: 'verity_secret_run', input: {} })).toBe(false);
+    expect(isPlanImplementationPermission(null)).toBe(false);
   });
 });
