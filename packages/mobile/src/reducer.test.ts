@@ -17,6 +17,19 @@ function userText(messages: readonly { kind: string }[]): UserTextMessage[] {
 }
 
 describe('SessionReducer — sub-agent attribution', () => {
+  it.each<AgentEvent>([
+    { t: 'status', state: 'running' },
+    { t: 'task', id: 'bg', phase: 'started' },
+  ])('shows working when a lifecycle start arrives without its prompt (%j)', (event) => {
+    const r = new SessionReducer();
+    r.apply(1, { t: 'status', state: 'completed' });
+    r.apply(2, event);
+    expect(r.running).toBe(true);
+    expect(r.activitySeq).toBe(2);
+    r.apply(3, { t: 'dev_servers_changed', devServers: [] });
+    expect(r.activitySeq).toBe(2);
+  });
+
   it('tags sub-agent text/tool events with parentToolId and keeps contexts separate', () => {
     const r = new SessionReducer();
     r.apply(1, { t: 'tool_call', id: 'agent1', name: 'Agent', input: { description: 'map it' } });

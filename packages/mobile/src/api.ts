@@ -126,13 +126,15 @@ export const sessionSummarySchema = z.object({
    * (`<type>/<issue>-<slug>`). ABSENT on an older server, while the server's label
    * is cold, or once the worktree is gone — all read as "no issue". */
   branch: z.string().optional(),
-  /** Persisted events excluding dev-server snapshots — the overview compares this
+  /** Nonempty agent-text events — the overview compares this
    * against the server-persisted "last seen" mark for the unread dot. OPTIONAL on
    * the wire: an OLDER server omits it on the list, and absent simply reads as "no
    * unread signal" (never a false unread). The detail endpoint always sends it. */
   eventCount: z.number().int().nonnegative().optional(),
+  /** Active subagents can keep working while the main agent awaits input. */
+  backgroundWorking: z.boolean().optional(),
   /** Version associated with this count; forward it unchanged when marking seen. */
-  eventCountVersion: z.literal('dev-servers-excluded-v1').optional(),
+  eventCountVersion: z.string().optional(),
   /** Operator's "last seen" mark for the unread dot (#387): the `eventCount` at the
    * last open, persisted server-side so the dot syncs across devices. A session is
    * unread when `eventCount > lastSeenEventCount`. `null` = never opened (→ not
@@ -220,6 +222,8 @@ export type SessionDetail = z.infer<typeof sessionDetailSchema>;
 /** Live activity of a session (from `GET /sessions/:id/activity`): in-flight +
  * queued state, polled for the working indicator and persistent waiting bubbles. */
 export const sessionActivitySchema = z.object({
+  /** Active work, independently of whether the session remains cancellable. */
+  activityAnimating: z.boolean().optional(),
   busy: z.boolean(),
   queued: z.array(queuedItemSchema),
   /** Tool-use ids currently parked on a server-side permission decision. Optional

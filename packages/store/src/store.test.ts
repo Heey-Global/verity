@@ -2094,14 +2094,17 @@ describe('EventStore — session projection facts', () => {
       // rather than quietly serving a short log to the overview.
       const expected = full.filter((row) => sessionProjectionEvents([row.event]).length === 1);
       expect(entry?.events).toEqual(expected);
-      expect(entry?.eventCount).toBe(full.length);
+      expect(entry?.eventCount).toBe(
+        full.filter((row) => row.event.t === 'text' && row.event.delta.length > 0).length,
+      );
       expect(entry?.lastEventSeq).toBe(full.at(-1)?.seq ?? 0);
       expect(entry?.lastActivityAt).toBe(full.at(-1)?.ts);
     }
-    // s2 holds none of the projected kinds — the count still separates it from an
-    // empty log, which is the whole reason it travels alongside the events.
+    // Non-projected text still advances unread state independently of status.
     expect(facts.get('s2')?.events).toEqual([]);
-    expect(facts.get('s2')?.eventCount).toBe(sampleEvents.length);
+    expect(facts.get('s2')?.eventCount).toBe(
+      sampleEvents.filter((event) => event.t === 'text' && event.delta.length > 0).length,
+    );
   });
 
   it('returns a zeroed entry for a session with no events and for an unknown id', async () => {
@@ -2202,7 +2205,7 @@ describe('EventStore — session projection facts', () => {
     const facts = await ctx.store.listSessionProjectionFacts(['s1'], WHOLE_LOG);
     expect(facts.get('s1')?.lastActivityAt).toBe(newestBySeq?.created_at.getTime());
     expect(facts.get('s1')?.lastActivityAt).toBe(older.getTime());
-    expect(facts.get('s1')?.eventCount).toBe(2);
+    expect(facts.get('s1')?.eventCount).toBe(0);
   });
 
   it('reads the same slice with and without the counters', async () => {
@@ -2295,7 +2298,7 @@ describe('EventStore — session projection facts', () => {
     expect(facts.get('s1')?.eventsTruncated).toBe(true);
     // The counters are still facts about the WHOLE log — a tail that shortened
     // them would read as an unread badge quietly resetting itself.
-    expect(facts.get('s1')?.eventCount).toBe(tailLimit * 3 * 2);
+    expect(facts.get('s1')?.eventCount).toBe(tailLimit * 3);
   });
 
   it('bounds each session separately, and calls a short tail complete', async () => {

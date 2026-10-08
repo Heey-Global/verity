@@ -45,6 +45,24 @@ export function deriveSessionStatus(events: readonly AgentEvent[]): SessionStatu
   return deriveSessionStatusFromProjection(events, events.length);
 }
 
+/** Current background work, excluding tasks from an already terminated turn. */
+export function sessionHasOpenTasks(events: readonly AgentEvent[]): boolean {
+  const open = new Set<string>();
+  for (const event of events) {
+    if (
+      (event.t === 'prompt' && event.steered !== true) ||
+      event.t === 'interrupted' ||
+      (event.t === 'status' && (event.state === 'completed' || event.state === 'crashed'))
+    )
+      open.clear();
+    else if (event.t === 'task') {
+      if (event.phase === 'started') open.add(event.id);
+      else if (event.phase === 'ended') open.delete(event.id);
+    }
+  }
+  return open.size > 0;
+}
+
 /**
  * Whether {@link deriveSessionStatusFromProjection} would return the same status
  * for this tail as it would for the whole slice it was cut from.
