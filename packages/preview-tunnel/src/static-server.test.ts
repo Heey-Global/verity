@@ -53,6 +53,26 @@ async function publishedWorkspace(): Promise<{ workspace: string; origin: string
 }
 
 describe('static preview server', () => {
+  it('serves the logo referenced by missing-file pages for GET and HEAD', async () => {
+    const { origin } = await publishedWorkspace();
+    const page = await fetch(`${origin}/missing.html`);
+    expect(page.status).toBe(404);
+    const html = await page.text();
+    const source = /<img\b[^>]*src="([^"]+)"/u.exec(html)?.[1];
+    expect(source).toBeDefined();
+    const logoUrl = new URL(source!, origin);
+    const logo = await fetch(logoUrl);
+    expect(logo.status).toBe(200);
+    expect(logo.headers.get('content-type')).toBe('image/png');
+    const bytes = new Uint8Array(await logo.arrayBuffer());
+    expect([...bytes.slice(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+    const head = await fetch(logoUrl, { method: 'HEAD' });
+    expect(head.status).toBe(200);
+    expect(head.headers.get('content-length')).toBe(String(bytes.length));
+    expect(await head.text()).toBe('');
+    expect((await fetch(logoUrl, { method: 'POST' })).status).toBe(405);
+  });
+
   it('rejects FIFOs without waiting for a writer and continues serving files', async () => {
     const { workspace, origin } = await publishedWorkspace();
     const fifo = join(workspace, 'dist', 'pipe.txt');
