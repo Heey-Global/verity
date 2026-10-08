@@ -14,5 +14,6 @@ WORKDIR /app
 COPY --from=build /src/packages/preview-tunnel/package.json ./package.json
 COPY --from=build /src/packages/preview-tunnel/dist ./dist
 COPY --from=build /src/node_modules/ws ./node_modules/ws
+COPY packages/preview-tunnel/assets/verity-mark.png ./assets/verity-mark.png
 USER 65532:65532
 ENTRYPOINT ["node", "dist/connector-main.js"]
