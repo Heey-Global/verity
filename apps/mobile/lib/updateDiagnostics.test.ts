@@ -1,4 +1,4 @@
-import { beginRowTouch, rowPress } from './sessionSwitchTiming';
+import { beginRowTouch, markFirstSessionRender, rowPress } from './sessionSwitchTiming';
 import { markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import * as Updates from 'expo-updates';
 import { Share } from 'react-native';
@@ -173,4 +173,16 @@ it('starts separate traces for repeated keyboard activation without touch callba
   expect(first.status).toBe('superseded');
   expect(first.phases.map((p) => p.phase)).toEqual(['js-press-handler']);
   expect(second.phases.map((p) => p.phase)).toEqual(['js-press-handler']);
+});
+
+it('bounds render entry diagnostics and keeps them attached to the active gesture', () => {
+  rowPress('first');
+  const first = sessionSwitchTiming('first')!;
+  for (let i = 0; i < 100; i++) markFirstSessionRender('first', 'selection-home-render-entry');
+  expect(first.phases.filter((p) => p.phase === 'selection-home-render-entry')).toHaveLength(1);
+  rowPress('second');
+  markFirstSessionRender('first', 'session-screen-render-entry');
+  expect(first.phases.some((p) => p.phase === 'session-screen-render-entry')).toBe(false);
+  markFirstSessionRender('second', 'session-screen-render-entry');
+  expect(sessionSwitchTiming('second')!.phases.at(-1)?.phase).toBe('session-screen-render-entry');
 });

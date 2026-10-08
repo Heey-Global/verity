@@ -1,3 +1,4 @@
+import { markFirstSessionRender } from '../../lib/sessionSwitchTiming';
 import { beginSessionSwitch, type SwitchTiming } from '@verity/mobile';
 import { markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { PinnedPlan } from '../../components/PinnedPlan';
@@ -652,6 +653,7 @@ export function SessionChat({
   initialTargetSearchQuery?: string;
   retrySecret?: string;
 }) {
+  markFirstSessionRender(sessionId, 'session-screen-render-entry');
   const switchTiming = useMemo(() => sessionSwitchTiming(sessionId), [sessionId]);
   useEffect(() => {
     markSessionSwitch(switchTiming, 'session-screen-react-commit');

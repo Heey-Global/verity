@@ -1,4 +1,5 @@
-import { beginRowTouch, rowPress } from '../lib/sessionSwitchTiming';
+import { useSessionRowCallbacks } from '../hooks/useSessionRowCallbacks';
+import { beginRowTouch, markFirstSessionRender, rowPress } from '../lib/sessionSwitchTiming';
 import { cancelSessionSwitch, markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { isLinkableSession } from '../lib/sessionLinks';
 import { subscribeLiveRefresh } from '../lib/liveConnection';
@@ -53,6 +54,7 @@ import {
 import { Link, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   Fragment,
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -177,6 +179,7 @@ function SessionList({ client }: { client: VerityClient }) {
     retrySecret?: string;
   }>();
   const [selectedId, setSelectedId] = useState<string | null>(selected ?? null);
+  if (selectedId) markFirstSessionRender(selectedId, 'selection-home-render-entry');
   const lastSelectedParamRef = useRef(selected);
   const incomingSelectedRef = useRef<string | null>(null);
   // A session started inline from the sidebar "+" (wide layout): we preselect it
@@ -1272,6 +1275,17 @@ function ProjectGroup({
     floating,
   });
   const sessionDragOrder = useSessionDragOrder(group.sessions);
+  const rowCallbacks = useSessionRowCallbacks({
+    sessions: group.sessions,
+    scope: group.id,
+    reordering: sessionReordering,
+    onRename: onRenameSession,
+    onFavorite: onToggleFavoriteSession,
+    onDelete: onDeleteSession,
+    onSelect: onSelectSession,
+    onOpen: onOpenSession,
+    onReorder: onReorderSession,
+  });
   const [headerHovered, setHeaderHovered] = useState(false);
   // Container state for the leading dot. A group with no project row is either an
   // orphan (including soft-deleted projects, which are not repairable) or the
@@ -1535,40 +1549,7 @@ function ProjectGroup({
                         dragHandleRef={handle}
                         reorderable={sessionReordering}
                         interactionsLocked={reordering}
-                        onMoveUp={
-                          sessionReordering && index > 0
-                            ? () =>
-                                onReorderSession(
-                                  group.id,
-                                  moveProjectIdToIndex(
-                                    group.sessions.map((entry) => `session:${entry.sessionId}`),
-                                    `session:${session.sessionId}`,
-                                    index - 1,
-                                  ),
-                                )
-                            : undefined
-                        }
-                        onMoveDown={
-                          sessionReordering && index < group.sessions.length - 1
-                            ? () =>
-                                onReorderSession(
-                                  group.id,
-                                  moveProjectIdToIndex(
-                                    group.sessions.map((entry) => `session:${entry.sessionId}`),
-                                    `session:${session.sessionId}`,
-                                    index + 1,
-                                  ),
-                                )
-                            : undefined
-                        }
-                        onOpenLinks={() => onRenameSession({ ...session, openLinks: true })}
-                        onRename={() => onRenameSession(session)}
-                        onToggleFavorite={() => onToggleFavoriteSession(session)}
-                        onDelete={() => onDeleteSession(session)}
-                        onSelect={
-                          onSelectSession ? () => onSelectSession(session.sessionId) : undefined
-                        }
-                        onOpen={() => onOpenSession(session)}
+                        {...rowCallbacks.get(session.sessionId)!}
                         unread={unread.has(session.sessionId)}
                         previewActive={previewUrls.has(session.sessionId)}
                         previewPublic={publicPreviews.has(session.sessionId)}
@@ -1868,7 +1849,7 @@ function ProviderLimitSegment({
 // One session in the list: compact, table-like row inside its project group.
 // The project card owns the outer frame; session rows stay flat so the overview
 // does not read as nested cards.
-function SessionRow({
+const SessionRow = memo(function SessionRow({
   session,
   onRename,
   onOpenLinks,
@@ -2150,7 +2131,7 @@ function SessionRow({
       </Pressable>
     </Link>,
   );
-}
+});
 
 function GroupSeparator() {
   return <View style={styles.separator} />;

@@ -83,6 +83,12 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
     const publish = (snapshot: SessionModelState): void => {
       if (!active) return;
       latest = snapshot;
+      if (!timingPublished && snapshot.loaded) {
+        // The initial history must not wait for a native animation frame.
+        markSessionSwitch(timing, 'loaded-model-state-publish');
+        flush();
+        return;
+      }
       // Socket bursts can contain many deltas in one display frame. Publish the
       // newest snapshot once while still reducing every event in the model.
       if (frame === undefined) frame = requestAnimationFrame(flush);
