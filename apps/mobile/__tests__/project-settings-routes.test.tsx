@@ -867,6 +867,25 @@ describe('project settings — agents', () => {
     expect(screen.getByLabelText('OpenCode').props.accessibilityState.checked).toBe(false);
   });
 
+  it('disables an excluded model while its agent restriction is saving', async () => {
+    let finish: (() => void) | undefined;
+    const updateProjectSettings = jest.fn().mockImplementation(
+      (_id: string, patch: object) =>
+        new Promise((resolve) => {
+          finish = () => resolve({ ...makeDetail().settings, ...patch });
+        }),
+    );
+    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    render(<ProjectModelScreen />);
+    fireEvent.press(await screen.findByLabelText('Codex'));
+    const model = screen.getByLabelText('Use model Codex, codex/default');
+    expect(model.props.accessibilityState.disabled).toBe(true);
+    fireEvent.press(model);
+    expect(updateProjectSettings).toHaveBeenCalledTimes(1);
+    await act(async () => finish?.());
+    expect(updateProjectSettings).toHaveBeenCalledTimes(1);
+  });
+
   it('clears a queued default when its agent is subsequently excluded', async () => {
     const finishers: (() => void)[] = [];
     const updateProjectSettings = jest.fn().mockImplementation(

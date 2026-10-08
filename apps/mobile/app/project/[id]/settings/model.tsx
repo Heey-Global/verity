@@ -119,12 +119,14 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
   // Taps during a save are merged and sent once it lands, so a second toggle
   // is never dropped while the first is still on its way.
   const inFlight = useRef(false);
+  const desired = useRef<ProjectSettingsChange | undefined>(undefined);
   const queued = useRef<ProjectSettingsChange | undefined>(undefined);
   const save = useCallback(
     (patch: ProjectSettingsChange) => {
-      setPending((shown) => mergeSettingsChanges(shown, patch));
+      desired.current = mergeSettingsChanges(desired.current, patch);
+      setPending(desired.current);
       if (inFlight.current) {
-        queued.current = mergeSettingsChanges(queued.current, patch);
+        queued.current = desired.current;
         return;
       }
       inFlight.current = true;
@@ -144,6 +146,7 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
           queued.current = undefined;
         }
         inFlight.current = false;
+        desired.current = undefined;
         setPending(undefined);
         // The server may have dropped a default the new rule excludes.
         loadModels();
@@ -208,6 +211,7 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
       title={modelDisplayName(model)}
       subtitle={model}
       selected={model === current}
+      disabled={!allowed.includes(modelAgent(model))}
       onPress={() => save({ defaultModel: model })}
       accessibilityLabel={`Use model ${modelDisplayName(model)}, ${model}`}
     />
