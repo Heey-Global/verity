@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react-native';
 import { AppState, type View } from 'react-native';
 import { measure, scrollTo, withSpring, type AnimatedRef } from 'react-native-reanimated';
-import { useProjectReorder, useProjectRowDrag } from './useProjectReorder';
+import { useProjectReorder, useProjectRowDrag, useSessionDragOrder } from './useProjectReorder';
 
 let mockFrame: (frame: { timeSincePreviousFrame: number }) => void;
 jest.mock('react-native-reanimated', () => {
@@ -23,7 +23,21 @@ jest.mock('react-native-reanimated', () => {
         },
       }).current;
     },
-    useAnimatedScrollHandler: (handler: unknown) => handler,
+    useAnimatedStyle: (processor: () => Record<string, unknown>) => {
+      const latest = useRef(processor);
+      latest.current = processor;
+      return useRef(
+        new Proxy(
+          {},
+          {
+            get: (_target, key) => latest.current()[key as string],
+            ownKeys: () => Reflect.ownKeys(latest.current()),
+            getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }),
+          },
+        ),
+      ).current;
+    },
+    useAnimatedScrollHandler: (handler: unknown) => useRef(handler).current,
     useFrameCallback: (handler: typeof mockFrame) => {
       mockFrame = handler;
     },
@@ -368,6 +382,10 @@ it('does not enable manual sorting for an unchanged pickup, but saves a move aga
       enabled: false,
     }),
   );
+  act(() =>
+    test.hook.result.current.confirmSessionOverlay(test.hook.result.current.sessionDragToken!),
+  );
+  picked.rerender({});
   expect(picked.result.current.style).toMatchObject({
     opacity: 0,
     transform: [{ translateY: -60 }],
@@ -446,5 +464,84 @@ it('leaves session links, status and sharing areas outside the drag handle', () 
   // A second start cannot turn a session drag into a project drag.
   test.start(105);
   expect(test.hook.result.current.draggingId).toBeNull();
+  expect(test.hook.result.current.draggingSessionId).toBe('session:b');
+});
+
+it('keeps the session visible until the measured overlay is ready and restores it on cancellation', () => {
+  const test = setupSessions();
+  test.start();
+  const row = renderHook(() =>
+    useProjectRowDrag({
+      id: 'session:b',
+      scope: 'project-a',
+      reorder: test.hook.result.current,
+      renderedOrder: ['session:a', 'session:b'],
+      enabled: false,
+    }),
+  );
+  expect(row.result.current.style).toMatchObject({ opacity: 1 });
+  expect(test.hook.result.current.overlayStyle).toMatchObject({
+    width: 300,
+    height: 60,
+    opacity: 1,
+  });
+  const token = test.hook.result.current.sessionDragToken!;
+  act(() => test.hook.result.current.confirmSessionOverlay(token));
+  row.rerender({});
+  expect(row.result.current.style).toMatchObject({ opacity: 0 });
+  test.end(false);
+  row.rerender({});
+  expect(row.result.current.style).toMatchObject({ opacity: 1, transform: [{ translateY: 0 }] });
+  act(() => test.hook.result.current.confirmSessionOverlay(token));
+  test.start();
+  row.rerender({});
+  expect(row.result.current.style).toMatchObject({ opacity: 1 });
+});
+
+it('restores a hidden session after a drop and ignores a late overlay layout', () => {
+  const test = setupSessions();
+  test.start();
+  const token = test.hook.result.current.sessionDragToken!;
+  act(() => test.hook.result.current.confirmSessionOverlay(token));
+  test.move(165);
+  test.end();
+  act(() => test.hook.result.current.confirmSessionOverlay(token));
+  expect(test.hook.result.current.sessionOverlayReady.value).toBeNull();
+  expect(test.hook.result.current.drag.value).toBeNull();
+  const row = renderHook(() =>
+    useProjectRowDrag({
+      id: 'session:b',
+      scope: 'project-a',
+      reorder: test.hook.result.current,
+      renderedOrder: ['session:b', 'session:a'],
+      enabled: false,
+    }),
+  );
+  expect(row.result.current.style).toMatchObject({ opacity: 1, transform: [{ translateY: 0 }] });
+});
+
+it('preserves the session order input across unread and polling renders', () => {
+  const first = [{ sessionId: 'a' }, { sessionId: 'b' }];
+  const hook = renderHook(
+    ({ sessions }: { sessions: { sessionId: string }[] }) => useSessionDragOrder(sessions),
+    {
+      initialProps: { sessions: first },
+    },
+  );
+  const order = hook.result.current;
+  hook.rerender({ sessions: first.map((session) => ({ ...session })) });
+  expect(hook.result.current).toBe(order);
+  hook.rerender({ sessions: [first[1]!, first[0]!] });
+  expect(hook.result.current).not.toBe(order);
+  expect(hook.result.current).toEqual(['session:b', 'session:a']);
+});
+
+it('preserves the controller identity on unrelated renders, but publishes drag changes', () => {
+  const test = setupSessions();
+  const controller = test.hook.result.current;
+  test.hook.rerender({});
+  expect(test.hook.result.current).toBe(controller);
+  test.start();
+  expect(test.hook.result.current).not.toBe(controller);
   expect(test.hook.result.current.draggingSessionId).toBe('session:b');
 });
