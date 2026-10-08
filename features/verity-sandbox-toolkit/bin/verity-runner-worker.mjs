@@ -23704,15 +23704,19 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
     kind: import_zod.z.string(),
     message: import_zod.z.string()
   }),
-  // Technical diagnostics are deliberately scalar and contain no agent, chat,
-  // tool-input, tool-output, or stderr text.
+  // Process failures may include a bounded, credential-redacted stderr tail.
   import_zod.z.object({
     t: import_zod.z.literal("diagnostic"),
     source: import_zod.z.enum(["agent", "tool", "mcp"]),
     outcome: import_zod.z.enum(["completed", "failed", "cancelled"]),
     phase: import_zod.z.enum(["spawn", "initialize", "session_load", "session_new", "prompt", "tool_call"]),
     backend: import_zod.z.string().min(1).max(40).optional(),
-    code: import_zod.z.number().int().optional()
+    code: import_zod.z.number().int().optional(),
+    model: import_zod.z.string().max(200).optional(),
+    exitCode: import_zod.z.number().int().nullable().optional(),
+    signal: import_zod.z.string().max(40).nullable().optional(),
+    turnActive: import_zod.z.boolean().optional(),
+    stderrTail: import_zod.z.string().max(65536).optional()
   }),
   import_zod.z.object({
     t: import_zod.z.literal("session_progress"),
@@ -29335,6 +29339,49 @@ var AcpTextStream = class _AcpTextStream {
   }
 };
 
+// packages/store/dist/redact.js
+var SECRET_PATTERNS = [
+  // Armored private keys (OpenSSH / PEM RSA / EC / PGP) — match the whole block.
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/g,
+  // Anthropic / Claude keys: sk-ant-oat01-…, sk-ant-api03-…
+  /sk-ant-[a-z0-9-]{8,}/gi,
+  // GitHub tokens: ghp_/gho_/ghu_/ghs_/ghr_ + fine-grained github_pat_…
+  /gh[pousr]_[A-Za-z0-9]{20,}/g,
+  /github_pat_[A-Za-z0-9_]{20,}/g,
+  // Doppler service/personal/CLI tokens: dp.st.<config>.<secret>, dp.sa.…, dp.ct.…
+  /dp\.(?:st|sa|ct|scim|audit)\.[A-Za-z0-9._-]{16,}/g,
+  // Slack tokens: xoxb-/xoxp-/xoxa-/xoxr-/xoxs-…
+  /xox[baprs]-[A-Za-z0-9-]{10,}/g,
+  // AWS access key ids.
+  /AKIA[0-9A-Z]{16}/g,
+  // OpenAI keys: sk-…, sk-proj-… (kept last + length-bounded to limit false hits).
+  /sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g
+];
+var REDACTED = "[REDACTED]";
+function redactSecrets(text) {
+  let out = text;
+  for (const pattern of SECRET_PATTERNS) {
+    out = out.replace(pattern, REDACTED);
+  }
+  return out;
+}
+function redactProcessStderr(text, env = {}) {
+  let out = Buffer.byteLength(text) >= 65533 ? text.slice(text.indexOf("\n") + 1) : text;
+  if (Buffer.byteLength(text) >= 65533 && !text.includes("\n"))
+    return "[truncated stderr line omitted]";
+  out = redactSecrets(out).replace(/(["'])(?:[a-z0-9_]*(?:token|secret|password|api[_-]?key)|passphrase|authorization|proxy-authorization|cookie|set-cookie|private[_-]?key|credential)\1\s*:\s*[^\r\n]*/giu, "[REDACTED CREDENTIAL FIELD]").replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/gu, "[REDACTED JWT]").replace(/\b[A-Z][A-Z0-9_]*\s*=[^\r\n]*/gu, "[REDACTED ENVIRONMENT]").replace(/\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=][^\r\n]*/giu, "$1: [REDACTED]").replace(/\b(password|passphrase|api[ _-]?key|access[ _-]?token|refresh[ _-]?token|client[ _-]?secret)\s*[:=][^\r\n]*/giu, "$1: [REDACTED]").replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/giu, "$1[REDACTED]@");
+  if (/-----BEGIN [A-Z0-9 ]*PRIVATE KEY/u.test(out) || /-----END [A-Z0-9 ]*PRIVATE KEY/u.test(out)) {
+    return "[REDACTED PARTIAL PRIVATE KEY]";
+  }
+  const values = Object.entries(env).filter(([name2, value]) => value && (value.length >= 4 || /TOKEN|SECRET|PASSWORD|KEY/u.test(name2))).map(([, value]) => value).sort((a, b) => b.length - a.length);
+  for (const value of values)
+    out = out.split(value).join(REDACTED);
+  return out;
+}
+
+// scripts/runner-worker-store-shim.mjs
+var RUNNER_FRAME_PROTOCOL_VERSION = 1;
+
 // packages/session/dist/ingest.js
 var NoSessionInitError = class extends Error {
   name = "NoSessionInitError";
@@ -29447,6 +29494,51 @@ var SessionWriter = class {
 
 // packages/session/dist/runner.js
 import { spawn } from "node:child_process";
+
+// packages/session/dist/stderr-tail.js
+var StderrTail = class {
+  bytes;
+  offset = 0;
+  length = 0;
+  constructor(capacity = 64 * 1024) {
+    if (!Number.isInteger(capacity) || capacity <= 0)
+      throw new Error("Invalid stderr capacity");
+    this.bytes = Buffer.alloc(capacity);
+  }
+  clear() {
+    this.offset = 0;
+    this.length = 0;
+  }
+  push(chunk) {
+    let source = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    if (source.length >= this.bytes.length) {
+      source = source.subarray(-this.bytes.length);
+      source.copy(this.bytes);
+      this.offset = 0;
+      this.length = this.bytes.length;
+      return;
+    }
+    const first = Math.min(source.length, this.bytes.length - this.offset);
+    source.copy(this.bytes, this.offset, 0, first);
+    source.copy(this.bytes, 0, first);
+    this.offset = (this.offset + source.length) % this.bytes.length;
+    this.length = Math.min(this.bytes.length, this.length + source.length);
+  }
+  text() {
+    const start = (this.offset - this.length + this.bytes.length) % this.bytes.length;
+    const first = Math.min(this.length, this.bytes.length - start);
+    const ordered = Buffer.concat([
+      this.bytes.subarray(start, start + first),
+      this.bytes.subarray(0, this.length - first)
+    ]);
+    let boundary = 0;
+    while (boundary < ordered.length && (ordered[boundary] & 192) === 128)
+      boundary++;
+    return ordered.subarray(boundary).toString("utf8");
+  }
+};
+
+// packages/session/dist/runner.js
 import { constants } from "node:os";
 
 // packages/session/dist/process-tree.js
@@ -29551,7 +29643,6 @@ function signalProcessTree(tree, signal, options = {}) {
 
 // packages/session/dist/runner.js
 var ALLOWED_PERMISSION_MODES = ["auto", "default", "plan", "acceptEdits"];
-var STDERR_CAP_BYTES = 16 * 1024;
 async function* readStrings(readable) {
   for await (const chunk of readable) {
     yield typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -29639,16 +29730,18 @@ var nodeSpawner = (command, args, options) => {
   }
   const stdout = child.stdout;
   stdout.setEncoding("utf8");
-  let stderrTail = "";
+  const stderrTail = new StderrTail();
+  let exitDetails;
   if (child.stderr !== null) {
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk) => {
-      stderrTail = (stderrTail + chunk).slice(-STDERR_CAP_BYTES);
-    });
+    child.stderr.on("data", (chunk) => stderrTail.push(chunk));
   }
+  child.once("exit", (code, signal) => {
+    exitDetails = { code, signal };
+  });
   const exited = new Promise((resolve3, reject) => {
     child.once("error", reject);
     child.once("close", (code, signal) => {
+      exitDetails = { code, signal };
       resolve3(exitCodeFromClose(code, signal));
     });
   });
@@ -29657,7 +29750,8 @@ var nodeSpawner = (command, args, options) => {
     stdout: readStrings(stdout),
     pid: child.pid,
     exited,
-    stderr: () => stderrTail,
+    stderr: () => stderrTail.text(),
+    exitDetails: () => exitDetails,
     kill: (signal) => {
       killProcessGroup(child, signal);
     },
@@ -29982,6 +30076,8 @@ async function runAcpTurn(opts, profile) {
   let loadRefused = false;
   let diagnosticPhase = "spawn";
   const isInitializing = () => diagnosticPhase === "initialize";
+  let promptDispatched = false;
+  const isPrompting = () => promptDispatched;
   const topLevelText = new AcpTextStream();
   let updateTail = Promise.resolve();
   let updateError;
@@ -30226,6 +30322,7 @@ async function runAcpTurn(opts, profile) {
         }).catch(() => void 0);
       };
       loadingSession = false;
+      promptDispatched = true;
       const prompt = await agent.request(methods.agent.session.prompt, {
         sessionId: session.sessionId,
         prompt: promptBlocks(turnOpts, profile)
@@ -30331,14 +30428,32 @@ async function runAcpTurn(opts, profile) {
       aborted
     };
   } catch (error) {
+    const turnActive = isPrompting() && !closedOut;
     acceptingSteering = false;
     const message = error instanceof Error ? error.message : String(error);
     await drainUpdates().catch(() => void 0);
     closedOut = true;
     await writeAll(writer, adapter.flush()).catch(() => void 0);
     await writeAll(writer, topLevelText.flush()).catch(() => void 0);
+    let exitTimer;
+    await Promise.race([
+      child.exited.then(() => true, () => false),
+      new Promise((resolve3) => {
+        exitTimer = setTimeout(() => resolve3(false), 250);
+      })
+    ]);
+    if (exitTimer !== void 0)
+      clearTimeout(exitTimer);
+    const exitDetails = child.exitDetails?.();
     const stderr = `${child.stderr()}
 ${message}`;
+    const processFailure = !aborted && exitDetails !== void 0 && (exitDetails.code !== 0 || exitDetails.signal !== null || turnActive) ? {
+      exitCode: exitDetails.code,
+      signal: exitDetails.signal,
+      turnActive,
+      stderrTail: redactProcessStderr(child.stderr(), opts.env ?? process.env).slice(-65536),
+      ...opts.model === void 0 ? {} : { model: opts.model.slice(0, 200) }
+    } : {};
     const failedBeforeExecution = !aborted && boundSessionId === void 0 && isExplicitPreExecutionRejection(stderr);
     if (sessionId2 !== void 0 && !aborted && !failedBeforeExecution) {
       const usageLimit = isUsageLimitError(message);
@@ -30352,7 +30467,8 @@ ${message}`;
         outcome: aborted ? "cancelled" : "failed",
         phase: diagnosticPhase,
         backend: profile.telemetryBackend,
-        ...error instanceof RequestError ? { code: error.code } : {}
+        ...error instanceof RequestError ? { code: error.code } : {},
+        ...processFailure
       };
       if (writer.currentSessionId !== void 0) {
         await writer.write(diagnostic).catch(() => void 0);
@@ -30663,7 +30779,6 @@ import { createConnection } from "node:net";
 import { constants as osConstants } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 var PROTOCOL_VERSION2 = 1;
-var MAX_STDERR_CHARS = 64 * 1024;
 var STDOUT_HIGH_WATER_BYTES = 1024 * 1024;
 var MAX_BROKER_FRAME_BYTES = 8 * 1024 * 1024;
 var SESSION_RUNTIME_ENV_KEYS = [
@@ -30747,9 +30862,9 @@ function createBrokerSpawner(socketPath) {
       socket.resume();
       queueMicrotask(processBuffered);
     });
-    let stderrTail = "";
+    const stderrTail = new StderrTail();
+    let exitDetails;
     const stdoutDecoder = new StringDecoder("utf8");
-    const stderrDecoder = new StringDecoder("utf8");
     let pid;
     let spawned = false;
     let settled2 = false;
@@ -30766,7 +30881,6 @@ function createBrokerSpawner(socketPath) {
       const stdoutTail = stdoutDecoder.end();
       if (stdoutTail !== "")
         stdout.push(stdoutTail);
-      stderrTail = `${stderrTail}${stderrDecoder.end()}`.slice(-MAX_STDERR_CHARS);
       stdout.end();
       socket.destroy();
       resolveExited(code);
@@ -30796,7 +30910,8 @@ function createBrokerSpawner(socketPath) {
     });
     processBuffered = () => {
       if (Buffer.byteLength(buffered) > MAX_BROKER_FRAME_BYTES && !buffered.includes("\n")) {
-        stderrTail = "spawn broker frame exceeded the size limit";
+        stderrTail.clear();
+        stderrTail.push("spawn broker frame exceeded the size limit");
         settle(1);
         return;
       }
@@ -30809,7 +30924,8 @@ function createBrokerSpawner(socketPath) {
         const line = buffered.slice(0, newline2);
         buffered = buffered.slice(newline2 + 1);
         if (Buffer.byteLength(line) > MAX_BROKER_FRAME_BYTES) {
-          stderrTail = "spawn broker frame exceeded the size limit";
+          stderrTail.clear();
+          stderrTail.push("spawn broker frame exceeded the size limit");
           settle(1);
           break;
         }
@@ -30817,13 +30933,14 @@ function createBrokerSpawner(socketPath) {
         try {
           frame = JSON.parse(line);
         } catch {
-          stderrTail = "spawn broker returned malformed JSON";
+          stderrTail.clear();
+          stderrTail.push("spawn broker returned malformed JSON");
           settle(1);
           break;
         }
         if (frame.ok !== true) {
           const error = typeof frame.error === "string" ? frame.error : "spawn broker failed";
-          stderrTail = `${stderrTail}${stderrTail ? "\n" : ""}${error}`.slice(-MAX_STDERR_CHARS);
+          stderrTail.push(`${stderrTail.text() ? "\n" : ""}${error}`);
           settle(1);
         } else if (frame.kind === "spawned") {
           spawned = true;
@@ -30834,8 +30951,12 @@ function createBrokerSpawner(socketPath) {
           if (decoded !== "" && !stdout.push(decoded))
             break;
         } else if (frame.kind === "stderr" && typeof frame.data === "string") {
-          stderrTail = `${stderrTail}${stderrDecoder.write(Buffer.from(frame.data, "base64"))}`.slice(-MAX_STDERR_CHARS);
+          stderrTail.push(Buffer.from(frame.data, "base64"));
         } else if (frame.kind === "exit") {
+          exitDetails = {
+            code: typeof frame.code === "number" ? frame.code : null,
+            signal: typeof frame.signal === "string" ? frame.signal : null
+          };
           const signalNumber = typeof frame.signal === "string" ? osConstants.signals[frame.signal] : void 0;
           settle(typeof frame.code === "number" ? frame.code : 128 + (signalNumber ?? 0));
         }
@@ -30848,13 +30969,14 @@ function createBrokerSpawner(socketPath) {
       processBuffered();
     });
     socket.once("error", (error) => {
-      stderrTail = `${stderrTail}${stderrTail ? "\n" : ""}${error.message}`.slice(-MAX_STDERR_CHARS);
+      stderrTail.push(`${stderrTail.text() ? "\n" : ""}${error.message}`);
       settle(1);
     });
     socket.once("close", () => {
       if (!settled2) {
         if (Buffer.byteLength(buffered) > MAX_BROKER_FRAME_BYTES) {
-          stderrTail = "spawn broker frame exceeded the size limit";
+          stderrTail.clear();
+          stderrTail.push("spawn broker frame exceeded the size limit");
         }
         settle(1);
       }
@@ -30865,7 +30987,8 @@ function createBrokerSpawner(socketPath) {
         return pid;
       },
       exited,
-      stderr: () => stderrTail,
+      stderr: () => stderrTail.text(),
+      exitDetails: () => exitDetails,
       kill: (signal = "SIGTERM") => {
         if (signal !== "SIGTERM" && signal !== "SIGKILL")
           return;
@@ -30903,9 +31026,6 @@ function createBrokerSpawner(socketPath) {
 import { createHash as createHash3, randomUUID as randomUUID3, timingSafeEqual } from "node:crypto";
 import { mkdir as mkdir3, open as open4 } from "node:fs/promises";
 import { dirname as dirname3 } from "node:path";
-
-// scripts/runner-worker-store-shim.mjs
-var RUNNER_FRAME_PROTOCOL_VERSION = 1;
 
 // packages/session/dist/runner-contract.js
 var LoopbackRunnerClient = class {
