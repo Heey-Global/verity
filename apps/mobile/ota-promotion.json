@@ -1,14 +1,19 @@
 {
   "schema": 1,
-  "version": "1.60.1",
+  "version": "1.60.2",
   "runtime": "1.60.0",
   "channel": "production",
-  "commit": "86c59d5f4ccd105129bd09b1d365d2871f618470",
-  "tag": "mobile-v1.60.1",
-  "branch": "staging-mobile-v1.60.1-86c59d5f4ccd105129bd09b1d365d2871f618470",
-  "baseline": "mobile-v1.60.0",
-  "group": "a28ce3c5-7539-4ef3-855c-90b41870466b",
+  "commit": "bf704a734bb0fcf2001521c71e34d68ede02ce7a",
+  "tag": "mobile-v1.60.2",
+  "branch": "staging-mobile-v1.60.2-bf704a734bb0fcf2001521c71e34d68ede02ce7a",
+  "baseline": "mobile-v1.60.1",
+  "group": "ce05a6d7-16a3-47c8-aaee-a523acd0d4c7",
   "notes": [
-    "synchronize PR overview markers and immediate status bar (#1347)"
+    "append new sessions after manual ordering (#1368)",
+    "show feedback while starting task sessions (#1369)",
+    "add bounded interaction timing diagnostics (#1365)",
+    "keep task dictation active until save (#1366)",
+    "replace Haiku 4.5 with Haiku 5.5 (#1363)",
+    "unify plan approval and label accepted proposals (#1352)"
   ]
 }
