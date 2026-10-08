@@ -280,7 +280,7 @@ export default function OnboardingServerUrl() {
             <View style={[styles.card, styles.infoCard]}>
               <Text style={styles.stepLabel}>Step 1</Text>
               <Text style={styles.cardTitle}>Install Verity on your server</Text>
-              <Text style={styles.hint}>Run this on an x86-64 Linux host with Docker:</Text>
+              <Text style={styles.hint}>Run this on your Linux machine with Docker installed:</Text>
               <View style={styles.commandRow}>
                 <Text style={styles.command} selectable>
                   curl -fsSL https://verity.build/install.sh | bash
