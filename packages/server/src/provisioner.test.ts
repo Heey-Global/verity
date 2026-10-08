@@ -2713,6 +2713,84 @@ describe('ProvisionerImpl (#174)', () => {
     );
   });
 
+  it('shares overlapping supervisor reads without skipping newly active projects and retries failures', async () => {
+    const id = await seedProject();
+    const project = { ...(await ctx.store.getProject(id))!, state: 'active' as const };
+    const other = { ...project, id: 'new-active', containerName: 'new-active-container' };
+    const { runner: git } = fakeGit([]);
+    const { client: docker } = fakeDocker();
+    let release!: (value: { stdout: string; stderr: string }) => void;
+    const containerCommand = vi.fn<ContainerCommandRunner>(async (options) => {
+      if (options.containerName === other.containerName) return { stdout: '', stderr: '' };
+      return new Promise((done) => {
+        release = done;
+      });
+    });
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/example/dev-base:default',
+      hostCloneRoot: '/srv/workspaces',
+      dataVolumeRoot: '/srv',
+      runnerSupervisor: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      containerCommand,
+      isDirectory: () => true,
+    });
+    const first = provisioner.reconcileRunnerSupervisors([project]);
+    const second = provisioner.reconcileRunnerSupervisors([project, other]);
+    await new Promise((done) => setImmediate(done));
+    expect(containerCommand).toHaveBeenCalledTimes(2);
+    expect(
+      containerCommand.mock.calls.filter(
+        ([options]) => options.containerName === project.containerName,
+      ),
+    ).toHaveLength(1);
+    release({ stdout: '', stderr: '' });
+    await Promise.all([first, second]);
+    let reject!: (reason: Error) => void;
+    containerCommand.mockImplementationOnce(
+      () =>
+        new Promise((_done, fail) => {
+          reject = fail;
+        }),
+    );
+    const failed = Promise.allSettled([
+      provisioner.reconcileRunnerSupervisors([project]),
+      provisioner.reconcileRunnerSupervisors([project]),
+    ]);
+    await new Promise((done) => setImmediate(done));
+    expect(containerCommand).toHaveBeenCalledTimes(3);
+    reject(new Error('exec failed'));
+    expect((await failed).map((result) => result.status)).toEqual(['rejected', 'rejected']);
+    containerCommand.mockResolvedValueOnce({ stdout: '', stderr: '' });
+    await provisioner.reconcileRunnerSupervisors([project]);
+    expect(containerCommand).toHaveBeenCalledTimes(4);
+    const releases = new Map<string, (value: { stdout: string; stderr: string }) => void>();
+    containerCommand.mockImplementation(
+      (options) =>
+        new Promise((done) => {
+          releases.set(options.containerName, done);
+        }),
+    );
+    const oldRun = provisioner.reconcileRunnerSupervisors([project]);
+    const replacement = { ...project, containerName: 'replacement-container' };
+    const freshRun = provisioner.reconcileRunnerSupervisors([replacement]);
+    await new Promise((done) => setImmediate(done));
+    expect(containerCommand).toHaveBeenCalledTimes(6);
+    releases.get(project.containerName)!({ stdout: '', stderr: '' });
+    await oldRun;
+    const sharedRun = provisioner.reconcileRunnerSupervisors([replacement]);
+    await new Promise((done) => setImmediate(done));
+    // Completion for a retired container must not erase the replacement's fence.
+    expect(containerCommand).toHaveBeenCalledTimes(6);
+    releases.get(replacement.containerName)!({ stdout: '', stderr: '' });
+    await Promise.all([freshRun, sharedRun]);
+  });
+
   it('does not exec the Runner watchdog into a sandbox that a replacement is retiring', async () => {
     const id = await seedProject();
     const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);

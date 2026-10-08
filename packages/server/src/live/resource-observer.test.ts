@@ -109,7 +109,7 @@ describe('ResourceObserver', () => {
     expect(changed).not.toHaveBeenCalled();
   });
 
-  it('bounds concurrent backend reads to one', async () => {
+  it('keeps unrelated resources moving while bounding pending reads', async () => {
     let resolve!: (value: { statusCode: number; body: string }) => void;
     const first = vi.fn(
       () =>
@@ -117,11 +117,24 @@ describe('ResourceObserver', () => {
           resolve = done;
         }),
     );
-    const second = vi.fn(async () => ({ statusCode: 200, body: '{}' }));
+    let releaseSecond!: (value: { statusCode: number; body: string }) => void;
+    const second = vi.fn(
+      () =>
+        new Promise<{ statusCode: number; body: string }>((done) => {
+          releaseSecond = done;
+        }),
+    );
+    const third = vi.fn(async () => ({ statusCode: 200, body: '{}' }));
     observer.watch('alice', { path: '/projects' }, first, () => {});
     observer.watch('bob', { path: '/projects' }, second, () => {});
+    observer.watch('charlie', { path: '/server/updates' }, third, () => {});
     await vi.advanceTimersByTimeAsync(1000);
-    expect(second).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledOnce();
+    expect(third).not.toHaveBeenCalled();
+    // A stuck branch or preview read must not freeze all other watched resources.
+    releaseSecond({ statusCode: 200, body: '{}' });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(third).toHaveBeenCalledOnce();
     resolve({ statusCode: 200, body: '{}' });
     await vi.advanceTimersByTimeAsync(1);
     expect(second).toHaveBeenCalledTimes(1);

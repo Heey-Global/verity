@@ -38,7 +38,7 @@ const execFileAsync = promisify(execFile);
 export type SandboxExec = (
   command: string,
   args: readonly string[],
-  options: { env: NodeJS.ProcessEnv },
+  options: { env: NodeJS.ProcessEnv; timeout?: number },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 /**
@@ -80,6 +80,7 @@ export interface SandboxGitOptions {
   dockerBaseUrl?: string | undefined;
   dockerCommand?: string | undefined;
   exec?: SandboxExec | undefined;
+  timeoutMs?: number;
 }
 
 const defaultExec: SandboxExec = async (command, args, options) => {
@@ -182,6 +183,7 @@ export function createSandboxGit(opts: SandboxGitOptions): GitOutput {
         ],
         {
           env: { ...process.env, ...(dockerHost !== undefined ? { DOCKER_HOST: dockerHost } : {}) },
+          ...(opts.timeoutMs !== undefined ? { timeout: opts.timeoutMs } : {}),
         },
       );
       return stdout;
@@ -195,7 +197,7 @@ export function createSandboxGit(opts: SandboxGitOptions): GitOutput {
 }
 
 /** Metadata remains available while a session sleeps, without executing its startup hooks. */
-export function createSleepingSessionGit(opts: {
+interface SleepingSessionGitOptions {
   docker: Pick<
     DockerClient,
     'inspectContainer' | 'createContainer' | 'startContainer' | 'removeContainer'
@@ -206,54 +208,68 @@ export function createSleepingSessionGit(opts: {
   dataVolume?: { name: string; root: string };
   dockerBaseUrl?: string | undefined;
   exec?: SandboxExec;
-}): GitOutput {
-  return async (args) => {
-    const subpath = opts.dataVolume ? relative(opts.dataVolume.root, opts.hostRoot) : undefined;
-    if (
-      subpath !== undefined &&
-      (subpath === '' || subpath.startsWith('..') || isAbsolute(subpath))
-    )
-      throw new Error('Metadata checkout escapes data volume');
-    const parent = await opts.docker.inspectContainer(opts.templateContainer);
-    const image = parent.imageId ?? parent.image;
-    if (!image) throw new Error('Metadata query image is unavailable');
-    const name = `verity-query-${randomUUID()}`;
-    await opts.docker.createContainer({
-      name,
-      image,
-      ...(opts.dataVolume
-        ? {
-            volumeMounts: [
-              { volume: opts.dataVolume.name, subpath: subpath!, target: '/work', readOnly: true },
-            ],
-          }
-        : { binds: [`${opts.hostRoot}:/work:ro`] }),
-      user: parent.user || '1000:1000',
-      entrypoint: ['sleep'],
-      command: ['infinity'],
-      network: 'none',
-      readOnlyRootfs: true,
-      capDrop: ['ALL'],
-      ...(parent.ulimits ? { ulimits: parent.ulimits } : {}),
-      securityOpt: [...new Set([...(parent.securityOpt ?? []), 'no-new-privileges:true'])],
-      ...(parent.runtime ? { runtime: parent.runtime } : {}),
-      ...(parent.memoryBytes ? { memoryBytes: parent.memoryBytes } : {}),
-      ...(parent.memorySwapBytes !== undefined ? { memorySwapBytes: parent.memorySwapBytes } : {}),
-      ...(parent.nanoCpus ? { nanoCpus: parent.nanoCpus } : {}),
-      ...(parent.pidsLimit ? { pidsLimit: parent.pidsLimit } : {}),
-      labels: { 'verity.project-id': opts.projectId, 'verity.session-id': name },
+}
+
+export function createSleepingSessionGit(opts: SleepingSessionGitOptions): GitOutput {
+  return (args) => withSleepingSessionGit(opts, (git) => git(args));
+}
+
+/** Keep one isolated query sandbox alive until every command in the read has settled. */
+export async function withSleepingSessionGit<T>(
+  opts: SleepingSessionGitOptions,
+  operation: (git: GitOutput) => Promise<T>,
+): Promise<T> {
+  const subpath = opts.dataVolume ? relative(opts.dataVolume.root, opts.hostRoot) : undefined;
+  if (subpath !== undefined && (subpath === '' || subpath.startsWith('..') || isAbsolute(subpath)))
+    throw new Error('Metadata checkout escapes data volume');
+  const parent = await opts.docker.inspectContainer(opts.templateContainer);
+  const image = parent.imageId ?? parent.image;
+  if (!image) throw new Error('Metadata query image is unavailable');
+  const name = `verity-query-${randomUUID()}`;
+  await opts.docker.createContainer({
+    name,
+    image,
+    ...(opts.dataVolume
+      ? {
+          volumeMounts: [
+            { volume: opts.dataVolume.name, subpath: subpath!, target: '/work', readOnly: true },
+          ],
+        }
+      : { binds: [`${opts.hostRoot}:/work:ro`] }),
+    user: parent.user || '1000:1000',
+    entrypoint: ['sleep'],
+    command: ['infinity'],
+    network: 'none',
+    readOnlyRootfs: true,
+    capDrop: ['ALL'],
+    ...(parent.ulimits ? { ulimits: parent.ulimits } : {}),
+    securityOpt: [...new Set([...(parent.securityOpt ?? []), 'no-new-privileges:true'])],
+    ...(parent.runtime ? { runtime: parent.runtime } : {}),
+    ...(parent.memoryBytes ? { memoryBytes: parent.memoryBytes } : {}),
+    ...(parent.memorySwapBytes !== undefined ? { memorySwapBytes: parent.memorySwapBytes } : {}),
+    ...(parent.nanoCpus ? { nanoCpus: parent.nanoCpus } : {}),
+    ...(parent.pidsLimit ? { pidsLimit: parent.pidsLimit } : {}),
+    labels: { 'verity.project-id': opts.projectId, 'verity.session-id': name },
+  });
+  const commands: Promise<string>[] = [];
+  try {
+    await opts.docker.startContainer(name);
+    const git = createSandboxGit({
+      containerName: name,
+      hostRoot: opts.hostRoot,
+      dockerBaseUrl: opts.dockerBaseUrl,
+      inspect: () => opts.docker.inspectContainer(name),
+      timeoutMs: 10_000,
+      ...(opts.exec ? { exec: opts.exec } : {}),
     });
-    try {
-      await opts.docker.startContainer(name);
-      return await createSandboxGit({
-        containerName: name,
-        hostRoot: opts.hostRoot,
-        dockerBaseUrl: opts.dockerBaseUrl,
-        inspect: () => opts.docker.inspectContainer(name),
-        ...(opts.exec ? { exec: opts.exec } : {}),
-      })(['--no-optional-locks', ...args]);
-    } finally {
-      await opts.docker.removeContainer(name);
-    }
-  };
+    return await operation((args) => {
+      const command = git(['--no-optional-locks', ...args]);
+      commands.push(command);
+      return command;
+    });
+  } finally {
+    // An operation may reject while sibling reads still use this sandbox.
+    await Promise.allSettled(commands);
+    await opts.docker.removeContainer(name);
+  }
 }

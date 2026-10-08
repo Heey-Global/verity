@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   BaseCheckoutStrandedError,
   BaseCheckoutUnavailableError,
@@ -68,6 +68,34 @@ function fakeGit(routes: Record<string, () => string>) {
   };
   return { git, calls };
 }
+
+it('reads branch metadata in one scoped operation with a shared HEAD result', async () => {
+  const { git, calls } = fakeGit({
+    'rev-parse --abbrev-ref HEAD': () => 'feature\n',
+    'for-each-ref --format=%(refname:short) refs/heads': () => 'feature\nmain\nbusy\nfree\n',
+    'worktree list --porcelain': () => 'worktree /other\nbranch refs/heads/busy\n',
+    'for-each-ref --format=%(refname:short) refs/remotes/origin': () =>
+      'origin/HEAD\norigin/main\norigin/feature\norigin/busy\n',
+  });
+  const scoped = vi.fn();
+  const branches = createGitBranchService({
+    git: async () => {
+      throw new Error('unscoped read');
+    },
+    withGit: async (worktree, operation) => {
+      scoped(worktree);
+      return operation(git);
+    },
+  });
+  expect(await branches.metadata!('/wt')).toEqual({
+    current: 'feature',
+    switchable: ['main', 'free'],
+    previewableRaw: ['busy'],
+  });
+  expect(scoped).toHaveBeenCalledOnce();
+  expect(calls.filter((args) => args.includes('rev-parse'))).toHaveLength(1);
+  expect(calls).toHaveLength(4);
+});
 
 /** The pins the local-merge path puts on every index-touching invocation in `repoPath`.
  *  A session can write each of the corresponding keys into the shared `.git/config` of

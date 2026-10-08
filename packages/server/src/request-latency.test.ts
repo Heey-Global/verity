@@ -11,49 +11,52 @@ import { registerRequestLatencyDiagnostics } from './request-latency.js';
 afterEach(() => vi.restoreAllMocks());
 
 describe('slow backend read diagnostics', () => {
-  it('attributes handler phases after auth and detects a block before the timer can fire', async () => {
-    const lines: string[] = [];
-    const app = Fastify({
-      logger: {
-        stream: {
-          write: (line: string) => {
-            lines.push(line);
+  it.each(['/projects', '/sessions/:id/events'])(
+    'attributes slow reads on %s and detects a block before the timer can fire',
+    async (route) => {
+      const lines: string[] = [];
+      const app = Fastify({
+        logger: {
+          stream: {
+            write: (line: string) => {
+              lines.push(line);
+            },
           },
         },
-      },
-    });
-    const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
-    registerRequestLatencyDiagnostics(app);
-    app.addHook('onRequest', async () => {
-      clock.mockReturnValue(200);
-    });
-    app.get('/projects', async () =>
-      measureLatencyPhase('project_list', async () => {
-        recordRequestQuery(30, false);
-        clock.mockReturnValue(5_000);
-        return [];
-      }),
-    );
-    try {
-      const response = await app.inject('/projects?private=secret');
-      expect(response.statusCode, response.body).toBe(200);
-      const diagnostic = lines
-        .map((line) => JSON.parse(line) as Record<string, unknown>)
-        .find((entry) => entry.msg === 'slow backend read diagnostic');
-      expect(diagnostic).toMatchObject({
-        route: '/projects',
-        statusCode: 200,
-        beforeHandlerMs: 200,
-        eventLoopDelayMaxMs: 4_900,
-        phases: { project_list: { calls: 1, totalMs: 4_800 } },
-        queries: { calls: 1, totalMs: 30 },
       });
-      expect(JSON.stringify(diagnostic)).not.toContain('secret');
-      expect(JSON.stringify(diagnostic)).not.toContain('private');
-    } finally {
-      await app.close();
-    }
-  });
+      const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
+      registerRequestLatencyDiagnostics(app);
+      app.addHook('onRequest', async () => {
+        clock.mockReturnValue(200);
+      });
+      app.get(route, async () =>
+        measureLatencyPhase('project_list', async () => {
+          recordRequestQuery(30, false);
+          clock.mockReturnValue(5_000);
+          return [];
+        }),
+      );
+      try {
+        const response = await app.inject(`${route.replace(':id', 'test')}?private=secret`);
+        expect(response.statusCode, response.body).toBe(200);
+        const diagnostic = lines
+          .map((line) => JSON.parse(line) as Record<string, unknown>)
+          .find((entry) => entry.msg === 'slow backend read diagnostic');
+        expect(diagnostic).toMatchObject({
+          route,
+          statusCode: 200,
+          beforeHandlerMs: 200,
+          eventLoopDelayMaxMs: 4_900,
+          phases: { project_list: { calls: 1, totalMs: 4_800 } },
+          queries: { calls: 1, totalMs: 30 },
+        });
+        expect(JSON.stringify(diagnostic)).not.toContain('secret');
+        expect(JSON.stringify(diagnostic)).not.toContain('private');
+      } finally {
+        await app.close();
+      }
+    },
+  );
 
   it('does not report ordinary reads or install probes on streaming routes', async () => {
     const app = Fastify();
