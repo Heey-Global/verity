@@ -130,7 +130,7 @@ describe('watch capture project', () => {
   });
 
   it('saves to the project picked on the watch', () => {
-    expect(watchCaptureProject(picked({}), known)).toBe('p1');
+    expect(watchCaptureProject(picked({}), known, 'account-1')).toBe('p1');
   });
 
   // Each of these would otherwise file the note under a project the user did
@@ -140,18 +140,24 @@ describe('watch capture project', () => {
     ['it was picked under another account', picked({ scope: 'account-2' })],
     ['the project is unknown here', picked({ projectId: 'p2' })],
   ])('holds the capture when %s', (_, held) => {
-    expect(() => watchCaptureProject(held, known)).toThrow();
+    expect(() => watchCaptureProject(held, known, 'account-1')).toThrow();
+  });
+
+  // Right after an account switch the loaded projects can still be the previous
+  // account's while the task queue already writes for the new one.
+  it('holds a capture while the known projects belong to another sign-in', () => {
+    expect(() => watchCaptureProject(picked({}), known, 'account-2')).toThrow('another account');
   });
 
   it('holds every capture until the projects are loaded', () => {
-    expect(() => watchCaptureProject(picked({}), null)).toThrow();
+    expect(() => watchCaptureProject(picked({}), null, 'account-1')).toThrow();
   });
 
   it('keeps a held capture in the inbox and saves the next one', async () => {
     const box = inbox([picked({ id: 'a', scope: 'account-2' }), picked({ id: 'b' })]);
     const saved: string[] = [];
     const save = jest.fn(async (c: WatchCapture) => {
-      saved.push(`${c.id}:${watchCaptureProject(c, known)}`);
+      saved.push(`${c.id}:${watchCaptureProject(c, known, 'account-1')}`);
     });
     await expect(createWatchInboxDrainer(box, save)()).rejects.toThrow('another account');
     expect(saved).toEqual(['b:p1']);

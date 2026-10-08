@@ -152,6 +152,8 @@ export async function resolveTaskConflict(id: string, keepLocal: boolean): Promi
 export async function loadTaskContextData(): Promise<{
   projects: ProjectRecord[];
   sessions: SessionSummary[];
+  /** The account the data belongs to. */
+  scope: string;
 } | null> {
   const started = taskAccountScope();
   if (!started) return null;
@@ -161,6 +163,7 @@ export async function loadTaskContextData(): Promise<{
   return {
     projects: parsed.projects.map((value) => projectRecordSchema.parse(value)),
     sessions: parsed.sessions.map((value) => sessionSummarySchema.parse(value)),
+    scope: started,
   };
 }
 export async function saveTaskContextData(

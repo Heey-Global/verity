@@ -159,6 +159,20 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     }
   }
 
+  /// Drops transcribed captures JavaScript cannot save (another account, a
+  /// project that is gone). Only on the operator's request: the watch already
+  /// discarded its audio, so this text is the last copy.
+  func discardWaiting() -> Int {
+    queue.sync {
+      let waiting = entries().filter { $0.state == .transcribed }
+      for entry in waiting {
+        remove(entry.id)
+        log("\(entry.id.prefix(8)) discarded while waiting for its project")
+      }
+      return waiting.count
+    }
+  }
+
   func logLines() -> [String] {
     queue.sync { readLog() }
   }
@@ -293,6 +307,9 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     case .success(let text) where !text.isEmpty:
       entry.state = .transcribed
       entry.text = text
+      // Only the text is needed from here on; a capture held back for its
+      // project must not keep its audio as well.
+      try? FileManager.default.removeItem(at: audioURL(id))
       reply["kind"] = "transcript"
       reply["text"] = text
       log("\(id.prefix(8)) transcribed in \(elapsed) ms")

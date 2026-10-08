@@ -15,6 +15,7 @@ import {
   type ScreenshotAccess,
 } from '../../lib/taskScreenshot';
 import {
+  discardWaitingWatchCaptures,
   watchBridgeAvailable,
   watchInboxLog,
   watchStatus,
@@ -147,12 +148,25 @@ export default function TasksSettingsScreen() {
               <SettingsNavRow
                 icon="inbox"
                 title="Waiting captures"
-                subtitle="Transcribed, not saved yet: sign in to the account and keep the project they were recorded for"
+                subtitle="Transcribed, not saved yet: sign in to the account and keep the project they were recorded for, or tap to discard"
                 value={String(watch.waiting)}
                 onPress={() =>
-                  void watchStatus()
-                    .then(setWatch)
-                    .catch(() => undefined)
+                  Alert.alert(
+                    'Discard waiting captures?',
+                    'Their text is only kept here and cannot be recovered.',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Discard',
+                        style: 'destructive',
+                        onPress: () =>
+                          void discardWaitingWatchCaptures()
+                            .then(watchStatus)
+                            .then(setWatch)
+                            .catch(() => undefined),
+                      },
+                    ],
+                  )
                 }
                 accessibilityLabel={`${String(watch.waiting)} watch captures waiting`}
               />

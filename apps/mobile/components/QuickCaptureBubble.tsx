@@ -86,6 +86,8 @@ export function QuickCaptureBubble() {
   const preferences = useTaskPreferences();
   const { tasks } = useTasks();
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  /** The account `projects` was loaded for; null while it is empty or unknown. */
+  const [projectsScope, setProjectsScope] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [keyboard, setKeyboard] = useState(Keyboard.isVisible());
   const [meeting, setMeeting] = useState(false);
@@ -222,8 +224,14 @@ export function QuickCaptureBubble() {
   // The watch picker offers the same projects, in the same order, as quick capture.
   const accountScope = taskAccountScope();
   useEffect(
-    () => syncWatchProjects(accountScope, projects, tasks, preferences.projectId),
-    [accountScope, projects, tasks, preferences.projectId],
+    () =>
+      syncWatchProjects(
+        accountScope,
+        projectsScope === accountScope ? projects : null,
+        tasks,
+        preferences.projectId,
+      ),
+    [accountScope, projectsScope, projects, tasks, preferences.projectId],
   );
   useEffect(() => {
     const load = async () => {
@@ -232,6 +240,7 @@ export function QuickCaptureBubble() {
       const client = createVerityClient();
       if (!client || !expectedScope) {
         setProjects([]);
+        setProjectsScope(null);
         setSessions([]);
         return;
       }
@@ -242,6 +251,7 @@ export function QuickCaptureBubble() {
         ]);
         if (generation !== loadGeneration.current) return;
         setProjects(nextProjects);
+        setProjectsScope(expectedScope);
         setSessions(nextSessions);
         await saveTaskContextData(
           { projects: nextProjects, sessions: nextSessions },
@@ -254,6 +264,7 @@ export function QuickCaptureBubble() {
     const reset = () => {
       ++loadGeneration.current;
       setProjects([]);
+      setProjectsScope(null);
       setSessions([]);
       setCapture(false);
       setPanel(false);
@@ -263,6 +274,7 @@ export function QuickCaptureBubble() {
         .then((data) => {
           if (data && loadGeneration.current === generation) {
             setProjects(data.projects);
+            setProjectsScope(data.scope);
             setSessions(data.sessions);
           }
         })
@@ -279,6 +291,7 @@ export function QuickCaptureBubble() {
       .then((data) => {
         if (data && loadGeneration.current === 0) {
           setProjects(data.projects);
+          setProjectsScope(data.scope);
           setSessions(data.sessions);
         }
       })

@@ -25,6 +25,9 @@ class VerityWatchBridge: Module {
       VerityWatchInbox.shared.setProjects(
         scope: scope, projects: projects, lastProjectId: lastProjectId)
     }
+    AsyncFunction("discardWaiting") { () -> Int in
+      VerityWatchInbox.shared.discardWaiting()
+    }
     AsyncFunction("log") { () -> [String] in
       VerityWatchInbox.shared.logLines()
     }
