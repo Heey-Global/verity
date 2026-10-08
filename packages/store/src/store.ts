@@ -1353,22 +1353,18 @@ export class EventStore implements EventSink {
         .orderBy('session_id')
         .forShare()
         .execute();
-      if (
-        sessions.length !== 2 ||
-        !sessions[0]?.project_id ||
-        !sessions[1]?.project_id ||
-        sessions[0].project_id === sessions[1].project_id
-      )
-        throw new Error('linked sessions must belong to different projects');
+      if (sessions.length !== 2 || !sessions[0]?.project_id || !sessions[1]?.project_id)
+        throw new Error('linked sessions must belong to projects');
+      const projectIds = [...new Set([sessions[0].project_id, sessions[1].project_id])];
       const projects = await tx
         .selectFrom('projects')
         .select(['id', 'state', 'hidden_at', 'kind'])
-        .where('id', 'in', [sessions[0].project_id, sessions[1].project_id])
+        .where('id', 'in', projectIds)
         .orderBy('id')
         .forShare()
         .execute();
       if (
-        projects.length !== 2 ||
+        projects.length !== projectIds.length ||
         projects.some(
           (project) =>
             !isSessionLinkProject({

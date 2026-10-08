@@ -510,12 +510,14 @@ export function SessionSettingsDialog({
                 />
               </Pressable>
             </View>
-            <Text style={styles.description}>Share messages with agents in other projects.</Text>
+            <Text style={styles.description}>
+              Share messages with agents in this or other projects.
+            </Text>
             {linkInfoOpen ? (
               <Text style={styles.hint}>
-                Linked agents can share messages across projects, including information they can
-                access there. Disconnecting stops future messages; it cannot remove messages already
-                delivered.
+                Linked agents can share messages within and across projects, including information
+                they can access there. Disconnecting stops future messages; it cannot remove
+                messages already delivered.
               </Text>
             ) : null}
             <View style={styles.group}>
@@ -718,7 +720,7 @@ export function SessionSettingsDialog({
         {linkGroups.length === 0 ? (
           <Text style={styles.emptyText}>
             {linkableSessions.length === 0
-              ? 'No sessions in other projects to link.'
+              ? 'No other sessions available to link.'
               : 'No sessions match your search.'}
           </Text>
         ) : null}
