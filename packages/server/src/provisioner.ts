@@ -192,8 +192,12 @@ const execFileAsync = promisify(execFile);
 // and there is no guest OOM killer: when the ceiling is hit the HOST kills the
 // Sentry, and every session of the project dies with it rather than one runaway
 // build. 4 GiB was hit that way four times in one evening (memcg 3.80 of 3.94 GB
-// shmem), so the ceiling has to fit all of a project's concurrent turns, not a
-// single process. Override per-host with VERITY_SANDBOX_MEMORY (server-main.ts)
+// shmem), and 6 GiB the same way on 2026-10-08, so the ceiling has to fit all of
+// a project's concurrent turns, not a single process. The toolkit's memory guard
+// (features/verity-sandbox-toolkit/bin/verity-memory-guard.mjs) stands in for
+// the missing guest OOM killer: it kills the largest agent-owned command a
+// reserve below this ceiling, so the common overrun costs one build rather than
+// the project. Override per-host with VERITY_SANDBOX_MEMORY (server-main.ts)
 // where the available RAM differs.
 // gVisor counts Sentry host threads as well as guest workload threads.
 export const DEFAULT_SANDBOX_PIDS_LIMIT = 4096;
