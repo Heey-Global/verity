@@ -774,6 +774,35 @@ describe('project settings — agents', () => {
     );
   });
 
+  it('keeps the latest project models when post-save refreshes finish out of order', async () => {
+    const all = { models: ['claude-sonnet-4-6', 'codex/default', 'verity/kimi-k2'] };
+    const pending: Array<(value: typeof all) => void> = [];
+    let projectReads = 0;
+    const listModels = jest.fn().mockImplementation((projectId?: string) => {
+      if (projectId === undefined || projectReads++ === 0) return Promise.resolve(all);
+      return new Promise<typeof all>((resolve) => pending.push(resolve));
+    });
+    const updateProjectSettings = jest
+      .fn()
+      .mockImplementation((_id: string, patch: object) =>
+        Promise.resolve({ ...makeDetail().settings, ...patch }),
+      );
+    mockCreateVerityClient.mockReturnValue(makeClient({ listModels, updateProjectSettings }));
+    render(<ProjectModelScreen />);
+    fireEvent.press(await screen.findByLabelText('Codex'));
+    await waitFor(() => expect(pending).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Claude').props.accessibilityState.disabled).toBe(false),
+    );
+    fireEvent.press(screen.getByLabelText('Claude'));
+    await waitFor(() => expect(pending).toHaveLength(2));
+    await act(async () => pending[1]?.({ models: ['verity/kimi-k2'] }));
+    expect(screen.queryByLabelText('Use model Claude Sonnet 4.6, claude-sonnet-4-6')).toBeNull();
+    // A late refresh must not reintroduce models excluded by the newer saved rule.
+    await act(async () => pending[0]?.({ models: ['claude-sonnet-4-6', 'verity/kimi-k2'] }));
+    expect(screen.queryByLabelText('Use model Claude Sonnet 4.6, claude-sonnet-4-6')).toBeNull();
+  });
+
   // Turning off the last connected agent would leave the project unable to start
   // any session, so its toggle cannot be switched off.
   it('locks the last connected allowed agent and lists the project models', async () => {

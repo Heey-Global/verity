@@ -13,7 +13,7 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
@@ -71,23 +71,27 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
   const [modelsError, setModelsError] = useState<string | undefined>(undefined);
   const [saving, setSaving] = useState(false);
 
+  const modelRequest = useRef(0);
   const loadModels = useCallback(() => {
-    let active = true;
+    const request = ++modelRequest.current;
+    const fresh = () => request === modelRequest.current;
     void Promise.all([client.listModels(), client.listModels(projectId)])
       .then(([all, project]) => {
-        if (!active) return;
+        if (!fresh()) return;
         setConnected(all);
         setModels(project);
         setModelsError(undefined);
       })
       .catch(() => {
-        if (active) setModelsError('Could not load the available models.');
+        if (fresh()) setModelsError('Could not load the available models.');
       });
-    return () => {
-      active = false;
-    };
   }, [client, projectId]);
-  useEffect(() => loadModels(), [loadModels]);
+  useEffect(() => {
+    loadModels();
+    return () => {
+      modelRequest.current++;
+    };
+  }, [loadModels]);
 
   const save = useCallback(
     (patch: { defaultModel?: string | null; allowedAgents?: ProjectAgent[] | null }) => {
