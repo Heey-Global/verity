@@ -16,7 +16,7 @@ it('releases a failed preparation so retry cannot remain blocked by a phantom bo
   const create = vi.fn().mockRejectedValue(new Error('unavailable'));
   const service = new AttendeeMeetings({
     store,
-    edge: { create, remove: vi.fn(), isAvailable: () => true },
+    edge: { create, remove: vi.fn().mockResolvedValue(undefined), isAvailable: () => true },
     ingest: vi.fn(),
   });
   await service.configure({
@@ -232,4 +232,126 @@ it('reconnects callbacks after restarting an ambiguous provider submission', asy
     connect.mockRestore();
     disconnected.mockRestore();
   }
+});
+
+it('treats repeat stop after final cleanup as an idempotent command', async () => {
+  const client = vi.fn();
+  const service = new AttendeeMeetings({
+    store: {
+      getAttendeeState: async () => ({
+        phase: 'ended',
+        meeting: { id: 'done', sessionId: 'session' },
+        credentials: { apiKey: '', webhookSecret: '' },
+      }),
+    } as unknown as EventStore,
+    ingest: vi.fn(),
+    client,
+  });
+  await expect(service.stop('session', 'done')).resolves.toEqual({ accepted: true });
+  expect(client).not.toHaveBeenCalled();
+});
+
+it('allows retry after a definitive Attendee rejection without waiting for a nonexistent bot', async () => {
+  const { PreviewConnector } = await import('@verity/preview-tunnel');
+  const { AttendeeClient } = await import('./attendee-client.js');
+  const connect = vi.spyOn(PreviewConnector.prototype, 'connect').mockResolvedValue(undefined);
+  const disconnected = vi
+    .spyOn(PreviewConnector.prototype, 'waitForDisconnect')
+    .mockImplementation(() => new Promise(() => undefined));
+  const rows = new Map<string, unknown>();
+  const store = {
+    getSession: async () => ({ id: 'session' }),
+    getAttendeeState: async (id: string) => rows.get(id),
+    putAttendeeState: async (id: string, value: unknown) => {
+      rows.set(id, structuredClone(value));
+    },
+    listAttendeeState: async () =>
+      [...rows].filter(([id]) => id !== 'config').map(([id, state]) => ({ id, state })),
+  } as unknown as EventStore;
+  const create = vi.fn(async () => ({
+    shareId: 'share',
+    publicOrigin: 'https://meeting.example.test',
+    edgeUrl: 'wss://meeting.example.test/__verity/connector',
+    connectorToken: 'fixture',
+    sessionSecret: 'fixture',
+    expiresAt: new Date(Date.now() + 60000),
+  }));
+  const service = new AttendeeMeetings({
+    store,
+    ingest: vi.fn(),
+    edge: { create, remove: vi.fn().mockResolvedValue(undefined), isAvailable: () => true },
+    client: (key) => new AttendeeClient(key, async () => new Response('', { status: 401 })),
+  });
+  await service.configure({
+    apiKey: 'fixture',
+    webhookSecret: Buffer.alloc(32).toString('base64'),
+  });
+  await service.open();
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(
+        service.start('session', 'https://meet.google.com/abc-defg-hij', false),
+      ).rejects.toThrow('Attendee rejected');
+    }
+    expect(create).toHaveBeenCalledTimes(2);
+  } finally {
+    await service.close();
+    connect.mockRestore();
+    disconnected.mockRestore();
+  }
+});
+
+it('keeps an addressed utterance pending when classification or dispatch fails', async () => {
+  const rows = new Map<string, unknown>([
+    [
+      'meeting:retry',
+      {
+        meeting: {
+          id: 'retry',
+          sessionId: 'session',
+          state: 'active',
+          transcript: '',
+          revision: 0,
+        },
+        botId: 'bot',
+        phase: 'running',
+        credentials: { apiKey: 'fixture' },
+        identities: {},
+        listenForVerity: true,
+        spokenThrough: -1,
+      },
+    ],
+  ]);
+  const store = {
+    getAttendeeState: async (id: string) => rows.get(id),
+    putAttendeeState: async (id: string, state: unknown) => {
+      rows.set(id, structuredClone(state));
+    },
+    listAttendeeState: async () => [...rows].map(([id, state]) => ({ id, state })),
+  } as unknown as EventStore;
+  const spoken = vi.fn().mockRejectedValue(new Error('temporarily unavailable'));
+  const service = new AttendeeMeetings({
+    store,
+    ingest: vi.fn(),
+    spoken,
+    client: () =>
+      ({
+        request: async () => ({ state: 'joined_recording' }),
+        transcript: async () => [
+          {
+            speaker_uuid: 'alice',
+            timestamp_ms: 0,
+            duration_ms: 500,
+            transcription: { transcript: 'Verity, check this claim' },
+          },
+        ],
+      }) as unknown as import('./attendee-client.js').AttendeeClient,
+  });
+  await service.open();
+  try {
+    await vi.waitFor(() => expect(spoken).toHaveBeenCalledOnce());
+  } finally {
+    await service.close();
+  }
+  expect(rows.get('meeting:retry')).toMatchObject({ spokenThrough: -1 });
 });

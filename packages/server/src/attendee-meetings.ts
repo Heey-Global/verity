@@ -7,6 +7,7 @@ import type { PreviewEdgeControl, PreviewEdgeBinding } from './preview-share-man
 import {
   ATTENDEE_WEBHOOK_PATH,
   AttendeeClient,
+  AttendeeRequestRejected,
   normalizeAttendeeTranscript,
   verifyAttendeeSignature,
 } from './attendee-client.js';
@@ -253,7 +254,8 @@ export class AttendeeMeetings {
         state.phase = 'running';
         await this.publish(state);
         return { meetingId: id };
-      } catch {
+      } catch (error) {
+        if (error instanceof AttendeeRequestRejected) state.botCreateAttempted = false;
         if (!state.botCreateAttempted) {
           if (state.binding)
             await this.options.edge.remove(state.binding.shareId).catch(() => undefined);
@@ -267,7 +269,10 @@ export class AttendeeMeetings {
           delete state.binding;
           await this.publish(state);
           throw new Error(
-            'Could not open the Uplink webhook connection. Check Uplink / Online Sharing and retry.',
+            error instanceof AttendeeRequestRejected
+              ? `Attendee rejected the meeting request (${error.status}). Check Connected services and the meeting link, then retry.`
+              : 'Could not open the Uplink webhook connection. Check Uplink / Online Sharing and retry.',
+            { cause: error },
           );
         }
         state.phase = 'interrupted';
@@ -276,7 +281,7 @@ export class AttendeeMeetings {
           'Online meeting start did not complete. Provider state will be reconciled; do not start another bot.';
         await this.publish(state);
         // Keep the saved binding: a timed-out bot creation may still deliver its ID.
-        throw new Error(state.error);
+        throw new Error(state.error, { cause: error });
       }
     });
   }
@@ -300,6 +305,7 @@ export class AttendeeMeetings {
       const state = await this.options.store.getAttendeeState<OnlineMeeting>(`meeting:${id}`);
       if (!state || state.meeting.sessionId !== sessionId)
         throw new Error('Online meeting not found.');
+      if (state.phase === 'ended') return { accepted: true };
       state.stopRequested = true;
       state.phase = 'stopping';
       await this.publish(state);
@@ -389,15 +395,14 @@ export class AttendeeMeetings {
     if (state.listenForVerity && this.options.spoken) {
       for (const utterance of [...snapshot].sort((a, b) => a.timestamp_ms - b.timestamp_ms)) {
         if (utterance.timestamp_ms <= state.spokenThrough) continue;
-        // Save the high-water mark before dispatch so replay cannot launch another turn.
-        state.spokenThrough = utterance.timestamp_ms;
-        await this.save(state);
         if (/\bverity\b/iu.test(utterance.transcription.transcript))
           await this.options.spoken(
             state.meeting,
             utterance.transcription.transcript,
             `meeting-${state.meeting.id}-${utterance.timestamp_ms}`,
           );
+        state.spokenThrough = utterance.timestamp_ms;
+        await this.save(state);
       }
     }
     if (final) {

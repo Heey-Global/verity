@@ -491,7 +491,7 @@ export function registerLiveMeetingRoutes(
         addressedPrompt(utterance, context),
         AbortSignal.timeout(30_000),
       );
-      if (!raw) return [];
+      if (!raw) throw new Error('Meeting request classification is unavailable');
       return addressedResult
         .parse(JSON.parse(raw))
         .requests.filter(

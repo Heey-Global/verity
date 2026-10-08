@@ -68,6 +68,12 @@ export function normalizeAttendeeTranscript(
   return { transcript: texts.join('\n'), speakerNames, speakerTurns, timedWords };
 }
 
+export class AttendeeRequestRejected extends Error {
+  constructor(readonly status: number) {
+    super(`Attendee request rejected (${status})`);
+  }
+}
+
 export class AttendeeClient {
   constructor(
     private readonly apiKey: string,
@@ -83,7 +89,11 @@ export class AttendeeClient {
       signal: AbortSignal.timeout(15_000),
     });
     // Never propagate provider response bodies or credentials into app errors/logs.
-    if (!response.ok) throw new Error(`Attendee request failed (${response.status})`);
+    if (!response.ok) {
+      if (response.status >= 400 && response.status < 500 && response.status !== 408)
+        throw new AttendeeRequestRejected(response.status);
+      throw new Error(`Attendee request failed (${response.status})`);
+    }
     return response.status === 204 ? null : response.json();
   }
 
