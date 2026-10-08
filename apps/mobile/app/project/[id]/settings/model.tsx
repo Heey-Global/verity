@@ -74,7 +74,6 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
   const [connected, setConnected] = useState<ModelList | undefined>(undefined);
   const [models, setModels] = useState<ModelList | undefined>(undefined);
   const [modelsError, setModelsError] = useState<string | undefined>(undefined);
-  const [saving, setSaving] = useState(false);
   // The change being saved, shown at once so a toggle or check mark flips on tap
   // instead of after the round trip; a failed save drops it again.
   const [pending, setPending] = useState<ProjectSettingsChange | undefined>(undefined);
@@ -101,28 +100,40 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
     };
   }, [loadModels]);
 
+  // Taps during a save are merged and sent once it lands, so a second toggle
+  // is never dropped while the first is still on its way.
+  const inFlight = useRef(false);
+  const queued = useRef<ProjectSettingsChange | undefined>(undefined);
   const save = useCallback(
     (patch: ProjectSettingsChange) => {
-      if (saving) return;
-      setSaving(true);
-      setPending(patch);
+      setPending((shown) => ({ ...shown, ...patch }));
+      if (inFlight.current) {
+        queued.current = { ...queued.current, ...patch };
+        return;
+      }
+      inFlight.current = true;
       setError(undefined);
-      void client
-        .updateProjectSettings(projectId, patch)
-        .then((settings) => {
-          onSettingsSaved(settings);
-          // The server may have dropped a default the new rule excludes.
-          loadModels();
-        })
-        .catch((caught) =>
-          setError(caught instanceof Error ? caught.message : 'Could not save the agents'),
-        )
-        .finally(() => {
-          setSaving(false);
-          setPending(undefined);
-        });
+      void (async () => {
+        let next: ProjectSettingsChange | undefined = patch;
+        while (next !== undefined) {
+          const change: ProjectSettingsChange = next;
+          try {
+            onSettingsSaved(await client.updateProjectSettings(projectId, change));
+          } catch (caught) {
+            setError(caught instanceof Error ? caught.message : 'Could not save the agents');
+            queued.current = undefined;
+            break;
+          }
+          next = queued.current;
+          queued.current = undefined;
+        }
+        inFlight.current = false;
+        setPending(undefined);
+        // The server may have dropped a default the new rule excludes.
+        loadModels();
+      })();
     },
-    [client, loadModels, onSettingsSaved, projectId, saving, setError],
+    [client, loadModels, onSettingsSaved, projectId, setError],
   );
 
   if (loading && detail === undefined) {

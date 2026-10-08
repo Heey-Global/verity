@@ -840,6 +840,33 @@ describe('project settings — agents', () => {
     expect(screen.getByLabelText('Codex').props.accessibilityState.checked).toBe(false);
   });
 
+  // Dropping a tap that lands mid-save leaves the screen showing one state while
+  // the project keeps another.
+  it('sends a toggle tapped during a save once that save lands', async () => {
+    const finishers: (() => void)[] = [];
+    const updateProjectSettings = jest.fn().mockImplementation(
+      (_id: string, patch: object) =>
+        new Promise((resolve) => {
+          finishers.push(() => resolve({ ...makeDetail().settings, ...patch }));
+        }),
+    );
+    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    render(<ProjectModelScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Codex'));
+    fireEvent.press(screen.getByLabelText('OpenCode'));
+    expect(screen.getByLabelText('OpenCode').props.accessibilityState.checked).toBe(false);
+    expect(updateProjectSettings).toHaveBeenCalledTimes(1);
+
+    await act(async () => finishers[0]?.());
+    await waitFor(() =>
+      expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', { allowedAgents: ['claude'] }),
+    );
+    await act(async () => finishers[1]?.());
+    expect(screen.getByLabelText('Claude').props.accessibilityState.checked).toBe(true);
+    expect(screen.getByLabelText('OpenCode').props.accessibilityState.checked).toBe(false);
+  });
+
   // Turning off the last connected agent would leave the project unable to start
   // any session, so its toggle cannot be switched off.
   it('locks the last connected allowed agent and lists the project models', async () => {
