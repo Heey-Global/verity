@@ -63,9 +63,11 @@ export const MINIMUM_VICTIM_RSS_BYTES = 64 * 1024 ** 2;
  * Process names of agent CLIs that sit between an ACP adapter and the commands
  * they run. Only Claude has that layer (`claude-agent-acp` → `claude` → tool
  * shell); `codex-acp` and `opencode acp` are the agent themselves and run
- * commands as their own children. Matched on the kernel's process name, the
- * `Name:` line of `/proc/<pid>/status`, which the agent cannot rename without
- * exec'ing something else.
+ * commands as their own children. Matched on the `Name:` line of
+ * `/proc/<pid>/status`, observed as `claude` for the Claude CLI in a project
+ * Sandbox on 2026-10-08. A process can rename itself, so this is a heuristic,
+ * not a boundary: a command calling itself `claude` gains only the CLI's higher
+ * threshold, not immunity, and a CLI renamed away loses only its narrowing.
  */
 const AGENT_CLI_NAMES = new Set(['claude']);
 const DEFAULT_AGENT_UID = 1000;
@@ -209,6 +211,8 @@ export function listProcesses(readFile = readFsFile, listPids = listProcDir) {
  *
  * An agent process whose parent is infrastructure other than init is a session
  * anchor — the ACP adapter the spawn broker started — and is never killed. The
+ * anchor is recognised by its parent: an adapter orphaned to init by a broker
+ * restart becomes a detached tree like any other. The
  * candidate trees are rooted at an anchor's children and at agent processes
  * detached under init (a backgrounded dev server or database); the largest by
  * summed RSS wins. A tree rooted at an anchor's child that is an agent CLI
@@ -405,19 +409,18 @@ export function createMemoryGuard(options) {
   };
 
   /**
-   * After a kill, the next poll above the threshold checks that the kill freed
-   * memory. If usage fell by less than a quarter of what the victim held, what
-   * keeps the cgroup full is likely not process memory the guard can reach —
-   * page cache, tmpfs files, the Sentry itself — and killing on every cooldown
-   * would take one session after another without helping. The guard then
-   * stands down until usage drops below the threshold, or until it grows by
-   * another `REARM_GROWTH_FRACTION` of the reserve past where it was suspended:
-   * growth is the one sign that process memory is rising again, and a timer
-   * would only space out the kills it should stop. Each re-arm needs fresh
-   * growth, so between the threshold and the ceiling the guard kills a bounded
-   * number of times. The quarter is lenient on purpose: summed RSS counts pages
-   * that forked workers share more than once, and a neighbour may grow during
-   * the cooldown.
+   * One kill per episode, then evidence before the next. If usage is still at
+   * or above the threshold once the cooldown after a kill has passed, what keeps
+   * the cgroup full is not something that kill could reach — page cache, tmpfs
+   * files, the Sentry, another session's steady load — and killing on every
+   * cooldown would fail one command after another, each of which "freed what it
+   * held" without bringing usage down. So the guard stands down until usage
+   * drops below the threshold, or until it grows by another
+   * `REARM_GROWTH_FRACTION` of the reserve past where it was suspended: growth is
+   * the one sign that process memory is rising again, and a timer would only
+   * space out the kills it should stop. Each re-arm needs fresh growth, so
+   * between the threshold and the ceiling the guard kills a bounded number of
+   * times.
    */
   let lastKill;
   let suspendedAtBytes;
@@ -457,15 +460,12 @@ export function createMemoryGuard(options) {
       suspendedAtBytes = undefined;
       lastKill = undefined;
     }
-    if (
-      lastKill !== undefined &&
-      lastKill.usageBytes - ceiling.usageBytes < lastKill.treeRssBytes / 4
-    ) {
+    if (lastKill !== undefined) {
       suspendedAtBytes = ceiling.usageBytes;
       log({
         event: 'suspended',
         reason:
-          'the last kill freed too little; what fills the cgroup is likely not process memory',
+          'usage stayed above the threshold after a kill; what fills the cgroup is not what a kill reaches',
         usageBytes: ceiling.usageBytes,
         usageAtKillBytes: lastKill.usageBytes,
         victimTreeRssBytes: lastKill.treeRssBytes,

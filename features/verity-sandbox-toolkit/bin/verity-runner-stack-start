@@ -306,7 +306,8 @@ fi
 # missing node or a Sandbox without a readable limit must not fail the stack.
 GUARD_LOG="$BROKER_RUNTIME/memory-guard.log"
 if [ "${VERITY_MEMORY_GUARD:-1}" != '0' ] && [ -x /usr/local/bin/verity-memory-guard ]; then
-  if ! /usr/local/bin/verity-memory-guard --probe >/dev/null 2>&1; then
+  if ! VERITY_AGENT_BROKER_RUNTIME="$BROKER_RUNTIME" /usr/local/bin/verity-memory-guard --probe \
+    >/dev/null 2>&1; then
     { touch "$GUARD_LOG" && chown 0:0 "$GUARD_LOG" && chmod 0600 "$GUARD_LOG"; } || true
     VERITY_AGENT_UID="$AGENT_UID" VERITY_AGENT_BROKER_RUNTIME="$BROKER_RUNTIME" \
       nohup /usr/local/bin/verity-memory-guard \

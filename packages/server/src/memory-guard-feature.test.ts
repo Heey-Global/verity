@@ -563,6 +563,36 @@ describe('createMemoryGuard', () => {
     expect(kill).toHaveBeenCalledWith(6000, 'SIGKILL');
   });
 
+  it('stands down when usage stays over the threshold after a kill that did free its tree', () => {
+    // Cache holds usage just above the threshold. Each small command killed frees
+    // what it held, so a "did it free enough" test passes every time — and every
+    // build in the project would die, one per cooldown, under a real ceiling it
+    // would have fit beneath.
+    let clock = 0;
+    const threshold = 6 * GIB - Math.floor(6 * GIB * 0.2);
+    // A small build: the shell and a 195 MiB node process, nothing else running.
+    const files = { ...sandbox(), ...cgroup(threshold + 300 * MIB) };
+    for (const pid of [6101, 6102, 7000]) delete files[`/proc/${pid}/status`];
+    files['/proc/6100/status'] = status('node', 6000, 1000, 195 * MIB);
+    files['/proc/5867/status'] = status('claude', 5574, 1000, 100 * MIB);
+    const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>();
+    const guard = createMemoryGuard({
+      readFile: guestReader(files),
+      listPids: listPids(files),
+      readLink: () => '/',
+      kill,
+      agentUid: 1000,
+      now: () => clock,
+    });
+    expect(guard.tick().outcome).toBe('kill');
+    // The kill freed all 200 MiB the tree held — yet usage is still above, held
+    // by cache the guard cannot reach. Another kill would cure nothing either.
+    Object.assign(files, cgroup(threshold + 100 * MIB));
+    clock = KILL_COOLDOWN_MS;
+    expect(guard.tick().outcome).toBe('suspended');
+    expect(kill.mock.calls.filter(([, signal]) => signal === 'SIGKILL')).toHaveLength(2);
+  });
+
   it('does not judge a kill that signalled nothing', () => {
     // A victim that exited on its own between the snapshot and the signal freed
     // its memory without the guard. Suspending on that would disarm the guard
