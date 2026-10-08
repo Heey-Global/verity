@@ -552,6 +552,7 @@ export {
   bubbleRestingPlace,
   taskAge,
   taskContext,
+  projectsByRecentCapture,
   TASK_SILENCE_MS,
   type Task,
   type TaskCapture,

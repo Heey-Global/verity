@@ -1,6 +1,7 @@
 import { Icon } from './Icon';
 import {
   bubbleRestingPlace,
+  projectsByRecentCapture,
   taskContext,
   type ProjectRecord,
   type SessionSummary,
@@ -108,14 +109,7 @@ export function QuickCaptureBubble() {
   const origin = useRef({ x: 0, y: 0 });
   const loadGeneration = useRef(0);
   const context = taskContext(pathname, params, sessions);
-  const recentProjects = [...projects].sort((a, b) => {
-    const recent = (id: string) =>
-      Math.max(
-        0,
-        ...tasks.filter((task) => task.projectId === id).map((task) => Date.parse(task.updatedAt)),
-      );
-    return recent(b.id) - recent(a.id);
-  });
+  const recentProjects = projectsByRecentCapture(projects, tasks);
   // Only what the operator captured counts: the agent's own steps live in
   // their own section of the panel and must not nag from the badge.
   const count = tasks.filter(
