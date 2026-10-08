@@ -204,3 +204,33 @@ describe('planning routes', () => {
     expect((await decide('implement', 'missing')).statusCode).toBe(404);
   });
 });
+
+it('keeps a dismissed plan in context without accepting it', async () => {
+  await store.startSessionPlanning('s1');
+  const revision = await store.presentSessionPlan('s1', '1. Retained step');
+  const res = await app.inject({
+    method: 'POST',
+    url: '/sessions/s1/planning',
+    payload: { action: 'discard', planningRevision: revision },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(await store.getSession('s1')).toMatchObject({
+    planning: 'discarded',
+    planningPlan: '1. Retained step',
+    planningRevision: revision,
+  });
+  expect(dispatchTurn).not.toHaveBeenCalled();
+});
+it('refuses dismissing a superseded proposal', async () => {
+  await store.startSessionPlanning('s1');
+  const revision = await store.presentSessionPlan('s1', '1. Old step');
+  await store.presentSessionPlan('s1', '1. New step');
+  const res = await app.inject({
+    method: 'POST',
+    url: '/sessions/s1/planning',
+    payload: { action: 'discard', planningRevision: revision },
+  });
+  expect(res.statusCode).toBe(409);
+  expect(res.json()).toMatchObject({ code: 'stalePlan' });
+  expect((await store.getSession('s1'))?.planning).toBe('active');
+});

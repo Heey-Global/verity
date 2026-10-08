@@ -104,9 +104,18 @@ const PRIMARY_FIELD: Record<string, string> = {
  *
  * Deliberately a small set rather than "every mapped tool": the mapped file and search tools
  * lose nothing by falling through, and widening this would change how existing cards read
- * for reasons that have nothing to do with these two.
+ * for reasons that have nothing to do with these.
  */
-const ONLY_PRIMARY_FIELD = new Set(['verity_session_handoff', 'verity_list_sessions']);
+const ONLY_PRIMARY_FIELD = new Set([
+  'verity_session_handoff',
+  'verity_list_sessions',
+  // Codex reports an MCP call's input as `{ server, tool, arguments }`, so the first string
+  // is the raw tool name and "Verity Implement Plan verity_end_planning" read as noise.
+  // The planning tools take no argument worth a headline; a presented plan has its own card.
+  'verity_start_planning',
+  'verity_present_plan',
+  'verity_end_planning',
+]);
 
 /**
  * Display labels for Verity's gateway tools. Verity's own features keep the product name

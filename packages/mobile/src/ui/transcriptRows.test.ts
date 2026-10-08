@@ -405,3 +405,16 @@ describe('withPlanningSnapshot', () => {
     ).toBe(rows);
   });
 });
+
+it('keeps planning start visible outside surrounding tool groups for every backend', () => {
+  for (const name of [
+    'verity_start_planning',
+    'mcp__verity__verity_start_planning',
+    'verity_verity_start_planning',
+  ]) {
+    const start = toolCall('start', { name });
+    const rows = groupRows([toolCall('before'), start, toolCall('after')]);
+    expect(rows.map((row) => row.kind)).toEqual(['tool-group', 'message', 'tool-group']);
+    expect(rows[1]).toEqual({ kind: 'message', message: start });
+  }
+});

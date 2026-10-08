@@ -5,6 +5,7 @@ import {
   BREVITY_SYSTEM_PROMPT,
   CHOICES_SYSTEM_PROMPT,
   CODE_REVIEW_SYSTEM_PROMPT,
+  DISMISSED_PLAN_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
   LANGUAGE_SYSTEM_PROMPT,
   LOCAL_PROJECT_SYSTEM_PROMPT,
@@ -1105,6 +1106,30 @@ describe('Conductor.sendTurn', () => {
     expect(fake.last().permissionMode).toBe('acceptEdits');
     expect(fake.last().planning).toBeUndefined();
     expect(fake.last().appendSystemPrompt).not.toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
+  });
+
+  it('keeps a dismissed plan as history without authorizing its implementation on resumed turns', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.setSessionPlanning('s1', 'active');
+    await ctx.store.presentSessionPlan('s1', '1. Change the gestures');
+    await ctx.store.setSessionPlanning('s1', 'discarded');
+    const fake = scriptedBackend({ sessionId: 'thread' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      permissionMode: 'auto',
+      worktreeExists: async () => true,
+    });
+
+    // A resumed backend may still carry the old planning instructions and plan.
+    for (const message of ['Discuss another approach', 'What about step 1?']) {
+      await conductor.sendTurn('s1', message);
+      expect(fake.last().appendSystemPrompt).toContain(DISMISSED_PLAN_SYSTEM_PROMPT);
+      expect(fake.last().appendSystemPrompt).not.toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
+      expect(fake.last().planning).toBeUndefined();
+      expect(fake.last().permissionMode).toBe('auto');
+    }
+    expect((await ctx.store.getSession('s1'))?.planningPlan).toBe('1. Change the gestures');
   });
 
   it('appends the assigned-tasks section on fresh and resumed turns alike', async () => {
@@ -6615,10 +6640,24 @@ describe('Conductor mid-turn steering (#101)', () => {
 
   it('durably accepts and dispatches a plan when the session is idle', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.tasks.upsert({
+      id: 'existing-task',
+      ownerUserId: '00000000-0000-4000-8000-000000000001',
+      sessionId: 's1',
+      origin: 'user',
+      title: 'Existing work',
+    });
     await ctx.store.startSessionPlanning('s1');
-    const revision = await ctx.store.presentSessionPlan('s1', 'Approved work');
+    const revision = await ctx.store.presentSessionPlan(
+      's1',
+      '# Approved work\n\n## Goal\nFix gestures.\n\n## Steps\n1. **Gestures** — separate swipe and drag.',
+    );
     const fake = steerableBackend();
+    const bus = new InMemoryEventBus();
+    const published: AgentEvent[] = [];
+    bus.subscribe('s1', ({ event }) => published.push(event));
     const conductor = new Conductor({
+      bus,
       store: ctx.store,
       backend: fake.backend,
       worktreeExists: async () => true,
@@ -6635,6 +6674,19 @@ describe('Conductor mid-turn steering (#101)', () => {
       ).toEqual({ queued: true });
       await waitFor(fake.ready);
       expect(enqueue).toHaveBeenCalledOnce();
+      // Task creation must reach live devices as well as the recovery log.
+      const taskEvents = published.filter((event) => event.t === 'tasks_updated');
+      expect(taskEvents).toHaveLength(1);
+      expect(taskEvents[0]).toMatchObject({
+        origin: 'agent',
+        change: 'added',
+        taskIds: [expect.any(String)],
+      });
+      expect(
+        (await ctx.store.getEventsAfter('s1', 0))
+          .filter(({ event }) => event.t === 'tasks_updated')
+          .map(({ event }) => event),
+      ).toEqual(taskEvents);
       expect((await ctx.store.getSession('s1'))?.planning).toBe('implemented');
       expect(fake.last().planning).not.toBe(true);
       expect(

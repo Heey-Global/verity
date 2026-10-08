@@ -5,6 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
   appendExternalPromptData,
+  DISMISSED_PLAN_SYSTEM_PROMPT,
   PLANNING_ACTIVE_SYSTEM_PROMPT,
   SANDBOX_NOT_READY_ERROR_KIND,
   turnFailureErrorKind,
@@ -3217,7 +3218,11 @@ export class Conductor {
         const input = { id, sessionId, prompt, opts: storedOpts };
         if (dispatchOpts.planningRevision !== undefined) {
           if (
-            !(await this.deps.store.enqueuePlanImplementation(input, dispatchOpts.planningRevision))
+            !(await this.deps.store.enqueuePlanImplementation(
+              input,
+              dispatchOpts.planningRevision,
+              (event) => this.deps.bus?.publish(sessionId, event),
+            ))
           ) {
             accepted = false;
             return;
@@ -5488,7 +5493,9 @@ export class Conductor {
       // sessions: user-facing terminology and visible-media output contracts.
       appendSystemPrompt: planning
         ? `${systemPrompt}\n\n${PLANNING_ACTIVE_SYSTEM_PROMPT}`
-        : systemPrompt,
+        : session.planning === 'discarded'
+          ? `${systemPrompt}\n\n${DISMISSED_PLAN_SYSTEM_PROMPT}`
+          : systemPrompt,
       model: opts.model ?? session.model,
       storeSessionId: sessionId,
       // Hold stdin open so a mid-turn operator message can be folded into THIS

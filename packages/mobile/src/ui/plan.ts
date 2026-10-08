@@ -1,4 +1,4 @@
-import { PRESENT_PLAN_TOOL, planningToolName } from '@verity/events';
+import { PRESENT_PLAN_TOOL, planningToolName, parsePlanningProposal } from '@verity/events';
 
 import type { ToolCall } from '../happy/message.js';
 
@@ -121,3 +121,13 @@ export function planProposalDisplay(
   }
   return { markdown: presented.markdown, revision: presented.revision };
 }
+
+/** The count uses the same parser as the card and implementation tasks. */
+export function planProposalHeadline(markdown: string): string {
+  const steps = parsePlanningProposal(markdown).steps.length;
+  if (steps === 0) return 'Plan';
+  return `Plan · ${String(steps)} ${steps === 1 ? 'step' : 'steps'}`;
+}
+
+/** The pinned card and server-created tasks share the proposal's structure. */
+export const planProposalContent = parsePlanningProposal;

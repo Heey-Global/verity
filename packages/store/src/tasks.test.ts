@@ -274,3 +274,69 @@ describe('TaskStore', () => {
     expect(new TaskRevisionConflictError('t1', 3).currentRevision).toBe(3);
   });
 });
+
+describe('accepted planning tasks', () => {
+  it('commits session tasks, event and backlog exactly once when decisions race', async () => {
+    await tasks().upsert({
+      id: 'existing',
+      ownerUserId: ADMIN,
+      projectId: 'p1',
+      sessionId: 's1',
+      origin: 'user',
+      title: 'Existing task',
+    });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan(
+      's1',
+      '# Plan\n## Goal\nFix gestures.\n## Steps\n1. **Threshold** — distinguish swipes.\n2. **Tests** — cover gestures.',
+    );
+    const enqueue = (id: string, r = revision!) =>
+      ctx.store.enqueuePlanImplementation(
+        { id, sessionId: 's1', prompt: 'Implement', opts: {} },
+        r,
+      );
+    expect(await enqueue('stale', revision! - 1)).toBe(false);
+    expect(await tasks().listAssigned('s1')).toHaveLength(1);
+    expect((await Promise.all([enqueue('one'), enqueue('two')])).sort()).toEqual([false, true]);
+    const assigned = await tasks().listAssigned('s1');
+    expect(assigned.filter((task) => task.origin === 'agent').map((task) => task.title)).toEqual([
+      'Threshold',
+      'Tests',
+    ]);
+    expect(assigned.every((task) => task.ownerUserId === ADMIN)).toBe(true);
+    expect(await ctx.store.listQueuedTurns()).toHaveLength(1);
+    const updates = (await ctx.store.getEvents('s1')).filter(
+      (event) => event.t === 'tasks_updated',
+    );
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      origin: 'agent',
+      change: 'added',
+      taskIds: assigned.filter((task) => task.origin === 'agent').map((task) => task.id),
+    });
+  });
+  it('rolls back acceptance and tasks when persistence fails', async () => {
+    await tasks().upsert({
+      id: 'existing',
+      ownerUserId: ADMIN,
+      projectId: 'p1',
+      sessionId: 's1',
+      origin: 'user',
+      title: 'Existing task',
+    });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', '1. Accepted step');
+    await ctx.store.enqueueTurn({ id: 'duplicate', sessionId: 's1', prompt: 'Existing', opts: {} });
+    await expect(
+      ctx.store.enqueuePlanImplementation(
+        { id: 'duplicate', sessionId: 's1', prompt: 'Implement', opts: {} },
+        revision!,
+      ),
+    ).rejects.toThrow();
+    expect((await ctx.store.getSession('s1'))?.planning).toBe('active');
+    expect(await tasks().listAssigned('s1')).toHaveLength(1);
+    expect(
+      (await ctx.store.getEvents('s1')).filter((event) => event.t === 'tasks_updated'),
+    ).toEqual([]);
+  });
+});

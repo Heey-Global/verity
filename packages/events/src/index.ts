@@ -55,6 +55,8 @@ export {
 } from './automation.js';
 export {
   END_PLANNING_TOOL,
+  DISMISSED_PLAN_SYSTEM_PROMPT,
+  parsePlanningProposal,
   IMPLEMENT_PLAN_DISPLAY,
   IMPLEMENT_PLAN_PROMPT,
   PLANNING_ACTIVE_SYSTEM_PROMPT,
