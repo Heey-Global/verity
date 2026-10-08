@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.59.2](https://github.com/Heey-Global/verity/compare/mobile-v1.59.1...mobile-v1.59.2) (2026-10-08)
+
+
+### Features
+
+* **meetings:** add Attendee online source to Live Meeting ([#1325](https://github.com/Heey-Global/verity/issues/1325)) ([27f66ba](https://github.com/Heey-Global/verity/commit/27f66ba79dbdc9a602cb229c7b10467503769ec4))
+
+
+### Bug Fixes
+
+* **mobile:** preserve session visibility during drag pickup ([#1328](https://github.com/Heey-Global/verity/issues/1328)) ([dc85aeb](https://github.com/Heey-Global/verity/commit/dc85aeb0385aebb35a0de39a48f1cc0ccec41487))
+* **planning:** make plan proposals clear and actionable ([#1324](https://github.com/Heey-Global/verity/issues/1324)) ([fd78ac3](https://github.com/Heey-Global/verity/commit/fd78ac3388e089541c1da1d2d6a31c99d00dd11a))
+
 ## [1.59.1](https://github.com/Heey-Global/verity/compare/mobile-v1.59.0...mobile-v1.59.1) (2026-10-08)
 
 
