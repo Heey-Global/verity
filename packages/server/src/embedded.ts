@@ -4194,6 +4194,7 @@ export async function buildEmbeddedServer(
     ...(uplinkControl !== undefined
       ? { onUplinkCredentialsChanged: () => uplinkControl.refreshCredentials() }
       : {}),
+    ...(uplinkControl ? { attendeeEdge: uplinkControl } : {}),
     onOpenCodeSettingsChanged: async (settings) => {
       materializeOpenCodeSettings(settings, secretRoot, config.claudeConnectorPort);
       await refreshAgentGatewayCredential();

@@ -121,6 +121,27 @@ export default function MeetingScreen() {
     null,
   );
   const [engines, setEngines] = useState<STTEngine[]>([]);
+  const [meetingSource, setMeetingSource] = useState<'presence' | 'online'>('presence');
+  const [meetingUrl, setMeetingUrl] = useState('');
+  const [attendeeConfigured, setAttendeeConfigured] = useState(false);
+  useEffect(() => {
+    let current = true;
+    const refreshConfig = () => {
+      const client = createVerityClient();
+      void client
+        ?.getAttendeeSettings?.()
+        .then((value) => {
+          if (current) setAttendeeConfigured(value.configured);
+        })
+        .catch(() => undefined);
+    };
+    refreshConfig();
+    const timer = meetingSource === 'online' ? setInterval(refreshConfig, 5000) : undefined;
+    return () => {
+      current = false;
+      if (timer) clearInterval(timer);
+    };
+  }, [meetingSource]);
   const [selectedEngine, setSelectedEngine] = useState<STTEngineId>('fluid-nemotron');
   const [expectedParticipants, setExpectedParticipants] = useState<number | null>(null);
   const [showNewMeeting, setShowNewMeeting] = useState(false);
@@ -148,7 +169,7 @@ export default function MeetingScreen() {
     merges: Record<string, number>;
   } | null>(null);
   const speakerEditWrite = useRef<Promise<void>>(Promise.resolve());
-  if (speakerEditDraft.current?.meetingId !== meeting?.id)
+  if (speakerEditDraft.current?.meetingId !== meeting?.id || meeting?.engine === 'attendee')
     speakerEditDraft.current = meeting
       ? {
           meetingId: meeting.id,
@@ -483,7 +504,11 @@ export default function MeetingScreen() {
       merges: Record<string, number>;
     }>,
   ) => {
-    if (!meeting?.ownerToken || speakerEditDraft.current?.meetingId !== meeting.id) return;
+    if (
+      !(meeting?.ownerToken || meeting?.engine === 'attendee') ||
+      speakerEditDraft.current?.meetingId !== meeting.id
+    )
+      return;
     const next = { ...speakerEditDraft.current, ...change };
     speakerEditDraft.current = next;
     setMeeting((current) =>
@@ -499,7 +524,18 @@ export default function MeetingScreen() {
     try {
       const write = speakerEditWrite.current
         .catch(() => undefined)
-        .then(() => updateSpeakerEdits(next.meetingId, next.names, next.corrections, next.merges));
+        .then(async () => {
+          if (meeting.engine === 'attendee') {
+            const client = createVerityClient();
+            if (!client) throw new Error('Connect to the server.');
+            await client.editOnlineMeetingSpeakers(meeting.sessionId, next.meetingId, {
+              ...(change.names !== undefined ? { speakerNames: next.names } : {}),
+              ...(change.corrections !== undefined ? { speakerCorrections: next.corrections } : {}),
+              ...(change.merges !== undefined ? { speakerMerges: next.merges } : {}),
+            });
+          } else
+            await updateSpeakerEdits(next.meetingId, next.names, next.corrections, next.merges);
+        });
       speakerEditWrite.current = write;
       await write;
       setSyncError(true);
@@ -509,7 +545,7 @@ export default function MeetingScreen() {
   };
 
   const renameSpeaker = (speaker: number) => {
-    if (!meeting?.ownerToken) return;
+    if (!(meeting?.ownerToken || meeting?.engine === 'attendee')) return;
     Alert.prompt(
       'Name this speaker',
       'The name applies throughout this meeting.',
@@ -530,7 +566,7 @@ export default function MeetingScreen() {
   };
 
   const correctSpeaker = (line: SpeakerLine, available: number[]) => {
-    if (!meeting?.ownerToken) return;
+    if (!(meeting?.ownerToken || meeting?.engine === 'attendee')) return;
     const buttons = [
       ...available.map((speaker) => ({
         text: speakerLabel(speaker),
@@ -560,7 +596,7 @@ export default function MeetingScreen() {
   };
 
   const mergeSpeaker = (source: number, available: number[]) => {
-    if (!meeting?.ownerToken) return;
+    if (!(meeting?.ownerToken || meeting?.engine === 'attendee')) return;
     const targets = available.filter((speaker) => speaker !== source);
     if (!targets.length) return;
     Alert.alert('Merge duplicate speaker', `Treat ${speakerLabel(source)} as:`, [
@@ -640,6 +676,17 @@ export default function MeetingScreen() {
     setBusy(true);
     setError(null);
     try {
+      if (meetingSource === 'online') {
+        const client = createVerityClient();
+        if (!client) throw new Error('Connect to the server.');
+        const result = await client.startOnlineMeeting(sessionId, meetingUrl.trim());
+        await syncMeetingSession(sessionId);
+        const synced = (await listMeetings(sessionId)).find((item) => item.id === result.meetingId);
+        if (synced) setMeeting(synced);
+        setShowNewMeeting(false);
+        await refresh();
+        return;
+      }
       const next = await startMeeting(sessionId, selectedEngine, expectedParticipants ?? 4);
       setSyncError(true);
       setMeeting(next);
@@ -663,8 +710,12 @@ export default function MeetingScreen() {
           throw new Error('This meeting belongs to another server.');
         const client = createVerityClient();
         if (!client) throw new Error('Connect to the server to stop this recording.');
-        await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
-        setPendingCommand('stop');
+        if (meeting.engine === 'attendee')
+          await client.stopOnlineMeeting(meeting.sessionId, meeting.id);
+        else {
+          await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
+          setPendingCommand('stop');
+        }
       } else {
         await endMeeting();
         setSyncError(true);
@@ -794,7 +845,9 @@ export default function MeetingScreen() {
 
   const runningMeeting = currentMeeting();
   const active = meeting?.state === 'active' && runningMeeting?.id === meeting.id;
-  const live = meeting?.state === 'active';
+  const live =
+    meeting?.state === 'active' ||
+    (meeting?.engine === 'attendee' && meeting.state === 'interrupted');
   const noteUnsaved = noteSaveError?.meetingId === meeting?.id;
   const syncDelayed = syncPendingSince !== null && now - syncPendingSince > 30_000;
   // The live header shows only what needs attention, in one fixed slot so nothing moves.
@@ -1091,14 +1144,14 @@ export default function MeetingScreen() {
         detail={captions && !live ? `${speakerMinutes(speaker)} min` : undefined}
         accessibilityLabel={`Rename ${speakerLabel(speaker)}`}
         accessibilityHint="Long press to merge this speaker with another"
-        disabled={!meeting?.ownerToken}
+        disabled={!(meeting?.ownerToken || meeting?.engine === 'attendee')}
         onPress={() => renameSpeaker(speaker)}
         onLongPress={() => mergeSpeaker(speaker, speakers)}
       />
     ));
 
   const restoreMerged =
-    meeting?.ownerToken && Object.keys(merges).length ? (
+    (meeting?.ownerToken || meeting?.engine === 'attendee') && Object.keys(merges).length ? (
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Restore merged speaker"
@@ -1216,7 +1269,7 @@ export default function MeetingScreen() {
             <Text style={styles.link}>Done</Text>
           </Pressable>
         </View>
-        {meeting.ownerToken && speakers.length ? (
+        {(meeting.ownerToken || meeting.engine === 'attendee') && speakers.length ? (
           <Text style={styles.hint}>Tap a line to correct its speaker.</Text>
         ) : null}
         <FlatList
@@ -1232,7 +1285,7 @@ export default function MeetingScreen() {
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Correct speaker for ${item.text}`}
-                disabled={!meeting.ownerToken}
+                disabled={!(meeting.ownerToken || meeting.engine === 'attendee')}
                 onPress={() => correctSpeaker(item, speakerChoices)}
               >
                 <Text style={styles.transcriptText}>
@@ -1313,92 +1366,147 @@ export default function MeetingScreen() {
               </Pressable>
             </View>
           ) : null}
-          <View style={styles.block}>
-            <SectionLabel>WHO IS THERE?</SectionLabel>
-            <View style={styles.segmented}>
-              {(
-                [
-                  [4, 'Up to 4 people'],
-                  [10, 'Larger group'],
-                ] as const
-              ).map(([count, label]) => {
-                const selected = (expectedParticipants ?? 4) === count;
-                return (
+          <View>
+            <Text style={styles.rowText}>Meeting source</Text>
+            {(['presence', 'online'] as const).map((source) => (
+              <Pressable
+                key={source}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: meetingSource === source }}
+                onPress={() => setMeetingSource(source)}
+                style={styles.engineChoice}
+              >
+                <Text
+                  style={{
+                    color: meetingSource === source ? theme.colors.primary : theme.colors.text,
+                  }}
+                >
+                  {meetingSource === source ? '● ' : '○ '}
+                  {source === 'presence' ? 'In person' : 'Online meeting'}
+                </Text>
+              </Pressable>
+            ))}
+            {meetingSource === 'online' ? (
+              <>
+                <TextInput
+                  value={meetingUrl}
+                  onChangeText={setMeetingUrl}
+                  placeholder="Meeting link"
+                  placeholderTextColor={theme.colors.textFaint}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="url"
+                  accessibilityLabel="Online meeting link"
+                  style={styles.engineChoice}
+                />
+                <Text style={styles.hint}>
+                  {attendeeConfigured
+                    ? 'Attendee joins and transcribes while the app is closed. Requires premium Uplink / Online Sharing.'
+                    : 'Set up online meetings: configure Attendee and enable premium Uplink / Online Sharing.'}
+                </Text>
+                {!attendeeConfigured ? (
                   <Pressable
-                    key={count}
-                    accessibilityRole="radio"
-                    accessibilityLabel={label}
-                    accessibilityState={{ selected }}
-                    disabled={busy}
-                    onPress={() => setExpectedParticipants(count)}
-                    style={[styles.segment, selected && styles.segmentSelected]}
+                    accessibilityRole="button"
+                    onPress={() => router.push('/settings/services')}
                   >
-                    <Text style={selected ? styles.segmentTextSelected : styles.segmentText}>
-                      {label}
-                    </Text>
+                    <Text style={styles.link}>Set up Attendee</Text>
                   </Pressable>
-                );
-              })}
-            </View>
-            <Text style={styles.hint}>
-              {(expectedParticipants ?? 4) > 4
-                ? 'Separates up to 10 voices, with more mix-ups between similar ones.'
-                : 'Keeps voices apart most reliably.'}{' '}
-              Can’t be changed once the meeting runs.
-            </Text>
+                ) : null}
+              </>
+            ) : null}
           </View>
-          <View style={styles.block}>
-            <SectionLabel>PRIVACY</SectionLabel>
-            <Text style={styles.body}>
-              Audio stays on this device and is not saved. Text goes to your Verity server only.
-            </Text>
-          </View>
-          <View style={styles.block}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Speech recognition"
-              accessibilityState={{ expanded: showEngines }}
-              onPress={() => setShowEngines((shown) => !shown)}
-              style={styles.row}
-            >
-              <Text style={styles.rowText}>Speech recognition</Text>
-              <Text style={styles.rowValue}>{engine?.name ?? 'On device'}</Text>
-              <Icon
-                name={showEngines ? 'chevron-down' : 'chevron-right'}
-                size={16}
-                color={theme.colors.textFaint}
-              />
-            </Pressable>
-            {showEngines
-              ? engines.map((item) => (
-                  <Pressable
-                    key={item.id}
-                    accessibilityRole="radio"
-                    accessibilityState={{
-                      selected: selectedEngine === item.id,
-                      disabled: !item.available,
-                    }}
-                    disabled={!item.available || busy}
-                    onPress={() => setSelectedEngine(item.id)}
-                    style={styles.engineChoice}
-                  >
-                    <Text
-                      style={
-                        selectedEngine === item.id ? styles.segmentTextSelected : styles.rowText
-                      }
-                    >
-                      {selectedEngine === item.id ? '● ' : '○ '}
-                      {item.name}
-                      {item.available ? '' : ' · unavailable'}
-                    </Text>
-                  </Pressable>
-                ))
-              : null}
-          </View>
+          {meetingSource === 'presence' ? (
+            <>
+              <View style={styles.block}>
+                <SectionLabel>WHO IS THERE?</SectionLabel>
+                <View style={styles.segmented}>
+                  {(
+                    [
+                      [4, 'Up to 4 people'],
+                      [10, 'Larger group'],
+                    ] as const
+                  ).map(([count, label]) => {
+                    const selected = (expectedParticipants ?? 4) === count;
+                    return (
+                      <Pressable
+                        key={count}
+                        accessibilityRole="radio"
+                        accessibilityLabel={label}
+                        accessibilityState={{ selected }}
+                        disabled={busy}
+                        onPress={() => setExpectedParticipants(count)}
+                        style={[styles.segment, selected && styles.segmentSelected]}
+                      >
+                        <Text style={selected ? styles.segmentTextSelected : styles.segmentText}>
+                          {label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <Text style={styles.hint}>
+                  {(expectedParticipants ?? 4) > 4
+                    ? 'Separates up to 10 voices, with more mix-ups between similar ones.'
+                    : 'Keeps voices apart most reliably.'}{' '}
+                  Can’t be changed once the meeting runs.
+                </Text>
+              </View>
+              <View style={styles.block}>
+                <SectionLabel>PRIVACY</SectionLabel>
+                <Text style={styles.body}>
+                  Audio stays on this device and is not saved. Text goes to your Verity server only.
+                </Text>
+              </View>
+              <View style={styles.block}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Speech recognition"
+                  accessibilityState={{ expanded: showEngines }}
+                  onPress={() => setShowEngines((shown) => !shown)}
+                  style={styles.row}
+                >
+                  <Text style={styles.rowText}>Speech recognition</Text>
+                  <Text style={styles.rowValue}>{engine?.name ?? 'On device'}</Text>
+                  <Icon
+                    name={showEngines ? 'chevron-down' : 'chevron-right'}
+                    size={16}
+                    color={theme.colors.textFaint}
+                  />
+                </Pressable>
+                {showEngines
+                  ? engines.map((item) => (
+                      <Pressable
+                        key={item.id}
+                        accessibilityRole="radio"
+                        accessibilityState={{
+                          selected: selectedEngine === item.id,
+                          disabled: !item.available,
+                        }}
+                        disabled={!item.available || busy}
+                        onPress={() => setSelectedEngine(item.id)}
+                        style={styles.engineChoice}
+                      >
+                        <Text
+                          style={
+                            selectedEngine === item.id ? styles.segmentTextSelected : styles.rowText
+                          }
+                        >
+                          {selectedEngine === item.id ? '● ' : '○ '}
+                          {item.name}
+                          {item.available ? '' : ' · unavailable'}
+                        </Text>
+                      </Pressable>
+                    ))
+                  : null}
+              </View>
+            </>
+          ) : null}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Start meeting"
-            disabled={busy}
+            disabled={
+              busy || (meetingSource === 'online' && (!attendeeConfigured || !meetingUrl.trim()))
+            }
             onPress={start}
             style={styles.startButton}
           >
@@ -1408,7 +1516,11 @@ export default function MeetingScreen() {
               <>
                 {returning ? null : <View style={styles.recordDot} />}
                 <Text style={styles.startButtonText}>
-                  {returning ? 'Return to live meeting' : 'Start recording'}
+                  {returning
+                    ? 'Return to live meeting'
+                    : meetingSource === 'online'
+                      ? 'Start online meeting'
+                      : 'Start recording'}
                 </Text>
               </>
             )}
@@ -1500,7 +1612,7 @@ export default function MeetingScreen() {
             ) : (
               <Text style={styles.hint}>{speakerStatus}</Text>
             )}
-            {unnamed !== undefined && meeting.ownerToken ? (
+            {unnamed !== undefined && (meeting.ownerToken || meeting.engine === 'attendee') ? (
               <Pressable
                 accessibilityRole="button"
                 onPress={() => renameSpeaker(unnamed)}
@@ -1593,7 +1705,12 @@ export default function MeetingScreen() {
         )}
       </View>
       <Pressable
-        disabled={busy || !!pendingCommand || (!paused && meeting.captureStatus !== 'listening')}
+        disabled={
+          busy ||
+          meeting.engine === 'attendee' ||
+          !!pendingCommand ||
+          (!paused && meeting.captureStatus !== 'listening')
+        }
         onPress={togglePause}
         style={styles.circleButton}
         accessibilityRole="button"

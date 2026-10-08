@@ -3472,6 +3472,30 @@ it('moves a session with a stable retry key and parses the retained-workspace re
   expect(JSON.parse(calls[0]?.init?.body as string)).toEqual(body);
 });
 
+it('labels Attendee JSON writes so the server parses configuration and meeting commands', async () => {
+  const { fetch, calls } = fakeFetchSequence(
+    json({ configured: true }),
+    json({ configured: false }),
+    json({ meetingId: 'meeting' }),
+    json({ accepted: true }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.saveAttendeeSettings({ apiKey: 'fixture', webhookSecret: 'fixture' });
+  await client.saveAttendeeSettings(null);
+  await client.startOnlineMeeting('session', 'https://meet.google.com/abc-defg-hij');
+  await client.editOnlineMeetingSpeakers('session', 'meeting', {
+    speakerNames: {},
+    speakerCorrections: [],
+    speakerMerges: {},
+  });
+  for (const call of calls) {
+    expect(new Headers(call.init?.headers).get('content-type')).toBe('application/json');
+    expect(typeof call.init?.body).toBe('string');
+  }
+  expect(jsonBody(calls[1])).toBeNull();
+  expect(jsonBody(calls[2])).toMatchObject({ meetingUrl: 'https://meet.google.com/abc-defg-hij' });
+});
+
 describe('Uplink diagnostics schema', () => {
   it('keeps the status fields when a Core stream record is out of shape', async () => {
     const { uplinkDiagnosticsSchema } = await import('./api.js');

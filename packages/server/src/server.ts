@@ -1,3 +1,6 @@
+import { attendeeResearchHints } from './attendee-research.js';
+import { AttendeeMeetings } from './attendee-meetings.js';
+import { registerAttendeeRoutes } from './attendee-routes.js';
 import { readMatrixDiagnosticSnapshot } from './matrix-diagnostic-snapshot.js';
 import { createControlDiagnosticsTool } from './control-diagnostics-tool.js';
 import type { createRuntimeDiagnostics } from './runtime-diagnostics.js';
@@ -1147,6 +1150,7 @@ export interface ServerDeps {
   onGoogleCredentialsChanged?: (() => void) | undefined;
   /** Sealable at-rest secret cipher backing `/secret/status|init|unlock`.
    *  Omit → the secret store is treated as an unmanaged always-unlocked no-op. */
+  attendeeEdge?: import('./preview-share-manager.js').PreviewEdgeControl;
   secretCipher?: SealableSecretCipher | undefined;
   /** Per-device API auth-token registry backing the C1 auth gate. When present
    *  AND enabled (a master password exists), a global `onRequest` hook requires a
@@ -7588,7 +7592,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return baseUrl && apiKey ? { baseUrl, apiKey } : undefined;
     },
   });
-  registerLiveMeetingRoutes(app, deps.eventStore, {
+  const meetingController = registerLiveMeetingRoutes(app, deps.eventStore, {
     onFinished: (sessionId, meetingId) =>
       fileLiveMeeting({
         eventStore: deps.eventStore,
@@ -7623,6 +7627,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       });
     },
   });
+  const attendeeMeetings = new AttendeeMeetings({
+    store: deps.eventStore,
+    ...(deps.attendeeEdge ? { edge: deps.attendeeEdge } : {}),
+    ingest: meetingController.ingest,
+    spoken: attendeeResearchHints({ store: deps.eventStore, classify: meetingController.spoken }),
+  });
+  registerAttendeeRoutes(app, attendeeMeetings, () =>
+    Boolean(deps.secretCipher && !deps.secretCipher.isSealed()),
+  );
+  app.addHook('onReady', () => attendeeMeetings.open());
+  app.addHook('onClose', () => attendeeMeetings.close());
   registerMeetingTranscriptRoutes(app, {
     save: async (request, reply, id, body) => {
       const session = await deps.eventStore.getSession(id);

@@ -4059,6 +4059,16 @@ const migrations: Record<string, Migration> = {
       await sql`drop table session_overview_order`.execute(db);
     },
   },
+  '0146_attendee_meetings': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`create table attendee_state (id text primary key, state_secret text not null)`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table attendee_state`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

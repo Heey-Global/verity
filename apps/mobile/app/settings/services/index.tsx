@@ -214,6 +214,16 @@ function ConnectionsView({ client }: { client: VerityClient }) {
           </SettingsPanel>
         )}
       </SettingsGroup>
+      <SettingsGroup title="Meetings">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="mic"
+            title="Attendee"
+            subtitle="Online meeting bots and transcripts"
+            onPress={() => router.push('/settings/services/attendee')}
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
       {error ? (
         <SettingsPanel>
           <Text style={styles.reproHint}>
