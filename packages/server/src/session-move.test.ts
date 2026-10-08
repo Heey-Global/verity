@@ -65,6 +65,7 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
       },
     },
   });
+  const recover = vi.spyOn(conductor, 'recover');
   const preview = await ctx.store.createDevServer({
     projectId: projects[0]!.id,
     command: 'npm start',
@@ -98,6 +99,9 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
     } as unknown as Provisioner,
   });
   await app.ready();
+  expect(recover).toHaveBeenCalledOnce();
+  // Recovery must not mistake newly seeded history for an abandoned turn and replay it.
+  await recover.mock.results[0]!.value;
   await ctx.store.appendEvent('moved', {
     t: 'session',
     id: 'moved',
