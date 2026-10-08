@@ -202,19 +202,25 @@ export function listProcesses(readFile = readFsFile, listPids = listProcDir) {
  * anchor — the ACP adapter the spawn broker started — and is never killed. The
  * candidate trees are rooted at an anchor's children and at agent processes
  * detached under init (a backgrounded dev server or database); the largest by
- * summed RSS wins. When that tree is an anchor's child and one of its own
- * children holds more than half of it, the guard takes that child instead.
- * Under a Claude session the anchor's child is the agent CLI and the children
- * are the commands it ran, so a runaway `npm test` is killed while the CLI
- * survives to report exit 137; the CLI itself goes only when it is where the
- * memory is. Adapters that run commands as their own children (Codex) need no
- * special case: the command is then the anchor's child, and the step down
- * narrows it to the part of its tree that is large.
+ * summed RSS wins. A tree rooted at an anchor's child is first narrowed: unless
+ * that process's own RSS is most of its tree, the guard takes its largest child
+ * tree instead. Under a Claude session the anchor's child is the agent CLI and
+ * its children are the commands it ran, so a runaway `npm test` is killed while
+ * the CLI survives to report exit 137, also when several commands run at once.
+ * The CLI itself goes only when it is where the memory is and holds at least
+ * `minimumSessionRssBytes` (the guard passes its reserve): an ordinary CLI is
+ * no runaway, and killing it for cache pressure would cost a session for
+ * nothing. Adapters that run commands as their own children (Codex) need no
+ * special case: the command is then the anchor's child, and narrowing takes the
+ * part of its tree that is large.
  *
  * Trees below `MINIMUM_VICTIM_RSS_BYTES` are not worth killing. Ties go to the
  * higher pid, the younger tree.
  */
-export function chooseVictim(processes, { agentUid, protectedPids = new Set() }) {
+export function chooseVictim(
+  processes,
+  { agentUid, protectedPids = new Set(), minimumSessionRssBytes = MINIMUM_VICTIM_RSS_BYTES },
+) {
   const byPid = new Map(processes.map((process) => [process.pid, process]));
   const isAgent = (process) =>
     process !== undefined && process.uid === agentUid && process.pid !== 1;
@@ -233,6 +239,29 @@ export function chooseVictim(processes, { agentUid, protectedPids = new Set() })
     a.treeRssBytes > b.treeRssBytes ||
     (a.treeRssBytes === b.treeRssBytes && a.pid > b.pid);
 
+  // A session tree resolves to the command holding its memory, or to the CLI
+  // when the CLI itself is the consumer. The CLI is that only when its own RSS
+  // is most of its tree; otherwise its commands are, even when no single one
+  // holds a majority — two parallel builds must not cost the session its agent.
+  // A CLI of ordinary size is not a runaway either: with nothing larger to
+  // blame, the pressure is likely cache or tmpfs, which no kill cures.
+  const resolveSession = (cli, treeRssBytes) => {
+    if (cli.rssBytes * 2 > treeRssBytes) {
+      return treeRssBytes >= minimumSessionRssBytes
+        ? { ...cli, tier: 'session', treeRssBytes }
+        : undefined;
+    }
+    let largestChild;
+    for (const child of processes) {
+      if (child.ppid !== cli.pid || !isAgent(child)) continue;
+      const childRssBytes = treeOf(child);
+      if (childRssBytes === undefined) continue;
+      const scored = { ...child, tier: 'command', treeRssBytes: childRssBytes };
+      if (larger(scored, largestChild)) largestChild = scored;
+    }
+    return largestChild;
+  };
+
   let best;
   for (const candidate of processes) {
     if (!isAgent(candidate) || isAnchor(candidate)) continue;
@@ -240,25 +269,15 @@ export function chooseVictim(processes, { agentUid, protectedPids = new Set() })
     const tier = isAnchor(parent) ? 'session' : isAgent(parent) ? undefined : 'detached';
     if (tier === undefined) continue;
     const treeRssBytes = treeOf(candidate);
-    if (treeRssBytes === undefined || treeRssBytes < MINIMUM_VICTIM_RSS_BYTES) continue;
-    const scored = { ...candidate, tier, treeRssBytes };
-    if (larger(scored, best)) best = scored;
-  }
-  if (best?.tier !== 'session') return best;
-
-  let largestChild;
-  for (const child of processes) {
-    if (child.ppid !== best.pid || !isAgent(child)) continue;
-    const treeRssBytes = treeOf(child);
     if (treeRssBytes === undefined) continue;
-    const scored = { ...child, tier: 'command', treeRssBytes };
-    if (larger(scored, largestChild)) largestChild = scored;
+    const victim =
+      tier === 'session'
+        ? resolveSession(candidate, treeRssBytes)
+        : { ...candidate, tier, treeRssBytes };
+    if (victim === undefined || victim.treeRssBytes < MINIMUM_VICTIM_RSS_BYTES) continue;
+    if (larger(victim, best)) best = victim;
   }
-  return largestChild !== undefined &&
-    largestChild.treeRssBytes * 2 > best.treeRssBytes &&
-    largestChild.treeRssBytes >= MINIMUM_VICTIM_RSS_BYTES
-    ? largestChild
-    : best;
+  return best;
 }
 
 /** Descendants of `pid`, deepest first. */
@@ -331,7 +350,7 @@ export function createMemoryGuard(options) {
       (parseStatus(tryRead(readFile, `/proc/${pid}/status`) ?? '').Uid ?? '').split(/\s+/)[0] ?? '',
       10,
     );
-    return uid === agentUid && statStartTime(readFile, pid) === startTime;
+    return uid === agentUid && startTime !== '' && statStartTime(readFile, pid) === startTime;
   };
 
   /** Signals every target that passes `fence`; returns the pids it reached. */
@@ -371,7 +390,9 @@ export function createMemoryGuard(options) {
     // A process this pass stopped is killed on the start-time fence alone: left
     // stopped because its status became unreadable, it would hang its session.
     return send(targets, 'SIGKILL', (pid, startTime) =>
-      stopped.has(pid) ? statStartTime(readFile, pid) === startTime : stillTarget(pid, startTime),
+      stopped.has(pid)
+        ? startTime !== '' && statStartTime(readFile, pid) === startTime
+        : stillTarget(pid, startTime),
     ).size;
   };
 
@@ -397,6 +418,9 @@ export function createMemoryGuard(options) {
   const tick = () => {
     const ceiling = readMemoryCeiling(readFile, cgroupRoot);
     if (ceiling === undefined) return { outcome: 'no-ceiling' };
+    // Under runc the kernel already picks one process at the ceiling and the
+    // container survives; a guard there would only kill builds a reserve early.
+    if (!runsUnderGvisor(readFile)) return { outcome: 'not-gvisor' };
     const reserveBytes = resolveReserveBytes(ceiling.limitBytes, env);
     const thresholdBytes = ceiling.limitBytes - reserveBytes;
     if (!reserveLogged) {
@@ -443,7 +467,11 @@ export function createMemoryGuard(options) {
       return result('suspended');
     }
     const processes = listProcesses(readFile, listPids);
-    const victim = chooseVictim(processes, { agentUid, protectedPids });
+    const victim = chooseVictim(processes, {
+      agentUid,
+      protectedPids,
+      minimumSessionRssBytes: reserveBytes,
+    });
     if (victim === undefined) {
       cooldownUntil = now() + KILL_COOLDOWN_MS;
       // Logged once per episode: the log sits on tmpfs charged to this cgroup.
@@ -462,7 +490,9 @@ export function createMemoryGuard(options) {
     const signalled = dryRun ? 0 : signalTree(victim, descendants);
     cooldownUntil = now() + KILL_COOLDOWN_MS;
     lastOutcome = 'kill';
-    if (!dryRun) lastKill = { usageBytes: ceiling.usageBytes, treeRssBytes: victim.treeRssBytes };
+    if (signalled > 0) {
+      lastKill = { usageBytes: ceiling.usageBytes, treeRssBytes: victim.treeRssBytes };
+    }
     log({
       event: dryRun ? 'would-kill' : 'kill',
       usageBytes: ceiling.usageBytes,
@@ -482,6 +512,11 @@ export function createMemoryGuard(options) {
   };
 
   return { tick };
+}
+
+/** gVisor names itself in the kernel version it reports, e.g. `4.19.0-gvisor`. */
+function runsUnderGvisor(readFile = readFsFile) {
+  return /gvisor/iu.test(tryRead(readFile, '/proc/version') ?? '');
 }
 
 function statStartTime(readFile, pid) {
@@ -515,8 +550,9 @@ export function probeMemoryGuard(controlDir, readFile = readFsFile) {
 /**
  * Claim the pid file before the first poll, exclusively, so two overlapping
  * stack passes cannot both start a guard that kills on its own cooldown. A file
- * left by a guard that is no longer running is replaced once; losing that
- * second race means another guard just claimed it.
+ * left by a guard that is no longer running is replaced once. That replacement
+ * can race with another launcher's; the loser notices on its next poll that the
+ * file no longer holds its record and exits (see `main`).
  */
 function claimPidFile(controlDir) {
   const path = join(controlDir, PID_FILE_NAME);
@@ -577,12 +613,26 @@ function main() {
     writeLog({ event: 'error', message: error instanceof Error ? error.message : String(error) });
     first = { outcome: 'error' };
   }
-  if (first.outcome === 'no-ceiling') {
-    writeLog({ event: 'disabled', reason: 'no finite memory limit is readable' });
+  if (first.outcome === 'no-ceiling' || first.outcome === 'not-gvisor') {
+    writeLog({
+      event: 'disabled',
+      reason:
+        first.outcome === 'no-ceiling'
+          ? 'no finite memory limit is readable'
+          : 'not running under gVisor; the kernel OOM killer picks one process',
+    });
+    rmSync(join(controlDir, PID_FILE_NAME), { force: true });
     process.exit(0);
   }
   const intervalMs = resolvePollIntervalMs(process.env);
+  const ownRecord = tryRead(readFsFile, join(controlDir, PID_FILE_NAME));
   const timer = setInterval(() => {
+    // Replacing a stale pid file is not atomic across two launchers; the one
+    // whose record is no longer in the file steps aside within a poll.
+    if (tryRead(readFsFile, join(controlDir, PID_FILE_NAME)) !== ownRecord) {
+      writeLog({ event: 'superseded' });
+      process.exit(0);
+    }
     try {
       guard.tick();
     } catch (error) {

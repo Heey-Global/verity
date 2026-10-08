@@ -824,15 +824,17 @@ reserve, freezes and then SIGKILLs the agent-owned process tree that holds the
 most memory. A tree is ranked by the memory of all its processes, because a
 worker pool respawns a single killed worker. Under a session the guard narrows
 to the command the agent ran — the tool shell with `npm test`, the test runner
-and its workers — whenever that command holds most of the memory, so the agent
-CLI goes only when it is itself the consumer, and the ACP adapter the broker started never does. A
+and its workers — and, when several commands run at once, to the largest of
+them. The agent CLI goes only when its own memory is most of its tree and at
+least the reserve, so an ordinary idle CLI is never killed for cache pressure,
+and the ACP adapter the broker started never is. A
 process tree detached under init (a backgrounded dev server or database) is a
 candidate of its own. If a kill does not lower usage by at least a quarter of what
 the victim held, the guard assumes the memory is page cache or tmpfs that no
 kill frees, logs `suspended`, and kills nothing more until usage drops below the
 threshold or grows by another quarter of the reserve, so it never works through
 the sessions one by one.
-The reserve is a fifth of the ceiling and never less than 1 GiB, because the
+The reserve is a fifth of the ceiling, at least 1 GiB and at most half the ceiling, because the
 guest cannot see the Sentry's own memory or the page cache the host charges to
 the cgroup; at the 6 GiB default the guard acts at about 4.8 GiB. On the cgroup
 v1 files gVisor exposes, usage includes the guest page cache, which lives in the
@@ -851,11 +853,11 @@ memory is invisible from inside. If a project still loses its Sandbox that way,
 a slow build instead of a dead project. Two container environment variables tune
 the guard for a project whose devcontainer sets them: `VERITY_MEMORY_GUARD=0`
 disables it, and `VERITY_MEMORY_GUARD_RESERVE_BYTES` replaces the reserve with an
-explicit byte count below the ceiling. A Sandbox without a readable finite memory
-limit runs no guard. Under runc the kernel already kills the largest process on
-its own; the guard then merely acts a little earlier, using `anon` from
-`memory.stat` rather than `memory.current`, so reclaimable page cache never
-triggers it.
+explicit byte count below the ceiling. A Sandbox without a readable finite
+memory limit runs no guard, and neither does a runc Sandbox: there the kernel
+already kills one process at the ceiling and the container survives, so a guard
+would only kill builds a reserve early. The guard recognizes gVisor by the
+kernel version it reports.
 
 The 6 GiB default assumes a host with room for it. Unlike the CPU ceiling it is
 not capped to the host, so on a small machine (8 GiB or less) set

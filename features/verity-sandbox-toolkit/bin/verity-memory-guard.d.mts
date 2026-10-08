@@ -49,6 +49,7 @@ export interface MemoryGuardOptions {
 export interface MemoryGuardTick {
   outcome:
     | 'no-ceiling'
+    | 'not-gvisor'
     | 'below-threshold'
     | 'cooldown'
     | 'suspended'
@@ -74,7 +75,7 @@ export function resolvePollIntervalMs(env?: Record<string, string | undefined>):
 export function listProcesses(readFile?: ReadFile, listPids?: () => string[]): GuardedProcess[];
 export function chooseVictim(
   processes: readonly GuardedProcess[],
-  options: { agentUid: number; protectedPids?: Set<number> },
+  options: { agentUid: number; protectedPids?: Set<number>; minimumSessionRssBytes?: number },
 ): MemoryGuardVictim | undefined;
 export function descendantsOf(pid: number, processes: readonly GuardedProcess[]): GuardedProcess[];
 export function createMemoryGuard(options: MemoryGuardOptions): { tick(): MemoryGuardTick };

@@ -54,6 +54,25 @@ const sandbox = (): Record<string, string> => ({
   '/proc/6000/cmdline': 'bash\0-c\0npm test\0',
 });
 
+/**
+ * `reader` plus what a gVisor guest always has: a kernel version naming gVisor,
+ * and a `/proc/<pid>/stat` for every process (start time = pid unless a test
+ * sets one). The guard refuses to signal a pid whose start time it cannot read,
+ * so a fixture without stats would test a guard that never kills.
+ */
+const guestReader =
+  (files: Record<string, string>) =>
+  (path: string): string => {
+    if (path === '/proc/version' && files[path] === undefined) {
+      return 'Linux version 4.19.0-gvisor #1 SMP Sun Jan 10 15:06:54 PST 2016\n';
+    }
+    const statPid = /^\/proc\/(\d+)\/stat$/u.exec(path)?.[1];
+    if (statPid !== undefined && files[path] === undefined && files[`/proc/${statPid}/status`]) {
+      return `${statPid} (node) S 1 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 ${statPid} 0 0`;
+    }
+    return reader(files)(path);
+  };
+
 const listPids = (files: Record<string, string>) => (): string[] => [
   'self',
   'sys',
@@ -204,6 +223,40 @@ describe('victim selection', () => {
     ).toBe(6000);
   });
 
+  it('takes the largest of several parallel commands rather than their CLI', () => {
+    // Two 1.2 GiB builds under a 500 MiB CLI: neither holds half of the CLI's
+    // tree, but the CLI is not the consumer either. Killing it would end the
+    // session's agent for memory its commands hold.
+    const files = sandbox();
+    files['/proc/6200/status'] = status('bash', 5867, 1000, 5 * MIB);
+    files['/proc/6201/status'] = status('node', 6200, 1000, 1300 * MIB);
+    const processes = listProcesses(reader(files), listPids(files));
+    expect(chooseVictim(processes, { agentUid: 1000 })).toMatchObject({
+      pid: 6000,
+      tier: 'command',
+    });
+  });
+
+  it('leaves an ordinary-sized idle CLI alone, without hiding a smaller real command', () => {
+    // After a build, cache can hold usage over the threshold while sessions idle.
+    // The largest tree is then an idle CLI; it is no runaway, and killing it would
+    // cost a session for memory no kill frees.
+    const files = sandbox();
+    for (const pid of [6000, 6100, 6101, 6102, 7000]) delete files[`/proc/${pid}/status`];
+    const idle = listProcesses(reader(files), listPids(files));
+    expect(chooseVictim(idle, { agentUid: 1000, minimumSessionRssBytes: GIB })).toBeUndefined();
+    // A larger idle CLI must not mask a smaller session whose command is the
+    // consumer: rejecting the first candidate is not a reason to stop looking.
+    files['/proc/9000/status'] = status('node', 470, 1000, 150 * MIB);
+    files['/proc/9001/status'] = status('claude', 9000, 1000, 200 * MIB);
+    files['/proc/9002/status'] = status('bash', 9001, 1000, 300 * MIB);
+    const busy = listProcesses(reader(files), listPids(files));
+    expect(chooseVictim(busy, { agentUid: 1000, minimumSessionRssBytes: GIB })).toMatchObject({
+      pid: 9002,
+      tier: 'command',
+    });
+  });
+
   it('finds the command under an adapter that runs commands as its own children', () => {
     // codex-acp has no separate CLI process: the tool shell is the anchor's child.
     // A topology-specific rule would call that shell "the CLI" and pick the 600 MiB
@@ -249,7 +302,7 @@ describe('createMemoryGuard', () => {
     const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>();
     const log = vi.fn<(record: MemoryGuardLogRecord) => void>();
     const guard = createMemoryGuard({
-      readFile: reader(files),
+      readFile: guestReader(files),
       listPids: listPids(files),
       readLink: (path) =>
         path === '/proc/6000/cwd' ? '/work/.verity-sessions/agent-a/packages/server' : '/',
@@ -307,7 +360,7 @@ describe('createMemoryGuard', () => {
       }
     });
     const guard = createMemoryGuard({
-      readFile: reader(files),
+      readFile: guestReader(files),
       listPids: listPids(files),
       readLink: () => '/',
       kill,
@@ -323,11 +376,12 @@ describe('createMemoryGuard', () => {
     // A process left in SIGSTOP hangs its session for good; the start time alone
     // still fences against pid reuse.
     const files = { ...sandbox(), ...cgroup(5.5 * GIB) };
+    files['/proc/6101/stat'] = '6101 (node) S 1 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 6101 0 0';
     const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>((pid, signal) => {
       if (pid === 6101 && signal === 'SIGSTOP') delete files['/proc/6101/status'];
     });
     const guard = createMemoryGuard({
-      readFile: reader(files),
+      readFile: guestReader(files),
       listPids: listPids(files),
       readLink: () => '/',
       kill,
@@ -354,7 +408,7 @@ describe('createMemoryGuard', () => {
       if (pid === 6102) throw new Error('ESRCH');
     });
     const guard = createMemoryGuard({
-      readFile: reader(files),
+      readFile: guestReader(files),
       listPids: listPids(files),
       readLink: () => '/',
       kill,
@@ -373,7 +427,7 @@ describe('createMemoryGuard', () => {
     const files = { ...sandbox(), ...cgroup(5.5 * GIB) };
     const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>();
     const guard = createMemoryGuard({
-      readFile: reader(files),
+      readFile: guestReader(files),
       listPids: listPids(files),
       readLink: () => '/',
       kill,
@@ -404,7 +458,7 @@ describe('createMemoryGuard', () => {
     const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>();
     const log = vi.fn<(record: MemoryGuardLogRecord) => void>();
     const guard = createMemoryGuard({
-      readFile: reader(files),
+      readFile: guestReader(files),
       listPids: listPids(files),
       readLink: () => '/',
       kill,
@@ -431,6 +485,61 @@ describe('createMemoryGuard', () => {
     expect(kills()).toBe(8);
   });
 
+  it('stands down under runc, where the kernel already picks one process', () => {
+    const files = { ...sandbox(), ...cgroup(5.9 * GIB), '/proc/version': 'Linux version 6.8.0\n' };
+    const kill = vi.fn();
+    const guard = createMemoryGuard({
+      readFile: guestReader(files),
+      listPids: listPids(files),
+      readLink: () => '/',
+      kill,
+      agentUid: 1000,
+      now: () => 0,
+    });
+    expect(guard.tick()).toEqual({ outcome: 'not-gvisor' });
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('never signals a process whose start time it cannot read', () => {
+    // An empty start time would compare equal to another empty one and let a
+    // reused pid through: the fence has to fail closed.
+    const files = { ...sandbox(), ...cgroup(5.5 * GIB), '/proc/6101/stat': '' };
+    const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>();
+    const guard = createMemoryGuard({
+      readFile: guestReader(files),
+      listPids: listPids(files),
+      readLink: () => '/',
+      kill,
+      agentUid: 1000,
+      now: () => 0,
+    });
+    expect(guard.tick().outcome).toBe('kill');
+    expect(kill.mock.calls.some(([pid]) => pid === 6101)).toBe(false);
+    expect(kill).toHaveBeenCalledWith(6000, 'SIGKILL');
+  });
+
+  it('does not judge a kill that signalled nothing', () => {
+    // A victim that exited on its own between the snapshot and the signal freed
+    // its memory without the guard. Suspending on that would disarm the guard
+    // for an episode it never acted in.
+    let clock = 0;
+    const files = { ...sandbox(), ...cgroup(5.5 * GIB) };
+    const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>(() => {
+      throw new Error('ESRCH');
+    });
+    const guard = createMemoryGuard({
+      readFile: guestReader(files),
+      listPids: listPids(files),
+      readLink: () => '/',
+      kill,
+      agentUid: 1000,
+      now: () => clock,
+    });
+    expect(guard.tick().outcome).toBe('kill');
+    clock = KILL_COOLDOWN_MS;
+    expect(guard.tick().outcome).toBe('kill');
+  });
+
   it('only reports in dry-run mode', () => {
     const { guard, kill, log } = guardAt(5.5 * GIB, { dryRun: true });
     expect(guard.tick()).toMatchObject({ outcome: 'would-kill', victim: { pid: 6000 } });
@@ -448,7 +557,7 @@ describe('createMemoryGuard', () => {
     const kill = vi.fn();
     const log = vi.fn<(record: MemoryGuardLogRecord) => void>();
     const guard = createMemoryGuard({
-      readFile: reader(files),
+      readFile: guestReader(files),
       listPids: listPids(files),
       readLink: () => '/',
       kill,
@@ -499,8 +608,17 @@ describe('Sandbox wiring', () => {
   // a guard that exists in the repository and never runs in a container.
   it('is installed next to the Runner stack and started by the root stack pass', async () => {
     const [installer, stackLauncher] = await Promise.all([
-      readFile('features/verity-sandbox-toolkit/install.sh', 'utf8'),
-      readFile('features/verity-sandbox-toolkit/bin/verity-runner-stack-start', 'utf8'),
+      readFile(
+        new URL('../../../features/verity-sandbox-toolkit/install.sh', import.meta.url),
+        'utf8',
+      ),
+      readFile(
+        new URL(
+          '../../../features/verity-sandbox-toolkit/bin/verity-runner-stack-start',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
     ]);
     expect(installer).toContain('/usr/local/bin/verity-memory-guard');
     expect(stackLauncher).toContain('verity-memory-guard --probe');
