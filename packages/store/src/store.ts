@@ -2418,13 +2418,12 @@ export class EventStore implements EventSink {
       const members = sessions.filter((session) => session.projectId === group.project_id);
       const live = new Set(members.map((session) => session.sessionId));
       const stored = new Set(group.ids);
-      // Newly created sessions lead the manual group without disturbing existing positions.
+      // Append new sessions so creating one does not shift the manual order.
       const ids = [
+        ...group.ids.filter((id) => live.has(id)),
         ...members
           .filter((session) => !stored.has(session.sessionId))
-          .reverse()
           .map((session) => session.sessionId),
-        ...group.ids.filter((id) => live.has(id)),
       ];
       ids.forEach((id, index) => result.set(id, index));
     }
@@ -2450,8 +2449,8 @@ export class EventStore implements EventSink {
       const sessions = await tx
         .selectFrom('sessions')
         .select(['session_id', 'project_id'])
-        .orderBy('created_at', 'desc')
-        .orderBy('session_id', 'desc')
+        .orderBy('created_at', 'asc')
+        .orderBy('session_id', 'asc')
         .execute();
       const requested = new Set(ids);
       if (
@@ -2464,10 +2463,10 @@ export class EventStore implements EventSink {
       const members = sessions.filter((session) => session.project_id === projectId);
       const live = new Set(members.map((session) => session.session_id));
       const canonical = [
+        ...ids.filter((id) => live.has(id)),
         ...members
           .filter((session) => !requested.has(session.session_id))
           .map((session) => session.session_id),
-        ...ids.filter((id) => live.has(id)),
       ];
       await tx
         .insertInto('session_overview_order')
