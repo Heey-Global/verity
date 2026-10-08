@@ -62,7 +62,7 @@ export function redactProcessStderr(text: string, env: NodeJS.ProcessEnv = {}): 
     // File-loaded credentials may have no recognizable value prefix. Omit the
     // remainder of a credential-bearing JSON line, including truncated values.
     .replace(
-      /(["'])(?:[a-z0-9_]*(?:token|secret|password|api[_-]?key)|passphrase|authorization|proxy-authorization|cookie|set-cookie|private[_-]?key|credential)\1\s*:\s*[^\r\n]*/giu,
+      /(["'])(?:[a-z0-9_]*(?:token|secret|password|api[_-]?key)[a-z0-9_]*|passphrase|authorization|proxy-authorization|cookie|set-cookie|private[_-]?key|credential)\1\s*:\s*[^\r\n]*/giu,
       '[REDACTED CREDENTIAL FIELD]',
     )
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/gu, '[REDACTED JWT]')
@@ -72,7 +72,7 @@ export function redactProcessStderr(text: string, env: NodeJS.ProcessEnv = {}): 
       '$1: [REDACTED]',
     )
     .replace(
-      /\b(password|passphrase|api[ _-]?key|access[ _-]?token|refresh[ _-]?token|client[ _-]?secret)\s*[:=][^\r\n]*/giu,
+      /\b(password|passphrase|api[ _-]?key|access[ _-]?token|refresh[ _-]?token|client[ _-]?secret|[a-z0-9_]*(?:secret|password|token|api[_-]?key)[a-z0-9_]*)\s*[:=][^\r\n]*/giu,
       '$1: [REDACTED]',
     )
     .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/giu, '$1[REDACTED]@');

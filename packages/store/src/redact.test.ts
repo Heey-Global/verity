@@ -117,6 +117,15 @@ describe('redactProcessStderr', () => {
     expect(redacted).not.toContain('eyJzdWIiOiJ1c2VyIn0');
     expect(redacted).not.toContain('unknown');
   });
+  it.each(['SecretAccessKey', 'aws_secret_access_key', 'AWS_SECRET_ACCESS_KEY'])(
+    'redacts file-loaded AWS credentials in JSON and assignments for %s',
+    (field) => {
+      const value = ['opaque', 'file', 'credential'].join('-');
+      for (const raw of [JSON.stringify({ [field]: value }), `${field}=${value}`]) {
+        expect(redactProcessStderr(raw)).not.toContain(value);
+      }
+    },
+  );
   it('omits a leading partial credential line from a full capture', () => {
     const raw = 'partial-credential' + 'x'.repeat(65_536) + '\nlast failure';
     expect(redactProcessStderr(raw)).toBe('last failure');
