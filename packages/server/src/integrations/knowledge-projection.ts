@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { IntegrationEvent, IntegrationStore } from '@verity/store';
 import { ensureProjectKnowledge, KNOWLEDGE_DOCUMENTS_DIR } from '../knowledge-folder.js';
@@ -59,6 +59,20 @@ export function renderChatDay(
   return [...header, ...entries].join('\n');
 }
 
+// Render missing history from its earliest retained edit without claiming an original receipt.
+export async function orphanMessage(
+  store: IntegrationStore,
+  accountId: string,
+  sourceId: string,
+  originalId: string,
+): Promise<IntegrationEvent | null> {
+  const changes = await store.listChangesForTargets(accountId, sourceId, [originalId]);
+  const firstEdit = changes.find((change) => change.kind === 'edit');
+  return firstEdit
+    ? { ...firstEdit, eventId: originalId, kind: 'message', targetEventId: null }
+    : null;
+}
+
 export async function projectChatDay(
   store: IntegrationStore,
   dataRoot: string,
@@ -82,12 +96,31 @@ export async function projectChatDay(
   try {
     const events = await store.listEventsForDay(input.accountId, input.sourceId, input.day);
     const messages = events.filter((event) => event.kind === 'message');
+    const missingTargets = new Set(
+      events.filter((event) => event.kind === 'edit').map((event) => event.targetEventId!),
+    );
+    for (const originalId of missingTargets) {
+      if (await store.getEvent(input.accountId, input.sourceId, originalId)) continue;
+      const recovered = await orphanMessage(store, input.accountId, input.sourceId, originalId);
+      if (recovered && dayOf(recovered.occurredAt) === input.day) messages.push(recovered);
+    }
+    messages.sort(
+      (left, right) =>
+        left.occurredAt.getTime() - right.occurredAt.getTime() ||
+        left.eventId.localeCompare(right.eventId),
+    );
+    if (messages.length === 0) {
+      await unlink(target).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      });
+      return relative;
+    }
     const changes = await store.listChangesForTargets(
       input.accountId,
       input.sourceId,
       messages.map((event) => event.eventId),
     );
-    const markdown = renderChatDay(input, input.day, events, changes);
+    const markdown = renderChatDay(input, input.day, messages, changes);
     await mkdir(dirname(target), { recursive: true, mode: 0o755 });
     const temporary = `${target}.${randomUUID()}.tmp`;
     await writeFile(temporary, markdown, { mode: 0o644 });
@@ -96,6 +129,22 @@ export async function projectChatDay(
     release();
   }
   return relative;
+}
+
+export async function projectChatHistory(
+  store: IntegrationStore,
+  dataRoot: string,
+  input: Parameters<typeof projectChatDay>[2] & { originalId: string },
+): Promise<void> {
+  // Late originals and reordered edits can move an inferred entry to another day.
+  const changes = await store.listChangesForTargets(input.accountId, input.sourceId, [
+    input.originalId,
+  ]);
+  const days = new Set([input.day]);
+  for (const change of changes) {
+    if (change.kind === 'edit') days.add(dayOf(change.occurredAt));
+  }
+  for (const day of days) await projectChatDay(store, dataRoot, { ...input, day });
 }
 
 export function affectedChatDay(
