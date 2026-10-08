@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.59.3](https://github.com/Heey-Global/verity/compare/mobile-v1.59.2...mobile-v1.59.3) (2026-10-08)
+
+
+### Features
+
+* **projects:** restrict allowed agents per project ([#1326](https://github.com/Heey-Global/verity/issues/1326)) ([e309754](https://github.com/Heey-Global/verity/commit/e30975490d7b637b0bab69299b14ee7a2da039be))
+
 ## [1.59.2](https://github.com/Heey-Global/verity/compare/mobile-v1.59.1...mobile-v1.59.2) (2026-10-08)
 
 
