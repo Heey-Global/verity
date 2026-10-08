@@ -501,6 +501,7 @@ function stage(runtime: string, version: string) {
     git('push', 'origin', `refs/tags/${candidate.tag}`);
   }
   finishRelease(candidate, true);
+  if (published(runtime) === candidate.tag) return;
 
   // Delivery reads the merged approval, while the rolling branch remains its
   // audit evidence. Publish Staging now and refresh the proposal after delivery.
@@ -823,6 +824,10 @@ function finishRelease(candidate: Artifact, staging = false) {
     `${candidate.notes.map((note) => `- ${note}`).join('\n')}\n\nEAS group: ${candidate.group}\nSource: ${candidate.commit}\nRuntime: ${candidate.runtime}\n`,
   );
   const releases = releaseRows();
+  // A staged release is immutable here. Production may have delivered it
+  // while a Staging retry was running; never demote that release on retry.
+  if (staging && releases.some((release) => release.tag_name === candidate.tag && !release.draft))
+    return;
   if (!releases.some((release) => release.tag_name === candidate.tag))
     gh(
       'release',

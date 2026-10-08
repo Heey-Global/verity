@@ -198,6 +198,7 @@ interface ServiceState {
   loseRelease?: boolean;
   released: string;
   releaseReads: number;
+  deliverAfterReads?: number;
   changeBaseline?: boolean;
   racedHead?: boolean;
   draft?: boolean;
@@ -280,6 +281,7 @@ if(tool === 'gh') {
     const endpoint=args.find(a=>a.startsWith('repos/'));
     if(endpoint?.includes('/releases?')) {
       s.releaseReads++;
+      if(s.deliverAfterReads && s.releaseReads >= s.deliverAfterReads) s.released=candidate.tag;
       const tag=s.changeBaseline && s.releaseReads>1 ? 'mobile-v1.33.9' : s.released;
       const releases=[{tag_name:'mobile-v1.33.0',draft:false,prerelease:false},{tag_name:tag,draft:false,prerelease:false},...(s.draft?[{tag_name:candidate.tag,draft:true,prerelease:false}]:[]),...(s.stagedVersion?[{tag_name:s.stagedVersion,draft:false,prerelease:true}]:[])];
       if (s.largeReleasePayload) releases.push(...Array.from({length:100}, (_, index) => ({tag_name:'mobile-v1.32.'+index,draft:false,prerelease:false,body:'x'.repeat(20000)})));
@@ -632,6 +634,16 @@ describe('OTA CLI interrupted external operations', () => {
     expect(result.stderr).toContain('owns this version');
     expect(service.state().calls.some((call) => call.includes('--force-with-lease'))).toBe(false);
     expect(service.state().calls.some((call) => call.startsWith('gh pr'))).toBe(false);
+  });
+
+  it('does not demote Production when delivery completes during a Staging retry', () => {
+    const service = serviceFixture({ deliverAfterReads: 3 });
+    const result = service.run('stage');
+    expect(result.status, result.stderr).toBe(0);
+    const calls = service.state().calls;
+    expect(calls.some((call) => call.includes('channel:edit staging'))).toBe(true);
+    expect(calls.some((call) => call.startsWith('gh release edit'))).toBe(false);
+    expect(calls.some((call) => call.startsWith('gh pr'))).toBe(false);
   });
 
   it('publishes a later Staging version while preserving an undelivered approval', () => {
