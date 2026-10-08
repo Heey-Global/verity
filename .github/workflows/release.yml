@@ -862,6 +862,7 @@ jobs:
     secrets: inherit
     permissions:
       contents: write
+      id-token: write
       issues: write
       pull-requests: write
     with:
@@ -909,10 +910,33 @@ jobs:
         with:
           name: native-staging-${{ env.MOBILE_TAG }}
           path: native-candidates
+      # renovate: datasource=github-actions depName=sigstore/cosign-installer
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
       - name: Record verified staging build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$MOBILE_TAG" native-candidates/native-staging.json --clobber
+        run: |
+          set -euo pipefail
+          release="$(gh release view "$MOBILE_TAG" --json targetCommitish)"
+          export SOURCE_REVISION="$(jq -r .targetCommitish <<< "$release")"
+          [[ "$SOURCE_REVISION" =~ ^[a-f0-9]{40}$ ]] || {
+            echo '::error::Native release must record an immutable source SHA.' >&2
+            exit 1
+          }
+          if git show-ref --verify --quiet "refs/tags/${MOBILE_TAG}"; then
+            [[ "$(git rev-parse "${MOBILE_TAG}^{commit}")" == "$SOURCE_REVISION" ]] || {
+              echo '::error::Native tag differs from its recorded release source.' >&2
+              exit 1
+            }
+          fi
+          bash scripts/lib/mobile-release-evidence.sh verify native-candidates
+          gh release upload "$MOBILE_TAG" \
+            native-candidates/native-staging.json \
+            native-candidates/native-staging.sigstore.json \
+            native-candidates/native-staging.provenance.sigstore.json \
+            native-candidates/native-staging.intoto.jsonl --clobber
 
       - name: Publish verified native GitHub release
         env:

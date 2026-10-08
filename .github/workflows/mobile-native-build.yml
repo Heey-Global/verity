@@ -24,6 +24,7 @@ jobs:
       MOBILE_TAG: ${{ inputs.mobile-tag }}
     permissions:
       contents: write
+      id-token: write
       issues: write
       # The release PR labels below are moved through the issues endpoint, but
       # GitHub authorizes labels on a pull request against this scope; with
@@ -354,11 +355,35 @@ jobs:
           jq --argjson id "$ARTIFACT_ID" '.artifact.id = $id' "$RUNNER_TEMP/native-production.json" > "$RUNNER_TEMP/native-production-complete.json"
           mv "$RUNNER_TEMP/native-production-complete.json" "$RUNNER_TEMP/native-production.json"
 
+      # renovate: datasource=github-actions depName=sigstore/cosign-installer
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        if: inputs.variant == 'staging'
+        with:
+          cosign-release: v3.1.3
+      - name: Load release evidence helper from workflow revision
+        if: inputs.variant == 'staging'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .mobile-release-tools
+          sparse-checkout: scripts/lib/mobile-release-evidence.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Sign staging build evidence
+        if: inputs.variant == 'staging'
+        env:
+          SOURCE_REVISION: ${{ steps.native-source.outputs.sha }}
+        run: bash .mobile-release-tools/scripts/lib/mobile-release-evidence.sh sign "$RUNNER_TEMP"
+
       - name: Record exact native candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-${{ inputs.variant }}-${{ env.MOBILE_TAG }}
-          path: ${{ runner.temp }}/native-${{ inputs.variant }}.json
+          path: |
+            ${{ runner.temp }}/native-${{ inputs.variant }}.json
+            ${{ runner.temp }}/native-${{ inputs.variant }}.sigstore.json
+            ${{ runner.temp }}/native-${{ inputs.variant }}.provenance.sigstore.json
+            ${{ runner.temp }}/native-${{ inputs.variant }}.intoto.jsonl
           if-no-files-found: error
 
       - name: Report native compiler cache statistics
