@@ -139,9 +139,9 @@ function DevicesView({ client }: { client: VerityClient }) {
     return () => clearTimeout(timeout);
   }, [pairingInvitation]);
 
-  // `auto` is the link the screen creates on its own when it opens: a server
-  // that cannot be invited to stays quiet then, and only an explicit tap on
-  // the fallback button explains why.
+  // `auto` is the link the screen creates on its own when it opens. A profile
+  // that cannot invite at all stays quiet then, and only an explicit tap on
+  // the fallback button explains why; a server that refuses still reports it.
   const createInvitation = (auto = false): void => {
     const browserSession = Platform.OS === 'web' ? getBrowserSession() : null;
     const profile = browserSession
