@@ -122,6 +122,17 @@ describe('toolCallView', () => {
         const view = toolCallView(tool({ name, state: 'running', input: {} }));
         expect(view.title).toBe(label);
         expect(view.headline).toBe(label);
+        // Codex's input names the server and tool; repeating the raw name after the label
+        // is what made a failed end-planning call read "Verity Implement Plan verity_end_planning".
+        const codex = toolCallView(
+          tool({
+            name,
+            state: 'error',
+            input: { server: 'verity', tool: toolName, arguments: {} },
+          }),
+        );
+        expect(codex.headline).toBe(label);
+        expect(codex.subtitle).toBeNull();
       }
     }
   });

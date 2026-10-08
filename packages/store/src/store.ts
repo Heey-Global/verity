@@ -7,6 +7,7 @@ import {
   externalizeToolResultImages,
   externalizeToolResultText,
   parseAgentEvent,
+  parsePlanningProposal,
 } from '@verity/events';
 import { type Kysely, type Selectable, sql, type Transaction } from 'kysely';
 import { type SecretCipher, createPassthroughCipher } from './crypto.js';
@@ -942,6 +943,12 @@ export interface QueuedTurnRecord {
 
 /** Input to {@link EventStore.enqueueTurn}: a queued turn minus the `seq` the
  * database assigns. */
+export interface PlanningConsent {
+  turnId: string;
+  promptSeq: number;
+  runningPromptSeq: number;
+}
+
 export type QueuedTurnInput = Omit<QueuedTurnRecord, 'seq'>;
 
 /** The durable "a turn is in flight for this session" marker (lifecycle Phase 1).
@@ -2831,9 +2838,8 @@ export class EventStore implements EventSink {
     // A device can approve an old card while another device is publishing its revision.
     // Checking in this UPDATE prevents the read-before-write race from accepting it.
     if (expectedRevision !== undefined) {
-      query = query
-        .where('planning_revision', '=', expectedRevision)
-        .where('planning_plan', 'is not', null);
+      query = query.where('planning_revision', '=', expectedRevision);
+      if (planning !== 'discarded') query = query.where('planning_plan', 'is not', null);
     }
     const result = await query.executeTakeFirst();
     return result.numUpdatedRows > 0n;
@@ -4592,8 +4598,48 @@ export class EventStore implements EventSink {
 
   /** Accept a plan and its implementation backlog entry together. A restart
    * between acceptance and the live queue update must still recover the work. */
-  async enqueuePlanImplementation(input: QueuedTurnInput, revision: number): Promise<boolean> {
-    return this.db.transaction().execute(async (tx) => {
+  async enqueuePlanImplementation(
+    input: QueuedTurnInput,
+    revision: number,
+    onPersisted?: (event: SequencedEvent) => void,
+    consent?: PlanningConsent,
+  ): Promise<boolean> {
+    const persisted: { seq: number; createdAt: Date; event: AgentEvent }[] = [];
+    const accepted = await this.db.transaction().execute(async (tx) => {
+      // A newer user prompt revokes chat consent before any tasks or work commit.
+      await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(input.sessionId)}))`.execute(
+        tx,
+      );
+      if (consent !== undefined) {
+        const running = await tx
+          .selectFrom('running_turns')
+          .select(['turn_id', 'prompt_seq'])
+          .where('session_id', '=', input.sessionId)
+          .forUpdate()
+          .executeTakeFirst();
+        const queuedPrompt = await tx
+          .selectFrom('queued_turns')
+          .select('id')
+          .where('session_id', '=', input.sessionId)
+          .limit(1)
+          .executeTakeFirst();
+        if (queuedPrompt !== undefined) return false;
+        const latest = await tx
+          .selectFrom('events')
+          .select('id')
+          .where('session_id', '=', input.sessionId)
+          .where('type', '=', 'prompt')
+          .orderBy('id', 'desc')
+          .limit(1)
+          .executeTakeFirst();
+        if (
+          running?.turn_id !== consent.turnId ||
+          Number(running.prompt_seq) !== consent.runningPromptSeq ||
+          Number(latest?.id) !== consent.promptSeq
+        )
+          return false;
+      }
+
       const result = await tx
         .updateTable('sessions')
         .set({ planning: 'implemented' })
@@ -4603,6 +4649,56 @@ export class EventStore implements EventSink {
         .where('planning_plan', 'is not', null)
         .executeTakeFirst();
       if (result.numUpdatedRows === 0n) return false;
+      const session = await tx
+        .selectFrom('sessions')
+        .select(['project_id', 'planning_plan'])
+        .where('session_id', '=', input.sessionId)
+        .executeTakeFirstOrThrow();
+      const tasks = new TaskStore(tx, this.cipher);
+      const ownerUserId = await tasks.agentTaskOwner(input.sessionId, session.project_id);
+      if (ownerUserId !== undefined) {
+        const steps = parsePlanningProposal(session.planning_plan!).steps;
+        const taskIds: string[] = [];
+        for (const [index, step] of steps.entries()) {
+          const id = randomUUID();
+          const title = step
+            .replace(/\*\*/g, '')
+            .split(/\s+[—–]\s+|\n/)[0]!
+            .slice(0, 2_000);
+          await tasks.upsert({
+            id,
+            ownerUserId,
+            projectId: session.project_id,
+            sessionId: input.sessionId,
+            sourceSessionId: input.sessionId,
+            origin: 'agent',
+            title,
+            detail: step.slice(0, 20_000),
+            sort: index,
+          });
+          taskIds.push(id);
+        }
+        // The event and tasks commit with acceptance: recovery never loses the link
+        // to the accepted steps, and concurrent decisions cannot duplicate them.
+        for (let offset = 0; offset < taskIds.length; offset += 100) {
+          const event: AgentEvent = {
+            t: 'tasks_updated',
+            origin: 'agent',
+            change: 'added',
+            taskIds: taskIds.slice(offset, offset + 100),
+          };
+          const eventRow = await this.prepareEventRow(event);
+          await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(input.sessionId)}))`.execute(
+            tx,
+          );
+          const row = await tx
+            .insertInto('events')
+            .values({ session_id: input.sessionId, type: eventRow.type, payload: eventRow.payload })
+            .returning(['id', 'created_at'])
+            .executeTakeFirstOrThrow();
+          persisted.push({ seq: Number(row.id), createdAt: row.created_at, event });
+        }
+      }
       await tx
         .insertInto('queued_turns')
         .values({
@@ -4614,6 +4710,11 @@ export class EventStore implements EventSink {
         .execute();
       return true;
     });
+    for (const row of persisted) {
+      this.enqueuePersistedMessageEvent(input.sessionId, row.seq, row.createdAt, row.event);
+      onPersisted?.({ seq: row.seq, ts: row.createdAt.getTime(), event: row.event });
+    }
+    return accepted;
   }
 
   /**

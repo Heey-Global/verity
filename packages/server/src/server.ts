@@ -343,7 +343,11 @@ import {
 import { parseOwnerRepo } from './canonical.js';
 import { startAutomationScheduler } from './automation-scheduler.js';
 import { registerAutomationRoutes } from './automation-routes.js';
-import { createSessionPlanning, registerPlanningRoutes } from './planning.js';
+import {
+  createSessionPlanning,
+  trustedPlanInstructionConsent,
+  registerPlanningRoutes,
+} from './planning.js';
 import type { ListenerDiscovery } from './listener-discovery.js';
 import { registerLocalPreviewRoutes } from './local-preview-routes.js';
 import {
@@ -5863,6 +5867,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
     // Bind the eventual card answer to the plan that existed before the card opened.
     const planningApprovalRevisions = new WeakMap<object, number>();
+    const planningConsents = new WeakMap<object, import('@verity/store').PlanningConsent>();
     const gateway = createMcpGateway({
       ...gatewayDeps,
       // Runs before the card, so a caller that may not use these tools is turned away without
@@ -5885,20 +5890,27 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           // decided, instead of raising a card whose answer could change nothing.
           if (toolName !== START_PLANNING_TOOL && session.planning !== 'active')
             throw new ControlPlaneSessionAuthorityError('this session is not in planning mode');
-          if (toolName === END_PLANNING_TOOL) {
+          if (toolName === END_PLANNING_TOOL && session.planningRevision !== undefined)
+            planningApprovalRevisions.set(input.request as object, session.planningRevision);
+          if (
+            toolName === END_PLANNING_TOOL &&
+            (input.request as { action?: string }).action !== 'discard'
+          ) {
             if (session.planningPlan == null || session.planningRevision === undefined)
               throw new ControlPlaneSessionAuthorityError(
-                'Present a plan before requesting implementation.',
+                'No plan was submitted. Call verity_present_plan with the complete plan first, then call verity_end_planning again.',
               );
-            planningApprovalRevisions.set(input.request as object, session.planningRevision);
           }
           return;
         }
         // Gateway capabilities run outside the backend's read-only sandbox.
         // Neither a standing grant nor a new approval may reopen them while planning.
+        // The task list is Verity's own record of the session, not an external effect,
+        // and recording the agreed steps belongs to planning.
         if (
-          (await deps.eventStore.getSession(sessionId))?.planning === 'active' ||
-          conductor.isPlanningTurn?.(sessionId)
+          toolName !== 'verity_tasks' &&
+          ((await deps.eventStore.getSession(sessionId))?.planning === 'active' ||
+            conductor.isPlanningTurn?.(sessionId))
         ) {
           throw new ControlPlaneSessionAuthorityError(
             'External tools are unavailable in planning mode; use read-only local tools.',
@@ -6080,6 +6092,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
       hasStandingAuthorization: async ({
+        turnId,
         projectId,
         sessionId,
         toolName,
@@ -6092,12 +6105,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;
         }
-        // Starting planning only takes the agent's own permissions away, and a
-        // presented plan only shows text, so neither needs the operator. Ending it is
-        // the operator's decision and always raises the card.
+
         if (toolName === START_PLANNING_TOOL || toolName === PRESENT_PLAN_TOOL) {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;
+        }
+        if (
+          toolName === END_PLANNING_TOOL &&
+          (request as { action?: string }).action !== 'discard'
+        ) {
+          const consent = await trustedPlanInstructionConsent(deps.eventStore, sessionId, turnId);
+          if (consent !== undefined) {
+            planningConsents.set(request as object, consent);
+            const session = await deps.eventStore.getSession(sessionId);
+            return session?.projectId === projectId;
+          }
         }
         if (toolName === 'verity_send_session_message') {
           const session = await deps.eventStore.getSession(sessionId);
@@ -6207,18 +6229,35 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return {
             presented: true,
             planningRevision,
-            note: 'The user sees this plan with an "Implement plan" button. Wait for their decision and do not implement it.',
+            note: 'The plan is pinned above the composer with Implement and Dismiss buttons. End your turn without repeating it; wait for the user.',
           };
         }
         if (input.toolName === END_PLANNING_TOOL) {
-          // Reached only through an approved card.
+          if ((input.request as { action?: string }).action === 'discard') {
+            if (
+              !(await sessionPlanning.discard(
+                input.sessionId,
+                planningApprovalRevisions.get(input.request as object),
+              ))
+            )
+              throw new ControlPlaneSessionAuthorityError('this session is not in planning mode');
+            return {
+              planning: 'discarded',
+              note: 'Planning ended without implementing. End this turn; normal access resumes with the next user message.',
+            };
+          }
+          // The user's instruction in chat already authorizes implementation.
           const planningRevision = planningApprovalRevisions.get(input.request as object);
           if (
             planningRevision === undefined ||
-            !(await sessionPlanning.implement(input.sessionId, planningRevision))
+            !(await sessionPlanning.implement(
+              input.sessionId,
+              planningRevision,
+              planningConsents.get(input.request as object),
+            ))
           )
             throw new ControlPlaneSessionAuthorityError(
-              'The plan was updated. Please review the current plan and request approval again.',
+              'The plan was updated. Please review the current plan before implementing.',
             );
           return {
             planning: 'implemented',

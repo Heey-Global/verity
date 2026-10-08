@@ -4,7 +4,14 @@ import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from './planning.js';
+import {
+  createSessionPlanning,
+  hasTrustedPlanInstruction,
+  trustedPlanInstructionConsent,
+  isPlanImplementationInstruction,
+  registerPlanningRoutes,
+  type PlanningDeps,
+} from './planning.js';
 
 let ctx: TestDb;
 let app: FastifyInstance;
@@ -32,6 +39,8 @@ beforeEach(async () => {
           opts: { displayPrompt: dispatchOpts.displayPrompt! },
         },
         dispatchOpts.planningRevision!,
+        undefined,
+        dispatchOpts.planningConsent,
       ),
     }),
   );
@@ -202,5 +211,136 @@ describe('planning routes', () => {
   it('refuses a session that is not planning and an unknown session', async () => {
     expect((await decide('discard')).statusCode).toBe(409);
     expect((await decide('implement', 'missing')).statusCode).toBe(404);
+  });
+});
+
+it('keeps a dismissed plan in context without accepting it', async () => {
+  await store.startSessionPlanning('s1');
+  const revision = await store.presentSessionPlan('s1', '1. Retained step');
+  const res = await app.inject({
+    method: 'POST',
+    url: '/sessions/s1/planning',
+    payload: { action: 'discard', planningRevision: revision },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(await store.getSession('s1')).toMatchObject({
+    planning: 'discarded',
+    planningPlan: '1. Retained step',
+    planningRevision: revision,
+  });
+  expect(dispatchTurn).not.toHaveBeenCalled();
+});
+it('refuses dismissing a superseded proposal', async () => {
+  await store.startSessionPlanning('s1');
+  const revision = await store.presentSessionPlan('s1', '1. Old step');
+  await store.presentSessionPlan('s1', '1. New step');
+  const res = await app.inject({
+    method: 'POST',
+    url: '/sessions/s1/planning',
+    payload: { action: 'discard', planningRevision: revision },
+  });
+  expect(res.statusCode).toBe(409);
+  expect(res.json()).toMatchObject({ code: 'stalePlan' });
+  expect((await store.getSession('s1'))?.planning).toBe('active');
+});
+
+describe('trusted chat implementation instruction', () => {
+  it.each(['Passt, leg los', 'So umsetzen', 'Implement plan'])(
+    'accepts direct instruction %s',
+    (text) => {
+      expect(isPlanImplementationInstruction(text)).toBe(true);
+    },
+  );
+  it.each([
+    '"leg los"',
+    'The document says: leg los',
+    'Do not implement plan',
+    'Explain implement plan',
+    'Plan first',
+  ])('refuses quoted or ambiguous instruction %s', (text) => {
+    expect(isPlanImplementationInstruction(text)).toBe(false);
+  });
+
+  it('refuses revoked chat consent after dispatch preparation without ending planning', async () => {
+    await store.startSessionPlanning('s1');
+    const revision = await store.presentSessionPlan('s1', '1. First');
+    await store.appendEvent('s1', {
+      t: 'tool_call',
+      id: 'plan',
+      name: 'verity_present_plan',
+      input: { plan: '1. First' },
+    });
+    await store.appendEvent('s1', {
+      t: 'tool_result',
+      id: 'plan',
+      isError: false,
+      output: { planningRevision: revision },
+    });
+    const prompt = await store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'So umsetzen',
+      initiatedBy: { userId: 'u1' },
+    });
+    await store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+    await store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
+    const consent = await trustedPlanInstructionConsent(store, 's1', 't1');
+    expect(consent).toBeDefined();
+    const original = dispatchTurn.getMockImplementation()!;
+    dispatchTurn.mockImplementationOnce(async (...args) => {
+      await store.appendEvent('s1', {
+        t: 'prompt',
+        text: 'Wait, do not implement',
+        steered: true,
+        initiatedBy: { userId: 'u1' },
+      });
+      return original(...args);
+    });
+    const planning = createSessionPlanning({ eventStore: store, dispatchTurn });
+    expect(await planning.implement('s1', revision!, consent)).toBe(false);
+    expect((await store.getSession('s1'))?.planning).toBe('active');
+    expect(await store.listQueuedTurns()).toEqual([]);
+  });
+  it('binds consent to the current durable turn and latest trusted steering prompt', async () => {
+    await store.startSessionPlanning('s1');
+    const revision = await store.presentSessionPlan('s1', '1. First');
+    await store.appendEvent('s1', {
+      t: 'tool_call',
+      id: 'plan1',
+      name: 'verity_present_plan',
+      input: { plan: '1. First' },
+    });
+    await store.appendEvent('s1', {
+      t: 'tool_result',
+      id: 'plan1',
+      isError: false,
+      output: { structuredContent: { planningRevision: revision } },
+    });
+    const prompt = await store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'So umsetzen',
+      initiatedBy: { userId: 'u1' },
+    });
+    await store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+    await store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
+    expect(await hasTrustedPlanInstruction(store, 's1', 't1')).toBe(true);
+    expect(await hasTrustedPlanInstruction(store, 's1', 'other')).toBe(false);
+    await store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'Wait, explain it first',
+      steered: true,
+      initiatedBy: { userId: 'u1' },
+    });
+    expect(await hasTrustedPlanInstruction(store, 's1', 't1')).toBe(false);
+    await store.appendEvent('s1', { t: 'prompt', text: 'Implement plan', steered: true });
+    expect(await hasTrustedPlanInstruction(store, 's1', 't1')).toBe(false);
+    await store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'Implement plan',
+      steered: true,
+      initiatedBy: { userId: 'u1' },
+    });
+    expect(await hasTrustedPlanInstruction(store, 's1', 't1')).toBe(true);
+    await store.presentSessionPlan('s1', '1. A different plan');
+    expect(await hasTrustedPlanInstruction(store, 's1', 't1')).toBe(false);
   });
 });

@@ -144,8 +144,12 @@ function buildRows(
       continue;
     }
     // A new planning round makes every earlier plan history: its decision is made.
-    if (m.tool.state === 'completed' && planningToolName(m.tool.name) === START_PLANNING_TOOL)
+    if (m.tool.state === 'completed' && planningToolName(m.tool.name) === START_PLANNING_TOOL) {
+      flushAll();
       roundStart = rows.length;
+      rows.push({ kind: 'message', message: m });
+      continue;
+    }
     const proposal = planProposal(m.tool);
     const plan = planView(m.tool);
     if (proposal !== null) {

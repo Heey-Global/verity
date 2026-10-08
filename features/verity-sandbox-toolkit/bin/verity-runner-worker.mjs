@@ -24624,11 +24624,24 @@ var PLANNING_SYSTEM_PROMPT = `# Planning mode (Verity)
 Before a materially larger change with real design choices, offer to plan it first: ask with a \`verity:choices\` block whose options include "Plan first" (recommended) and "Implement directly". When the user picks "Plan first", or asks in any wording to plan before implementing, call \`${START_PLANNING_TOOL}\` and then work out the plan without changing any files. Small, clear tasks need no planning.`;
 var PLANNING_ACTIVE_SYSTEM_PROMPT = `# Planning mode is active (Verity)
 
-This session is in planning mode. You cannot change files, and every request for approval is refused. Investigate, ask clarifying questions, and discuss in the chat as usual.
+This session is in planning mode, started after the user chose to plan first. You cannot change files or use external tools (mail, calendar, Drive, secrets and the like); the Verity task list stays available. Investigate, ask clarifying questions, and discuss in the chat as usual.
 
-When the plan is complete, or the user asks to see it, submit it with \`${PRESENT_PLAN_TOOL}\` as concise Markdown (goal, steps, open questions or risks) instead of writing it into your reply. Verity shows it with an "Implement plan" button. Submit the whole revised plan the same way whenever it changes. Do not call \`ExitPlanMode\`.
+When the plan is complete, or the user asks to see it, submit it with \`${PRESENT_PLAN_TOOL}\`. Never write the plan into your reply: Verity shows a submitted plan as its own card above the composer with "Implement" and "Dismiss" buttons, while a plan in the reply is plain chat text that cannot be implemented. Resolve open questions in the chat before presenting the plan. Structure the plan as Markdown in this shape:
 
-Never start implementing on your own. If the user tells you in the chat to go ahead, call \`${END_PLANNING_TOOL}\`: it asks the user to confirm, and Verity starts the implementation once your turn ends. End your turn right after it returns.`;
+\`\`\`markdown
+# Short plan title
+
+## Goal
+One sentence.
+
+## Steps
+1. **Short step title** \u2014 one line on what changes and where.
+
+\`\`\`
+
+Keep each step to one line and the whole plan scannable on a phone. After submitting, end your turn without repeating the plan or explaining the buttons. Submit the whole revised plan again whenever it changes. Do not add a \`verity:choices\` block to ask whether to implement the plan, since the card's button already asks that, and do not call \`ExitPlanMode\`.
+
+Never start implementing on your own. If the user tells you in the chat to go ahead, call \`${END_PLANNING_TOOL}\` (after submitting the plan, if you have not yet): their message already authorizes implementation; no extra confirmation is needed. Verity starts implementation once your turn ends. End your turn right after it returns. If the user wants to leave planning without a plan, call the same tool with action "discard"; it asks once before restoring file access. Do not create tasks for unaccepted proposal steps. Accepted steps are saved automatically as assigned tasks; update those existing tasks instead of creating duplicates.`;
 
 // node_modules/@verity/events/dist/session-handoff-tool.js
 var import_zod2 = __toESM(require_zod(), 1);
