@@ -44,7 +44,7 @@ describe('project settings index — destinations', () => {
   // Each row opens its project-specific destination directly.
   it.each([
     ['Sandbox', '/project/[id]/settings/sandbox'],
-    ['Default model', '/project/[id]/settings/model'],
+    ['Agents', '/project/[id]/settings/model'],
   ])('routes %s to %s', async (label, pathname) => {
     mockCreateVerityClient.mockReturnValue(makeClient());
     render(<ProjectSettingsIndexScreen />);
@@ -88,7 +88,9 @@ describe('project settings index — destinations', () => {
 
   it('shows the sandbox state and default model without GitHub details', async () => {
     mockCreateVerityClient.mockReturnValue(
-      makeClient({ detail: makeDetail({ defaultModel: 'codex/default' }) }),
+      makeClient({
+        detail: makeDetail({ defaultModel: 'codex/default', allowedAgents: ['codex'] }),
+      }),
     );
     render(<ProjectSettingsIndexScreen />);
 
@@ -98,6 +100,7 @@ describe('project settings index — destinations', () => {
     // The same badge label the overview dot uses for an `absent` project.
     expect(screen.getByLabelText('Paused')).toBeOnTheScreen();
     expect(screen.getByText('Codex')).toBeOnTheScreen();
+    expect(screen.getByText('Codex only')).toBeOnTheScreen();
   });
 
   it('keeps the GitHub connection action for local projects', async () => {
@@ -109,7 +112,8 @@ describe('project settings index — destinations', () => {
       pathname: '/project/[id]/settings/github',
       params: { id: 'p/1' },
     });
-    expect(screen.getByText('Server default')).toBeOnTheScreen();
+    expect(screen.getByText('Automatic')).toBeOnTheScreen();
+    expect(screen.getByText('All agents')).toBeOnTheScreen();
   });
 
   it('keeps every editable field off the index', async () => {
@@ -119,7 +123,7 @@ describe('project settings index — destinations', () => {
     await screen.findByLabelText('Doppler');
     expect(screen.queryByLabelText('Choose Doppler binding')).toBeNull();
     expect(screen.queryByLabelText('Start project')).toBeNull();
-    expect(screen.queryByLabelText('Use the server default model')).toBeNull();
+    expect(screen.queryByLabelText('Use the first allowed model')).toBeNull();
   });
 
   // `replace` here swapped this screen for `/` while the home it was opened from
@@ -669,7 +673,7 @@ describe('project settings — connected services', () => {
   });
 });
 
-describe('project settings — default model', () => {
+describe('project settings — agents', () => {
   it('keeps a saved model when an older project refresh finishes afterward', async () => {
     const before = makeDetail();
     const client = makeClient({ detail: before });
@@ -703,11 +707,11 @@ describe('project settings — default model', () => {
     ).toBe(true);
   });
 
-  it('offers the server default plus the models the server can spawn', async () => {
+  it('offers Automatic plus the models the project can spawn', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient());
     render(<ProjectModelScreen />);
 
-    const serverDefault = await screen.findByLabelText('Use the server default model');
+    const serverDefault = await screen.findByLabelText('Use the first allowed model');
     expect(serverDefault.props.accessibilityState.checked).toBe(true);
     expect(
       screen.getByLabelText('Use model Claude Sonnet 4.6, claude-sonnet-4-6'),
@@ -717,7 +721,7 @@ describe('project settings — default model', () => {
 
   // The choice has to reach the server as the `defaultModel` key alone — a
   // PATCH that also carried `defaultBranch` or `memory` would clear them.
-  it('PATCHes { defaultModel } when a model is picked and null for the server default', async () => {
+  it('PATCHes { defaultModel } when a model is picked and null for Automatic', async () => {
     const updateProjectSettings = jest
       .fn()
       .mockImplementation((_id: string, patch: object) =>
@@ -735,10 +739,111 @@ describe('project settings — default model', () => {
         .checked,
     ).toBe(true);
 
-    fireEvent.press(screen.getByLabelText('Use the server default model'));
+    fireEvent.press(screen.getByLabelText('Use the first allowed model'));
     await waitFor(() =>
       expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', { defaultModel: null }),
     );
+  });
+
+  // The toggles PATCH the agent list alone; a list naming every agent is stored
+  // as null so agents connected later are allowed too.
+  it('turns an agent off and back on through allowedAgents', async () => {
+    const updateProjectSettings = jest
+      .fn()
+      .mockImplementation((_id: string, patch: object) =>
+        Promise.resolve({ ...makeDetail().settings, ...patch }),
+      );
+    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    render(<ProjectModelScreen />);
+
+    for (const agent of ['Claude', 'Codex', 'OpenCode']) {
+      expect((await screen.findByLabelText(agent)).props.accessibilityState.checked).toBe(true);
+    }
+    fireEvent.press(screen.getByLabelText('Codex'));
+    await waitFor(() =>
+      expect(updateProjectSettings).toHaveBeenCalledWith('p/1', {
+        allowedAgents: ['claude', 'opencode'],
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText('Codex').props.accessibilityState.checked).toBe(false),
+    );
+    fireEvent.press(screen.getByLabelText('Codex'));
+    await waitFor(() =>
+      expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', { allowedAgents: null }),
+    );
+  });
+
+  it('keeps the latest project models when post-save refreshes finish out of order', async () => {
+    const all = { models: ['claude-sonnet-4-6', 'codex/default', 'verity/kimi-k2'] };
+    const pending: Array<(value: typeof all) => void> = [];
+    let projectReads = 0;
+    const listModels = jest.fn().mockImplementation((projectId?: string) => {
+      if (projectId === undefined || projectReads++ === 0) return Promise.resolve(all);
+      return new Promise<typeof all>((resolve) => pending.push(resolve));
+    });
+    const updateProjectSettings = jest
+      .fn()
+      .mockImplementation((_id: string, patch: object) =>
+        Promise.resolve({ ...makeDetail().settings, ...patch }),
+      );
+    mockCreateVerityClient.mockReturnValue(makeClient({ listModels, updateProjectSettings }));
+    render(<ProjectModelScreen />);
+    fireEvent.press(await screen.findByLabelText('Codex'));
+    await waitFor(() => expect(pending).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Claude').props.accessibilityState.disabled).toBe(false),
+    );
+    fireEvent.press(screen.getByLabelText('Claude'));
+    await waitFor(() => expect(pending).toHaveLength(2));
+    await act(async () => pending[1]?.({ models: ['verity/kimi-k2'] }));
+    expect(screen.queryByLabelText('Use model Claude Sonnet 4.6, claude-sonnet-4-6')).toBeNull();
+    // A late refresh must not reintroduce models excluded by the newer saved rule.
+    await act(async () => pending[0]?.({ models: ['claude-sonnet-4-6', 'verity/kimi-k2'] }));
+    expect(screen.queryByLabelText('Use model Claude Sonnet 4.6, claude-sonnet-4-6')).toBeNull();
+  });
+
+  it('locks the final allowed agent even when disconnected', async () => {
+    const client = makeClient({
+      detail: makeDetail({ allowedAgents: ['codex'] }),
+      listModels: jest.fn().mockResolvedValue({ models: ['claude-sonnet-4-6'] }),
+    });
+    mockCreateVerityClient.mockReturnValue(client);
+    render(<ProjectModelScreen />);
+
+    const codex = await screen.findByLabelText('Codex');
+    expect(codex.props.accessibilityState.disabled).toBe(true);
+    fireEvent.press(codex);
+    expect(client.updateProjectSettings).not.toHaveBeenCalled();
+  });
+
+  // Turning off the last connected agent would leave the project unable to start
+  // any session, so its toggle cannot be switched off.
+  it('locks the last connected allowed agent and lists the project models', async () => {
+    const listModels = jest.fn().mockImplementation((projectId?: string) =>
+      Promise.resolve(
+        projectId === undefined
+          ? { models: ['claude-sonnet-4-6', 'codex/default'], default: 'claude-sonnet-4-6' }
+          : {
+              models: ['claude-sonnet-4-6'],
+              default: 'claude-sonnet-4-6',
+              allowedAgents: ['claude'],
+            },
+      ),
+    );
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({ detail: makeDetail({ allowedAgents: ['claude'] }), listModels }),
+    );
+    render(<ProjectModelScreen />);
+
+    expect((await screen.findByLabelText('Claude')).props.accessibilityState.disabled).toBe(true);
+    expect(screen.getByLabelText('Codex').props.accessibilityState.checked).toBe(false);
+    expect(screen.queryByLabelText('OpenCode')).toBeNull();
+    expect(
+      await screen.findByText('First allowed model · currently Claude Sonnet 4.6'),
+    ).toBeOnTheScreen();
+    expect(screen.queryByLabelText('Use model Codex, codex/default')).toBeNull();
+    expect(listModels).toHaveBeenCalledWith('p/1');
   });
 
   // A model the server no longer offers is still what this project starts
@@ -755,7 +860,7 @@ describe('project settings — default model', () => {
         .accessibilityState.checked,
     ).toBe(true);
     expect(
-      screen.getByLabelText('Use the server default model').props.accessibilityState.checked,
+      screen.getByLabelText('Use the first allowed model').props.accessibilityState.checked,
     ).toBe(false);
   });
 });

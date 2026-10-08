@@ -151,6 +151,10 @@ export {
   defaultModel,
   modelDisplayName,
   engineLabel,
+  modelAgent,
+  agentLabel,
+  allowedAgentsSummary,
+  excludedAgentsNote,
 } from './ui/modelPicker.js';
 export { secretGrantScopes, type StandingSecretGrantScope } from './ui/secretGrantScopes.js';
 export {
@@ -295,6 +299,7 @@ export {
   projectRuntimeLogsSchema,
   projectRuntimeStartedSchema,
   projectSettingsSchema,
+  PROJECT_AGENTS,
   projectStateSchema,
   automationScheduleSchema,
   sessionAutomationSchema,
@@ -339,6 +344,7 @@ export {
   type ProjectRuntimeStarted,
   type ProjectSettings,
   type ProjectSettingsPatch,
+  type ProjectAgent,
   type ProjectLifecycleState,
   type ProjectState,
   type MessageSearchResult,

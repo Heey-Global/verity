@@ -175,7 +175,11 @@ import type {
   SessionProjectionFacts,
   SessionRecord,
 } from '@verity/store';
-import { PROJECT_MEMORY_MAX_CHARS, SealedError } from '@verity/store';
+import {
+  PROJECT_MEMORY_MAX_CHARS,
+  ProjectDefaultModelNotAllowedError,
+  SealedError,
+} from '@verity/store';
 import websocketPlugin, { type WebSocket } from '@fastify/websocket';
 import rateLimitPlugin from '@fastify/rate-limit';
 import compressPlugin from '@fastify/compress';
@@ -373,6 +377,13 @@ import {
 import { containerPathFor } from './project-backend.js';
 import type { ProjectRuntime } from './project-runtime.js';
 import type { ProjectEnvironmentSettings } from './project-settings-env.js';
+import {
+  filterModelListForProject,
+  isModelAllowedForProject,
+  ProjectAgentNotAllowedError,
+  resolveProjectDefaultModel,
+  type ProjectAgent,
+} from './project-agent-policy.js';
 import type { SandboxUpdateChecker, SandboxUpdateStatus } from './sandbox-updates.js';
 import {
   isDriftReportable,
@@ -669,6 +680,8 @@ export interface ProjectSettingsRecord {
   googleDriveFolderId: string | null;
   googleDriveFolderName: string | null;
   googleDriveAccessMode: 'read-only' | 'read-write';
+  /** Agents sessions in this project may use; null permits every connected agent. */
+  allowedAgents: ProjectAgent[] | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -685,7 +698,8 @@ type ProjectSettingsKey =
   | 'memory'
   | 'googleDriveFolderId'
   | 'googleDriveFolderName'
-  | 'googleDriveAccessMode';
+  | 'googleDriveAccessMode'
+  | 'allowedAgents';
 
 type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
@@ -857,6 +871,7 @@ function emptyProjectSettings(projectId: string): ProjectSettingsRecord {
     googleDriveFolderId: null,
     googleDriveFolderName: null,
     googleDriveAccessMode: 'read-only',
+    allowedAgents: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };
@@ -1069,6 +1084,7 @@ function publicProjectSettings(
     googleDriveFolderId: settings.googleDriveFolderId,
     googleDriveFolderName: settings.googleDriveFolderName,
     googleDriveAccessMode: settings.googleDriveAccessMode,
+    allowedAgents: settings.allowedAgents,
     createdAt: settings.createdAt,
     updatedAt: settings.updatedAt,
   };
@@ -3686,7 +3702,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     isModelAllowed: async (model, session) =>
       session.projectId === null
         ? (await availableModels()).models.includes(model)
-        : isConfiguredProjectSessionModel(model),
+        : (await isConfiguredProjectSessionModel(model)) &&
+          (await projectAgentRejection(model, session.projectId)) === undefined,
     // A sealed secret store or a project that is still being set up is not the
     // automation's fault; those slots are skipped rather than counted toward the
     // pause after repeated failures.
@@ -5208,11 +5225,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
       : {}),
   });
-  registerConnectionUsageRoutes(
-    app,
-    deps.eventStore,
-    async () => (await availableModels()).default,
-  );
+  registerConnectionUsageRoutes(app, deps.eventStore, () => availableModels());
   registerProjectGoogleRoutes(app, deps.eventStore);
   registerGmailRoutes(app, {
     eventStore: deps.eventStore,
@@ -5647,11 +5660,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
               project.id,
             );
-            const model = settings?.defaultModel ?? (await availableModels()).default;
-            if (!isProjectSessionModel(model)) {
+            const model = resolveProjectDefaultModel(
+              await availableModels({ allowLegacyCodexFallback: true }),
+              settings,
+              isProjectSessionModel,
+            );
+            if (model === undefined || !(await isConfiguredProjectSessionModel(model))) {
               throw new ControlPlaneSessionToolError('project has no eligible default model');
             }
-            const selectedModel = model as string;
+            const selectedModel = model;
             const projectClone = projectClonePath(deps.projectCloneRoot, project);
             const worktreeOpts = {
               refreshBase: true,
@@ -6460,7 +6477,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // confirms rather than on every unattended run.
     validateModel: async (model, session) => {
       if (session.projectId !== null) {
-        return (await isConfiguredProjectSessionModel(model)) ? null : PROJECT_MODEL_ERROR;
+        if (!(await isConfiguredProjectSessionModel(model))) return PROJECT_MODEL_ERROR;
+        return (await projectAgentRejection(model, session.projectId)) ?? null;
       }
       return (await availableModels()).models.includes(model)
         ? null
@@ -6774,9 +6792,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             },
           }),
           cwd: deps.refineCwd,
-          modelFor: async (projectId) =>
-            (await projectSettingsStore(deps.eventStore).getProjectSettings(projectId))
-              ?.defaultModel ?? (await availableModels()).default,
+          modelFor: (projectId) => projectDefaultModel(projectId),
           onError: (error, job) =>
             app.log.warn(
               { err: error, projectId: job.projectId, path: job.relativePath },
@@ -6867,7 +6883,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     isSealed: () => deps.secretCipher?.isSealed() === true,
     updateSettings: async (id, patch) => {
-      const settings = await projectSettingsStore(deps.eventStore).updateProjectSettings(id, patch);
+      const store = projectSettingsStore(deps.eventStore);
+      let settings: ProjectSettingsRecord | undefined;
+      try {
+        settings = await store.updateProjectSettings(id, patch);
+      } catch (error) {
+        if (error instanceof ProjectDefaultModelNotAllowedError) {
+          throw new ProjectAgentNotAllowedError(error.model);
+        }
+        throw error;
+      }
       return settings === undefined ? undefined : publicProjectSettings(settings)!;
     },
   });
@@ -7483,6 +7508,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     deleteSessionEverywhere,
     advancedModeEnabled,
     ensureControlProject: ensureVerityControlProject,
+    resolveProjectModel: async (projectId) => {
+      const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
+      const model =
+        settings?.allowedAgents == null
+          ? (settings?.defaultModel ?? DEFAULT_MODEL)
+          : resolveProjectDefaultModel(
+              await availableModels({ allowLegacyCodexFallback: true }),
+              settings,
+              isProjectSessionModel,
+            );
+      return (await isConfiguredProjectSessionModel(model)) ? model : undefined;
+    },
   });
 
   // The usable model set for the picker (ADR 0001 / #143): Claude and Codex are
@@ -7529,6 +7566,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       add(id);
     }
+    // Spawn callers can use the authenticated CLI default even when discovery fails.
+    // Keep it eligible when a project's rule excludes the global Claude default.
+    if (options.allowLegacyCodexFallback === true && codexConfigured && codexModels.length === 0) {
+      add(CODEX_DEFAULT_MODEL);
+    }
     const models = sortModelIds(merged);
     const modelOrder = [
       ...models.filter((id) => !id.includes('/')),
@@ -7552,6 +7594,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           : {}),
     };
   };
+  /** Why the project's agent rule rejects `model`, or undefined when it is allowed. */
+  const projectAgentRejection = async (
+    model: string,
+    projectId: string,
+  ): Promise<string | undefined> => {
+    const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
+    return isModelAllowedForProject(model, settings)
+      ? undefined
+      : new ProjectAgentNotAllowedError(model).message;
+  };
+  /** The model a project's new work starts with, honouring its agent rule. */
+  const projectDefaultModel = async (projectId: string | null): Promise<string | undefined> => {
+    const available = await availableModels();
+    if (projectId === null) return available.default;
+    const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
+    return resolveProjectDefaultModel(available, settings, isProjectSessionModel);
+  };
   const isConfiguredProjectSessionModel = async (model: string | undefined): Promise<boolean> => {
     if (!isProjectSessionModel(model)) return false;
     if (model === undefined || !model.startsWith('verity/')) return true;
@@ -7562,7 +7621,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
 
   registerSessionReadRoutes(app, {
-    listModels: availableModels,
+    listModels: async (projectId) => {
+      const available = await availableModels();
+      if (projectId === undefined) return available;
+      const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
+      return filterModelListForProject(available, settings, isProjectSessionModel);
+    },
     getSession: async (id): Promise<SessionDetail | undefined> => {
       const session = await deps.eventStore.getSession(id);
       if (!session) return undefined;
@@ -7650,11 +7714,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     query: async (sessionId, prompt, signal) => {
       const session = await deps.eventStore.getSession(sessionId);
       if (!session) return undefined;
-      const projectModel = session.projectId
-        ? (await projectSettingsStore(deps.eventStore).getProjectSettings(session.projectId))
-            ?.defaultModel
+      const settings = session.projectId
+        ? await projectSettingsStore(deps.eventStore).getProjectSettings(session.projectId)
         : undefined;
-      const model = projectModel ?? session.model;
+      const projectModel = settings?.defaultModel ?? undefined;
+      // The analysis must stay on an agent the project allows, even when the
+      // session itself still runs on one the project has since excluded.
+      const model =
+        projectModel !== undefined && isModelAllowedForProject(projectModel, settings)
+          ? projectModel
+          : isModelAllowedForProject(session.model, settings)
+            ? session.model
+            : resolveProjectDefaultModel(await availableModels(), settings, isProjectSessionModel);
+      if (model === undefined) return undefined;
       if (model.startsWith('codex/') || model.startsWith('verity/'))
         return directMeetingQuery({ model, prompt, signal });
       return conductor.query({
@@ -8867,6 +8939,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     closeSession: (id) => conductor.closeSession?.(id),
     isModelAllowed: isProjectSessionModel,
     projectModelError: PROJECT_MODEL_ERROR,
+    projectAgentRejection: (model, projectId) => projectAgentRejection(model, projectId),
   });
   // Advance a session's "last seen" mark for the overview unread dot (#387). The
   // client sends the `eventCount` it just observed when the operator opened the
@@ -9056,6 +9129,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ) {
         reply.code(400);
         return { error: PROJECT_MODEL_ERROR };
+      }
+      // Existing sessions keep their model, but a turn override is new work on its chosen agent.
+      if (body.model !== undefined && body.model !== session?.model && session?.projectId != null) {
+        const rejection = await projectAgentRejection(body.model, session.projectId);
+        if (rejection !== undefined) {
+          reply.code(400);
+          return { error: rejection };
+        }
       }
       // SBX-4: reject a turn against a project whose sandbox cannot become active
       // (stopped/failed/restarting) up front — 409 + repair hint — instead of

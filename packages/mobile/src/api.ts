@@ -395,6 +395,10 @@ const linkedProjectSchema = z.object({
 });
 export type LinkedProject = z.infer<typeof linkedProjectSchema>;
 
+/** The agents a project can allow, in picker order. */
+export const PROJECT_AGENTS = ['claude', 'codex', 'opencode'] as const;
+export type ProjectAgent = (typeof PROJECT_AGENTS)[number];
+
 export const projectSettingsSchema = z.object({
   projectId: z.string().min(1),
   // Broker-only Doppler mapping. Credentials remain central and never appear in
@@ -410,12 +414,16 @@ export const projectSettingsSchema = z.object({
   googleDriveFolderId: z.string().nullable().optional(),
   googleDriveFolderName: z.string().nullable().optional(),
   googleDriveAccessMode: z.enum(['read-only', 'read-write']).optional(),
+  // Agents sessions in this project may use; null (or absent on an older server)
+  // allows every connected agent.
+  allowedAgents: z.array(z.enum(PROJECT_AGENTS)).nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type ProjectSettings = z.infer<typeof projectSettingsSchema>;
 
-type ProjectSettingsKey = 'defaultBranch' | 'defaultModel' | 'memory' | 'googleDriveAccessMode';
+type ProjectSettingsKey =
+  'defaultBranch' | 'defaultModel' | 'memory' | 'googleDriveAccessMode' | 'allowedAgents';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettings[K] | undefined;
@@ -1336,6 +1344,8 @@ export const modelListSchema = z.object({
   modelOrder: z.array(z.string().min(1)).optional(),
   moreModels: z.array(z.string().min(1)).optional(),
   default: z.string().min(1).optional(),
+  /** Present when the list was narrowed to a project that excludes some agents. */
+  allowedAgents: z.array(z.enum(PROJECT_AGENTS)).optional(),
 });
 export type ModelList = z.infer<typeof modelListSchema>;
 
@@ -4198,8 +4208,10 @@ export class VerityClient {
 
   /** The routable models for the new-session picker (#143): the Claude ids plus any
    * OpenCode provider-qualified ids the server enumerates, and the spawn default. */
-  async listModels(): Promise<ModelList> {
-    const res = await this.request('/models', { method: 'GET' });
+  async listModels(projectId?: string): Promise<ModelList> {
+    // A project narrows the list to its allowed agents and resolves its default.
+    const query = projectId === undefined ? '' : `?projectId=${encodeURIComponent(projectId)}`;
+    const res = await this.request(`/models${query}`, { method: 'GET' });
     return modelListSchema.parse(await res.json());
   }
 

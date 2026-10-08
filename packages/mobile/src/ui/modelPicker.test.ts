@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { PROJECT_AGENTS } from '../api.js';
 import {
+  allowedAgentsSummary,
   defaultModel,
   engineLabel,
+  excludedAgentsNote,
+  modelAgent,
   groupModelsByEngine,
   modelDisplayName,
   orderModels,
@@ -156,5 +160,31 @@ describe('partitionModels', () => {
       primary: ['codex/a'],
       more: ['codex/b'],
     });
+  });
+});
+
+describe('project agent labels', () => {
+  // The settings toggles and the server rule key on these ids; an engine label that
+  // stopped mapping to one would leave its models unfilterable without any error.
+  it('maps every engine group to a project agent', () => {
+    const agents = ['claude-opus-5-5', 'codex/gpt-5.6-sol', 'verity/kimi-k2'].map(modelAgent);
+    expect(agents).toEqual([...PROJECT_AGENTS]);
+  });
+
+  it('summarises the allowed agents for the settings row', () => {
+    expect(allowedAgentsSummary(null)).toBe('All agents');
+    expect(allowedAgentsSummary([...PROJECT_AGENTS])).toBe('All agents');
+    expect(allowedAgentsSummary(['claude'])).toBe('Claude only');
+    expect(allowedAgentsSummary(['opencode', 'claude'])).toBe('Claude, OpenCode');
+  });
+
+  it('names the excluded agents in the model sheet footer', () => {
+    expect(excludedAgentsNote(null)).toBeUndefined();
+    expect(excludedAgentsNote(['claude'])).toBe(
+      'Codex and OpenCode are turned off for this project.',
+    );
+    expect(excludedAgentsNote(['claude', 'opencode'])).toBe(
+      'Codex is turned off for this project.',
+    );
   });
 });

@@ -105,7 +105,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
     {
       title: 'Claude',
       usageKey: 'claude',
-      group: 'AI',
+      group: 'Agents',
       icon: 'terminal',
       subtitle: 'Use your Claude subscription',
       route: '/settings/services/claude',
@@ -114,7 +114,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
     {
       title: 'Codex',
       usageKey: 'codex',
-      group: 'AI',
+      group: 'Agents',
       icon: 'terminal',
       subtitle: 'Use your Codex subscription',
       route: '/settings/services/codex',
@@ -123,7 +123,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
     {
       title: 'OpenCode',
       usageKey: 'opencode',
-      group: 'AI',
+      group: 'Agents',
       icon: 'terminal',
       subtitle: 'Custom providers and models',
       route: '/settings/services/opencode',
@@ -236,14 +236,14 @@ function ConnectionsView({ client }: { client: VerityClient }) {
           Available
         </Text>
       ) : null}
-      {['AI', 'Code', 'Files & documents', 'Messaging', 'Secrets', 'Advanced'].map((group) => {
+      {['Agents', 'Code', 'Files & documents', 'Messaging', 'Secrets', 'Advanced'].map((group) => {
         const available = rows.filter((item) => !item.connected && item.group === group);
         return available.length > 0 ? (
           <SettingsGroup
             key={group}
             title={group}
             description={
-              group === 'AI' ? 'Available connections — add only what you need.' : undefined
+              group === 'Agents' ? 'Available connections — add only what you need.' : undefined
             }
           >
             {renderRows(available)}

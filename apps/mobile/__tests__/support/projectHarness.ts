@@ -14,6 +14,7 @@ export function makeDetail(
     dopplerProject?: string | null;
     dopplerConfig?: string | null;
     defaultModel?: string | null;
+    allowedAgents?: ('claude' | 'codex' | 'opencode')[] | null;
     kind?: 'github' | 'local';
   } = {},
 ): ProjectDetail {
@@ -36,6 +37,7 @@ export function makeDetail(
       dopplerConfig: overrides.dopplerConfig ?? null,
       defaultBranch: 'main',
       defaultModel: overrides.defaultModel ?? null,
+      allowedAgents: overrides.allowedAgents ?? null,
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     },

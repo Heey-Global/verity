@@ -4069,6 +4069,20 @@ const migrations: Record<string, Migration> = {
       await sql`drop table attendee_state`.execute(db);
     },
   },
+  '0147_project_allowed_agents': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Null keeps every connected agent available, so existing projects are unchanged.
+      await sql`alter table project_settings add column allowed_agents jsonb
+        check (allowed_agents is null or (
+          jsonb_typeof(allowed_agents) = 'array'
+          and jsonb_array_length(allowed_agents) > 0
+          and allowed_agents <@ '["claude","codex","opencode"]'::jsonb
+        ))`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table project_settings drop column allowed_agents`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

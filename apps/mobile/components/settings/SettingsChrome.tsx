@@ -253,11 +253,14 @@ export function SettingsToggleRow({
   value,
   onValueChange,
   disabled = false,
+  icon,
 }: {
   label: string;
   value: boolean;
   onValueChange: (value: boolean) => void;
   disabled?: boolean;
+  /** Leading glyph, drawn in the same slot as a nav row's icon. */
+  icon?: ReactNode;
 }) {
   return (
     <Pressable
@@ -272,6 +275,7 @@ export function SettingsToggleRow({
       accessibilityState={{ checked: value, disabled }}
       accessibilityLabel={label}
     >
+      {icon !== undefined ? <View style={styles.navRowIcon}>{icon}</View> : null}
       <Text style={styles.toggleLabel}>{label}</Text>
       <Toggle value={value} />
     </Pressable>

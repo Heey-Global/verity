@@ -1,5 +1,5 @@
 import { secretAuditEventInputSchema } from '@verity/secret-contracts';
-import type { Conductor } from '@verity/session';
+import type { Backend, Conductor } from '@verity/session';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
@@ -82,6 +82,7 @@ function build(
     enforceAuth?: boolean;
     /** Advertise the control-plane session tools, as `embedded.ts` does for that project. */
     sessionTools?: boolean;
+    projectSpawns?: boolean;
     runtimeDiagnostics?: ReturnType<typeof createRuntimeDiagnostics>;
     linkedTools?: boolean;
     planningTools?: boolean;
@@ -96,7 +97,7 @@ function build(
   } = {},
 ): Harness {
   const cipher = createSealableSecretCipher();
-  if (options.unlocked) cipher.unlock('31'.repeat(32));
+  if (options.projectSpawns || options.unlocked) cipher.unlock('31'.repeat(32));
   const store = new EventStore(ctx.db, cipher);
   const tokens = createMcpGatewayTokens();
   const records: McpGatewayAuditRecord[] = [];
@@ -265,6 +266,19 @@ function build(
     bus: new InMemoryEventBus(),
     conductor,
     secretCipher: cipher,
+    ...(options.projectSpawns
+      ? {
+          projectCloneRoot: '/data/dev',
+          projectBackend: (_project: unknown, selected: Backend) => selected,
+          projectWorktrees: () => ({
+            add: async () => `/wt/new-handoff-${crypto.randomUUID()}`,
+            remove: async () => undefined,
+          }),
+          listModels: async (): Promise<string[]> => {
+            throw new Error('Catalog unavailable');
+          },
+        }
+      : {}),
     ...(options.wire === false ? {} : { mcpGateway: gateway }),
     ...(options.internalGuard === true ? { internalPathGuard: requestArrivedInternally } : {}),
     ...(options.enforceAuth === true
@@ -1340,6 +1354,90 @@ async function withInternalTcpListener(
 // and nothing said so. There was no test for a control-plane `tools/list`, which is what hid
 // it; these are that test.
 describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
+  it('preserves Codex handoff fallback and refuses an unconfigured project default', async () => {
+    const harness = build({ sessionTools: true, projectSpawns: true });
+    await harness.store.createProject({
+      id: VERITY_CONTROL_PROJECT_ID,
+      kind: 'control_plane',
+      owner: 'verity',
+      repo: 'control',
+      containerName: 'verity-control',
+      state: 'active',
+    });
+    await harness.store.createSession({
+      sessionId: 'control-s1',
+      projectId: VERITY_CONTROL_PROJECT_ID,
+      worktree: process.cwd(),
+      model: 'claude-opus-5-5',
+    });
+    await harness.store.createProject({
+      id: 'website',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'website',
+      containerName: 'verity-website',
+      state: 'active',
+    });
+    await ctx.db
+      .deleteFrom('project_knowledge_spaces')
+      .where('project_id', 'in', [VERITY_CONTROL_PROJECT_ID, 'website'])
+      .execute();
+    await harness.store.updateProjectSettings('website', { allowedAgents: ['codex'] });
+    await harness.store.updateVeritySettings({
+      claudeCodeOauthCredentialsJson: '{"claudeAiOauth":{"accessToken":"claude"}}',
+      codexAuthJson: '{"tokens":{"access_token":"codex"}}',
+    });
+    const token = harness.tokens.issue({
+      projectId: VERITY_CONTROL_PROJECT_ID,
+      sessionId: 'control-s1',
+      turnId: 'control-t1',
+    });
+    await withInternalTcpListener(harness, async (port) => {
+      const response = await postTcp(port, '/internal/control-plane/mcp', `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 71,
+        method: 'tools/call',
+        params: {
+          name: 'verity_session_handoff',
+          arguments: {
+            target: { newSession: { project: '__local__/website' } },
+            title: 'Continue work',
+            briefing: 'Implement the requested change.',
+          },
+        },
+      });
+      const body = JSON.parse(response.body) as {
+        result: { isError?: boolean; content: Array<{ text: string }> };
+      };
+      expect(body.result.isError, body.result.content[0]?.text).toBeUndefined();
+      const result = JSON.parse(body.result.content[0]!.text) as { sessionId: string };
+      expect((await harness.store.getSession(result.sessionId))?.model).toBe('codex/default');
+      expect(harness.dispatches).toHaveLength(1);
+      await harness.store.updateProjectSettings('website', {
+        allowedAgents: ['opencode'],
+        defaultModel: 'verity/unselected',
+      });
+      const unavailable = await postTcp(port, '/internal/control-plane/mcp', `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 72,
+        method: 'tools/call',
+        params: {
+          name: 'verity_session_handoff',
+          arguments: {
+            target: { newSession: { project: '__local__/website' } },
+            title: 'New work',
+            briefing: 'Continue with the configured model.',
+          },
+        },
+      });
+      const unavailableBody = JSON.parse(unavailable.body) as { result: { isError?: boolean } };
+      expect(unavailableBody.result.isError).toBe(true);
+      expect(
+        (await harness.store.listSessions()).filter((session) => session.projectId === 'website'),
+      ).toHaveLength(1);
+      expect(harness.dispatches).toHaveLength(1);
+    });
+  });
   it('completes the handshake and lists tools for a control-plane turn bearer', async () => {
     const harness = build({ trustedCli: true });
     const token = harness.tokens.issue({
