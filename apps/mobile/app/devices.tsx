@@ -43,7 +43,7 @@ import { setVeritySettingsError } from '../lib/settingsStore';
 /** Pick the row glyph from the label the device reported when it paired. */
 function iconForDevice(label: string | null): IconName {
   if (label === null) return 'smartphone';
-  if (/browser|safari|chrome|firefox|\bedge\b/iu.test(label)) return 'globe';
+  if (/browser|safari|\bchrome\b|firefox|\bedge\b/iu.test(label)) return 'globe';
   if (/ipad|tablet/iu.test(label)) return 'tablet';
   if (/mac|desktop|laptop/iu.test(label)) return 'monitor';
   return 'smartphone';
@@ -186,7 +186,9 @@ function DevicesView({ client }: { client: VerityClient }) {
           minutes: Math.max(1, Math.round((expiresAt - Date.now()) / 60_000)),
           // The same endpoint the link names, so the sign-in page's identity
           // check runs against the server the browser was sent to.
-          webAddress: webAppAddress(Platform.OS === 'web' ? window.location.origin : direct!.url),
+          webAddress: webAppAddress(
+            direct?.url ?? (Platform.OS === 'web' ? window.location.origin : profile!.activeUrl),
+          ),
         });
       })
       .catch((caught: unknown) =>
