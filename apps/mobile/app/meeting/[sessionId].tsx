@@ -499,7 +499,7 @@ export default function MeetingScreen() {
       !(meeting?.ownerToken || meeting?.engine === 'attendee') ||
       speakerEditDraft.current?.meetingId !== meeting.id
     )
-      return;
+      return false;
     const next = { ...speakerEditDraft.current, ...change };
     speakerEditDraft.current = next;
     setMeeting((current) =>
@@ -530,8 +530,10 @@ export default function MeetingScreen() {
       speakerEditWrite.current = write;
       await write;
       setSyncError(true);
+      return true;
     } catch (reason) {
       setError(`Could not save speaker correction: ${String(reason)}`);
+      return false;
     }
   };
 
@@ -972,8 +974,11 @@ export default function MeetingScreen() {
                       };
                       if (names[suggestion.speaker] === undefined)
                         names[suggestion.speaker] = suggestion.name;
-                      clearSpeakerNameSuggestion(meeting.id, suggestion.speaker, false);
-                      void persistSpeakerEdits({ names });
+                      // Keep the card until the name is saved, so a failed save can be retried.
+                      void persistSpeakerEdits({ names }).then((saved) => {
+                        if (saved)
+                          clearSpeakerNameSuggestion(meeting.id, suggestion.speaker, false);
+                      });
                     },
                   },
                 ]}

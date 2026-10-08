@@ -487,14 +487,51 @@ it('names a speaker only after the suggestion is confirmed', async () => {
   render(<MeetingScreen />);
   expect(await screen.findByText('Speaker 1 is Holger?')).toBeOnTheScreen();
   expect(updateSpeakerEdits).not.toHaveBeenCalled();
+  // A failed save keeps the suggestion in the recording, so it is offered again.
+  jest.mocked(updateSpeakerEdits).mockRejectedValueOnce(new Error('disk full'));
   fireEvent.press(screen.getByLabelText('Yes, Holger'));
-  await waitFor(() =>
-    expect(updateSpeakerEdits).toHaveBeenCalledWith(meeting.id, { '0': 'Holger' }, [], {}),
-  );
-  expect(clearSpeakerNameSuggestion).toHaveBeenCalledWith(meeting.id, 0, false);
+  expect(await screen.findByText(/Could not save speaker correction/)).toBeOnTheScreen();
+  expect(clearSpeakerNameSuggestion).not.toHaveBeenCalled();
+  expect(updateSpeakerEdits).toHaveBeenCalledWith(meeting.id, { '0': 'Holger' }, [], {});
+
   fireEvent.press(screen.getByLabelText('Not Anna'));
   expect(clearSpeakerNameSuggestion).toHaveBeenCalledWith(meeting.id, 1, true);
   expect(updateSpeakerEdits).toHaveBeenCalledTimes(1);
+});
+
+it('clears a confirmed name suggestion once the name is saved', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-suggest',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hallo, ich bin Holger. Hi',
+    error: null,
+    ownerToken: 'owner',
+    speakerTurns: [
+      { speaker: 0, start: 0, end: 2 },
+      { speaker: 1, start: 3, end: 4 },
+    ],
+    timedWords: [
+      { text: 'Hallo, ich bin Holger.', start: 0, end: 2 },
+      { text: 'Hi', start: 3, end: 3.5 },
+    ],
+    speakerNameSuggestions: [
+      { speaker: 0, name: 'Holger', quote: 'Hallo, ich bin Holger.' },
+      { speaker: 1, name: 'Anna', quote: 'Hi' },
+    ],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('Yes, Holger'));
+  await waitFor(() =>
+    expect(clearSpeakerNameSuggestion).toHaveBeenCalledWith(meeting.id, 0, false),
+  );
+  expect(updateSpeakerEdits).toHaveBeenCalledWith(meeting.id, { '0': 'Holger' }, [], {});
 });
 
 it('renames a speaker across the current meeting', async () => {

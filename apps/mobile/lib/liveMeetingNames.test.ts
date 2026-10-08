@@ -71,3 +71,13 @@ test('stops checking a speaker after three attempts', () => {
   spent.set(0, { ...spent.get(0)!, checks: 2 });
   expect(nextSpeakerNameCheck(lines, new Set(), spent, 60_000)).toMatchObject({ speaker: 0 });
 });
+
+// German "im" is everywhere; read as "I'm" it would spend a speaker's checks before
+// anyone introduced themselves.
+test('does not read German "im" as an introduction', () => {
+  const lines = [line(0, 'Wir sind im Büro.', 0, 2)];
+  expect(nextSpeakerNameCheck(lines, new Set(), new Map(), 0)).toBeNull();
+  expect(nextSpeakerNameCheck([line(0, 'I’m Anna.', 0, 2)], new Set(), new Map(), 0)).toMatchObject(
+    { speaker: 0, opening: false },
+  );
+});
