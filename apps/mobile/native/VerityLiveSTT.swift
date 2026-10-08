@@ -96,15 +96,23 @@ private actor LiveSpeakerProcessor {
   }
 
   init(participants: Int) async throws {
+    // Frame durations come from the model and library defaults, so the smoothing
+    // values in seconds map to the right number of frames for each variant.
     if participants > 4 {
+      let lsEend = try await LSEENDModel.loadFromHuggingFace(
+        variant: .dihard3, stepSize: .step100ms)
       model = .lsEend(
-        try await LSEENDDiarizer(
-          variant: .dihard3, timelineConfig: Self.timelineConfig(frameDuration: 0.1)))
+        try LSEENDDiarizer(
+          model: lsEend,
+          timelineConfig: Self.timelineConfig(
+            frameDuration: lsEend.metadata.frameDurationSeconds)))
     } else {
       let config = SortformerConfig.default
       let models = try await SortformerModels.loadFromHuggingFace(config: config)
       let diarizer = SortformerDiarizer(
-        config: config, timelineConfig: Self.timelineConfig(frameDuration: 0.08))
+        config: config,
+        timelineConfig: Self.timelineConfig(
+          frameDuration: DiarizerTimelineConfig.sortformerDefault.frameDurationSeconds))
       diarizer.initialize(models: models)
       model = .sortformer(diarizer)
     }

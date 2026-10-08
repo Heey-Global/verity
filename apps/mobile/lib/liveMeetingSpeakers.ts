@@ -71,6 +71,19 @@ export function speakerLines(
   const resolved = turns
     .map((turn) => ({ ...turn, who: resolvedSpeaker(turn.speaker, merges) }))
     .sort((a, b) => a.start - b.start);
+  // Turns are sorted by start, so each word only needs the window that can reach it:
+  // a long meeting would otherwise scan every turn for every word.
+  const longest = resolved.reduce((max, turn) => Math.max(max, turn.end - turn.start), 0);
+  const firstReaching = (time: number) => {
+    let low = 0;
+    let high = resolved.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (resolved[middle]!.start < time - longest) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
   // Coverage is a union, so a turn repeated by the model is not counted twice.
   const heardFor = (spans: [number, number][]) => {
     let total = 0;
@@ -91,7 +104,13 @@ export function speakerLines(
     const covered = new Map<number | null, [number, number][]>();
     // Turns running past the word's edge: evidence of who was speaking around it.
     const crossing = new Set<number | null>();
-    for (const turn of resolved) {
+    const nearby: typeof resolved = [];
+    for (let index = firstReaching(word.start - 0.6); index < resolved.length; index++) {
+      const turn = resolved[index]!;
+      if (turn.start >= word.end + 0.6) break;
+      nearby.push(turn);
+    }
+    for (const turn of nearby) {
       const from = Math.max(word.start, turn.start);
       const to = Math.min(word.end, turn.end);
       if (to <= from) continue;
@@ -113,17 +132,14 @@ export function speakerLines(
       // A short pause inside one person's speech belongs to that person, and so does a
       // word clipped by that person's turn edge. Anyone else heard nearby leaves it
       // unknown.
-      const before = resolved.findLast(
-        (turn) => turn.end <= word.start && word.start - turn.end < 0.6,
+      const neighbours = nearby.filter(
+        (turn) =>
+          (turn.end <= word.start && word.start - turn.end < 0.6) ||
+          (turn.start >= word.end && turn.start - word.end < 0.6),
       );
-      const after = resolved.find((turn) => turn.start >= word.end && turn.start - word.end < 0.6);
-      const around = new Set([
-        ...covered.keys(),
-        ...(before ? [before.who] : []),
-        ...(after ? [after.who] : []),
-      ]);
+      const around = new Set([...covered.keys(), ...neighbours.map((turn) => turn.who)]);
       // A voice heard only inside the word, with no one around it, is too little to go on.
-      speaker = (before || after || crossing.size) && around.size === 1 ? [...around][0]! : null;
+      speaker = (neighbours.length || crossing.size) && around.size === 1 ? [...around][0]! : null;
     }
     const correction = corrections.findLast(
       (entry) => entry.start <= word.start && entry.end >= word.end,

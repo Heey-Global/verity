@@ -265,3 +265,19 @@ test('regroups Apple runs into timed words', () => {
     { text: 'Ja gut', start: 0, end: 0.3 },
   ]);
 });
+
+// Each word only looks at turns near it; a long turn that began far earlier must still
+// be found, or a monologue would turn unknown partway through.
+test('finds a long turn that started well before the word among many short ones', () => {
+  const turns = [
+    { speaker: 0, start: 0, end: 100 },
+    ...Array.from({ length: 50 }, (_, index) => ({
+      speaker: 1,
+      start: 10 + index,
+      end: 10.3 + index,
+    })),
+  ];
+  expect(speakerLines([{ text: 'still', start: 95, end: 95.4 }], turns)).toEqual([
+    { speaker: 0, text: 'still', start: 95, end: 95.4 },
+  ]);
+});

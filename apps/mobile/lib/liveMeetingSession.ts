@@ -585,7 +585,8 @@ export async function updateSpeakerEdits(
       speakerMerges: merges,
       // A name given by the operator supersedes any suggestion for that speaker.
       speakerNameSuggestions: (active.speakerNameSuggestions ?? []).filter(
-        (suggestion) => names[suggestion.speaker] === undefined,
+        (suggestion) =>
+          names[suggestion.speaker] === undefined && merges[suggestion.speaker] === undefined,
       ),
     };
     publish();
