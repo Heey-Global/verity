@@ -63,7 +63,7 @@ export function groupModelsByEngine(
  *     product name, so keep it verbatim (`deepinfra/zai-org/GLM-5.2` → `GLM-5.2`).
  *   - Claude bare id: title-case the words and fuse the trailing numeric version parts
  *     with dots, dropping an 8-digit date stamp (`claude-opus-4-8` → `Claude Opus 4.8`,
- *     `claude-haiku-4-5-20251001` → `Claude Haiku 4.5`).
+ *     `claude-haiku-5-5` → `Claude Haiku 5.5`).
  *
  * `undefined` (no explicit model → the server's Claude default) reads as `Claude`.
  */

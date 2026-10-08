@@ -6333,7 +6333,7 @@ describe('GET /models (#143)', () => {
       'claude-opus-5-5',
       'claude-fable-5-1',
       'claude-sonnet-5-5',
-      'claude-haiku-4-5-20251001',
+      'claude-haiku-5-5',
     ]);
     expect(DEFAULT_MODEL).toBe('claude-opus-5-5');
   });
@@ -6354,7 +6354,7 @@ describe('GET /models (#143)', () => {
     expect(body.models).toEqual([...CLAUDE_SORTED]);
     expect(body.default).toBe(DEFAULT_MODEL);
     expect(body.default).not.toContain('/');
-    expect(res.json<{ moreModels: string[] }>().moreModels).toEqual(['claude-haiku-4-5-20251001']);
+    expect(res.json<{ moreModels: string[] }>().moreModels).toEqual(['claude-haiku-5-5']);
   });
 
   it('returns Codex only when only Codex is logged in', async () => {
@@ -6417,7 +6417,7 @@ describe('GET /models (#143)', () => {
           'codex/gpt-5.3-codex-spark',
         ],
         moreModels: [
-          'claude-haiku-4-5-20251001',
+          'claude-haiku-5-5',
           'codex/gpt-5.6-luna',
           'codex/gpt-5.5',
           'codex/gpt-5.3-codex-spark',
