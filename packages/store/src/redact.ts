@@ -67,6 +67,12 @@ export function redactProcessStderr(text: string, env: NodeJS.ProcessEnv = {}): 
     .sort((a, b) => b.length - a.length);
   for (const value of values) out = out.split(value).join(REDACTED);
   out = redactSecrets(out)
+    // File-loaded credentials may have no recognizable value prefix. Omit the
+    // remainder of a credential-bearing JSON line, including truncated values.
+    .replace(
+      /(["'])(?:[a-z0-9_]*(?:token|secret|password|api[_-]?key)|passphrase|authorization|proxy-authorization|cookie|set-cookie|private[_-]?key|credential)\1\s*:\s*[^\r\n]*/giu,
+      '[REDACTED CREDENTIAL FIELD]',
+    )
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/gu, '[REDACTED JWT]')
     .replace(/\b[A-Z][A-Z0-9_]*\s*=[^\r\n]*/gu, '[REDACTED ENVIRONMENT]')
     .replace(

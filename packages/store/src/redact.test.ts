@@ -84,6 +84,26 @@ describe('redactProcessStderr', () => {
     expect(redacted).not.toContain(jwt);
     expect(redacted).toContain('[REDACTED JWT]');
   });
+  it.each([
+    'access_token',
+    'refresh_token',
+    'password',
+    'api_key',
+    'client_secret',
+    'CUSTOM_TOKEN',
+    'authorization',
+  ])('redacts an opaque credential in the JSON field %s', (field) => {
+    const value = ['opaque', 'file', 'credential'].join('-');
+    const raw = `${JSON.stringify({ [field]: value })}\nlast failure`;
+    const redacted = redactProcessStderr(raw);
+    expect(redacted).not.toContain(value);
+    expect(redacted).toContain('[REDACTED CREDENTIAL FIELD]');
+    expect(redacted).toContain('last failure');
+  });
+  it('redacts quoted credential values even when JSON is truncated', () => {
+    const value = ['opaque', 'file', 'credential'].join('-');
+    expect(redactProcessStderr(`{"password":"${value}`)).not.toContain(value);
+  });
   it('omits a leading partial credential line from a full capture', () => {
     const raw = 'partial-credential' + 'x'.repeat(65_536) + '\nlast failure';
     expect(redactProcessStderr(raw)).toBe('last failure');
