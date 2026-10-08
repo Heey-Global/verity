@@ -3409,10 +3409,10 @@ export function SessionChat({
     [decidePlanning, scrollToLatest],
   );
   const dismissPlan = useCallback(() => {
-    Alert.alert('Dismiss this plan?', 'The plan stays in the chat. Nothing is implemented.', [
+    Alert.alert('Cancel this plan?', 'The plan stays in the chat. Nothing is implemented.', [
       { text: 'Keep', style: 'cancel' },
       {
-        text: 'Dismiss',
+        text: 'Cancel plan',
         style: 'destructive',
         onPress: () => decidePlanning('discard', planningRevision),
       },
@@ -4454,6 +4454,16 @@ export function SessionChat({
       ) : null}
       {planning === 'active' && planningPlan != null ? (
         <PinnedPlan
+          revision={planningRevision}
+          sendNonce={sendNonce}
+          renderMarkdown={(content) => (
+            <MarkdownText
+              content={content}
+              onOpenLocalFile={null}
+              sessionFileImageSource={null}
+              onOpenImage={() => undefined}
+            />
+          )}
           markdown={planningPlan}
           updated={planUpdated}
           deciding={decidingPlanning}
@@ -7515,7 +7525,7 @@ function PlanProposalCard({
     : planning === 'implemented'
       ? 'Implemented'
       : planning === 'discarded'
-        ? 'Dismissed'
+        ? 'Cancelled'
         : null;
   return (
     <View

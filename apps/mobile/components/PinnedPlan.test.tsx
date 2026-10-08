@@ -1,10 +1,14 @@
 import { fireEvent, render, screen } from '@testing-library/react-native';
+import { Text } from 'react-native';
 import { PinnedPlan } from './PinnedPlan';
 
 const markdown =
   '# Separate gestures\n\n## Goal\nStop accidental drags.\n\n## Steps\n1. **Require long press** — Update SessionList.tsx.\n2. **Add haptics** — Signal drag start.';
 const props = {
   markdown,
+  revision: 1,
+  sendNonce: 0,
+  renderMarkdown: (text: string) => <Text>{text}</Text>,
   updated: false,
   deciding: false,
   disabled: false,
@@ -15,19 +19,18 @@ const props = {
 
 beforeEach(() => jest.clearAllMocks());
 
-it('presents the submitted plan as numbered steps with one decision per action', () => {
+it('presents concise bullet titles with descriptions reserved for details', () => {
   render(<PinnedPlan {...props} />);
   expect(screen.getByText('Separate gestures')).toBeOnTheScreen();
-  expect(screen.getByText('Stop accidental drags.')).toBeOnTheScreen();
+  expect(screen.queryByText('Stop accidental drags.')).toBeNull();
   expect(screen.getByText('2 steps')).toBeOnTheScreen();
   expect(screen.getByText('Require long press')).toBeOnTheScreen();
-  expect(screen.getByText('Update SessionList.tsx.')).toBeOnTheScreen();
-  expect(screen.getByText('1')).toBeOnTheScreen();
-  expect(screen.getByText('2')).toBeOnTheScreen();
-  expect(screen.getAllByRole('button')).toHaveLength(2);
+  expect(screen.queryByText('Update SessionList.tsx.')).toBeNull();
+  expect(screen.getAllByText('•')).toHaveLength(2);
+  expect(screen.getAllByRole('button')).toHaveLength(4);
   fireEvent.press(screen.getByLabelText('Implement plan'));
   expect(props.onImplement).toHaveBeenCalledTimes(1);
-  fireEvent.press(screen.getByLabelText('Dismiss plan'));
+  fireEvent.press(screen.getByLabelText('Cancel plan'));
   expect(props.onDismiss).toHaveBeenCalledTimes(1);
   expect(screen.queryByText('Updated')).toBeNull();
 });
@@ -48,7 +51,7 @@ it('replaces the proposal with its revision and blocks double decisions while sa
   expect(screen.getByText('Keep haptics')).toBeOnTheScreen();
   expect(screen.getByText('Please retry')).toBeOnTheScreen();
   expect(screen.getByLabelText('Implement plan')).toBeDisabled();
-  expect(screen.getByLabelText('Dismiss plan')).toBeDisabled();
+  expect(screen.getByLabelText('Cancel plan')).toBeDisabled();
   fireEvent.press(screen.getByLabelText('Implement plan'));
   expect(props.onImplement).not.toHaveBeenCalled();
 });
@@ -56,6 +59,23 @@ it('replaces the proposal with its revision and blocks double decisions while sa
 it('keeps the complete approved text visible when a proposal contains other sections', () => {
   const fullPlan = `${markdown}\n\n## Risks\nPreserve navigation and do not change the public API.`;
   render(<PinnedPlan {...props} markdown={fullPlan} />);
+  fireEvent.press(screen.getByLabelText('Show full plan'));
   expect(screen.getByText(fullPlan)).toBeOnTheScreen();
-  expect(screen.getAllByRole('button')).toHaveLength(2);
+  expect(screen.getAllByRole('button')).toHaveLength(4);
+});
+
+it('collapses on sending and reopens a new revision, including identical text', () => {
+  const view = render(<PinnedPlan {...props} />);
+  expect(screen.getByText('Separate gestures')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Show full plan'));
+  view.rerender(<PinnedPlan {...props} sendNonce={1} />);
+  expect(screen.queryByText(markdown)).toBeNull();
+  expect(screen.queryByText('Separate gestures')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Expand plan'));
+  expect(screen.getByText('Separate gestures')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Collapse plan'));
+  view.rerender(<PinnedPlan {...props} sendNonce={1} revision={2} updated />);
+  expect(screen.getByText('Separate gestures')).toBeOnTheScreen();
+  expect(screen.getByLabelText('Show full plan')).toBeOnTheScreen();
+  expect(props.onDismiss).not.toHaveBeenCalled();
 });
