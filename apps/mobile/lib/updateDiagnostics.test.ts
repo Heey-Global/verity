@@ -163,3 +163,14 @@ it('exports bounded content-free switch phases with the loaded update identity',
   ]);
   expect(JSON.stringify(report)).not.toContain('private-session');
 });
+
+it('starts separate traces for repeated keyboard activation without touch callbacks', () => {
+  rowPress('keyboard-session');
+  const first = sessionSwitchTiming('keyboard-session')!;
+  rowPress('keyboard-session');
+  const second = sessionSwitchTiming('keyboard-session')!;
+  expect(second.id).not.toBe(first.id);
+  expect(first.status).toBe('superseded');
+  expect(first.phases.map((p) => p.phase)).toEqual(['js-press-handler']);
+  expect(second.phases.map((p) => p.phase)).toEqual(['js-press-handler']);
+});
