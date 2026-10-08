@@ -311,6 +311,7 @@ COPY --from=builder --chown=node:node /app/packages/store/package.json ./package
 COPY --from=builder --chown=node:node /app/packages/session/dist ./packages/session/dist
 COPY --from=builder --chown=node:node /app/packages/session/package.json ./packages/session/package.json
 COPY --from=builder --chown=node:node /app/packages/preview-tunnel/dist ./packages/preview-tunnel/dist
+COPY --from=builder --chown=node:node /app/packages/preview-tunnel/assets/verity-mark.png ./packages/preview-tunnel/assets/verity-mark.png
 COPY --from=builder --chown=node:node /app/packages/server/dist ./packages/server/dist
 COPY --from=builder --chown=node:node /app/packages/server/package.json ./packages/server/package.json
 COPY --from=builder --chown=node:node /app/package.json ./package.json

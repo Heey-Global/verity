@@ -121,6 +121,23 @@ describe('selective Docker build contexts', () => {
     },
   );
 
+  it('ships preview branding beside the compiled module in the server runtime', () => {
+    const module = readFileSync('packages/preview-tunnel/src/static-server.ts', 'utf8');
+    const assetPath = module.match(/new URL\('([^']+)', import\.meta\.url\)/u)?.[1];
+    expect(assetPath).toBeDefined();
+    const asset = new URL(
+      assetPath!,
+      new URL('../packages/preview-tunnel/dist/static-server.js', import.meta.url),
+    );
+    const relativeAsset = asset.pathname.slice(new URL('../', import.meta.url).pathname.length);
+    const runtime = readFileSync('deploy/Dockerfile', 'utf8').split(' AS runtime\n')[1]!;
+    // Local previews run in the server image, which does not inherit connector assets.
+    expect(runtime).toContain(
+      `COPY --from=builder --chown=node:node /app/${relativeAsset} ./${relativeAsset}`,
+    );
+    expect([...readFileSync(asset).subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+  });
+
   it('installs and probes the shared libraries required by copied Python', () => {
     const dockerfile = readFileSync('deploy/verity-sandbox.Dockerfile', 'utf8');
     for (const dependency of ['libbz2-1.0', 'libexpat1', 'libffi8', 'libsqlite3-0', 'libssl3']) {
