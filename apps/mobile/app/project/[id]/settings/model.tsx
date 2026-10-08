@@ -181,8 +181,11 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
           <SettingsPanel>
             {listedAgents.map((agent) => {
               const on = allowed.includes(agent);
-              // The last connected agent stays on, or no session could start here.
-              const locked = on && connectedAgents.has(agent) && allowedConnected.length === 1;
+              // An empty rule is invalid even when its final agent is disconnected.
+              const locked =
+                on &&
+                (allowed.length === 1 ||
+                  (connectedAgents.has(agent) && allowedConnected.length === 1));
               return (
                 <SettingsToggleRow
                   key={agent}

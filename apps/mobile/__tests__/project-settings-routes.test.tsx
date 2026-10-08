@@ -803,6 +803,20 @@ describe('project settings — agents', () => {
     expect(screen.queryByLabelText('Use model Claude Sonnet 4.6, claude-sonnet-4-6')).toBeNull();
   });
 
+  it('locks the final allowed agent even when disconnected', async () => {
+    const client = makeClient({
+      detail: makeDetail({ allowedAgents: ['codex'] }),
+      listModels: jest.fn().mockResolvedValue({ models: ['claude-sonnet-4-6'] }),
+    });
+    mockCreateVerityClient.mockReturnValue(client);
+    render(<ProjectModelScreen />);
+
+    const codex = await screen.findByLabelText('Codex');
+    expect(codex.props.accessibilityState.disabled).toBe(true);
+    fireEvent.press(codex);
+    expect(client.updateProjectSettings).not.toHaveBeenCalled();
+  });
+
   // Turning off the last connected agent would leave the project unable to start
   // any session, so its toggle cannot be switched off.
   it('locks the last connected allowed agent and lists the project models', async () => {
