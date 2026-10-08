@@ -586,6 +586,31 @@ describe('createMemoryGuard', () => {
     expect(kills()).toBe(8);
   });
 
+  it('counts growth during the cooldown and suspends again if that growth stops', () => {
+    let clock = 0;
+    const files = { ...sandbox(), ...cgroup(5 * GIB) };
+    const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>();
+    const guard = createMemoryGuard({
+      readFile: guestReader(files),
+      listPids: listPids(files),
+      readLink: () => '/',
+      kill,
+      agentUid: 1000,
+      now: () => clock,
+    });
+    expect(guard.tick().outcome).toBe('kill');
+    Object.assign(files, cgroup(5.9 * GIB));
+    clock = KILL_COOLDOWN_MS - 1;
+    expect(guard.tick().outcome).toBe('cooldown');
+    clock = KILL_COOLDOWN_MS;
+    expect(guard.tick().outcome).toBe('kill');
+    clock += KILL_COOLDOWN_MS;
+    expect(guard.tick().outcome).toBe('suspended');
+    clock += KILL_COOLDOWN_MS;
+    expect(guard.tick().outcome).toBe('suspended');
+    expect(kill.mock.calls.filter(([, signal]) => signal === 'SIGKILL')).toHaveLength(8);
+  });
+
   it('stands down when a kill freed nothing, instead of taking one session after another', () => {
     // On cgroup v1 the usage counts page cache and tmpfs files, which no kill
     // frees. Left alone the guard would kill on every cooldown, or on every

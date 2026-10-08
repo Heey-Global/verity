@@ -485,6 +485,19 @@ export function createMemoryGuard(options) {
       lastKill = undefined;
     }
     if (lastKill !== undefined) {
+      // Growth during the cooldown is evidence too; do not discard it by
+      // resetting the baseline to the already higher post-cooldown charge.
+      const rearmAtBytes =
+        lastKill.usageBytes +
+        Math.min(
+          reserveBytes * REARM_GROWTH_FRACTION,
+          (ceiling.limitBytes - lastKill.usageBytes) / 2,
+        );
+      if (ceiling.usageBytes >= rearmAtBytes && ceiling.usageBytes > lastKill.usageBytes) {
+        lastKill = undefined;
+      }
+    }
+    if (lastKill !== undefined) {
       suspendedAtBytes = ceiling.usageBytes;
       log({
         event: 'suspended',
