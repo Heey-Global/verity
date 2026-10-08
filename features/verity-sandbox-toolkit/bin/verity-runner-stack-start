@@ -300,7 +300,7 @@ fi
 
 # Memory guard (verity-memory-guard.mjs): under gVisor the host kills the whole
 # Sandbox when the memory ceiling is hit, so this root daemon kills the largest
-# agent-owned process first. Root because CAP_KILL is what reaches uid-1000
+# agent-owned command first. Root because CAP_KILL is what reaches uid-1000
 # processes; launched here because this is the one root pass that runs on every
 # reconcile, and probe-idempotent like the broker. Best effort by design: a
 # missing node or a Sandbox without a readable limit must not fail the stack.
@@ -308,7 +308,8 @@ GUARD_LOG="$BROKER_RUNTIME/memory-guard.log"
 if [ "${VERITY_MEMORY_GUARD:-1}" != '0' ] && [ -x /usr/local/bin/verity-memory-guard ]; then
   if ! /usr/local/bin/verity-memory-guard --probe >/dev/null 2>&1; then
     { touch "$GUARD_LOG" && chown 0:0 "$GUARD_LOG" && chmod 0600 "$GUARD_LOG"; } || true
-    VERITY_AGENT_UID="$AGENT_UID" nohup /usr/local/bin/verity-memory-guard \
+    VERITY_AGENT_UID="$AGENT_UID" VERITY_AGENT_BROKER_RUNTIME="$BROKER_RUNTIME" \
+      nohup /usr/local/bin/verity-memory-guard \
       >>"$GUARD_LOG" 2>&1 </dev/null &
   fi
 fi

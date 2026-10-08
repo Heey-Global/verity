@@ -36,11 +36,11 @@
  * workspace imports.
  *
  * Reads `/sys/fs/cgroup/memory/memory.{limit,usage}_in_bytes` (cgroup v1, which
- * gVisor mounts by default) or `memory.max` and `anon` from `memory.stat`
- * (cgroup v2, a runc Sandbox). The v1 usage includes the guest page cache on
- * purpose: under gVisor that cache lives in the Sentry's memory file, which the
- * host charges to the container like any anonymous page. With no readable finite limit the guard exits
- * quietly: there is nothing to defend.
+ * gVisor mounts by default) or `memory.{max,current}` (cgroup v2, when gVisor
+ * is configured to mount it). Usage includes the guest page cache on purpose:
+ * under gVisor that cache lives in the Sentry's memory file, which the host
+ * charges to the container like any anonymous page. With no readable finite
+ * limit, or outside gVisor, the guard exits quietly.
  */
 
 import { readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -88,9 +88,9 @@ function tryRead(readFile, path) {
  * Returns `undefined` when no finite limit is readable: nothing to defend.
  *
  * cgroup v2 is consulted first because its files sit at the root and a v1
- * mount never has them; `anon` from `memory.stat` is preferred over
- * `memory.current`, which counts reclaimable page cache and sits near the limit
- * after any build without being a reason to kill anything.
+ * mount never has them. Both versions read the total charge, page cache and
+ * tmpfs included: the guard runs only under gVisor, where that memory lives in
+ * the Sentry's memory file and the host charges it like any anonymous page.
  */
 export function readMemoryCeiling(readFile = readFsFile, cgroupRoot = '/sys/fs/cgroup') {
   const v2Max = tryRead(readFile, join(cgroupRoot, 'memory.max'));
@@ -98,11 +98,8 @@ export function readMemoryCeiling(readFile = readFsFile, cgroupRoot = '/sys/fs/c
     if (v2Max.trim() === 'max') return undefined;
     const limitBytes = parseBytes(v2Max);
     if (limitBytes === undefined || limitBytes === 0) return undefined;
-    const stat = tryRead(readFile, join(cgroupRoot, 'memory.stat'));
-    const anonLine = stat?.split('\n').find((line) => line.startsWith('anon '));
-    const anon = anonLine === undefined ? undefined : parseBytes(anonLine.slice('anon '.length));
     const current = tryRead(readFile, join(cgroupRoot, 'memory.current'));
-    const usageBytes = anon ?? (current === undefined ? undefined : parseBytes(current));
+    const usageBytes = current === undefined ? undefined : parseBytes(current);
     if (usageBytes === undefined) return undefined;
     return { limitBytes, usageBytes, source: 'cgroup-v2' };
   }
@@ -182,7 +179,10 @@ export function listProcesses(readFile = readFsFile, listPids = listProcDir) {
     const rssMatch = /^(\d+)\s*kB$/u.exec(fields.VmRSS ?? '');
     const rssBytes = rssMatch === null ? 0 : Number.parseInt(rssMatch[1], 10) * 1024;
     if (!Number.isSafeInteger(ppid) || !Number.isSafeInteger(uid)) continue;
-    processes.push({ pid, ppid, uid, rssBytes, name: fields.Name ?? '' });
+    // Read with the rest of the snapshot: the signal fence compares against it,
+    // so a pid reused after this point no longer matches.
+    const startTime = statStartTime(readFile, pid);
+    processes.push({ pid, ppid, uid, rssBytes, name: fields.Name ?? '', startTime });
   }
   return processes;
 }
@@ -377,9 +377,7 @@ export function createMemoryGuard(options) {
    */
   const signalTree = (victim, descendants) => {
     const topDown = (processes) =>
-      [...processes]
-        .reverse()
-        .map((process) => [process.pid, statStartTime(readFile, process.pid)]);
+      [...processes].reverse().map((process) => [process.pid, process.startTime]);
     const targets = new Map(topDown([...descendants, victim]));
     const stopped = send(targets, 'SIGSTOP', stillTarget);
     const late = topDown(descendantsOf(victim.pid, listProcesses(readFile, listPids))).filter(
@@ -568,9 +566,13 @@ function claimPidFile(controlDir) {
       // record is another guard mid-claim, not a stale one, unless it has stayed
       // that way long enough that its writer cannot still be alive.
       const existing = tryRead(readFsFile, path) ?? '';
-      if (!/^\d+ \d+\n$/u.test(existing) && Date.now() - statSync(path).mtimeMs < 10_000) {
-        return false;
+      let ageMs;
+      try {
+        ageMs = Date.now() - statSync(path).mtimeMs;
+      } catch {
+        continue; // removed by a competing launcher in between: try to claim it
       }
+      if (!/^\d+ \d+\n$/u.test(existing) && ageMs < 10_000) return false;
       rmSync(path, { force: true });
     }
   }

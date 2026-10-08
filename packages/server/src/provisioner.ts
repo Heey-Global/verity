@@ -195,7 +195,7 @@ const execFileAsync = promisify(execFile);
 // shmem), and 6 GiB the same way on 2026-10-08, so the ceiling has to fit all of
 // a project's concurrent turns, not a single process. The toolkit's memory guard
 // (features/verity-sandbox-toolkit/bin/verity-memory-guard.mjs) stands in for
-// the missing guest OOM killer: it kills the largest agent-owned process a
+// the missing guest OOM killer: it kills the largest agent-owned command a
 // reserve below this ceiling, so the common overrun costs one build rather than
 // the project. Override per-host with VERITY_SANDBOX_MEMORY (server-main.ts)
 // where the available RAM differs.

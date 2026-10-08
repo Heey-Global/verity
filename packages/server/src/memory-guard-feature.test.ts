@@ -101,10 +101,11 @@ describe('readMemoryCeiling', () => {
     ).toBeUndefined();
   });
 
-  it('reads cgroup v2 from anon rather than memory.current, and no ceiling from `max`', () => {
-    // `memory.current` counts reclaimable page cache and sits near the limit after
-    // any build; killing on it would evict a session for memory the kernel can
-    // reclaim on its own.
+  it('reads cgroup v2 from memory.current, cache included, and no ceiling from `max`', () => {
+    // The guard runs only under gVisor, where page cache and tmpfs live in the
+    // Sentry's memory file and count against the host limit like anonymous
+    // memory. Reading `anon` would understate usage by exactly what kills the
+    // Sentry, and the guard would never fire.
     expect(
       readMemoryCeiling(
         reader({
@@ -113,7 +114,7 @@ describe('readMemoryCeiling', () => {
           '/sys/fs/cgroup/memory.stat': 'anon 1000000\nfile 3100000000\n',
         }),
       ),
-    ).toEqual({ limitBytes: 4 * GIB, usageBytes: 1000000, source: 'cgroup-v2' });
+    ).toEqual({ limitBytes: 4 * GIB, usageBytes: 4100000000, source: 'cgroup-v2' });
     expect(
       readMemoryCeiling(
         reader({ '/sys/fs/cgroup/memory.max': 'max\n', '/sys/fs/cgroup/memory.current': '5\n' }),
@@ -164,6 +165,7 @@ describe('victim selection', () => {
       uid: 1000,
       rssBytes: 950 * MIB,
       name: 'node',
+      startTime: '',
     });
   });
 
@@ -278,8 +280,15 @@ describe('victim selection', () => {
 
   it('declines when nothing agent-owned is large enough to matter', () => {
     const small: GuardedProcess[] = [
-      { pid: 2, ppid: 1, uid: 1000, rssBytes: MINIMUM_VICTIM_RSS_BYTES - 1, name: 'sleep' },
-      { pid: 3, ppid: 1, uid: 0, rssBytes: 2 * GIB, name: 'node' },
+      {
+        pid: 2,
+        ppid: 1,
+        uid: 1000,
+        rssBytes: MINIMUM_VICTIM_RSS_BYTES - 1,
+        name: 'sleep',
+        startTime: '2',
+      },
+      { pid: 3, ppid: 1, uid: 0, rssBytes: 2 * GIB, name: 'node', startTime: '3' },
     ];
     expect(chooseVictim(small, { agentUid: 1000 })).toBeUndefined();
   });
@@ -390,6 +399,32 @@ describe('createMemoryGuard', () => {
     });
     guard.tick();
     expect(kill).toHaveBeenCalledWith(6101, 'SIGKILL');
+  });
+
+  it('fences on the start time the snapshot saw, not one read at signal time', () => {
+    // Worker 6101 exits and its pid goes to another session's process right after
+    // the listing. Reading the start time only when signalling would adopt the
+    // newcomer's and let the root guard stop and kill it.
+    const files = { ...sandbox(), ...cgroup(5.5 * GIB) };
+    const base = guestReader(files);
+    let reads = 0;
+    const readFile = (path: string): string => {
+      if (path !== '/proc/6101/stat') return base(path);
+      reads += 1;
+      return `6101 (node) S 1 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 ${reads === 1 ? 100 : 200} 0 0`;
+    };
+    const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>();
+    const guard = createMemoryGuard({
+      readFile,
+      listPids: listPids(files),
+      readLink: () => '/',
+      kill,
+      agentUid: 1000,
+      now: () => 0,
+    });
+    expect(guard.tick().outcome).toBe('kill');
+    expect(kill.mock.calls.some(([pid]) => pid === 6101)).toBe(false);
+    expect(kill).toHaveBeenCalledWith(6000, 'SIGKILL');
   });
 
   it('never signals a pid reused by infrastructure or by another session', () => {

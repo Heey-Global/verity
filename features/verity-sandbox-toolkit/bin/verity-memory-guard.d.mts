@@ -17,6 +17,8 @@ export interface GuardedProcess {
   uid: number;
   rssBytes: number;
   name: string;
+  /** Field 22 of `/proc/<pid>/stat` at snapshot time; `''` when unreadable. */
+  startTime: string;
 }
 
 /** A process chosen as the root of the tree to kill. */
