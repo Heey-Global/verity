@@ -86,6 +86,7 @@ import { ProjectSessionsCollapse } from '../components/ProjectSessionsCollapse';
 import {
   useProjectReorder,
   useProjectRowDrag,
+  useSessionDragOrder,
   type ProjectReorderController,
 } from '../components/useProjectReorder';
 import { ProjectStatusDot } from '../components/ProjectStatusDot';
@@ -492,8 +493,11 @@ function SessionList({ client }: { client: VerityClient }) {
   // at its current event count, clearing its unread dot.
   const onOpenSession = useCallback(
     (session: SessionSummary) => {
-      if (client) prefetchBranches(client, session.sessionId);
-      markSeen(session.sessionId, session.eventCount, session.eventCountVersion);
+      // Let Link navigation or split-pane selection start before updating the list.
+      setTimeout(() => {
+        markSeen(session.sessionId, session.eventCount, session.eventCountVersion);
+        if (client) prefetchBranches(client, session.sessionId);
+      }, 0);
     },
     [client, markSeen],
   );
@@ -811,11 +815,16 @@ function SessionList({ client }: { client: VerityClient }) {
               </>
             }
           />
-          {floatingSession ? (
+          {floatingSession && reorder.sessionDragToken !== null ? (
             <Reanimated.View
               pointerEvents="none"
               accessibilityElementsHidden
               importantForAccessibility="no-hide-descendants"
+              key={reorder.sessionDragToken}
+              onLayout={() => {
+                if (reorder.sessionDragToken !== null)
+                  reorder.confirmSessionOverlay(reorder.sessionDragToken);
+              }}
               style={[reorder.overlayStyle, styles.sessionDragOverlay]}
             >
               <SessionRow
@@ -1256,6 +1265,7 @@ function ProjectGroup({
     enabled: sortable,
     floating,
   });
+  const sessionDragOrder = useSessionDragOrder(group.sessions);
   const [headerHovered, setHeaderHovered] = useState(false);
   // Container state for the leading dot. A group with no project row is either an
   // orphan (including soft-deleted projects, which are not repairable) or the
@@ -1502,7 +1512,7 @@ function ProjectGroup({
                   key={session.sessionId}
                   id={`session:${session.sessionId}`}
                   scope={group.id}
-                  order={group.sessions.map((entry) => `session:${entry.sessionId}`)}
+                  order={sessionDragOrder}
                   reorder={reorder}
                   enabled={sessionReordering && !collapsed}
                 >
@@ -2060,8 +2070,8 @@ function SessionRow({
         {...moveActions}
         onPress={() => {
           if (interactionsLocked) return;
-          onOpen?.();
           onSelect();
+          onOpen?.();
         }}
         onLongPress={reorderable ? undefined : onRename}
         delayLongPress={300}

@@ -40,6 +40,7 @@ type Pickup = {
   left: number;
   top: number;
   width: number;
+  height: number;
   fingerY: number;
 };
 const SLOT_SPRING = { damping: 30, stiffness: 320, overshootClamping: true };
@@ -63,6 +64,7 @@ export function useProjectReorder({
   const listRef = useAnimatedRef<React.Component>();
   const drag = useSharedValue<ProjectDrag | null>(null);
   const pickup = useSharedValue<Pickup | null>(null);
+  const sessionOverlayReady = useSharedValue<number | null>(null);
   const fingerY = useSharedValue(0);
   const scrollY = useSharedValue(0);
   const contentHeight = useSharedValue(0);
@@ -122,13 +124,20 @@ export function useProjectReorder({
     const current = drag.value;
     if (current?.dropping && current.token === active.token) drag.value = null;
   }, [active, drag]);
+  const confirmSessionOverlay = useCallback(
+    (token: number) => {
+      if (drag.value?.token === token && !drag.value.dropping) sessionOverlayReady.value = token;
+    },
+    [drag, sessionOverlayReady],
+  );
   const cancel = useCallback(() => {
     const current = drag.value ?? activeRef.current;
     if (!current) return;
     drag.value = null;
     pickup.value = null;
+    sessionOverlayReady.value = null;
     ended(null, current.token);
-  }, [drag, pickup, ended]);
+  }, [drag, pickup, ended, sessionOverlayReady]);
 
   // A native interruption must not leave React's scroll lock behind, even if
   // the platform loses a recognizer callback while backgrounding the app.
@@ -266,6 +275,7 @@ export function useProjectReorder({
               top: row.pageY - host.pageY,
               left: row.pageX - host.pageX,
               width: row.width,
+              height: row.height,
               fingerY: event.absoluteY,
             };
             const startOrder =
@@ -294,6 +304,7 @@ export function useProjectReorder({
           if (!current || current.dropping) return;
           drag.value = success ? { ...current, dropping: true } : null;
           pickup.value = null;
+          sessionOverlayReady.value = null;
           // Compare with pickup, not a live refresh: attention may have changed
           // the server's automatic order while the visible slots stayed frozen.
           const moved = current.order.some((id, index) => id !== current.startOrder[index]);
@@ -305,6 +316,7 @@ export function useProjectReorder({
         }),
     [
       registeredHeaders,
+      sessionOverlayReady,
       hostRef,
       source,
       sequence,
@@ -326,31 +338,61 @@ export function useProjectReorder({
       top: origin?.top ?? 0,
       transform: [{ translateY: origin ? fingerY.value - origin.fingerY : 0 }],
       width: origin?.width ?? 0,
+      ...(drag.value?.scope !== undefined ? { height: origin?.height ?? 0 } : {}),
       opacity: origin ? 1 : 0,
       zIndex: 10,
       elevation: 10,
     };
   });
-  return {
-    drag,
-    hostRef,
-    listRef,
-    gesture,
-    overlayStyle,
-    onScroll,
-    draggingId: active?.scope === undefined ? (active?.id ?? null) : null,
-    draggingSessionId: active?.scope !== undefined ? active.id : null,
-    draggingSessionScope: active?.scope ?? null,
-    register,
-    reportCompactHeight,
-    heights,
-    onContentSizeChange: (_width: number, height: number) => {
+  const onContentSizeChange = useCallback(
+    (_width: number, height: number) => {
       contentHeight.value = height;
     },
-    onViewportLayout: (height: number) => {
+    [contentHeight],
+  );
+  const onViewportLayout = useCallback(
+    (height: number) => {
       viewportHeight.value = height;
     },
-  };
+    [viewportHeight],
+  );
+  return useMemo(
+    () => ({
+      drag,
+      hostRef,
+      listRef,
+      gesture,
+      overlayStyle,
+      sessionOverlayReady,
+      confirmSessionOverlay,
+      sessionDragToken: active?.scope !== undefined ? active.token : null,
+      onScroll,
+      draggingId: active?.scope === undefined ? (active?.id ?? null) : null,
+      draggingSessionId: active?.scope !== undefined ? active.id : null,
+      draggingSessionScope: active?.scope ?? null,
+      register,
+      reportCompactHeight,
+      heights,
+      onContentSizeChange,
+      onViewportLayout,
+    }),
+    [
+      active,
+      drag,
+      hostRef,
+      listRef,
+      gesture,
+      overlayStyle,
+      sessionOverlayReady,
+      confirmSessionOverlay,
+      onScroll,
+      register,
+      reportCompactHeight,
+      heights,
+      onContentSizeChange,
+      onViewportLayout,
+    ],
+  );
 }
 
 export type ProjectReorderController = ReturnType<typeof useProjectReorder>;
@@ -375,7 +417,7 @@ export function useProjectRowDrag({
   const rowRef = useAnimatedRef<View>();
   const handleRef = useAnimatedRef<View>();
   const handleCallbackRef = useMemo(() => projectHandleRef(handleRef), [handleRef]);
-  const { register, drag, heights } = reorder;
+  const { register, drag, heights, sessionOverlayReady } = reorder;
   const reducedMotion = useReducedMotion();
   useEffect(() => {
     if (enabled && !floating)
@@ -410,7 +452,14 @@ export function useProjectRowDrag({
   const style = useAnimatedStyle(() => {
     const current = drag.value?.scope === scope ? drag.value : null;
     return {
-      opacity: !floating && current?.id === id && !current.dropping ? 0 : 1,
+      // Never hide a session before its replacement has completed native layout.
+      opacity:
+        !floating &&
+        current?.id === id &&
+        !current.dropping &&
+        (scope === undefined || sessionOverlayReady.value === current.token)
+          ? 0
+          : 1,
       transform: [{ translateY: displacement.value }],
     };
   });
@@ -418,4 +467,16 @@ export function useProjectRowDrag({
     transform: [{ translateY: displacement.value }],
   }));
   return { slotRef, rowRef, handleCallbackRef, style, placeholderStyle };
+}
+
+/** Keep worklet inputs stable when a poll or unread update leaves the order intact. */
+export function useSessionDragOrder(sessions: readonly { sessionId: string }[]): readonly string[] {
+  const order = useRef<readonly string[]>([]);
+  if (
+    order.current.length !== sessions.length ||
+    sessions.some((session, index) => order.current[index] !== `session:${session.sessionId}`)
+  ) {
+    order.current = sessions.map((session) => `session:${session.sessionId}`);
+  }
+  return order.current;
 }
