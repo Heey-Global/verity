@@ -1,7 +1,15 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createProcessAgentLoginService,
   type AgentLoginPublic,
@@ -20,7 +28,7 @@ async function waitForSession(
   predicate: (session: AgentLoginPublic) => boolean,
 ): Promise<AgentLoginPublic> {
   let last: AgentLoginPublic | null = null;
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+  for (let attempt = 0; attempt < 250; attempt += 1) {
     last = await service.get(sessionId);
     if (predicate(last)) return last;
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -144,8 +152,8 @@ if (command.includes('codex')) {
   writeFileSync(
     expect,
     `#!/usr/bin/env node
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 const mode = process.env.VERITY_FAKE_AGENT_LOGIN_MODE ?? 'success';
 const transcriptPath = process.env.VERITY_AGENT_LOGIN_TRANSCRIPT;
@@ -241,6 +249,18 @@ process.stdin.on('data', (chunk) => {
         if (mode !== 'claude-token-transcript-only') console.log(token);
       }
     }
+  }
+  if (mode === 'claude-still-writing') {
+    const fixtureRoot = dirname(dirname(process.argv[1]));
+    writeFileSync(join(fixtureRoot, 'login-writing'), dirname(transcriptPath));
+    const timer = setInterval(() => {
+      if (!existsSync(join(fixtureRoot, 'release-login'))) return;
+      writeFileSync(join(dirname(transcriptPath), 'last-write'), 'finished');
+      clearInterval(timer);
+      process.exit(0);
+    }, 10);
+    setTimeout(() => process.exit(0), 10_000);
+    return;
   }
   setTimeout(() => process.exit(0), 25);
 });
@@ -400,6 +420,40 @@ describe('createProcessAgentLoginService', () => {
 
     expect(complete.configured).toBe(true);
     expect(updates).toEqual([claudeCredentialsPatch()]);
+  });
+
+  it('waits for the login writer to close before storing credentials and removing its directory', async () => {
+    process.env.VERITY_FAKE_AGENT_LOGIN_MODE = 'claude-still-writing';
+    const started = await service.start('claude');
+    await waitForSession(started.sessionId, (session) => session.status === 'ready');
+    await service.submitCode(started.sessionId, 'claude-returned-code');
+    const marker = join(tempRoot, 'login-writing');
+    await vi.waitFor(() => expect(existsSync(marker)).toBe(true), { timeout: 5000 });
+    const loginDir = readFileSync(marker, 'utf8');
+    try {
+      // Credentials can exist while the CLI is still writing its transcript and state.
+      expect((await service.get(started.sessionId)).status).toBe('waiting');
+      expect(updates).toEqual([]);
+      expect(existsSync(loginDir)).toBe(true);
+    } finally {
+      writeFileSync(join(tempRoot, 'release-login'), 'release');
+    }
+    await waitForSession(started.sessionId, (session) => session.status === 'complete');
+    expect(updates).toEqual([claudeCredentialsPatch()]);
+    expect(existsSync(loginDir)).toBe(false);
+  });
+
+  it('stops an active login writer before cleaning up without importing cancelled credentials', async () => {
+    process.env.VERITY_FAKE_AGENT_LOGIN_MODE = 'claude-still-writing';
+    const started = await service.start('claude');
+    await waitForSession(started.sessionId, (session) => session.status === 'ready');
+    await service.submitCode(started.sessionId, 'claude-returned-code');
+    const marker = join(tempRoot, 'login-writing');
+    await vi.waitFor(() => expect(existsSync(marker)).toBe(true), { timeout: 5000 });
+    const loginDir = readFileSync(marker, 'utf8');
+    service.close();
+    await vi.waitFor(() => expect(existsSync(loginDir)).toBe(false), { timeout: 5000 });
+    expect(updates).toEqual([]);
   });
 
   it('isolates Claude auth login from server Claude env', async () => {
