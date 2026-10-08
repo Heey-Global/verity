@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.60.0](https://github.com/Heey-Global/verity/compare/mobile-v1.59.0...mobile-v1.60.0) (2026-10-08)
+
+
+### Features
+
+* **meetings:** add Attendee online source to Live Meeting ([#1325](https://github.com/Heey-Global/verity/issues/1325)) ([27f66ba](https://github.com/Heey-Global/verity/commit/27f66ba79dbdc9a602cb229c7b10467503769ec4))
+* **mobile:** add web browser access to the devices settings screen ([#1339](https://github.com/Heey-Global/verity/issues/1339)) ([5d68513](https://github.com/Heey-Global/verity/commit/5d68513aa96fa9a3792f6de6f92d9fbccd910d9d))
+* **mobile:** mark linked sessions with a violet chain icon ([#1338](https://github.com/Heey-Global/verity/issues/1338)) ([3d10fbc](https://github.com/Heey-Global/verity/commit/3d10fbc1ca6ab4e7735625ed48da1cadfeeb500e))
+* **mobile:** reorder sessions within projects by long press ([#1323](https://github.com/Heey-Global/verity/issues/1323)) ([98c77f3](https://github.com/Heey-Global/verity/commit/98c77f30a6f92203cf48a5cc506e598309193d9e))
+* **projects:** restrict allowed agents per project ([#1326](https://github.com/Heey-Global/verity/issues/1326)) ([e309754](https://github.com/Heey-Global/verity/commit/e30975490d7b637b0bab69299b14ee7a2da039be))
+* **sessions:** allow linking sessions in the same project ([#1317](https://github.com/Heey-Global/verity/issues/1317)) ([c366cf3](https://github.com/Heey-Global/verity/commit/c366cf3749b2621a3de769e1761122a310192457))
+* **tasks:** unify task views and add project GitHub issues ([#1342](https://github.com/Heey-Global/verity/issues/1342)) ([01f8e0b](https://github.com/Heey-Global/verity/commit/01f8e0b66e0fc5977bcd40058276c5882a65f66d))
+
+
+### Bug Fixes
+
+* **mobile:** drop the x86-64 restriction from the pairing screen ([#1344](https://github.com/Heey-Global/verity/issues/1344)) ([0168e0f](https://github.com/Heey-Global/verity/commit/0168e0f051fcd2a65276a2462abdf15f17b893cd))
+* **mobile:** move PR status to the session row's second line ([#1321](https://github.com/Heey-Global/verity/issues/1321)) ([a662aa1](https://github.com/Heey-Global/verity/commit/a662aa12575fba2c111951a16151686e92293c38))
+* **mobile:** preserve session visibility during drag pickup ([#1328](https://github.com/Heey-Global/verity/issues/1328)) ([dc85aeb](https://github.com/Heey-Global/verity/commit/dc85aeb0385aebb35a0de39a48f1cc0ccec41487))
+* **planning:** keep plan proposals compact and collapsible ([#1343](https://github.com/Heey-Global/verity/issues/1343)) ([408f594](https://github.com/Heey-Global/verity/commit/408f59480565b5d7ca7d2a5fd9029886ce604435))
+* **planning:** make plan proposals clear and actionable ([#1324](https://github.com/Heey-Global/verity/issues/1324)) ([fd78ac3](https://github.com/Heey-Global/verity/commit/fd78ac3388e089541c1da1d2d6a31c99d00dd11a))
+* **sessions:** save link edits with session settings ([#1335](https://github.com/Heey-Global/verity/issues/1335)) ([76ce0e4](https://github.com/Heey-Global/verity/commit/76ce0e455eeb82c8ba4e46cbdb84a908c426f1fe))
+* **session:** stabilize cancellation, activity and unread indicators ([#1316](https://github.com/Heey-Global/verity/issues/1316)) ([59f357b](https://github.com/Heey-Global/verity/commit/59f357b2e41095590e581e1745118cec6ac78dc7))
+* **tasks:** calm capture flow and polish task editing ([#1320](https://github.com/Heey-Global/verity/issues/1320)) ([3056a73](https://github.com/Heey-Global/verity/commit/3056a73c40d70a7901626bf72ee52e15f0beb324))
+
 ## [1.59.0](https://github.com/Heey-Global/verity/compare/mobile-v1.58.0...mobile-v1.59.0) (2026-10-07)
 
 
