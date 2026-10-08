@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.59.1](https://github.com/Heey-Global/verity/compare/mobile-v1.59.0...mobile-v1.59.1) (2026-10-08)
+
+
+### Features
+
+* **mobile:** reorder sessions within projects by long press ([#1323](https://github.com/Heey-Global/verity/issues/1323)) ([98c77f3](https://github.com/Heey-Global/verity/commit/98c77f30a6f92203cf48a5cc506e598309193d9e))
+* **sessions:** allow linking sessions in the same project ([#1317](https://github.com/Heey-Global/verity/issues/1317)) ([c366cf3](https://github.com/Heey-Global/verity/commit/c366cf3749b2621a3de769e1761122a310192457))
+
+
+### Bug Fixes
+
+* **mobile:** move PR status to the session row's second line ([#1321](https://github.com/Heey-Global/verity/issues/1321)) ([a662aa1](https://github.com/Heey-Global/verity/commit/a662aa12575fba2c111951a16151686e92293c38))
+* **sandbox:** kill the largest agent command before gVisor's host OOM kill ([#1322](https://github.com/Heey-Global/verity/issues/1322)) ([3be664e](https://github.com/Heey-Global/verity/commit/3be664e9126103d028915f386834ddbf239d0e08))
+* **session:** stabilize cancellation, activity and unread indicators ([#1316](https://github.com/Heey-Global/verity/issues/1316)) ([59f357b](https://github.com/Heey-Global/verity/commit/59f357b2e41095590e581e1745118cec6ac78dc7))
+* **tasks:** calm capture flow and polish task editing ([#1320](https://github.com/Heey-Global/verity/issues/1320)) ([3056a73](https://github.com/Heey-Global/verity/commit/3056a73c40d70a7901626bf72ee52e15f0beb324))
+
 ## [1.58.4](https://github.com/Heey-Global/verity/compare/mobile-v1.58.3...mobile-v1.58.4) (2026-10-07)
 
 
