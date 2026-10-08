@@ -258,14 +258,21 @@ completely. The public bootstrap and a repository checkout run the same
 installer:
 
 ```sh
-curl -fsSL https://verity.build/install.sh | bash                  # repair, or print a new pairing link
-curl -fsSL https://verity.build/install.sh | bash -s -- --reinstall # delete everything and install fresh
-sudo deploy/bin/verity-install                                      # the same, from a checkout
+curl -fsSL https://verity.build/install.sh | bash   # repair, or print a new pairing link
+sudo deploy/bin/verity-install                       # the same, from a checkout
 ```
 
-`--reinstall` requires the exact phrase `DELETE VERITY` before removing
-containers, volumes, the database, projects, sessions, stored secrets, and the
-pairing identity.
+To discard an installation **and all of its data**, pass `--reinstall`. The
+installer asks for the exact phrase `DELETE VERITY` on the terminal before
+removing containers, volumes, the database, projects, sessions, stored
+secrets, and the pairing identity, then performs a fresh install:
+
+```sh
+curl -fsSL https://verity.build/install.sh | bash -s -- --reinstall
+```
+
+Automation can make the same destructive choice explicitly with
+`--reinstall --yes`.
 
 Adopting a hand-built deployment for managed updates, what the companion
 handoff does, and what to check when an update fails or the Updater is

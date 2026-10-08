@@ -56,7 +56,8 @@ phone, signing in to your AI provider, and running your first session.
 
 > [!WARNING]
 > **Keep the Verity server off the public internet.** Do not open ports `8082`
-> or `8100–8119` on your router or cloud firewall. Connect from your local
+> or `8100–8119` on your router or cloud firewall; the preview ports serve
+> project previews without any access protection. Connect from your local
 > network or through a VPN such as Tailscale or WireGuard; the getting started
 > guide shows how. A firewall on the host itself, such as ufw, does not block
 > these ports, because Docker publishes them before its rules apply. In the
