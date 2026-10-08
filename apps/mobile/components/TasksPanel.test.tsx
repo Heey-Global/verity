@@ -18,20 +18,19 @@ jest.mock('../lib/tasksStore', () => ({
 jest.mock('../lib/client', () => ({ createVerityClient: jest.fn(() => null) }));
 jest.mock('../lib/taskPreferences', () => {
   const React = require('react');
-  let tab = 'mine';
+  let state = { tab: 'mine', projectId: null as string | null };
   const listeners = new Set<() => void>();
   return {
-    useTaskPreferences: () => ({
-      tab: React.useSyncExternalStore(
+    useTaskPreferences: () =>
+      React.useSyncExternalStore(
         (listener: () => void) => {
           listeners.add(listener);
           return () => listeners.delete(listener);
         },
-        () => tab,
+        () => state,
       ),
-    }),
-    saveTaskPreferences: jest.fn(async (patch: { tab: string }) => {
-      tab = patch.tab;
+    saveTaskPreferences: jest.fn(async (patch: { tab?: string; projectId?: string | null }) => {
+      state = { ...state, ...patch };
       listeners.forEach((listener) => listener());
     }),
   };
@@ -41,7 +40,7 @@ beforeEach(() => {
   jest.mocked(router.push).mockClear();
   props.onClose.mockClear();
   jest.mocked(patchTask).mockClear();
-  void saveTaskPreferences({ tab: 'mine' });
+  void saveTaskPreferences({ tab: 'mine', projectId: null });
 });
 jest.mock('../lib/taskDispatch', () => ({ dispatchTasks: jest.fn() }));
 jest.mock('../lib/taskAttachments', () => ({ openTaskAttachment: jest.fn() }));
@@ -70,7 +69,7 @@ const props = {
   onClose: jest.fn(),
   onCapture: jest.fn(),
 };
-it('offers no session action for General', () => {
+it('offers no session action for tasks awaiting project assignment', () => {
   jest.mocked(useTasks).mockReturnValue({ tasks: [task], pending: [], conflicts: [] });
   const ui = render(<TasksPanel {...props} />);
   expect(ui.queryByText(/New Session/)).toBeNull();
@@ -289,7 +288,7 @@ it('keeps a new draft when an earlier save fails', async () => {
   expect(ui.getByDisplayValue('New draft')).toBeTruthy();
 });
 
-it('starts General collapsed when a project is current and removes empty copy', () => {
+it('starts legacy tasks collapsed when a project is current and removes empty copy', () => {
   jest.mocked(useTasks).mockReturnValue({
     tasks: [task, { ...task, id: 'p-task', title: 'Project task', projectId: 'p' }],
     pending: [],
@@ -297,7 +296,7 @@ it('starts General collapsed when a project is current and removes empty copy', 
   });
   const ui = render(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 's' }} />);
   expect(ui.queryByDisplayValue(task.title)).toBeNull();
-  fireEvent.press(ui.getByLabelText('General · 1'));
+  fireEvent.press(ui.getByLabelText('Assign to project · 1'));
   expect(ui.getByDisplayValue(task.title)).toBeTruthy();
   expect(ui.queryByText(/Nothing.*here|Nothing captured/)).toBeNull();
 });
@@ -336,4 +335,34 @@ it('shows GitHub Issues only for a connected project and hides Mine while select
   expect(ui.queryByLabelText('GitHub Issues')).toBeNull();
   expect(ui.getByLabelText('Mine').props.accessibilityState.selected).toBe(true);
   jest.mocked(createVerityClient).mockReturnValue(null);
+});
+
+it('selects a project outside a session and remembers it for capture', async () => {
+  jest
+    .mocked(useTasks)
+    .mockReturnValue({ tasks: [{ ...task, projectId: 'p' }], pending: [], conflicts: [] });
+  const ui = render(
+    <TasksPanel
+      {...props}
+      projects={[
+        {
+          id: 'p',
+          owner: '',
+          repo: 'Project',
+          kind: 'local',
+          containerName: 'p',
+          imageRef: null,
+          state: 'active',
+          provisionError: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]}
+    />,
+  );
+  expect(ui.queryByDisplayValue(task.title)).toBeNull();
+  await act(async () => fireEvent.press(ui.getAllByText('Project')[0]!));
+  expect(ui.getByDisplayValue(task.title)).toBeTruthy();
+  expect(saveTaskPreferences).toHaveBeenCalledWith({ projectId: 'p' });
+  expect(ui.queryByText('General')).toBeNull();
 });

@@ -43,7 +43,7 @@ interface TaskGroup {
 
 /** One task view at a time, with projects and sessions sharing the same row anatomy. */
 export function TasksPanel({
-  context,
+  context: suppliedContext,
   projects,
   sessions = [],
   side,
@@ -79,6 +79,15 @@ export function TasksPanel({
         setMenu({ task, anchor: { x, y, width, height } }),
       );
   const preferences = useTaskPreferences();
+  const selectedProjectId =
+    suppliedContext.projectId ??
+    (projects.some((project) => project.id === preferences.projectId)
+      ? preferences.projectId
+      : null);
+  const context = {
+    projectId: selectedProjectId,
+    sessionId: selectedProjectId === suppliedContext.projectId ? suppliedContext.sessionId : null,
+  };
   const [github, setGithub] = useState<{ projectId: string; data: ProjectGitHubIssues } | null>(
     null,
   );
@@ -182,11 +191,11 @@ export function TasksPanel({
         ]
       : []),
     {
-      key: 'general',
-      label: 'General',
+      key: 'unassigned',
+      label: 'Assign to project',
       current: context.projectId === null,
       items: mine.filter((t) => t.projectId === null),
-      expanded: context.projectId === null || expanded.includes('general'),
+      expanded: context.projectId === null || expanded.includes('unassigned'),
       collapsible: context.projectId !== null,
     },
     ...[
@@ -267,7 +276,7 @@ export function TasksPanel({
       ...(syncing ? ['waiting to sync'] : []),
     ].join(' · ');
     // Implement buttons belong to unassigned project tasks only: an assigned
-    // task already has its session, and a General task has no project to run in.
+    // task already has its session, and an unassigned task has no project to run in.
     const canImplement = implementable(task);
     const inThisProject = context.sessionId !== null && task.projectId === context.projectId;
     return (
@@ -506,7 +515,7 @@ export function TasksPanel({
       {
         icon: 'folder',
         title: 'Move',
-        subtitle: 'To another project or General',
+        subtitle: 'To another project',
         onPress: close(() => setMoving(task)),
       },
       {
@@ -560,6 +569,24 @@ export function TasksPanel({
             {headerButton('Capture task', 'mic', onCapture)}
             {headerButton('Close', 'x', onClose)}
           </View>
+          {suppliedContext.projectId === null ? (
+            <View style={styles.chips}>
+              {projects.map((project) =>
+                chip(
+                  projectDisplayName(project),
+                  () => {
+                    void saveTaskPreferences({ projectId: project.id }).catch(() =>
+                      Alert.alert('Could not remember project', 'Try again'),
+                    );
+                  },
+                  { accent: project.id === context.projectId },
+                ),
+              )}
+              {projects.length === 0 ? (
+                <Text style={styles.meta}>Create a project to capture tasks.</Text>
+              ) : null}
+            </View>
+          ) : null}
           <View style={styles.tabs} accessibilityRole="tablist">
             {(['mine', 'agent', ...(githubConnected ? (['issues'] as const) : [])] as const).map(
               (value) => (
@@ -621,23 +648,22 @@ export function TasksPanel({
           {moving ? (
             <KeyboardAwareScrollView bottomOffset={24}>
               <Text style={styles.sectionLabel}>Move to</Text>
-              {[
-                { id: null, label: 'General' },
-                ...projects.map((p) => ({ id: p.id, label: projectDisplayName(p) })),
-              ].map((project) => (
-                <Pressable
-                  key={project.id ?? 'general'}
-                  style={({ pressed }) => [styles.moveTarget, pressed ? styles.pressed : null]}
-                  onPress={() => {
-                    void run(async () => {
-                      await patchTask(moving, { projectId: project.id, sessionId: null });
-                      setMoving(null);
-                    });
-                  }}
-                >
-                  <Text style={styles.title}>{project.label}</Text>
-                </Pressable>
-              ))}
+              {[...projects.map((p) => ({ id: p.id, label: projectDisplayName(p) }))].map(
+                (project) => (
+                  <Pressable
+                    key={project.id}
+                    style={({ pressed }) => [styles.moveTarget, pressed ? styles.pressed : null]}
+                    onPress={() => {
+                      void run(async () => {
+                        await patchTask(moving, { projectId: project.id, sessionId: null });
+                        setMoving(null);
+                      });
+                    }}
+                  >
+                    <Text style={styles.title}>{project.label}</Text>
+                  </Pressable>
+                ),
+              )}
               <View style={styles.chips}>
                 {chip('Cancel', () => setMoving(null), { whileBusy: true })}
               </View>

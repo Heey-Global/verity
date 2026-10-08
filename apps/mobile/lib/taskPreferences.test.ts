@@ -15,11 +15,14 @@ function freshPreferences(): typeof import('./taskPreferences') {
 
 it('restores the selected task view and persists the next selection', async () => {
   const { saveTaskPreferences, useTaskPreferences } = freshPreferences();
-  jest.mocked(AsyncStorage.getItem).mockResolvedValueOnce(JSON.stringify({ tab: 'issues' }));
+  jest
+    .mocked(AsyncStorage.getItem)
+    .mockResolvedValueOnce(JSON.stringify({ tab: 'issues', projectId: 'p' }));
   const { result } = renderHook(() => useTaskPreferences());
   await waitFor(() => expect(result.current.loaded).toBe(true));
   expect(result.current.tab).toBe('issues');
-  await act(async () => saveTaskPreferences({ tab: 'agent' }));
+  expect(result.current.projectId).toBe('p');
+  await act(async () => saveTaskPreferences({ tab: 'agent', projectId: 'next' }));
   expect(result.current.tab).toBe('agent');
   expect(AsyncStorage.setItem).toHaveBeenLastCalledWith(
     'verity.tasks.preferences',
@@ -28,6 +31,7 @@ it('restores the selected task view and persists the next selection', async () =
   const persisted = JSON.parse(jest.mocked(AsyncStorage.setItem).mock.calls.at(-1)![1]);
   // A tab that is only kept in React state is forgotten when the app restarts.
   expect(persisted.tab).toBe('agent');
+  expect(persisted.projectId).toBe('next');
 });
 
 it.each(['unreadable storage', 'malformed JSON'])(
