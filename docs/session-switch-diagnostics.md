@@ -107,8 +107,8 @@ measured synchronous work from unmeasured child work and scheduling. This uses
 ordinary JavaScript clocks and works without a React profiling build.
 
 Automatic history pagination waits for the initial list's `onLoad` signal. Explicit
-message jumps and saved-anchor recovery can still load required pages before that
-signal. Verify on a device by opening a long session at the newest edge: automatic
+message jumps can still load required pages before that signal. Saved-anchor
+restoration is unchanged: anchors outside the loaded tail fall back to latest. Verify on a device by opening a long session at the newest edge: automatic
 follow-up `events-request-start` should follow `flash-list-on-load`, and scrolling
 backwards should continue loading history. Also verify a deep saved anchor and an
-explicit message jump; those may legitimately request earlier pages.
+explicit message jump. Only explicit jumps may legitimately request earlier pages.
