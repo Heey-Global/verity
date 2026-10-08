@@ -643,6 +643,7 @@ ln -sf /opt/agent-seed/bin/oras /usr/local/bin/oras
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/git" /opt/agent-seed/bin/git
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-dev-server" /opt/agent-seed/bin/verity-dev-server
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-code-review" /opt/agent-seed/bin/verity-code-review
+install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-review-base.sh" /opt/agent-seed/bin/verity-review-base.sh
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed/bin/verity-secret-scan
 # Commit-signing broker wrapper (audit H1). git is pointed at it via GIT_CONFIG_*
 # env only in broker mode; without the broker env it is transparently ssh-keygen,
