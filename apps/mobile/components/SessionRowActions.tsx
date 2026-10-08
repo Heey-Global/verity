@@ -3,8 +3,8 @@
 // "delete" on the trailing edge (iOS Mail style) — a short swipe holds the
 // actions open for a tap, a long swipe fires the outermost one directly.
 // Browser: a right-click opens a small menu with the same actions plus "Edit…"
-// (the existing session settings). Long-press stays with the row itself and
-// keeps opening the settings directly.
+// (the existing session settings). The row owns Long-Press for reordering, or
+// settings on servers without session ordering support.
 import * as Haptics from 'expo-haptics';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Modal, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native';
@@ -59,6 +59,7 @@ export function SwipeableSessionRow({
   onDelete,
   onEdit,
   children,
+  disabled = false,
 }: {
   favorite: boolean;
   /** Session title, shown as the menu header. */
@@ -67,12 +68,15 @@ export function SwipeableSessionRow({
   onDelete: () => void;
   onEdit: () => void;
   children: ReactNode;
+  disabled?: boolean;
 }) {
   const { theme } = useUnistyles();
   const swipeable = useRef<SwipeableMethods>(null);
   const armed = useRef<SwipeSide | null>(null);
   const [width, setWidth] = useState(0);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
   const fullSwipe = Math.max(SWIPE_ACTION_WIDTH * 1.5, width * FULL_SWIPE_RATIO);
   // The trailing edge rests two actions wide; keep a full action's margin past that
   // rest, so dragging on to aim at Edit does not arm Delete.
@@ -80,6 +84,7 @@ export function SwipeableSessionRow({
 
   const run = useCallback(
     (side: SwipeSide) => {
+      if (disabledRef.current) return;
       swipeable.current?.close();
       if (side === 'favorite') onToggleFavorite();
       else onDelete();
@@ -87,16 +92,29 @@ export function SwipeableSessionRow({
     [onDelete, onToggleFavorite],
   );
   const onArm = useCallback((side: SwipeSide, on: boolean) => {
+    if (disabledRef.current) return;
     armed.current = on ? side : armed.current === side ? null : armed.current;
     if (on) void Haptics.selectionAsync().catch(() => undefined);
   }, []);
 
   const container = useRef<View>(null);
   useContextMenu(container, setMenuAt);
+  useEffect(() => {
+    if (disabled) {
+      armed.current = null;
+      swipeable.current?.reset();
+      setMenuAt(null);
+    }
+  }, [disabled]);
 
   return (
-    <View ref={container} onLayout={(event) => setWidth(event.nativeEvent.layout.width)}>
+    <View
+      ref={container}
+      pointerEvents={disabled ? 'none' : 'auto'}
+      onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
+    >
       <ReanimatedSwipeable
+        enabled={!disabled}
         ref={swipeable}
         friction={1}
         leftThreshold={SWIPE_ACTION_WIDTH / 2}
@@ -109,6 +127,7 @@ export function SwipeableSessionRow({
         // labels show through the session title.
         childrenContainerStyle={{ backgroundColor: theme.colors.surface }}
         onSwipeableWillOpen={() => {
+          if (disabledRef.current) return;
           if (openRow && openRow !== swipeable.current) openRow.close();
           openRow = swipeable.current;
           const side = armed.current;
@@ -142,6 +161,7 @@ export function SwipeableSessionRow({
               label: 'Edit',
               icon: 'edit-2',
               onPress: () => {
+                if (disabledRef.current) return;
                 swipeable.current?.close();
                 onEdit();
               },

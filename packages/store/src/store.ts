@@ -891,7 +891,7 @@ function emptyUsageTotals(): UsageTotals {
  * {@link EventStore.listSessionProjectionFacts}.
  */
 export interface SessionEventStats {
-  /** Persisted events excluding dev-server snapshots; used for unread state. */
+  /** Nonempty agent-text events; used for unread state. */
   eventCount: number;
   lastEventSeq: number;
   lastActivityAt: number | null;
@@ -900,7 +900,7 @@ export interface SessionEventStats {
 }
 
 export interface SessionProjectionFacts {
-  /** Persisted events excluding dev-server snapshots; the overview unread counter. */
+  /** Nonempty agent-text events; the overview unread counter. */
   eventCount: number;
   /** Highest event seq visible in the snapshot; bounds a later fallback read. */
   lastEventSeq: number;
@@ -2361,6 +2361,82 @@ export class EventStore implements EventSink {
       planningPlan: r.planning_plan,
       ...(r.favorite ? { favorite: true } : {}),
     }));
+  }
+
+  /** Overview positions are separate from the chronological session registry. */
+  async sessionSortOrders(sessions: readonly SessionRecord[]): Promise<Map<string, number>> {
+    const groups = await this.db.selectFrom('session_overview_order').selectAll().execute();
+    const result = new Map<string, number>();
+    for (const group of groups) {
+      const members = sessions.filter((session) => session.projectId === group.project_id);
+      const live = new Set(members.map((session) => session.sessionId));
+      const stored = new Set(group.ids);
+      // Newly created sessions lead the manual group without disturbing existing positions.
+      const ids = [
+        ...members
+          .filter((session) => !stored.has(session.sessionId))
+          .reverse()
+          .map((session) => session.sessionId),
+        ...group.ids.filter((id) => live.has(id)),
+      ];
+      ids.forEach((id, index) => result.set(id, index));
+    }
+    return result;
+  }
+
+  async reorderSessions(projectId: string | null, ids: readonly string[]): Promise<string[]> {
+    if (new Set(ids).size !== ids.length) throw new Error('Duplicate session IDs');
+    return this.db.transaction().execute(async (tx) => {
+      // Serialize reorders against membership changes, including moves and inserts.
+      // Reordering is infrequent; a short registry lock avoids lost concurrent additions.
+      await sql`lock table sessions in share row exclusive mode`.execute(tx);
+      if (
+        projectId !== null &&
+        !(await tx
+          .selectFrom('projects')
+          .select('id')
+          .where('id', '=', projectId)
+          .executeTakeFirst())
+      ) {
+        throw new Error('Project not found');
+      }
+      const sessions = await tx
+        .selectFrom('sessions')
+        .select(['session_id', 'project_id'])
+        .orderBy('created_at', 'desc')
+        .orderBy('session_id', 'desc')
+        .execute();
+      const requested = new Set(ids);
+      if (
+        sessions.some(
+          (session) => requested.has(session.session_id) && session.project_id !== projectId,
+        )
+      ) {
+        throw new Error('Session belongs to another project');
+      }
+      const members = sessions.filter((session) => session.project_id === projectId);
+      const live = new Set(members.map((session) => session.session_id));
+      const canonical = [
+        ...members
+          .filter((session) => !requested.has(session.session_id))
+          .map((session) => session.session_id),
+        ...ids.filter((id) => live.has(id)),
+      ];
+      await tx
+        .insertInto('session_overview_order')
+        .values({
+          group_key: JSON.stringify(projectId),
+          project_id: projectId,
+          ids: sql<string[]>`${JSON.stringify(canonical)}::jsonb`,
+        })
+        .onConflict((conflict) =>
+          conflict
+            .column('group_key')
+            .doUpdateSet({ ids: sql<string[]>`${JSON.stringify(canonical)}::jsonb` }),
+        )
+        .execute();
+      return canonical;
+    });
   }
 
   async listPreparedSessionMoves() {

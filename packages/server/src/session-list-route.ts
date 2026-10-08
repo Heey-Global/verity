@@ -4,7 +4,7 @@ import type { AttentionSignal } from './attention.js';
 import type { SessionSummary, SessionListEnvelope } from './server.js';
 
 export interface SessionListRouteDeps {
-  store: Pick<EventStore, 'listSessions'>;
+  store: Pick<EventStore, 'listSessions' | 'sessionSortOrders'>;
   prunePrSummaryCache: (liveWorktrees: ReadonlySet<string>) => void;
   pruneBranchCache: (liveWorktrees: ReadonlySet<string>) => void;
   summarizeSessions: (sessions: SessionRecord[]) => Promise<SessionSummary[]>;
@@ -32,9 +32,15 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
     const summaries = await measureLatencyPhase('session_summaries', () =>
       deps.summarizeSessions(sessions),
     );
+    const orders = await deps.store.sessionSortOrders(sessions);
+    for (const summary of summaries) summary.sortOrder = orders.get(summary.sessionId) ?? null;
     if ((request.query as { envelope?: unknown } | undefined)?.envelope !== '1') return summaries;
     const attention = await measureLatencyPhase('session_attention', deps.collectAttention);
     // Absent when healthy, so the envelope stays quiet in the steady state.
-    return { sessions: summaries, ...(attention.length > 0 ? { attention } : {}) };
+    return {
+      sessions: summaries,
+      sessionReordering: true,
+      ...(attention.length > 0 ? { attention } : {}),
+    };
   });
 }

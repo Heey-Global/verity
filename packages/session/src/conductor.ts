@@ -3565,18 +3565,17 @@ export class Conductor {
     sessionId: string,
   ): Promise<{ cancelled: boolean; droppedQueued: RestoredQueuedTurn[] }> {
     this.stopping.set(sessionId, (this.stopping.get(sessionId) ?? 0) + 1);
-    let droppedQueued: RestoredQueuedTurn[] = [];
-    let clearError: unknown;
     try {
-      try {
-        droppedQueued = await this.clearQueue(sessionId);
-      } catch (error) {
-        clearError = error;
-      }
-      const cancelled = await this.cancelTurn(sessionId);
-      if (clearError !== undefined)
-        throw clearError instanceof Error ? clearError : new Error('queue cleanup failed');
-      return { cancelled, droppedQueued };
+      // Durable enqueues can stall independently of the agent. Signal cancellation
+      // immediately, but hold the stop fence until both operations have settled.
+      const [cancel, clear] = await Promise.allSettled([
+        this.cancelTurn(sessionId),
+        this.clearQueue(sessionId),
+      ]);
+      if (clear.status === 'rejected')
+        throw clear.reason instanceof Error ? clear.reason : new Error('queue cleanup failed');
+      if (cancel.status === 'rejected') throw cancel.reason;
+      return { cancelled: cancel.value, droppedQueued: clear.value };
     } finally {
       const remainingStops = (this.stopping.get(sessionId) ?? 1) - 1;
       if (remainingStops === 0) {

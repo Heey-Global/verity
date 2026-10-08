@@ -808,10 +808,60 @@ Under gVisor, the default project runtime, the ceiling is hit harder than it
 looks. The whole Sandbox is one gVisor Sentry process, and its guest memory is a
 shared-memory file charged to the container. gVisor has no OOM killer of its
 own, so there is no runaway process inside the guest for the kernel to pick:
-it kills the Sentry, and every session of the project goes down together.
-Keeping a margin below the limit does not help, because nothing inside the guest
-ever uses that margin. That is why the default is 6 GiB rather than 4 GiB: the
-ceiling has to fit every turn the project runs at once, not a single process.
+it kills the Sentry, and every session of the project goes down together. The
+guest cannot even be asked to behave: the cgroup limits gVisor exposes inside the
+Sandbox are unenforced, and its platform processes are created to die together
+with the Sentry, so any OOM kill in the container's cgroup ends the whole
+Sandbox. That is why the default is 6 GiB rather than 4 GiB: the ceiling has to
+fit every turn the project runs at once, not a single process.
+
+Because nothing in the runtime uses the margin below the limit, the Sandbox
+toolkit runs a memory guard (`verity-memory-guard`) that stands in for the
+missing guest OOM killer, the way earlyoom or kubelet eviction act before the
+kernel does. Started by the root stack pass next to the spawn broker, it polls
+the cgroup's usage every 500 ms and, once usage reaches the ceiling minus a
+reserve, freezes and then SIGKILLs the agent-owned process tree that holds the
+most memory. A tree is ranked by the memory of all its processes, because a
+worker pool respawns a single killed worker. Under a Claude or Codex session the guard
+narrows from the agent CLI to the command it ran — the tool shell with `npm
+test`, the test runner and its workers — and, when several commands run at once,
+to the largest of them. The CLI itself goes only when its own memory is most of
+its tree and that tree holds at least the reserve, so an ordinary idle CLI is
+never killed for cache pressure. For adapters that run commands directly,
+what they start is a command like any other. The ACP adapter the broker started is never a candidate; one orphaned to init by a
+broker restart counts as a detached tree. A process tree detached under init (a
+backgrounded dev server or database) is a candidate of its own. If usage is
+still above the threshold once the cooldown after a kill has passed, the guard
+assumes the rest is page cache, tmpfs or steady load that another kill would not
+cure, logs `suspended`, and kills nothing more until usage drops below the
+threshold or grows by another quarter of the reserve (closer to the ceiling, by
+half the remaining room), so it never works through the sessions one by one. The
+reserve is a fifth of the ceiling, at least 1 GiB and at most half the ceiling,
+because the guest cannot see the Sentry's own memory; at the 6 GiB default the
+guard acts at about 4.8 GiB. Usage includes the guest page cache and tmpfs,
+which live in the same host-charged memory file and therefore count against the
+ceiling too. The victim's command ends with exit 137 and no kernel message, the
+session that ran it sees that failure, and the other sessions of the project
+keep running. Infrastructure is never a candidate: only processes of the agent
+identity qualify, never root or the Runner identity, and nothing under 64 MiB.
+Every kill is recorded in `/run/verity-runner-broker/memory-guard.log` inside
+the Sandbox with the usage, the victim's command and the session worktree it ran
+in.
+
+The guard is a mitigation, not an isolation boundary. An allocation burst
+between two polls can still reach the host limit, and growth in the Sentry's own
+memory is invisible from inside. If a project still loses its Sandbox that way,
+`VERITY_SANDBOX_SWAP` below is the next lever: it turns the remaining cases into
+a slow build instead of a dead project. Three container environment variables
+tune the guard for a project whose devcontainer sets them:
+`VERITY_MEMORY_GUARD=0` disables it, `VERITY_MEMORY_GUARD_RESERVE_BYTES`
+replaces the reserve with an explicit byte count below the ceiling, and
+`VERITY_MEMORY_GUARD_INTERVAL_MS` changes the poll interval (100 to 60000 ms;
+anything else keeps 500). A Sandbox without a readable finite memory limit runs
+no guard, and neither does a runc Sandbox: there the kernel already kills one
+process at the ceiling and the container survives, so a guard would only kill
+builds a reserve early. The guard recognizes gVisor by the kernel version it
+reports.
 
 The 6 GiB default assumes a host with room for it. Unlike the CPU ceiling it is
 not capped to the host, so on a small machine (8 GiB or less) set

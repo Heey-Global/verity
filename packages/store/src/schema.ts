@@ -1335,7 +1335,14 @@ interface SessionMovesTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+interface SessionOverviewOrderTable {
+  group_key: string;
+  project_id: string | null;
+  ids: string[];
+}
+
 export interface Database {
+  session_overview_order: SessionOverviewOrderTable;
   live_meetings: LiveMeetingsTable;
   live_meeting_notes: LiveMeetingNotesTable;
   live_meeting_insights: LiveMeetingInsightsTable;

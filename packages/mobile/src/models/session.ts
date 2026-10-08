@@ -135,6 +135,8 @@ export interface SessionModelState {
    * stick ON after the turn truly ended, so it agrees with the overview's server
    * `status` dot. */
   working: boolean;
+  /** Pulse only for active work; a turn awaiting your input remains cancellable. */
+  activityAnimating: boolean;
   /** Server-authoritative turns queued behind the in-flight one (#90), shown as
    * persistent "waiting to send" bubbles (not lost on navigation), MINUS any already
    * delivered (matching a `user-text` in the transcript) — so a sent message never
@@ -278,6 +280,10 @@ export class SessionModel {
   // reducer is running AHEAD of the poll on a fresh turn, not stuck BEHIND a finished
   // one. See the `working` field in `state`. Starts at -1 (no settled poll yet).
   private _settledAtSeq = -1;
+  private _busyAtSeq = 0;
+  private _activityAnimating: boolean | undefined;
+  private _activityAnimatingAtSeq = 0;
+  private _permissionChangedAfterActivityRequest = 0;
   private _waiting: QueuedItem[] = [];
   /** Stream watermark when each server queue id was first observed. An older
    * identical prompt must not consume a newly queued item (common for "ok"). */
@@ -336,7 +342,20 @@ export class SessionModel {
       sessionId: opts.sessionId,
       transport: opts.transport,
       onUpdate: (session) => {
+        if (session.pendingPermission?.toolUseId !== this._session.pendingPermission?.toolUseId) {
+          this._activityAnimating = undefined;
+          this._permissionChangedAfterActivityRequest = this._activityRequest;
+        }
         this._session = session;
+        // A live turn-end must not wait for polling, or a slow older busy response.
+        // Keep the server's termination fence until it confirms the process stopped.
+        if (
+          !session.running &&
+          !this._terminationUnconfirmed &&
+          this.stream.settledSeq > this._busyAtSeq
+        ) {
+          this._busy = false;
+        }
         // The canonical message may have just landed — hand the bubble over from the
         // local echo to the transcript before the screen re-renders, so it never
         // shows both (the echo's whole job ends here).
@@ -381,6 +400,17 @@ export class SessionModel {
   }
 
   get state(): SessionModelState {
+    const working =
+      this._busy || (this._session.running && this.stream.activitySeq > this._settledAtSeq);
+    const awaiting =
+      this._session.pendingPermission !== undefined ||
+      this._session.status === 'awaiting_input' ||
+      this._session.status === 'awaiting_dependency';
+    const activityAnimating =
+      this._activityAnimating !== undefined &&
+      this.stream.activitySeq <= this._activityAnimatingAtSeq
+        ? this._activityAnimating
+        : !awaiting || this.stream.hasOpenTasks;
     const currentProvider = engineLabel(this._model ?? this._session.model);
     const streamRateLimit =
       this._session.rateLimit !== undefined &&
@@ -427,7 +457,8 @@ export class SessionModel {
       // (running AHEAD of the poll) but can't keep the indicator lit after the turn
       // truly ended (a stuck-ON reducer running BEHIND a settled server). Keeps the
       // overview dot (server `status`) and this in-session indicator in agreement.
-      working: this._busy || (this._session.running && this.stream.newestSeq > this._settledAtSeq),
+      working,
+      activityAnimating: working && activityAnimating,
       // Filter the server's queued list against the transcript too: the instant a
       // queued message is delivered (its `prompt` event lands as a user-text), drop
       // its "waiting to send" bubble — don't wait for the next activity poll, which
@@ -850,6 +881,21 @@ export class SessionModel {
     try {
       const rateLimitPruned = this.pruneExpiredRateLimit();
       const activity = await this.opts.client.getActivity(this.opts.sessionId);
+      const animationBefore = this.state.activityAnimating;
+      if (activityRequest > this._permissionChangedAfterActivityRequest) {
+        this._activityAnimating = activity.activityAnimating;
+        this._activityAnimatingAtSeq = seqAtRequest;
+      }
+      // The response cannot override a lifecycle transition received while it was
+      // in flight. Ordinary text/metadata updates do not invalidate the busy snapshot.
+      if (
+        this.stream.activitySeq > seqAtRequest &&
+        (this._session.running || this.stream.settledSeq > seqAtRequest) &&
+        activity.terminationUnconfirmed !== true
+      ) {
+        activity.busy = this._session.running;
+      }
+      this._busyAtSeq = seqAtRequest;
       // Ending planning keeps the same revision: an older poll must not reactivate it.
       const acceptPlanning = activityRequest > this._planningDecisionAfterActivityRequest;
       if (activity.pendingPermissions !== undefined) {
@@ -920,7 +966,8 @@ export class SessionModel {
         !modelSwitchPendingChanged &&
         !rateLimitPruned &&
         !pendingRetired &&
-        this.state.working === workingBefore
+        this.state.working === workingBefore &&
+        this.state.activityAnimating === animationBefore
       ) {
         return;
       }

@@ -2434,6 +2434,26 @@ describe('session worktree files', () => {
 });
 
 describe('GET /sessions/:id/activity', () => {
+  it('keeps background work visible while the main agent awaits input and settles on termination', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    isBusy.mockReturnValue(true);
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'go' });
+    await ctx.store.appendEvent('s1', { t: 'task', id: 'child', phase: 'started' });
+    await ctx.store.appendEvent('s1', { t: 'status', state: 'awaiting_input' });
+    const activity = await app.inject({ method: 'GET', url: '/sessions/s1/activity' });
+    expect(activity.json()).toMatchObject({ busy: true, activityAnimating: true });
+    const overview = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(overview.json()[0]).toMatchObject({ status: 'awaiting_input', backgroundWorking: true });
+    await ctx.store.appendEvent('s1', { t: 'task', id: 'child', phase: 'ended' });
+    const waiting = await app.inject({ method: 'GET', url: '/sessions/s1/activity' });
+    expect(waiting.json()).toMatchObject({ busy: true, activityAnimating: false });
+    await ctx.store.appendEvent('s1', { t: 'task', id: 'orphan', phase: 'started' });
+    await ctx.store.appendEvent('s1', { t: 'status', state: 'completed' });
+    isBusy.mockReturnValue(false);
+    const ended = await app.inject({ method: 'GET', url: '/sessions/s1/activity' });
+    expect(ended.json()).toMatchObject({ busy: false, activityAnimating: false });
+  });
+
   it('reflects the conductor in-flight + queued state', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     isBusy.mockReturnValue(true);
@@ -2442,6 +2462,7 @@ describe('GET /sessions/:id/activity', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
       busy: true,
+      activityAnimating: true,
       queued: [{ id: 'q1', text: 'next one' }],
       pendingPermissions: [],
       modelSwitchPending: false,
@@ -2490,6 +2511,7 @@ describe('GET /sessions/:id/activity', () => {
     const res = await app.inject({ method: 'GET', url: '/sessions/s1/activity' });
     expect(res.json()).toEqual({
       busy: false,
+      activityAnimating: false,
       queued: [],
       pendingPermissions: [],
       modelSwitchPending: false,
@@ -2513,6 +2535,7 @@ describe('GET /sessions/:id/activity', () => {
     const res = await noBranches.inject({ method: 'GET', url: '/sessions/s1/activity' });
     expect(res.json()).toEqual({
       busy: false,
+      activityAnimating: false,
       queued: [],
       pendingPermissions: [],
       modelSwitchPending: false,
@@ -2544,6 +2567,7 @@ describe('GET /sessions/:id/activity', () => {
     const res = await noBranches.inject({ method: 'GET', url: '/sessions/s1/activity' });
     expect(res.json()).toEqual({
       busy: false,
+      activityAnimating: false,
       queued: [],
       pendingPermissions: [],
       modelSwitchPending: false,
@@ -2892,7 +2916,8 @@ describe('GET /sessions?envelope=1', () => {
 
     expect(enveloped.statusCode).toBe(200);
     expect(enveloped.json().sessions).toEqual(plain.json());
-    expect(Object.keys(enveloped.json())).toEqual(['sessions']);
+    expect(Object.keys(enveloped.json())).toEqual(['sessions', 'sessionReordering']);
+    expect(enveloped.json().sessionReordering).toBe(true);
   });
 
   it('names an Updater that is not answering its control socket', async () => {
@@ -3072,7 +3097,7 @@ describe('GET /sessions?envelope=1', () => {
         url: '/sessions?envelope=1',
         headers: { authorization: `Bearer ${updates.token}` },
       });
-      expect(Object.keys(res.json())).toEqual(['sessions']);
+      expect(Object.keys(res.json())).toEqual(['sessions', 'sessionReordering']);
     } finally {
       await server.close();
     }
@@ -3257,12 +3282,13 @@ describe('GET /sessions', () => {
         planningPlan: null,
         planningRevision: 0,
         projectId: null,
+        sortOrder: null,
         status: 'awaiting_input',
         pendingPermissions: [],
         usage: ZERO_USAGE,
         resumable: false, // fake worktree path → not on disk
-        eventCount: 1,
-        eventCountVersion: 'dev-servers-excluded-v1',
+        eventCount: 0,
+        agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: expect.any(Number),
         lastSeenEventCount: null,
       },
@@ -3274,12 +3300,13 @@ describe('GET /sessions', () => {
         planningPlan: null,
         planningRevision: 0,
         projectId: null,
+        sortOrder: null,
         status: 'idle',
         pendingPermissions: [],
         usage: ZERO_USAGE,
         resumable: false,
         eventCount: 0,
-        eventCountVersion: 'dev-servers-excluded-v1',
+        agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: null,
         lastSeenEventCount: null,
       },
@@ -3440,6 +3467,7 @@ describe('GET /sessions', () => {
         planningPlan: null,
         planningRevision: 0,
         projectId: null,
+        sortOrder: null,
         status: 'completed',
         pendingPermissions: [],
         usage: {
@@ -3450,8 +3478,8 @@ describe('GET /sessions', () => {
           turns: 2,
         },
         resumable: false,
-        eventCount: 2,
-        eventCountVersion: 'dev-servers-excluded-v1',
+        eventCount: 0,
+        agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: expect.any(Number),
         lastSeenEventCount: null,
       },
@@ -3537,7 +3565,9 @@ describe('GET /sessions', () => {
     // which renders as "not limited".
     expect(summary?.rateLimit).toMatchObject({ status: 'rejected', resetsAt: 1_700_000_042 });
     // The counters stay facts about the whole log, whatever the tail read.
-    expect(summary?.eventCount).toBe(written.length);
+    expect(summary?.eventCount).toBe(
+      written.filter((event) => event.t === 'text' && event.delta.length > 0).length,
+    );
   });
 
   it('carries the cached branch on each summary without awaiting git', async () => {
@@ -4874,11 +4904,12 @@ describe('GET /projects (#174)', () => {
     await ctx.store.createSession({ sessionId: 's-seen', worktree: '/wt/s-seen', model: 'm' });
     await ctx.store.appendEvent('s-seen', { t: 'status', state: 'awaiting_input' });
     await ctx.store.appendEvent('s-seen', { t: 'text', delta: 'hi' });
+    await ctx.store.appendEvent('s-seen', { t: 'text', delta: ' there' });
 
     const res = await app.inject({
       method: 'PATCH',
       url: '/sessions/s-seen/seen',
-      payload: { eventCount: 2, counterVersion: 'dev-servers-excluded-v1' },
+      payload: { eventCount: 2, counterVersion: 'agent-text-v2' },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ sessionId: 's-seen', lastSeenEventCount: 2 });
@@ -4887,7 +4918,7 @@ describe('GET /projects (#174)', () => {
     const stale = await app.inject({
       method: 'PATCH',
       url: '/sessions/s-seen/seen',
-      payload: { eventCount: 1, counterVersion: 'dev-servers-excluded-v1' },
+      payload: { eventCount: 1, counterVersion: 'agent-text-v2' },
     });
     expect(stale.json()).toMatchObject({ lastSeenEventCount: 2 });
 
@@ -4905,7 +4936,7 @@ describe('GET /projects (#174)', () => {
     await app.inject({
       method: 'PATCH',
       url: `/sessions/${sessionId}/seen`,
-      payload: { eventCount: 1, counterVersion: 'dev-servers-excluded-v1' },
+      payload: { eventCount: 1, counterVersion: 'agent-text-v2' },
     });
     await ctx.store.appendEvent(sessionId, { t: 'dev_servers_changed', devServers: [] });
     const listed = await app.inject({ method: 'GET', url: '/sessions' });
@@ -4919,7 +4950,7 @@ describe('GET /projects (#174)', () => {
     expect(detail.json()).toMatchObject({
       eventCount: 1,
       lastSeenEventCount: 1,
-      eventCountVersion: 'dev-servers-excluded-v1',
+      agentTextCounterVersion: 'agent-text-v2',
     });
     await ctx.store.appendEvent(sessionId, { t: 'text', delta: 'new message' });
     const unread = await app.inject({ method: 'GET', url: `/sessions/${sessionId}` });
@@ -4936,7 +4967,7 @@ describe('GET /projects (#174)', () => {
     const stale = await app.inject({
       method: 'PATCH',
       url: `/sessions/${sessionId}/seen`,
-      payload: { eventCount: 3, counterVersion: 'dev-servers-excluded-v1' },
+      payload: { eventCount: 3, counterVersion: 'agent-text-v2' },
     });
     expect(stale.statusCode).toBe(409);
     expect((await ctx.store.getSession(sessionId))!.lastSeenEventCount).toBe(1);
@@ -4948,10 +4979,17 @@ describe('GET /projects (#174)', () => {
     });
     expect(overlapping.statusCode).toBe(409);
     expect((await ctx.store.getSession(sessionId))!.lastSeenEventCount).toBe(1);
-    const valid = await app.inject({
+    const oldVersion = await app.inject({
       method: 'PATCH',
       url: `/sessions/${sessionId}/seen`,
       payload: { eventCount: 2, counterVersion: 'dev-servers-excluded-v1' },
+    });
+    expect(oldVersion.statusCode).toBe(409);
+    expect((await ctx.store.getSession(sessionId))!.lastSeenEventCount).toBe(1);
+    const valid = await app.inject({
+      method: 'PATCH',
+      url: `/sessions/${sessionId}/seen`,
+      payload: { eventCount: 2, counterVersion: 'agent-text-v2' },
     });
     expect(valid.statusCode).toBe(200);
     expect(valid.json()).toMatchObject({ lastSeenEventCount: 2 });
@@ -4961,7 +4999,7 @@ describe('GET /projects (#174)', () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/sessions/does-not-exist/seen',
-      payload: { eventCount: 1, counterVersion: 'dev-servers-excluded-v1' },
+      payload: { eventCount: 1, counterVersion: 'agent-text-v2' },
     });
     expect(res.statusCode).toBe(404);
     expect(res.json()).toMatchObject({ error: expect.stringContaining('not found') });
@@ -6504,8 +6542,8 @@ describe('GET /sessions/:id', () => {
       pendingPermissions: [],
       usage: ZERO_USAGE,
       resumable: false,
-      eventCount: 2,
-      eventCountVersion: 'dev-servers-excluded-v1',
+      eventCount: 0,
+      agentTextCounterVersion: 'agent-text-v2',
       lastActivityAt: expect.any(Number),
       lastSeenEventCount: null,
       busy: false,
@@ -6525,7 +6563,7 @@ describe('GET /sessions/:id', () => {
     const res = await app.inject({ method: 'GET', url: '/sessions/s1' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({
-      eventCount: 2,
+      eventCount: 0,
       usage: {
         inputTokens: 100,
         outputTokens: 20,
@@ -15070,14 +15108,14 @@ describe('overview projections read only the narrow event slice', () => {
       expect(list.json()[0]).toMatchObject({
         sessionId: 's-chatty',
         status: 'completed',
-        eventCount: 22,
+        eventCount: 20,
         usage: { inputTokens: 5, outputTokens: 7 },
       });
 
       const detail = await app.inject({ method: 'GET', url: '/sessions/s-chatty' });
       expect(detail.json()).toMatchObject({
         status: 'completed',
-        eventCount: 22,
+        eventCount: 20,
         usage: { inputTokens: 5, outputTokens: 7 },
       });
 
@@ -15675,6 +15713,52 @@ describe('GET /projects/:id release resolution', () => {
       expect(refreshLatestRelease).toHaveBeenCalledTimes(1);
     } finally {
       await withRelease.close();
+    }
+  });
+});
+
+describe('PATCH /sessions/order', () => {
+  it('requires a device bearer and exposes manual positions through the overview', async () => {
+    await ctx.store.createSession({ sessionId: 'order-a', worktree: '/wt/order-a', model: 'm' });
+    await ctx.store.createSession({ sessionId: 'order-b', worktree: '/wt/order-b', model: 'm' });
+    const history = (await ctx.store.listSessions()).map((session) => session.sessionId);
+    const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+    const { token } = await registry.mint('order-device');
+    const gated = buildServer({
+      eventStore: ctx.store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+    });
+    try {
+      const request = {
+        method: 'PATCH' as const,
+        url: '/sessions/order',
+        payload: { projectId: null, ids: ['order-b', 'order-a'] },
+      };
+      expect((await gated.inject(request)).statusCode).toBe(401);
+      const result = await gated.inject({
+        ...request,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(result.statusCode).toBe(200);
+      expect(result.json()).toEqual({ ids: ['order-b', 'order-a'] });
+      const overview = await gated.inject({
+        url: '/sessions?envelope=1',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const body = overview.json<{
+        sessionReordering: boolean;
+        sessions: { sessionId: string; sortOrder: number }[];
+      }>();
+      expect(body.sessionReordering).toBe(true);
+      expect(body.sessions.map((session) => [session.sessionId, session.sortOrder])).toEqual([
+        ['order-a', 1],
+        ['order-b', 0],
+      ]);
+      expect((await ctx.store.listSessions()).map((session) => session.sessionId)).toEqual(history);
+    } finally {
+      await gated.close();
     }
   });
 });

@@ -142,6 +142,7 @@ function makeSession(id: string, name: string | null, model = MODEL): DemoSessio
       status: 'idle',
       usage: { ...usage, turns: 0 },
       eventCount: 0,
+      eventCountVersion: 'agent-text-v2',
       busy: false,
       queued: [],
       lastSeenEventCount: 0,
@@ -159,7 +160,7 @@ function append(session: DemoSession, event: StreamEventFrame['event']): void {
     event,
   };
   session.events.push(frame);
-  session.detail.eventCount = frame.seq;
+  if (event.t === 'text' && event.delta.length > 0) session.detail.eventCount += 1;
   for (const socket of sockets) socket.deliverLive(session.detail.sessionId, frame);
 }
 function clearTimers(session: DemoSession): void {
@@ -580,6 +581,7 @@ const demoFetchImpl: typeof fetch = async (input, init) => {
     if (rest === '/activity' && method === 'GET')
       return json({
         busy: session.detail.busy,
+        activityAnimating: session.detail.busy && session.detail.status === 'running',
         queued: [],
         pendingPermissions: session.detail.pendingPermissions ?? [],
         name: session.detail.name,
