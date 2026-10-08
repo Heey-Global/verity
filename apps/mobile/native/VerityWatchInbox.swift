@@ -319,9 +319,6 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     case .success(let text) where !text.isEmpty:
       entry.state = .transcribed
       entry.text = text
-      // Only the text is needed from here on; a capture held back for its
-      // project must not keep its audio as well.
-      try? FileManager.default.removeItem(at: audioURL(id))
       reply["kind"] = "transcript"
       reply["text"] = text
       log("\(id.prefix(8)) transcribed in \(elapsed) ms")
@@ -338,7 +335,17 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
       reply["text"] = "Transcription failed"
       log("\(id.prefix(8)) transcription failed after \(elapsed) ms: \(error.localizedDescription)")
     }
-    try? save(entry)
+    do {
+      try save(entry)
+    } catch {
+      // Keep both audio copies recoverable if the transcript is not durable.
+      log("\(id.prefix(8)) transcription result could not be stored: \(error.localizedDescription)")
+      return
+    }
+    if entry.state == .transcribed {
+      // Only the durable text is needed for later project assignment.
+      try? FileManager.default.removeItem(at: audioURL(id))
+    }
     // The watch only hears about a failure once no retry is left.
     if entry.state == .transcribed || (entry.attempts ?? 0) >= Self.maxAttempts {
       self.reply(reply)

@@ -111,10 +111,24 @@ describe('iOS scene lifecycle', () => {
     expect(exhausted.indexOf('finish(')).toBeLessThan(exhausted.indexOf('if expired'));
     const finish = native.slice(native.indexOf('private func finish('));
     expect(finish).toMatch(/case \.failure\(let error\):\s*entry.state = \.failed/);
-    expect(finish).toContain('try? save(entry)');
+    expect(finish).toContain('try save(entry)');
     expect(finish).toMatch(
       /if entry.state == \.transcribed \|\| \(entry.attempts \?\? 0\) >= Self.maxAttempts \{\s*self.reply\(reply\)/,
     );
+  });
+
+  // A terminal reply deletes the watch copy, so persistence must succeed first.
+  it('persists a watch transcript before releasing either audio copy', () => {
+    const native = readFileSync(resolve(__dirname, '../native/VerityWatchInbox.swift'), 'utf8');
+    const finish = native.slice(
+      native.indexOf('private func finish('),
+      native.indexOf('private static func transcribeFile('),
+    );
+    const saved = finish.indexOf('try save(entry)');
+    expect(saved).toBeGreaterThan(-1);
+    expect(saved).toBeLessThan(finish.indexOf('removeItem(at: audioURL(id))'));
+    expect(saved).toBeLessThan(finish.indexOf('self.reply(reply)'));
+    expect(finish.slice(saved)).toMatch(/catch \{[^}]*return\s*\}/);
   });
 
   it('is idempotent and rejects template drift rather than retaining legacy startup', async () => {
