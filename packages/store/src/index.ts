@@ -66,6 +66,7 @@ export {
   type ProjectSettingsPatch,
   type ProjectAgent,
   PROJECT_AGENTS,
+  ProjectDefaultModelNotAllowedError,
   type ProjectSettingsRecord,
   type HttpMcpConnectionRecord,
   type ProjectMcpBindingRecord,

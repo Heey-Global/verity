@@ -435,6 +435,14 @@ export interface ProjectSettingsRecord {
 export const PROJECT_AGENTS = ['claude', 'codex', 'opencode'] as const;
 export type ProjectAgent = (typeof PROJECT_AGENTS)[number];
 
+/** An explicit default cannot be persisted outside the project's current agent rule. */
+export class ProjectDefaultModelNotAllowedError extends Error {
+  constructor(readonly model: string) {
+    super(`Project default model ${model} is not allowed.`);
+    this.name = 'ProjectDefaultModelNotAllowedError';
+  }
+}
+
 export interface HttpMcpConnectionRecord {
   id: string;
   ownerUserId?: string;
@@ -7051,12 +7059,34 @@ export class EventStore implements EventSink {
         .values({ project_id: projectId })
         .onConflict((oc) => oc.column('project_id').doNothing())
         .execute();
-      await tx
+      const current = await tx
         .selectFrom('project_settings')
-        .select('project_id')
+        .select(['project_id', 'default_model', 'allowed_agents'])
         .where('project_id', '=', projectId)
         .forUpdate()
         .executeTakeFirstOrThrow();
+
+      const allowedAgents =
+        patch.allowedAgents === undefined
+          ? current.allowed_agents
+          : values.allowed_agents === null
+            ? null
+            : patch.allowedAgents;
+      let defaultModel =
+        patch.defaultModel === undefined ? current.default_model : values.default_model;
+      if (defaultModel !== null && allowedAgents !== null) {
+        const agent: ProjectAgent = defaultModel.startsWith('codex/')
+          ? 'codex'
+          : defaultModel.includes('/')
+            ? 'opencode'
+            : 'claude';
+        if (!allowedAgents.includes(agent)) {
+          if (patch.defaultModel !== undefined)
+            throw new ProjectDefaultModelNotAllowedError(defaultModel);
+          // The locked row prevents concurrent default and agent patches from leaving a dead default.
+          defaultModel = null;
+        }
+      }
 
       const row = await tx
         .insertInto('project_settings')
@@ -7088,8 +7118,8 @@ export class EventStore implements EventSink {
             ...(patch.defaultBranch !== undefined
               ? { default_branch: normalizeSetting(patch.defaultBranch) }
               : {}),
-            ...(patch.defaultModel !== undefined
-              ? { default_model: normalizeSetting(patch.defaultModel) }
+            ...(patch.defaultModel !== undefined || defaultModel !== current.default_model
+              ? { default_model: defaultModel }
               : {}),
             ...(patch.memory !== undefined ? { memory } : {}),
             ...(patch.googleDriveFolderId !== undefined

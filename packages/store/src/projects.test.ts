@@ -919,6 +919,25 @@ describe('EventStore — projects', () => {
     expect(cleared?.allowedAgents).toBeNull();
   });
 
+  it('serializes concurrent default and allowed agent patches', async () => {
+    const projectId = sampleProject.id();
+    await ctx.store.upsertProject({
+      id: projectId,
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state: 'active',
+    });
+    const results = await Promise.allSettled([
+      ctx.store.updateProjectSettings(projectId, { defaultModel: 'claude-sonnet-5-5' }),
+      ctx.store.updateProjectSettings(projectId, { allowedAgents: ['codex'] }),
+    ]);
+    expect(results[1]?.status).toBe('fulfilled');
+    const settings = await ctx.store.getProjectSettings(projectId);
+    // Each patch is valid against the old row, but their combined result must stay eligible.
+    expect(settings).toMatchObject({ allowedAgents: ['codex'], defaultModel: null });
+  });
+
   it('project settings return undefined for an unknown project and cascade when the project is deleted', async () => {
     expect(
       await ctx.store.updateProjectSettings(randomUUID(), { defaultBranch: 'main' }),

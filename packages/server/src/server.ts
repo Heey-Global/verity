@@ -171,7 +171,11 @@ import type {
   SessionProjectionFacts,
   SessionRecord,
 } from '@verity/store';
-import { PROJECT_MEMORY_MAX_CHARS, SealedError } from '@verity/store';
+import {
+  PROJECT_MEMORY_MAX_CHARS,
+  ProjectDefaultModelNotAllowedError,
+  SealedError,
+} from '@verity/store';
 import websocketPlugin, { type WebSocket } from '@fastify/websocket';
 import rateLimitPlugin from '@fastify/rate-limit';
 import compressPlugin from '@fastify/compress';
@@ -365,7 +369,6 @@ import { containerPathFor } from './project-backend.js';
 import type { ProjectRuntime } from './project-runtime.js';
 import type { ProjectEnvironmentSettings } from './project-settings-env.js';
 import {
-  assertModelAllowedForProject,
   filterModelListForProject,
   isModelAllowedForProject,
   ProjectAgentNotAllowedError,
@@ -6807,28 +6810,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     isSealed: () => deps.secretCipher?.isSealed() === true,
     updateSettings: async (id, patch) => {
       const store = projectSettingsStore(deps.eventStore);
-      if (patch.allowedAgents !== undefined || (patch.defaultModel ?? null) !== null) {
-        const current = await store.getProjectSettings(id);
-        const rule = {
-          defaultModel: patch.defaultModel ?? current?.defaultModel ?? null,
-          allowedAgents:
-            patch.allowedAgents !== undefined
-              ? patch.allowedAgents
-              : (current?.allowedAgents ?? null),
-        };
-        if ((patch.defaultModel ?? null) !== null) {
-          assertModelAllowedForProject(patch.defaultModel!, rule);
-        } else if (
-          patch.defaultModel === undefined &&
-          rule.defaultModel !== null &&
-          !isModelAllowedForProject(rule.defaultModel, rule)
-        ) {
-          // Narrowing the agents drops a default the new rule excludes, so the
-          // project falls back to "Automatic" instead of keeping a dead default.
-          patch = { ...patch, defaultModel: null };
+      let settings: ProjectSettingsRecord | undefined;
+      try {
+        settings = await store.updateProjectSettings(id, patch);
+      } catch (error) {
+        if (error instanceof ProjectDefaultModelNotAllowedError) {
+          throw new ProjectAgentNotAllowedError(error.model);
         }
+        throw error;
       }
-      const settings = await store.updateProjectSettings(id, patch);
       return settings === undefined ? undefined : publicProjectSettings(settings)!;
     },
   });

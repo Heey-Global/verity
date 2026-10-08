@@ -6137,6 +6137,15 @@ describe('project allowed agents', () => {
     expect(allowed.json()).toMatchObject({ settings: { defaultModel: 'codex/gpt-5.6-sol' } });
   });
 
+  it('validates the normalized model before persisting an explicit default', async () => {
+    await project('p-agents-trim');
+    await patchSettings('p-agents-trim', { allowedAgents: ['opencode'] });
+    const excluded = await patchSettings('p-agents-trim', { defaultModel: ' codex/default ' });
+    expect(excluded.statusCode).toBe(400);
+    expect(excluded.json()).toEqual({ error: 'Codex is not allowed in this project.' });
+    expect((await ctx.store.getProjectSettings('p-agents-trim'))?.defaultModel).toBeNull();
+  });
+
   it('narrows GET /models to the project and resolves its default to the first allowed model', async () => {
     await project('p-agents-models');
     await ctx.store.updateVeritySettings({
