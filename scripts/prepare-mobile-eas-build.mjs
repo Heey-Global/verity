@@ -4,10 +4,12 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { URL, fileURLToPath } from 'node:url';
 
-if (process.env.EAS_BUILD === 'true') {
+// The local EAS builder uses '1'; verification must never silently skip itself.
+const verify = process.argv.includes('--verify');
+if (verify || ['true', '1'].includes(process.env.EAS_BUILD ?? '')) {
   const root = fileURLToPath(new URL('../', import.meta.url));
   const marker = new URL('../.verity-eas-prepared', import.meta.url);
-  if (process.argv.includes('--verify')) {
+  if (verify) {
     // EAS runs this second hook after CocoaPods but before compilation. Fail if
     // npm skipped lifecycle scripts; never repair too late in the build here.
     if (readFileSync(marker, 'utf8') !== root) {
