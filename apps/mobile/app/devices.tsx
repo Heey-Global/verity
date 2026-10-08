@@ -268,6 +268,10 @@ function DevicesView({ client }: { client: VerityClient }) {
     );
   };
 
+  // Inside a browser without a pinned server profile the invitation is the
+  // bare code, which the browser sign-in accepts as well but the app does not.
+  const invitationIsLink = pairingInvitation?.link.startsWith('verity:') ?? false;
+
   return (
     <SettingsScaffold title="Devices & Web Browsers" detail onRetry={load}>
       {Platform.OS === 'web' && (
@@ -325,7 +329,7 @@ function DevicesView({ client }: { client: VerityClient }) {
           </View>
           {pairingInvitation ? (
             <>
-              {tab === 'app' && !pairingInvitation.link.startsWith('verity:') ? (
+              {tab === 'app' && !invitationIsLink ? (
                 // A bare code carries no server identity, which the app needs
                 // before it trusts a server; only a browser can redeem it.
                 <Text style={styles.footnote}>
@@ -355,19 +359,15 @@ function DevicesView({ client }: { client: VerityClient }) {
                   accessibilityLabel="Open web address"
                 />
               )}
-              {tab === 'app' && !pairingInvitation.link.startsWith('verity:') ? null : (
+              {tab === 'app' && !invitationIsLink ? null : (
                 <CopyField
-                  // Inside a browser without a pinned server profile the invitation
-                  // is the bare code, which the browser sign-in accepts as well.
-                  label={
-                    pairingInvitation.link.startsWith('verity:') ? 'Pairing link' : 'Pairing code'
-                  }
+                  label={invitationIsLink ? 'Pairing link' : 'Pairing code'}
                   value={pairingInvitation.link}
                   mono
                   action="Copy"
                   icon="copy"
                   onPress={() => void Clipboard.setStringAsync(pairingInvitation.link)}
-                  accessibilityLabel="Copy pairing link"
+                  accessibilityLabel={invitationIsLink ? 'Copy pairing link' : 'Copy pairing code'}
                 />
               )}
               <View style={styles.invitationHint}>
