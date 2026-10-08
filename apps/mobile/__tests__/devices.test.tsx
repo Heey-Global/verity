@@ -76,6 +76,7 @@ beforeEach(() => {
 
 afterEach(() => {
   mockQrFailure.current = null;
+  jest.restoreAllMocks();
 });
 
 it('lists the current device and creates a copyable pairing invitation', async () => {
@@ -167,7 +168,6 @@ it('keeps a failure to draw the pairing link inside the card', async () => {
   fireEvent.press(screen.getByLabelText('Try again'));
   fireEvent.press(await screen.findByLabelText('Create pairing link'));
   expect(await screen.findByTestId('pairing-qr')).toBeOnTheScreen();
-  jest.mocked(console.error).mockRestore();
 });
 
 it('revokes the device the confirmed row belongs to', async () => {
