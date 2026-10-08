@@ -225,6 +225,18 @@ describe('victim selection', () => {
     ).toBe(6000);
   });
 
+  it('never takes a process started by docker exec, only what it started', () => {
+    // ppid 0: a process the Server started with `docker exec`, whose parent the
+    // guest cannot see. Read as detached, it would be killed with all it runs.
+    const files = sandbox();
+    files['/proc/9500/status'] = status('node', 0, 1000, 3 * GIB);
+    files['/proc/9501/status'] = status('node', 9500, 1000, 100 * MIB);
+    const processes = listProcesses(reader(files), listPids(files));
+    const victim = chooseVictim(processes, { agentUid: 1000 });
+    expect(victim?.pid).not.toBe(9500);
+    expect(victim?.pid).toBe(6000);
+  });
+
   it('takes the largest of several parallel commands rather than their CLI', () => {
     // Two 1.2 GiB builds under a 500 MiB CLI: neither holds half of the CLI's
     // tree, but the CLI is not the consumer either. Killing it would end the
@@ -318,13 +330,23 @@ describe('createMemoryGuard', () => {
 
   const guardAt = (usageBytes: number, extra: { dryRun?: boolean; now?: () => number } = {}) => {
     const files = { ...sandbox(), ...cgroup(usageBytes) };
-    const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>();
+    let killed = false;
+    // A killed process keeps neither a command line nor a working directory.
+    const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>((pid, signal) => {
+      if (pid === 6000 && signal === 'SIGKILL') {
+        killed = true;
+        delete files['/proc/6000/cmdline'];
+      }
+    });
     const log = vi.fn<(record: MemoryGuardLogRecord) => void>();
     const guard = createMemoryGuard({
       readFile: guestReader(files),
       listPids: listPids(files),
-      readLink: (path) =>
-        path === '/proc/6000/cwd' ? '/work/.verity-sessions/agent-a/packages/server' : '/',
+      readLink: (path) => {
+        if (path !== '/proc/6000/cwd') return '/';
+        if (killed) throw new Error('ENOENT');
+        return '/work/.verity-sessions/agent-a/packages/server';
+      },
       kill,
       log,
       agentUid: 1000,

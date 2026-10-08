@@ -212,7 +212,8 @@ export function listProcesses(readFile = readFsFile, listPids = listProcDir) {
  * An agent process whose parent is infrastructure other than init is a session
  * anchor — the ACP adapter the spawn broker started — and is never killed. The
  * anchor is recognised by its parent: an adapter orphaned to init by a broker
- * restart becomes a detached tree like any other. The
+ * restart becomes a detached tree like any other. An agent process whose parent
+ * the guest cannot see (`docker exec`, ppid 0) is an anchor as well. The
  * candidate trees are rooted at an anchor's children and at agent processes
  * detached under init (a backgrounded dev server or database); the largest by
  * summed RSS wins. A tree rooted at an anchor's child that is an agent CLI
@@ -238,8 +239,10 @@ export function chooseVictim(
     process !== undefined && process.uid === agentUid && process.pid !== 1;
   const isAnchor = (process) => {
     if (!isAgent(process)) return false;
+    // A parent the guest cannot see — ppid 0, as for anything `docker exec`
+    // started — is infrastructure too: the Server runs its own commands that way.
     const parent = byPid.get(process.ppid);
-    return parent !== undefined && parent.pid !== 1 && !isAgent(parent);
+    return process.ppid !== 1 && (parent === undefined || !isAgent(parent));
   };
   const treeOf = (process) => {
     const tree = [process, ...descendantsOf(process.pid, processes)];
@@ -503,6 +506,10 @@ export function createMemoryGuard(options) {
       return result('no-candidate');
     }
     const descendants = descendantsOf(victim.pid, processes);
+    // Read before the kill: a killed process is a zombie or gone, with no
+    // command line and no working directory left to attribute it by.
+    const command = loggableCommand(readFile, victim.pid);
+    const session = sessionOf(readLink, victim.pid);
     const signalled = dryRun ? 0 : signalTree(victim, descendants);
     cooldownUntil = now() + KILL_COOLDOWN_MS;
     lastOutcome = 'kill';
@@ -519,8 +526,8 @@ export function createMemoryGuard(options) {
       tier: victim.tier,
       treeRssBytes: victim.treeRssBytes,
       name: victim.name,
-      command: loggableCommand(readFile, victim.pid),
-      session: sessionOf(readLink, victim.pid),
+      command,
+      session,
       descendants: descendants.map((process) => process.pid),
       signalled,
     });
