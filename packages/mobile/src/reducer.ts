@@ -309,7 +309,8 @@ export class SessionReducer {
         this._pendingPermission = undefined;
         this._status = 'running';
         this._running = true;
-        this._openTasks.clear(); // a fresh turn starts with no outstanding tasks
+        // Steering belongs to the current turn and must retain its background work.
+        if (!event.steered) this._openTasks.clear();
         const msg: UserTextMessage = {
           kind: 'user-text',
           id: `user-${String(seq)}`,

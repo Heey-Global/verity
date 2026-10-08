@@ -1341,3 +1341,15 @@ it('renders durable task updates without ending the running turn', () => {
   reducer.apply(3, { t: 'tasks_updated', origin: 'user', change: 'completed', taskIds: ['one'] });
   expect(reducer.messages).toHaveLength(1);
 });
+
+it('preserves background work across steering and clears it for a fresh turn', () => {
+  const reducer = new SessionReducer();
+  reducer.apply(1, { t: 'prompt', text: 'Start' });
+  reducer.apply(2, { t: 'task', id: 'background', phase: 'started' });
+  reducer.apply(3, { t: 'prompt', text: 'Continue', steered: true });
+  reducer.apply(4, { t: 'status', state: 'awaiting_input' });
+  // Steering must not hide background work while the main agent waits for input.
+  expect(reducer.hasOpenTasks).toBe(true);
+  reducer.apply(5, { t: 'prompt', text: 'New turn' });
+  expect(reducer.hasOpenTasks).toBe(false);
+});
