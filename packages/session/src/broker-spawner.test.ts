@@ -1211,6 +1211,18 @@ describe('broker spawner protocol handling', () => {
     return handle;
   }
 
+  it('retains the latest 64 KiB of broker stderr bytes', async () => {
+    const broker = await startScriptedBroker();
+    const handle = await connect(broker);
+    broker.send(
+      { ok: true, kind: 'stderr', data: base64('old' + 'é'.repeat(40000) + 'END') },
+      { ok: true, kind: 'exit', code: 1, signal: null },
+    );
+    await expect(handle.exited).resolves.toBe(1);
+    expect(handle.stderr()).toBe('é'.repeat(32766) + 'END');
+    expect(handle.exitDetails?.()).toEqual({ code: 1, signal: null });
+  });
+
   // A broker that answers with something other than JSON is a broker whose own
   // framing broke. Reporting the last agent diagnostic instead would blame the
   // agent for the transport's failure, so the tail is REPLACED, not appended to.
@@ -1253,6 +1265,7 @@ describe('broker spawner protocol handling', () => {
     );
     await expect(killedHandle.exited).resolves.toBe(137);
     expect(killedHandle.pid).toBe(4242);
+    expect(killedHandle.exitDetails?.()).toEqual({ code: null, signal: 'SIGKILL' });
 
     const unknown = await startScriptedBroker();
     const unknownHandle = await connect(unknown);

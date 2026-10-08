@@ -6,6 +6,7 @@ import {
   type ProjectGitHubIssues,
 } from './project-github-issues.js';
 import { readMatrixDiagnosticSnapshot } from './matrix-diagnostic-snapshot.js';
+import { subscribeAgentProcessLogging } from './agent-process-logging.js';
 import { createControlDiagnosticsTool } from './control-diagnostics-tool.js';
 import type { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import { googleAppClient } from './google-app-client.js';
@@ -3427,6 +3428,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
   const resources = new ResourceObserver();
   app.addHook('onClose', () => resources.close());
+  const unsubscribeAgentProcessLogging = subscribeAgentProcessLogging(
+    deps.bus,
+    deps.eventStore,
+    app.log,
+  );
+  app.addHook('onClose', () => unsubscribeAgentProcessLogging());
   app.addHook('onResponse', (request, reply, done) => {
     if (
       reply.statusCode < 400 &&

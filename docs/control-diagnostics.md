@@ -58,6 +58,14 @@ and briefing, without automatically copying project Knowledge or transcripts.
 Progress returns lifecycle, timestamps, completion and outcome-delivery flags,
 and allowlisted technical diagnostics. Free-form summaries, decisions, branch
 names, pull-request data and transcripts are excluded from this metadata view.
+Agent process failures include the native exit code, terminating signal, whether
+an agent turn was active, backend/model, and a bounded stderr tail. Each process
+retains at most 64 KiB of stderr. Credential patterns, supplied environment
+values, and environment assignments are redacted before persistence or logging;
+truncated leading lines and partial private-key blocks are omitted. Intentional
+stops and normal completed turns do not produce process-failure records. The
+Server logs the same structured evidence with session and project identifiers.
+
 Ordinary project sessions cannot use these Control tools.
 
 ## Local resources and runtime incidents

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { StderrTail } from './stderr-tail.js';
 import { constants } from 'node:os';
 import type { Readable } from 'node:stream';
 import type { Spawner } from './backend-contract.js';
@@ -28,9 +29,6 @@ export const ALLOWED_PERMISSION_MODES = ['auto', 'default', 'plan', 'acceptEdits
 /** The permission mode of a planning turn: Claude's and OpenCode's `plan` modes.
  *  Codex has none and reads the turn's `planning` flag instead. */
 export const PLANNING_PERMISSION_MODE = 'plan' satisfies (typeof ALLOWED_PERMISSION_MODES)[number];
-
-/** Cap on retained stderr (keep the most recent bytes for diagnostics). */
-const STDERR_CAP_BYTES = 16 * 1024;
 
 async function* readStrings(readable: Readable): AsyncGenerator<string> {
   for await (const chunk of readable as AsyncIterable<Buffer | string>) {
@@ -177,17 +175,16 @@ export const nodeSpawner: Spawner = (command, args, options) => {
   const stdout = child.stdout;
   stdout.setEncoding('utf8');
 
-  let stderrTail = '';
+  const stderrTail = new StderrTail();
+  let exitDetails: { code: number | null; signal: NodeJS.Signals | null } | undefined;
   if (child.stderr !== null) {
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk: string) => {
-      stderrTail = (stderrTail + chunk).slice(-STDERR_CAP_BYTES);
-    });
+    child.stderr.on('data', (chunk: Buffer) => stderrTail.push(chunk));
   }
 
   const exited = new Promise<number>((resolve, reject) => {
     child.once('error', reject);
     child.once('close', (code, signal) => {
+      exitDetails = { code, signal };
       resolve(exitCodeFromClose(code, signal));
     });
   });
@@ -205,7 +202,8 @@ export const nodeSpawner: Spawner = (command, args, options) => {
     stdout: readStrings(stdout),
     pid: child.pid,
     exited,
-    stderr: () => stderrTail,
+    stderr: () => stderrTail.text(),
+    exitDetails: () => exitDetails,
     kill: (signal) => {
       killProcessGroup(child, signal);
     },

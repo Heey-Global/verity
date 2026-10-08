@@ -51,3 +51,38 @@ export function redactSecrets(text: string): string {
   }
   return out;
 }
+
+/** Redact process diagnostics before they reach any sink, including live logs. */
+export function redactProcessStderr(text: string, env: NodeJS.ProcessEnv = {}): string {
+  // The oldest line in a full byte tail may start halfway through a credential.
+  let out = Buffer.byteLength(text) >= 65_533 ? text.slice(text.indexOf('\n') + 1) : text;
+  if (Buffer.byteLength(text) >= 65_533 && !text.includes('\n'))
+    return '[truncated stderr line omitted]';
+  // Values supplied to the child can be opaque credentials without a known prefix.
+  const values = Object.entries(env)
+    .filter(
+      ([name, value]) => value && (value.length >= 4 || /TOKEN|SECRET|PASSWORD|KEY/u.test(name)),
+    )
+    .map(([, value]) => value as string)
+    .sort((a, b) => b.length - a.length);
+  for (const value of values) out = out.split(value).join(REDACTED);
+  out = redactSecrets(out)
+    .replace(/\b[A-Z][A-Z0-9_]*\s*=[^\r\n]*/gu, '[REDACTED ENVIRONMENT]')
+    .replace(
+      /\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=][^\r\n]*/giu,
+      '$1: [REDACTED]',
+    )
+    .replace(
+      /\b(password|passphrase|api[ _-]?key|access[ _-]?token|refresh[ _-]?token|client[ _-]?secret)\s*[:=][^\r\n]*/giu,
+      '$1: [REDACTED]',
+    )
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/giu, '$1[REDACTED]@');
+  // A bounded tail can cut through key armor; never retain a partial key block.
+  if (
+    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY/u.test(out) ||
+    /-----END [A-Z0-9 ]*PRIVATE KEY/u.test(out)
+  ) {
+    return '[REDACTED PARTIAL PRIVATE KEY]';
+  }
+  return out;
+}

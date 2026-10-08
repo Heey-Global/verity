@@ -76,6 +76,7 @@ function acpSpawner(
     loadSession?: boolean;
     startupFailure?: string;
     promptFailure?: string;
+    processExit?: { code: number | null; signal: NodeJS.Signals | null };
     /** Refuse `session/load` the way the adapter refuses a rollout it cannot
      *  restore: JSON-RPC -32002 naming the requested id. */
     loadNotFound?: boolean;
@@ -152,7 +153,8 @@ function acpSpawner(
     return {
       stdout,
       pid: 321,
-      exited: Promise.resolve(0),
+      exited: Promise.resolve(behavior.processExit?.code ?? 0),
+      exitDetails: () => (closed ? behavior.processExit : undefined),
       stderr: () => behavior.startupFailure ?? behavior.promptFailure ?? '',
       kill,
       closeStdin: close,
@@ -314,6 +316,75 @@ function write(
 }
 
 describe('AcpCodexBackend', () => {
+  it.each([
+    { code: 1, signal: null },
+    { code: null, signal: 'SIGKILL' as const },
+    { code: 0, signal: null },
+  ])(
+    'persists redacted process details for an unexpected active-turn exit: %j',
+    async (processExit) => {
+      const append = vi.spyOn(ctx.store, 'appendEvent');
+      const secret = 'ghp_' + 'a'.repeat(24);
+      const opaque = 'opaque-runtime-credential';
+      const fake = acpSpawner({
+        promptFailure: `fatal: ${secret} ${opaque}\nCUSTOM_VALUE=private-setting\nlast failure`,
+        processExit,
+      });
+      const result = await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        model: 'gpt-6.1-sol',
+        env: { CUSTOM_SECRET: opaque },
+        spawner: fake.spawner,
+      });
+      const events = await ctx.store.getEvents('codex-session-1');
+      const diagnostic = events.findLast((event) => event.t === 'diagnostic');
+      expect(diagnostic).toMatchObject({
+        t: 'diagnostic',
+        outcome: 'failed',
+        exitCode: processExit.code,
+        signal: processExit.signal,
+        turnActive: true,
+        model: 'gpt-6.1-sol',
+      });
+      expect(JSON.stringify(diagnostic)).not.toContain(secret);
+      expect(JSON.stringify(diagnostic)).not.toContain(opaque);
+      expect(JSON.stringify(diagnostic)).not.toContain('private-setting');
+      expect(diagnostic).toHaveProperty('stderrTail', expect.stringContaining('last failure'));
+      expect(result.stderr).not.toContain(secret);
+      const persisted = append.mock.calls.findLast(([, event]) => event.t === 'diagnostic')?.[1];
+      expect(JSON.stringify(persisted)).not.toContain(secret);
+      expect(JSON.stringify(persisted)).not.toContain(opaque);
+      expect(JSON.stringify(persisted)).not.toContain('private-setting');
+      append.mockRestore();
+    },
+  );
+
+  it('omits process failure details for an intentional stop', async () => {
+    const operator = new AbortController();
+    const fake = acpSpawner({
+      cancel: { operator },
+      processExit: { code: null, signal: 'SIGTERM' },
+    });
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      signal: operator.signal,
+      spawner: fake.spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(
+      events.filter((event) => event.t === 'diagnostic' && event.outcome === 'failed'),
+    ).toEqual([]);
+    expect(events.some((event) => event.t === 'diagnostic' && event.exitCode !== undefined)).toBe(
+      false,
+    );
+  });
+
   it('externalizes an image generation notification larger than the ACP frame limit', async () => {
     const worktree = await mkdtemp(join(tmpdir(), 'verity-acp-image-'));
     const png = largePng();

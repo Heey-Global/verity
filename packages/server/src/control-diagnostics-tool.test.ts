@@ -26,7 +26,7 @@ function setup() {
           outcome: 'failed',
           phase: 'tool_call',
           code: 503,
-          backend: 'private',
+          backend: 'codex-acp',
           message: 'secret',
         },
       ],
@@ -48,6 +48,41 @@ describe('Control diagnostics', () => {
     expect(result.server).toEqual({ version: deps.version });
     expect(deps.readProgress).not.toHaveBeenCalled();
   });
+  it('returns bounded process failure evidence for the selected session', async () => {
+    const result = await createControlDiagnosticsTool({
+      ...setup(),
+      readProgress: async () => ({
+        sessionId: 'target',
+        projectId: 'project',
+        lifecycle: 'failed',
+        lastActivityAt: 123,
+        projectionTruncated: false,
+        diagnostics: [
+          {
+            seq: 1,
+            ts: 123,
+            source: 'agent',
+            outcome: 'failed',
+            phase: 'prompt',
+            backend: 'codex-acp',
+            model: 'codex/model',
+            exitCode: null,
+            signal: 'SIGKILL',
+            turnActive: true,
+            stderrTail: 'fatal error [REDACTED]',
+          },
+        ],
+      }),
+    })({ ...input, request: { sessionId: 'target' } });
+    expect(result.session?.diagnostics[0]).toMatchObject({
+      exitCode: null,
+      signal: 'SIGKILL',
+      turnActive: true,
+      stderrTail: 'fatal error [REDACTED]',
+      backend: 'codex-acp',
+      model: 'codex/model',
+    });
+  });
   it('projects only technical evidence even when sources gain private fields', async () => {
     const result = await createControlDiagnosticsTool({
       ...setup(),
@@ -62,7 +97,15 @@ describe('Control diagnostics', () => {
       }),
     })({ ...input, request: { sessionId: 'target' } });
     expect(result.session?.diagnostics).toEqual([
-      { seq: 1, ts: 123, source: 'mcp', outcome: 'failed', phase: 'tool_call', code: 503 },
+      {
+        seq: 1,
+        ts: 123,
+        source: 'mcp',
+        outcome: 'failed',
+        phase: 'tool_call',
+        code: 503,
+        backend: 'codex-acp',
+      },
     ]);
     expect(result.secretJobRuntime).toEqual({ state: 'ready' });
     expect(result.uplink).toEqual({

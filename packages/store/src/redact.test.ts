@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { REDACTED, redactSecrets } from './redact.js';
+import { REDACTED, redactSecrets, redactProcessStderr } from './redact.js';
 
 // The fixtures below are synthetic, but a credential-shaped literal trips the secret
 // scanners that run over this repository and over anything published from it. So each
@@ -60,5 +60,31 @@ describe('redactSecrets (M9)', () => {
   it('leaves ordinary transcript text untouched', () => {
     const text = 'Refactored the auth gate; ran npm test — 42 passed. See PR #123.';
     expect(redactSecrets(text)).toBe(text);
+  });
+});
+
+describe('redactProcessStderr', () => {
+  it('redacts credential patterns, child environment values and environment assignments', () => {
+    const value = ['opaque', 'child', 'credential'].join('-');
+    const known = ['ghp_', ALPHANUM_RUN].join('');
+    const result = redactProcessStderr(
+      `failure ${value} ${known}\nPATH=/private/path\nAuthorization: Bearer unknown\nlast failure`,
+      { CUSTOM_VALUE: value },
+    );
+    expect(result).not.toContain(value);
+    expect(result).not.toContain(known);
+    expect(result).not.toContain('/private/path');
+    expect(result).not.toContain('unknown');
+    expect(result).toContain('last failure');
+  });
+  it('omits a leading partial credential line from a full capture', () => {
+    const raw = 'partial-credential' + 'x'.repeat(65_536) + '\nlast failure';
+    expect(redactProcessStderr(raw)).toBe('last failure');
+    expect(redactProcessStderr('x'.repeat(65_536))).toBe('[truncated stderr line omitted]');
+  });
+  it('suppresses partial private key armor', () => {
+    expect(redactProcessStderr('keybody\n-----END OPENSSH PRIVATE KEY-----')).toBe(
+      '[REDACTED PARTIAL PRIVATE KEY]',
+    );
   });
 });

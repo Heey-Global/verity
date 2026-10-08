@@ -26,6 +26,7 @@ import {
   toolName,
   type AcpEventAdapterOptions,
 } from './acp-adapter.js';
+import { redactProcessStderr } from '@verity/store';
 import { SessionWriter } from './ingest.js';
 import { assertSafeArgs, nodeSpawner } from './runner.js';
 
@@ -1203,7 +1204,31 @@ export async function runAcpTurn(
     // when the ACP process disconnects before returning PromptResponse.
     await writeAll(writer, adapter.flush()).catch(() => undefined);
     await writeAll(writer, topLevelText.flush()).catch(() => undefined);
-    const stderr = `${child.stderr()}\n${message}`;
+    // EOF can precede the process close event; wait briefly for drained stderr and
+    // exit metadata, without stalling a failure on a wedged remote channel.
+    let exitTimer: ReturnType<typeof setTimeout> | undefined;
+    const processExited = await Promise.race([
+      child.exited.then(
+        () => true,
+        () => false,
+      ),
+      new Promise<boolean>((resolve) => {
+        exitTimer = setTimeout(() => resolve(false), 250);
+      }),
+    ]);
+    if (exitTimer !== undefined) clearTimeout(exitTimer);
+    const exitDetails = processExited ? child.exitDetails?.() : undefined;
+    const stderr = redactProcessStderr(`${child.stderr()}\n${message}`, opts.env ?? process.env);
+    const processFailure =
+      !aborted && exitDetails !== undefined
+        ? {
+            exitCode: exitDetails.code,
+            signal: exitDetails.signal,
+            turnActive: true,
+            stderrTail: redactProcessStderr(child.stderr(), opts.env ?? process.env).slice(-65_536),
+            ...(opts.model === undefined ? {} : { model: opts.model.slice(0, 200) }),
+          }
+        : {};
     // The ACP analogue of Codex's `thread.started` gate. `session/prompt` is
     // dispatched only after `session/new` or `session/load` has ANSWERED, and
     // that answer is the only thing that assigns `boundSessionId` — so an
@@ -1252,6 +1277,7 @@ export async function runAcpTurn(
         phase: diagnosticPhase,
         backend: profile.telemetryBackend,
         ...(error instanceof acp.RequestError ? { code: error.code } : {}),
+        ...processFailure,
       } as const;
       if (writer.currentSessionId !== undefined) {
         await writer.write(diagnostic).catch(() => undefined);

@@ -93,6 +93,22 @@ describe('nodeSpawner (real child process, integration)', () => {
     await collect(proc.stdout);
     await expect(proc.exited).resolves.toBe(3);
     expect(proc.stderr()).toContain('boom diag');
+    expect(proc.exitDetails?.()).toEqual({ code: 3, signal: null });
+  });
+
+  it('retains the latest 64 KiB of stderr bytes', async () => {
+    const proc = nodeSpawner(
+      'node',
+      ['-e', `process.stderr.write('old' + 'é'.repeat(40000) + 'END')`],
+      {
+        cwd: process.cwd(),
+        env: process.env,
+      },
+    );
+    await collect(proc.stdout);
+    await expect(proc.exited).resolves.toBe(0);
+    expect(Buffer.byteLength(proc.stderr())).toBeLessThanOrEqual(64 * 1024);
+    expect(proc.stderr()).toBe('é'.repeat(32766) + 'END');
   });
 
   it('writes the stdin payload to a real child and closes the pipe (EOF)', async () => {
@@ -137,6 +153,7 @@ describe('nodeSpawner (real child process, integration)', () => {
     });
     proc.kill();
     await expect(proc.exited).resolves.toBeGreaterThanOrEqual(128);
+    expect(proc.exitDetails?.()).toEqual({ code: null, signal: 'SIGTERM' });
   });
 
   it('rejects exited when the command cannot be spawned', async () => {
