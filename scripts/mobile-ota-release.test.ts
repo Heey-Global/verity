@@ -347,11 +347,6 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
           },
         },
       ),
-    update: (changes: Partial<ServiceState>) =>
-      writeFileSync(
-        statePath,
-        JSON.stringify({ ...JSON.parse(readFileSync(statePath, 'utf8')), ...changes }),
-      ),
     state: () => JSON.parse(readFileSync(statePath, 'utf8')) as ServiceState,
     update: (changes: Partial<ServiceState>) =>
       writeFileSync(
