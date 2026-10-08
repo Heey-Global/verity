@@ -1,5 +1,5 @@
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
-import { render, fireEvent } from '@testing-library/react-native';
+import { act, render, fireEvent } from '@testing-library/react-native';
 import { TasksPanel } from './TasksPanel';
 import { patchTask, useTasks } from '../lib/tasksStore';
 import type { Task } from '@verity/mobile';
@@ -182,4 +182,25 @@ it('uses the revision at focus when saving across a concurrent edit', () => {
   ui.rerender(<TasksPanel {...props} />);
   fireEvent(ui.getByLabelText('Task text'), 'blur');
   expect(patchTask).toHaveBeenCalledWith(task, { title: 'My edit' });
+});
+
+it('keeps a new draft when an earlier save fails', async () => {
+  let rejectSave!: (error: Error) => void;
+  jest.mocked(patchTask).mockReturnValueOnce(
+    new Promise((_, reject) => {
+      rejectSave = reject;
+    }),
+  );
+  jest.mocked(useTasks).mockReturnValue({ tasks: [task], pending: [], conflicts: [] });
+  const ui = render(<TasksPanel {...props} />);
+  const field = ui.getByLabelText('Task text');
+  fireEvent(field, 'focus');
+  fireEvent.changeText(field, 'First edit');
+  fireEvent(field, 'blur');
+  fireEvent(field, 'focus');
+  fireEvent.changeText(field, 'New draft');
+  await act(async () => {
+    rejectSave(new Error('Offline'));
+  });
+  expect(ui.getByDisplayValue('New draft')).toBeTruthy();
 });

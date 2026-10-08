@@ -641,6 +641,7 @@ function TaskTitleInput({ task, onSave }: { task: Task; onSave(title: string): P
   // Keep the original revision through the save callback to detect concurrent edits.
   const baseline = useRef({ title: task.title, onSave });
   const dirty = useRef(false);
+  const editGeneration = useRef(0);
   const latest = useRef(value);
   latest.current = value;
   // Follow edits from elsewhere (another device, the agent) unless typing.
@@ -655,7 +656,10 @@ function TaskTitleInput({ task, onSave }: { task: Task; onSave(title: string): P
     }
     if (trimmed === title) return;
     // A failed save puts the stored text back rather than showing unsaved text.
-    save(trimmed).catch(() => setValue(title));
+    const generation = editGeneration.current;
+    save(trimmed).catch(() => {
+      if (editGeneration.current === generation) setValue(title);
+    });
   };
   // Closing the panel or switching views can unmount a focused field before
   // blur arrives; save what was typed instead of dropping it.
@@ -673,10 +677,12 @@ function TaskTitleInput({ task, onSave }: { task: Task; onSave(title: string): P
       accessibilityLabel="Task text"
       value={value}
       onChangeText={(next) => {
+        editGeneration.current++;
         dirty.current = true;
         setValue(next);
       }}
       onFocus={() => {
+        editGeneration.current++;
         baseline.current = { title: task.title, onSave };
         dirty.current = false;
         focused.current = true;

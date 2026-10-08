@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, Linking } from 'react-native';
+import { Alert, AppState, Linking } from 'react-native';
 import {
   SettingsGroup,
   SettingsListPanel,
@@ -32,7 +32,20 @@ export default function TasksSettingsScreen() {
   const preferences = useTaskPreferences();
   const [access, setAccess] = useState<ScreenshotAccess | null>(null);
   useEffect(() => {
-    void screenshotAccess().then(setAccess);
+    let active = true;
+    const refresh = () => {
+      void screenshotAccess().then((next) => {
+        if (active) setAccess(next);
+      });
+    };
+    refresh();
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') refresh();
+    });
+    return () => {
+      active = false;
+      subscription.remove();
+    };
   }, []);
   const requestAccess = () => {
     if (access === 'denied') {
