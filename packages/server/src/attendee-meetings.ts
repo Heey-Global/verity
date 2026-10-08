@@ -26,7 +26,8 @@ interface OnlineMeeting {
   phase: 'preparing' | 'running' | 'stopping' | 'ended' | 'interrupted';
   stopRequested: boolean;
   listenForVerity: boolean;
-  spokenThrough: number;
+  pendingRequests?: Record<string, string>;
+  processedRequests?: Record<string, boolean>;
   timeOriginMs?: number;
   botCreateAttempted?: boolean;
   error?: string;
@@ -223,7 +224,8 @@ export class AttendeeMeetings {
         phase: 'preparing',
         stopRequested: false,
         listenForVerity,
-        spokenThrough: -1,
+        pendingRequests: {},
+        processedRequests: {},
       };
       await this.publish(state);
       try {
@@ -317,13 +319,23 @@ export class AttendeeMeetings {
   private async reconcile() {
     if (this.closed) return;
     for (const { state } of await this.records()) {
-      if (state.phase === 'ended') continue;
       try {
-        await this.reconcileOne(state);
+        if (state.phase !== 'ended') await this.reconcileOne(state);
+        await this.processPendingRequests(state);
       } catch {
         state.error = 'Meeting connection interrupted; retrying recovery.';
         await this.save(state);
       }
+    }
+  }
+  private async processPendingRequests(state: OnlineMeeting) {
+    if (!this.options.spoken) return;
+    for (const [identity, text] of Object.entries(state.pendingRequests ?? {})) {
+      await this.options.spoken(state.meeting, text, `meeting-${state.meeting.id}-${identity}`);
+      state.processedRequests ??= {};
+      state.processedRequests[identity] = true;
+      delete state.pendingRequests?.[identity];
+      await this.save(state);
     }
   }
   private async reconcileOne(state: OnlineMeeting) {
@@ -393,17 +405,22 @@ export class AttendeeMeetings {
     if (previous !== JSON.stringify(state.meeting)) await this.publish(state);
     else await this.options.ingest(state.meeting);
     if (state.listenForVerity && this.options.spoken) {
-      for (const utterance of [...snapshot].sort((a, b) => a.timestamp_ms - b.timestamp_ms)) {
-        if (utterance.timestamp_ms <= state.spokenThrough) continue;
-        if (/\bverity\b/iu.test(utterance.transcription.transcript))
-          await this.options.spoken(
-            state.meeting,
-            utterance.transcription.transcript,
-            `meeting-${state.meeting.id}-${utterance.timestamp_ms}`,
-          );
-        state.spokenThrough = utterance.timestamp_ms;
-        await this.save(state);
+      state.pendingRequests ??= {};
+      state.processedRequests ??= {};
+      const current = new Set<string>();
+      for (const utterance of snapshot) {
+        const text = utterance.transcription.transcript;
+        if (!/\bverity\b/iu.test(text)) continue;
+        const identity = createHash('sha256')
+          .update(JSON.stringify([utterance.speaker_uuid, utterance.timestamp_ms, text]))
+          .digest('hex');
+        current.add(identity);
+        if (!state.processedRequests[identity]) state.pendingRequests[identity] = text;
       }
+      for (const identity of Object.keys(state.pendingRequests)) {
+        if (!current.has(identity)) delete state.pendingRequests[identity];
+      }
+      await this.save(state);
     }
     if (final) {
       if (state.binding) await this.options.edge?.remove(state.binding.shareId);

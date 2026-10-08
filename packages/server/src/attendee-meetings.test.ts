@@ -336,7 +336,7 @@ it('keeps an addressed utterance pending when classification or dispatch fails',
     spoken,
     client: () =>
       ({
-        request: async () => ({ state: 'joined_recording' }),
+        request: async () => ({ state: 'ended' }),
         transcript: async () => [
           {
             speaker_uuid: 'alice',
@@ -353,5 +353,88 @@ it('keeps an addressed utterance pending when classification or dispatch fails',
   } finally {
     await service.close();
   }
-  expect(rows.get('meeting:retry')).toMatchObject({ spokenThrough: -1 });
+  expect(rows.get('meeting:retry')).toMatchObject({
+    phase: 'ended',
+    credentials: { apiKey: '', webhookSecret: '' },
+  });
+  const saved = rows.get('meeting:retry') as { pendingRequests: Record<string, string> };
+  expect(Object.values(saved.pendingRequests)).toEqual(['Verity, check this claim']);
+});
+
+it('finds corrected, late and simultaneous addressed utterances without replaying hints', async () => {
+  const rows = new Map<string, unknown>([
+    [
+      'meeting:corrections',
+      {
+        meeting: {
+          id: 'corrections',
+          sessionId: 'session',
+          state: 'active',
+          transcript: '',
+          revision: 0,
+        },
+        botId: 'bot',
+        phase: 'running',
+        credentials: { apiKey: 'fixture' },
+        identities: {},
+        listenForVerity: true,
+      },
+    ],
+  ]);
+  const store = {
+    getAttendeeState: async (id: string) => rows.get(id),
+    putAttendeeState: async (id: string, state: unknown) => {
+      rows.set(id, structuredClone(state));
+    },
+    listAttendeeState: async () => [...rows].map(([id, state]) => ({ id, state })),
+  } as unknown as EventStore;
+  let snapshot = [
+    {
+      speaker_uuid: 'alice',
+      timestamp_ms: 1000,
+      duration_ms: 500,
+      transcription: { transcript: 'ordinary statement' },
+    },
+  ];
+  const spoken = vi.fn().mockResolvedValue(undefined);
+  const ingest = vi.fn();
+  const run = async () => {
+    ingest.mockClear();
+    const service = new AttendeeMeetings({
+      store,
+      spoken,
+      ingest,
+      client: () =>
+        ({
+          request: async () => ({ state: 'joined_recording' }),
+          transcript: async () => snapshot,
+        }) as unknown as import('./attendee-client.js').AttendeeClient,
+    });
+    await service.open();
+    try {
+      await vi.waitFor(() => expect(ingest).toHaveBeenCalled());
+    } finally {
+      await service.close();
+    }
+  };
+  await run();
+  expect(spoken).not.toHaveBeenCalled();
+  snapshot = [
+    { ...snapshot[0]!, transcription: { transcript: 'Verity, check the corrected claim' } },
+    {
+      ...snapshot[0]!,
+      timestamp_ms: 0,
+      transcription: { transcript: 'Verity, check the late claim' },
+    },
+    {
+      ...snapshot[0]!,
+      speaker_uuid: 'bob',
+      transcription: { transcript: 'Verity, check the simultaneous claim' },
+    },
+  ];
+  await run();
+  expect(spoken).toHaveBeenCalledTimes(3);
+  expect(new Set(spoken.mock.calls.map((call: unknown[]) => call[2])).size).toBe(3);
+  await run();
+  expect(spoken).toHaveBeenCalledTimes(3);
 });
