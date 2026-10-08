@@ -666,6 +666,7 @@ export function SessionChat({
     locallyCreated,
     busy,
     working,
+    activityAnimating,
     waitingMessages,
     pendingMessages,
     branch: liveBranch,
@@ -4472,6 +4473,7 @@ export function SessionChat({
         // (a reducer that missed a `task ended`), so the Stop button + activity line
         // agree with the overview's server `status` dot instead of diverging.
         running={working}
+        activityAnimating={activityAnimating}
         onStop={onStop}
         dead={dead}
         voiceState={voice.state}
@@ -9173,6 +9175,7 @@ function InputBar({
   canSend,
   sending,
   running,
+  activityAnimating,
   onStop,
   dead,
   voiceState,
@@ -9212,6 +9215,8 @@ function InputBar({
   sending: boolean;
   /** A turn is in flight (#79) — the empty-field action button becomes Stop. */
   running: boolean;
+  /** Work is progressing; awaiting user input can still keep Stop available. */
+  activityAnimating: boolean;
   /** Interrupt the in-flight turn (#79). */
   onStop: () => void;
   /** Session can't be resumed (worktree gone) — lock the input, no send/mic. */
@@ -9290,7 +9295,7 @@ function InputBar({
         onRejected={onDropRejected}
         onActiveChange={setDropActive}
       >
-        <InputActivityLine running={running && !dead} />
+        <InputActivityLine running={activityAnimating && !dead} />
         {dropActive ? (
           <View pointerEvents="none" style={styles.inputDropHint}>
             <Icon name="paperclip" size={18} color={theme.colors.primary} />

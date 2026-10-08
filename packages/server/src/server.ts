@@ -187,6 +187,7 @@ import { z, ZodError } from 'zod';
 import {
   deriveSessionStatusFromProjection,
   permissionEventAwaitsInput,
+  sessionHasOpenTasks,
   projectionTailIsSelfContained,
   type SessionStatus,
 } from './status.js';
@@ -2825,11 +2826,13 @@ export interface SessionSummary extends SessionRecord {
    * can show the session's issue (`<type>/<issue>-<slug>`). ABSENT while the label
    * is cold, the worktree is gone, or branch switching is not configured. */
   branch?: string;
-  /** Persisted events excluding dev-server snapshots; compared against the synced
+  /** Background work can continue while the main agent awaits input. */
+  backgroundWorking?: boolean;
+  /** Nonempty agent-text events; compared against the synced
    * read marker to show the overview unread dot. */
   eventCount: number;
   /** Version associated with eventCount; absent in summaries from older servers. */
-  eventCountVersion?: 'dev-servers-excluded-v1';
+  agentTextCounterVersion?: 'agent-text-v2';
   /** Timestamp of the newest canonical event, for metadata-only recency displays. */
   lastActivityAt: number | null;
   /**
@@ -4887,9 +4890,25 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   const activityBusyCache = new Map<
     string,
-    { revision: string; lastEventSeq: number; busy: Promise<boolean> }
+    {
+      revision: string;
+      lastEventSeq: number;
+      busy: Promise<{
+        busy: boolean;
+        status: SessionStatus;
+        openTasks: boolean;
+        waitingPermission: boolean;
+      }>;
+    }
   >();
-  const activityLogBusy = async (id: string): Promise<boolean> => {
+  const activityLogBusy = async (
+    id: string,
+  ): Promise<{
+    busy: boolean;
+    status: SessionStatus;
+    openTasks: boolean;
+    waitingPermission: boolean;
+  }> => {
     const stats = await deps.eventStore.getSessionEventStats(id);
     const cached = activityBusyCache.get(id);
     if (
@@ -4903,10 +4922,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return cached.busy;
     }
     activityBusyCache.delete(id);
-    const busy = activityProjection(id).then(
-      ({ events, hasTaskLifecycle }) =>
-        hasTaskLifecycle && deriveSessionStatusFromProjection(events, events.length) === 'running',
-    );
+    const busy = activityProjection(id).then(({ events, hasTaskLifecycle }) => {
+      const status = deriveSessionStatusFromProjection(events, events.length);
+      const openTasks = sessionHasOpenTasks(events);
+      return {
+        busy: hasTaskLifecycle && (status === 'running' || (AWAITING.has(status) && openTasks)),
+        status,
+        openTasks,
+        waitingPermission: permissionEventAwaitsInput(events),
+      };
+    });
     if (stats === undefined) return busy;
     // Cache only the pure log result, never conductor state or payload arrays.
     // Revision catches lower-seq commits and removed provisional events; seq
@@ -4957,7 +4982,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const pendingPermissions = [
       ...new Set([...conductor.pendingPermissions(session.sessionId), ...pendingLinks]),
     ];
-    // Unread counts exclude listener snapshots; the seq still identifies a nonempty log.
+    // Unread counts include only agent text; the seq still identifies a nonempty log.
     const projectedStatus = liveStatusFromProjection(
       session.sessionId,
       events,
@@ -4987,6 +5012,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return {
       ...session,
       status,
+      ...(AWAITING.has(status) && sessionHasOpenTasks(events) ? { backgroundWorking: true } : {}),
       pendingPermissions,
       ...(status === 'awaiting_input' && pendingPermissions.length > 0
         ? { permissionAwaitingInput: true as const }
@@ -5001,7 +5027,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       resumable,
       ...(branch !== undefined ? { branch } : {}),
       eventCount: facts.eventCount,
-      eventCountVersion: 'dev-servers-excluded-v1',
+      agentTextCounterVersion: 'agent-text-v2',
       // Omit entirely when unresolved/unconfigured (exactOptionalPropertyTypes): a
       // literal `undefined` isn't assignable to `pr?: … | null`, and absent reads as
       // "no marker" on the client anyway.
@@ -7536,7 +7562,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ...(rateLimits.length > 0 ? { rateLimits } : {}),
         resumable: await worktreeExists(session.worktree),
         eventCount: facts.eventCount,
-        eventCountVersion: 'dev-servers-excluded-v1',
+        agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: facts.lastActivityAt,
         busy: conductor.isBusy(id) || hasMeetingJob(id),
         queued: conductor.queuedItems(id),
@@ -8656,9 +8682,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             reply.code(404);
             return { error: `session ${id} not found` };
           }
-          // In-flight OR log-derived running (open background task). `||` short-circuits,
-          // so a busy session skips the event-log read entirely — only an idle-looking
-          // conductor pays the hydration to catch the settled-turn/open-task gap. Carry
+          // In-flight OR log-derived running (open background task). The cached
+          // projection also separates input waits from active background work. Carry
           // the display name so the header reflects an auto-generated (or externally
           // renamed) title within a poll, without a remount. `branch` is still gated on
           // the branch-switching dep (a git read).
@@ -8669,7 +8694,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           // Log hydration exists specifically for a background task that outlived
           // conductor tracking. Neutral notices (including meeting progress) are
           // not turns and must not make an otherwise-finished session busy forever.
-          const busy = base.busy || (await activityLogBusy(id));
+          const log = await activityLogBusy(id);
+          const busy = base.busy || log.busy;
+          const awaiting =
+            base.pendingPermissions.length > 0 ||
+            (AWAITING.has(log.status) && !log.waitingPermission);
+          const activityAnimating =
+            busy && !base.terminationUnconfirmed && (!awaiting || log.openTasks);
           const branches = await branchesForSession(session);
           const branch = branches
             ? await currentBranchCached(branches, session.worktree)
@@ -8677,6 +8708,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return {
             ...base,
             busy,
+            activityAnimating,
             name: session.name,
             ...(branch !== undefined ? { branch } : {}),
             // Polled with the rest so the planning bar follows an agent that starts

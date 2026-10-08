@@ -145,6 +145,19 @@ export class SessionStream {
     return this.lastSeq;
   }
 
+  /** Latest lifecycle event, excluding transcript and administrative changes. */
+  get activitySeq(): number {
+    return this.reducer.activitySeq;
+  }
+
+  get settledSeq(): number {
+    return this.reducer.settledSeq;
+  }
+
+  get hasOpenTasks(): boolean {
+    return this.reducer.hasOpenTasks;
+  }
+
   /**
    * Prepend an older page of history (from scroll-up). The reducer is forward-only,
    * so this rebuilds it over the combined event list — correct across the page

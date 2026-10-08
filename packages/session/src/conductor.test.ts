@@ -2294,6 +2294,7 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
 
   it('stopSession includes an enqueue already awaiting durable storage and prevents it from draining', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    let turnSignal: AbortSignal | undefined;
     let releaseTurn = (): void => undefined;
     const turnGate = new Promise<void>((resolve) => {
       releaseTurn = resolve;
@@ -2311,7 +2312,11 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     });
     const conductor = new Conductor({
       store: ctx.store,
-      backend: gatedBackend(turnGate).backend,
+      backend: gatedBackend(turnGate, {
+        during: async (turn) => {
+          turnSignal = turn.opts.signal;
+        },
+      }).backend,
       worktreeExists: async () => true,
     });
 
@@ -2321,12 +2326,16 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     });
     await vi.waitFor(() => expect(enqueueStarted).toHaveBeenCalledOnce());
     const stop = conductor.stopSession('s1');
-    releaseEnqueue();
+    try {
+      // A stalled durable enqueue must not delay signalling the active agent.
+      await vi.waitFor(() => expect(turnSignal?.aborted).toBe(true));
+    } finally {
+      releaseEnqueue();
+      releaseTurn();
+      await stop;
+    }
 
     await expect(enqueue).resolves.toEqual({ queued: true });
-    // A cancel ACK is not process exit. Let the old backend actually finish before
-    // Stop may report the cancellation as complete.
-    releaseTurn();
     await expect(stop).resolves.toMatchObject({
       cancelled: true,
       droppedQueued: [expect.objectContaining({ prompt: 'queued while stopping' })],

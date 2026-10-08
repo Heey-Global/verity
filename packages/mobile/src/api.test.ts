@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { VerityApiError, VerityClient, projectRecordSchema, type TurnRequest } from './api.js';
+import {
+  VerityApiError,
+  VerityClient,
+  projectRecordSchema,
+  sessionSummarySchema,
+  sessionDetailSchema,
+  type TurnRequest,
+} from './api.js';
 
 const ZERO_USAGE = {
   inputTokens: 0,
@@ -9,6 +16,47 @@ const ZERO_USAGE = {
   cacheCreationTokens: 0,
   turns: 0,
 };
+
+it('normalizes the additive agent-text counter version without breaking legacy readers', () => {
+  const wire = {
+    sessionId: 's1',
+    worktree: '/wt/s1',
+    model: 'm',
+    name: null,
+    status: 'idle',
+    usage: ZERO_USAGE,
+    eventCount: 2,
+    agentTextCounterVersion: 'agent-text-v2',
+    lastSeenEventCount: 1,
+  };
+  // Installed clients restrict the older field to a literal; a replacement value
+  // there would reject the entire session list rather than just the read marker.
+  const legacy = z.object({ eventCountVersion: z.literal('dev-servers-excluded-v1').optional() });
+  expect(() => legacy.parse(wire)).not.toThrow();
+  expect(sessionSummarySchema.parse(wire).eventCountVersion).toBe('agent-text-v2');
+  expect(sessionDetailSchema.parse(wire).eventCountVersion).toBe('agent-text-v2');
+});
+
+it.each([undefined, 'dev-servers-excluded-v1', 'agent-text-v2'])(
+  'accepts summaries with counter version %s',
+  (eventCountVersion) => {
+    const parsed = sessionSummarySchema.parse({
+      sessionId: 's1',
+      worktree: '/wt/s1',
+      model: 'm',
+      name: null,
+      status: 'awaiting_input',
+      usage: ZERO_USAGE,
+      resumable: true,
+      eventCount: 2,
+      lastSeenEventCount: 1,
+      eventCountVersion,
+      backgroundWorking: true,
+    });
+    expect(parsed.eventCountVersion).toBe(eventCountVersion);
+    expect(parsed.backgroundWorking).toBe(true);
+  },
+);
 
 interface Call {
   url: string;
@@ -1992,14 +2040,14 @@ describe('VerityClient.setSessionSeen (#387)', () => {
     const { fetch, calls } = fakeFetch(json({ sessionId: 's1', lastSeenEventCount: 7 }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
 
-    const res = await client.setSessionSeen('s1', 7, 'dev-servers-excluded-v1');
+    const res = await client.setSessionSeen('s1', 7, 'agent-text-v2');
 
     expect(res).toEqual({ sessionId: 's1', lastSeenEventCount: 7 });
     expect(calls[0]?.url).toBe('http://host/sessions/s1/seen');
     expect(calls[0]?.init?.method).toBe('PATCH');
     expect(calls[0]?.init?.headers).toEqual({ 'content-type': 'application/json' });
     expect(calls[0]?.init?.body).toBe(
-      JSON.stringify({ eventCount: 7, counterVersion: 'dev-servers-excluded-v1' }),
+      JSON.stringify({ eventCount: 7, counterVersion: 'agent-text-v2' }),
     );
   });
 

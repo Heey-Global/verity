@@ -21,19 +21,25 @@ beforeEach(async () => {
 async function expectCanonicalStats(id: string): Promise<void> {
   const rows = await ctx.db
     .selectFrom('events')
-    .select(['id', 'created_at', 'type'])
+    .select(['id', 'created_at', 'type', 'payload'])
     .where('session_id', '=', id)
     .orderBy('id', 'desc')
     .execute();
   const marker = await ctx.store.getSessionEventStats(id);
   expect(marker).toMatchObject({
-    eventCount: rows.filter((row) => row.type !== 'dev_servers_changed').length,
+    eventCount: rows.filter(
+      (row) =>
+        row.type === 'text' && String((row.payload as { delta?: string }).delta ?? '').length > 0,
+    ).length,
     lastEventSeq: Number(rows[0]?.id ?? 0),
     lastActivityAt: rows[0]?.created_at.getTime() ?? null,
   });
   const facts = (await ctx.store.listSessionProjectionFacts([id], 5)).get(id);
   expect(facts).toMatchObject({
-    eventCount: rows.filter((row) => row.type !== 'dev_servers_changed').length,
+    eventCount: rows.filter(
+      (row) =>
+        row.type === 'text' && String((row.payload as { delta?: string }).delta ?? '').length > 0,
+    ).length,
     lastEventSeq: Number(rows[0]?.id ?? 0),
     lastActivityAt: rows[0]?.created_at.getTime() ?? null,
   });
@@ -47,6 +53,55 @@ async function insertRaw(id: number, sessionId = 'a', at = '2026-01-01T00:00:00Z
 }
 
 describe('durable session event statistics', () => {
+  it('counts new agent text but not merge bookkeeping, thoughts or tool activity', async () => {
+    await ctx.store.appendEvent('a', { t: 'text', delta: 'read reply' });
+    await ctx.store.setSessionSeen('a', 1);
+    const before = (await ctx.store.getSessionEventStats('a'))!;
+    const events = [
+      { t: 'prompt', text: 'merge' },
+      { t: 'thinking', blockId: 'thought', delta: 'checking' },
+      { t: 'notice', text: 'Merge complete' },
+      { t: 'task', id: 'child', phase: 'started' },
+      { t: 'task', id: 'child', phase: 'ended' },
+      { t: 'status', state: 'completed' },
+      { t: 'text', delta: '' },
+    ] as const;
+    for (const event of events) await ctx.store.appendEvent('a', event);
+    await expectCanonicalStats('a');
+    expect((await ctx.store.getSessionEventStats('a'))!.eventCount).toBe(1);
+    expect((await ctx.store.getSessionEventStats('a'))!.lastEventSeq).toBeGreaterThan(
+      before.lastEventSeq,
+    );
+    expect((await ctx.store.getSession('a'))!.lastSeenEventCount).toBe(1);
+    await ctx.store.appendEvent('a', { t: 'text', delta: 'new ' });
+    await ctx.store.appendEvent('a', { t: 'text', delta: 'reply' });
+    expect((await ctx.store.getSessionEventStats('a'))!.eventCount).toBe(3);
+  });
+
+  it('migrates broad read marks to text frontiers and preserves unread replies on rollback', async () => {
+    const migrator = new Migrator({ db: ctx.db, provider: migrationProvider });
+    try {
+      expect((await migrator.migrateTo('0143_drop_orphaned_agent_steps')).error).toBeUndefined();
+      await ctx.store.appendEvent('a', { t: 'prompt', text: 'go' });
+      await ctx.store.appendEvent('a', { t: 'text', delta: 'read' });
+      await ctx.store.appendEvent('a', { t: 'notice', text: 'Merge complete' });
+      await ctx.store.setSessionSeen('a', 3);
+      await ctx.store.appendEvent('a', { t: 'thinking', blockId: 't', delta: 'thinking' });
+      await ctx.store.appendEvent('a', { t: 'text', delta: 'unread' });
+      expect((await migrator.migrateToLatest()).error).toBeUndefined();
+      expect((await ctx.store.getSession('a'))!.lastSeenEventCount).toBe(1);
+      expect((await ctx.store.getSession('b'))!.lastSeenEventCount).toBeNull();
+      expect((await ctx.store.getSessionEventStats('a'))!.eventCount).toBe(2);
+      expect((await migrator.migrateTo('0143_drop_orphaned_agent_steps')).error).toBeUndefined();
+      expect((await ctx.store.getSession('a'))!.lastSeenEventCount).toBe(2);
+      expect((await ctx.store.getSessionEventStats('a'))!.eventCount).toBe(5);
+      expect((await migrator.migrateToLatest()).error).toBeUndefined();
+      expect((await ctx.store.getSession('a'))!.lastSeenEventCount).toBe(1);
+    } finally {
+      expect((await migrator.migrateToLatest()).error).toBeUndefined();
+    }
+  });
+
   it('restores the latest listener snapshot across unrelated message events', async () => {
     expect(await ctx.store.getLatestDevServersEvent('a')).toBeUndefined();
     const listeners = [

@@ -88,63 +88,71 @@ export const attentionSignalSchema = z.object({
 });
 export type AttentionSignal = z.infer<typeof attentionSignalSchema>;
 
-export const sessionSummarySchema = z.object({
-  sessionId: z.string().min(1),
-  worktree: z.string(),
-  model: z.string(),
-  /** Operator-assigned display name; `null` until set at spawn or via rename. */
-  name: z.string().nullable(),
-  /** Project binding for multi-repo fleet sessions (#174). Older servers omit it. */
-  projectId: z.string().nullable().optional(),
-  /** Operator-marked favorite, highlighted in the session list. ABSENT means not a
-   * favorite — servers omit it for unmarked sessions, and older servers never send it. */
-  favorite: z.boolean().optional(),
-  status: sessionStatusSchema,
-  /** Tool-use ids currently waiting for permission. Optional for compatibility
-   * with older servers. */
-  pendingPermissions: z.array(z.string().min(1)).optional(),
-  /** True only when awaiting_input is caused by those permissions. */
-  permissionAwaitingInput: z.literal(true).optional(),
-  usage: usageTotalsSchema,
-  /** Latest rate-limit state for this session. Optional for rollout with
-   * older servers and absent until a runtime emits one. */
-  rateLimit: rateLimitStateSchema.optional(),
-  /** Latest rate-limit states by provider/window. Optional for older servers. */
-  rateLimits: z.array(rateLimitStateSchema).optional(),
-  /** False once the session's worktree is gone (cleaned up after its PR merged):
-   * a steering turn would 410. The UI disables the input + flags the session.
-   * OPTIONAL on the wire for forward-compat: an app newer than the server (no
-   * `resumable` yet) must not hard-fail the list parse — a missing value reads as
-   * "resumable" (the safe default: don't block sending on absent metadata). */
-  resumable: z.boolean().optional(),
-  /** Compact PR status for this session's current branch (#387), so the overview can
-   * mark merge-ready / merge-blocked / CI-failed sessions without a per-session branch fetch. `null` =
-   * looked up, no open PR; ABSENT = older server OR GitHub not configured (no
-   * token/remote) — both render as "no PR marker". */
-  pr: sessionPrSchema.nullable().optional(),
-  /** The worktree's current branch, so the overview can show the session's issue
-   * (`<type>/<issue>-<slug>`). ABSENT on an older server, while the server's label
-   * is cold, or once the worktree is gone — all read as "no issue". */
-  branch: z.string().optional(),
-  /** Persisted events excluding dev-server snapshots — the overview compares this
-   * against the server-persisted "last seen" mark for the unread dot. OPTIONAL on
-   * the wire: an OLDER server omits it on the list, and absent simply reads as "no
-   * unread signal" (never a false unread). The detail endpoint always sends it. */
-  eventCount: z.number().int().nonnegative().optional(),
-  /** Version associated with this count; forward it unchanged when marking seen. */
-  eventCountVersion: z.literal('dev-servers-excluded-v1').optional(),
-  /** Operator's "last seen" mark for the unread dot (#387): the `eventCount` at the
-   * last open, persisted server-side so the dot syncs across devices. A session is
-   * unread when `eventCount > lastSeenEventCount`. `null` = never opened (→ not
-   * unread); ABSENT = older server with no synced mark (→ not unread either). */
-  lastSeenEventCount: z.number().int().nonnegative().nullable().optional(),
-  /** Conditions about THIS session, e.g. a sandbox that lost its connection to
-   * the server (`sandbox_disconnected`). Absent from a healthy session and from
-   * any older server, both of which read as "nothing to report". */
-  attention: z.array(attentionSignalSchema).optional(),
-  /** The session's recurring automation, if it has one. */
-  automation: z.object({ status: z.enum(['enabled', 'paused']) }).optional(),
-});
+export const sessionSummarySchema = z
+  .object({
+    sessionId: z.string().min(1),
+    worktree: z.string(),
+    model: z.string(),
+    /** Operator-assigned display name; `null` until set at spawn or via rename. */
+    name: z.string().nullable(),
+    /** Project binding for multi-repo fleet sessions (#174). Older servers omit it. */
+    projectId: z.string().nullable().optional(),
+    /** Operator-marked favorite, highlighted in the session list. ABSENT means not a
+     * favorite — servers omit it for unmarked sessions, and older servers never send it. */
+    favorite: z.boolean().optional(),
+    status: sessionStatusSchema,
+    /** Tool-use ids currently waiting for permission. Optional for compatibility
+     * with older servers. */
+    pendingPermissions: z.array(z.string().min(1)).optional(),
+    /** True only when awaiting_input is caused by those permissions. */
+    permissionAwaitingInput: z.literal(true).optional(),
+    usage: usageTotalsSchema,
+    /** Latest rate-limit state for this session. Optional for rollout with
+     * older servers and absent until a runtime emits one. */
+    rateLimit: rateLimitStateSchema.optional(),
+    /** Latest rate-limit states by provider/window. Optional for older servers. */
+    rateLimits: z.array(rateLimitStateSchema).optional(),
+    /** False once the session's worktree is gone (cleaned up after its PR merged):
+     * a steering turn would 410. The UI disables the input + flags the session.
+     * OPTIONAL on the wire for forward-compat: an app newer than the server (no
+     * `resumable` yet) must not hard-fail the list parse — a missing value reads as
+     * "resumable" (the safe default: don't block sending on absent metadata). */
+    resumable: z.boolean().optional(),
+    /** Compact PR status for this session's current branch (#387), so the overview can
+     * mark merge-ready / merge-blocked / CI-failed sessions without a per-session branch fetch. `null` =
+     * looked up, no open PR; ABSENT = older server OR GitHub not configured (no
+     * token/remote) — both render as "no PR marker". */
+    pr: sessionPrSchema.nullable().optional(),
+    /** The worktree's current branch, so the overview can show the session's issue
+     * (`<type>/<issue>-<slug>`). ABSENT on an older server, while the server's label
+     * is cold, or once the worktree is gone — all read as "no issue". */
+    branch: z.string().optional(),
+    /** Nonempty agent-text events — the overview compares this
+     * against the server-persisted "last seen" mark for the unread dot. OPTIONAL on
+     * the wire: an OLDER server omits it on the list, and absent simply reads as "no
+     * unread signal" (never a false unread). The detail endpoint always sends it. */
+    eventCount: z.number().int().nonnegative().optional(),
+    /** Active subagents can keep working while the main agent awaits input. */
+    backgroundWorking: z.boolean().optional(),
+    /** Version associated with this count; forward it unchanged when marking seen. */
+    eventCountVersion: z.string().optional(),
+    agentTextCounterVersion: z.literal('agent-text-v2').optional(),
+    /** Operator's "last seen" mark for the unread dot (#387): the `eventCount` at the
+     * last open, persisted server-side so the dot syncs across devices. A session is
+     * unread when `eventCount > lastSeenEventCount`. `null` = never opened (→ not
+     * unread); ABSENT = older server with no synced mark (→ not unread either). */
+    lastSeenEventCount: z.number().int().nonnegative().nullable().optional(),
+    /** Conditions about THIS session, e.g. a sandbox that lost its connection to
+     * the server (`sandbox_disconnected`). Absent from a healthy session and from
+     * any older server, both of which read as "nothing to report". */
+    attention: z.array(attentionSignalSchema).optional(),
+    /** The session's recurring automation, if it has one. */
+    automation: z.object({ status: z.enum(['enabled', 'paused']) }).optional(),
+  })
+  .overwrite((session) => ({
+    ...session,
+    eventCountVersion: session.agentTextCounterVersion ?? session.eventCountVersion,
+  }));
 export type SessionSummary = z.infer<typeof sessionSummarySchema>;
 
 /**
@@ -204,7 +212,7 @@ const sessionPlanningSchema = z
   .catch(undefined);
 export type SessionPlanning = NonNullable<z.infer<typeof sessionPlanningSchema>>;
 
-export const sessionDetailSchema = sessionSummarySchema.extend({
+export const sessionDetailSchema = sessionSummarySchema.safeExtend({
   planning: sessionPlanningSchema,
   planningRevision: z.number().int().nonnegative().optional(),
   planningPlan: z.string().nullable().optional(),
@@ -220,6 +228,8 @@ export type SessionDetail = z.infer<typeof sessionDetailSchema>;
 /** Live activity of a session (from `GET /sessions/:id/activity`): in-flight +
  * queued state, polled for the working indicator and persistent waiting bubbles. */
 export const sessionActivitySchema = z.object({
+  /** Active work, independently of whether the session remains cancellable. */
+  activityAnimating: z.boolean().optional(),
   busy: z.boolean(),
   queued: z.array(queuedItemSchema),
   /** Tool-use ids currently parked on a server-side permission decision. Optional
@@ -4406,7 +4416,10 @@ export class VerityClient {
     if (sentToken) {
       init = {
         ...init,
-        headers: { authorization: `Bearer ${token}`, ...(init.headers as Record<string, string>) },
+        headers: {
+          authorization: `Bearer ${token}`,
+          ...(init.headers as Record<string, string>),
+        },
       };
     }
     if ((init.method ?? 'GET') === 'GET' && liveResourceInterval(path) !== undefined) {
