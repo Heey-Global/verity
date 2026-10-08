@@ -2,6 +2,7 @@ export const DEFAULT_POLL_INTERVAL_MS: number;
 export const DEFAULT_RESERVE_FRACTION: number;
 export const DEFAULT_MINIMUM_RESERVE_BYTES: number;
 export const KILL_COOLDOWN_MS: number;
+export const SUSPEND_MS: number;
 export const MINIMUM_VICTIM_RSS_BYTES: number;
 export const DEFAULT_AGENT_UID: number;
 export const DEFAULT_CONTROL_DIR: string;

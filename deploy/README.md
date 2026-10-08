@@ -827,10 +827,10 @@ to the command the agent ran — the tool shell with `npm test`, the test runner
 and its workers — whenever that command holds most of the memory, so the agent
 CLI goes only when it is itself the consumer, and the ACP adapter never does. A
 process tree detached under init (a backgrounded dev server or database) is a
-candidate of its own. If a kill does not lower usage by at least half of what
+candidate of its own. If a kill does not lower usage by at least a quarter of what
 the victim held, the guard assumes the memory is page cache or tmpfs that no
-kill frees, logs `suspended`, and kills nothing more until usage drops below the
-threshold again.
+kill frees, logs `suspended`, and kills nothing for a minute or until usage
+drops below the threshold, so it never works through the sessions one by one.
 The reserve is a fifth of the ceiling and never less than 1 GiB, because the
 guest cannot see the Sentry's own memory or the page cache the host charges to
 the cgroup; at the 6 GiB default the guard acts at about 4.8 GiB. On the cgroup

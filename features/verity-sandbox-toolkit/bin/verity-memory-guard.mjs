@@ -55,6 +55,8 @@ export const DEFAULT_RESERVE_FRACTION = 0.2;
 export const DEFAULT_MINIMUM_RESERVE_BYTES = 1024 ** 3;
 /** Time after a kill during which no second kill is attempted; freed pages take a moment to leave the cgroup. */
 export const KILL_COOLDOWN_MS = 2_000;
+/** How long the guard stands down after a kill that freed too little (see `tick`). */
+export const SUSPEND_MS = 60_000;
 /** Below this RSS a process is not worth killing: it would not free enough to matter and is likely infrastructure. */
 export const MINIMUM_VICTIM_RSS_BYTES = 64 * 1024 ** 2;
 export const DEFAULT_AGENT_UID = 1000;
@@ -332,13 +334,14 @@ export function createMemoryGuard(options) {
     return uid === agentUid && statStartTime(readFile, pid) === startTime;
   };
 
-  const send = (targets, signal) => {
-    let delivered = 0;
+  /** Signals every target that passes `fence`; returns the pids it reached. */
+  const send = (targets, signal, fence) => {
+    const delivered = new Set();
     for (const [pid, startTime] of targets) {
-      if (!stillTarget(pid, startTime)) continue;
+      if (!fence(pid, startTime)) continue;
       try {
         kill(pid, signal);
-        delivered += 1;
+        delivered.add(pid);
       } catch {
         // Already gone: the memory it held is not the guard's problem any more.
       }
@@ -354,32 +357,38 @@ export function createMemoryGuard(options) {
    * that appeared in between.
    */
   const signalTree = (victim, descendants) => {
-    const targets = new Map(
-      [victim, ...descendants.toReversed()].map((process) => [
-        process.pid,
-        statStartTime(readFile, process.pid),
-      ]),
+    const topDown = (processes) =>
+      [...processes]
+        .reverse()
+        .map((process) => [process.pid, statStartTime(readFile, process.pid)]);
+    const targets = new Map(topDown([...descendants, victim]));
+    const stopped = send(targets, 'SIGSTOP', stillTarget);
+    const late = topDown(descendantsOf(victim.pid, listProcesses(readFile, listPids))).filter(
+      ([pid]) => !targets.has(pid),
     );
-    send(targets, 'SIGSTOP');
-    const late = descendantsOf(victim.pid, listProcesses(readFile, listPids))
-      .toReversed()
-      .filter((process) => !targets.has(process.pid))
-      .map((process) => [process.pid, statStartTime(readFile, process.pid)]);
-    send(late, 'SIGSTOP');
+    for (const pid of send(late, 'SIGSTOP', stillTarget)) stopped.add(pid);
     for (const [pid, startTime] of late) targets.set(pid, startTime);
-    return send(targets, 'SIGKILL');
+    // A process this pass stopped is killed on the start-time fence alone: left
+    // stopped because its status became unreadable, it would hang its session.
+    return send(targets, 'SIGKILL', (pid, startTime) =>
+      stopped.has(pid) ? statStartTime(readFile, pid) === startTime : stillTarget(pid, startTime),
+    ).size;
   };
 
   /**
    * After a kill, the next poll above the threshold checks that the kill freed
-   * memory. If usage did not fall by at least half of what the victim held, what
-   * keeps the cgroup full is not process memory the guard can reach — page
-   * cache, tmpfs files, the Sentry itself — and killing on would take one
-   * session after another without helping. The guard then stands down until
-   * usage falls below the threshold again.
+   * memory. If usage fell by less than a quarter of what the victim held, what
+   * keeps the cgroup full is likely not process memory the guard can reach —
+   * page cache, tmpfs files, the Sentry itself — and killing on every cooldown
+   * would take one session after another without helping. The guard then
+   * stands down for `SUSPEND_MS`, or until usage drops below the threshold. The
+   * quarter is lenient on purpose: summed RSS counts pages that forked workers
+   * share more than once, and a neighbour may grow during the cooldown. A
+   * misjudged suspension costs a minute of protection; a missed one, a session
+   * per cooldown.
    */
   let lastKill;
-  let suspended = false;
+  let suspendedUntil;
 
   /** One poll. Returns what happened, for `--once` and for the tests. */
   const tick = () => {
@@ -402,19 +411,25 @@ export function createMemoryGuard(options) {
     if (ceiling.usageBytes < thresholdBytes) {
       lastOutcome = 'below-threshold';
       lastKill = undefined;
-      suspended = false;
+      suspendedUntil = undefined;
       return result('below-threshold');
     }
     if (now() < cooldownUntil) return result('cooldown');
-    if (suspended) return result('suspended');
+    if (suspendedUntil !== undefined) {
+      if (now() < suspendedUntil) return result('suspended');
+      suspendedUntil = undefined;
+      lastKill = undefined;
+    }
     if (
       lastKill !== undefined &&
-      lastKill.usageBytes - ceiling.usageBytes < lastKill.treeRssBytes / 2
+      lastKill.usageBytes - ceiling.usageBytes < lastKill.treeRssBytes / 4
     ) {
-      suspended = true;
+      suspendedUntil = now() + SUSPEND_MS;
       log({
         event: 'suspended',
-        reason: 'the last kill freed too little; what fills the cgroup is not process memory',
+        reason:
+          'the last kill freed too little; what fills the cgroup is likely not process memory',
+        suspendMs: SUSPEND_MS,
         usageBytes: ceiling.usageBytes,
         usageAtKillBytes: lastKill.usageBytes,
         victimTreeRssBytes: lastKill.treeRssBytes,
@@ -507,7 +522,8 @@ function claimPidFile(controlDir) {
       writeFileSync(path, record, { mode: 0o600, flag: 'wx' });
       return true;
     } catch (error) {
-      if (error?.code !== 'EEXIST' || attempt > 0 || probeMemoryGuard(controlDir)) return false;
+      if (error?.code !== 'EEXIST') throw error;
+      if (attempt > 0 || probeMemoryGuard(controlDir)) return false;
       rmSync(path, { force: true });
     }
   }

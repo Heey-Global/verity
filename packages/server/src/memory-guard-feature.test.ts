@@ -7,6 +7,7 @@ import {
   DEFAULT_MINIMUM_RESERVE_BYTES,
   descendantsOf,
   KILL_COOLDOWN_MS,
+  SUSPEND_MS,
   listProcesses,
   MINIMUM_VICTIM_RSS_BYTES,
   probeMemoryGuard,
@@ -318,6 +319,25 @@ describe('createMemoryGuard', () => {
     expect(kill).toHaveBeenCalledWith(6103, 'SIGKILL');
   });
 
+  it('kills every process it stopped, even one whose status became unreadable', () => {
+    // A process left in SIGSTOP hangs its session for good; the start time alone
+    // still fences against pid reuse.
+    const files = { ...sandbox(), ...cgroup(5.5 * GIB) };
+    const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>((pid, signal) => {
+      if (pid === 6101 && signal === 'SIGSTOP') delete files['/proc/6101/status'];
+    });
+    const guard = createMemoryGuard({
+      readFile: reader(files),
+      listPids: listPids(files),
+      readLink: () => '/',
+      kill,
+      agentUid: 1000,
+      now: () => 0,
+    });
+    guard.tick();
+    expect(kill).toHaveBeenCalledWith(6101, 'SIGKILL');
+  });
+
   it('never signals a pid reused by infrastructure or by another session', () => {
     const files = { ...sandbox(), ...cgroup(5.5 * GIB) };
     const stat = (startTime: number): string =>
@@ -383,10 +403,16 @@ describe('createMemoryGuard', () => {
     expect(guard.tick().outcome).toBe('kill');
     clock = KILL_COOLDOWN_MS;
     expect(guard.tick().outcome).toBe('suspended');
-    clock = 100 * KILL_COOLDOWN_MS;
+    clock = KILL_COOLDOWN_MS + SUSPEND_MS - 1;
     expect(guard.tick().outcome).toBe('suspended');
-    expect(kill.mock.calls.filter(([, signal]) => signal === 'SIGKILL')).toHaveLength(4);
+    const kills = () => kill.mock.calls.filter(([, signal]) => signal === 'SIGKILL').length;
+    expect(kills()).toBe(4);
     expect(log.mock.calls.map(([r]) => r.event)).toEqual(['armed', 'kill', 'suspended']);
+    // A suspension is bounded: a misjudged one must not disarm the guard for an
+    // episode that may never end. At most one kill per suspension, not per cooldown.
+    clock = KILL_COOLDOWN_MS + SUSPEND_MS;
+    expect(guard.tick().outcome).toBe('kill');
+    expect(kills()).toBe(8);
   });
 
   it('only reports in dry-run mode', () => {
