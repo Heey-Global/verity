@@ -422,7 +422,7 @@ function SessionList({ client }: { client: VerityClient }) {
   // The session whose actions sheet is open (its long-press opened the modal), or
   // null when the modal is closed.
   const [moveGeneration, setMoveGeneration] = useState(0);
-  const [renaming, setRenaming] = useState<SessionSummary | null>(null);
+  const [renaming, setRenaming] = useState<(SessionSummary & { openLinks?: boolean }) | null>(null);
 
   // Drop a stale split-pane selection: if the chosen session disappears (deleted,
   // or it was never refreshed in), clear it so the right pane falls back to the
@@ -865,6 +865,7 @@ function SessionList({ client }: { client: VerityClient }) {
       {renaming && client && (
         <SessionSettingsDialog
           key={renaming.sessionId}
+          initialSection={renaming.openLinks ? 'links' : undefined}
           sessionId={renaming.sessionId}
           sessionName={renaming.name}
           displayName={sessionLabel(renaming)}
@@ -1233,7 +1234,7 @@ function ProjectGroup({
   reordering: boolean;
   sessionReordering: boolean;
   onReorderSession: (scope: string, order: readonly string[]) => void;
-  onRenameSession: (session: SessionSummary) => void;
+  onRenameSession: (session: SessionSummary & { openLinks?: boolean }) => void;
   onToggleFavoriteSession: (session: SessionSummary) => void;
   onDeleteSession: (session: SessionSummary) => void;
   onSelectSession?: (id: string) => void;
@@ -1555,6 +1556,7 @@ function ProjectGroup({
                                 )
                             : undefined
                         }
+                        onOpenLinks={() => onRenameSession({ ...session, openLinks: true })}
                         onRename={() => onRenameSession(session)}
                         onToggleFavorite={() => onToggleFavoriteSession(session)}
                         onDelete={() => onDeleteSession(session)}
@@ -1864,6 +1866,7 @@ function ProviderLimitSegment({
 function SessionRow({
   session,
   onRename,
+  onOpenLinks,
   onToggleFavorite,
   onDelete,
   onSelect,
@@ -1883,6 +1886,7 @@ function SessionRow({
   onMoveDown,
 }: {
   session: SessionSummary;
+  onOpenLinks?: () => void;
   onRename: () => void;
   onToggleFavorite: () => void;
   onDelete: () => void;
@@ -1933,6 +1937,7 @@ function SessionRow({
   const notice = attentionNotice(session.attention);
   const edgeMarkers = sessionMarkers({
     favorite,
+    linked: session.linked,
     automation: session.automation?.status,
     shared: previewActive ? (previewPublic ? 'online' : 'local') : undefined,
   });
@@ -2023,7 +2028,11 @@ function SessionRow({
       </View>
       {/* Favorite, automation and sharing: icon + short bar on the trailing edge,
           so the leading edge stays with the working/unread dot. */}
-      <SessionMarkerColumn markers={edgeMarkers} previewUrl={previewUrl ?? null} />
+      <SessionMarkerColumn
+        markers={edgeMarkers}
+        previewUrl={previewUrl ?? null}
+        onOpenLinks={interactionsLocked ? undefined : onOpenLinks}
+      />
     </View>
   );
 

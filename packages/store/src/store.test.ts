@@ -66,7 +66,9 @@ describe('EventStore — linked session allowance', () => {
     await expect(ctx.store.createSessionLink('s1', 's1')).rejects.toThrow(
       'a session cannot link to itself',
     );
+    expect(await ctx.store.linkedSessionIds()).toEqual(new Set());
     expect(await ctx.store.createSessionLink('s1', 's2')).toBe(true);
+    expect(await ctx.store.linkedSessionIds()).toEqual(new Set(['s1', 's2']));
     expect(await ctx.store.createSessionLink('s2', 's1')).toBe(false);
     expect(await ctx.store.listSessionLinks('s1')).toEqual([
       { sessionId: 's1', peerSessionId: 's2', peerProjectId: 'p1', peerName: null },
@@ -79,6 +81,7 @@ describe('EventStore — linked session allowance', () => {
     );
     expect(await ctx.store.reserveSessionLinkMessage('s2', 's1', 'reply', false)).toBe('reserved');
     await ctx.store.hideProject('p1');
+    expect(await ctx.store.linkedSessionIds()).toEqual(new Set());
     expect(await ctx.store.listSessionLinks('s1')).toEqual([]);
     expect(await ctx.store.listSessionLinks('s2')).toEqual([]);
     await expect(ctx.store.createSessionLink('s1', 's2')).rejects.toThrow(

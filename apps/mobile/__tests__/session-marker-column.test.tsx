@@ -71,3 +71,24 @@ describe('SessionMarkerColumn', () => {
     expect(open).toHaveBeenCalledWith('http://192.168.1.5:8080');
   });
 });
+
+it('marks linked sessions between automation and sharing and opens their settings', () => {
+  const markers = sessionMarkers({
+    favorite: true,
+    automation: 'enabled',
+    linked: true,
+    shared: 'online',
+  });
+  expect(markers.map((marker) => marker.kind)).toEqual([
+    'favorite',
+    'automation',
+    'linked',
+    'shared',
+  ]);
+  expect(markerIcon({ kind: 'linked' })).toBe('link');
+  expect(sessionMarkersLabel([{ kind: 'linked' }])).toBe('linked sessions');
+  const open = jest.fn();
+  render(<SessionMarkerColumn markers={markers} previewUrl={null} onOpenLinks={open} />);
+  fireEvent.press(screen.getByLabelText('Open linked sessions'));
+  expect(open).toHaveBeenCalledTimes(1);
+});

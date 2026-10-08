@@ -1448,6 +1448,15 @@ export class EventStore implements EventSink {
     return deleted !== undefined;
   }
 
+  /** Both endpoints are marked using one query for the overview. */
+  async linkedSessionIds(): Promise<Set<string>> {
+    const rows = await this.db
+      .selectFrom('session_links')
+      .select(['session_a', 'session_b'])
+      .execute();
+    return new Set(rows.flatMap((row) => [row.session_a, row.session_b]));
+  }
+
   async listSessionLinks(sessionId: string): Promise<SessionLinkRecord[]> {
     const rows = await this.db
       .selectFrom('session_links')

@@ -50,6 +50,7 @@ const lightTheme = {
     onPrimary: '#ffffff',
     // Magenta signature accent (duotone partner to `primary`). Darker on light.
     accent: '#c81d9e',
+    linked: '#7952c7',
     tone: {
       idle: '#8a949c',
       active: '#2f6fed',
@@ -92,6 +93,7 @@ const darkTheme = {
     onPrimary: '#00111f',
     // Neon-magenta signature accent (duotone partner to the electric-blue primary).
     accent: '#ff35da',
+    linked: '#b695ff',
     tone: {
       idle: '#5d6090',
       active: '#19c8ff',

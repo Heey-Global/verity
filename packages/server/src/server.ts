@@ -2828,6 +2828,7 @@ interface SessionPrSummary {
 }
 
 export interface SessionSummary extends SessionRecord {
+  linked?: boolean;
   /** Position within a manually ordered overview group; null means automatic. */
   sortOrder?: number | null;
   status: SessionStatus;

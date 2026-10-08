@@ -147,6 +147,7 @@ export const sessionSummarySchema = z
      * any older server, both of which read as "nothing to report". */
     attention: z.array(attentionSignalSchema).optional(),
     /** Position within a manually ordered project; absent on older servers. */
+    linked: z.boolean().optional(),
     sortOrder: z.number().int().nonnegative().nullable().optional(),
     /** The session's recurring automation, if it has one. */
     automation: z.object({ status: z.enum(['enabled', 'paused']) }).optional(),
