@@ -29,6 +29,7 @@ import {
 
 type Header = {
   id: string;
+  scope?: string;
   row: AnimatedRef<View>;
   handle: AnimatedRef<View>;
   slot: AnimatedRef<View>;
@@ -49,10 +50,14 @@ export function useProjectReorder({
   order,
   sortable,
   onDrop,
+  sessionOrders = {},
+  onDropSession,
 }: {
   order: readonly string[];
   sortable: readonly string[];
   onDrop: (order: readonly string[]) => void;
+  sessionOrders?: Readonly<Record<string, readonly string[]>>;
+  onDropSession?: (scope: string, order: readonly string[]) => void;
 }) {
   const hostRef = useAnimatedRef<View>();
   const listRef = useAnimatedRef<React.Component>();
@@ -64,14 +69,18 @@ export function useProjectReorder({
   const viewportHeight = useSharedValue(0);
   const heights = useSharedValue<RowHeights>({});
   const sequence = useSharedValue(0);
-  const source = useDerivedValue(() => ({ order, sortable }));
+  const source = useDerivedValue(() => ({ order, sortable, sessionOrders }));
   const [headers, setHeaders] = useState<Header[]>([]);
   const registeredHeaders = useDerivedValue(() => headers);
-  const [active, setActive] = useState<{ id: string | null; token: number } | null>(null);
+  const [active, setActive] = useState<{ id: string | null; token: number; scope?: string } | null>(
+    null,
+  );
   const activeRef = useRef<{ id: string; token: number } | null>(null);
   const completedToken = useRef(0);
   const latestDrop = useRef(onDrop);
   latestDrop.current = onDrop;
+  const latestSessionDrop = useRef(onDropSession);
+  latestSessionDrop.current = onDropSession;
   const fallback = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const register = useCallback((header: Header) => {
     setHeaders((current) => [...current, header]);
@@ -87,17 +96,24 @@ export function useProjectReorder({
     (id: string, token: number) => {
       if (drag.value?.token !== token || token <= completedToken.current) return;
       activeRef.current = { id, token };
-      setActive({ id, token });
+      setActive({
+        id,
+        token,
+        ...(drag.value.scope !== undefined ? { scope: drag.value.scope } : {}),
+      });
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => undefined);
     },
     [drag],
   );
-  const ended = useCallback((next: readonly string[] | null, token: number) => {
+  const ended = useCallback((next: readonly string[] | null, token: number, scope?: string) => {
     if (token <= completedToken.current) return;
     completedToken.current = token;
     if (activeRef.current?.token === token) activeRef.current = null;
     setActive((current) => (current?.token === token ? { id: null, token } : current));
-    if (next) latestDrop.current(next);
+    if (next) {
+      if (scope !== undefined) latestSessionDrop.current?.(scope, next);
+      else latestDrop.current(next);
+    }
   }, []);
   // Keep the final compact slot until React commits the new order. Clearing it
   // in finalize starts a return spring against the old layout before that commit.
@@ -145,6 +161,7 @@ export function useProjectReorder({
     // Measure untransformed slots, not the animated neighbours. Prefix sums of
     // estimated offscreen row heights drift badly in a long virtualized list.
     for (const header of registeredHeaders.value) {
+      if (header.scope !== current.scope) continue;
       const candidate = current.startOrder.indexOf(header.id);
       if (candidate < current.range.min || candidate > current.range.max) continue;
       const slot = measure(header.slot);
@@ -199,7 +216,11 @@ export function useProjectReorder({
           const hit =
             touch &&
             registeredHeaders.value.some((header) => {
-              if (!source.value.sortable.includes(header.id)) return false;
+              const allowed =
+                header.scope === undefined
+                  ? source.value.sortable
+                  : (source.value.sessionOrders[header.scope] ?? []);
+              if (!allowed.includes(header.id)) return false;
               const bounds = measure(header.handle);
               return (
                 bounds !== null &&
@@ -221,7 +242,11 @@ export function useProjectReorder({
           const host = measure(hostRef);
           if (!host) return;
           for (const header of registeredHeaders.value) {
-            if (!source.value.sortable.includes(header.id)) continue;
+            const allowed =
+              header.scope === undefined
+                ? source.value.sortable
+                : (source.value.sessionOrders[header.scope] ?? []);
+            if (!allowed.includes(header.id)) continue;
             const handle = measure(header.handle);
             if (
               !handle ||
@@ -243,13 +268,17 @@ export function useProjectReorder({
               width: row.width,
               fingerY: event.absoluteY,
             };
-            const startOrder = source.value.order;
+            const startOrder =
+              header.scope === undefined
+                ? source.value.order
+                : (source.value.sessionOrders[header.scope] ?? []);
             drag.value = {
+              ...(header.scope !== undefined ? { scope: header.scope } : {}),
               id: header.id,
               token,
               startOrder,
               order: startOrder,
-              range: projectSortableRange(startOrder, source.value.sortable, header.id),
+              range: projectSortableRange(startOrder, allowed, header.id),
             };
             runOnJS(started)(header.id, token);
             break;
@@ -265,7 +294,14 @@ export function useProjectReorder({
           if (!current || current.dropping) return;
           drag.value = success ? { ...current, dropping: true } : null;
           pickup.value = null;
-          runOnJS(ended)(success ? current.order : null, current.token);
+          // Compare with pickup, not a live refresh: attention may have changed
+          // the server's automatic order while the visible slots stayed frozen.
+          const moved = current.order.some((id, index) => id !== current.startOrder[index]);
+          runOnJS(ended)(
+            success && (current.scope === undefined || moved) ? current.order : null,
+            current.token,
+            current.scope,
+          );
         }),
     [
       registeredHeaders,
@@ -302,7 +338,9 @@ export function useProjectReorder({
     gesture,
     overlayStyle,
     onScroll,
-    draggingId: active?.id ?? null,
+    draggingId: active?.scope === undefined ? (active?.id ?? null) : null,
+    draggingSessionId: active?.scope !== undefined ? active.id : null,
+    draggingSessionScope: active?.scope ?? null,
     register,
     reportCompactHeight,
     heights,
@@ -324,12 +362,14 @@ export function useProjectRowDrag({
   renderedOrder,
   enabled,
   floating = false,
+  scope,
 }: {
   id: string;
   reorder: ProjectReorderController;
   renderedOrder: readonly string[];
   enabled: boolean;
   floating?: boolean;
+  scope?: string;
 }) {
   const slotRef = useAnimatedRef<View>();
   const rowRef = useAnimatedRef<View>();
@@ -339,11 +379,17 @@ export function useProjectRowDrag({
   const reducedMotion = useReducedMotion();
   useEffect(() => {
     if (enabled && !floating)
-      return register({ id, row: rowRef, handle: handleRef, slot: slotRef });
-  }, [enabled, floating, id, register, rowRef, handleRef, slotRef]);
+      return register({
+        id,
+        row: rowRef,
+        handle: handleRef,
+        slot: slotRef,
+        ...(scope !== undefined ? { scope } : {}),
+      });
+  }, [enabled, floating, id, register, rowRef, handleRef, slotRef, scope]);
   const visual = useDerivedValue(() => {
     const current = drag.value;
-    if (!current || floating) return 0;
+    if (!current || floating || current.scope !== scope) return 0;
     const target =
       projectRowPosition(current.order, id, heights.value) -
       projectRowPosition(current.startOrder, id, heights.value);
@@ -353,21 +399,23 @@ export function useProjectRowDrag({
       ? target
       : withSpring(target, SLOT_SPRING);
   });
+  const displacement = useDerivedValue(() => {
+    const current = drag.value?.scope === scope ? drag.value : null;
+    return !current || floating
+      ? 0
+      : visual.value -
+          (projectRowPosition(renderedOrder, id, heights.value) -
+            projectRowPosition(current.startOrder, id, heights.value));
+  });
   const style = useAnimatedStyle(() => {
-    const current = drag.value;
+    const current = drag.value?.scope === scope ? drag.value : null;
     return {
       opacity: !floating && current?.id === id && !current.dropping ? 0 : 1,
-      transform: [
-        {
-          translateY:
-            !current || floating
-              ? 0
-              : visual.value -
-                (projectRowPosition(renderedOrder, id, heights.value) -
-                  projectRowPosition(current.startOrder, id, heights.value)),
-        },
-      ],
+      transform: [{ translateY: displacement.value }],
     };
   });
-  return { slotRef, rowRef, handleCallbackRef, style };
+  const placeholderStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: displacement.value }],
+  }));
+  return { slotRef, rowRef, handleCallbackRef, style, placeholderStyle };
 }

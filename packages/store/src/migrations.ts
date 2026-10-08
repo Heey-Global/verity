@@ -4047,6 +4047,18 @@ const migrations: Record<string, Migration> = {
         $$`.execute(db);
     },
   },
+  '0145_session_overview_order': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`create table session_overview_order (
+        group_key text primary key,
+        project_id text references projects(id) on delete cascade,
+        ids jsonb not null default '[]'::jsonb
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table session_overview_order`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

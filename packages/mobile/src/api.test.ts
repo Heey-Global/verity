@@ -854,7 +854,11 @@ describe('VerityClient.listSessionOverview', () => {
   it('reads a healthy envelope (no attention key) as no signals', async () => {
     const { fetch } = fakeFetch(json({ sessions: [summary] }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-    expect(await client.listSessionOverview()).toEqual({ sessions: [summary], attention: [] });
+    expect(await client.listSessionOverview()).toEqual({
+      sessions: [summary],
+      attention: [],
+      sessionReordering: false,
+    });
   });
 
   // A server that predates the envelope ignores the query parameter and answers
@@ -863,7 +867,11 @@ describe('VerityClient.listSessionOverview', () => {
   it('accepts the bare array an older server still returns', async () => {
     const { fetch } = fakeFetch(json([summary]));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-    expect(await client.listSessionOverview()).toEqual({ sessions: [summary], attention: [] });
+    expect(await client.listSessionOverview()).toEqual({
+      sessions: [summary],
+      attention: [],
+      sessionReordering: false,
+    });
   });
 
   // Symmetrically: a server NEWER than this app may add a code it never heard of.
@@ -3829,5 +3837,41 @@ describe('VerityClient tasks', () => {
     await client.updateTask(task.id, { title: 'Edited', expectedRevision: 1 });
     expect(jsonBody(calls[0])).toEqual({ title: 'Edited', expectedRevision: 1 });
     await expect(client.listTasks()).rejects.toThrow();
+  });
+});
+
+describe('session reorder API', () => {
+  it('reads the advertised capability and ranked summaries', async () => {
+    const wire = {
+      sessionId: 's1',
+      worktree: '/wt/s1',
+      model: 'm',
+      name: null,
+      status: 'idle',
+      usage: ZERO_USAGE,
+      sortOrder: 2,
+      backgroundWorking: true,
+      agentTextCounterVersion: 'agent-text-v2',
+    };
+    const { fetch } = fakeFetch(json({ sessions: [wire], sessionReordering: true }));
+    const overview = await new VerityClient({
+      baseUrl: 'http://host',
+      fetch,
+    }).listSessionOverview();
+    expect(overview.sessionReordering).toBe(true);
+    // Counter normalization must not strip the independently persisted order.
+    expect(overview.sessions[0]).toMatchObject({
+      sortOrder: wire.sortOrder,
+      backgroundWorking: wire.backgroundWorking,
+      eventCountVersion: wire.agentTextCounterVersion,
+    });
+  });
+  it('persists a project-bound order and reads canonical IDs', async () => {
+    const { fetch, calls } = fakeFetch(json({ ids: ['b', 'a'] }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.reorderSessions('p', ['b', 'a'])).toEqual(['b', 'a']);
+    expect(calls[0]?.url).toBe('http://host/sessions/order');
+    expect(calls[0]?.init?.method).toBe('PATCH');
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ projectId: 'p', ids: ['b', 'a'] }));
   });
 });

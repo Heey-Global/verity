@@ -36,6 +36,7 @@ export interface ProviderLimitRow {
 export interface SessionListState {
   /** Sessions ordered attention-first (see {@link attentionQueue}). */
   sessions: SessionSummary[];
+  sessionReordering: boolean;
   /** How many need operator action (badge count). */
   attentionCount: number;
   /** A load is in flight (the LATEST one). */
@@ -58,12 +59,14 @@ export interface SessionListModelOptions {
     VerityClient,
     'listSessions' | 'renameSession' | 'setSessionFavorite' | 'deleteSession'
   > & {
+    reorderSessions?: (projectId: string | null, ids: string[]) => Promise<string[]>;
     listProviderLimits?: () => Promise<ProviderLimitSummary[]>;
     /** Optional like {@link listProviderLimits}: absent, the model falls back to
      * the plain list and simply reports no server-level attention. */
     listSessionOverview?: () => Promise<{
       sessions: SessionSummary[];
       attention: AttentionSignal[];
+      sessionReordering?: boolean;
     }>;
   };
   /** Notified with a fresh state snapshot on every change. */
@@ -89,6 +92,11 @@ export interface SessionListModelOptions {
  * screen is a thin renderer over `state` that calls {@link refresh}/{@link stop}.
  */
 export class SessionListModel {
+  private sessionReordering = false;
+  private orderWrites = new Map<string | null, Promise<void>>();
+  private orderMutations = new Map<string | null, number>();
+  private confirmedOrders = new Map<string | null, Map<string, number | null | undefined>>();
+  private pendingOrders = new Map<string | null, { ids: string[]; maxRequest: number }>();
   private _sessions: SessionSummary[] = [];
   private _attention: AttentionSignal[] = [];
   private _providerLimits: ProviderLimitSummary[] = [];
@@ -124,7 +132,8 @@ export class SessionListModel {
 
   get state(): SessionListState {
     return {
-      sessions: attentionQueue(this._sessions),
+      sessions: orderedSessions(this._sessions),
+      sessionReordering: this.sessionReordering,
       attentionCount: attentionCount(this._sessions),
       loading: this._loading,
       error: this._error,
@@ -150,7 +159,9 @@ export class SessionListModel {
       const overview = this.opts.client.listSessionOverview;
       const [list, providerLimits] = await Promise.all([
         overview === undefined
-          ? this.opts.client.listSessions().then((sessions) => ({ sessions, attention: [] }))
+          ? this.opts.client
+              .listSessions()
+              .then((sessions) => ({ sessions, attention: [], sessionReordering: false }))
           : overview.call(this.opts.client),
         this.opts.client.listProviderLimits?.().catch(() => this._providerLimits) ??
           Promise.resolve([]),
@@ -158,6 +169,7 @@ export class SessionListModel {
       const sessions = list.sessions;
       if (req !== this.reqSeq) return; // superseded
       this._attention = list.attention;
+      this.sessionReordering = list.sessionReordering === true;
       this._sessions = sessions
         .filter((session) => !this.pendingDeletes.has(session.sessionId))
         .map((session) => {
@@ -186,6 +198,13 @@ export class SessionListModel {
           this.pendingSessionStatuses.delete(session.sessionId);
           return req <= pending.maxRequest ? { ...session, status: pending.status } : session;
         });
+      for (const [projectId, pending] of this.pendingOrders) {
+        if (req <= pending.maxRequest) this.applyOrder(projectId, pending.ids);
+        else {
+          this.pendingOrders.delete(projectId);
+          this.confirmedOrders.delete(projectId);
+        }
+      }
       for (const [sessionId, deletion] of this.pendingDeletes) {
         const latest = sessions.find((session) => session.sessionId === sessionId);
         if (latest) deletion.removed = latest;
@@ -268,6 +287,66 @@ export class SessionListModel {
     this.favoriteWrites.set(sessionId, pending);
     await pending;
     if (this.favoriteWrites.get(sessionId) === pending) this.favoriteWrites.delete(sessionId);
+  }
+
+  /** Persist drag results in order; polls cannot overwrite an unconfirmed drag. */
+  async reorder(projectId: string | null, ids: string[]): Promise<void> {
+    if (!this.sessionReordering || !this.opts.client.reorderSessions) return;
+    const mutation = (this.orderMutations.get(projectId) ?? 0) + 1;
+    this.orderMutations.set(projectId, mutation);
+    if (!this.confirmedOrders.has(projectId)) {
+      this.confirmedOrders.set(
+        projectId,
+        new Map(
+          this._sessions
+            .filter((s) => (s.projectId ?? null) === projectId)
+            .map((s) => [s.sessionId, s.sortOrder]),
+        ),
+      );
+    }
+    this.pendingOrders.set(projectId, { ids: [...ids], maxRequest: Infinity });
+    this.applyOrder(projectId, ids);
+    this.emit();
+    const write = async (): Promise<void> => {
+      try {
+        const stored = await this.opts.client.reorderSessions!(projectId, ids);
+        this.confirmedOrders.set(projectId, new Map(stored.map((id, index) => [id, index])));
+        if (this.orderMutations.get(projectId) !== mutation) return;
+        this.pendingOrders.set(projectId, { ids: stored, maxRequest: this.reqSeq });
+        this.applyOrder(projectId, stored);
+        this._error = undefined;
+      } catch (error) {
+        if (this.orderMutations.get(projectId) !== mutation) return;
+        const confirmed = this.confirmedOrders.get(projectId)!;
+        this._sessions = this._sessions.map((s) =>
+          (s.projectId ?? null) === projectId
+            ? { ...s, sortOrder: confirmed.get(s.sessionId) ?? null }
+            : s,
+        );
+        // Preserve rollback against refreshes that began before the failed write.
+        this.pendingOrders.delete(projectId);
+        this.confirmedOrders.delete(projectId);
+        this.reqSeq += 1;
+        this._loading = false;
+        this._error =
+          error instanceof VerityApiError ? error.message : 'failed to reorder sessions';
+      }
+      this.emit();
+    };
+    const previous = this.orderWrites.get(projectId);
+    const pending = previous ? previous.then(write) : write();
+    this.orderWrites.set(projectId, pending);
+    await pending;
+    if (this.orderWrites.get(projectId) === pending) this.orderWrites.delete(projectId);
+  }
+
+  private applyOrder(projectId: string | null, ids: readonly string[]): void {
+    const positions = new Map(ids.map((id, index) => [id, index]));
+    this._sessions = this._sessions.map((s) =>
+      (s.projectId ?? null) === projectId
+        ? { ...s, sortOrder: positions.get(s.sessionId) ?? null }
+        : s,
+    );
   }
 
   /** Retire one permission immediately after its decision POST settles. The next
@@ -588,4 +667,26 @@ function overviewRateLimitNotice(
     }
   }
   return latest;
+}
+
+/** Preserve the overview's group slots; only manual groups bypass attention priority. */
+function orderedSessions(sessions: SessionSummary[]): SessionSummary[] {
+  const queued = attentionQueue(sessions);
+  const manual = new Map<string | null, SessionSummary[]>();
+  for (const session of sessions) {
+    const key = session.projectId ?? null;
+    if (session.sortOrder != null && !manual.has(key)) manual.set(key, []);
+  }
+  for (const session of sessions) manual.get(session.projectId ?? null)?.push(session);
+  for (const group of manual.values())
+    group.sort((a, b) => (a.sortOrder ?? -1) - (b.sortOrder ?? -1));
+  const offsets = new Map<string | null, number>();
+  return queued.map((session) => {
+    const key = session.projectId ?? null;
+    const group = manual.get(key);
+    if (!group) return session;
+    const index = offsets.get(key) ?? 0;
+    offsets.set(key, index + 1);
+    return group[index]!;
+  });
 }

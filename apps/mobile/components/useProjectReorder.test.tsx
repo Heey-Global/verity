@@ -289,3 +289,162 @@ it('removes a neighbour displacement in the same render that commits its new slo
   expect(row.result.current.style).toMatchObject({ transform: [{ translateY: 0 }] });
   jest.mocked(withSpring).mockImplementation((value) => value);
 });
+
+function setupSessions() {
+  const onDrop = jest.fn();
+  const onDropSession = jest.fn();
+  let sessionOrders = { 'project-a': ['session:a', 'session:b'], 'project-b': ['session:c'] };
+  const hook = renderHook(() =>
+    useProjectReorder({
+      order: ['project-a', 'project-b'],
+      sortable: ['project-a', 'project-b'],
+      onDrop,
+      sessionOrders,
+      onDropSession,
+    }),
+  );
+  const entries = [
+    { id: 'project-a', top: 100, scope: undefined },
+    { id: 'session:a', top: 160, scope: 'project-a' },
+    { id: 'session:b', top: 220, scope: 'project-a' },
+    { id: 'project-b', top: 280, scope: undefined },
+    { id: 'session:c', top: 340, scope: 'project-b' },
+  ].map(({ scope, ...entry }) => ({
+    ...entry,
+    ...(scope ? { scope } : {}),
+    row: {} as AnimatedRef<View>,
+    handle: {} as AnimatedRef<View>,
+    slot: {} as AnimatedRef<View>,
+  }));
+  act(() => {
+    entries.forEach((entry) => {
+      hook.result.current.register(entry);
+      hook.result.current.reportCompactHeight(entry.id, 60);
+    });
+    hook.result.current.onViewportLayout(600);
+  });
+  jest.mocked(measure).mockImplementation((ref) => {
+    if (Object.is(ref, hook.result.current.hostRef)) return rect(100, 600);
+    const entry = entries.find((entry) =>
+      [entry.handle, entry.row, entry.slot].some((candidate) => Object.is(candidate, ref)),
+    );
+    if (!entry) return null;
+    // Action/link areas are outside the title's hit rectangle.
+    return Object.is(ref, entry.handle)
+      ? { ...rect(entry.top), width: 180, height: 19 }
+      : rect(entry.top);
+  });
+  const start = (y = 225) =>
+    act(() =>
+      hook.result.current.gesture.handlers.onStart?.({ absoluteX: 100, absoluteY: y } as never),
+    );
+  const move = (y: number) =>
+    act(() =>
+      hook.result.current.gesture.handlers.onUpdate?.({ absoluteX: 100, absoluteY: y } as never),
+    );
+  const end = (success = true) =>
+    act(() => hook.result.current.gesture.handlers.onFinalize?.({} as never, success));
+  const refreshOrder = () => {
+    sessionOrders = { ...sessionOrders, 'project-a': ['session:b', 'session:a'] };
+    hook.rerender({});
+  };
+  return { hook, onDrop, onDropSession, start, move, end, refreshOrder };
+}
+
+it('does not enable manual sorting for an unchanged pickup, but saves a move against the frozen order', () => {
+  const test = setupSessions();
+  test.start();
+  test.end();
+  expect(test.onDropSession).not.toHaveBeenCalled();
+  test.start();
+  test.refreshOrder();
+  test.move(165);
+  const picked = renderHook(() =>
+    useProjectRowDrag({
+      id: 'session:b',
+      scope: 'project-a',
+      reorder: test.hook.result.current,
+      renderedOrder: ['session:a', 'session:b'],
+      enabled: false,
+    }),
+  );
+  expect(picked.result.current.style).toMatchObject({
+    opacity: 0,
+    transform: [{ translateY: -60 }],
+  });
+  expect(picked.result.current.placeholderStyle).toMatchObject({
+    transform: [{ translateY: -60 }],
+  });
+  test.end();
+  expect(test.onDropSession).toHaveBeenCalledWith('project-a', ['session:b', 'session:a']);
+});
+
+it('moves sessions only within the picked project and never saves a project order', () => {
+  const test = setupSessions();
+  test.start();
+  expect(test.hook.result.current.draggingId).toBeNull();
+  expect(test.hook.result.current.draggingSessionId).toBe('session:b');
+  test.move(105);
+  expect(test.hook.result.current.drag.value?.order).toEqual(['session:b', 'session:a']);
+  test.move(400);
+  expect(test.hook.result.current.drag.value?.order).toEqual(['session:a', 'session:b']);
+  test.move(165);
+  test.end();
+  expect(test.onDropSession).toHaveBeenCalledWith('project-a', ['session:b', 'session:a']);
+  expect(test.onDrop).not.toHaveBeenCalled();
+  expect(test.hook.result.current.draggingSessionId).toBeNull();
+});
+
+it('keeps other projects and their sessions stationary during a session drag', () => {
+  const test = setupSessions();
+  test.start();
+  test.move(165);
+  const project = renderHook(() =>
+    useProjectRowDrag({
+      id: 'project-a',
+      reorder: test.hook.result.current,
+      renderedOrder: ['project-a', 'project-b'],
+      enabled: false,
+    }),
+  );
+  const otherSession = renderHook(() =>
+    useProjectRowDrag({
+      id: 'session:c',
+      scope: 'project-b',
+      reorder: test.hook.result.current,
+      renderedOrder: ['session:c'],
+      enabled: false,
+    }),
+  );
+  expect(project.result.current.style).toMatchObject({
+    opacity: 1,
+    transform: [{ translateY: 0 }],
+  });
+  expect(otherSession.result.current.style).toMatchObject({
+    opacity: 1,
+    transform: [{ translateY: 0 }],
+  });
+  test.end(false);
+  expect(test.onDropSession).not.toHaveBeenCalled();
+});
+
+it('leaves session links, status and sharing areas outside the drag handle', () => {
+  const test = setupSessions();
+  const fail = jest.fn();
+  act(() =>
+    test.hook.result.current.gesture.handlers.onTouchesDown?.(
+      {
+        allTouches: [{ absoluteX: 280, absoluteY: 225 }],
+      } as never,
+      { fail } as never,
+    ),
+  );
+  expect(fail).toHaveBeenCalledTimes(1);
+  test.start(247);
+  expect(test.hook.result.current.draggingSessionId).toBeNull();
+  test.start();
+  // A second start cannot turn a session drag into a project drag.
+  test.start(105);
+  expect(test.hook.result.current.draggingId).toBeNull();
+  expect(test.hook.result.current.draggingSessionId).toBe('session:b');
+});
