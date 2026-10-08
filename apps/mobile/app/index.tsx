@@ -66,7 +66,7 @@ import Reanimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { AttentionMarkers } from '../components/AttentionMarkers';
+import { AttentionMarkers, drawsAttentionMarker } from '../components/AttentionMarkers';
 import { Icon } from '../components/Icon';
 import { ProjectPortChip, type ProjectPortLink } from '../components/ProjectPortChip';
 import { ProjectOverviewList } from '../components/ProjectOverviewList';
@@ -1869,7 +1869,7 @@ function SessionRow({
           </Text>
           {/* The PR status sits after the issue it belongs to, not at the end of the
               title line, where it collided with the marker column. */}
-          {hasIssue || markers.length > 0 ? (
+          {hasIssue || drawsAttentionMarker(markers) ? (
             <View style={styles.sessionFeatures}>
               <Text style={styles.rowSub} accessible={false} importantForAccessibility="no">
                 ·

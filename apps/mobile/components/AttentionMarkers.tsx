@@ -51,6 +51,22 @@ function PrMarker({
   );
 }
 
+const DRAWN: ReadonlySet<AttentionFlag['kind']> = new Set([
+  'ci_running',
+  'merge_ready',
+  'merge_checking',
+  'ci_failed',
+  'merge_blocked',
+  'merge_conflict',
+]);
+
+/** Whether {@link AttentionMarkers} draws anything for these flags, so a caller can
+ *  leave out the separator it would otherwise put in front of an empty slot. */
+export function drawsAttentionMarker(flags: readonly AttentionFlag[]): boolean {
+  const flag = flags[0];
+  return flag !== undefined && DRAWN.has(flag.kind);
+}
+
 export function AttentionMarkers({
   flags,
   size = 15,
@@ -68,7 +84,7 @@ export function AttentionMarkers({
   // trailing column clean and aligned under the project ⋯ — two side-by-side icons
   // read as clutter.
   const flag = flags[0];
-  if (!flag) return null;
+  if (!flag || !drawsAttentionMarker(flags)) return null;
   return (
     <View
       style={inline ? styles.inline : styles.slot}
