@@ -51,7 +51,17 @@ function PrMarker({
   );
 }
 
-export function AttentionMarkers({ flags, size = 15 }: { flags: AttentionFlag[]; size?: number }) {
+export function AttentionMarkers({
+  flags,
+  size = 15,
+  inline = false,
+}: {
+  flags: AttentionFlag[];
+  size?: number;
+  /** Sit in running text (the session row's second line) instead of the fixed
+   *  34px column slot; only the badge's overhang is reserved. */
+  inline?: boolean;
+}) {
   const { theme } = useUnistyles();
   // Show only the SINGLE highest-priority marker (flags are priority-ordered:
   // merge_conflict > ci_failed > merge_blocked > merge_ready > merge_checking > ci_running > unread). One icon per row keeps the
@@ -60,7 +70,11 @@ export function AttentionMarkers({ flags, size = 15 }: { flags: AttentionFlag[];
   const flag = flags[0];
   if (!flag) return null;
   return (
-    <View style={styles.slot} accessibilityRole="image" accessibilityLabel={flag.label}>
+    <View
+      style={inline ? styles.inline : styles.slot}
+      accessibilityRole="image"
+      accessibilityLabel={flag.label}
+    >
       {flag.kind === 'ci_running' ? (
         <PrMarker size={size} color={theme.colors.tone.done} pulsing />
       ) : flag.kind === 'merge_ready' || flag.kind === 'merge_checking' ? (
@@ -90,6 +104,11 @@ const styles = StyleSheet.create(() => ({
     // the icon centers in the same column — a session marker sits under the project ⋯.
     width: 34,
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inline: {
+    // The badge overhangs the glyph's top-right corner by 5px.
+    paddingRight: 5,
     justifyContent: 'center',
   },
   badge: {
