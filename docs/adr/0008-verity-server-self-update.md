@@ -939,9 +939,8 @@ What the condition gates is now open, and it is not a flag — there never was o
 behind the `managed` Compose profile plus the ownership overlay, and
 `deploy/bin/verity-compose managed-up` is the single guarded path into it
 (`docs/operations/server-updates-and-recovery.md`, "Migrate to managed Server
-updates"). A deployment that has
-not run that command is host-managed and reports Server self-update as
-unsupported, whatever this matrix says.
+updates"). A deployment that has not run that command is host-managed and
+reports Server self-update as unsupported, whatever this matrix says.
 
 The condition explicitly covers an old managed topology moving to a newer target:
 the live smoke starts Server, Gateways and Updater on the previous published image,
