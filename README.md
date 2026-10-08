@@ -43,7 +43,8 @@ curl -fsSL https://verity.build/install.sh | bash
 
 The installer checks the machine, downloads the signed Verity release, starts
 it with Docker, and prints a QR code and pairing link for your first device. It
-takes a few minutes. To only run the checks first, add `--preflight`:
+takes a few minutes, needs root or `sudo`, and needs network access to GitHub,
+the image registry, and the Sigstore signature service. To only run the checks first, add `--preflight`:
 
 ```sh
 curl -fsSL https://verity.build/install.sh | bash -s -- --preflight
@@ -57,7 +58,10 @@ phone, signing in to your AI provider, and running your first session.
 > **Keep the Verity server off the public internet.** Do not open ports `8082`
 > or `8100–8119` on your router or cloud firewall. Connect from your local
 > network or through a VPN such as Tailscale or WireGuard; the getting started
-> guide shows how. For a cloud server with a public address, also follow the
+> guide shows how. A firewall on the host itself, such as ufw, does not block
+> these ports, because Docker publishes them before its rules apply. In the
+> current beta a compromise of the Server amounts to a compromise of the host.
+> For a cloud server with a public address, also follow the
 > [hardening guide](deploy/README.md#hardening-an-internet-reachable-host).
 
 ## What Verity does

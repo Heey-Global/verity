@@ -104,7 +104,7 @@ the update failed.
 Custom images and custom orchestrators are intentionally not adopted and continue
 to report Server self-update as unsupported.
 
-### After an update: companion handoff
+## After an update: companion handoff
 
 A self-update first replaces the Server, then uses the same journal to replace
 the installed companions. The old Updater moves both Gateways first and starts a
@@ -175,7 +175,7 @@ new value wherever you keep the others. In a normal managed update no manual see
 repair is required: `completed` guarantees that the selected seed and companions
 converged on the target release.
 
-### When an update fails
+## When an update fails
 
 A failed update is built to end where it started, without host intervention. Every
 step is journalled before it runs, so an Updater that dies resumes rather than
@@ -208,7 +208,7 @@ while the database is away parks until the database is back and then completes.
 Restoring the database is the whole of that recovery — there is no separate repair
 step, and no state to unwind by hand.
 
-### When the Updater is crash-looping
+## When the Updater is crash-looping
 
 The Updater refuses to adopt a Server that is not the one the sealed spec
 describes, and on a difference it cannot tolerate it exits. Its restart policy
@@ -274,7 +274,7 @@ the container: read its log again. An authority that cannot be read, a deploymen
 ID that does not match the seal, or two containers on one name are separate
 faults, and each says so by name.
 
-### The control-plane generation
+## The control-plane generation
 
 Exactly one Server is the control plane, and PostgreSQL records which. Compose
 sets `VERITY_CONTROL_PLANE_HOLDER_ID` for you; the managed Server inherits it,

@@ -195,10 +195,13 @@ and choose "Repair this installation".
 ### Browser access
 
 The Server image includes the browser build of the app and serves it at
-`https://<host>:8082/app/` (the API port, `VERITY_API_HOST_PORT`). The browser
-sees the same self-signed, pinned certificate the native app verifies, so it
-shows a certificate warning on first use; the operator confirms the address
-and continues. Sign-in on the "Connect this browser" page accepts the
+`https://<host>:8082/app/` (the API port, `VERITY_API_HOST_PORT`). The Server
+presents its self-signed certificate, so the browser shows a certificate
+warning on first use. Unlike the native app, a browser cannot check that
+certificate against the pin in the pairing link; a user who accepts the
+warning on an untrusted network has no protection against interception for
+that visit, so the first browser sign-in belongs on a trusted network or VPN.
+Sign-in on the "Connect this browser" page accepts the
 installer's `verity://pair?` line or a pairing link created from an already
 paired device, then asks for the master password and issues a private session
 cookie for that browser. A browser can therefore be the first paired client.

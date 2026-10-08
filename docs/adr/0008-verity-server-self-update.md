@@ -1259,9 +1259,9 @@ rollback that started re-comparing would put the fatal refusal back inside the
 cutover, at the one point where there is nothing to fall back to.
 
 `docs/operations/server-updates-and-recovery.md` documents the blunt manual
-repair for a host already in the crash loop — remove the Server container so the Updater takes the create path —
-including its cost: one hard control-plane restart, no drain, in-flight sessions
-lost.
+repair for a host already in the crash loop — remove the Server container so
+the Updater takes the create path — including its cost: one hard control-plane
+restart, no drain, in-flight sessions lost.
 
 
 ## Amendment 2 — host runtime prerequisites are reconciled before activation (2026-09-23)

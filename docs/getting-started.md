@@ -85,7 +85,10 @@ private network between your devices:
    for the details behind this.
 
 A machine on your home network that you only use from the same network does
-not need this step.
+not need this step. If you rely on a firewall on the machine itself, such as
+ufw, know that it does not block Verity's ports: Docker publishes them before
+those rules apply. Block them on the router or network instead, and check from
+outside that they are closed.
 
 ## Step 1: Install the Core
 
@@ -127,8 +130,10 @@ Choose one. You can add the others later.
    the `/app/`.
 2. Your browser will warn that the connection is not private. Verity uses a
    certificate it created on your server rather than one from a public
-   authority, and the app verifies it in its own way afterwards. Confirm that
-   the address in the bar is your server, then choose the option to continue
+   authority. The iPhone and iPad app checks that certificate against the
+   pairing link; a browser cannot, so do this first sign-in only on a network
+   you trust, such as your home network or Tailscale. Confirm that the
+   address in the bar is your server, then choose the option to continue
    (often behind "Advanced").
 3. On the "Connect this browser" page, paste the full `verity://pair?` line
    from the terminal and continue.
@@ -239,8 +244,9 @@ the same place and are explained in the [connections guide](connections.md).
 
 If you are stuck, open an issue at
 [github.com/Heey-Global/verity/issues](https://github.com/Heey-Global/verity/issues)
-and include the installer output. Do not paste the `verity://pair?` line; it
-is a secret.
+and include the lines the installer printed before it stopped. Remove the QR
+code and the `verity://pair?` line first: both let anyone pair with your
+server while the link is valid.
 
 ## Where to go next
 
