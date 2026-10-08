@@ -192,11 +192,21 @@ describe('sessionAttention', () => {
     // tri-state already describe; only `dirty` means an actual conflict.
     for (const mergeState of ['behind', 'blocked', 'unstable', 'draft', 'clean'] as const) {
       expect(
-        sessionAttention({ status: 'idle', pr: openPr({ pipeline: 'unknown', mergeState }) }).map(
-          (flag) => flag.kind,
-        ),
+        sessionAttention({
+          status: 'idle',
+          pr: openPr({ pipeline: 'unknown', mergeable: null, mergeState }),
+        }).map((flag) => flag.kind),
       ).toEqual(['pr_unknown']);
     }
+  });
+
+  it('blocks an unreported-CI PR that GitHub confirms cannot merge', () => {
+    expect(
+      sessionAttention({
+        status: 'idle',
+        pr: openPr({ pipeline: 'unknown', mergeable: false }),
+      }).map((f) => f.kind),
+    ).toEqual(['merge_blocked']);
   });
 
   it('marks checks-passed-but-mergeability-unknown as a non-blocking merge_checking', () => {
@@ -232,7 +242,9 @@ describe('sessionAttention', () => {
   });
 
   it('keeps an unknown open PR visible without claiming CI or merge readiness', () => {
-    expect(sessionAttention({ status: 'idle', pr: openPr({ pipeline: 'unknown' }) })).toEqual([
+    expect(
+      sessionAttention({ status: 'idle', pr: openPr({ pipeline: 'unknown', mergeable: null }) }),
+    ).toEqual([
       { kind: 'pr_unknown', tone: 'attention', label: 'PR status unavailable', blocking: false },
     ]);
     const merged = openPr({ phase: 'merged', mergeable: false, pipeline: 'success' });

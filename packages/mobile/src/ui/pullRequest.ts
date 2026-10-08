@@ -130,7 +130,7 @@ export function pullRequestMergeButton(
   // without checks still merges. Anything short of that with no status is a status to
   // re-read, not a block to explain.
   if (pr.mergeable === true) return { kind: 'merge', label: 'Merge' };
-  if (pr.pipeline === 'unknown') return { kind: 'refresh', label: 'Refresh' };
   if (pr.mergeable === false) return blocked('blocked');
+  if (pr.pipeline === 'unknown') return { kind: 'refresh', label: 'Refresh' };
   return { kind: 'waiting', label: 'Checking…' };
 }

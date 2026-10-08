@@ -121,8 +121,10 @@ export function sessionAttention(input: AttentionInput): AttentionFlag[] {
       pr.mergeable === true &&
       (pr.pipeline === 'unknown' || (pr.pipeline === 'failure' && pr.mergeState === 'unstable'));
     if (mergesAnyway && !kinds.has('merge_conflict')) kinds.add('merge_ready');
-    else if (pr.pipeline === 'unknown' && !kinds.has('merge_conflict')) kinds.add('pr_unknown');
-    else if (pr.pipeline === 'failure') kinds.add('ci_failed');
+    else if (pr.pipeline === 'unknown' && !kinds.has('merge_conflict')) {
+      // GitHub's confirmed "cannot merge" outranks a CI status it could not report.
+      kinds.add(pr.mergeable === false ? 'merge_blocked' : 'pr_unknown');
+    } else if (pr.pipeline === 'failure') kinds.add('ci_failed');
     else if (pr.pipeline === 'pending' || pr.pipeline === 'running') kinds.add('ci_running');
     else if (pr.pipeline === 'success') {
       if (pr.mergeable === true) kinds.add('merge_ready');
