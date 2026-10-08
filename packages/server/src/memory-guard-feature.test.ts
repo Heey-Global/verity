@@ -593,11 +593,12 @@ describe('createMemoryGuard', () => {
     expect(kill.mock.calls.filter(([, signal]) => signal === 'SIGKILL')).toHaveLength(2);
   });
 
-  it('re-arms before the ceiling even when suspended close to it', () => {
+  it('re-arms before the ceiling even when suspended close to it, but only on growth', () => {
     // Suspended 200 MiB below a 6 GiB ceiling, a full growth step would only be
     // reached past the limit: the host would kill the Sandbox with the guard idle.
+    // Re-arming without growth instead would kill once per cooldown for as long
+    // as cache holds usage there — through every command in the project.
     let clock = 0;
-    const step = Math.floor(6 * GIB * 0.2) * REARM_GROWTH_FRACTION;
     const files = { ...sandbox(), ...cgroup(6 * GIB - 200 * MIB) };
     const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>();
     const guard = createMemoryGuard({
@@ -608,11 +609,25 @@ describe('createMemoryGuard', () => {
       agentUid: 1000,
       now: () => clock,
     });
+    const kills = () => kill.mock.calls.filter(([, signal]) => signal === 'SIGKILL').length;
     expect(guard.tick().outcome).toBe('kill');
     clock = KILL_COOLDOWN_MS;
     expect(guard.tick().outcome).toBe('suspended');
-    Object.assign(files, cgroup(6 * GIB - step));
+    clock += 3_600_000;
+    expect(guard.tick().outcome).toBe('suspended');
+    // Half the remaining room is growth, and re-arms it below the ceiling.
+    Object.assign(files, cgroup(6 * GIB - 100 * MIB));
     expect(guard.tick().outcome).toBe('kill');
+    expect(kills()).toBe(8);
+    // At unchanged usage the next poll after the cooldown suspends again, and
+    // stays suspended: no kill without fresh growth.
+    clock += KILL_COOLDOWN_MS;
+    expect(guard.tick().outcome).toBe('suspended');
+    clock += KILL_COOLDOWN_MS;
+    expect(guard.tick().outcome).toBe('suspended');
+    clock += 3_600_000;
+    expect(guard.tick().outcome).toBe('suspended');
+    expect(kills()).toBe(8);
   });
 
   it('does not judge a kill that signalled nothing', () => {

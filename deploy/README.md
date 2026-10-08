@@ -835,18 +835,19 @@ backgrounded dev server or database) is a candidate of its own. If usage is
 still above the threshold once the cooldown after a kill has passed, the guard
 assumes the rest is page cache, tmpfs or steady load that another kill would not
 cure, logs `suspended`, and kills nothing more until usage drops below the
-threshold or grows by another quarter of the reserve, so it never works through
-the sessions one by one. The reserve is a fifth of the ceiling, at least 1 GiB
-and at most half the ceiling, because the guest cannot see the Sentry's own
-memory; at the 6 GiB default the guard acts at about 4.8 GiB. Usage includes the
-guest page cache and tmpfs, which live in the same host-charged memory file and
-therefore count against the ceiling too. The victim's command ends with exit 137
-and no kernel message, the session that ran it sees that failure, and the other
-sessions of the project keep running. Infrastructure is never a candidate: only
-processes of the agent identity qualify, never root or the Runner identity, and
-nothing under 64 MiB. Every kill is recorded in
-`/run/verity-runner-broker/memory-guard.log` inside the Sandbox with the usage,
-the victim's command and the session worktree it ran in.
+threshold or grows by another quarter of the reserve (closer to the ceiling, by
+half the remaining room), so it never works through the sessions one by one. The
+reserve is a fifth of the ceiling, at least 1 GiB and at most half the ceiling,
+because the guest cannot see the Sentry's own memory; at the 6 GiB default the
+guard acts at about 4.8 GiB. Usage includes the guest page cache and tmpfs,
+which live in the same host-charged memory file and therefore count against the
+ceiling too. The victim's command ends with exit 137 and no kernel message, the
+session that ran it sees that failure, and the other sessions of the project
+keep running. Infrastructure is never a candidate: only processes of the agent
+identity qualify, never root or the Runner identity, and nothing under 64 MiB.
+Every kill is recorded in `/run/verity-runner-broker/memory-guard.log` inside
+the Sandbox with the usage, the victim's command and the session worktree it ran
+in.
 
 The guard is a mitigation, not an isolation boundary. An allocation burst
 between two polls can still reach the host limit, and growth in the Sentry's own

@@ -454,11 +454,14 @@ export function createMemoryGuard(options) {
     }
     if (now() < cooldownUntil) return result('cooldown');
     if (suspendedAtBytes !== undefined) {
-      // Capped one step below the ceiling: a suspension that began close to it
-      // would otherwise ask for growth past the limit, and the guard would sit
-      // disarmed through the very kill it exists to prevent.
+      // Never past the ceiling: a suspension that began close to it would
+      // otherwise ask for growth beyond the limit, and the guard would sit
+      // disarmed through the very kill it exists to prevent. Never without
+      // growth either: half the remaining room is still growth, so kills stay
+      // bounded however close to the ceiling the suspension began.
       const step = reserveBytes * REARM_GROWTH_FRACTION;
-      const rearmAtBytes = Math.min(suspendedAtBytes + step, ceiling.limitBytes - step);
+      const rearmAtBytes =
+        suspendedAtBytes + Math.min(step, (ceiling.limitBytes - suspendedAtBytes) / 2);
       if (ceiling.usageBytes < rearmAtBytes) {
         return result('suspended');
       }
