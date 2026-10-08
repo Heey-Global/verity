@@ -13,6 +13,7 @@ import {
   otaConfigPath,
   otaManifestPath,
   otaReleasePlan,
+  otaPlanningBaseline,
   otaSourcePath,
   otaVersionPath,
 } from './mobile-ota-proposal.mjs';
@@ -35,7 +36,7 @@ it('starts a fresh runtime at patch one and refuses an unpublished native runtim
       { tag_name: 'mobile-v1.53.0', draft: false },
     ]).version,
   ).toBe('1.53.1');
-  expect(() => otaReleasePlan('1.53.0', [])).toThrow('not published');
+  expect(() => otaReleasePlan('1.53.0', [])).toThrow('no release candidate');
   expect(() => otaReleasePlan('1.53.1', [])).toThrow('native');
 });
 
@@ -329,4 +330,61 @@ it('plans the new native line instead of replaying an unfinished obsolete OTA re
   const result = detectFixture({ nativeVersion: '1.53.0' });
   expect(result.status).toBe(0);
   expect(result.output).toBe('mode=plan\n');
+});
+
+it('plans the first patch from a native draft while ignoring unfinished OTA drafts', () => {
+  expect(
+    otaReleasePlan('1.61.0', [
+      { tag_name: 'mobile-v1.60.3', draft: false },
+      { tag_name: 'mobile-v1.61.0', draft: true },
+      { tag_name: 'mobile-v1.61.1', draft: true },
+    ]),
+  ).toEqual({ baseline: 'mobile-v1.61.0', version: '1.61.1' });
+});
+
+it('gates OTA delivery on native publication while allowing PR planning immediately', () => {
+  const workflow = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')) as {
+    jobs: { update: { steps: Array<{ id?: string; run?: string; if?: string }> } };
+  };
+  const steps = workflow.jobs.update.steps;
+  const plan = steps.find((step: { run?: string }) =>
+    step.run?.includes('mobile-ota-proposal.mjs plan'),
+  );
+  const gate = steps.find((step: { id?: string }) => step.id === 'version');
+  expect(plan?.if).toBe("steps.intent.outputs.mode == 'plan'");
+  expect(plan?.run).toContain('apps/mobile/version.txt');
+  expect(gate?.if).toBe("steps.intent.outputs.mode == 'stage'");
+  expect(
+    steps.find((step: { run?: string }) => step.run?.includes('mobile-ota-release.ts stage'))?.if,
+  ).toContain("steps.version.outputs.blocked != 'true'");
+});
+
+it('uses only an immutable compatible native draft source for early planning', () => {
+  const runtime = '1.61.0';
+  const source = 'c'.repeat(40);
+  const draft = {
+    tag_name: `mobile-v${runtime}`,
+    draft: true,
+    prerelease: false,
+    target_commitish: source,
+  };
+  const calls: string[][] = [];
+  const execute = (command: string, args: string[]) => {
+    calls.push([command, ...args]);
+    return args[0] === 'show' ? runtime : '';
+  };
+  expect(otaPlanningBaseline(runtime, draft.tag_name, [draft], execute)).toBe(source);
+  expect(calls).toContainEqual(['git', 'merge-base', '--is-ancestor', source, 'HEAD']);
+  expect(calls).toContainEqual(['node', 'scripts/mobile-native-compatibility.mjs', source, 'HEAD']);
+  expect(() =>
+    otaPlanningBaseline(runtime, draft.tag_name, [{ ...draft, target_commitish: 'main' }], execute),
+  ).toThrow('Invalid OTA release baseline');
+  expect(() => otaPlanningBaseline(runtime, draft.tag_name, [draft], () => '1.60.0')).toThrow(
+    'does not match',
+  );
+  expect(
+    otaPlanningBaseline(runtime, draft.tag_name, [draft], (command, args) =>
+      command === 'node' ? 'native-change' : args[0] === 'show' ? runtime : '',
+    ),
+  ).toBeNull();
 });

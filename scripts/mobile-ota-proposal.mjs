@@ -26,11 +26,16 @@ export function otaReleasePlan(runtime, releases) {
     throw new Error('OTA runtime must be a native X.Y.0 version');
   const line = runtime.slice(0, -1);
   const versions = releases
-    .filter((release) => !release.draft && release.tag_name.startsWith(`mobile-v${line}`))
+    .filter(
+      (release) =>
+        (!release.draft || release.tag_name === `mobile-v${runtime}`) &&
+        release.tag_name.startsWith(`mobile-v${line}`),
+    )
     .map((release) => release.tag_name.slice('mobile-v'.length))
     .filter((version) => versionPattern.test(version))
     .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
-  if (!versions.includes(runtime)) throw new Error('The native Staging runtime is not published');
+  if (!versions.includes(runtime))
+    throw new Error('The native Staging runtime has no release candidate');
   const baseline = versions.at(-1);
   if (!baseline) throw new Error('No staged native baseline');
   return {
@@ -48,8 +53,29 @@ const repository = () => {
 };
 /** @template T @param {string[]} args @returns {T} */
 const api = (...args) => /** @type {T} */ (captureJson('gh', ['api', ...args]));
-/** @typedef {{tag_name: string, draft: boolean, prerelease: boolean}} Release */
+/** @typedef {{tag_name: string, draft: boolean, prerelease: boolean, target_commitish?: string}} Release */
 /** @typedef {{number: number, merged_at: string | null, base: {ref: string}, head: {ref: string, sha: string}, user?: {login: string}, labels?: Array<{name: string}>}} Pull */
+
+/**
+ * @param {string} runtime
+ * @param {string} baseline
+ * @param {Release[]} releases
+ * @param {(command: string, args: string[]) => string} execute
+ */
+export function otaPlanningBaseline(runtime, baseline, releases, execute = run) {
+  const draft = releases.find((release) => release.tag_name === baseline && release.draft);
+  const source = draft
+    ? (draft.target_commitish ?? '')
+    : execute('git', ['rev-list', '-n', '1', baseline]);
+  if (!shaPattern.test(source)) throw new Error('Invalid OTA release baseline');
+  execute('git', ['merge-base', '--is-ancestor', source, 'HEAD']);
+  if (draft) {
+    if (execute('git', ['show', `${source}:apps/mobile/version.txt`]).trim() !== runtime)
+      throw new Error('Native draft source does not match the planned runtime');
+    if (execute('node', ['scripts/mobile-native-compatibility.mjs', source, 'HEAD'])) return null;
+  }
+  return source;
+}
 
 /** @param {string} runtime */
 async function plan(runtime) {
@@ -64,8 +90,11 @@ async function plan(runtime) {
     api('--paginate', '--slurp', `repos/${repo}/releases?per_page=100`)
   ).flat();
   const next = otaReleasePlan(runtime, releases);
-  const baselineSha = run('git', ['rev-list', '-n', '1', next.baseline]);
-  if (!shaPattern.test(baselineSha)) throw new Error('Invalid OTA release baseline');
+  const baselineSha = otaPlanningBaseline(runtime, next.baseline, releases);
+  if (!baselineSha) {
+    console.log('OTA planning waits for a native candidate containing the pending native changes.');
+    return;
+  }
   const marker = readFileSync(otaVersionPath, 'utf8').trim();
   if (
     marker.startsWith(runtime.slice(0, -1)) &&
