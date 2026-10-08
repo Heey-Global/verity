@@ -43,7 +43,10 @@ export function useTaskPreferences(): typeof state {
         }
         notify();
       })
-      .catch(() => undefined);
+      .catch(() => {
+        state = { ...state, loaded: true };
+        notify();
+      });
   }
   return useSyncExternalStore(
     (listener) => {

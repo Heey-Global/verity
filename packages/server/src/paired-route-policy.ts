@@ -26,6 +26,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
   [routeScopeKey('GET', '/projects/:id'), { kind: 'project', parameter: 'id', permission: 'read' }],
+  [
+    routeScopeKey('GET', '/projects/:id/github/issues'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
   [routeScopeKey('GET', '/sessions/:id'), { kind: 'session', parameter: 'id', permission: 'read' }],
   [
     routeScopeKey('GET', '/sessions/:id/live-meetings'),

@@ -1,3 +1,7 @@
+import { InMemoryEventBus, type Conductor } from '@verity/session';
+import { createTestDb } from '@verity/store/testing';
+import { createAuthTokenRegistry } from './auth.js';
+import { buildServer } from './server.js';
 import { describe, expect, it, vi } from 'vitest';
 import Fastify from 'fastify';
 import type { ProjectRecord } from '@verity/store';
@@ -86,4 +90,48 @@ describe('project GitHub issues', () => {
     expect(list).not.toHaveBeenCalled();
     await app.close();
   });
+});
+
+// Registering the handler without the paired route rule leaves project members
+// blocked before the handler's own access check ever runs.
+it('allows project readers through the paired auth gate and denies unrelated projects', async () => {
+  const ctx = await createTestDb();
+  const actual = await ctx.store.upsertProject({
+    id: 'issues-project',
+    owner: 'acme',
+    repo: 'app',
+    containerName: 'issues-project',
+    state: 'active',
+  });
+  const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+  const token = await registry.mint('reader');
+  vi.spyOn(ctx.store, 'isActiveAdministrator').mockResolvedValue(false);
+  vi.spyOn(ctx.store, 'hasProjectPermission').mockImplementation(
+    async (_userId, projectId, permission) => projectId === actual.id && permission === 'read',
+  );
+  vi.spyOn(ctx.store, 'listReadableProjectIds').mockResolvedValue([actual.id]);
+  const list = vi.fn(async () => ({ connected: true, viewerLogin: null, issues: [] }));
+  const app = buildServer({
+    eventStore: ctx.store,
+    bus: new InMemoryEventBus(),
+    conductor: {} as Conductor,
+    authRegistry: registry,
+    listProjectGitHubIssues: list,
+  });
+  try {
+    const headers = { authorization: `Bearer ${token.token}` };
+    expect(
+      (await app.inject({ url: `/projects/${actual.id}/github/issues`, headers })).statusCode,
+    ).toBe(200);
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ id: actual.id }));
+    list.mockClear();
+    expect(
+      (await app.inject({ url: '/projects/unrelated/github/issues', headers })).statusCode,
+    ).toBe(403);
+    expect(list).not.toHaveBeenCalled();
+  } finally {
+    vi.restoreAllMocks();
+    await app.close();
+    await ctx.close();
+  }
 });
