@@ -131,14 +131,26 @@ MARKER="${VERITY_CODE_REVIEW_MARKER:-$REPO_ROOT/.agents/.last-code-review-sha}"
 BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
 HEAD_SHA=$(git rev-parse HEAD)
 
-if ! git rev-parse --verify --quiet "$BASE" >/dev/null; then
-  git fetch origin --quiet 2>/dev/null || true
+REVIEW_BASE_HELPER="${0%/*}/verity-review-base.sh"
+[ -f "$REVIEW_BASE_HELPER" ] || REVIEW_BASE_HELPER=/opt/agent-seed/bin/verity-review-base.sh
+if [ ! -f "$REVIEW_BASE_HELPER" ]; then
+  echo "review-base: helper missing; rebuild the container to restore the review tooling" >&2
+  exit 2
+fi
+source "$REVIEW_BASE_HELPER"
+
+if [ "$COMMAND" = run ] || [ "$COMMAND" = status ]; then
+  if ! verity_resolve_review_base "$BASE" HEAD; then
+    echo "verity-code-review: cannot resolve comparison with $BASE: $VERITY_BASE_REASON" >&2
+    echo "Restore the base and branch history, or run: verity-code-review $COMMAND <other-base-ref>" >&2
+    exit 1
+  fi
 fi
 
 case "$COMMAND" in
   status)
     if git rev-parse --verify --quiet "$BASE" >/dev/null; then
-      MERGE_BASE=$(git merge-base "$BASE" HEAD)
+      MERGE_BASE="$VERITY_MERGE_BASE"
       echo "verity-code-review on ${BRANCH:-detached} vs $BASE"
       git diff --stat "$MERGE_BASE"..HEAD
     else
@@ -233,7 +245,7 @@ case "$COMMAND" in
       exit 1
     fi
 
-    MERGE_BASE=$(git merge-base "$BASE" HEAD)
+    MERGE_BASE="$VERITY_MERGE_BASE"
     # Committed build output is derived, not authored: reviewing it costs the
     # reviewer's whole input budget on a minified bundle nobody edits by hand,
     # and on a branch that touches the worker it is the majority of the diff.
