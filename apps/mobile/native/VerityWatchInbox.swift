@@ -168,6 +168,8 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
         log("\(id.prefix(8)) duplicate ignored")
         if existing.state == .transcribed || existing.state == .stored, let text = existing.text {
           reply(["kind": "transcript", "id": id, "text": text])
+        } else if existing.state == .failed, (existing.attempts ?? 0) >= Self.maxAttempts {
+          reply(["kind": "failed", "id": id, "text": existing.error ?? "Transcription failed"])
         }
         return
       }
