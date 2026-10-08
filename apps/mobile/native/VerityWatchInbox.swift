@@ -1,4 +1,3 @@
-internal import ExpoModulesCore
 import AVFoundation
 import Foundation
 import Speech
@@ -20,6 +19,8 @@ private struct WatchInboxEntry: Codable {
   var text: String?
   var error: String?
   var transcribeMs: Int?
+  /// Transcription attempts so far; optional so entries from older builds decode.
+  var attempts: Int?
 }
 
 /// Receives Apple Watch captures natively. iOS can wake or launch Verity in the
@@ -29,9 +30,14 @@ private struct WatchInboxEntry: Codable {
 final class VerityWatchInbox: NSObject, WCSessionDelegate {
   static let shared = VerityWatchInbox()
   private static let protocolVersion = 1
+  /// A failure on a background wake is often transient (speech assets still
+  /// downloading, background time expired), so a failed entry is retried at the
+  /// next launch or app activation, up to this many attempts in total.
+  private static let maxAttempts = 3
 
   /// Set while JavaScript observes the bridge; called after an entry changes.
-  var onChange: (() -> Void)?
+  /// Only touched on `queue`.
+  private var onChange: (() -> Void)?
 
   private let queue = DispatchQueue(label: "build.verity.watch-inbox")
   private let directory: URL
@@ -49,15 +55,32 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     WCSession.default.delegate = self
     WCSession.default.activate()
     // A previous run may have been suspended mid-transcription.
-    queue.async {
-      for entry in self.entries() where entry.state == .received { self.transcribe(entry.id) }
+    queue.async { self.retry() }
+  }
+
+  func observe(_ handler: (() -> Void)?) {
+    queue.async { self.onChange = handler }
+  }
+
+  /// On `queue`: transcribe what a previous run left unfinished, and give up on
+  /// entries that failed too often so their audio does not pile up.
+  private func retry() {
+    for entry in entries() where entry.state != .transcribed && !transcribing.contains(entry.id) {
+      if (entry.attempts ?? 0) < Self.maxAttempts {
+        transcribe(entry.id)
+      } else {
+        remove(entry.id)
+        log("\(entry.id.prefix(8)) dropped after \(Self.maxAttempts) attempts")
+      }
     }
   }
 
   // MARK: JavaScript surface
 
   func transcribed() -> [[String: Any]] {
-    queue.sync {
+    // JavaScript drains on every activation: a good moment to retry failures.
+    queue.async { self.retry() }
+    return queue.sync {
       entries().filter { $0.state == .transcribed }.map { entry in
         [
           "id": entry.id, "text": entry.text ?? "", "createdAt": entry.createdAt,
@@ -70,8 +93,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   func acknowledge(_ id: String) {
     queue.sync {
       guard isCaptureId(id) else { return }
-      try? FileManager.default.removeItem(at: audioURL(id))
-      try? FileManager.default.removeItem(at: entryURL(id))
+      remove(id)
       log("\(id.prefix(8)) stored as task")
     }
   }
@@ -128,6 +150,8 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
         return
       }
       do {
+        // Audio without an entry is a leftover from a failed earlier save.
+        try? FileManager.default.removeItem(at: audioURL(id))
         try FileManager.default.moveItem(at: file.fileURL, to: audioURL(id))
         let entry = WatchInboxEntry(
           id: id, createdAt: metadata["createdAt"] as? String ?? "",
@@ -147,12 +171,13 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   /// Runs on `queue`. Holds a background task so iOS grants time to finish after
   /// a background wake; the result also goes back to the watch.
   private func transcribe(_ id: String) {
-    guard !transcribing.contains(id) else { return }
+    guard !transcribing.contains(id), var entry = load(id) else { return }
     transcribing.insert(id)
-    var backgroundTask = UIBackgroundTaskIdentifier.invalid
-    backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "watch-transcribe") {
+    entry.attempts = (entry.attempts ?? 0) + 1
+    entry.state = .received
+    try? save(entry)
+    let backgroundTime = BackgroundTime("watch-transcribe") {
       self.queue.async { self.log("\(id.prefix(8)) background time expired") }
-      UIApplication.shared.endBackgroundTask(backgroundTask)
     }
     let audio = audioURL(id)
     Task {
@@ -169,7 +194,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
       self.queue.async {
         self.transcribing.remove(id)
         self.finish(id, result, elapsed: elapsed)
-        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTime.end()
       }
     }
   }
@@ -255,6 +280,11 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     (try? Data(contentsOf: entryURL(id))).flatMap { try? JSONDecoder().decode(WatchInboxEntry.self, from: $0) }
   }
 
+  private func remove(_ id: String) {
+    try? FileManager.default.removeItem(at: audioURL(id))
+    try? FileManager.default.removeItem(at: entryURL(id))
+  }
+
   private func save(_ entry: WatchInboxEntry) throws {
     // Readable after first unlock, so a wake while the phone is locked can still write.
     try JSONEncoder().encode(entry).write(
@@ -296,29 +326,27 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   }
 }
 
-class VerityWatchBridge: Module {
-  public func definition() -> ModuleDefinition {
-    Name("VerityWatchBridge")
-    Events("onWatchInbox")
+/// A background task that ends exactly once, whether the work finishes or iOS
+/// reclaims the time first.
+private final class BackgroundTime {
+  private let lock = NSLock()
+  private var id = UIBackgroundTaskIdentifier.invalid
 
-    OnStartObserving {
-      VerityWatchInbox.shared.onChange = { [weak self] in self?.sendEvent("onWatchInbox", [:]) }
+  init(_ name: String, expired: @escaping () -> Void) {
+    let begun = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+      expired()
+      self?.end()
     }
-    OnStopObserving {
-      VerityWatchInbox.shared.onChange = nil
-    }
+    lock.lock()
+    id = begun
+    lock.unlock()
+  }
 
-    AsyncFunction("pending") { () -> [[String: Any]] in
-      VerityWatchInbox.shared.transcribed()
-    }
-    AsyncFunction("acknowledge") { (id: String) in
-      VerityWatchInbox.shared.acknowledge(id)
-    }
-    AsyncFunction("log") { () -> [String] in
-      VerityWatchInbox.shared.logLines()
-    }
-    AsyncFunction("status") { () -> [String: Any] in
-      VerityWatchInbox.shared.status()
-    }
+  func end() {
+    lock.lock()
+    let current = id
+    id = .invalid
+    lock.unlock()
+    if current != .invalid { UIApplication.shared.endBackgroundTask(current) }
   }
 }

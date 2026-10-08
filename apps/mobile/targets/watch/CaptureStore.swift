@@ -42,6 +42,7 @@ final class CaptureStore: NSObject, ObservableObject {
   private var recorder: AVAudioRecorder?
   private var meter: Timer?
   private var current: (id: String, start: Date)?
+  private var starting = false
   private var heardSpeech = false
   private var quietSince: Date?
   private let directory: URL
@@ -73,9 +74,12 @@ final class CaptureStore: NSObject, ObservableObject {
   }
 
   func start() {
-    guard !recording else { return }
+    // The permission prompt is async: a second tap meanwhile must not start a second recorder.
+    guard !recording, !starting else { return }
+    starting = true
     error = nil
     Task {
+      defer { starting = false }
       guard await AVAudioApplication.requestRecordPermission() else {
         error = "Allow microphone access for Verity in the Watch settings."
         return
@@ -182,8 +186,15 @@ final class CaptureStore: NSObject, ObservableObject {
   }
 
   private func persist() {
-    // Keep the list short on the watch; delivered audio is already gone.
-    captures = Array(captures.prefix(20))
+    // Keep the history short, but never drop a capture still waiting to reach the
+    // iPhone: its entry is the only thing that offers the audio again. Settled
+    // entries no longer have audio on the watch.
+    var settled = 0
+    captures = captures.filter { capture in
+      guard capture.state != .queued else { return true }
+      settled += 1
+      return settled <= 20
+    }
     guard let data = try? JSONEncoder().encode(captures) else { return }
     try? data.write(to: indexURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
   }
