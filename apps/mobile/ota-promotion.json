@@ -1,18 +1,22 @@
 {
   "schema": 1,
-  "version": "1.53.1",
-  "runtime": "1.53.0",
+  "version": "1.59.2",
+  "runtime": "1.59.0",
   "channel": "production",
-  "commit": "6295153442b688218c2d7bc33aec341a255331ba",
-  "tag": "mobile-v1.53.1",
-  "branch": "staging-mobile-v1.53.1-6295153442b688218c2d7bc33aec341a255331ba",
-  "baseline": "mobile-v1.53.0",
-  "group": "3cc94933-6a59-4f0e-ae0c-ce7a9ae192fe",
+  "commit": "78640404432054e614d5adcbadeaae7a01ce1f8c",
+  "tag": "mobile-v1.59.2",
+  "branch": "staging-mobile-v1.59.2-78640404432054e614d5adcbadeaae7a01ce1f8c",
+  "baseline": "mobile-v1.59.0",
+  "group": "913581ac-03b4-4d01-8dbd-4d5f8cb6e0fe",
   "notes": [
-    "manage session servers from Preview and chat (#1175)",
-    "keep chat-enabled Google services scoped to the session (#1171)",
-    "add persistent planning with synchronized plan approvals (#1163)",
-    "even out preview cards and name running servers by state (#1167)",
-    "pin session row icons to the row's right edge (#1166)"
+    "make plan proposals clear and actionable (#1324)",
+    "add Attendee online source to Live Meeting (#1325)",
+    "preserve session visibility during drag pickup (#1328)",
+    "kill the largest agent command before gVisor's host OOM kill (#1322)",
+    "reorder sessions within projects by long press (#1323)",
+    "stabilize cancellation, activity and unread indicators (#1316)",
+    "move PR status to the session row's second line (#1321)",
+    "calm capture flow and polish task editing (#1320)",
+    "allow linking sessions in the same project (#1317)"
   ]
 }
