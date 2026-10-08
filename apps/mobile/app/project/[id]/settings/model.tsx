@@ -49,6 +49,11 @@ export default function ProjectAgentsScreen() {
   return <ProjectAgentsView client={client} projectId={projectId} />;
 }
 
+type ProjectSettingsChange = {
+  defaultModel?: string | null;
+  allowedAgents?: ProjectAgent[] | null;
+};
+
 function AgentIcon({ agent }: { agent: ProjectAgent }) {
   const { theme } = useUnistyles();
   return agent === 'opencode' ? (
@@ -70,6 +75,9 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
   const [models, setModels] = useState<ModelList | undefined>(undefined);
   const [modelsError, setModelsError] = useState<string | undefined>(undefined);
   const [saving, setSaving] = useState(false);
+  // The change being saved, shown at once so a toggle or check mark flips on tap
+  // instead of after the round trip; a failed save drops it again.
+  const [pending, setPending] = useState<ProjectSettingsChange | undefined>(undefined);
 
   const modelRequest = useRef(0);
   const loadModels = useCallback(() => {
@@ -94,9 +102,10 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
   }, [loadModels]);
 
   const save = useCallback(
-    (patch: { defaultModel?: string | null; allowedAgents?: ProjectAgent[] | null }) => {
+    (patch: ProjectSettingsChange) => {
       if (saving) return;
       setSaving(true);
+      setPending(patch);
       setError(undefined);
       void client
         .updateProjectSettings(projectId, patch)
@@ -108,7 +117,10 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
         .catch((caught) =>
           setError(caught instanceof Error ? caught.message : 'Could not save the agents'),
         )
-        .finally(() => setSaving(false));
+        .finally(() => {
+          setSaving(false);
+          setPending(undefined);
+        });
     },
     [client, loadModels, onSettingsSaved, projectId, saving, setError],
   );
@@ -132,7 +144,8 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
   }
 
   const stored = detail.settings?.allowedAgents ?? null;
-  const allowed: readonly ProjectAgent[] = stored ?? PROJECT_AGENTS;
+  const allowed: readonly ProjectAgent[] =
+    (pending?.allowedAgents !== undefined ? pending.allowedAgents : stored) ?? PROJECT_AGENTS;
   const connectedAgents = new Set((connected?.models ?? []).map(modelAgent));
   // An agent that is allowed but no longer connected stays visible, so the rule
   // that still names it can be read and changed.
@@ -147,7 +160,10 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
     save({ allowedAgents: next.length === PROJECT_AGENTS.length ? null : next });
   };
 
-  const current = detail.settings?.defaultModel ?? null;
+  const current =
+    pending?.defaultModel !== undefined
+      ? pending.defaultModel
+      : (detail.settings?.defaultModel ?? null);
   const partitioned =
     models === undefined
       ? undefined
@@ -165,14 +181,13 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
       title={modelDisplayName(model)}
       subtitle={model}
       selected={model === current}
-      disabled={saving}
       onPress={() => save({ defaultModel: model })}
       accessibilityLabel={`Use model ${modelDisplayName(model)}, ${model}`}
     />
   );
 
   return (
-    <SettingsScaffold title="Agents" detail state={{ error, saving }} onRetry={() => load()}>
+    <SettingsScaffold title="Agents" detail state={{ error, saving: false }} onRetry={() => load()}>
       {listedAgents.length > 0 ? (
         <SettingsGroup
           title="Allowed"
@@ -192,7 +207,7 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
                   icon={<AgentIcon agent={agent} />}
                   label={agentLabel(agent)}
                   value={on}
-                  disabled={saving || locked}
+                  disabled={locked}
                   onValueChange={(value) => toggle(agent, value)}
                 />
               );
@@ -213,7 +228,6 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
                 : 'First allowed model'
             }
             selected={current === null}
-            disabled={saving}
             onPress={() => save({ defaultModel: null })}
             accessibilityLabel="Use the first allowed model"
           />

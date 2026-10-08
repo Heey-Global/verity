@@ -817,6 +817,29 @@ describe('project settings — agents', () => {
     expect(client.updateProjectSettings).not.toHaveBeenCalled();
   });
 
+  // A banner sliding in above the list while a toggle saves shifts the whole
+  // screen; the flipped toggle is the feedback.
+  it('flips a toggle at once without a saving banner or dimmed rows', async () => {
+    let finish: (() => void) | undefined;
+    const updateProjectSettings = jest.fn().mockImplementation(
+      (_id: string, patch: object) =>
+        new Promise((resolve) => {
+          finish = () => resolve({ ...makeDetail().settings, ...patch });
+        }),
+    );
+    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    render(<ProjectModelScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Codex'));
+    expect(screen.getByLabelText('Codex').props.accessibilityState).toMatchObject({
+      checked: false,
+      disabled: false,
+    });
+    expect(screen.queryByText('Saving changes…')).toBeNull();
+    await act(async () => finish?.());
+    expect(screen.getByLabelText('Codex').props.accessibilityState.checked).toBe(false);
+  });
+
   // Turning off the last connected agent would leave the project unable to start
   // any session, so its toggle cannot be switched off.
   it('locks the last connected allowed agent and lists the project models', async () => {
