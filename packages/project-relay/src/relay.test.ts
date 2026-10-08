@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import {
   createServer as createHttpServer,
   request,
@@ -40,6 +41,41 @@ afterEach(async () => {
 });
 
 describe('broker relay', () => {
+  it('runs the deployed broker smoke probe against the current relay routes', async () => {
+    const script = readFileSync('deploy/bin/verity-project-relay-smoke', 'utf8');
+    const source = /broker_probe_source <<'NODE' \|\| true\n([\s\S]*?)\nNODE/.exec(script)?.[1];
+    expect(source).toBeDefined();
+    const socketPath = await fakeBroker(async (incoming) => ({
+      status: 200,
+      body: JSON.stringify({ url: incoming.url, body: await readBody(incoming) }),
+    }));
+    const port = await listenTcp(createBrokerRelayServer({ socketPath }));
+    const probeProcess = { argv: ['127.0.0.1'], exitCode: 0 };
+    const errors: unknown[] = [];
+    // A stale smoke probe can keep unit tests green while both image builds fail.
+    await (runInNewContext(source!.replace('void (async', '(async'), {
+      require: () => ({
+        request: (options: object, callback: (response: IncomingMessage) => void) =>
+          request({ ...options, port }, callback),
+      }),
+      Buffer,
+      process: probeProcess,
+      console: { error: (error: unknown) => errors.push(error) },
+    }) as Promise<void>);
+    expect(errors).toEqual([]);
+    expect(probeProcess.exitCode).toBe(0);
+  });
+
+  it.each([
+    'deploy/bin/verity-project-relay-isolation-smoke',
+    'deploy/bin/verity-project-relay-lifecycle-smoke.mjs',
+  ])('keeps the successful broker probe in %s on an exposed route', (file) => {
+    const source = readFileSync(file, 'utf8');
+    const paths = [...source.matchAll(/path: '(\/internal\/[^']+)'/g)];
+    expect(paths.length).toBeGreaterThan(0);
+    for (const match of paths) expect(BROKER_RELAY_ROUTES.has(`POST ${match[1]}`)).toBe(true);
+  });
+
   it('forwards only an allowlisted request to the fixed Unix socket', async () => {
     const seen: Array<{ method: string; url: string; authorization?: string; body: string }> = [];
     const socketPath = await fakeBroker(async (incoming) => {
