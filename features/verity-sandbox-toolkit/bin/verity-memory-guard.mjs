@@ -18,7 +18,7 @@
  * This guard stands in for the guest OOM killer the runtime does not have, the
  * way earlyoom or kubelet eviction stand in for a kernel that acts too late. It
  * polls the cgroup's usage and, once usage reaches the ceiling minus a reserve,
- * SIGKILLs the largest agent-owned process and its descendants. One session's
+ * SIGKILLs the largest agent-owned command tree (see `chooseVictim`). One session's
  * build or test run dies with exit 137; the container and the other sessions
  * survive. The reserve exists because the guest cannot see the Sentry's own
  * memory (about 0.8 GiB anonymous RSS in the kill record) or the host page
@@ -37,11 +37,13 @@
  *
  * Reads `/sys/fs/cgroup/memory/memory.{limit,usage}_in_bytes` (cgroup v1, which
  * gVisor mounts by default) or `memory.max` and `anon` from `memory.stat`
- * (cgroup v2, a runc Sandbox). With no readable finite limit the guard exits
+ * (cgroup v2, a runc Sandbox). The v1 usage includes the guest page cache on
+ * purpose: under gVisor that cache lives in the Sentry's memory file, which the
+ * host charges to the container like any anonymous page. With no readable finite limit the guard exits
  * quietly: there is nothing to defend.
  */
 
-import { readdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { clearInterval, setInterval } from 'node:timers';
@@ -184,27 +186,70 @@ export function listProcesses(readFile = readFsFile, listPids = listProcDir) {
 }
 
 /**
- * The largest agent-owned process worth killing. Only the agent uid qualifies:
- * root and the Runner identity are the container's infrastructure (init, spawn
- * broker, supervisor, workers, egress connector, this guard), and killing any
- * of them would end sessions without freeing the memory a build holds. Ties go
- * to the higher pid, the younger process.
+ * The agent-owned process tree to kill, ranked by the RSS of the whole tree.
+ *
+ * Only the agent uid qualifies: root and the Runner identity are the
+ * container's infrastructure (init, spawn broker, supervisor, workers, egress
+ * connector, this guard), and killing any of them would end sessions without
+ * freeing the memory a build holds. Within the agent's processes the unit is a
+ * whole command, not a single process, for two reasons. A test runner's worker
+ * pool respawns a worker killed on its own, so killing the largest worker frees
+ * nothing for long and repeats every cooldown; and the session that ran the
+ * command should see that command fail with exit 137, not lose its agent.
+ *
+ * The tree shapes this distinguishes, from the agent processes' parents:
+ *
+ * - An agent process whose parent is infrastructure other than init is a
+ *   session anchor — the ACP adapter the spawn broker started. It is never a
+ *   unit of its own.
+ * - Its children are the agent CLI. Killing one ends the session's agent, so a
+ *   CLI tree is chosen only when no command tree qualifies: losing one session
+ *   is still better than losing the container.
+ * - Their children are the commands the agent ran (the tool shell, and under it
+ *   `npm test`, vitest and its workers): the preferred units.
+ * - An agent process under init — or with no visible parent — was detached from
+ *   any session (a dev database, a backgrounded server) and is a unit with its
+ *   whole tree.
+ *
+ * Trees below `MINIMUM_VICTIM_RSS_BYTES` are not worth killing. Ties go to the
+ * higher pid, the younger tree.
  */
 export function chooseVictim(processes, { agentUid, protectedPids = new Set() }) {
-  let victim;
+  const byPid = new Map(processes.map((process) => [process.pid, process]));
+  const isAgent = (process) =>
+    process !== undefined && process.uid === agentUid && process.pid !== 1;
+  const isAnchor = (process) => {
+    const parent = byPid.get(process.ppid);
+    return !isAgent(parent) && parent !== undefined && parent.pid !== 1;
+  };
+  const tierOf = (process) => {
+    if (!isAgent(process)) return undefined;
+    const parent = byPid.get(process.ppid);
+    if (!isAgent(parent)) return isAnchor(process) ? undefined : 'detached';
+    if (isAnchor(parent)) return 'agent-cli';
+    const grandparent = byPid.get(parent.ppid);
+    return isAgent(grandparent) && isAnchor(grandparent) ? 'command' : undefined;
+  };
+  let best;
   for (const candidate of processes) {
-    if (candidate.uid !== agentUid || candidate.pid === 1) continue;
-    if (protectedPids.has(candidate.pid)) continue;
-    if (candidate.rssBytes < MINIMUM_VICTIM_RSS_BYTES) continue;
+    const tier = tierOf(candidate);
+    if (tier === undefined || protectedPids.has(candidate.pid)) continue;
+    const tree = [candidate, ...descendantsOf(candidate.pid, processes)];
+    if (tree.some((process) => protectedPids.has(process.pid))) continue;
+    const treeRssBytes = tree.reduce((sum, process) => sum + process.rssBytes, 0);
+    if (treeRssBytes < MINIMUM_VICTIM_RSS_BYTES) continue;
+    const rank = tier === 'agent-cli' ? 0 : 1;
     if (
-      victim === undefined ||
-      candidate.rssBytes > victim.rssBytes ||
-      (candidate.rssBytes === victim.rssBytes && candidate.pid > victim.pid)
+      best === undefined ||
+      rank > best.rank ||
+      (rank === best.rank &&
+        (treeRssBytes > best.victim.treeRssBytes ||
+          (treeRssBytes === best.victim.treeRssBytes && candidate.pid > best.victim.pid)))
     ) {
-      victim = candidate;
+      best = { rank, victim: { ...candidate, tier, treeRssBytes } };
     }
   }
-  return victim;
+  return best?.victim;
 }
 
 /**
@@ -269,10 +314,16 @@ export function createMemoryGuard(options) {
   const dryRun = options.dryRun === true;
   let cooldownUntil = 0;
   let reserveLogged = false;
+  let lastOutcome;
 
   const signalTree = (victim, descendants) => {
     let signalled = 0;
     for (const target of [...descendants, victim]) {
+      // The snapshot is a few milliseconds old and this runs as root: a pid that
+      // exited and was reused by infrastructure in between must not be signalled.
+      const current = tryRead(readFile, `/proc/${target.pid}/status`);
+      const uid = Number.parseInt((parseStatus(current ?? '').Uid ?? '').split(/\s+/)[0] ?? '', 10);
+      if (uid !== agentUid) continue;
       try {
         kill(target.pid, 'SIGKILL');
         signalled += 1;
@@ -302,6 +353,7 @@ export function createMemoryGuard(options) {
       });
     }
     if (ceiling.usageBytes < thresholdBytes) {
+      lastOutcome = 'below-threshold';
       return { outcome: 'below-threshold', ...ceiling, thresholdBytes };
     }
     if (now() < cooldownUntil) return { outcome: 'cooldown', ...ceiling, thresholdBytes };
@@ -309,6 +361,10 @@ export function createMemoryGuard(options) {
     const victim = chooseVictim(processes, { agentUid, protectedPids });
     if (victim === undefined) {
       cooldownUntil = now() + KILL_COOLDOWN_MS;
+      // Logged once per episode: the log sits on tmpfs charged to this cgroup.
+      if (lastOutcome === 'no-candidate')
+        return { outcome: 'no-candidate', ...ceiling, thresholdBytes };
+      lastOutcome = 'no-candidate';
       log({
         event: 'no-candidate',
         usageBytes: ceiling.usageBytes,
@@ -320,6 +376,7 @@ export function createMemoryGuard(options) {
     const descendants = descendantsOf(victim.pid, processes);
     const signalled = dryRun ? 0 : signalTree(victim, descendants);
     cooldownUntil = now() + KILL_COOLDOWN_MS;
+    lastOutcome = 'kill';
     log({
       event: dryRun ? 'would-kill' : 'kill',
       usageBytes: ceiling.usageBytes,
@@ -327,7 +384,8 @@ export function createMemoryGuard(options) {
       thresholdBytes,
       pid: victim.pid,
       uid: victim.uid,
-      rssBytes: victim.rssBytes,
+      tier: victim.tier,
+      treeRssBytes: victim.treeRssBytes,
       name: victim.name,
       command: loggableCommand(readFile, victim.pid),
       session: sessionOf(readLink, victim.pid),
@@ -368,6 +426,27 @@ export function probeMemoryGuard(controlDir, readFile = readFsFile) {
   return command !== undefined && command.includes('verity-memory-guard');
 }
 
+/**
+ * Claim the pid file before the first poll, exclusively, so two overlapping
+ * stack passes cannot both start a guard that kills on its own cooldown. A file
+ * left by a guard that is no longer running is replaced once; losing that
+ * second race means another guard just claimed it.
+ */
+function claimPidFile(controlDir) {
+  const path = join(controlDir, PID_FILE_NAME);
+  const record = `${process.pid} ${statStartTime(readFsFile, process.pid)}\n`;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      writeFileSync(path, record, { mode: 0o600, flag: 'wx' });
+      return true;
+    } catch (error) {
+      if (error?.code !== 'EEXIST' || attempt > 0 || probeMemoryGuard(controlDir)) return false;
+      rmSync(path, { force: true });
+    }
+  }
+  return false;
+}
+
 function writeLog(record) {
   process.stdout.write(`${JSON.stringify({ ts: new Date().toISOString(), ...record })}\n`);
 }
@@ -393,7 +472,7 @@ function main() {
     writeLog({ event: 'once', ...result, victim: result.victim?.pid });
     process.exit(0);
   }
-  if (probeMemoryGuard(controlDir)) {
+  if (!claimPidFile(controlDir)) {
     writeLog({ event: 'already-running' });
     process.exit(0);
   }
@@ -402,11 +481,6 @@ function main() {
     writeLog({ event: 'disabled', reason: 'no finite memory limit is readable' });
     process.exit(0);
   }
-  writeFileSync(
-    join(controlDir, PID_FILE_NAME),
-    `${process.pid} ${statStartTime(readFsFile, process.pid)}\n`,
-    { mode: 0o600 },
-  );
   const intervalMs = resolvePollIntervalMs(process.env);
   const timer = setInterval(() => {
     try {

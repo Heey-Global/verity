@@ -23,6 +23,14 @@ export interface GuardedProcess {
   name: string;
 }
 
+/** A process chosen as the root of the tree to kill. */
+export interface MemoryGuardVictim extends GuardedProcess {
+  /** `command`: a command an agent ran; `detached`: a tree under init; `agent-cli`: last resort. */
+  tier: 'command' | 'detached' | 'agent-cli';
+  /** RSS summed over the process and all its descendants. */
+  treeRssBytes: number;
+}
+
 export interface MemoryGuardLogRecord {
   event: string;
   [key: string]: unknown;
@@ -48,7 +56,7 @@ export interface MemoryGuardTick {
   usageBytes?: number;
   source?: MemoryCeiling['source'];
   thresholdBytes?: number;
-  victim?: GuardedProcess;
+  victim?: MemoryGuardVictim;
 }
 
 export function readMemoryCeiling(
@@ -64,7 +72,7 @@ export function listProcesses(readFile?: ReadFile, listPids?: () => string[]): G
 export function chooseVictim(
   processes: readonly GuardedProcess[],
   options: { agentUid: number; protectedPids?: Set<number> },
-): GuardedProcess | undefined;
+): MemoryGuardVictim | undefined;
 export function descendantsOf(pid: number, processes: readonly GuardedProcess[]): GuardedProcess[];
 export function createMemoryGuard(options: MemoryGuardOptions): { tick(): MemoryGuardTick };
 export function probeMemoryGuard(controlDir: string, readFile?: ReadFile): boolean;

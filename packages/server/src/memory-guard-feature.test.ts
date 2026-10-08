@@ -50,7 +50,7 @@ const sandbox = (): Record<string, string> => ({
   '/proc/6101/status': status('node', 6100, 1000, 900 * MIB),
   '/proc/6102/status': status('node', 6100, 1000, 950 * MIB),
   '/proc/7000/status': status('node', 1, 1000, 600 * MIB),
-  '/proc/6102/cmdline': 'node\0/work/.verity-sessions/agent-a/node_modules/.bin/vitest\0run\0',
+  '/proc/6000/cmdline': 'bash\0-c\0npm test\0',
 });
 
 const listPids = (files: Record<string, string>) => (): string[] => [
@@ -147,20 +147,62 @@ describe('victim selection', () => {
     });
   });
 
-  it('picks the largest agent-owned process and never the container infrastructure', () => {
+  it('picks the whole command an agent ran, ranked by tree RSS, and never infrastructure', () => {
     const processes = listProcesses(reader(sandbox()), listPids(sandbox()));
-    expect(chooseVictim(processes, { agentUid: 1000 })?.pid).toBe(6102);
+    // The largest single process is worker 6102, but a pool respawns a lone
+    // worker: killing it frees nothing for long and repeats every cooldown. The
+    // unit is the tool shell 6000 with vitest and both workers under it.
+    expect(chooseVictim(processes, { agentUid: 1000 })).toMatchObject({
+      pid: 6000,
+      tier: 'command',
+      treeRssBytes: (5 + 470 + 900 + 950) * MIB,
+    });
     // Root and the Runner identity hold the spawn broker, supervisor and workers:
     // killing them ends sessions without freeing what a build holds. Make one of
     // them the biggest process in the container and it must still be passed over.
     const inflated: GuardedProcess[] = processes.map((p) =>
       p.pid === 519 ? { ...p, rssBytes: 4 * GIB } : p,
     );
-    expect(chooseVictim(inflated, { agentUid: 1000 })?.pid).toBe(6102);
-    // The guard itself and its parent are excluded explicitly.
-    expect(chooseVictim(processes, { agentUid: 1000, protectedPids: new Set([6102]) })?.pid).toBe(
-      6101,
-    );
+    expect(chooseVictim(inflated, { agentUid: 1000 })?.pid).toBe(6000);
+    // A tree holding a protected pid (the guard itself, its parent) is skipped;
+    // the next unit is the process detached under init.
+    expect(
+      chooseVictim(processes, { agentUid: 1000, protectedPids: new Set([6102]) }),
+    ).toMatchObject({ pid: 7000, tier: 'detached' });
+  });
+
+  it('treats init as infrastructure even when it runs as the agent uid', () => {
+    // Observed in a project Sandbox: docker-init runs as uid 1000. Read as an agent
+    // process it would turn every detached tree into a child of an agent "anchor".
+    const files = sandbox();
+    files['/proc/1/status'] = status('docker-init', 0, 1000, 2 * MIB);
+    const processes = listProcesses(reader(files), listPids(files));
+    expect(chooseVictim(processes, { agentUid: 1000 })?.pid).toBe(6000);
+    const detachedOnly = processes.filter((p) => ![6000, 6100, 6101, 6102].includes(p.pid));
+    expect(chooseVictim(detachedOnly, { agentUid: 1000 })).toMatchObject({
+      pid: 7000,
+      tier: 'detached',
+    });
+  });
+
+  it('spares the agent CLI and its adapter while any command qualifies', () => {
+    // A large CLI is still not the unit: killing it ends the session's agent
+    // instead of failing one command with exit 137.
+    const files = sandbox();
+    files['/proc/5867/status'] = status('claude', 5574, 1000, 3 * GIB);
+    files['/proc/5574/status'] = status('node', 470, 1000, 3 * GIB);
+    const processes = listProcesses(reader(files), listPids(files));
+    expect(chooseVictim(processes, { agentUid: 1000 })?.pid).toBe(6000);
+    // With every command too small to matter, the CLI is the last resort — one
+    // session lost rather than the container. The adapter never is.
+    const idle = processes.filter((p) => ![6000, 6100, 6101, 6102, 7000].includes(p.pid));
+    expect(chooseVictim(idle, { agentUid: 1000 })).toMatchObject({ pid: 5867, tier: 'agent-cli' });
+    expect(
+      chooseVictim(
+        idle.filter((p) => p.pid !== 5867),
+        { agentUid: 1000 },
+      ),
+    ).toBeUndefined();
   });
 
   it('declines when nothing agent-owned is large enough to matter', () => {
@@ -194,7 +236,7 @@ describe('createMemoryGuard', () => {
       readFile: reader(files),
       listPids: listPids(files),
       readLink: (path) =>
-        path === '/proc/6102/cwd' ? '/work/.verity-sessions/agent-a/packages/server' : '/',
+        path === '/proc/6000/cwd' ? '/work/.verity-sessions/agent-a/packages/server' : '/',
       kill,
       log,
       agentUid: 1000,
@@ -214,31 +256,42 @@ describe('createMemoryGuard', () => {
     expect(log.mock.calls.map(([record]) => record.event)).toEqual(['armed']);
   });
 
-  it('SIGKILLs the largest agent process and its descendants once usage reaches the threshold', () => {
+  it('SIGKILLs the chosen command tree, deepest first, once usage reaches the threshold', () => {
     const { guard, kill, log } = guardAt(5.5 * GIB);
     const result = guard.tick();
     expect(result.outcome).toBe('kill');
-    expect(result.victim?.pid).toBe(6102);
-    expect(kill.mock.calls).toEqual([[6102, 'SIGKILL']]);
+    expect(result.victim?.pid).toBe(6000);
+    // Workers before vitest before the shell: a parent killed first would leave
+    // orphans still holding the memory, or respawn what was just killed.
+    expect(kill.mock.calls).toEqual([
+      [6101, 'SIGKILL'],
+      [6102, 'SIGKILL'],
+      [6100, 'SIGKILL'],
+      [6000, 'SIGKILL'],
+    ]);
     const record = log.mock.calls.map(([r]) => r).find((r) => r.event === 'kill');
     // What the operator needs to attribute the kill: which session, which command,
     // and that the guard — not the kernel — is what the exit 137 came from.
     expect(record).toMatchObject({
-      pid: 6102,
+      pid: 6000,
       uid: 1000,
-      rssBytes: 950 * MIB,
+      tier: 'command',
+      treeRssBytes: (5 + 470 + 900 + 950) * MIB,
       session: 'agent-a',
-      command: 'node /work/.verity-sessions/agent-a/node_modules/.bin/vitest run',
-      signalled: 1,
+      command: 'bash -c npm test',
+      signalled: 4,
     });
   });
 
-  it('kills a victim tree deepest first and survives targets that are already gone', () => {
+  it('survives targets that are gone and never signals a pid reused by infrastructure', () => {
     const files = { ...sandbox(), ...cgroup(5.5 * GIB) };
-    // Make the agent CLI itself the biggest process: its whole tool tree goes with it.
-    files['/proc/5867/status'] = status('claude', 5574, 1000, 3 * GIB);
     const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>((pid) => {
-      if (pid === 6000) throw new Error('ESRCH');
+      if (pid === 6101) {
+        // Between the snapshot and the next signal, vitest exits and its pid is
+        // reused by a root process. The guard runs as root and could kill it.
+        files['/proc/6100/status'] = status('node', 470, 0, 470 * MIB);
+      }
+      if (pid === 6102) throw new Error('ESRCH');
     });
     const guard = createMemoryGuard({
       readFile: reader(files),
@@ -249,7 +302,7 @@ describe('createMemoryGuard', () => {
       now: () => 0,
     });
     expect(guard.tick().outcome).toBe('kill');
-    expect(kill.mock.calls.map(([pid]) => pid)).toEqual([6101, 6102, 6100, 6000, 5867]);
+    expect(kill.mock.calls.map(([pid]) => pid)).toEqual([6101, 6102, 6000]);
   });
 
   it('waits out a cooldown after a kill so freed pages can leave the cgroup before the next one', () => {
@@ -258,20 +311,21 @@ describe('createMemoryGuard', () => {
     expect(guard.tick().outcome).toBe('kill');
     clock = KILL_COOLDOWN_MS - 1;
     expect(guard.tick().outcome).toBe('cooldown');
-    expect(kill).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledTimes(4);
     clock = KILL_COOLDOWN_MS;
     expect(guard.tick().outcome).toBe('kill');
-    expect(kill).toHaveBeenCalledTimes(2);
+    expect(kill).toHaveBeenCalledTimes(8);
   });
 
   it('only reports in dry-run mode', () => {
     const { guard, kill, log } = guardAt(5.5 * GIB, { dryRun: true });
-    expect(guard.tick()).toMatchObject({ outcome: 'would-kill', victim: { pid: 6102 } });
+    expect(guard.tick()).toMatchObject({ outcome: 'would-kill', victim: { pid: 6000 } });
     expect(kill).not.toHaveBeenCalled();
     expect(log.mock.calls.map(([r]) => r.event)).toEqual(['armed', 'would-kill']);
   });
 
   it('reports no candidate rather than killing infrastructure when only root is large', () => {
+    let clock = 0;
     const files: Record<string, string> = {
       ...cgroup(5.9 * GIB),
       '/proc/1/status': status('docker-init', 0, 0, 2 * MIB),
@@ -286,8 +340,12 @@ describe('createMemoryGuard', () => {
       kill,
       log,
       agentUid: 1000,
-      now: () => 0,
+      now: () => clock,
     });
+    expect(guard.tick().outcome).toBe('no-candidate');
+    // Logged once per episode, not every cooldown: the log is on tmpfs charged to
+    // the very cgroup that is already at its threshold.
+    clock = 10 * KILL_COOLDOWN_MS;
     expect(guard.tick().outcome).toBe('no-candidate');
     expect(kill).not.toHaveBeenCalled();
     expect(log.mock.calls.map(([r]) => r.event)).toEqual(['armed', 'no-candidate']);

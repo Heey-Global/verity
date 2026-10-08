@@ -820,10 +820,17 @@ toolkit runs a memory guard (`verity-memory-guard`) that stands in for the
 missing guest OOM killer, the way earlyoom or kubelet eviction act before the
 kernel does. Started by the root stack pass next to the spawn broker, it polls
 the cgroup's usage every 500 ms and, once usage reaches the ceiling minus a
-reserve, SIGKILLs the largest agent-owned process together with its descendants.
+reserve, SIGKILLs the largest command an agent ran together with everything it
+started — the tool shell with `npm test`, the test runner and its workers, ranked
+by the memory of the whole tree. Killing a single worker would not help, since a
+worker pool respawns it. A process tree detached under init (a backgrounded dev
+server or database) counts as a command of its own. An agent CLI is chosen only
+when no command is large enough, because killing it ends that session's agent.
 The reserve is a fifth of the ceiling and never less than 1 GiB, because the
 guest cannot see the Sentry's own memory or the page cache the host charges to
-the cgroup; at the 6 GiB default the guard acts at about 4.8 GiB. The victim's
+the cgroup; at the 6 GiB default the guard acts at about 4.8 GiB. On the cgroup
+v1 files gVisor exposes, usage includes the guest page cache, which lives in the
+same host-charged memory file and therefore counts against the ceiling too. The victim's
 command ends with exit 137 and no kernel message, the session that ran it sees
 that failure, and the other sessions of the project keep running. Infrastructure
 is never a candidate: only processes of the agent identity qualify, never root
