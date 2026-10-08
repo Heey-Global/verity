@@ -51,20 +51,23 @@ function PrMarker({
   );
 }
 
-const DRAWN: ReadonlySet<AttentionFlag['kind']> = new Set([
-  'ci_running',
-  'merge_ready',
-  'merge_checking',
-  'ci_failed',
-  'merge_blocked',
-  'merge_conflict',
-]);
+// One entry per kind the marker draws. Drawing and `drawsAttentionMarker` both read
+// this table, so a kind can't be drawn without the row knowing, or vice versa.
+type MarkerSpec = { tone: 'done' | 'danger'; pulsing: boolean; badge?: 'check' | 'x' };
+const MARKERS: Partial<Record<AttentionFlag['kind'], MarkerSpec>> = {
+  ci_running: { tone: 'done', pulsing: true },
+  merge_ready: { tone: 'done', pulsing: false, badge: 'check' },
+  merge_checking: { tone: 'done', pulsing: true, badge: 'check' },
+  ci_failed: { tone: 'danger', pulsing: false, badge: 'x' },
+  merge_blocked: { tone: 'danger', pulsing: false, badge: 'x' },
+  merge_conflict: { tone: 'danger', pulsing: false, badge: 'x' },
+};
 
 /** Whether {@link AttentionMarkers} draws anything for these flags, so a caller can
  *  leave out the separator it would otherwise put in front of an empty slot. */
 export function drawsAttentionMarker(flags: readonly AttentionFlag[]): boolean {
   const flag = flags[0];
-  return flag !== undefined && DRAWN.has(flag.kind);
+  return flag !== undefined && MARKERS[flag.kind] !== undefined;
 }
 
 export function AttentionMarkers({
@@ -84,32 +87,21 @@ export function AttentionMarkers({
   // trailing column clean and aligned under the project ⋯ — two side-by-side icons
   // read as clutter.
   const flag = flags[0];
-  if (!flag || !drawsAttentionMarker(flags)) return null;
+  const spec = flag ? MARKERS[flag.kind] : undefined;
+  if (!flag || !spec) return null;
+  const color = theme.colors.tone[spec.tone];
   return (
     <View
       style={inline ? styles.inline : styles.slot}
       accessibilityRole="image"
       accessibilityLabel={flag.label}
     >
-      {flag.kind === 'ci_running' ? (
-        <PrMarker size={size} color={theme.colors.tone.done} pulsing />
-      ) : flag.kind === 'merge_ready' || flag.kind === 'merge_checking' ? (
-        <PrMarker
-          size={size}
-          color={theme.colors.tone.done}
-          pulsing={flag.kind === 'merge_checking'}
-          badge={{ icon: 'check', color: theme.colors.tone.done }}
-        />
-      ) : flag.kind === 'ci_failed' ||
-        flag.kind === 'merge_blocked' ||
-        flag.kind === 'merge_conflict' ? (
-        <PrMarker
-          size={size}
-          color={theme.colors.tone.danger}
-          pulsing={false}
-          badge={{ icon: 'x', color: theme.colors.tone.danger }}
-        />
-      ) : null}
+      <PrMarker
+        size={size}
+        color={color}
+        pulsing={spec.pulsing}
+        {...(spec.badge ? { badge: { icon: spec.badge, color } } : {})}
+      />
     </View>
   );
 }

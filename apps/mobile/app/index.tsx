@@ -1836,22 +1836,20 @@ function SessionRow({
           <Text style={styles.sessionTitle} numberOfLines={1}>
             {label}
           </Text>
+          {/* The lifecycle label is hidden while working since the left dot
+              already conveys it. */}
           {showLabel ? (
             <View style={[styles.sessionLineEnd, styles.sessionTitleLineEnd]}>
-              {/* The lifecycle label is hidden while working since the left dot
-                  already conveys it. */}
-              {showLabel ? (
-                <View
-                  style={[
-                    styles.statusPill,
-                    { borderColor: toneColor, backgroundColor: `${toneColor}1f` },
-                  ]}
-                >
-                  <Text style={[styles.statusPillText, { color: toneColor }]} numberOfLines={1}>
-                    {badge.label}
-                  </Text>
-                </View>
-              ) : null}
+              <View
+                style={[
+                  styles.statusPill,
+                  { borderColor: toneColor, backgroundColor: `${toneColor}1f` },
+                ]}
+              >
+                <Text style={[styles.statusPillText, { color: toneColor }]} numberOfLines={1}>
+                  {badge.label}
+                </Text>
+              </View>
             </View>
           ) : null}
         </View>
