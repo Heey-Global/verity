@@ -4,7 +4,11 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-import { assertPromotionOrder, assertTestFlightReady } from './production-promotion.js';
+import {
+  assertPromotionOrder,
+  assertTestFlightReady,
+  validateNativePromotion,
+} from './production-promotion.js';
 
 function fixture(change: Record<string, unknown> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'verity-production-'));
@@ -156,4 +160,48 @@ it('keeps native promotion in TestFlight and requires tester availability', () =
   expect(() => assertTestFlightReady('IN_BETA_TESTING')).not.toThrow();
   for (const state of ['PROCESSING', 'READY_FOR_BETA_TESTING', 'EXPIRED', 'FAILED', ''])
     expect(() => assertTestFlightReady(state)).toThrow('not available');
+});
+
+// Unuploaded archives have no Apple build ID; approval must bind their immutable bytes instead.
+it('requires an immutable archive identity for unuploaded native candidates', () => {
+  const candidate = {
+    schema: 2,
+    product: 'mobile-native',
+    version: '1.54.0',
+    source: 'a'.repeat(40),
+    appId: '123',
+    buildNumber: '42',
+    releasePr: 1195,
+    artifact: { id: 123, sha256: 'b'.repeat(64) },
+  };
+  expect(validateNativePromotion(candidate)).toEqual(candidate);
+  for (const artifact of [
+    undefined,
+    { id: 0, sha256: 'b'.repeat(64) },
+    { id: 123, sha256: 'invalid' },
+  ])
+    expect(() => validateNativePromotion({ ...candidate, artifact })).toThrow('Invalid native');
+});
+
+// A dispatch alone must never authorize Apple's upload or rebuild the reviewed source.
+it('checks merged approval and recorded evidence before uploading native bytes', () => {
+  const source = readFileSync(new URL('./production-promotion.ts', import.meta.url), 'utf8');
+  const native = source.slice(
+    source.indexOf('export async function promoteNative'),
+    source.indexOf('function assertReviewed'),
+  );
+  const upload = native.indexOf('await uploadApprovedBinary(candidate)');
+  expect(upload).toBeGreaterThan(native.indexOf('assertReviewed('));
+  expect(upload).toBeGreaterThan(native.indexOf('assertRecorded('));
+  const workflow = parse(
+    readFileSync('.github/workflows/mobile-production-promote.yml', 'utf8'),
+  ) as { jobs: { promote: { steps: { run?: string }[] } }; concurrency: { group: string } };
+  expect(
+    workflow.jobs.promote.steps.some((step: { run?: string }) => step.run?.includes('eas build')),
+  ).toBe(false);
+  const background = parse(readFileSync('.github/workflows/mobile-production-build.yml', 'utf8'));
+  expect(workflow.concurrency.group).toBe(background.concurrency.group);
+  const release = parse(readFileSync('.github/workflows/release.yml', 'utf8'));
+  expect(release.jobs['finalize-mobile-staging'].needs).not.toContain('dispatch-mobile-production');
+  expect(background.concurrency.group).not.toBe('release-mobile');
 });

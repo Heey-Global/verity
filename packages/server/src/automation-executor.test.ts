@@ -64,6 +64,16 @@ describe('automation executor', () => {
     });
   });
 
+  it('runs the turn for the user who confirmed the automation', async () => {
+    const { executor, dispatch } = harness();
+    await executor.run({ ...automation, sponsorUserId: 'alice' });
+    expect(dispatch).toHaveBeenCalledWith(
+      's1',
+      automation.prompt,
+      expect.objectContaining({ initiatedBy: { userId: 'alice' } }),
+    );
+  });
+
   it('passes the chosen model to the dispatched turn', async () => {
     const { executor, dispatch } = harness();
     await executor.run({ ...automation, model: 'codex/default' });

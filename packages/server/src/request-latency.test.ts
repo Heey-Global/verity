@@ -61,11 +61,11 @@ describe('slow backend read diagnostics', () => {
     const interval = vi.spyOn(globalThis, 'setInterval');
     registerRequestLatencyDiagnostics(app);
     app.get('/sessions', async () => []);
-    app.get('/sessions/:id/stream', async () => 'stream');
+    app.get('/live', async () => 'stream');
     try {
       await app.inject('/sessions');
       const afterRead = interval.mock.calls.length;
-      await app.inject('/sessions/s1/stream');
+      await app.inject('/live');
       expect(interval.mock.calls.length).toBe(afterRead);
       expect(warned).not.toHaveBeenCalled();
     } finally {

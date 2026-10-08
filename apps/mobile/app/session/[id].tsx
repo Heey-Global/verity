@@ -1,3 +1,7 @@
+import { shouldSendWebKey } from '../../lib/composerWebKey';
+import { subscribeLiveRefresh } from '../../lib/liveConnection';
+import { openTasksPanel } from '../../lib/taskPanelEvents';
+import { ActionMenu } from '../../components/ActionMenu';
 import { FileTextEditor } from '../../components/files/FileTextEditor';
 import { FileContentPreview } from '../../components/files/FileContentPreview';
 // Session chat screen: the live transcript for one Claude Code session plus the
@@ -146,7 +150,6 @@ import {
   type StyleProp,
   Text,
   TextInput,
-  type TextInputKeyPressEventData,
   type TextStyle,
   useWindowDimensions,
   View,
@@ -190,6 +193,7 @@ import {
 import { DragSource } from '../../components/DragSource';
 import { DropZone } from '../../components/DropZone';
 import { ImageLightbox } from '../../components/ImageLightbox';
+import { PromptComposerInput } from '../../components/PromptComposerInput';
 import { WorkingDot } from '../../components/WorkingDot';
 import {
   hardwareKeyboardDetection,
@@ -214,7 +218,9 @@ import {
   type DroppedFileDescriptor,
   captureImage,
   pickMeetingAudioAsset,
+  droppedFileData,
   pickSessionFiles,
+  releaseDroppedFile,
   readMeetingAudioUpload,
   pickFiles,
   pickImagesFromLibrary,
@@ -313,8 +319,6 @@ const AnimatedKeyboardAvoidingView = Reanimated.createAnimatedComponent(Keyboard
 // (Cross-app-restart persistence would need AsyncStorage — a follow-up.)
 const draftStore = new Map<string, string>();
 
-const MEETING_FOLLOW_UP_IDLE_POLL_MS = 1200;
-const MEETING_FOLLOW_UP_IDLE_ATTEMPTS = 100;
 const MAX_ATTACHMENTS_PER_TURN = 8;
 // Points at 72 PPI (~18 mm). iOS takes page margins only from this option; the
 // document's own `@page` rule covers Android.
@@ -328,19 +332,57 @@ const HISTORY_APPEND_SETTLE_FALLBACK_MS = 2000;
 /** Upper bound on the jump cover; the passes themselves finish in about two seconds. */
 const JUMP_FAIL_SAFE_MS = 4000;
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function waitForSessionIdle(client: VerityClient, sessionId: string): Promise<void> {
-  for (let attempt = 0; attempt < MEETING_FOLLOW_UP_IDLE_ATTEMPTS; attempt += 1) {
-    const activity = await client.getActivity(sessionId);
-    if (!activity.busy && activity.queued.length === 0) return;
-    await delay(MEETING_FOLLOW_UP_IDLE_POLL_MS);
-  }
-  throw new Error(
-    'The session is still busy. The meeting prompt will retry when this chat opens again.',
-  );
+  await new Promise<void>((resolve, reject) => {
+    let finished = false;
+    let reading = false;
+    let again = false;
+    let detach = () => {};
+    const timeout = setTimeout(
+      () =>
+        finish(
+          new Error(
+            'The session is still busy. The meeting prompt will retry when this chat opens again.',
+          ),
+        ),
+      120_000,
+    );
+    const finish = (error?: unknown): void => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      detach();
+      if (error) reject(error);
+      else resolve();
+    };
+    const read = async (): Promise<void> => {
+      if (finished) return;
+      if (reading) {
+        again = true;
+        return;
+      }
+      reading = true;
+      try {
+        const activity = await client.getActivity(sessionId);
+        if (!activity.busy && activity.queued.length === 0) finish();
+      } catch (error) {
+        finish(error);
+      } finally {
+        reading = false;
+        if (again && !finished) {
+          again = false;
+          void read();
+        }
+      }
+    };
+    detach = subscribeLiveRefresh(
+      client,
+      read,
+      (path) => path === `/sessions/${encodeURIComponent(sessionId)}/activity`,
+      [{ path: `/sessions/${encodeURIComponent(sessionId)}/activity` }],
+    );
+    void read();
+  });
 }
 
 interface LocalMeetingUploadActivity {
@@ -414,16 +456,6 @@ function shouldAlertMeetingUploadApiError(error: VerityApiError): boolean {
 // its `offsetY` measures something else, so it is repositioned by row identity alone
 // (`migratedAnchorOffset`).
 const dismissedPullRequests = createPersistedStringSet('verity.dismissedPullRequests.v1');
-
-function isSingleInsertedNewline(previous: string, next: string): boolean {
-  if (next.length !== previous.length + 1) return false;
-  for (let index = 0; index < next.length; index += 1) {
-    if (next[index] !== previous[index]) {
-      return next[index] === '\n' && next.slice(index + 1) === previous.slice(index);
-    }
-  }
-  return false;
-}
 
 // Half-height of the 3-item message-nav stack, incl. the backdrop's vertical padding:
 // 3 btns·(icon 22 + 6·2) + 2 gaps·8 + container 6·2 = 130; half = 65. Used to
@@ -684,10 +716,14 @@ export function SessionChat({
           .catch(() => undefined);
       };
       refresh();
-      const interval = setInterval(refresh, 15_000);
+      const detach = subscribeLiveRefresh(
+        client,
+        refresh,
+        (path) => path === `/sessions/${encodeURIComponent(sessionId)}/links`,
+      );
       return () => {
         active = false;
-        clearInterval(interval);
+        detach();
       };
     }, [client, sessionId, loaded]),
   );
@@ -705,10 +741,14 @@ export function SessionChat({
           .catch(() => undefined);
       };
       refresh();
-      const interval = setInterval(refresh, 5_000);
+      const detach = subscribeLiveRefresh(
+        client,
+        refresh,
+        (path) => path === `/sessions/${encodeURIComponent(sessionId)}/linked-message-approvals`,
+      );
       return () => {
         active = false;
-        clearInterval(interval);
+        detach();
       };
     }, [client, sessionId, loaded]),
   );
@@ -965,28 +1005,47 @@ export function SessionChat({
         })
         .catch(() => undefined);
     }
-    void client
+    // Shared means shared on the local network or online alike: either lights the
+    // preview button. A failed read counts as "not shared" for that source only.
+    const now = Date.now();
+    const publicShared = client
       .listPublicPreviewShares(projectId)
-      .then((shares) => {
-        setHasActiveStaticPreview(
-          shares.some(
-            (share) =>
-              (share.targetKind === 'static-folder' ||
-                (share.targetKind === 'dev-server' && share.devServerId === null)) &&
-              share.sessionId === sessionId &&
-              share.state === 'active' &&
-              new Date(share.expiresAt).getTime() > Date.now(),
-          ),
-        );
-      })
-      .catch(() => undefined);
+      .then((shares) =>
+        shares.some(
+          (share) =>
+            (share.targetKind === 'static-folder' ||
+              (share.targetKind === 'dev-server' && share.devServerId === null)) &&
+            share.sessionId === sessionId &&
+            share.state === 'active' &&
+            new Date(share.expiresAt).getTime() > now,
+        ),
+      )
+      .catch(() => false);
+    const localShared =
+      typeof client.listSessionLocalPreviewShares === 'function'
+        ? client
+            .listSessionLocalPreviewShares(sessionId)
+            .then((shares) => shares.some((share) => share.expiresAt.getTime() > now))
+            .catch(() => false)
+        : Promise.resolve(false);
+    void Promise.all([publicShared, localShared]).then(([online, local]) =>
+      setHasActiveStaticPreview(online || local),
+    );
   }, [client, projectId, sessionId]);
   useEffect(() => {
     if (!loaded) return;
     refreshStaticPreview();
-    const timer = setInterval(refreshStaticPreview, 20_000);
-    return () => clearInterval(timer);
-  }, [refreshStaticPreview, loaded]);
+    const detach = subscribeLiveRefresh(
+      client,
+      refreshStaticPreview,
+      (path) =>
+        (projectId != null &&
+          path === `/projects/${encodeURIComponent(projectId)}/public-shares`) ||
+        (path.startsWith(`/sessions/${encodeURIComponent(sessionId)}/`) &&
+          /preview|share|dev-server/u.test(path)),
+    );
+    return () => detach();
+  }, [refreshStaticPreview, loaded, client, projectId, sessionId]);
 
   useEffect(() => {
     if (session.devServers !== undefined) setHasRunningDevServer(session.devServers.length > 0);
@@ -2739,8 +2798,10 @@ export function SessionChat({
     // previously fell back to `software`, but the operator has since focused the
     // composer with a hardware keyboard attached.
     const preserveFocus =
-      isIpadFocusTarget &&
-      (shouldPreserveComposerFocus() || (composerFocusedRef.current && !keyboardShownRef.current));
+      Platform.OS === 'web' ||
+      (isIpadFocusTarget &&
+        (shouldPreserveComposerFocus() ||
+          (composerFocusedRef.current && !keyboardShownRef.current)));
     preserveFocusAfterSendRef.current = preserveFocus;
     if (!preserveFocus) Keyboard.dismiss();
   }, [
@@ -3534,6 +3595,14 @@ export function SessionChat({
     };
   }, []);
 
+  // Navigation can retain the session screen, so mounting alone misses return visits.
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== 'web') return;
+      return focusComposer();
+    }, [focusComposer, sessionId]),
+  );
+
   // Composer autofocus on iPad with a hardware keyboard (#98): drop the operator
   // straight into the input (blinking cursor, ready to type) when a session opens, so
   // they don't have to tap the field first. "Unknown" gets one probe attempt because
@@ -3629,9 +3698,9 @@ export function SessionChat({
             </Pressable>
           </View>
         )}
-        {/* Title block: the session name with the branch underneath as quiet context.
-            The branch stays tappable (opens the switcher, #91) but no longer competes
-            with the actions — it is information first. A long-press on a header action
+        {/* Title block: the session name with quiet context underneath — the branch
+            as a bare glyph that opens the switcher (#91, where its full name is
+            shown) and the issue as a bare `#123`. A long-press on a header action
             briefly swaps this line for the action's name. */}
         <View style={styles.headerTitleBlock}>
           <Text style={styles.headerTitle} numberOfLines={1} accessibilityRole="header">
@@ -3650,14 +3719,9 @@ export function SessionChat({
                 accessibilityLabel={`Current branch ${currentLabel}. Tap to switch branch.`}
                 style={styles.headerBranchBtn}
               >
-                <Icon name="git-branch" size={11} color={theme.colors.textFaint} />
-                <Text style={styles.headerBranch} numberOfLines={1}>
-                  {currentLabel}
-                </Text>
+                <Icon name="git-branch" size={13} color={theme.colors.textFaint} />
               </Pressable>
-              {issueNumber !== null ? (
-                <MetaChip label={`Issue #${issueNumber}`} url={issueUrl} />
-              ) : null}
+              {issueNumber !== null ? <IssueRef number={issueNumber} url={issueUrl} /> : null}
             </View>
           )}
         </View>
@@ -3672,6 +3736,7 @@ export function SessionChat({
                 hasRunningDevServer ? 'Share preview. A dev server is running.' : 'Share preview'
               }
               active={hasActiveStaticPreview}
+              activeColor={theme.colors.tone.done}
               dot={hasRunningDevServer}
               dotTestID="preview-server-dot"
               onHint={showHeaderHint}
@@ -4476,6 +4541,7 @@ function HeaderActionButton({
   dot = false,
   dotTestID,
   badge,
+  activeColor,
 }: {
   icon: IconName;
   label: string;
@@ -4486,6 +4552,8 @@ function HeaderActionButton({
   dot?: boolean;
   dotTestID?: string;
   badge?: number;
+  /** Icon color while `active`; defaults to the primary blue. */
+  activeColor?: string;
 }) {
   const { theme } = useUnistyles();
   return (
@@ -4497,7 +4565,11 @@ function HeaderActionButton({
       accessibilityLabel={accessibilityLabel}
       style={({ pressed }) => [styles.headerActionBtn, pressed ? styles.copyBtnPressed : null]}
     >
-      <Icon name={icon} size={20} color={active ? theme.colors.primary : theme.colors.textMuted} />
+      <Icon
+        name={icon}
+        size={20}
+        color={active ? (activeColor ?? theme.colors.primary) : theme.colors.textMuted}
+      />
       {dot ? <View testID={dotTestID} style={styles.headerActionDot} /> : null}
       {badge !== undefined ? (
         <View style={styles.headerActionBadge}>
@@ -4508,13 +4580,19 @@ function HeaderActionButton({
   );
 }
 
-// A header Issue context chip (#125). Tappable when `url` is a string (opens the
-// GitHub issue via `Linking.openURL`, announced as a link); when `url` is null —
-// owner/repo unknown (no GitHub remote / older server) — it renders as the plain,
-// non-tappable chip it always was, never linking to a broken URL (#161).
-function MetaChip({ label, url }: { label: string; url: string | null }) {
+// The header's issue reference (#125): a bare `#123`. Tappable when `url` is a
+// string (opens the GitHub issue via `Linking.openURL`, announced as a link) and
+// then tinted like the app's other tappable meta; when `url` is null — owner/repo
+// unknown (no GitHub remote / older server) — it stays plain, faint text and never
+// links to a broken URL (#161).
+function IssueRef({ number, url }: { number: number; url: string | null }) {
+  const label = `#${String(number)}`;
   if (url === null) {
-    return <Text style={styles.headerMetaChip}>{label}</Text>;
+    return (
+      <Text style={styles.headerBranch} accessibilityLabel={`Issue ${String(number)}`}>
+        {label}
+      </Text>
+    );
   }
   return (
     <Pressable
@@ -4523,9 +4601,9 @@ function MetaChip({ label, url }: { label: string; url: string | null }) {
       // so it never surfaces as an unhandled rejection.
       onPress={() => void Linking.openURL(url).catch(() => undefined)}
       accessibilityRole="link"
-      accessibilityLabel={`${label}. Tap to open on GitHub.`}
+      accessibilityLabel={`Issue ${String(number)}. Tap to open on GitHub.`}
     >
-      <Text style={styles.headerMetaChip}>{label}</Text>
+      <Text style={[styles.headerBranch, styles.headerIssueLink]}>{label}</Text>
     </Pressable>
   );
 }
@@ -5033,7 +5111,7 @@ function SessionFilesSheet({
               await client.uploadSessionFile(sessionId, {
                 path,
                 fileName: file.fileName,
-                data: new FsFile(file.uri),
+                data: await droppedFileData(file.uri),
                 root,
               });
               uploaded = true;
@@ -5055,7 +5133,7 @@ function SessionFilesSheet({
           // failure partway through must not strand the rest.
           for (const file of files) {
             try {
-              new FsFile(file.uri).delete();
+              releaseDroppedFile(file.uri);
             } catch {
               // Best effort; the OS also clears the app's temporary directory.
             }
@@ -6661,8 +6739,6 @@ function MessageActionsMenu({
   knowledge: { saved: boolean; save: () => Promise<void> } | null;
   bookmark: { bookmarked: boolean; toggle: () => void } | null;
 }) {
-  const { width: winW, height: winH } = useWindowDimensions();
-  const insets = useSafeAreaInsets();
   const [saving, setSaving] = useState(false);
   const saveKnowledge = (): void => {
     if (!knowledge || knowledge.saved || saving) return;
@@ -6677,114 +6753,37 @@ function MessageActionsMenu({
       )
       .finally(() => setSaving(false));
   };
-  const rows = 1 + (knowledge ? 1 : 0) + (bookmark ? 1 : 0);
-  const gap = 6;
-  const margin = 12;
-  const width = Math.min(300, winW - 2 * margin);
-  const right = Math.min(Math.max(margin, winW - (anchor.x + anchor.width)), winW - width - margin);
-  // Only used to pick a side; the card itself sizes to its content.
-  const estimatedHeight = rows * MESSAGE_MENU_ROW_HEIGHT + 2 * gap;
-  // Keep the card clear of the status bar / notch and the home indicator.
-  const minTop = insets.top + margin;
-  const maxBottom = winH - insets.bottom - margin;
-  const below = anchor.y + anchor.height + gap + estimatedHeight <= maxBottom;
-  const top = anchor.y + anchor.height + gap;
-  const bottom = Math.min(
-    Math.max(insets.bottom + margin, winH - anchor.y + gap),
-    winH - minTop - estimatedHeight,
-  );
-  // The estimate can undershoot (large text grows the rows), so the card is also
-  // capped to the room on its side and scrolls instead of running off screen.
-  const position = below
-    ? { top, maxHeight: maxBottom - top }
-    : { bottom, maxHeight: winH - bottom - minTop };
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessible={false} />
-      <View
-        style={[styles.msgMenu, { width, right }, position]}
-        accessibilityRole="menu"
-        accessibilityLabel="Message actions"
-        accessibilityViewIsModal
-        onAccessibilityEscape={onClose}
-      >
-        <ScrollView bounces={false}>
-          <MessageActionRow
-            icon="copy"
-            title="Copy text"
-            subtitle="Copy the whole message"
-            onPress={onCopy}
-          />
-          {knowledge ? (
-            <MessageActionRow
-              icon={knowledge.saved ? 'check' : KNOWLEDGE_ICON}
-              title={knowledge.saved ? 'Added to Project Knowledge' : 'Save to Project Knowledge'}
-              subtitle="Keep it as a project insight"
-              busy={saving}
-              disabled={knowledge.saved}
-              onPress={saveKnowledge}
-            />
-          ) : null}
-          {bookmark ? (
-            <MessageActionRow
-              icon="bookmark"
-              title={bookmark.bookmarked ? 'Remove bookmark' : 'Bookmark'}
-              subtitle="Find it again via the header"
-              onPress={bookmark.toggle}
-            />
-          ) : null}
-        </ScrollView>
-      </View>
-    </Modal>
-  );
-}
-
-const MESSAGE_MENU_ROW_HEIGHT = 56;
-
-// One menu entry. Every icon shares the same muted tint — state shows in the icon
-// (a check once saved) and the title, never in a colour that singles one action out.
-function MessageActionRow({
-  icon,
-  title,
-  subtitle,
-  onPress,
-  busy = false,
-  disabled = false,
-}: {
-  icon: IconName;
-  title: string;
-  subtitle: string;
-  onPress: () => void;
-  busy?: boolean;
-  disabled?: boolean;
-}) {
-  const { theme } = useUnistyles();
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled || busy}
-      accessibilityRole="menuitem"
-      accessibilityLabel={title}
-      accessibilityHint={subtitle}
-      accessibilityState={{ disabled: disabled || busy }}
-      style={({ pressed }) => [styles.msgMenuRow, pressed ? styles.sheetRowPressed : null]}
-    >
-      <View style={styles.msgMenuIcon}>
-        {busy ? (
-          <ActivityIndicator size="small" color={theme.colors.accent} />
-        ) : (
-          <Icon name={icon} size={18} color={theme.colors.textMuted} />
-        )}
-      </View>
-      <View style={styles.msgMenuText}>
-        <Text style={styles.msgMenuTitle} numberOfLines={1}>
-          {title}
-        </Text>
-        <Text style={styles.msgMenuSubtitle} numberOfLines={1}>
-          {subtitle}
-        </Text>
-      </View>
-    </Pressable>
+    <ActionMenu
+      anchor={anchor}
+      label="Message actions"
+      onClose={onClose}
+      items={[
+        { icon: 'copy', title: 'Copy text', subtitle: 'Copy the whole message', onPress: onCopy },
+        ...(knowledge
+          ? [
+              {
+                icon: knowledge.saved ? ('check' as const) : KNOWLEDGE_ICON,
+                title: knowledge.saved ? 'Added to Project Knowledge' : 'Save to Project Knowledge',
+                subtitle: 'Keep it as a project insight',
+                busy: saving,
+                disabled: knowledge.saved,
+                onPress: saveKnowledge,
+              },
+            ]
+          : []),
+        ...(bookmark
+          ? [
+              {
+                icon: 'bookmark' as const,
+                title: bookmark.bookmarked ? 'Remove bookmark' : 'Bookmark',
+                subtitle: 'Find it again via the header',
+                onPress: bookmark.toggle,
+              },
+            ]
+          : []),
+      ]}
+    />
   );
 }
 
@@ -7614,6 +7613,21 @@ function EventRow({ message }: { message: ModeSwitchMessage }) {
   const { theme } = useUnistyles();
   const descriptor = agentEventDescriptor(message.event);
   const color = theme.colors.tone[eventToneColor(descriptor.tone)];
+  // A task change is bookkeeping, not conversation: one muted line that opens
+  // the panel when tapped, so it never competes with the reply around it.
+  if (descriptor.action === 'tasks') {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${descriptor.label}. Open Tasks`}
+        onPress={openTasksPanel}
+        style={({ pressed }) => [styles.eventRow, pressed ? styles.eventActionPressed : null]}
+      >
+        <Text style={styles.eventDetail}>{descriptor.label}</Text>
+        <Text style={styles.eventTasksLink}>Tasks ›</Text>
+      </Pressable>
+    );
+  }
   return (
     <View style={[styles.eventRow, descriptor.action ? styles.eventRowActionable : null]}>
       <Text style={[styles.eventLabel, { color }]}>{descriptor.label}</Text>
@@ -8673,7 +8687,7 @@ function PermissionPrompt({
           disabled={!active}
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
-          accessibilityLabel={`${approvedForDelivery ? 'Cancel' : 'Deny'} ${pending.tool}`}
+          accessibilityLabel={`${approvedForDelivery ? 'Cancel' : 'Deny'} ${view.title}`}
           style={({ pressed }) => [
             styles.permissionButton,
             styles.permissionDeny,
@@ -8699,7 +8713,7 @@ function PermissionPrompt({
               ? knowledgeSummary?.replacesExisting
                 ? 'Save changes to Global Knowledge'
                 : 'Publish to Global Knowledge'
-              : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${pending.tool}${isScopedSecretTool ? ' once' : ''}`
+              : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${view.title}${isScopedSecretTool ? ' once' : ''}`
           }
           style={({ pressed }) => [
             styles.permissionButton,
@@ -8736,7 +8750,7 @@ function PermissionPrompt({
               disabled={!active}
               accessibilityRole="button"
               accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? pending.tool} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} for this session`}
+              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? view.title} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} for this session`}
               style={({ pressed }) => [
                 styles.permissionScopeButton,
                 active ? null : styles.permissionButtonDisabled,
@@ -8752,7 +8766,7 @@ function PermissionPrompt({
               disabled={!active}
               accessibilityRole="button"
               accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? pending.tool} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} in this project for 30 days`}
+              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? view.title} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} in this project for 30 days`}
               style={({ pressed }) => [
                 styles.permissionScopeButton,
                 active ? null : styles.permissionButtonDisabled,
@@ -8768,7 +8782,7 @@ function PermissionPrompt({
               disabled={!active}
               accessibilityRole="button"
               accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Always allow ${httpSummary?.secretAlias ?? pending.tool} for ${httpSummary?.host ?? 'this destination'}`}
+              accessibilityLabel={`Always allow ${httpSummary?.secretAlias ?? view.title} for ${httpSummary?.host ?? 'this destination'}`}
               style={({ pressed }) => [
                 styles.permissionScopeButton,
                 active ? null : styles.permissionButtonDisabled,
@@ -9242,28 +9256,14 @@ function InputBar({
   const [dropActive, setDropActive] = useState(false);
   const attachBtnRef = useRef<View>(null);
   const openAttachMenu = useAttachmentMenuAnchor(attachBtnRef, onAttach);
-  const suppressReturnChangeRef = useRef(false);
-  const returnSubmitValueRef = useRef('');
-  const onComposerChangeText = useCallback(
-    (next: string) => {
-      if (suppressReturnChangeRef.current) {
-        suppressReturnChangeRef.current = false;
-        if (isSingleInsertedNewline(returnSubmitValueRef.current, next)) return;
-      }
-      onChangeText(next);
-    },
-    [onChangeText],
-  );
   const onComposerKeyPress = useCallback(
-    (event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
-      if (dead || Platform.OS !== 'ios' || !Platform.isPad || event.nativeEvent.key !== 'Enter')
-        return;
-      if (!shouldSubmitOnReturn(keyboardHeight)) return;
-      suppressReturnChangeRef.current = true;
-      returnSubmitValueRef.current = value;
-      onSend();
+    (event: Parameters<NonNullable<React.ComponentProps<typeof TextInput>['onKeyPress']>>[0]) => {
+      if (Platform.OS === 'web' && !dead && shouldSendWebKey(event.nativeEvent)) {
+        event.preventDefault();
+        onSend();
+      }
     },
-    [dead, keyboardHeight, onSend, value],
+    [dead, onSend],
   );
   // Auto-grow: let the native multiline TextInput size to its content (it grows up
   // to `maxHeight`, then scrolls). We deliberately do NOT set an explicit `height`
@@ -9272,7 +9272,7 @@ function InputBar({
   // text padding lives on the `inputCard`, not the TextInput, so the input's content
   // width is clean and lines wrap correctly.
   return (
-    <DropZone
+    <View
       style={[
         styles.inputBarWrap,
         {
@@ -9282,141 +9282,150 @@ function InputBar({
         },
       ]}
       onLayout={(e) => onHeightChange(e.nativeEvent.layout.height)}
-      enabled={!dead && attachments.length < MAX_ATTACHMENTS_PER_TURN}
-      maxFiles={Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length)}
-      onFiles={onDropFiles}
-      onRejected={onDropRejected}
-      onActiveChange={setDropActive}
     >
-      <InputActivityLine running={running && !dead} />
-      {dropActive ? (
-        <View pointerEvents="none" style={styles.inputDropHint}>
-          <Icon name="paperclip" size={18} color={theme.colors.primary} />
-          <Text style={styles.inputDropHintText}>Drop files to attach</Text>
-        </View>
-      ) : null}
-      {attachments.length > 0 ? (
-        <>
-          <AttachmentPreviews attachments={attachments} onRemove={onRemoveAttachment} />
-          {knowledgeEnabled ? (
-            <Pressable
-              onPress={onToggleSaveAttachmentsToKnowledge}
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked: saveAttachmentsToKnowledge }}
-              style={styles.knowledgeAttachmentToggle}
-            >
-              <Icon
-                name={saveAttachmentsToKnowledge ? 'check-square' : 'square'}
-                size={16}
-                color={saveAttachmentsToKnowledge ? theme.colors.primary : theme.colors.textMuted}
-              />
-              <Text style={styles.knowledgeAttachmentToggleText}>Save to Project Knowledge</Text>
-            </Pressable>
-          ) : null}
-        </>
-      ) : null}
-      {/* Two-tier layout (like the Claude app): the text field spans the FULL width
+      <DropZone
+        enabled={!dead && attachments.length < MAX_ATTACHMENTS_PER_TURN}
+        maxFiles={Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length)}
+        onFiles={onDropFiles}
+        onRejected={onDropRejected}
+        onActiveChange={setDropActive}
+      >
+        <InputActivityLine running={running && !dead} />
+        {dropActive ? (
+          <View pointerEvents="none" style={styles.inputDropHint}>
+            <Icon name="paperclip" size={18} color={theme.colors.primary} />
+            <Text style={styles.inputDropHintText}>Drop files to attach</Text>
+          </View>
+        ) : null}
+        {attachments.length > 0 ? (
+          <>
+            <AttachmentPreviews attachments={attachments} onRemove={onRemoveAttachment} />
+            {knowledgeEnabled ? (
+              <Pressable
+                onPress={onToggleSaveAttachmentsToKnowledge}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: saveAttachmentsToKnowledge }}
+                style={styles.knowledgeAttachmentToggle}
+              >
+                <Icon
+                  name={saveAttachmentsToKnowledge ? 'check-square' : 'square'}
+                  size={16}
+                  color={saveAttachmentsToKnowledge ? theme.colors.primary : theme.colors.textMuted}
+                />
+                <Text style={styles.knowledgeAttachmentToggleText}>Save to Project Knowledge</Text>
+              </Pressable>
+            ) : null}
+          </>
+        ) : null}
+        {/* Two-tier layout (like the Claude app): the text field spans the FULL width
           on top, and the action buttons sit in a row UNDERNEATH it — so the field is
           never squeezed between inline buttons. Padding lives on this card (not the
           TextInput) so the input's content-size measurement isn't skewed (RN#35234). */}
-      <View
-        style={[
-          styles.inputCard,
-          compact && styles.inputCardCompact,
-          dropActive ? styles.inputCardDropActive : null,
-        ]}
-      >
-        <TextInput
-          key={sendNonce}
-          ref={inputRef}
-          style={[styles.input, compact && styles.inputCompact]}
-          value={value}
-          onChangeText={onComposerChangeText}
-          onKeyPress={onComposerKeyPress}
-          onFocus={onFocus}
-          onBlur={onBlur}
-          placeholder={
-            dead
-              ? 'This session can’t be resumed'
-              : voiceState === 'recording'
-                ? 'Listening…'
-                : 'Message this agent…'
-          }
-          placeholderTextColor={theme.colors.textFaint}
-          editable={!dead}
-          multiline
-          keyboardAppearance="dark"
-          accessibilityLabel="Message input"
-        />
-        <View style={[styles.actionRow, compact && styles.actionRowCompact]}>
-          {/* Left: attach + the engine/model chip (moved here from the header, like
-              the Claude app — it sits with the composer instead of the nav bar). */}
-          <View style={styles.actionRowLeft}>
-            <Pressable
-              ref={attachBtnRef}
-              style={styles.iconButton}
-              onPress={openAttachMenu}
-              disabled={dead}
-              hitSlop={4}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: dead }}
-              accessibilityLabel="Add content or connect a service"
-            >
-              <Icon
-                name="plus"
-                size={22}
-                color={dead ? theme.colors.textFaint : theme.colors.textMuted}
-              />
-            </Pressable>
-            <EngineChip
-              engine={engineLabel}
-              busy={engineBusy}
-              onPress={onEnginePress}
-              style={styles.inputEngineChip}
-              textStyle={styles.inputEngineChipText}
-            />
-          </View>
-          {/* Right: the persistent mic, then the Send/Stop slot. */}
-          <View style={styles.actionRowRight}>
-            {/* The mic is ALWAYS a mic (never a stop glyph) and always pressable —
-                dictation is tap-to-toggle; recording gets its own active treatment.
-                A separate button keeps it from ever "mutating" into Send/Stop. */}
-            <MicButton
-              voiceState={voiceState}
-              autoMode={voiceAutoMode}
-              countdown={voiceCountdown}
-              onMic={onMic}
-              onLongPress={onMicLongPress}
-              onPauseCountdown={onPauseVoiceCountdown}
-              disabled={dead}
-            />
-            {running && !canSend && !sending && !dead ? (
-              // Empty field while a turn runs → Stop is available, while the top
-              // activity line carries the "agent is working" cue.
-              <StopButton onStop={onStop} />
-            ) : (
-              // Otherwise the Send button — active when there's something to send,
-              // greyed when idle/empty or dead. Sending while a turn runs queues/steers
-              // it, so Send keeps priority over Stop whenever the field is sendable.
+        <View
+          style={[
+            styles.inputCard,
+            compact && styles.inputCardCompact,
+            dropActive ? styles.inputCardDropActive : null,
+          ]}
+        >
+          <PromptComposerInput
+            key={Platform.OS === 'web' ? 'web-composer' : sendNonce}
+            ref={inputRef}
+            style={[
+              styles.input,
+              compact && styles.inputCompact,
+              Platform.OS === 'web' ? { outlineWidth: 0 } : null,
+            ]}
+            value={value}
+            onChangeText={onChangeText}
+            containerStyle={compact ? styles.inputContainerCompact : undefined}
+            submitOnReturn={shouldSubmitOnReturn(keyboardHeight)}
+            onSend={onSend}
+            onKeyPress={onComposerKeyPress}
+            onFocus={onFocus}
+            onBlur={onBlur}
+            placeholder={
+              dead
+                ? 'This session can’t be resumed'
+                : voiceState === 'recording'
+                  ? 'Listening…'
+                  : 'Message this agent…'
+            }
+            placeholderTextColor={theme.colors.textFaint}
+            editable={!dead}
+            keyboardAppearance="dark"
+            accessibilityLabel="Message input"
+          />
+          <View style={[styles.actionRow, compact && styles.actionRowCompact]}>
+            {/* Left: attach + the engine/model chip (moved here from the header, like
+the Claude app — it sits with the composer instead of the nav bar). */}
+            <View style={styles.actionRowLeft}>
               <Pressable
-                style={[styles.sendButton, canSend ? null : styles.sendButtonDisabled]}
-                onPress={onSend}
-                disabled={!canSend}
-                hitSlop={8}
+                ref={attachBtnRef}
+                style={styles.iconButton}
+                onPress={openAttachMenu}
+                disabled={dead}
+                hitSlop={4}
                 accessibilityRole="button"
-                accessibilityLabel="Send message"
+                accessibilityState={{ disabled: dead }}
+                accessibilityLabel="Add content or connect a service"
               >
                 <Icon
-                  name="arrow-up"
+                  name="plus"
                   size={22}
-                  color={canSend ? theme.colors.onPrimary : theme.colors.textMuted}
+                  color={dead ? theme.colors.textFaint : theme.colors.textMuted}
                 />
               </Pressable>
-            )}
+              <EngineChip
+                engine={engineLabel}
+                busy={engineBusy}
+                onPress={onEnginePress}
+                style={styles.inputEngineChip}
+                textStyle={styles.inputEngineChipText}
+              />
+            </View>
+            {/* Right: the persistent mic, then the Send/Stop slot. */}
+            <View style={styles.actionRowRight}>
+              {/* The mic is ALWAYS a mic (never a stop glyph) and always pressable —
+                dictation is tap-to-toggle; recording gets its own active treatment.
+                A separate button keeps it from ever "mutating" into Send/Stop. */}
+              <MicButton
+                voiceState={voiceState}
+                autoMode={voiceAutoMode}
+                countdown={voiceCountdown}
+                onMic={onMic}
+                onLongPress={onMicLongPress}
+                onPauseCountdown={onPauseVoiceCountdown}
+                disabled={dead}
+              />
+              {running && !canSend && !sending && !dead ? (
+                // Empty field while a turn runs → Stop is available, while the top
+                // activity line carries the "agent is working" cue.
+                <StopButton onStop={onStop} />
+              ) : (
+                // Otherwise the Send button — active when there's something to send,
+                // greyed when idle/empty or dead. Sending while a turn runs queues/steers
+                // it, so Send keeps priority over Stop whenever the field is sendable.
+                <Pressable
+                  style={[styles.sendButton, canSend ? null : styles.sendButtonDisabled]}
+                  onPress={onSend}
+                  disabled={!canSend}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Send message"
+                >
+                  <Icon
+                    name="arrow-up"
+                    size={22}
+                    color={canSend ? theme.colors.onPrimary : theme.colors.textMuted}
+                  />
+                </Pressable>
+              )}
+            </View>
           </View>
         </View>
-      </View>
-    </DropZone>
+      </DropZone>
+    </View>
   );
 }
 
@@ -9701,6 +9710,7 @@ function AttachmentPreviews({
 }
 
 function InputActivityLine({ running }: { running: boolean }) {
+  const { theme } = useUnistyles();
   const [width, setWidth] = useState(0);
   const progress = useRef(new Animated.Value(0)).current;
   const isPad = Platform.OS === 'ios' && Platform.isPad;
@@ -9726,7 +9736,7 @@ function InputActivityLine({ running }: { running: boolean }) {
         toValue: 1,
         duration,
         easing: Easing.linear,
-        useNativeDriver: true,
+        useNativeDriver: Platform.OS !== 'web',
       }),
     );
     loop.start();
@@ -9747,7 +9757,14 @@ function InputActivityLine({ running }: { running: boolean }) {
       {running ? (
         <Animated.View
           style={[
-            styles.inputActivitySegment,
+            Platform.OS === 'web'
+              ? {
+                  height: 2,
+                  borderRadius: theme.radius.pill,
+                  backgroundColor: theme.colors.accent,
+                  opacity: 0.8,
+                }
+              : styles.inputActivitySegment,
             isPad ? { opacity: 0.55 } : null,
             { width: segmentWidth, transform: [{ translateX }] },
           ]}
@@ -10084,8 +10101,9 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  // The branch under the title: muted and caption-sized so it reads as status, while
-  // staying tappable for the switcher.
+  // The branch glyph under the title: muted so it reads as status, while staying
+  // tappable for the switcher. `headerBranch` is the caption text style that line
+  // (and the action hint replacing it) uses.
   headerBranchBtn: {
     flexShrink: 1,
     flexDirection: 'row',
@@ -10098,6 +10116,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: 12 * theme.fontScale,
     fontWeight: '400',
   },
+  headerIssueLink: { color: theme.colors.primary },
   headerBookmarkCount: {
     color: theme.colors.textMuted,
     fontSize: 11 * theme.fontScale,
@@ -10841,46 +10860,6 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
-  // The anchored "…" menu card: same surface + border language as the action chips,
-  // lifted off the transcript with a shadow.
-  msgMenu: {
-    position: 'absolute',
-    paddingVertical: 6,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    shadowColor: '#000000',
-    shadowOpacity: 0.35,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
-  },
-  msgMenuRow: {
-    minHeight: 56,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.md,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-  },
-  msgMenuIcon: {
-    width: 22,
-    alignItems: 'center',
-  },
-  msgMenuText: {
-    flex: 1,
-    gap: 1,
-  },
-  msgMenuTitle: {
-    color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
-  },
-  msgMenuSubtitle: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-  },
   // The persistent dog-ear on a bookmarked message: pinned top-right, quiet, and
   // non-interactive — a scanning cue while scrolling, not a control.
   msgBookmarkFlag: {
@@ -11208,6 +11187,11 @@ const styles = StyleSheet.create((theme) => ({
   eventDetail: {
     color: theme.colors.textFaint,
     fontSize: theme.text.xs,
+  },
+  eventTasksLink: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.xs,
+    fontWeight: '600',
   },
   eventAction: {
     alignSelf: 'flex-start',
@@ -11713,9 +11697,11 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: 2,
     textAlignVertical: 'top',
   },
-  inputCompact: {
+  inputContainerCompact: {
     flex: 1,
     minWidth: 80,
+  },
+  inputCompact: {
     maxHeight: 21 * 3,
   },
   // Action-slot + attach buttons share one clear circular footprint; the visible

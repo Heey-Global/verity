@@ -22,6 +22,15 @@ type Fixture = {
   releaseRuns?: Run[];
   promoteRuns?: Run[];
   ota?: boolean;
+  native?: {
+    path?: string;
+    compatible?: boolean;
+    open?: boolean;
+    mainMoved?: boolean;
+    oldHead?: boolean;
+    recent?: boolean;
+    rename?: boolean;
+  };
 };
 
 function sweep(fixture: Fixture) {
@@ -45,13 +54,47 @@ function sweep(fixture: Fixture) {
       JSON.stringify({ schema: 1, version: '1.33.1', tag: 'mobile-v1.33.1' }),
     );
   }
+  if (fixture.native?.rename) {
+    mkdirSync(join(cwd, 'apps/mobile/plugins'), { recursive: true });
+    writeFileSync(join(cwd, 'apps/mobile/plugins/capture.js'), 'native change');
+  }
   git('add', '.');
   const commitDate = fixture.approvedAt ?? approvedAt;
   execFileSync('git', ['commit', '-qm', 'chore(mobile): promote OTA 1.33.1'], {
     cwd,
     env: { ...process.env, GIT_AUTHOR_DATE: commitDate, GIT_COMMITTER_DATE: commitDate },
   });
+  if (fixture.native) {
+    git('tag', 'mobile-v1.33.0');
+    const nativePath = fixture.native.rename
+      ? 'capture.js'
+      : (fixture.native.path ?? 'apps/mobile/plugins/capture.js');
+    mkdirSync(resolve(cwd, nativePath, '..'), { recursive: true });
+    if (fixture.native.rename) git('mv', 'apps/mobile/plugins/capture.js', nativePath);
+    else writeFileSync(join(cwd, nativePath), 'native change');
+    git('add', '.');
+    const date = fixture.native.recent ? new Date().toISOString() : approvedAt;
+    execFileSync('git', ['commit', '-qm', 'feat(tasks): capture tasks'], {
+      cwd,
+      env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+    });
+    if (!fixture.native.recent) {
+      writeFileSync(join(cwd, 'server-version'), 'server release');
+      git('add', '.');
+      execFileSync('git', ['commit', '-qm', 'chore(release): staging server 4.21.0'], {
+        cwd,
+        env: { ...process.env, GIT_AUTHOR_DATE: approvedAt, GIT_COMMITTER_DATE: approvedAt },
+      });
+    }
+    mkdirSync(join(cwd, 'scripts'));
+    writeFileSync(
+      join(cwd, 'scripts/mobile-native-compatibility.mjs'),
+      fixture.native.compatible ? '' : "console.log('Mobile native fingerprint changed');",
+    );
+  }
+  const head = git('rev-parse', 'HEAD');
   mkdirSync(join(cwd, 'bin'));
+  writeFileSync(join(cwd, 'bin/npm'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   const log = join(cwd, 'gh.log');
   writeFileSync(
     join(cwd, 'bin/gh'),
@@ -66,7 +109,15 @@ const pr = (component, number) => ({ number, merged_at: fixture.mergedAt ?? '202
 if (joined.startsWith('workflow run')) process.exit(0);
 if (!args.includes('--paginate') && /\\/(releases|pulls|runs)\\?/.test(joined)) throw new Error('listing must paginate: ' + joined);
 if (joined.includes('/runs?') && (!args.includes('--slurp') || !/created=>=\\d{4}-\\d{2}-\\d{2}/.test(joined))) throw new Error('run listing must slurp pages since a day: ' + joined);
-if (joined.includes('/releases?')) {
+if (joined.includes('/git/ref/heads/main')) {
+  const { existsSync, writeFileSync } = require('node:fs');
+  const seen = process.env.RECONCILE_LOG + '.main';
+  const moved = fixture.native?.oldHead || (fixture.native?.mainMoved && existsSync(seen));
+  writeFileSync(seen, '1');
+  process.stdout.write(JSON.stringify({object:{sha:moved ? 'f'.repeat(40) : process.env.RECONCILE_HEAD}}));
+} else if (joined.includes('/pulls?state=open')) {
+  process.stdout.write(fixture.native?.open ? '42' : '');
+} else if (joined.includes('/releases?')) {
   process.stdout.write((fixture.releases ?? []).map((r) => JSON.stringify({ tag_name: r.tag_name, draft: !!r.draft, prerelease: !!r.prerelease })).join('\\n') + '\\n');
 } else if (joined.includes('/pulls?')) {
   const rows = [];
@@ -74,7 +125,7 @@ if (joined.includes('/releases?')) {
   rows.push({ ...pr('server', 900), labels: ['autorelease: tagged'] }, { ...pr('server', 901), merged_at: null });
   process.stdout.write(rows.map((row) => JSON.stringify(row)).join('\\n') + '\\n');
 } else if (joined.includes('/actions/workflows/release-dispatch.yml/runs?')) {
-  const runs = (fixture.releaseRuns ?? []).map((run, index) => ({ ...run, html_url: 'https://runs.invalid/release/' + index }));
+  const runs = (fixture.releaseRuns ?? []).map((run, index) => ({ ...run, display_title: run.display_title === 'replan' ? 'Replan native mobile ' + process.env.RECONCILE_HEAD : run.display_title, html_url: 'https://runs.invalid/release/' + index }));
   process.stdout.write(JSON.stringify([{ workflow_runs: runs.slice(0, 1) }, { workflow_runs: runs.slice(1) }]));
 } else if (joined.includes('/actions/workflows/mobile-ota-promote.yml/runs?')) {
   const runs = (fixture.promoteRuns ?? []).map((run, index) => ({ ...run, html_url: 'https://runs.invalid/promote/' + index }));
@@ -94,6 +145,7 @@ if (joined.includes('/releases?')) {
       GITHUB_STEP_SUMMARY: summary,
       RECONCILE_FIXTURE: JSON.stringify(fixture),
       RECONCILE_LOG: log,
+      RECONCILE_HEAD: head,
     },
   });
   const calls = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : [];
@@ -124,7 +176,7 @@ describe('release reconciliation sweep', () => {
     const result = sweep({ releases: delivered });
     expect(result.status, result.stderr).toBe(0);
     expect(result.dispatches).toEqual([]);
-    expect(result.summary).toContain('nothing to reconcile');
+    expect(result.summary).not.toContain('needs attention');
   });
 
   it('dispatches one reconcile run for merged release PRs with no release', () => {
@@ -328,5 +380,81 @@ describe('release reconciliation sweep', () => {
     const result = sweep({ pending: { mobile: [871] } });
     expect(result.status, result.stderr).toBe(0);
     expect(result.dispatches).toEqual([releaseReconcile, promote]);
+  });
+});
+
+// A Server release can become Main before Mobile classification finishes, leaving no PR to recover.
+describe('missing native Staging planning', () => {
+  const native = [{ tag_name: 'mobile-v1.33.0' }];
+  const replan = 'workflow run release-dispatch.yml --ref main -f mobile-replan=true';
+  it('recovers native changes displaced by a subsequent Server release', () => {
+    const result = sweep({ ota: false, native: {}, releases: native });
+    expect(result.status).toBe(0);
+    expect(result.dispatches).toEqual([replan]);
+    expect(result.summary).toContain('had no Staging release PR');
+  });
+  // Rename detection must not hide the removal of an input from the native tree.
+  it('recovers a native file moved outside the native tree', () => {
+    const result = sweep({ ota: false, native: { rename: true }, releases: native });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual([replan]);
+  });
+  it.each([
+    { name: 'open native PR', native: { open: true } },
+    {
+      name: 'unchanged fingerprint',
+      native: { path: 'apps/mobile/package.json', compatible: true },
+    },
+    { name: 'pure OTA source', native: { path: 'apps/mobile/app/session.tsx' } },
+    { name: 'stale checkout', native: { oldHead: true } },
+    { name: 'Main advancing during classification', native: { mainMoved: true } },
+    { name: 'recent Main push', native: { recent: true } },
+  ])('waits for $name without dispatching', ({ native: state }) => {
+    const result = sweep({ ota: false, native: state, releases: native });
+    expect(result.status).toBe(0);
+    expect(result.dispatches).toEqual([]);
+  });
+  it('leaves native draft recovery to its existing publication path', () => {
+    const result = sweep({
+      ota: false,
+      native: {},
+      releases: [{ tag_name: 'mobile-v1.33.0', draft: true }],
+    });
+    expect(result.status).toBe(0);
+    expect(result.dispatches).toEqual([]);
+  });
+  it('waits for a running dispatcher', () => {
+    const result = sweep({
+      ota: false,
+      native: {},
+      releases: native,
+      releaseRuns: [run({ status: 'in_progress' })],
+    });
+    expect(result.status).toBe(0);
+    expect(result.dispatches).toEqual([]);
+  });
+  it.each(['failure', 'success'])(
+    'reports a %s replan without a PR instead of looping',
+    (conclusion) => {
+      const result = sweep({
+        ota: false,
+        native: {},
+        releases: native,
+        releaseRuns: [run({ conclusion, display_title: 'replan' })],
+      });
+      expect(result.status).toBe(1);
+      expect(result.dispatches).toEqual([]);
+      expect(result.summary).toContain('no native Staging PR exists');
+    },
+  );
+  it('re-evaluates a different Main revision after an older replan', () => {
+    const result = sweep({
+      ota: false,
+      native: {},
+      releases: native,
+      releaseRuns: [run({ display_title: 'Replan native mobile ' + 'a'.repeat(40) })],
+    });
+    expect(result.status).toBe(0);
+    expect(result.dispatches).toEqual([replan]);
   });
 });

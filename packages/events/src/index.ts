@@ -107,6 +107,18 @@ export {
   publishSessionProgressRequestSchema,
   sessionProgressRequestSchema,
 } from './session-observation-tool.js';
+export {
+  ASSIGNED_TASKS_PROMPT_MAX,
+  TASKS_ADD_MAX,
+  TASKS_RESUME_SYSTEM_PROMPT,
+  TASKS_SYSTEM_PROMPT,
+  TASKS_TOOL,
+  TASKS_TOOL_DESCRIPTION,
+  renderAssignedTasksPrompt,
+  tasksRequestSchema,
+  type AssignedTaskSummary,
+  type TasksRequest,
+} from './tasks-tool.js';
 export { SESSION_PROJECTION_EVENT_TYPES, sessionProjectionEvents } from './projection.js';
 export {
   aggregateUsage,
@@ -139,3 +151,33 @@ export {
 export { selectedOpenCodeModels } from './opencode-model-selection.js';
 
 export { fileOperationRequestSchema } from './file-operations.js';
+
+export {
+  LIVE_ALERT_KINDS,
+  LIVE_ALERT_MAX_CHOICES,
+  LIVE_ENDED_REASONS,
+  LIVE_HINT_TOPICS,
+  LIVE_MAX_SESSION_SUBSCRIPTIONS,
+  LIVE_PING_INTERVAL_MS,
+  LIVE_PONG_TIMEOUT_MS,
+  LIVE_PROTOCOL_VERSION,
+  LIVE_TICKET_PROTOCOL_PREFIX,
+  decodeLiveClientFrame,
+  decodeLiveServerFrame,
+  liveAlertSchema,
+  liveClientFrameSchema,
+  liveHintSchema,
+  liveServerFrameSchema,
+  liveResourceSchema,
+  type LiveResource,
+  type LiveAlert,
+  type LiveAlertKind,
+  type LiveClientFrame,
+  type LiveDecodeResult,
+  type LiveEndedReason,
+  type LiveHint,
+  type LiveHintTopic,
+  type LiveServerFrame,
+} from './live.js';
+
+export { liveResourceInterval } from './live-resources.js';

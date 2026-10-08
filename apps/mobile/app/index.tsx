@@ -1,3 +1,11 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
+import { SessionIssueRef } from '../components/SessionIssueRef';
+import { SwipeableSessionRow } from '../components/SessionRowActions';
+import {
+  SessionMarkerColumn,
+  sessionMarkers,
+  sessionMarkersLabel,
+} from '../components/SessionMarkerColumn';
 import { SessionSettingsDialog } from '../components/SessionSettingsDialog';
 // Sessions home screen: the live list of Claude Code sessions, bound to
 // @verity/mobile's SessionListModel via useSessionList. Renders loading / error /
@@ -34,9 +42,11 @@ import {
   UNAVAILABLE_PROJECT_BADGE,
   UNTRACKED_PROJECT_BADGE,
   type ProjectBadge,
+  type RepoIdentity,
+  parseBranchIssue,
 } from '@verity/mobile';
 import { Link, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -79,6 +89,7 @@ import {
   mergeSessionPreviewUrls,
   nextProjectPreviewLinks,
   publicPreviewLinks,
+  publicPreviewSessionIds,
   type ProjectPreviewLinks,
 } from '../lib/sessionPreviewLinks';
 import { prefetchBranches } from '../lib/branchesPrefetch';
@@ -89,11 +100,7 @@ import { devServerUrl } from '../lib/devServerUrl';
 import { repairProject } from '../lib/projectRepair';
 import { sessionLoadError } from '../lib/sessionLoadError';
 import { mergeProjectStatusMutation } from '../lib/projectStatusMutation';
-import {
-  hasPendingProjectSetup,
-  projectOverviewStatus,
-  type ProjectOverviewStatus,
-} from '../lib/projectSetup';
+import { projectOverviewStatus, type ProjectOverviewStatus } from '../lib/projectSetup';
 import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
 
@@ -189,8 +196,24 @@ function SessionList({ client }: { client: VerityClient }) {
       });
     }
   }, [selected, selectedId, wide]);
-  const { sessions, loading, error, refresh, remove, providerLimitRows, serverAttention } =
-    useSessionList(client);
+  const {
+    sessions,
+    loading,
+    error,
+    refresh,
+    remove,
+    setFavorite,
+    providerLimitRows,
+    serverAttention,
+  } = useSessionList(client);
+  const onToggleFavoriteSession = useCallback(
+    (session: SessionSummary) => setFavorite(session.sessionId, session.favorite !== true),
+    [setFavorite],
+  );
+  const onDeleteSession = useCallback(
+    (session: SessionSummary) => confirmDeleteSession(session, remove),
+    [remove],
+  );
   const authRequired = error !== undefined && isAuthRequiredError(error);
   const { unread, markSeen } = useUnread(client, sessions);
   useEffect(() => {
@@ -204,6 +227,7 @@ function SessionList({ client }: { client: VerityClient }) {
     devServersByProject,
     detectionsByProject,
     previewUrls,
+    publicPreviews,
   } = useProjects(client);
   // Returning to the overview refetches the sessions too, not just the projects
   // (`useProjects` does its own). Deleting a project takes its sessions with it,
@@ -556,6 +580,8 @@ function SessionList({ client }: { client: VerityClient }) {
           dragging={draggingProjectId === item.id}
           reordering={draggingProjectId !== null}
           onRenameSession={setRenaming}
+          onToggleFavoriteSession={onToggleFavoriteSession}
+          onDeleteSession={onDeleteSession}
           onSelectSession={wide ? setSelectedId : undefined}
           onNewSession={wide ? createSessionInPane : undefined}
           onOpenSession={onOpenSession}
@@ -564,6 +590,7 @@ function SessionList({ client }: { client: VerityClient }) {
           defaultNewSessionProject={defaultNewSessionProject}
           unread={unread}
           previewUrls={previewUrls}
+          publicPreviews={publicPreviews}
           selectedId={wide ? selectedId : null}
           renamingId={renaming?.sessionId ?? null}
           updatingProjectIds={updatingProjectIds}
@@ -581,6 +608,7 @@ function SessionList({ client }: { client: VerityClient }) {
       selectedId,
       unread,
       previewUrls,
+      publicPreviews,
       onOpenSession,
       createSessionInPane,
       renaming,
@@ -590,6 +618,8 @@ function SessionList({ client }: { client: VerityClient }) {
       repairingProjectIds,
       defaultNewSessionProject,
       refreshProjects,
+      onToggleFavoriteSession,
+      onDeleteSession,
     ],
   );
   const renderItem = useCallback(
@@ -830,14 +860,7 @@ function RightPanePlaceholder() {
   );
 }
 
-// How often the overview silently re-fetches projects so the container-lifecycle
-// state and the GitHub release version stay current without a pull-to-refresh.
-// Coarser than the 2s session poll — project/release data changes slowly and the
-// server throttles the underlying GitHub calls (installation list ~60s, latest
-// release ~5min), so a tighter interval would only add no-op round-trips.
-const PROJECTS_POLL_MS = 15_000;
-const PROJECT_SETUP_POLL_MS = 2_000;
-
+// Project and preview changes arrive over the shared live connection.
 function useProjects(client: VerityClient) {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const devServersByProject = new Map<string, DevServer[]>();
@@ -846,6 +869,9 @@ function useProjects(client: VerityClient) {
   const [previewUrls, setPreviewUrls] = useState<ReadonlyMap<string, string | null>>(
     () => new Map(),
   );
+  // Sessions with an unexpired public share: their row shows "online" even when
+  // the preview entry opens the local link.
+  const [publicPreviews, setPublicPreviews] = useState<ReadonlySet<string>>(() => new Set());
   const publicPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
   const localPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
   const [loading, setLoading] = useState(true);
@@ -904,13 +930,11 @@ function useProjects(client: VerityClient) {
           projectIds,
           localResults,
         );
+        const now = Date.now();
         setPreviewUrls(
-          mergeSessionPreviewUrls(
-            publicPreviewLinksRef.current,
-            localPreviewLinksRef.current,
-            Date.now(),
-          ),
+          mergeSessionPreviewUrls(publicPreviewLinksRef.current, localPreviewLinksRef.current, now),
         );
+        setPublicPreviews(publicPreviewSessionIds(publicPreviewLinksRef.current, now));
         const pending = new Map(
           [...pendingProjectMutations.current].filter(
             ([, entry]) => entry.generation >= generation,
@@ -954,20 +978,22 @@ function useProjects(client: VerityClient) {
     }, [load]),
   );
 
-  const setupRunning = hasPendingProjectSetup(projects);
-  useEffect(() => {
-    const timer = setInterval(
-      () => void load({ silent: true }),
-      setupRunning ? PROJECT_SETUP_POLL_MS : PROJECTS_POLL_MS,
-    );
-    return () => clearInterval(timer);
-  }, [load, setupRunning]);
+  useEffect(
+    () =>
+      subscribeLiveRefresh(
+        client,
+        () => load({ silent: true }),
+        (path) => path.startsWith('/projects'),
+      ),
+    [client, load],
+  );
 
   return {
     projects,
     devServersByProject,
     detectionsByProject,
     previewUrls,
+    publicPreviews,
     loading,
     error,
     refresh: () => load(),
@@ -1092,6 +1118,8 @@ function ProjectGroup({
   dragging,
   reordering,
   onRenameSession,
+  onToggleFavoriteSession,
+  onDeleteSession,
   onSelectSession,
   onNewSession,
   onOpenSession,
@@ -1100,6 +1128,7 @@ function ProjectGroup({
   defaultNewSessionProject,
   unread,
   previewUrls,
+  publicPreviews,
   selectedId,
   renamingId,
   updatingProjectIds,
@@ -1117,6 +1146,8 @@ function ProjectGroup({
   dragging: boolean;
   reordering: boolean;
   onRenameSession: (session: SessionSummary) => void;
+  onToggleFavoriteSession: (session: SessionSummary) => void;
+  onDeleteSession: (session: SessionSummary) => void;
   onSelectSession?: (id: string) => void;
   // Wide layout only: create a session inline for this project (no /new route).
   // Undefined on narrow, where the "+" falls back to navigating to /new.
@@ -1127,6 +1158,7 @@ function ProjectGroup({
   defaultNewSessionProject?: ProjectRecord | undefined;
   unread: ReadonlySet<string>;
   previewUrls: ReadonlyMap<string, string | null>;
+  publicPreviews: ReadonlySet<string>;
   selectedId?: string | null;
   renamingId?: string | null;
   updatingProjectIds?: ReadonlySet<string>;
@@ -1397,13 +1429,17 @@ function ProjectGroup({
                   <SessionRow
                     session={session}
                     onRename={() => onRenameSession(session)}
+                    onToggleFavorite={() => onToggleFavoriteSession(session)}
+                    onDelete={() => onDeleteSession(session)}
                     onSelect={
                       onSelectSession ? () => onSelectSession(session.sessionId) : undefined
                     }
                     onOpen={() => onOpenSession(session)}
                     unread={unread.has(session.sessionId)}
                     previewActive={previewUrls.has(session.sessionId)}
+                    previewPublic={publicPreviews.has(session.sessionId)}
                     previewUrl={previewUrls.get(session.sessionId) ?? null}
+                    repo={group.project?.kind === 'github' ? group.project : undefined}
                     selected={selectedId === session.sessionId}
                     renaming={renamingId === session.sessionId}
                   />
@@ -1419,7 +1455,8 @@ function ProjectGroup({
 
 // Delete is destructive + irreversible (drops history, removes the worktree), so
 // confirm with a native alert before firing. Called from the rename modal (opened
-// by a row long-press); `onConfirmed` lets the modal close itself after the delete.
+// by a row long-press) and from the row's swipe/context-menu action; `onConfirmed`
+// lets the modal close itself after the delete.
 function confirmDeleteSession(
   session: SessionSummary,
   remove: (sessionId: string, opts?: { force?: boolean }) => Promise<void>,
@@ -1698,22 +1735,32 @@ function ProviderLimitSegment({
 function SessionRow({
   session,
   onRename,
+  onToggleFavorite,
+  onDelete,
   onSelect,
   onOpen,
   unread,
   previewActive,
+  previewPublic,
   previewUrl,
+  repo,
   selected,
   renaming,
 }: {
   session: SessionSummary;
   onRename: () => void;
+  onToggleFavorite: () => void;
+  onDelete: () => void;
   onSelect?: () => void;
   onOpen?: () => void;
   unread?: boolean;
   previewActive?: boolean;
+  /** An unexpired public share exists, whichever link the preview entry opens. */
+  previewPublic?: boolean;
   /** Where the preview icon leads; null while a public share has no origin yet. */
   previewUrl?: string | null;
+  /** The GitHub repo the issue number links into; absent for local projects. */
+  repo?: RepoIdentity | undefined;
   selected?: boolean;
   renaming?: boolean;
 }) {
@@ -1722,6 +1769,7 @@ function SessionRow({
   const badge = sessionBadge(session.status);
   const toneColor = theme.colors.tone[badge.tone];
   const label = sessionLabel(session);
+  const favorite = session.favorite === true;
   const subtitle = modelDisplayName(session.model);
   const running = session.status === 'running';
   // "Done"/"Idle" are implicit from the ABSENCE of the working dot, so they get no
@@ -1742,7 +1790,15 @@ function SessionRow({
   // would have used is not the thing to say — and the row keeps its height, which
   // this list re-measures on every poll.
   const notice = attentionNotice(session.attention);
-  const automationActive = session.automation?.status === 'enabled';
+  const edgeMarkers = sessionMarkers({
+    favorite,
+    automation: session.automation?.status,
+    shared: previewActive ? (previewPublic ? 'online' : 'local') : undefined,
+  });
+  const a11yLabel = edgeMarkers.length
+    ? `Open session ${label}, ${sessionMarkersLabel(edgeMarkers)}`
+    : `Open session ${label}`;
+  const hasIssue = parseBranchIssue(session.branch) !== null;
   // Accent wash marking the row whose rename sheet is open. Driven by an animated
   // value so that on close it lingers a beat and fades out (rather than vanishing)
   // as the sheet dismisses; on open it snaps in.
@@ -1813,43 +1869,38 @@ function SessionRow({
           >
             {notice ? attentionNoticeText(notice) : subtitle}
           </Text>
-          {automationActive || previewActive ? (
+          {hasIssue ? (
             <View style={styles.sessionFeatures}>
               <Text style={styles.rowSub} accessible={false} importantForAccessibility="no">
                 ·
               </Text>
-              {automationActive ? (
-                <View accessible accessibilityLabel="Automation active">
-                  <Icon name="repeat" size={14} color={theme.colors.primary} />
-                </View>
-              ) : null}
-              {previewActive ? (
-                <Pressable
-                  // openURL rejects only if no handler can open the URL; swallow it.
-                  // Enabled even without a URL yet: a disabled Pressable lets the tap
-                  // fall through to the row, which would open the session instead.
-                  onPress={() =>
-                    previewUrl && void Linking.openURL(previewUrl).catch(() => undefined)
-                  }
-                  hitSlop={8}
-                  accessibilityRole="link"
-                  accessibilityLabel="Open preview"
-                  accessibilityState={{ disabled: !previewUrl }}
-                >
-                  <Icon name="monitor" size={14} color={theme.colors.primary} />
-                </Pressable>
-              ) : null}
+              <SessionIssueRef branch={session.branch} repo={repo} />
             </View>
           ) : null}
         </View>
       </View>
+      {/* Favorite, automation and sharing: icon + short bar on the trailing edge,
+          so the leading edge stays with the working/unread dot. */}
+      <SessionMarkerColumn markers={edgeMarkers} previewUrl={previewUrl ?? null} />
     </View>
   );
 
   // Wide layout: select into the right pane instead of navigating. Narrow layout:
   // navigate to the full-screen session via the Link, exactly as before.
+  const swipeable = (row: ReactNode) => (
+    <SwipeableSessionRow
+      favorite={favorite}
+      label={label}
+      onToggleFavorite={onToggleFavorite}
+      onDelete={onDelete}
+      onEdit={onRename}
+    >
+      {row}
+    </SwipeableSessionRow>
+  );
+
   if (onSelect) {
-    return (
+    return swipeable(
       <Pressable
         style={({ pressed }) => [
           styles.row,
@@ -1867,18 +1918,18 @@ function SessionRow({
         delayLongPress={300}
         accessibilityRole="button"
         accessibilityState={{ selected: !!selected }}
-        accessibilityLabel={`Open session ${label}`}
+        accessibilityLabel={a11yLabel}
         accessibilityHint="Long press to edit session settings"
       >
         {rowBody}
-      </Pressable>
+      </Pressable>,
     );
   }
 
-  return (
+  return swipeable(
     <Link
       href={{ pathname: '/session/[id]', params: { id: session.sessionId } }}
-      accessibilityLabel={`Open session ${label}`}
+      accessibilityLabel={a11yLabel}
       asChild
     >
       <Pressable
@@ -1896,7 +1947,7 @@ function SessionRow({
       >
         {rowBody}
       </Pressable>
-    </Link>
+    </Link>,
   );
 }
 

@@ -5,6 +5,18 @@ module.exports = function (api) {
     // Unistyles v3 needs its Babel plugin to make components theme-reactive.
     // `root` points at the folder holding the styled components (the Expo Router
     // app dir); files there are processed for StyleSheet.create usage.
-    plugins: [['react-native-unistyles/plugin', { root: 'app' }]],
+    plugins: [
+      [
+        'react-native-unistyles/plugin',
+        {
+          root: 'app',
+          // Shared settings consumers need the same web component transforms as routes.
+          autoProcessImports: ['./settingsStyles'],
+          // Components outside `app/` that render route styles on web need the same
+          // component transform, or those styles never reach the DOM.
+          autoProcessPaths: ['components/PromptComposerInput'],
+        },
+      ],
+    ],
   };
 };

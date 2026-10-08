@@ -45,6 +45,37 @@ const body = (): ServerDeploymentSpecBody => ({
 });
 
 describe('ServerDeploymentSpec', () => {
+  it('keeps legacy seals valid and permits only one read-only diagnostic bind', () => {
+    const legacy = sealDeploymentSpec(body());
+    expect(parseServerDeploymentSpec(legacy)).toEqual(legacy);
+    const mount = {
+      source: { kind: 'bind' as const, path: '/var/lib/verity/host-diagnostics' },
+      target: '/run/verity-host-diagnostics',
+      readOnly: true,
+    };
+    const withMount = { ...body(), mounts: [...body().mounts, mount] };
+    expect(parseServerDeploymentSpec(sealDeploymentSpec(withMount))).not.toBeNull();
+    for (const invalid of [
+      { ...mount, readOnly: false },
+      { ...mount, source: { kind: 'volume', name: 'verity-data' } },
+      { ...mount, source: { kind: 'bind', path: '/' } },
+    ]) {
+      expect(
+        parseServerDeploymentSpec(
+          sealDeploymentSpec({
+            ...body(),
+            mounts: [...body().mounts, invalid],
+          } as ServerDeploymentSpecBody),
+        ),
+      ).toBeNull();
+    }
+    expect(
+      parseServerDeploymentSpec(
+        sealDeploymentSpec({ ...withMount, mounts: [...withMount.mounts, mount] }),
+      ),
+    ).toBeNull();
+  });
+
   it('round-trips a sealed allowlisted spec', () => {
     const spec = sealDeploymentSpec(body());
     expect(parseServerDeploymentSpec(JSON.parse(JSON.stringify(spec)))).toEqual(spec);

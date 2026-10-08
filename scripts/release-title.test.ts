@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
@@ -78,15 +78,22 @@ it.each([
   const titles = [...source.matchAll(/(?:message=|const title = `)(chore[^`]+)`/g)].map(
     (match) => match[1],
   );
-  expect(titles).toHaveLength(2);
-  expect(titles.every((title) => title === `chore(release): ${suffix}`)).toBe(true);
+  const evidenceTitles = titles.filter((title) => title.startsWith('chore(release): record '));
+  expect(evidenceTitles).toEqual(
+    file === 'scripts/production-promotion.ts'
+      ? ['chore(release): record native production ${candidate.version}']
+      : [],
+  );
+  const approvalTitles = titles.filter((title) => !evidenceTitles.includes(title));
+  expect(approvalTitles).toHaveLength(2);
+  expect(approvalTitles.every((title) => title === `chore(release): ${suffix}`)).toBe(true);
 });
 
 // Title-based recovery must keep finding approvals after the naming migration.
 it('keeps workflow release lookups compatible with current and historical titles', () => {
-  const workflow = readFileSync('.github/workflows/release.yml', 'utf8');
-  const lookups = workflow
-    .split('\n')
+  const lookups = readdirSync('.github/workflows')
+    .filter((file) => /\.ya?ml$/.test(file))
+    .flatMap((file) => readFileSync(`.github/workflows/${file}`, 'utf8').split('\n'))
     .filter((line) => line.includes('.title == "chore(main): release'));
   expect(lookups).toHaveLength(3);
   for (const lookup of lookups) {

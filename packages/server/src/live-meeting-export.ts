@@ -66,16 +66,33 @@ function speakerLines(
   for (const word of words) {
     const duration = word.end - word.start;
     if (!word.text.trim() || duration <= 0) continue;
-    const matches = turns
-      .map((turn) => ({
-        speaker: turn.speaker,
-        overlap: Math.max(0, Math.min(word.end, turn.end) - Math.max(word.start, turn.start)),
-      }))
-      .filter(({ overlap }) => overlap > duration * 0.6);
+    // Streaming diarization reports one voice as many short adjacent turns, so a word
+    // spanning a turn boundary is measured against all of that speaker's turns at once.
+    // Coverage is a union, so a turn repeated by the model is not counted twice.
+    const covered = new Map<number | null, [number, number][]>();
+    for (const turn of turns) {
+      const from = Math.max(word.start, turn.start);
+      const to = Math.min(word.end, turn.end);
+      if (to <= from) continue;
+      const speaker = resolvedSpeaker(turn.speaker, merges);
+      covered.set(speaker, [...(covered.get(speaker) ?? []), [from, to]]);
+    }
+    const candidates = new Set(
+      [...covered]
+        .filter(([, spans]) => {
+          let total = 0;
+          let reached = word.start;
+          for (const [from, to] of spans.sort((a, b) => a[0] - b[0])) {
+            total += Math.max(0, to - Math.max(from, reached));
+            reached = Math.max(reached, to);
+          }
+          return total > duration * 0.6;
+        })
+        .map(([speaker]) => speaker),
+    );
     const correction = corrections.findLast(
       (entry) => entry.start <= word.start && entry.end >= word.end,
     );
-    const candidates = new Set(matches.map((match) => resolvedSpeaker(match.speaker, merges)));
     const speaker = correction
       ? resolvedSpeaker(correction.speaker, merges)
       : candidates.size === 1

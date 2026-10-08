@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
 import {
   type VerityClient,
   SessionListModel,
@@ -9,7 +10,9 @@ import {
 } from '@verity/mobile';
 import { AppState } from 'react-native';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getVerityBaseUrl } from '../lib/client';
+import { useLiveHints } from '../lib/liveConnection';
 
 export interface UseSessionList extends SessionListState {
   /** Force an immediate reload (e.g. pull-to-refresh / retry button). `silent`
@@ -18,6 +21,8 @@ export interface UseSessionList extends SessionListState {
   refresh: (opts?: { silent?: boolean }) => Promise<void>;
   /** Set a session's display name (or clear it with `null`). Optimistic. */
   rename: (sessionId: string, name: string | null) => void;
+  /** Mark or unmark a session as a favorite (synced across devices). Optimistic. */
+  setFavorite: (sessionId: string, favorite: boolean) => void;
   /** Permanently delete a session (removes its history + worktree). Optimistic.
    * Named `remove` rather than `delete` so consumers can destructure it (`delete`
    * is a reserved word and would be a syntax error in a destructuring binding). */
@@ -36,7 +41,7 @@ export function useSessionList(client: VerityClient): UseSessionList {
   // (its `state` getter returns a new literal + a new array), so React never bails
   // out of a re-render on a same-reference no-op.
   const model = useMemo(
-    () => new SessionListModel({ client, onChange: (s) => setState(s) }),
+    () => new SessionListModel({ client, pollIntervalMs: 0, onChange: (s) => setState(s) }),
     [client],
   );
 
@@ -49,17 +54,38 @@ export function useSessionList(client: VerityClient): UseSessionList {
     setState({ ...model.state, loading: true });
   }, [model]);
 
-  const [focused, setFocused] = useState(false);
+  // The list refetches when the server says a session changed; its own poll is
+  // only the safety net. Hints for a model that is not running are ignored.
+  const onHints = useCallback(
+    (hints: Parameters<typeof model.applyHints>[0]) => {
+      model.applyHints(hints);
+    },
+    [model],
+  );
+  useLiveHints(getVerityBaseUrl(), onHints);
+  useEffect(
+    () =>
+      subscribeLiveRefresh(
+        client,
+        () => model.applyHints([]),
+        (path) => path.split('?')[0] === '/sessions' || path === '/provider-limits',
+      ),
+    [client, model],
+  );
+
+  // Focus only gates background requests; React state would redraw the entire
+  // overview and embedded transcript during each navigation transition.
+  const focused = useRef(false);
   useFocusEffect(
     useCallback(() => {
-      setFocused(true);
+      focused.current = true;
       if (AppState.currentState === 'active') model.start();
       const appState = AppState.addEventListener('change', (nextState) => {
         if (nextState === 'active') model.start();
         else model.stop();
       });
       return () => {
-        setFocused(false);
+        focused.current = false;
         appState.remove();
         model.stop();
       };
@@ -70,9 +96,9 @@ export function useSessionList(client: VerityClient): UseSessionList {
     () =>
       subscribeSettledPermissions((sessionId, toolUseId) => {
         model.settlePermission(sessionId, toolUseId);
-        if (focused) void model.refresh({ silent: true });
+        if (focused.current) void model.refresh({ silent: true });
       }),
-    [model, focused],
+    [model],
   );
 
   useEffect(
@@ -80,7 +106,7 @@ export function useSessionList(client: VerityClient): UseSessionList {
       subscribeSessionStatusMutations((sessionId, status) => {
         model.applySessionStatus(sessionId, status);
       }),
-    [model, focused],
+    [model],
   );
 
   useEffect(
@@ -98,9 +124,9 @@ export function useSessionList(client: VerityClient): UseSessionList {
     () =>
       subscribePullRequestStatusMutations(({ sessionId, pr }) => {
         if (pr !== undefined) model.applyPullRequestStatus(sessionId, pr);
-        if (focused) void model.refresh({ silent: true });
+        if (focused.current) void model.refresh({ silent: true });
       }),
-    [model, focused],
+    [model],
   );
 
   const refresh = useCallback(
@@ -117,6 +143,13 @@ export function useSessionList(client: VerityClient): UseSessionList {
     [model],
   );
 
+  const setFavorite = useCallback(
+    (sessionId: string, favorite: boolean) => {
+      void model.setFavorite(sessionId, favorite);
+    },
+    [model],
+  );
+
   const remove = useCallback(
     (sessionId: string, opts: { force?: boolean } = {}) => {
       return model.delete(sessionId, opts);
@@ -124,5 +157,5 @@ export function useSessionList(client: VerityClient): UseSessionList {
     [model],
   );
 
-  return { ...state, refresh, rename, remove };
+  return { ...state, refresh, rename, setFavorite, remove };
 }

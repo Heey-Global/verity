@@ -3540,6 +3540,55 @@ describe('GET /sessions', () => {
     expect(summary?.eventCount).toBe(written.length);
   });
 
+  it('carries the cached branch on each summary without awaiting git', async () => {
+    let release: (branch: string) => void = () => undefined;
+    const current = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const branches = {
+      current,
+      switchable: vi.fn(async () => [] as string[]),
+      previewable: vi.fn(async () => [] as string[]),
+      switch: vi.fn(),
+    };
+    const branchApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      spawnWorktreeRoot: worktreeRoot,
+      branches: branches as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchCacheTtlMs: 60_000,
+    });
+    try {
+      const live = join(worktreeRoot, 'live');
+      mkdirSync(live, { recursive: true });
+      await ctx.store.createSession({ sessionId: 's1', worktree: live, model: 'm' });
+      await ctx.store.createSession({ sessionId: 's2', worktree: '/wt/gone', model: 'm' });
+      // The list is polled every 2 s for every session: a git read that never
+      // settles must not hold it up, so the cold answer simply has no branch.
+      type Listed = { sessionId: string; branch?: string };
+      const cold = await branchApp.inject({ method: 'GET', url: '/sessions' });
+      expect(cold.statusCode).toBe(200);
+      expect(cold.json<Listed[]>().find((s) => s.sessionId === 's1')?.branch).toBeUndefined();
+      release('feat/122-preview-branches');
+      await vi.waitFor(async () => {
+        const res = await branchApp.inject({ method: 'GET', url: '/sessions' });
+        const byId = new Map(res.json<Listed[]>().map((s) => [s.sessionId, s]));
+        expect(byId.get('s1')?.branch).toBe('feat/122-preview-branches');
+        expect(byId.get('s2')?.branch).toBeUndefined();
+      });
+      // A gone worktree is never asked: git would fail for it on every poll.
+      expect(current).not.toHaveBeenCalledWith('/wt/gone');
+      // Within the TTL the label comes from memory, not another git read per poll.
+      expect(current).toHaveBeenCalledTimes(1);
+    } finally {
+      await branchApp.close();
+    }
+  });
+
   it('enriches each summary with a compact `pr` once resolved (stale-while-revalidate)', async () => {
     const branchPrStatus = vi.fn(async () => ({
       number: 7,
@@ -3959,9 +4008,14 @@ describe('GET /provider-limits', () => {
   });
 });
 
-it('does not expose the retired issues and task-board routes', async () => {
+it('does not expose the retired issues route', async () => {
   expect((await app.inject({ method: 'GET', url: '/issues' })).statusCode).toBe(404);
-  expect((await app.inject({ method: 'GET', url: '/tasks' })).statusCode).toBe(404);
+});
+
+it('serves the durable task list through the full server', async () => {
+  const response = await app.inject({ method: 'GET', url: '/tasks' });
+  expect(response.statusCode).toBe(200);
+  expect(response.json()).toEqual({ tasks: [] });
 });
 
 describe('GET /projects (#174)', () => {
@@ -6391,6 +6445,60 @@ describe('PATCH /sessions/:id (rename + switch engine)', () => {
     expect(res.json()).toMatchObject({ error: expect.stringContaining('missing') });
   });
 
+  it('marks and unmarks a favorite, and lists it in GET /sessions', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const marked = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s1',
+      payload: { favorite: true },
+    });
+    expect(marked.statusCode).toBe(200);
+    expect(marked.json()).toEqual({ sessionId: 's1', favorite: true });
+    const listed = await app.inject({ method: 'GET', url: '/sessions' });
+    expect(
+      listed.json<{ sessionId: string; favorite?: boolean }[]>().find((s) => s.sessionId === 's1')
+        ?.favorite,
+    ).toBe(true);
+
+    const unmarked = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s1',
+      payload: { favorite: false },
+    });
+    expect(unmarked.json()).toEqual({ sessionId: 's1', favorite: false });
+    expect((await ctx.store.getSession('s1'))?.favorite).toBeUndefined();
+  });
+
+  it('applies a favorite together with a rename', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s1',
+      payload: { name: 'Pinned', favorite: true },
+    });
+    expect(res.json()).toEqual({ sessionId: 's1', name: 'Pinned', favorite: true });
+    expect(await ctx.store.getSession('s1')).toMatchObject({ name: 'Pinned', favorite: true });
+  });
+
+  it('returns 404 when marking an unknown session as favorite', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/missing',
+      payload: { favorite: true },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('rejects a non-boolean favorite with 400', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s1',
+      payload: { favorite: 'yes' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
   it('rejects a whitespace-only name with 400', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const res = await app.inject({
@@ -6550,7 +6658,7 @@ describe('PATCH /sessions/:id (rename + switch engine)', () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/sessions/s1',
-      payload: { name: 'after', model: 'codex/default' },
+      payload: { name: 'after', favorite: true, model: 'codex/default' },
     });
 
     expect(res.statusCode).toBe(503);
@@ -6559,6 +6667,10 @@ describe('PATCH /sessions/:id (rename + switch engine)', () => {
     });
     const session = await ctx.store.getSession('s1');
     expect(session?.name).toBe('after');
+    expect(session?.favorite).toBe(true);
+    expect(res.json()).toMatchObject({
+      error: expect.stringContaining('the favorite change in this request was applied'),
+    });
     expect(session?.model).toBe('claude-opus-4-8');
     expect(res.headers['retry-after']).toBe('5');
   });
@@ -6579,7 +6691,7 @@ describe('PATCH /sessions/:id (rename + switch engine)', () => {
     const res = await app.inject({
       method: 'PATCH',
       url: '/sessions/s1',
-      payload: { name: 'after', model: 'codex/default' },
+      payload: { name: 'after', favorite: true, model: 'codex/default' },
     });
 
     expect(res.statusCode).toBe(409);
@@ -6589,6 +6701,10 @@ describe('PATCH /sessions/:id (rename + switch engine)', () => {
     expect(res.headers['retry-after']).toBe('5');
     const session = await ctx.store.getSession('s1');
     expect(session?.name).toBe('after');
+    expect(session?.favorite).toBe(true);
+    expect(res.json()).toMatchObject({
+      error: expect.stringContaining('the favorite change in this request was applied'),
+    });
     expect(session?.model).toBe('claude-opus-4-8');
   });
 
@@ -7446,6 +7562,50 @@ describe('POST /sessions/:id/turns', () => {
     expect(dispatchTurn).toHaveBeenCalledWith('s1', 'yes, do it', expect.any(Object), {
       clientReplyId: 'reply-abc',
     });
+  });
+
+  // Steered into a running reply, a second meeting question shares that reply and its
+  // card shows the answer to the first question.
+  it('queues a turn behind the active one only when the client asks for it', async () => {
+    dispatchTurn.mockResolvedValueOnce({ queued: true });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions/s1/turns',
+      payload: { prompt: 'meeting question', queueBehindActiveTurn: true },
+    });
+    expect(res.statusCode).toBe(202);
+    expect(dispatchTurn).toHaveBeenCalledWith('s1', 'meeting question', expect.any(Object), {
+      queueBehindActiveTurn: true,
+    });
+  });
+
+  it('stamps the authenticated caller as the initiator, never a body-supplied one', async () => {
+    const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+    const { token } = await registry.mint('phone');
+    const gated = buildServer({
+      eventStore: ctx.store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      secretCipher: createSealableSecretCipher(),
+      authRegistry: registry,
+    });
+    try {
+      dispatchTurn.mockResolvedValueOnce({ queued: false });
+      const res = await gated.inject({
+        method: 'POST',
+        url: '/sessions/s1/turns',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { prompt: 'go', initiatedBy: { userId: 'someone-else' } },
+      });
+      expect(res.statusCode).toBe(202);
+      const caller = registry.resolveUserId(token);
+      expect(caller).toBeDefined();
+      expect(dispatchTurn).toHaveBeenCalledWith('s1', 'go', expect.any(Object), {
+        initiatedBy: { userId: caller },
+      });
+    } finally {
+      await gated.close();
+    }
   });
 
   it('rejects unknown provider model overrides for project-bound sessions', async () => {
@@ -10267,7 +10427,7 @@ describe('error boundary', () => {
   });
 });
 
-describe('GET /sessions/:id/stream (WebSocket)', () => {
+describe('GET /live (WebSocket)', () => {
   type Frame = Record<string, unknown>;
 
   /**
@@ -10308,20 +10468,111 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
     return { ws, next, closed };
   }
 
-  it('streams backlog -> caught_up -> live, deduped by seq', async () => {
+  /** Connect, wait for `ready`, then subscribe to a session. */
+  async function subscribe(
+    atPort: number,
+    sessionId: string,
+    options: { sinceSeq?: number; protocol?: string } = {},
+  ): Promise<Conn> {
+    const conn = await connect(atPort, '/live', options.protocol);
+    expect(await conn.next()).toMatchObject({ k: 'ready', v: 1 });
+    conn.ws.send(
+      JSON.stringify({
+        k: 'sub',
+        ch: 'session',
+        id: sessionId,
+        ...(options.sinceSeq === undefined ? {} : { sinceSeq: options.sinceSeq }),
+      }),
+    );
+    return conn;
+  }
+
+  it('preserves the project on deletion hints without a cached session owner', async () => {
+    await ctx.store.createProject({
+      id: 'p-delete',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'delete',
+      cloneDir: 'delete',
+      containerName: 'delete',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 's-delete',
+      worktree: '/wt/s-delete',
+      model: 'm',
+      projectId: 'p-delete',
+    });
+    const conn = await connect(port, '/live');
+    try {
+      expect(await conn.next()).toMatchObject({ k: 'ready' });
+      conn.ws.send(JSON.stringify({ k: 'sub', ch: 'overview' }));
+      // Synchronize after the subscription without priming the session owner cache.
+      conn.ws.send(JSON.stringify({ k: 'ping', n: 1 }));
+      expect(await conn.next()).toMatchObject({ k: 'pong', n: 1 });
+      expect((await app.inject({ method: 'DELETE', url: '/sessions/s-delete' })).statusCode).toBe(
+        200,
+      );
+      expect(await conn.next()).toMatchObject({
+        k: 'hint',
+        hints: [{ sessionId: 's-delete', projectId: 'p-delete', deleted: true }],
+      });
+    } finally {
+      conn.ws.close();
+    }
+  });
+
+  it('synchronizes project collapse between live devices after a saved mutation', async () => {
+    await ctx.store.createProject({
+      id: 'p-live',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'live',
+      cloneDir: 'live',
+      containerName: 'live',
+      state: 'active',
+    });
+    const first = await connect(port, '/live');
+    const second = await connect(port, '/live');
+    try {
+      for (const connection of [first, second]) {
+        expect(await connection.next()).toMatchObject({ k: 'ready', resources: true });
+        connection.ws.send(JSON.stringify({ k: 'watch', resource: { path: '/projects' } }));
+        expect(await connection.next()).toEqual({ k: 'invalidate', path: '/projects' });
+      }
+      const response = await app.inject({
+        method: 'PATCH',
+        url: '/projects/p-live/collapsed',
+        payload: { collapsed: true },
+      });
+      expect(response.statusCode).toBe(200);
+      for (const connection of [first, second]) {
+        expect(await connection.next()).toEqual({ k: 'invalidate', path: '/projects' });
+        expect(
+          (await app.inject({ method: 'GET', url: '/projects' }))
+            .json<{ id: string; collapsed: boolean }[]>()
+            .find((project) => project.id === 'p-live')?.collapsed,
+        ).toBe(true);
+      }
+    } finally {
+      first.ws.close();
+      second.ws.close();
+    }
+  });
+
+  it('streams a subscribed session: backlog -> caught_up -> live', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const { seq: backlogSeq, ts: backlogTs } = await ctx.store.appendEvent('s1', {
       t: 'text',
       delta: 'backlog',
     });
 
-    const { ws, next } = await connect(port, '/sessions/s1/stream');
+    const { ws, next } = await subscribe(port, 's1');
     try {
       // The backlog frame carries the row's real created_at as `ts` (#32).
-      expect(await next()).toMatchObject({ k: 'event', seq: backlogSeq, ts: backlogTs });
-      expect(await next()).toMatchObject({ k: 'caught_up', seq: backlogSeq });
+      expect(await next()).toMatchObject({ k: 'event', id: 's1', seq: backlogSeq, ts: backlogTs });
+      expect(await next()).toMatchObject({ k: 'caught_up', id: 's1', seq: backlogSeq });
 
-      // a live event published after caught_up is forwarded, ts and all
       bus.publish('s1', {
         seq: backlogSeq + 1,
         ts: 1_700_000_000_000,
@@ -10329,6 +10580,7 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
       });
       expect(await next()).toMatchObject({
         k: 'event',
+        id: 's1',
         seq: backlogSeq + 1,
         ts: 1_700_000_000_000,
         event: { t: 'text', delta: 'live' },
@@ -10338,13 +10590,12 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
     }
   });
 
-  it('with ?sinceSeq, replays only events after the cursor (reconnect)', async () => {
+  it('with sinceSeq, replays only events after the cursor (reconnect)', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const { seq: one } = await ctx.store.appendEvent('s1', { t: 'text', delta: 'one' });
     const { seq: two } = await ctx.store.appendEvent('s1', { t: 'text', delta: 'two' });
-    const { ws, next } = await connect(port, `/sessions/s1/stream?sinceSeq=${String(one)}`);
+    const { ws, next } = await subscribe(port, 's1', { sinceSeq: one });
     try {
-      // 'one' (== cursor) is skipped; only 'two' replays
       expect(await next()).toMatchObject({
         k: 'event',
         seq: two,
@@ -10356,34 +10607,28 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
     }
   });
 
-  it('falls back to the full backlog when sinceSeq is not a number', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    const { seq } = await ctx.store.appendEvent('s1', { t: 'text', delta: 'x' });
-    const { ws, next } = await connect(port, '/sessions/s1/stream?sinceSeq=abc');
+  it('ends the subscription of a session that does not exist', async () => {
+    const { ws, next } = await subscribe(port, 'missing');
     try {
-      expect(await next()).toMatchObject({ k: 'event', seq }); // full backlog (fallback to 0)
+      expect(await next()).toEqual({ k: 'ended', id: 'missing', reason: 'not_found' });
     } finally {
       ws.close();
     }
   });
 
-  it('closes with 1008 for an invalid session id', async () => {
-    const { closed } = await connect(port, '/sessions/bad%20id/stream');
-    expect((await closed).code).toBe(1008);
-  });
-
-  it('sends an error frame and closes if the backlog read fails', async () => {
+  it('ends the subscription without detail if the backlog read fails', async () => {
     const throwing = {
       listMovePreviewRestarts: async () => [],
+      getSession: async () => ({ sessionId: 's1', projectId: null }),
       getEventsAfter: () => Promise.reject(new Error('db down INTERNAL')),
     } as unknown as Parameters<typeof buildServer>[0]['eventStore'];
     const badApp = buildServer({ eventStore: throwing, bus: new InMemoryEventBus(), conductor });
     await badApp.listen({ port: 0, host: '127.0.0.1' });
     const badPort = (badApp.server.address() as AddressInfo).port;
     try {
-      const { ws, next } = await connect(badPort, '/sessions/s1/stream');
+      const { ws, next } = await subscribe(badPort, 's1');
       const frame = await next();
-      expect(frame).toMatchObject({ k: 'error' });
+      expect(frame).toEqual({ k: 'ended', id: 's1', reason: 'error' });
       expect(JSON.stringify(frame)).not.toContain('INTERNAL');
       ws.close();
     } finally {
@@ -10392,7 +10637,7 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
   });
 
   it.each(['revoke', 'forget', 'clear'] as const)(
-    'invalidates pending and open streams on %s',
+    'invalidates pending tickets and open connections on %s',
     async (operation) => {
       const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
       const device = await registry.mint('revoked-device');
@@ -10411,7 +10656,7 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
         const mint = async (token: string): Promise<string> => {
           const response = await gated.inject({
             method: 'POST',
-            url: '/sessions/s1/stream-ticket',
+            url: '/live/ticket',
             headers: { authorization: `Bearer ${token}` },
           });
           expect(response.statusCode).toBe(200);
@@ -10420,28 +10665,24 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
         const pending = await mint(device.token);
         const active = await connect(
           gatedPort,
-          '/sessions/s1/stream',
-          `verity-stream-ticket.${await mint(device.token)}`,
+          '/live',
+          `verity-live-ticket.${await mint(device.token)}`,
         );
         connections.push(active);
-        expect(await active.next()).toMatchObject({ k: 'caught_up' });
+        expect(await active.next()).toMatchObject({ k: 'ready' });
         const unaffected = await connect(
           gatedPort,
-          '/sessions/s1/stream',
-          `verity-stream-ticket.${await mint(other.token)}`,
+          '/live',
+          `verity-live-ticket.${await mint(other.token)}`,
         );
         connections.push(unaffected);
-        expect(await unaffected.next()).toMatchObject({ k: 'caught_up' });
+        expect(await unaffected.next()).toMatchObject({ k: 'ready' });
         if (operation === 'revoke') await registry.revoke(device.id);
         else if (operation === 'clear') registry.clear();
         else registry.forget(hashAuthToken(device.token));
-        // Existing subscriptions and unused tickets otherwise outlive device authority.
+        // Existing connections and unused tickets otherwise outlive device authority.
         expect((await active.closed).code).toBe(1008);
-        const rejected = await connect(
-          gatedPort,
-          '/sessions/s1/stream',
-          `verity-stream-ticket.${pending}`,
-        );
+        const rejected = await connect(gatedPort, '/live', `verity-live-ticket.${pending}`);
         connections.push(rejected);
         expect((await rejected.closed).code).toBe(1008);
         if (operation === 'clear') expect((await unaffected.closed).code).toBe(1008);
@@ -10453,7 +10694,7 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
     },
   );
 
-  it('requires a session-bound, single-use stream ticket once the gate is armed', async () => {
+  it('requires a single-use, expiring live ticket once the gate is armed', async () => {
     const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
     const { token } = await registry.mint('test-device');
     const gated = buildServer({
@@ -10466,54 +10707,65 @@ describe('GET /sessions/:id/stream (WebSocket)', () => {
     await gated.listen({ port: 0, host: '127.0.0.1' });
     const gatedPort = (gated.server.address() as AddressInfo).port;
     try {
-      const mint = async (sessionId: string): Promise<string> => {
+      const mint = async (): Promise<string> => {
         const response = await gated.inject({
           method: 'POST',
-          url: `/sessions/${sessionId}/stream-ticket`,
+          url: '/live/ticket',
           headers: { authorization: `Bearer ${token}` },
         });
         expect(response.statusCode).toBe(200);
         return response.json<{ ticket: string }>().ticket;
       };
-      const noToken = await connect(gatedPort, '/sessions/s1/stream');
+      const unauthenticatedTicket = await gated.inject({ method: 'POST', url: '/live/ticket' });
+      expect(unauthenticatedTicket.statusCode).toBe(401);
+      const noToken = await connect(gatedPort, '/live');
       expect((await noToken.closed).code).toBe(1008);
-      const bearerInUrl = await connect(gatedPort, `/sessions/s1/stream?access_token=${token}`);
+      const bearerInUrl = await connect(gatedPort, `/live?access_token=${token}`);
       expect((await bearerInUrl.closed).code).toBe(1008);
 
-      const wrongSessionTicket = await mint('other-session');
-      const wrongSession = await connect(
-        gatedPort,
-        '/sessions/s1/stream',
-        `verity-stream-ticket.${wrongSessionTicket}`,
-      );
-      expect((await wrongSession.closed).code).toBe(1008);
-
-      const ticket = await mint('s1');
-      const ok = await connect(gatedPort, '/sessions/s1/stream', `verity-stream-ticket.${ticket}`);
-      expect(await ok.next()).toMatchObject({ k: 'caught_up' });
+      const ticket = await mint();
+      const ok = await connect(gatedPort, '/live', `verity-live-ticket.${ticket}`);
+      expect(await ok.next()).toMatchObject({ k: 'ready' });
       ok.ws.close();
-      const replay = await connect(
-        gatedPort,
-        '/sessions/s1/stream',
-        `verity-stream-ticket.${ticket}`,
-      );
+      const replay = await connect(gatedPort, '/live', `verity-live-ticket.${ticket}`);
       expect((await replay.closed).code).toBe(1008);
 
-      const expiringTicket = await mint('s1');
+      const expiringTicket = await mint();
       const now = Date.now();
       const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 31_000);
       try {
-        const expired = await connect(
-          gatedPort,
-          '/sessions/s1/stream',
-          `verity-stream-ticket.${expiringTicket}`,
-        );
+        const expired = await connect(gatedPort, '/live', `verity-live-ticket.${expiringTicket}`);
         expect((await expired.closed).code).toBe(1008);
       } finally {
         clock.mockRestore();
       }
     } finally {
       await gated.close();
+    }
+  });
+
+  it('hints overview subscribers about session mutations that are not events', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const conn = await connect(port, '/live');
+    try {
+      expect(await conn.next()).toMatchObject({ k: 'ready' });
+      conn.ws.send(JSON.stringify({ k: 'sub', ch: 'overview' }));
+      // Let the subscription land before the mutation.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const renamed = await app.inject({
+        method: 'PATCH',
+        url: '/sessions/s1',
+        payload: { name: 'Renamed' },
+      });
+      expect(renamed.statusCode).toBe(200);
+      expect(await conn.next()).toMatchObject({
+        k: 'hint',
+        hints: [
+          expect.objectContaining({ sessionId: 's1', topics: expect.arrayContaining(['session']) }),
+        ],
+      });
+    } finally {
+      conn.ws.close();
     }
   });
 });

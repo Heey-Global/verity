@@ -8,6 +8,7 @@ import {
   CONNECTOR_MAX_RECONNECT_ATTEMPTS,
   PreviewConnector,
   PreviewEdge,
+  type PreviewEdgeOptions,
   generatePreviewSecret,
   hashPreviewPin,
   hashPreviewSecret,
@@ -304,6 +305,196 @@ describe('preview session cookie expiry', () => {
     const response = await rawUpgrade(edgePort, cookie, handshakeKey());
     expect(response).toContain('401 Unauthorized');
     expect(connections).toBe(1);
+  });
+});
+
+describe('WebSocket PIN query authentication', () => {
+  async function refused(url: string, headers?: Record<string, string>): Promise<number> {
+    const client = new WebSocket(url, { headers });
+    cleanups.push(() => client.terminate());
+    return new Promise((resolve, reject) => {
+      client.once('unexpected-response', (_request, response) => {
+        response.resume();
+        client.terminate();
+        resolve(response.statusCode!);
+      });
+      client.once('error', () => {});
+      client.once('open', () => reject(new Error('unauthorized socket opened')));
+    });
+  }
+
+  it('authenticates without cookies and strips all PIN parameters while preserving application queries and duplex audio', async () => {
+    const paths: string[] = [];
+    const targetPort = await wsTarget((socket, request) => {
+      paths.push(request.url!);
+      socket.on('message', (data: WebSocket.RawData) => socket.send(data));
+    });
+    const { edgePort } = await bridge('ws-pin-query', targetPort);
+    const client = new WebSocket(
+      `ws://127.0.0.1:${edgePort}/attendee?pin=123456&?token=audio%20~&p%69n=secret`,
+    );
+    cleanups.push(() => client.terminate());
+    await opened(client);
+    const echo = new Promise<string>((resolve) =>
+      client.once('message', (data: WebSocket.RawData) => resolve(rawText(data))),
+    );
+    client.send('audio chunk');
+    expect(await echo).toBe('audio chunk');
+    expect(paths).toEqual(['/attendee??token=audio%20~']);
+  });
+
+  it('preserves raw application query encoding when authenticating with a cookie', async () => {
+    const paths: string[] = [];
+    const targetPort = await wsTarget((_socket, request) => paths.push(request.url!));
+    const { edgePort, cookie } = await bridge('ws-query-encoding', targetPort);
+    const client = new WebSocket(`ws://127.0.0.1:${edgePort}/socket?signature=a%20~&value=%2f`, {
+      headers: { cookie },
+    });
+    cleanups.push(() => client.terminate());
+    await opened(client);
+    expect(paths).toEqual(['/socket?signature=a%20~&value=%2f']);
+  });
+
+  it.each(['', '?pin=000000'])(
+    'releases rejected sockets even when clients withhold FIN (%s)',
+    async (query) => {
+      const edge = new PreviewEdge({
+        shareId: 'ws-half-open',
+        pinHash: hashPreviewPin('123456'),
+        connectorTokenHash: hashPreviewSecret('connector'),
+        sessionSecretHash,
+        publicOrigin: 'https://ws-half-open.preview.example.test',
+      });
+      const port = await edge.listen();
+      const client = connect({ port, host: '127.0.0.1', allowHalfOpen: true });
+      client.on('error', () => {});
+      const ended = new Promise<string>((resolve) => {
+        let response = '';
+        client.on('data', (chunk: Buffer) => {
+          response += chunk.toString();
+        });
+        client.once('end', () => resolve(response));
+      });
+      client.write(
+        `GET /attendee${query} HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n${handshakeKey()}\r\n`,
+      );
+      let closing: Promise<void> | undefined;
+      try {
+        expect(await ended).toContain('401 Unauthorized');
+        // An unclosed upgrade can keep server shutdown waiting for the client's FIN.
+        closing = edge.close();
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            closing,
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(
+                () => reject(new Error('rejected socket retained by server')),
+                1000,
+              );
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+        expect(client.writableEnded).toBe(false);
+      } finally {
+        client.destroy();
+        await (closing ?? edge.close());
+      }
+    },
+  );
+
+  it('survives a peer reset while the PIN budget verification is pending', async () => {
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const beginning = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const edge = new PreviewEdge({
+      shareId: 'ws-reset',
+      pinHash: hashPreviewPin('123456'),
+      connectorTokenHash: hashPreviewSecret('connector'),
+      sessionSecretHash,
+      publicOrigin: 'https://ws-reset.preview.example.test',
+      pinBudget: {
+        begin: async () => {
+          started();
+          await pending;
+          return { state: 'allowed', attemptId: 'attempt' };
+        },
+        finish: async () => ({ state: 'allowed' }),
+      },
+    });
+    const port = await edge.listen();
+    cleanups.push(() => edge.close());
+    const client = connect({ port, host: '127.0.0.1' });
+    cleanups.push(() => {
+      release();
+      client.destroy();
+    });
+    client.on('error', () => {});
+    client.write(
+      `GET /attendee?pin=123456 HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n${handshakeKey()}\r\n`,
+    );
+    await beginning;
+    const closed = new Promise<void>((resolve) => client.once('close', () => resolve()));
+    client.resetAndDestroy();
+    await closed;
+    // Allow the reset to reach the edge while verification remains suspended.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    release();
+    const response = await fetch(`http://127.0.0.1:${port}/__verity/login`);
+    expect(response.status).toBe(200);
+    await response.arrayBuffer();
+  });
+
+  it('shares the failed-attempt limit with HTTP and rejects foreign browser origins', async () => {
+    const reached = vi.fn();
+    const targetPort = await wsTarget(reached);
+    const { edgePort } = await bridge('ws-pin-limits', targetPort);
+    const base = `ws://127.0.0.1:${edgePort}/attendee`;
+    expect(await refused(`${base}?pin=123456`, { origin: 'https://hostile.example.test' })).toBe(
+      403,
+    );
+    expect(await refused(base)).toBe(401);
+    expect(await refused(`${base}?pin=bad`)).toBe(401);
+    for (let i = 0; i < 9; i++) {
+      const response = await fetch(`http://127.0.0.1:${edgePort}/__verity/login?pin=000000`, {
+        redirect: 'manual',
+      });
+      expect(response.status).toBe(401);
+      await response.arrayBuffer();
+    }
+    expect(await refused(`${base}?pin=123456`)).toBe(429);
+    expect(reached).not.toHaveBeenCalled();
+  });
+
+  it('requires durable PIN budget completion before opening a target socket', async () => {
+    const reached = vi.fn();
+    const targetPort = await wsTarget(reached);
+    const begin = vi.fn().mockResolvedValue({ state: 'allowed', attemptId: 'attempt' });
+    const finish = vi.fn().mockResolvedValue({ state: 'allowed' });
+    const { edgePort } = await bridge('ws-pin-budget', targetPort, {
+      pinBudget: { begin, finish },
+    });
+    begin.mockClear();
+    finish.mockClear();
+    const url = `ws://127.0.0.1:${edgePort}/attendee?pin=123456`;
+    finish.mockResolvedValueOnce({ state: 'unavailable' });
+    expect(await refused(url)).toBe(503);
+    expect(begin).toHaveBeenCalledOnce();
+    expect(finish).toHaveBeenCalledWith('attempt', true);
+    begin.mockResolvedValueOnce({ state: 'cooldown', retryAfterSeconds: 60 });
+    expect(await refused(url)).toBe(429);
+    begin.mockResolvedValueOnce({ state: 'locked' });
+    expect(await refused(url)).toBe(403);
+    begin.mockRejectedValueOnce(new Error('offline'));
+    expect(await refused(url)).toBe(503);
+    expect(reached).not.toHaveBeenCalled();
   });
 });
 
@@ -2085,6 +2276,7 @@ async function bridge(
   shareId: string,
   targetPort: number,
   options: Partial<{
+    pinBudget: NonNullable<PreviewEdgeOptions['pinBudget']>;
     expiresAt: string;
     maxConcurrentStreams: number;
     requestTimeoutMs: number;

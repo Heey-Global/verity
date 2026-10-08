@@ -4,6 +4,19 @@ import { AppState, type AppStateStatus } from 'react-native';
 import { useBranches } from './useBranches';
 import { cachedBranches, rememberBranches } from '../lib/branchesPrefetch';
 
+const mockLive = new Set<() => void | Promise<unknown>>();
+jest.mock('../lib/liveConnection', () => ({
+  subscribeLiveRefresh: (_client: unknown, refresh: () => void | Promise<unknown>) => {
+    mockLive.add(refresh);
+    return () => mockLive.delete(refresh);
+  },
+}));
+const changed = async () => {
+  await act(async () => {
+    for (const refresh of mockLive) void refresh();
+  });
+};
+
 let mockFocused = true;
 jest.mock('expo-router', () => ({
   useFocusEffect: (callback: () => (() => void) | undefined) => {
@@ -40,10 +53,11 @@ const advance = async (ms: number) => {
   await act(async () => jest.advanceTimersByTimeAsync(ms));
 };
 
-describe('useBranches polling', () => {
+describe('useBranches live updates', () => {
   let listeners: Set<(state: AppStateStatus) => void>;
   let previousState: AppStateStatus;
   beforeEach(() => {
+    mockLive.clear();
     jest.useFakeTimers();
     mockFocused = true;
     previousState = AppState.currentState;
@@ -120,7 +134,7 @@ describe('useBranches polling', () => {
     });
   });
 
-  it('keeps active cadence across manual responses and makes automatic requests silent', async () => {
+  it('makes live refreshes silent and preserves an in-flight response', async () => {
     const slow = deferred<BranchList>();
     const getBranches = jest.fn().mockImplementation(() => Promise.resolve(branches()));
     const client = { getBranches } as unknown as VerityClient;
@@ -129,8 +143,7 @@ describe('useBranches polling', () => {
     await advance(3_000);
     await act(async () => hook.result.current.refresh());
     getBranches.mockReturnValueOnce(slow.promise);
-    // A fresh PR object from manual refresh must not postpone the scheduled poll.
-    await advance(2_000);
+    await changed();
     expect(getBranches).toHaveBeenCalledTimes(3);
     expect(hook.result.current.loading).toBe(false);
     await advance(15_000);
@@ -161,7 +174,7 @@ describe('useBranches polling', () => {
     const hook = renderHook(() => useBranches(client, 's'));
     await advance(0);
     getBranches.mockReturnValueOnce(old.promise);
-    await advance(5_000);
+    await changed();
     let switched!: ReturnType<typeof hook.result.current.switchTo>;
     act(() => {
       switched = hook.result.current.switchTo({ branch: 'fix/new' });
@@ -176,53 +189,19 @@ describe('useBranches polling', () => {
     expect(hook.result.current.current).toBe('fix/new');
   });
 
-  it('backs off discovery to 30s and resets when the branch changes', async () => {
-    const getBranches = jest.fn().mockResolvedValue({ current: 'main', switchable: [] });
-    const client = { getBranches } as unknown as VerityClient;
-    const hook = renderHook(() => useBranches(client, 's'));
-    await advance(0);
-    await advance(5_000);
-    await advance(10_000);
-    await advance(20_000);
-    expect(getBranches).toHaveBeenCalledTimes(4);
-    await advance(29_999);
-    expect(getBranches).toHaveBeenCalledTimes(4);
-    getBranches.mockResolvedValue({ current: 'fix/new', switchable: [] });
-    await advance(1);
-    await advance(5_000);
-    expect(getBranches).toHaveBeenCalledTimes(6);
-    expect(hook.result.current.current).toBe('fix/new');
-  });
-
-  it.each([
-    ['open', 'success', 30_000],
-    ['merged', 'running', 60_000],
-    ['closed', 'running', 60_000],
-  ] as const)('polls %s/%s every %i ms', async (phase, pipeline, interval) => {
-    const getBranches = jest.fn().mockResolvedValue(branches(phase, pipeline));
-    const client = { getBranches } as unknown as VerityClient;
-    renderHook(() => useBranches(client, 's'));
-    await advance(0);
-    await advance(interval - 1);
-    expect(getBranches).toHaveBeenCalledTimes(1);
-    await advance(1);
-    expect(getBranches).toHaveBeenCalledTimes(2);
-  });
-
-  it('polls a green PR every 5s while GitHub is still computing mergeability', async () => {
-    // The merge button waits on this answer; the settled 30s cadence kept it dead
-    // long after github.com had finished its merge test.
-    const list = branches('open', 'success');
-    list.pullRequest = { ...list.pullRequest!, mergeable: null };
-    const getBranches = jest.fn().mockResolvedValue(list);
-    const client = { getBranches } as unknown as VerityClient;
-    renderHook(() => useBranches(client, 's'));
-    await advance(0);
-    await advance(4_999);
-    expect(getBranches).toHaveBeenCalledTimes(1);
-    await advance(1);
-    expect(getBranches).toHaveBeenCalledTimes(2);
-  });
+  it.each(['open', 'merged', 'closed'] as const)(
+    'refreshes %s PRs on hints without periodic HTTP requests',
+    async (phase) => {
+      const getBranches = jest.fn().mockResolvedValue(branches(phase));
+      const client = { getBranches } as unknown as VerityClient;
+      renderHook(() => useBranches(client, 's'));
+      await advance(0);
+      await advance(60_000);
+      expect(getBranches).toHaveBeenCalledTimes(1);
+      await changed();
+      expect(getBranches).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it('ignores an in-flight background response and pauses until foreground', async () => {
     const slow = deferred<BranchList>();

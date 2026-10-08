@@ -60,7 +60,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 // would resolve `(theme) => …` against `{}` and blow up on `theme.colors.…`.
 // Importing the app's `unistyles` module calls the mock's `StyleSheet.configure`
 // with the real dark/light tokens, populating the registry — mirroring the root
-// layout's `import '../unistyles'` side effect that every screen relies on.
+// entry's `import './unistyles'` side effect that every screen relies on.
 import './unistyles';
 
 // Raise the default async-query timeout (RNTL default is 1000 ms). The screens

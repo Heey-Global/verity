@@ -1,6 +1,7 @@
 import {
   mergeSessionPreviewUrls,
   nextProjectPreviewLinks,
+  publicPreviewSessionIds,
   type SessionPreviewLink,
 } from './sessionPreviewLinks';
 
@@ -51,5 +52,18 @@ describe('mergeSessionPreviewUrls', () => {
   it('marks a public share without an origin yet', () => {
     const merged = mergeSessionPreviewUrls(new Map([['p1', [link('s1', null)]]]), new Map(), NOW);
     expect(merged.get('s1')).toBeNull();
+  });
+});
+
+describe('publicPreviewSessionIds', () => {
+  it('marks a public share even when the merged URL is the local one', () => {
+    const publicLinks = new Map([['p1', [link('s1', 'https://public'), link('s2', null)]]]);
+    // s2 has no origin yet but is already reachable online; the row should say so.
+    expect(publicPreviewSessionIds(publicLinks, NOW)).toEqual(new Set(['s1', 's2']));
+  });
+
+  it('drops a public share once it has expired', () => {
+    const publicLinks = new Map([['p1', [link('s1', 'https://public', NOW - 1)]]]);
+    expect(publicPreviewSessionIds(publicLinks, NOW).size).toBe(0);
   });
 });

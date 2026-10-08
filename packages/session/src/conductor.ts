@@ -443,12 +443,20 @@ export interface TurnPreparationContext {
 
 export interface ConductorDeps {
   store: EventStore;
+  /** A session changed in a way no event records: it started or stopped
+   * working, or received an automatic name. Lets live overviews refresh the row.
+   * Must not throw; called synchronously. */
+  onSessionChanged?: ((sessionId: string, change: 'activity' | 'name') => void) | undefined;
   /** Project overview.md contents for a fresh backend context. */
   projectOverview?: ((projectId: string) => Promise<string | undefined>) | undefined;
   /** Durable Verity-owned system context selected from the persisted session.
    * Evaluated whenever a fresh backend context starts, so an empty session can
    * receive hidden capabilities on its first real turn without a synthetic turn. */
   sessionSystemPrompt?: ((session: SessionRecord) => string | Promise<string>) | undefined;
+  /** The "Assigned tasks" section for a session (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md
+   * §6.2). Rebuilt on EVERY turn, resumed contexts included, so compaction or a
+   * backend switch cannot lose the list; empty when nothing is assigned. */
+  assignedTasksPrompt?: ((session: SessionRecord) => string | Promise<string>) | undefined;
   /** Secret alias NAMES eligible for `verity_http_request` / `verity_secret_run` in a
    * project (ADR 0011 D3); best-effort — failures or absence simply omit the list from
    * the turn context. Backend-independent: the names reach every ACP backend that can
@@ -677,10 +685,26 @@ export interface TurnOptions {
   attachments?: readonly AttachmentUpload[] | undefined;
 }
 
-export interface DispatchTurnOptions {
+/** Who a prompt came from: a linked peer session, and/or the local user the turn
+ * runs for (ADR 0023 §2). Both are durable provenance on the `prompt` event, set
+ * by the server and never taken from a request body. */
+export interface PromptOrigin {
+  peer?: { sessionId: string; projectId: string; label: string; message: string };
+  initiatedBy?: { userId: string };
+}
+
+/** Copy only the provenance fields that are set, so a persisted event carries no
+ * explicit `undefined` keys. */
+function originFields(origin: PromptOrigin): PromptOrigin {
+  return {
+    ...(origin.peer ? { peer: origin.peer } : {}),
+    ...(origin.initiatedBy ? { initiatedBy: origin.initiatedBy } : {}),
+  };
+}
+
+export interface DispatchTurnOptions extends PromptOrigin {
   /** Transcript text to show for this turn when it differs from the backend prompt. */
   displayPrompt?: string;
-  peer?: { sessionId: string; projectId: string; label: string; message: string };
   /** Client-minted idempotency key (ADR 0008). A background-woken app can be
    * suspended by iOS before it reads the 202 and re-flush the same quick reply on
    * the next foreground; keyed dispatches dedupe so the replay returns the prior
@@ -695,13 +719,12 @@ export interface DispatchTurnOptions {
   planningRevision?: number;
 }
 
-interface QueuedConductorTurn {
+interface QueuedConductorTurn extends PromptOrigin {
   /** Durable queue row id. Undefined for prompts already persisted in the event log. */
   id?: string;
   prompt: string;
   opts: TurnOptions;
   displayPrompt?: string;
-  peer?: { sessionId: string; projectId: string; label: string; message: string };
   /** Stored attachment refs used by queue-status consumers for lightweight previews. */
   displayAttachments?: Attachment[];
   /** True when recovery is replaying a tail prompt event and must not append it again. */
@@ -1329,6 +1352,7 @@ export class Conductor {
       runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
     }
     runOpts.appendSystemPrompt += this.projectKnowledgePrompt(session);
+    runOpts.appendSystemPrompt += await this.assignedTasksPrompt(session);
     runOpts.appendSystemPrompt = withBackendSystemPrompt(
       runOpts.appendSystemPrompt,
       backend,
@@ -1779,7 +1803,7 @@ export class Conductor {
         this.parkWhenIdle(sessionId, guarded);
         return;
       }
-      this.inFlight.add(sessionId);
+      this.markInFlight(sessionId);
       this.maintenanceLocks.add(sessionId);
       try {
         await fn();
@@ -1830,7 +1854,7 @@ export class Conductor {
     fn: () => Promise<T>,
   ): Promise<{ ran: true; value: T } | { ran: false }> {
     if (this.inFlight.has(sessionId)) return { ran: false };
-    this.inFlight.add(sessionId);
+    this.markInFlight(sessionId);
     this.maintenanceLocks.add(sessionId);
     try {
       return { ran: true, value: await fn() };
@@ -1899,7 +1923,7 @@ export class Conductor {
       // this barrier exists to prevent, in its least visible form. Refusing costs a
       // retriable 409 and nothing else.
       if (this.inFlight.has(sessionId)) throw new SessionBusyError(sessionId);
-      this.inFlight.add(sessionId);
+      this.markInFlight(sessionId);
       this.maintenanceLocks.add(sessionId);
       try {
         return await fn();
@@ -2045,8 +2069,21 @@ export class Conductor {
   }
 
   /** Release this session's turn lock and run actions waiting on that exact boundary. */
+  private markInFlight(sessionId: string): void {
+    this.inFlight.add(sessionId);
+    this.sessionChanged(sessionId, 'activity');
+  }
+
+  private sessionChanged(sessionId: string, change: 'activity' | 'name'): void {
+    try {
+      this.deps.onSessionChanged?.(sessionId, change);
+    } catch {
+      // An observer must never affect the turn.
+    }
+  }
+
   private releaseInFlight(sessionId: string): void {
-    this.inFlight.delete(sessionId);
+    if (this.inFlight.delete(sessionId)) this.sessionChanged(sessionId, 'activity');
     this.runningPlanning.delete(sessionId);
     // The fence dropping IS the recovery from an unconfirmed stop, whichever path got
     // there (reaper, late run-loop settle, or the liveness sweep).
@@ -3158,7 +3195,7 @@ export class Conductor {
         // The seq counter orders by append time, not logical time, so under extreme
         // store contention the prompt could theoretically land just after the reply
         // — a transcript blemish, never a lost turn (the message is already in claude).
-        void this.persistSteeredPrompt(sessionId, displayPrompt, opts, dispatchOpts.peer);
+        void this.persistSteeredPrompt(sessionId, displayPrompt, opts, originFields(dispatchOpts));
         return { queued: false };
       }
       if (this.stopping.has(sessionId)) throw new SessionBusyError(sessionId);
@@ -3175,7 +3212,7 @@ export class Conductor {
         const storedOpts = await this.toStorableOpts(
           opts,
           displayPrompt === prompt ? undefined : displayPrompt,
-          dispatchOpts.peer,
+          originFields(dispatchOpts),
         );
         const input = { id, sessionId, prompt, opts: storedOpts };
         if (dispatchOpts.planningRevision !== undefined) {
@@ -3197,7 +3234,7 @@ export class Conductor {
           prompt,
           opts,
           ...(displayPrompt !== prompt ? { displayPrompt } : {}),
-          ...(dispatchOpts.peer ? { peer: dispatchOpts.peer } : {}),
+          ...originFields(dispatchOpts),
           ...(storedOpts.attachments !== undefined
             ? { displayAttachments: storedOpts.attachments }
             : {}),
@@ -3223,7 +3260,7 @@ export class Conductor {
     const session = await this.accept(sessionId, prompt, opts); // lock held on success
     this.launchAcceptedTurn(sessionId, prompt, session, opts, displayPrompt, {
       persistPrompt: true,
-      ...(dispatchOpts.peer ? { peer: dispatchOpts.peer } : {}),
+      ...originFields(dispatchOpts),
     });
     return { queued: false };
   }
@@ -3269,7 +3306,7 @@ export class Conductor {
       dispatchOpts.displayPrompt ?? prompt,
       {
         persistPrompt: true,
-        ...(dispatchOpts.peer ? { peer: dispatchOpts.peer } : {}),
+        ...originFields(dispatchOpts),
       },
     );
     return { accepted: true };
@@ -3281,10 +3318,9 @@ export class Conductor {
     session: SessionRecord,
     opts: TurnOptions,
     displayPrompt: string,
-    launchOpts: {
+    launchOpts: PromptOrigin & {
       persistPrompt: boolean;
       autoResumeCount?: number;
-      peer?: { sessionId: string; projectId: string; label: string; message: string };
     },
   ): void {
     // Register the in-flight handle synchronously so the operator can cancel/steer
@@ -3306,7 +3342,7 @@ export class Conductor {
           displayPrompt,
           await this.storeAttachments(opts.attachments),
           false,
-          launchOpts.peer,
+          originFields(launchOpts),
         );
         this.maybeAutoTitle(sessionId); // name from the prompt now, concurrently with the turn
       }
@@ -3612,7 +3648,7 @@ export class Conductor {
           ...(row.opts.displayPrompt !== undefined
             ? { displayPrompt: row.opts.displayPrompt }
             : {}),
-          ...(row.opts.peer ? { peer: row.opts.peer } : {}),
+          ...originFields(row.opts),
         });
         this.queues.set(row.sessionId, queue);
         sessions.add(row.sessionId);
@@ -3657,7 +3693,7 @@ export class Conductor {
           // Step 5: bounded discovery — the Runner's fate is unknown, so do NOT
           // interrupt, do NOT re-run, and KEEP the marker for a later pass to resolve.
           // A surviving turn is never inferred only from the event tail.
-          this.inFlight.add(marker.sessionId);
+          this.markInFlight(marker.sessionId);
           this.uncertainRecovery.add(marker.sessionId);
           this.scheduleUncertainRecovery(marker);
           handled.add(marker.sessionId);
@@ -4255,7 +4291,7 @@ export class Conductor {
       // Claim the recovered turn BEFORE resolving its project backend. A Sandbox
       // repair consults this in-flight set; taking the lock later left a gap where
       // it could recreate the container between discovery and `runner.attach()`.
-      this.inFlight.add(marker.sessionId);
+      this.markInFlight(marker.sessionId);
       handle = new SessionTurnHandle();
       handle.markerSeq = marker.promptSeq;
       this.turns.set(marker.sessionId, handle);
@@ -4481,7 +4517,7 @@ export class Conductor {
           next.displayPrompt ?? next.prompt,
           {
             persistPrompt: false,
-            ...(next.peer ? { peer: next.peer } : {}),
+            ...originFields(next),
             ...(next.autoResumeCount === undefined
               ? {}
               : { autoResumeCount: next.autoResumeCount }),
@@ -4521,9 +4557,9 @@ export class Conductor {
                   t: 'prompt',
                   text,
                   attachments: [...attachments],
-                  ...(next.peer ? { peer: next.peer } : {}),
+                  ...originFields(next),
                 }
-              : { t: 'prompt', text, ...(next.peer ? { peer: next.peer } : {}) };
+              : { t: 'prompt', text, ...originFields(next) };
           const persisted = await this.deps.store.drainQueuedTurn(next.id, sessionId, event);
           if (!persisted) {
             // The row was already drained/retracted by a concurrent path (run-once
@@ -4534,7 +4570,7 @@ export class Conductor {
           this.deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
           this.launchAcceptedTurn(sessionId, next.prompt, session, next.opts, text, {
             persistPrompt: false,
-            ...(next.peer ? { peer: next.peer } : {}),
+            ...originFields(next),
           });
         } catch (error) {
           // The atomic drain rolled back (row still durable, prompt not persisted).
@@ -4620,7 +4656,7 @@ export class Conductor {
           const publicSessionId = opts.sessionId ?? sessionId;
           boundId = publicSessionId;
           this.starting.delete(opts.worktree); // bound → release the start lock
-          this.inFlight.add(publicSessionId); // serialize turns against the still-running spawn
+          this.markInFlight(publicSessionId); // serialize turns against the still-running spawn
           this.runningPlanning.set(publicSessionId, false);
           this.turns.set(publicSessionId, handle); // operator can cancel/steer now (#79/#101)
           // The session row exists now (either preallocated by the server or
@@ -4693,6 +4729,7 @@ export class Conductor {
           if (session !== undefined) {
             runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
             runOpts.appendSystemPrompt += this.projectKnowledgePrompt(session);
+            runOpts.appendSystemPrompt += await this.assignedTasksPrompt(session);
             contextProjectId = session.projectId;
           }
         }
@@ -4824,7 +4861,7 @@ export class Conductor {
     // (attachment, empty prompt) is valid content and passes.
     if (!turnHasContent(prompt, opts)) throw new Error('turn must have a prompt or an attachment');
     if (this.inFlight.has(sessionId)) throw new SessionBusyError(sessionId);
-    this.inFlight.add(sessionId);
+    this.markInFlight(sessionId);
     try {
       const session = await this.deps.store.getSession(sessionId);
       if (!session) throw new UnknownSessionError(sessionId);
@@ -4875,7 +4912,7 @@ export class Conductor {
   private async toStorableOpts(
     opts: TurnOptions,
     displayPrompt?: string,
-    peer?: { sessionId: string; projectId: string; label: string; message: string },
+    origin: PromptOrigin = {},
   ): Promise<QueuedTurnOpts> {
     const attachments = await this.storeAttachments(opts.attachments);
     return {
@@ -4886,7 +4923,7 @@ export class Conductor {
       ...(opts.disallowedTools !== undefined ? { disallowedTools: [...opts.disallowedTools] } : {}),
       ...(attachments !== undefined ? { attachments } : {}),
       ...(displayPrompt !== undefined ? { displayPrompt } : {}),
-      ...(peer ? { peer } : {}),
+      ...originFields(origin),
     };
   }
 
@@ -4938,7 +4975,7 @@ export class Conductor {
     text: string,
     attachments?: readonly Attachment[],
     steered = false,
-    peer?: { sessionId: string; projectId: string; label: string; message: string },
+    origin: PromptOrigin = {},
   ): Promise<void> {
     const event =
       attachments && attachments.length > 0
@@ -4947,13 +4984,13 @@ export class Conductor {
             text,
             attachments: [...attachments],
             ...(steered ? { steered } : {}),
-            ...(peer ? { peer } : {}),
+            ...originFields(origin),
           }
         : {
             t: 'prompt' as const,
             text,
             ...(steered ? { steered } : {}),
-            ...(peer ? { peer } : {}),
+            ...originFields(origin),
           };
     const { seq, ts } = await this.deps.store.appendEvent(sessionId, event);
     this.deps.bus?.publish(sessionId, { seq, ts, event });
@@ -4971,7 +5008,7 @@ export class Conductor {
     sessionId: string,
     prompt: string,
     opts: TurnOptions,
-    peer?: { sessionId: string; projectId: string; label: string; message: string },
+    origin: PromptOrigin = {},
   ): Promise<void> {
     try {
       await this.emitPrompt(
@@ -4979,7 +5016,7 @@ export class Conductor {
         prompt,
         await this.storeAttachments(opts.attachments),
         true,
-        peer,
+        origin,
       );
     } catch (error) {
       this.reportTurnError(sessionId, error);
@@ -5279,6 +5316,7 @@ export class Conductor {
             // auto-titling never clobbers a manual rename. If the operator took over the
             // name, don't auto-derive a branch either — they're driving.
             const named = await this.deps.store.renameSessionIfUnnamed(sessionId, title);
+            if (named) this.sessionChanged(sessionId, 'name');
             if (named && autoTitle.onBranchName !== undefined) {
               // Contained per the `onBranchName` contract ("the conductor never lets
               // hook failures affect turns"). The title is already persisted at this
@@ -5377,6 +5415,12 @@ export class Conductor {
     const memory = settings?.memory?.trim();
     if (memory === undefined || memory.length === 0) return '';
     return `\n\n## Project memory (operator-curated; may be stale — verify before relying on it)\n${memory}`;
+  }
+
+  /** The per-turn "Assigned tasks" section, framed like the other appended blocks. */
+  private async assignedTasksPrompt(session: SessionRecord): Promise<string> {
+    const prompt = (await this.deps.assignedTasksPrompt?.(session))?.trim();
+    return prompt ? `\n\n${prompt}` : '';
   }
 
   private projectKnowledgePrompt(session: SessionRecord): string {

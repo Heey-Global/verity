@@ -1,4 +1,10 @@
-import { VerityClient, decodeStreamMessage, SessionStream, SessionModel } from '@verity/mobile';
+import {
+  LiveConnection,
+  VerityClient,
+  decodeLiveServerFrame,
+  SessionStream,
+  SessionModel,
+} from '@verity/mobile';
 import { DEMO_BASE_URL, demoFetch, createDemoSocket, resetDemoData } from './demoTransport';
 
 function requiredVersion(file: { version?: string }): string {
@@ -13,6 +19,44 @@ const client = () =>
     uploadFetch: demoFetch,
     allowBackgroundUpload: false,
   });
+
+const LIVE_URL = `${DEMO_BASE_URL.replace('https', 'wss')}/live`;
+
+/** A raw demo live socket that records every frame and can subscribe. */
+function openDemoLive(): {
+  socket: ReturnType<typeof createDemoSocket>;
+  frames: Record<string, unknown>[];
+  subscribe: (id: string, sinceSeq?: number) => void;
+} {
+  const socket = createDemoSocket(LIVE_URL);
+  const frames: Record<string, unknown>[] = [];
+  socket.addEventListener('message', ({ data }) => {
+    const decoded = decodeLiveServerFrame(String(data));
+    if (!decoded.ok) throw new Error(`invalid demo frame: ${decoded.error}`);
+    frames.push(decoded.frame as Record<string, unknown>);
+  });
+  return {
+    socket,
+    frames,
+    subscribe: (id, sinceSeq) =>
+      socket.send(
+        JSON.stringify({
+          k: 'sub',
+          ch: 'session',
+          id,
+          ...(sinceSeq === undefined ? {} : { sinceSeq }),
+        }),
+      ),
+  };
+}
+
+function demoLive(api: VerityClient): LiveConnection {
+  return new LiveConnection({
+    baseUrl: DEMO_BASE_URL,
+    connect: createDemoSocket,
+    getTicket: async () => (await api.createLiveTicket()).ticket,
+  });
+}
 
 beforeEach(() => {
   jest.useFakeTimers();
@@ -72,23 +116,21 @@ it('streams schema-valid replies and changes a local file without calling networ
     const { sessionId } = (await api.createSession({ sessionId: 'new-demo', name: 'My demo' })) as {
       sessionId: string;
     };
-    const socket = createDemoSocket(
-      `${DEMO_BASE_URL.replace('https', 'wss')}/sessions/${sessionId}/stream`,
-    );
-    const frames: ReturnType<typeof decodeStreamMessage>[] = [];
-    socket.addEventListener('message', ({ data }) =>
-      frames.push(decodeStreamMessage(String(data))),
-    );
+    const live = openDemoLive();
+    jest.advanceTimersByTime(0);
+    live.subscribe(sessionId);
     jest.advanceTimersByTime(0);
     expect((await api.sendTurn(sessionId, { prompt: 'Change the button color' })).accepted).toBe(
       true,
     );
     expect((await api.getActivity(sessionId)).busy).toBe(true);
     jest.advanceTimersByTime(2000);
-    expect(frames.every((frame) => frame.ok)).toBe(true);
     expect(
-      frames.some(
-        (frame) => frame.ok && frame.frame.k === 'event' && frame.frame.event.t === 'tool_call',
+      live.frames.some(
+        (frame) =>
+          frame.k === 'event' &&
+          frame.id === sessionId &&
+          (frame.event as { t: string }).t === 'tool_call',
       ),
     ).toBe(true);
     expect((await api.getSessionFileContent(sessionId, 'src/Button.tsx')).content).toContain(
@@ -96,75 +138,70 @@ it('streams schema-valid replies and changes a local file without calling networ
     );
     expect((await api.getActivity(sessionId)).busy).toBe(false);
     expect(network).not.toHaveBeenCalled();
-    socket.close();
+    live.socket.close();
   } finally {
     network.mockRestore();
   }
 });
-
 it('cancel and reset prevent delayed mutations and retire old sockets', async () => {
   const api = client();
   const id = (await api.listSessions())[0]!.sessionId;
-  const socket = createDemoSocket(`${DEMO_BASE_URL.replace('https', 'wss')}/sessions/${id}/stream`);
-  const received = jest.fn();
-  socket.addEventListener('message', received);
+  const live = openDemoLive();
+  jest.advanceTimersByTime(0);
+  live.subscribe(id);
   jest.advanceTimersByTime(0);
   await api.sendTurn(id, { prompt: 'Change the button color' });
   expect((await api.cancelTurn(id)).cancelled).toBe(true);
-  const count = received.mock.calls.length;
+  const count = live.frames.length;
   jest.advanceTimersByTime(5000);
-  expect(received).toHaveBeenCalledTimes(count);
+  expect(live.frames).toHaveLength(count);
   expect((await api.getSessionFileContent(id, 'src/Button.tsx')).content).toContain('#2563eb');
   await api.sendTurn(id, { prompt: 'Change the button color' });
   resetDemoData();
-  const resetCount = received.mock.calls.length;
+  const resetCount = live.frames.length;
   const resetId = (await api.listSessions())[0]!.sessionId;
   expect(resetId).not.toBe(id);
   jest.advanceTimersByTime(5000);
-  expect(received).toHaveBeenCalledTimes(resetCount);
+  expect(live.frames).toHaveLength(resetCount);
   expect((await api.getActivity(resetId)).busy).toBe(false);
   expect((await api.getSessionFileContent(resetId, 'src/Button.tsx')).content).toContain('#2563eb');
 });
-
 it('supports stream lifecycle and resumes without duplicating old events', async () => {
   const api = client();
   const id = (await api.listSessions())[0]!.sessionId;
   const seq = (await api.getSession(id)).eventCount;
-  const stream = new SessionStream({
-    baseUrl: DEMO_BASE_URL,
-    sessionId: id,
-    connect: createDemoSocket,
-    getStreamTicket: async () => (await api.createStreamTicket(id)).ticket,
-  });
-  await stream.start();
-  jest.advanceTimersByTime(0);
+  const connection = demoLive(api);
+  const stream = new SessionStream({ sessionId: id, transport: connection });
+  connection.start();
+  stream.start();
+  await jest.advanceTimersByTimeAsync(0);
   stream.stop();
+  connection.stop();
   expect(jest.getTimerCount()).toBe(0);
-  const socket = createDemoSocket(
-    `${DEMO_BASE_URL.replace('https', 'wss')}/sessions/${id}/stream?sinceSeq=${seq}`,
-  );
-  const frames: unknown[] = [];
-  socket.addEventListener('message', ({ data }) => frames.push(JSON.parse(String(data))));
+  const live = openDemoLive();
   jest.advanceTimersByTime(0);
-  expect(frames).toEqual([{ k: 'caught_up', seq }]);
-  socket.close();
+  live.subscribe(id, seq);
+  jest.advanceTimersByTime(0);
+  expect(live.frames).toEqual([
+    { k: 'ready', v: 1, maxSessions: 8, resources: true },
+    { k: 'caught_up', id, seq },
+  ]);
+  live.socket.close();
 });
-
 it('replays history before a turn submitted while the stream is opening', async () => {
   const api = client();
   const id = (await api.listSessions())[0]!.sessionId;
-  const socket = createDemoSocket(`${DEMO_BASE_URL.replace('https', 'wss')}/sessions/${id}/stream`);
-  const frames: { k: string; seq: number }[] = [];
-  socket.addEventListener('message', ({ data }) => frames.push(JSON.parse(String(data))));
+  const live = openDemoLive();
+  jest.advanceTimersByTime(0);
+  live.subscribe(id);
   await api.sendTurn(id, { prompt: 'Explain the project' });
-  expect(frames).toEqual([]);
+  expect(live.frames.filter(({ k }) => k !== 'ready')).toEqual([]);
   jest.advanceTimersByTime(0);
   const expected = (await api.getHistory(id)).events.map(({ seq }) => seq);
-  expect(frames.filter(({ k }) => k === 'event').map(({ seq }) => seq)).toEqual(expected);
-  expect(frames.at(-1)).toEqual({ k: 'caught_up', seq: expected.at(-1) });
-  socket.close();
+  expect(live.frames.filter(({ k }) => k === 'event').map(({ seq }) => seq)).toEqual(expected);
+  expect(live.frames.at(-1)).toEqual({ k: 'caught_up', id, seq: expected.at(-1) });
+  live.socket.close();
 });
-
 it('rejects unsupported operations and foreign addresses locally', async () => {
   await expect(
     client().connectGoogleDrive({ code: 'demo', codeVerifier: 'demo', redirectUri: 'demo://' }),
@@ -175,15 +212,12 @@ it('rejects unsupported operations and foreign addresses locally', async () => {
 it('feeds the real session model, including local echoes, tool cards and approval decisions', async () => {
   const api = client();
   const id = (await api.listSessions())[0]!.sessionId;
-  const model = new SessionModel({
-    client: api,
-    sessionId: id,
-    baseUrl: DEMO_BASE_URL,
-    connect: createDemoSocket,
-    getStreamTicket: async () => (await api.createStreamTicket(id)).ticket,
-  });
+  const connection = demoLive(api);
+  connection.start();
+  const model = new SessionModel({ client: api, sessionId: id, transport: connection });
   model.start();
-  await jest.advanceTimersByTimeAsync(0);
+  // Ticket, `ready`, then the replay: each waits on one more of the demo's timers.
+  for (let i = 0; i < 5; i += 1) await jest.advanceTimersByTimeAsync(1);
   expect(model.state.connectionState).toBe('connected');
   expect(model.state.streamError).toBeUndefined();
   expect(model.state.session.messages.length).toBeGreaterThan(0);
@@ -198,6 +232,7 @@ it('feeds the real session model, including local echoes, tool cards and approva
   await model.decidePermission(activity.pendingPermissions![0]!, { behavior: 'allow' });
   expect((await api.getActivity(id)).busy).toBe(false);
   model.stop();
+  connection.stop();
   expect(jest.getTimerCount()).toBe(0);
 });
 
@@ -325,4 +360,18 @@ it('walks through proposing, confirming, pausing, and deleting an automation', a
   await api.deleteSessionAutomation(id);
   expect(await api.getSessionAutomation(id)).toBeNull();
   expect((await api.listSessionOverview()).sessions[0]?.automation).toBeUndefined();
+});
+
+it('invalidates watched project data when its fold state changes', async () => {
+  jest.useFakeTimers();
+  const api = new VerityClient({ baseUrl: DEMO_BASE_URL, fetch: demoFetch });
+  const projects = await api.listProjects();
+  const live = openDemoLive();
+  live.socket.send(JSON.stringify({ k: 'watch', resource: { path: '/projects' } }));
+  jest.advanceTimersByTime(0);
+  live.frames.length = 0;
+  await api.setProjectCollapsed(projects[0]!.id, true);
+  expect(live.frames).toContainEqual({ k: 'invalidate', path: '/projects' });
+  expect((await api.listProjects())[0]?.collapsed).toBe(true);
+  live.socket.close();
 });

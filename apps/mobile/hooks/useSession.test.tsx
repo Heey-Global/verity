@@ -10,6 +10,8 @@ interface MockModel {
   stop: jest.Mock;
   pause: jest.Mock;
   resume: jest.Mock;
+  setView: jest.Mock;
+  refreshActivity: jest.Mock;
 }
 const mockModels: MockModel[] = [];
 jest.mock('@verity/mobile', () => ({
@@ -22,12 +24,27 @@ jest.mock('@verity/mobile', () => ({
       stop: jest.fn(),
       pause: jest.fn(),
       resume: jest.fn(),
+      setView: jest.fn(),
+      refreshActivity: jest.fn(),
     };
     mockModels.push(model);
     return model;
   }),
 }));
-jest.mock('../lib/socket', () => ({ createWebSocket: jest.fn() }));
+const mockHintListeners: ((hints: { sessionId: string; topics: string[] }[]) => void)[] = [];
+jest.mock('../lib/liveConnection', () => ({
+  liveConnectionFor: jest.fn(() => ({})),
+  useLiveHints: (_baseUrl: string, listener: (hints: unknown[]) => void) => {
+    mockHintListeners.push(listener);
+  },
+  subscribeLiveRefresh: () => () => {},
+}));
+jest.mock('expo-router', () => ({
+  useFocusEffect: (callback: () => (() => void) | undefined) => {
+    const React = require('react') as typeof import('react');
+    React.useEffect(() => callback(), [callback]);
+  },
+}));
 
 function emit(model: MockModel, name: string): void {
   model.state = { ...model.state, name, loaded: true };
@@ -148,6 +165,25 @@ describe('useSession frame publication', () => {
     act(() => emit(current, 'new tail'));
     paint();
     expect(hook.result.current.name).toBe('new tail');
+    hook.unmount();
+  });
+
+  it('marks the session as viewed while focused, so its own notifications stay quiet', () => {
+    const hook = renderHook(() => useSession(client, 's1', 'http://host'));
+    const model = mockModels[0]!;
+    expect(model.setView).toHaveBeenLastCalledWith(true);
+    hook.unmount();
+    expect(model.setView).toHaveBeenLastCalledWith(false);
+  });
+
+  it('refreshes the activity snapshot when a hint says it changed, not for every event', () => {
+    mockHintListeners.length = 0;
+    const hook = renderHook(() => useSession(client, 's1', 'http://host'));
+    const model = mockModels[0]!;
+    act(() => mockHintListeners.at(-1)?.([{ sessionId: 's1', topics: ['events'] }]));
+    expect(model.refreshActivity).not.toHaveBeenCalled();
+    act(() => mockHintListeners.at(-1)?.([{ sessionId: 's1', topics: ['events', 'status'] }]));
+    expect(model.refreshActivity).toHaveBeenCalledTimes(1);
     hook.unmount();
   });
 });

@@ -1247,6 +1247,29 @@ describe('EventStore — sessions', () => {
     });
   });
 
+  describe('setSessionFavorite', () => {
+    it('marks and unmarks a favorite, visible through getSession and listSessions', async () => {
+      await ctx.store.createSession(session);
+      expect((await ctx.store.getSession('s1'))?.favorite).toBeUndefined();
+
+      expect(await ctx.store.setSessionFavorite('s1', true)).toBe(true);
+      expect((await ctx.store.getSession('s1'))?.favorite).toBe(true);
+      expect((await ctx.store.listSessions()).find((s) => s.sessionId === 's1')?.favorite).toBe(
+        true,
+      );
+
+      expect(await ctx.store.setSessionFavorite('s1', false)).toBe(true);
+      expect((await ctx.store.getSession('s1'))?.favorite).toBeUndefined();
+      expect(
+        (await ctx.store.listSessions()).find((s) => s.sessionId === 's1')?.favorite,
+      ).toBeUndefined();
+    });
+
+    it('returns false for an unknown session (no row matched)', async () => {
+      expect(await ctx.store.setSessionFavorite('missing', true)).toBe(false);
+    });
+  });
+
   describe('renameSessionIfUnnamed (auto-title guarded write)', () => {
     it('names a session that is still unnamed and reports it did', async () => {
       await ctx.store.createSession(session); // name defaults to null

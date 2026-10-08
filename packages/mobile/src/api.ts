@@ -1,4 +1,5 @@
-import { selectedOpenCodeModels } from '@verity/events';
+import { taskSchema, type Task, type TaskCapture, type TaskPatch } from './tasks.js';
+import { liveResourceInterval, type LiveResource, selectedOpenCodeModels } from '@verity/events';
 import {
   agentEventSchema,
   attachmentSchema,
@@ -95,6 +96,9 @@ export const sessionSummarySchema = z.object({
   name: z.string().nullable(),
   /** Project binding for multi-repo fleet sessions (#174). Older servers omit it. */
   projectId: z.string().nullable().optional(),
+  /** Operator-marked favorite, highlighted in the session list. ABSENT means not a
+   * favorite — servers omit it for unmarked sessions, and older servers never send it. */
+  favorite: z.boolean().optional(),
   status: sessionStatusSchema,
   /** Tool-use ids currently waiting for permission. Optional for compatibility
    * with older servers. */
@@ -118,6 +122,10 @@ export const sessionSummarySchema = z.object({
    * looked up, no open PR; ABSENT = older server OR GitHub not configured (no
    * token/remote) — both render as "no PR marker". */
   pr: sessionPrSchema.nullable().optional(),
+  /** The worktree's current branch, so the overview can show the session's issue
+   * (`<type>/<issue>-<slug>`). ABSENT on an older server, while the server's label
+   * is cold, or once the worktree is gone — all read as "no issue". */
+  branch: z.string().optional(),
   /** Persisted events excluding dev-server snapshots — the overview compares this
    * against the server-persisted "last seen" mark for the unread dot. OPTIONAL on
    * the wire: an OLDER server omits it on the list, and absent simply reads as "no
@@ -1380,6 +1388,12 @@ const sessionRenamedSchema = z.object({
 });
 export type SessionRenamed = z.infer<typeof sessionRenamedSchema>;
 
+const sessionFavoriteSchema = z.object({
+  sessionId: z.string().min(1),
+  favorite: z.boolean(),
+});
+export type SessionFavorite = z.infer<typeof sessionFavoriteSchema>;
+
 const sessionModelSwitchedSchema = z.object({
   sessionId: z.string().min(1),
   model: z.string().min(1),
@@ -1469,6 +1483,9 @@ export interface TurnRequest {
    * re-flushed from the push outbox after the app was suspended before the 202, so
    * the server dedupes the replay instead of dispatching a second turn. */
   clientReplyId?: string;
+  /** Wait for the active turn instead of steering into it, so this prompt gets its
+   * own reply. Older servers ignore it and steer as before. */
+  queueBehindActiveTurn?: boolean;
 }
 
 export interface MeetingTranscriptUpload {
@@ -1871,6 +1888,19 @@ export type LiveMeetingCommand = z.infer<typeof liveMeetingCommandSchema>;
 export type LiveMeetingInsight = z.infer<typeof liveMeetingInsightSchema>;
 
 export class VerityClient {
+  private readonly observedReads = new Map<string, LiveResource>();
+  private readonly readListeners = new Set<(resource: LiveResource) => void>();
+
+  liveBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  observeReads(listener: (resource: LiveResource) => void): () => void {
+    this.readListeners.add(listener);
+    for (const resource of this.observedReads.values()) listener(resource);
+    return () => this.readListeners.delete(listener);
+  }
+
   async getLiveMeetingInsights(
     sessionId: string,
     meetingId: string,
@@ -3767,10 +3797,10 @@ export class VerityClient {
     return sessionDetailSchema.parse(await res.json());
   }
 
-  async createStreamTicket(id: string): Promise<StreamTicket> {
-    const res = await this.request(`/sessions/${encodeURIComponent(id)}/stream-ticket`, {
-      method: 'POST',
-    });
+  /** A one-use ticket for the app-wide live connection (`WS /live`), carried as
+   * a WebSocket subprotocol so it never appears in a URL. */
+  async createLiveTicket(): Promise<StreamTicket> {
+    const res = await this.request('/live/ticket', { method: 'POST' });
     return streamTicketSchema.parse(await res.json());
   }
 
@@ -4001,6 +4031,17 @@ export class VerityClient {
       body: JSON.stringify({ name }),
     });
     return sessionRenamedSchema.parse(await res.json());
+  }
+
+  /** Mark or unmark a session as a favorite; the mark is stored server-side so it
+   * syncs across devices. */
+  async setSessionFavorite(id: string, favorite: boolean): Promise<SessionFavorite> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ favorite }),
+    });
+    return sessionFavoriteSchema.parse(await res.json());
   }
 
   /** Switch the engine/model a session uses (the operator's pick is persisted, not a
@@ -4309,6 +4350,41 @@ export class VerityClient {
     return permissionDecidedSchema.parse(await res.json());
   }
 
+  async listTasks(): Promise<Task[]> {
+    const res = await this.request('/tasks', { method: 'GET' });
+    return z.object({ tasks: z.array(taskSchema) }).parse(await res.json()).tasks;
+  }
+
+  async saveTask(id: string, body: TaskCapture): Promise<Task> {
+    const res = await this.request(`/tasks/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return z.object({ task: taskSchema }).parse(await res.json()).task;
+  }
+
+  async updateTask(id: string, body: TaskPatch): Promise<Task> {
+    const res = await this.request(`/tasks/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return z.object({ task: taskSchema }).parse(await res.json()).task;
+  }
+
+  async deleteTask(id: string): Promise<void> {
+    await this.request(`/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  async readTaskAttachment(id: string, hash: string): Promise<ArrayBuffer> {
+    const res = await this.request(
+      `/tasks/${encodeURIComponent(id)}/attachments/${encodeURIComponent(hash)}`,
+      { method: 'GET' },
+    );
+    return res.arrayBuffer();
+  }
+
   private async request(
     path: string,
     init: RequestInit,
@@ -4332,6 +4408,20 @@ export class VerityClient {
         ...init,
         headers: { authorization: `Bearer ${token}`, ...(init.headers as Record<string, string>) },
       };
+    }
+    if ((init.method ?? 'GET') === 'GET' && liveResourceInterval(path) !== undefined) {
+      const url = new URL(path, 'http://verity.invalid');
+      url.searchParams.delete('force');
+      url.searchParams.delete('after');
+      const resource: LiveResource = { path: url.pathname + url.search };
+      const ownerToken = (init.headers as Record<string, string> | undefined)?.[
+        'x-meeting-owner-token'
+      ];
+      if (ownerToken) resource.ownerToken = ownerToken;
+      this.observedReads.set(url.pathname, resource);
+      if (this.observedReads.size > 64)
+        this.observedReads.delete(this.observedReads.keys().next().value!);
+      for (const listener of this.readListeners) listener(resource);
     }
     const res = await fetchImpl(`${this.baseUrl}${path}`, init);
     if (!res.ok) {

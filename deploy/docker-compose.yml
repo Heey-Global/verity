@@ -133,7 +133,9 @@ services:
       # Read it as the cgroup v2 weight it becomes (512 -> 20, against a default of
       # 100), not as a fraction of Docker's nominal 1024. 0 restores the default.
       VERITY_SANDBOX_CPU_SHARES: ${VERITY_SANDBOX_CPU_SHARES:-512}
-      VERITY_SANDBOX_PIDS_LIMIT: ${VERITY_SANDBOX_PIDS_LIMIT:-512}
+      VERITY_SANDBOX_PIDS_LIMIT: ${VERITY_SANDBOX_PIDS_LIMIT:-4096}
+      # Updater input: explicitly retain the historical 512 PID limit.
+      VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY: ${VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY:-0}
       # Escape hatch for a project whose devcontainer needs sudo or a capability:
       # VERITY_SANDBOX_ALLOW_PRIVILEGE_ESCALATION: '1'   # keep sudo working
       # VERITY_SANDBOX_CAP_ADD: NET_BIND_SERVICE          # add back specific caps
@@ -319,6 +321,8 @@ services:
       - verity-data:/srv/verity
       - verity-agent-gateway-control:/run/verity-agent-gateway
       - ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}:/run/verity-pairing:ro
+      # Only classified host evidence is shared; raw journals stay on the host.
+      - ${VERITY_HOST_DIAGNOSTIC_DIR:-/var/lib/verity/host-diagnostics}:/run/verity-host-diagnostics:ro
 
     # Grant the non-root `node` user access to the mounted socket without running
     # the container as root. Set this to the GID that owns /var/run/docker.sock
@@ -545,6 +549,7 @@ services:
       VERITY_PROJECT_RELAY_GID: ${VERITY_PROJECT_RELAY_GID:-65532}
       VERITY_RUNNER_RUNTIME_GID: ${VERITY_RUNNER_RUNTIME_GID:-1101}
       VERITY_PAIRING_STATE_HOST_PATH: ${VERITY_PAIRING_STATE_HOST_PATH:-/etc/verity}
+      VERITY_HOST_DIAGNOSTIC_DIR: ${VERITY_HOST_DIAGNOSTIC_DIR:-/var/lib/verity/host-diagnostics}
       VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM: ${VERITY_BOOTSTRAP_ADVANCE_IMAGE_FROM:-}
     volumes:
       - verity-managed-deployment:/var/lib/verity/updater/managed-deployment

@@ -80,6 +80,7 @@ export async function resolveRepoWorktreeFetchAuthHeader(
 }
 
 import { buildControlPlane } from './app.js';
+import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import { createProjectListCache } from './project-list-cache.js';
 import type { ServerDeps, ServerUpdateController } from './server.js';
 import { createAuthTokenRegistry } from './auth.js';
@@ -694,6 +695,8 @@ export interface EmbeddedServerConfig {
    *  `POST /projects/:id/deprovision` become operational. Omit → those routes
    *  return 503 (multi-repo fleet registry not configured). */
   dockerBaseUrl?: string | undefined;
+  diagnosticServerContainerId?: string | undefined;
+  hostDiagnosticSnapshotPath?: string | undefined;
   /** Enable fail-closed Docker/runsc readiness for the production Secret Job Executor path. */
   secretJobRuntimeRequired?: boolean | undefined;
   /** Test seam; production derives this checker from dockerBaseUrl and the pinned runtime config. */
@@ -1977,6 +1980,7 @@ export async function buildEmbeddedServer(
             'verity_start_planning',
             'verity_present_plan',
             'verity_end_planning',
+            'verity_tasks',
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',
@@ -1994,6 +1998,7 @@ export async function buildEmbeddedServer(
             'verity_start_planning',
             'verity_present_plan',
             'verity_end_planning',
+            'verity_tasks',
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',
@@ -4272,6 +4277,12 @@ export async function buildEmbeddedServer(
     listBrokeredGrants: async (projectId) =>
       brokeredHttpGrants.list(projectId, (await brokeredGrantBindingId(projectId)) ?? null),
     revokeBrokeredGrant: (projectId, grantId) => brokeredHttpGrants.revoke(projectId, grantId),
+    runtimeDiagnostics: createRuntimeDiagnostics({
+      dockerBaseUrl: config.dockerBaseUrl,
+      dataRoot: config.dataVolumeRoot,
+      serverContainerId: config.diagnosticServerContainerId,
+      hostSnapshotPath: config.hostDiagnosticSnapshotPath,
+    }),
     ...(secretJobRuntimeReadiness !== undefined ? { secretJobRuntimeReadiness } : {}),
     ...(config.pushEnabled === true
       ? {

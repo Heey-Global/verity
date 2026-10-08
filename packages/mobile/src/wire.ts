@@ -2,11 +2,10 @@ import { agentEventSchema, type AgentEvent } from '@verity/events';
 import { z } from 'zod';
 
 /**
- * The frames the Verity server pushes over `WS /sessions/:id/stream` (server
- * `server.ts`): a sequenced canonical `event`, a `caught_up` watermark once the
- * backlog is drained, or a terminal `error`. The mobile reducer consumes these
- * to rebuild a session's transcript; `seq` drives the reconnect cursor
- * (`?sinceSeq=N`) and dedup, exactly as the server emits it.
+ * A session's transcript frames as the mobile reducer consumes them: a
+ * sequenced canonical `event`, a `caught_up` watermark once the backlog is
+ * drained, or an `error`. The live connection (`WS /live`) delivers the events
+ * per subscribed session; `seq` drives the resume cursor and dedup.
  */
 export const streamFrameSchema = z.discriminatedUnion('k', [
   z.object({

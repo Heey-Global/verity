@@ -1,8 +1,8 @@
 # Verity Server image — the standalone control-plane an operator installs to run
-# Verity on any host (ADR 0003, Phase A). API-only: the compiled Fastify server
-# (packages/server -> dist) on a minimal Node 24 base, plus the `docker` CLI and
+# Verity on any host (ADR 0003, Phase A). The compiled Fastify server
+# (packages/server -> dist) and static browser client on a minimal Node 24 base, plus the `docker` CLI and
 # `git` the runtime needs to clone repos and spawn sibling project containers.
-# The Expo mobile app is the client; no web build ships here.
+# The shared Expo client is exported for the browser and served under /app/.
 #
 # Multi-stage:
 #   builder    -> npm ci (whole monorepo) + tsc -b  => packages/*/dist
@@ -17,7 +17,7 @@
 # Stage 1: builder — compile the TypeScript monorepo.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS builder-deps
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS builder-deps
 
 WORKDIR /app
 
@@ -69,6 +69,13 @@ COPY features features
 # stale incremental metadata from an older source layer.
 RUN npm run build -- --force
 
+# Export only browser assets; Expo dependencies stay out of the runtime image.
+FROM builder-deps AS web-builder
+COPY packages/events packages/events
+COPY packages/mobile packages/mobile
+COPY apps/mobile apps/mobile
+RUN CI=1 EXPO_NO_TELEMETRY=1 npm run build:web --workspace @verity/mobile-app -- --max-workers 1
+
 # ---------------------------------------------------------------------------
 # Stage 2: deps — production-only node_modules, scoped to the server workspace.
 # ---------------------------------------------------------------------------
@@ -78,7 +85,7 @@ RUN npm run build -- --force
 # runtime image stays lean. --include-workspace-root keeps root-level runtime
 # deps (there are none today, but it is correct if any are added).
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS deps
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS deps
 
 WORKDIR /app
 
@@ -106,7 +113,7 @@ RUN npm ci --omit=dev --ignore-scripts --workspace=@verity/server --include-work
 # the client binary from the static bundle and the buildx/compose CLI plugins
 # are needed — not dockerd/containerd.
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS docker-cli
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS docker-cli
 
 # The static CLI download version tracks Docker Engine (moby) releases, whose
 # GitHub tags are `docker-v<x.y.z>` — the extractVersion strips that prefix and
@@ -187,7 +194,7 @@ RUN set -eux; \
 # Stage 4: runtime — the shipped image.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS runtime
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS runtime
 
 # git: the provisioner clones project repos on the Server.
 # ca-certificates: TLS to github.com and Docker registries.
@@ -227,7 +234,7 @@ RUN chmod 0755 /usr/local/bin/verity-transcribe-meeting
 # renovate: datasource=npm depName=@devcontainers/cli
 RUN npm install -g @devcontainers/cli@0.89.0
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-RUN npm install -g @anthropic-ai/claude-code@2.1.288
+RUN npm install -g @anthropic-ai/claude-code@2.1.289
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
 RUN npm install -g @agentclientprotocol/claude-agent-acp@0.85.1
 # Harden that install: upstream (through 0.66.0) builds tool-call titles out of
@@ -307,6 +314,7 @@ COPY --from=builder --chown=node:node /app/packages/preview-tunnel/dist ./packag
 COPY --from=builder --chown=node:node /app/packages/server/dist ./packages/server/dist
 COPY --from=builder --chown=node:node /app/packages/server/package.json ./packages/server/package.json
 COPY --from=builder --chown=node:node /app/package.json ./package.json
+COPY --from=web-builder --chown=node:node /app/apps/mobile/dist ./web
 
 # The shared release version, injected by release.yml (semantic-release) as a
 # build-arg, immutable file, and compatibility environment variable. The Server
@@ -385,6 +393,7 @@ ENV GOOGLE_STAGING_CLIENT_ID_DEFAULT=${STAGING_GOOGLE_AUTH_ID}
 # deployment default per ADR 0003 R2.
 ENV NODE_ENV=production
 ENV PORT=8082
+ENV VERITY_WEB_APP_DIR=/app/web
 EXPOSE 8082
 
 # Data root (VERITY_ROOT). The control-plane DB is an external PostgreSQL

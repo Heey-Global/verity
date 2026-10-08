@@ -28,7 +28,7 @@
 # Test / coverage artifacts
 coverage
 
-# Expo / React Native generated native dirs (mobile app is not built here)
+# Expo / React Native generated native dirs (browser export uses source assets only)
 .expo
 apps/*/android
 apps/*/ios

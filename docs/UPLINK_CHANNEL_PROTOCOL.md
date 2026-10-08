@@ -536,11 +536,19 @@ The hosted Uplink owns the persistent attempt budget. The production edge requir
 These credentials are never sent to Core, the connector, or visitors. Deploy the
 hosted budget endpoints and provision these variables before upgrading the edge.
 
-Before verifying a code from either the POST form or a GET PIN link, the edge calls
+Application WebSocket upgrades can authenticate with an existing preview session
+cookie or a `?pin=123456` query parameter. PIN authentication needs no prior HTTP
+login or cookie, allowing server clients to connect directly over WSS. The edge
+removes every `pin` parameter before forwarding the application path and preserves
+other query parameters. Browser origin checks and share expiry still apply.
+
+Before verifying a code from the POST form, a GET PIN link, or a WebSocket upgrade,
+the edge calls
 `POST /internal/preview-pin/<shareId>/begin` with `{}` and Bearer authentication.
 HTTP 200 `{state:"allowed",attemptId,failures}` reserves a verification. The edge
-then calls `/finish` with `{attemptId,valid}`. A cookie is issued only after a correct
-code and HTTP 200 `{state:"allowed"}` from finish. Both endpoints may instead return
+then calls `/finish` with `{attemptId,valid}`. A cookie is issued or a PIN-authenticated
+WebSocket is admitted only after a correct code and HTTP 200 `{state:"allowed"}`
+from finish. Both endpoints may instead return
 HTTP 200 `{state:"cooldown",retryAfterSeconds}` or `{state:"locked"}`. The edge
 returns 429 with Retry-After for cooldown, 403 for lockout, and 503 for unavailable,
 malformed, oversized, timed-out, or non-success responses. Requests have a five-second

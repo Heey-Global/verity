@@ -1,0 +1,104 @@
+name: verity-mobile-production-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      mobile-tag:
+        description: Immutable mobile-vX.Y.0 release to prepare for production
+        required: true
+        type: string
+      production-run-id:
+        description: Existing production build run to finalize without rebuilding or uploading
+        required: false
+        type: string
+
+# Apple build counters and the shared promotion branch must remain serialized.
+# This lock never holds the staging release train.
+concurrency:
+  group: mobile-production-build
+  queue: max
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish-mobile-native:
+    if: inputs.production-run-id == ''
+    uses: ./.github/workflows/mobile-native-build.yml
+    secrets: inherit
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    with:
+      mobile-tag: ${{ inputs.mobile-tag }}
+      variant: production
+
+  finalize-mobile-production:
+    needs: publish-mobile-native
+    if: >-
+      always() && (needs.publish-mobile-native.result == 'success' ||
+      (needs.publish-mobile-native.result == 'skipped' && inputs.production-run-id != ''))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 130
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: write
+    env:
+      MOBILE_TAG: ${{ inputs.mobile-tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+      - name: Verify recovery build provenance
+        if: inputs.production-run-id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PRODUCTION_RUN_ID: ${{ inputs.production-run-id }}
+        run: |
+          set -euo pipefail
+          [[ "$PRODUCTION_RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/${GH_REPO}/actions/runs/${PRODUCTION_RUN_ID}" --jq \
+            '.path == ".github/workflows/mobile-production-build.yml" and .event == "workflow_dispatch" and .head_branch == "main"' | grep -qx true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-production-${{ env.MOBILE_TAG }}
+          path: native-candidates
+          run-id: ${{ inputs.production-run-id || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Wait for verified staging publication
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 240); do
+            state="$(gh release view "$MOBILE_TAG" --json isDraft,assets)"
+            if jq -e '.isDraft == false and any(.assets[]; .name == "native-staging.json")' <<< "$state" >/dev/null; then
+              gh release download "$MOBILE_TAG" --pattern native-staging.json --output "$RUNNER_TEMP/native-staging.json" --clobber
+              jq -e --slurpfile staging "$RUNNER_TEMP/native-staging.json" \
+                '.source == $staging[0].source and .version == $staging[0].version and .product == "mobile-native" and .appId != $staging[0].appId' \
+                native-candidates/native-production.json >/dev/null
+              exit 0
+            fi
+            sleep 30
+          done
+          echo '::error::Staging has not published; retry this job after staging recovery.'
+          exit 1
+
+      - name: Open native production approval
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${MOBILE_TAG#mobile-v}"
+          pr="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq '.[] | select(.merged_at != null and (.title == "chore(main): release mobile '"$version"'" or .title == "chore(release): staging mobile native '"$version"'")) | .number')"
+          [[ "$pr" =~ ^[0-9]+$ ]]
+          jq --argjson releasePr "$pr" '. + {releasePr:$releasePr}' native-candidates/native-production.json > "$RUNNER_TEMP/mobile-production.json"
+          node scripts/production-promotion.ts propose "$RUNNER_TEMP/mobile-production.json"

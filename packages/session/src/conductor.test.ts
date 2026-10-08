@@ -2,6 +2,7 @@ import {
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   AUTONOMY_SYSTEM_PROMPT,
   AUTOMATION_SYSTEM_PROMPT,
+  BREVITY_SYSTEM_PROMPT,
   CHOICES_SYSTEM_PROMPT,
   CODE_REVIEW_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
@@ -10,6 +11,7 @@ import {
   MEMORY_SYSTEM_PROMPT,
   PLANNING_ACTIVE_SYSTEM_PROMPT,
   PLANNING_SYSTEM_PROMPT,
+  TASKS_RESUME_SYSTEM_PROMPT,
   PULL_REQUEST_SYSTEM_PROMPT,
   REPO_CONVENTIONS_SYSTEM_PROMPT,
   SANDBOX_NOT_READY_ERROR_KIND,
@@ -86,7 +88,7 @@ const ZERO_USAGE = {
 
 /**
  * The compact directive set a resumed turn carries, enumerated rather than
- * imported: `RESUME_SYSTEM_PROMPT` is module-private to the conductor, and
+ * imported: the conductor consumes `RESUME_SYSTEM_PROMPT`, and
  * restating its membership here is the point — a fragment joining or leaving the
  * set has to be a two-file change, not a silent one.
  */
@@ -94,9 +96,11 @@ const RESUME_SET = [
   TERMINOLOGY_SYSTEM_PROMPT,
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   PLANNING_SYSTEM_PROMPT,
+  TASKS_RESUME_SYSTEM_PROMPT,
   VISIBLE_MEDIA_SYSTEM_PROMPT,
   SANDBOX_RESOURCES_SYSTEM_PROMPT,
   AUTOMATION_SYSTEM_PROMPT,
+  BREVITY_SYSTEM_PROMPT,
 ];
 
 /**
@@ -111,12 +115,13 @@ const RESUME_SET = [
  * (3100, in sandbox-resources.test.ts) so that growth *that* ceiling still
  * permits cannot fail here instead, where the message would name the wrong
  * thing. That ordering is conditional, not structural: it holds while the other
- * members sum to under 6500 - 3100 = 3400 characters. If they grow past that,
+ * members sum to under 8000 - 3100 = 4900 characters. If they grow past that,
  * this budget fires first on sandbox-fragment growth — annoying, not wrong, and
  * the fix is to raise this one after reading what actually grew, not to derive
- * either number from the other.
+ * either number from the other. Includes the communication guidance refreshed
+ * on resumed turns; the assembled payload is currently 7769 characters.
  */
-const RESUME_SET_BUDGET = 6500;
+const RESUME_SET_BUDGET = 8000;
 
 /**
  * Asserts that `appended` is exactly {@link RESUME_SET} — every member present
@@ -1100,6 +1105,29 @@ describe('Conductor.sendTurn', () => {
     expect(fake.last().permissionMode).toBe('acceptEdits');
     expect(fake.last().planning).toBeUndefined();
     expect(fake.last().appendSystemPrompt).not.toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
+  });
+
+  it('appends the assigned-tasks section on fresh and resumed turns alike', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const fake = scriptedBackend({ sessionId: 'thread' });
+    let assigned = '# Assigned tasks (verity_tasks)\n- #t1 Rotate tokens';
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      assignedTasksPrompt: () => assigned,
+      worktreeExists: async () => true,
+    });
+
+    await conductor.sendTurn('s1', 'first');
+    expect(fake.last().resumeSessionId).toBeUndefined();
+    expect(fake.last().appendSystemPrompt).toContain('- #t1 Rotate tokens');
+
+    // The list is rebuilt from the store each turn: a resumed context sees the
+    // current state, and an empty list leaves no stale section behind.
+    assigned = '';
+    await conductor.sendTurn('s1', 'second');
+    expect(fake.last().resumeSessionId).toBe('thread');
+    expect(fake.last().appendSystemPrompt).not.toContain('# Assigned tasks');
   });
 
   it('threads per-turn allow/deny tool lists into the turn options', async () => {
@@ -2147,6 +2175,64 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
       expect(
         (await ctx.store.getEvents('s1')).filter((event) => event.t === 'prompt').at(-1),
       ).toMatchObject({ peer });
+    });
+  });
+
+  it('reports a turn starting and stopping, which no event records', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const onSessionChanged = vi.fn();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: gatedBackend(gate).backend,
+      worktreeExists: async () => true,
+      onSessionChanged,
+    });
+    await conductor.dispatchTurn('s1', 'go');
+    expect(onSessionChanged).toHaveBeenCalledWith('s1', 'activity');
+    onSessionChanged.mockClear();
+    release();
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect(onSessionChanged).toHaveBeenCalledWith('s1', 'activity');
+  });
+
+  it('stamps the initiator on the prompt, across the durable queue too', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: gatedBackend(gate).backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'first', undefined, { initiatedBy: { userId: 'alice' } });
+    await vi.waitFor(async () => {
+      expect((await ctx.store.getEvents('s1')).find((event) => event.t === 'prompt')).toMatchObject(
+        { text: 'first', initiatedBy: { userId: 'alice' } },
+      );
+    });
+    // Queued behind the running turn: the row carries the initiator, so a restart
+    // that recovers the queue still knows whose turn it is.
+    await conductor.dispatchTurn(
+      's1',
+      'second',
+      { attachments: [] },
+      {
+        queueBehindActiveTurn: true,
+        initiatedBy: { userId: 'bob' },
+      },
+    );
+    expect((await ctx.store.listQueuedTurns())[0]?.opts.initiatedBy).toEqual({ userId: 'bob' });
+    release();
+    await vi.waitFor(async () => {
+      expect(
+        (await ctx.store.getEvents('s1')).filter((event) => event.t === 'prompt').at(-1),
+      ).toMatchObject({ text: 'second', initiatedBy: { userId: 'bob' } });
     });
   });
 

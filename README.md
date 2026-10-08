@@ -120,6 +120,16 @@ curl -fsSL https://verity.build/install.sh | bash -s -- --preflight
 See the [deployment guide](deploy/README.md) for manual installation, advanced
 configuration, upgrades, and recovery.
 
+> [!WARNING]
+> **Do not expose the Verity server to the public internet.** Do not open or
+> forward port `8082` or the preview ports `8100–8119` on your router or cloud
+> firewall. Connect from your local network or through a VPN such as WireGuard
+> or Tailscale. The local previews have no access protection, and a Server
+> compromise currently amounts to a host compromise. If the host is reachable
+> from the internet anyway, for example a cloud VM with a public address, follow
+> the [hardening guide](deploy/README.md#hardening-an-internet-reachable-host)
+> and verify from an outside network that the ports are blocked.
+
 The mobile app source is included in this repository. Official App Store builds
 and hosted connectivity are distributed separately and are not required by the
 self-hosted core.

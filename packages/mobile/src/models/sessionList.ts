@@ -1,3 +1,4 @@
+import type { LiveHint } from '@verity/events';
 import {
   VerityApiError,
   type AttentionSignal,
@@ -53,7 +54,10 @@ export interface SessionListState {
 export type CancelPoll = () => void;
 
 export interface SessionListModelOptions {
-  client: Pick<VerityClient, 'listSessions' | 'renameSession' | 'deleteSession'> & {
+  client: Pick<
+    VerityClient,
+    'listSessions' | 'renameSession' | 'setSessionFavorite' | 'deleteSession'
+  > & {
     listProviderLimits?: () => Promise<ProviderLimitSummary[]>;
     /** Optional like {@link listProviderLimits}: absent, the model falls back to
      * the plain list and simply reports no server-level attention. */
@@ -64,8 +68,9 @@ export interface SessionListModelOptions {
   };
   /** Notified with a fresh state snapshot on every change. */
   onChange?: (state: SessionListState) => void;
-  /** Poll interval for the live list; default 2s. Kept short so auto-generated
-   * session names (which land without a live event on the list) surface quickly. */
+  /** Safety-net poll interval; default 30s. Changes arrive as live hints
+   * ({@link SessionListModel.applyHints}); the poll only catches what produced
+   * none, and keeps time-derived fields fresh. */
   pollIntervalMs?: number;
   /** Time-only recompute interval; default 30s. Lets reset windows disappear even
    * when the network poll is paused/stale. */
@@ -90,9 +95,15 @@ export class SessionListModel {
   private _loading = false;
   private _error: string | undefined;
   private cancelPoll: CancelPoll | undefined;
+  /** The running model's coalescing refresh; undefined while stopped. */
+  private poll: (() => void) | undefined;
   private cancelTimeTick: CancelPoll | undefined;
   // Monotonic request id: a slower earlier load must not overwrite a newer one.
   private reqSeq = 0;
+  private favoriteMutations = new Map<string, number>();
+  private confirmedFavorites = new Map<string, boolean>();
+  private favoriteWrites = new Map<string, Promise<void>>();
+  private pendingFavorites = new Map<string, { favorite: boolean; maxRequest: number }>();
   private pendingAutomations = new Map<
     string,
     { automation: SessionSummary['automation']; maxRequest: number }
@@ -150,6 +161,17 @@ export class SessionListModel {
       this._sessions = sessions
         .filter((session) => !this.pendingDeletes.has(session.sessionId))
         .map((session) => {
+          const favorite = this.pendingFavorites.get(session.sessionId);
+          if (favorite !== undefined) {
+            if (req <= favorite.maxRequest) {
+              session = { ...session };
+              if (favorite.favorite) session.favorite = true;
+              else delete session.favorite;
+            } else {
+              this.pendingFavorites.delete(session.sessionId);
+              this.confirmedFavorites.delete(session.sessionId);
+            }
+          }
           const automation = this.pendingAutomations.get(session.sessionId);
           if (automation !== undefined) {
             this.pendingAutomations.delete(session.sessionId);
@@ -208,6 +230,44 @@ export class SessionListModel {
       this._error = error instanceof VerityApiError ? error.message : 'failed to rename session';
     }
     this.emit();
+  }
+
+  /**
+   * Mark or unmark a session as a favorite. Optimistic like {@link rename}: the
+   * highlight changes immediately, and on failure only this session's flag is
+   * reverted while the error surfaces until the next successful load.
+   */
+  async setFavorite(sessionId: string, favorite: boolean): Promise<void> {
+    const mutation = (this.favoriteMutations.get(sessionId) ?? 0) + 1;
+    this.favoriteMutations.set(sessionId, mutation);
+    const previous = this._sessions.find((s) => s.sessionId === sessionId)?.favorite === true;
+    if (!this.confirmedFavorites.has(sessionId)) this.confirmedFavorites.set(sessionId, previous);
+    this.pendingFavorites.set(sessionId, { favorite, maxRequest: Infinity });
+    this.applyFavorite(sessionId, favorite);
+    this.emit();
+    // Parallel requests can commit in reverse order even when stale responses are ignored.
+    const write = async (): Promise<void> => {
+      try {
+        const { favorite: stored } = await this.opts.client.setSessionFavorite(sessionId, favorite);
+        this.confirmedFavorites.set(sessionId, stored);
+        if (this.favoriteMutations.get(sessionId) !== mutation) return;
+        this.pendingFavorites.set(sessionId, { favorite: stored, maxRequest: this.reqSeq });
+        this.applyFavorite(sessionId, stored);
+        this._error = undefined;
+      } catch (error) {
+        if (this.favoriteMutations.get(sessionId) !== mutation) return;
+        const confirmed = this.confirmedFavorites.get(sessionId) ?? previous;
+        this.pendingFavorites.set(sessionId, { favorite: confirmed, maxRequest: this.reqSeq });
+        this.applyFavorite(sessionId, confirmed);
+        this._error = error instanceof VerityApiError ? error.message : 'failed to update favorite';
+      }
+      this.emit();
+    };
+    const previousWrite = this.favoriteWrites.get(sessionId);
+    const pending = previousWrite ? previousWrite.then(write) : write();
+    this.favoriteWrites.set(sessionId, pending);
+    await pending;
+    if (this.favoriteWrites.get(sessionId) === pending) this.favoriteWrites.delete(sessionId);
   }
 
   /** Retire one permission immediately after its decision POST settles. The next
@@ -318,32 +378,78 @@ export class SessionListModel {
     this.emit();
   }
 
+  /** Replace one session's favorite flag in the local list; `false` drops the
+   * field, matching the server, which omits it for unmarked sessions. */
+  private applyFavorite(sessionId: string, favorite: boolean): void {
+    this._sessions = this._sessions.map((s) => {
+      if (s.sessionId !== sessionId) return s;
+      const next: SessionSummary = { ...s, favorite: true };
+      if (!favorite) delete next.favorite;
+      return next;
+    });
+  }
+
   /** Replace one session's name in the local list (no-op if it's not present). */
   private applyName(sessionId: string, name: string | null): void {
     this._sessions = this._sessions.map((s) => (s.sessionId === sessionId ? { ...s, name } : s));
+  }
+
+  /**
+   * Live hints from the server: these sessions changed. Refetches the list (the
+   * hint carries no content), coalescing a burst into one request; a hint that
+   * lands while a request is in flight queues exactly one more, so the change it
+   * announced is never answered by a response that predates it.
+   */
+  applyHints(hints: readonly LiveHint[]): void {
+    for (const hint of hints) {
+      if (hint.deleted === true) {
+        const deletion = this.pendingDeletes.get(hint.sessionId) ?? {
+          active: 0,
+          removed: this._sessions.find((session) => session.sessionId === hint.sessionId),
+          succeeded: true,
+        };
+        deletion.succeeded = true;
+        this.pendingDeletes.set(hint.sessionId, deletion);
+        this._sessions = this._sessions.filter((s) => s.sessionId !== hint.sessionId);
+      }
+    }
+    if (hints.some((hint) => hint.deleted === true)) this.emit();
+    this.poll?.();
   }
 
   /** Initial load + start polling. Idempotent: cancels any existing poll first
    * so a double `start()` can't leak a timer. */
   start(): void {
     this.stop();
-    const intervalMs = this.opts.pollIntervalMs ?? 2000;
-    // Coalesce interval ticks while the previous poll is still in flight. Without
-    // this guard, a slow /sessions response (> intervalMs) is superseded by every
-    // following request and therefore never reaches state — the UI can remain on
-    // the same PR/check count indefinitely while requests pile up.
+    const intervalMs = this.opts.pollIntervalMs ?? 30_000;
+    // Coalesce requests while one is in flight. Without this guard, a slow
+    // /sessions response is superseded by every following request and therefore
+    // never reaches state — the UI can remain on the same PR/check count
+    // indefinitely while requests pile up.
     let inFlight = false;
+    let again = false;
     const poll = (): void => {
-      if (inFlight) return;
+      if (inFlight) {
+        again = true;
+        return;
+      }
       inFlight = true;
       void this.refresh({ silent: true }).finally(() => {
         inFlight = false;
+        if (again && this.poll === poll) {
+          again = false;
+          poll();
+        }
       });
     };
+    this.poll = poll;
     poll();
-    this.cancelPoll = this.opts.schedule
-      ? this.opts.schedule(poll, intervalMs)
-      : defaultSchedule(poll, intervalMs);
+    this.cancelPoll =
+      intervalMs === 0
+        ? undefined
+        : this.opts.schedule
+          ? this.opts.schedule(poll, intervalMs)
+          : defaultSchedule(poll, intervalMs);
     const tickIntervalMs = this.opts.timeTickMs ?? 30_000;
     const tick = (): void => this.emit();
     this.cancelTimeTick = this.opts.schedule
@@ -353,6 +459,7 @@ export class SessionListModel {
 
   /** Stop polling. Idempotent. */
   stop(): void {
+    this.poll = undefined;
     this.cancelPoll?.();
     this.cancelTimeTick?.();
     this.cancelPoll = undefined;

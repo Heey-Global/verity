@@ -29,6 +29,7 @@ import type {
   ScheduleConfig,
 } from './schema.js';
 import { ManagedDevServerStore } from './managed-dev-servers.js';
+import { TaskStore } from './tasks.js';
 
 /** A stored image blob: its media type and raw bytes (for serving). */
 export interface AttachmentBlob {
@@ -60,6 +61,9 @@ export interface SessionRecord {
   planning?: SessionPlanning | null;
   planningRevision?: number;
   planningPlan?: string | null;
+  /** Operator-marked favorite, highlighted in the session list. Global like the
+   *  unread mark, so it syncs across devices. Absent means not a favorite. */
+  favorite?: boolean;
 }
 
 /** `active`: turns run without permission to change files until the operator
@@ -375,6 +379,9 @@ export interface SessionAutomationRecord {
   /** Short operator-facing explanation of the last outcome, if any. */
   lastDetail: string | null;
   nextRunAt: Date | null;
+  /** The local user who confirmed it; null for automations confirmed before
+   * sponsors were recorded. */
+  sponsorUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -394,6 +401,7 @@ export interface SessionAutomationInput {
   prompt: string;
   script?: string | null;
   model?: string | null;
+  sponsorUserId?: string | null;
 }
 
 export interface ProjectSettingsRecord {
@@ -1323,11 +1331,13 @@ export class EventStore implements EventSink {
     this.integrations = new IntegrationStore(db, cipher);
     this.liveMeetings = new LiveMeetingStore(db);
     this.managedDevServers = new ManagedDevServerStore(db);
+    this.tasks = new TaskStore(db, cipher);
   }
 
   readonly knowledge: KnowledgeStore;
   readonly integrations: IntegrationStore;
   readonly liveMeetings: LiveMeetingStore;
+  readonly tasks: TaskStore;
   readonly managedDevServers: ManagedDevServerStore;
   /** One delivery at a time leaves pool capacity for conductor acceptance. */
   private sessionLinkDeliveryTail: Promise<void> = Promise.resolve();
@@ -1763,6 +1773,7 @@ export class EventStore implements EventSink {
         'planning',
         'planning_revision',
         'planning_plan',
+        'favorite',
       ])
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
@@ -1777,6 +1788,7 @@ export class EventStore implements EventSink {
       ...(row.planning !== null ? { planning: row.planning } : {}),
       planningRevision: row.planning_revision,
       planningPlan: row.planning_plan,
+      ...(row.favorite ? { favorite: true } : {}),
     };
   }
 
@@ -2320,6 +2332,7 @@ export class EventStore implements EventSink {
         'planning',
         'planning_revision',
         'planning_plan',
+        'favorite',
       ])
       // session_id tiebreaker: `created_at` is `now()` (tx-start), so rapid
       // inserts can share a timestamp — without this the order is unspecified.
@@ -2336,6 +2349,7 @@ export class EventStore implements EventSink {
       ...(r.planning !== null ? { planning: r.planning } : {}),
       planningRevision: r.planning_revision,
       planningPlan: r.planning_plan,
+      ...(r.favorite ? { favorite: true } : {}),
     }));
   }
 
@@ -2467,6 +2481,13 @@ export class EventStore implements EventSink {
         .set({ project_id: move.target_project_id, worktree: move.target_worktree })
         .where('session_id', '=', sessionId)
         .execute();
+      // Assigned work stays in its source project; moving the session revokes
+      // the assignment and invalidates updates authorized before the move.
+      await tx
+        .updateTable('tasks')
+        .set({ session_id: null, revision: sql`revision + 1`, updated_at: sql`now()` })
+        .where('session_id', '=', sessionId)
+        .execute();
       // The operator confirmed a check script against the source project. In the
       // target it would run against another repository and other secrets without
       // anyone having seen it there, so it waits until they resume it.
@@ -2593,6 +2614,19 @@ export class EventStore implements EventSink {
     const result = await this.db
       .updateTable('sessions')
       .set({ name })
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    return result.numUpdatedRows > 0n;
+  }
+
+  /**
+   * Mark or unmark a session as an operator favorite. Returns `false` if the
+   * session id is unknown, like {@link renameSession}.
+   */
+  async setSessionFavorite(sessionId: string, favorite: boolean): Promise<boolean> {
+    const result = await this.db
+      .updateTable('sessions')
+      .set({ favorite })
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     return result.numUpdatedRows > 0n;
@@ -3193,6 +3227,20 @@ export class EventStore implements EventSink {
         .set({ state: 'revoked', updated_at: new Date().toISOString() })
         .where('session_id', '=', sessionId)
         .where('state', '=', 'active')
+        .execute();
+      // The agent's unfinished steps were its plan for this session and end with
+      // it; the operator's own tasks only lose the assignment (FK set null).
+      await tx
+        .updateTable('tasks')
+        .set((eb) => ({
+          status: 'dropped',
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          revision: eb('revision', '+', 1),
+        }))
+        .where('session_id', '=', sessionId)
+        .where('origin', '=', 'agent')
+        .where('status', 'in', ['open', 'in_progress'])
         .execute();
       const result = await tx
         .deleteFrom('sessions')
@@ -3945,14 +3993,20 @@ export class EventStore implements EventSink {
    * with its `seq`. `afterSeq = 0` returns the full log. The cursor lets a WS
    * client page a backlog and resume after a reconnect without re-sending it.
    */
-  async getEventsAfter(sessionId: string, afterSeq: number): Promise<SequencedEvent[]> {
-    const rows = await this.db
+  async getEventsAfter(
+    sessionId: string,
+    afterSeq: number,
+    limit?: number,
+  ): Promise<SequencedEvent[]> {
+    let query = this.db
       .selectFrom('events')
       .select(['id', 'payload', 'created_at'])
       .where('session_id', '=', sessionId)
       .where('id', '>', afterSeq)
-      .orderBy('id', 'asc')
-      .execute();
+      .orderBy('id', 'asc');
+    // Paged readers (the live replay) bound each read; recovery reads stay whole.
+    if (limit !== undefined) query = query.limit(limit);
+    const rows = await query.execute();
     return rows.map((row) => {
       const parsed = parseAgentEvent(row.payload);
       if (!parsed.success) {
@@ -4992,6 +5046,50 @@ export class EventStore implements EventSink {
       .map((membership) => membership.project_id);
   }
 
+  /** Active users holding a project permission — the notification audience
+   * for project work that has no individual initiator. Same control-plane rule
+   * as {@link hasProjectPermission}. */
+  async listProjectUserIds(
+    projectId: string,
+    permission: 'read' | 'execute' | 'manage',
+  ): Promise<string[]> {
+    const rows = await this.db
+      .selectFrom('project_memberships as m')
+      .innerJoin('users as u', 'u.id', 'm.user_id')
+      .innerJoin('projects as p', 'p.id', 'm.project_id')
+      .select([
+        'm.user_id',
+        'm.can_read',
+        'm.can_execute',
+        'm.can_manage',
+        'u.status',
+        'u.role',
+        'p.kind',
+        'p.created_by_user_id',
+      ])
+      .where('m.project_id', '=', projectId)
+      .execute();
+    return rows
+      .filter(
+        (row) =>
+          row.status === 'active' &&
+          row[`can_${permission}`] &&
+          (row.kind !== 'control_plane' ||
+            (row.role === 'administrator' && row.created_by_user_id === row.user_id)),
+      )
+      .map((row) => row.user_id);
+  }
+
+  async listActiveAdministratorIds(): Promise<string[]> {
+    const rows = await this.db
+      .selectFrom('users')
+      .select('id')
+      .where('role', '=', 'administrator')
+      .where('status', '=', 'active')
+      .execute();
+    return rows.map((row) => row.id);
+  }
+
   async getProjectByOwnerRepo(owner: string, repo: string): Promise<ProjectRecord | undefined> {
     // Lookup-form mirrors the persistence-form (lowercase, §19.0/§19.2): a row
     // persisted from `'heey-global'/'VERITY'` lives as `'verity'` on disk, so the
@@ -5604,6 +5702,7 @@ export class EventStore implements EventSink {
     last_outcome: string | null;
     last_detail: string | null;
     next_run_at: Date | null;
+    sponsor_user_id: string | null;
     created_at: Date;
     updated_at: Date;
   }): SessionAutomationRecord {
@@ -5621,6 +5720,7 @@ export class EventStore implements EventSink {
       lastOutcome: row.last_outcome as SessionAutomationOutcome | null,
       lastDetail: row.last_detail,
       nextRunAt: row.next_run_at,
+      sponsorUserId: row.sponsor_user_id,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -5649,6 +5749,8 @@ export class EventStore implements EventSink {
       last_outcome: null,
       last_detail: null,
       next_run_at: computeNextRun(input.schedule, now).toISOString(),
+      // A replacement is confirmed by whoever confirmed it, so it re-sponsors.
+      sponsor_user_id: input.sponsorUserId ?? null,
     };
     return this.db.transaction().execute(async (tx) => {
       // Serialize with commitSessionMove: a script checked in the old workspace
@@ -7274,6 +7376,37 @@ export class EventStore implements EventSink {
           createdAt: new Date(row.created_at).getTime(),
           updatedAt: new Date(row.updated_at).getTime(),
         };
+  }
+
+  /** The push tokens of the given users' devices, with the user each belongs to. */
+  async listDevicePushTokensForUsers(
+    userIds: readonly string[],
+  ): Promise<(DevicePushTokenRecord & { userId: string })[]> {
+    if (userIds.length === 0) return [];
+    const rows = await this.db
+      .selectFrom('device_push_tokens as t')
+      .innerJoin('auth_tokens as a', 'a.id', 't.auth_token_id')
+      .innerJoin('users as u', 'u.id', 'a.user_id')
+      .select([
+        't.auth_token_id',
+        't.expo_token',
+        't.platform',
+        't.created_at',
+        't.updated_at',
+        'a.user_id',
+      ])
+      .where('a.user_id', 'in', [...userIds])
+      .where('u.status', '=', 'active')
+      .orderBy('t.created_at', 'asc')
+      .execute();
+    return rows.map((row) => ({
+      authTokenId: row.auth_token_id,
+      expoToken: row.expo_token,
+      platform: row.platform,
+      createdAt: new Date(row.created_at).getTime(),
+      updatedAt: new Date(row.updated_at).getTime(),
+      userId: row.user_id,
+    }));
   }
 
   async listDevicePushTokens(): Promise<DevicePushTokenRecord[]> {

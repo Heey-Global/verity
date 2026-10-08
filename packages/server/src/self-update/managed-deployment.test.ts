@@ -1,7 +1,7 @@
 import { chmod, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ServerDeploymentSpecBody } from './deployment-spec.js';
 import {
   advanceManagedDeploymentImage,
@@ -11,7 +11,14 @@ import {
   MANAGED_DEPLOYMENT_SPEC_FILE,
   readManagedDeployment,
   migrateManagedControlPlaneRunner,
+  migrateManagedHostDiagnostics,
+  MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE,
 } from './managed-deployment.js';
+
+vi.mock('node:fs/promises', async () => {
+  const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+  return { ...actual, open: vi.fn(actual.open) };
+});
 
 const adoptionSpec = (): Omit<ServerDeploymentSpecBody, 'schemaVersion' | 'deploymentId'> => ({
   image: `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`,
@@ -52,6 +59,54 @@ const LIMITS = {
 };
 
 describe('managed deployment bootstrap', () => {
+  it('retries an interrupted backup write without publishing partial authority', async () => {
+    const directory = await root();
+    const initial = await initializeManagedDeployment({
+      root: directory,
+      deploymentId: 'managed-1',
+      spec: adoptionSpec(),
+    });
+    if (!initial.managed) throw new Error(initial.reason);
+    const fs = await import('node:fs/promises');
+    const originalOpen =
+      await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const mockedOpen = vi.mocked(fs.open);
+    mockedOpen.mockImplementation(async (...args) => {
+      const handle = await originalOpen.open(...args);
+      if (String(args[0]).includes(MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE) && args[1] === 'wx') {
+        const write = handle.writeFile.bind(handle);
+        vi.spyOn(handle, 'writeFile').mockImplementation(async () => {
+          await write('{');
+          throw new Error('interrupted backup write');
+        });
+      }
+      return handle;
+    });
+    const options = {
+      root: directory,
+      deploymentId: 'managed-1',
+      image: initial.spec.image,
+      hostPath: '/var/lib/verity/host-diagnostics',
+    };
+    try {
+      await expect(migrateManagedHostDiagnostics(options)).rejects.toThrow(
+        'interrupted backup write',
+      );
+    } finally {
+      mockedOpen.mockImplementation(originalOpen.open);
+    }
+    await expect(
+      readFile(join(directory, MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readManagedDeployment(directory)).toEqual(initial);
+    // A crash can leave an unpublished temporary file; retry must replace it.
+    await writeFile(join(directory, `${MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE}.tmp`), '{');
+    expect((await migrateManagedHostDiagnostics(options)).managed).toBe(true);
+    expect(
+      JSON.parse(await readFile(join(directory, MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE), 'utf8')),
+    ).toEqual(initial.spec);
+  });
+
   it('is unsupported before explicit initialization', async () => {
     expect(await readManagedDeployment(await root())).toEqual({
       managed: false,

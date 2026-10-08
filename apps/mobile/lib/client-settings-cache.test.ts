@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { setVerityBaseUrl } from './client';
+import { setVerityBaseUrl, getVerityBaseUrl, subscribeVerityBaseUrl } from './client';
 
 const mockResetVeritySettingsStore = jest.fn();
 
@@ -39,4 +39,15 @@ it('keeps the cache when the selected server is unchanged', async () => {
   await setVerityBaseUrl('https://server.test/ignored/path');
 
   expect(mockResetVeritySettingsStore).not.toHaveBeenCalled();
+});
+
+it('notifies live consumers after the runtime endpoint changes', async () => {
+  await setVerityBaseUrl('https://first.test');
+  const seen: (string | null)[] = [];
+  const unsubscribe = subscribeVerityBaseUrl(() => seen.push(getVerityBaseUrl()));
+  await setVerityBaseUrl('https://second.test');
+  expect(seen).toEqual(['https://second.test']);
+  unsubscribe();
+  await setVerityBaseUrl('https://third.test');
+  expect(seen).toEqual(['https://second.test']);
 });

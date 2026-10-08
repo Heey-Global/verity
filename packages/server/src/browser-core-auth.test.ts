@@ -242,7 +242,7 @@ describe('browser authentication through the Core', () => {
     }
   });
 
-  it('checks the exact browser origin before consuming a stream ticket', async () => {
+  it('checks the exact browser origin before consuming a live ticket', async () => {
     const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
     const browser = await registry.mint('Browser', true);
     await ctx.store.createSession({
@@ -261,13 +261,13 @@ describe('browser authentication through the Core', () => {
       const address = `127.0.0.1:${String((app.server.address() as AddressInfo).port)}`;
       const response = await app.inject({
         method: 'POST',
-        url: '/sessions/origin-session/stream-ticket',
+        url: '/live/ticket',
         headers: { host: address, origin: `http://${address}`, cookie: cookie(browser.token) },
       });
       expect(response.statusCode).toBe(200);
-      const protocol = `verity-stream-ticket.${response.json<{ ticket: string }>().ticket}`;
+      const protocol = `verity-live-ticket.${response.json<{ ticket: string }>().ticket}`;
       for (const requestOrigin of [undefined, 'http://127.0.0.1:1']) {
-        const socket = new WebSocket(`ws://${address}/sessions/origin-session/stream`, protocol, {
+        const socket = new WebSocket(`ws://${address}/live`, protocol, {
           headers: {
             cookie: cookie(browser.token),
             ...(requestOrigin === undefined ? {} : { origin: requestOrigin }),
@@ -283,7 +283,7 @@ describe('browser authentication through the Core', () => {
         });
         expect(code).toBe(1008);
       }
-      const socket = new WebSocket(`ws://${address}/sessions/origin-session/stream`, protocol, {
+      const socket = new WebSocket(`ws://${address}/live`, protocol, {
         headers: { cookie: cookie(browser.token), origin: `http://${address}` },
       });
       // Rejected origins must not burn the ticket before the legitimate browser retries.
@@ -317,13 +317,13 @@ describe('browser authentication through the Core', () => {
       await app.listen({ port: 0, host: '127.0.0.1' });
       const response = await app.inject({
         method: 'POST',
-        url: '/sessions/browser-session/stream-ticket',
+        url: '/live/ticket',
         headers: { ...origin, cookie: cookie(browser.token) },
       });
       expect(response.statusCode).toBe(200);
       socket = new WebSocket(
-        `ws://127.0.0.1:${String((app.server.address() as AddressInfo).port)}/sessions/browser-session/stream`,
-        `verity-stream-ticket.${response.json<{ ticket: string }>().ticket}`,
+        `ws://127.0.0.1:${String((app.server.address() as AddressInfo).port)}/live`,
+        `verity-live-ticket.${response.json<{ ticket: string }>().ticket}`,
       );
       await new Promise<void>((resolve, reject) => {
         socket!.once('open', resolve);

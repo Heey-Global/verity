@@ -740,6 +740,7 @@ VERITY_SANDBOX_MEMORY=6g
 VERITY_SANDBOX_SWAP=0
 VERITY_SANDBOX_CPUS=4
 VERITY_SANDBOX_CPU_SHARES=512
+VERITY_SANDBOX_PIDS_LIMIT=4096
 ```
 
 Active project Sandboxes sleep after 30 minutes without a running turn,
@@ -839,7 +840,34 @@ The CPU ceiling is capped at the host's CPU count, because Docker refuses to
 create a container that asks for more. On a 2-core host the default of 4 therefore
 gives each sandbox both cores.
 
-Memory, swap, and CPU ceilings are applied when a sandbox container is
+`VERITY_SANDBOX_PIDS_LIMIT` defaults to 4096 and remains configurable. With
+runsc (gVisor), the host PID cgroup counts Sentry and platform threads, rather
+than only guest processes. A small limit can therefore be exhausted by routine
+builds even when few guest processes are visible. [gVisor issue #2490](https://github.com/google/gvisor/issues/2490)
+describes Sentry termination with `failed to create new OS thread` / `newosproc`
+when the host PID limit is exhausted. Keep this limit generous; the sandbox
+memory ceiling remains unchanged. Runtime diagnostics report current PID usage
+and flag usage at or above 80% of a finite limit. A sample taken after restart
+does not establish PID usage before the crash; host runtime logs are needed to
+confirm the cause.
+
+Managed deployments treat an env-source `VERITY_SANDBOX_PIDS_LIMIT=512` as a
+legacy bootstrap default and pass an empty value to new Servers, which use the
+current default of 4096. The Updater logs when it ignores this pin. This also
+applies to older sealed deployments without editing the host `.env`. Other
+values and file-backed sources remain configurable. To deliberately retain 512,
+set `VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY=1` in the host `.env` and recreate the
+Updater through installation Repair so it receives that input; the opt-in works
+even with an older sealed deployment. Unmanaged Servers retain their configured
+value.
+
+Applying the migration requires an Updater version containing it and a guarded
+Server replacement. Existing project sandboxes must also be recreated after
+active work finishes; restarting an existing container does not change its PID
+limit. A running Server with the old pin remains available; reconciliation
+reports environment drift until replacement.
+
+Memory, swap, CPU, and PID ceilings are applied when a sandbox container is
 **created**. An existing sandbox keeps the limits it was created with until it
 is next provisioned, repaired, or updated to a new image. To apply new limits to
 a specific project now, recreate its sandbox.

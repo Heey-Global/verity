@@ -1,5 +1,162 @@
 # Changelog
 
+## [4.25.3](https://github.com/Heey-Global/verity/compare/v4.25.2...v4.25.3) (2026-10-07)
+
+
+### Bug Fixes
+
+* **mobile:** preserve Unistyles state during OTA reloads and bound diagnostics ([#1311](https://github.com/Heey-Global/verity/issues/1311)) ([e597a26](https://github.com/Heey-Global/verity/commit/e597a264ca5516b5285b6d4d4864bd3304a7fd63))
+
+## [4.25.2](https://github.com/Heey-Global/verity/compare/v4.25.1...v4.25.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* **mobile:** stabilize meeting UI and isolate research replies ([#1308](https://github.com/Heey-Global/verity/issues/1308)) ([66ec3d5](https://github.com/Heey-Global/verity/commit/66ec3d567c629c534a8674ae5124809969e1e80d))
+* **server:** ignore the legacy managed sandbox PID pin ([#1309](https://github.com/Heey-Global/verity/issues/1309)) ([af81ac0](https://github.com/Heey-Global/verity/commit/af81ac0a6261cf026f5df5957da1392c488a5ccf))
+* **session:** require actionable next steps for unfinished outcomes ([#1303](https://github.com/Heey-Global/verity/issues/1303)) ([1caf118](https://github.com/Heey-Global/verity/commit/1caf1184c24395765c3e06b3c8031f065d596b9c))
+
+## [4.25.1](https://github.com/Heey-Global/verity/compare/v4.25.0...v4.25.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **provisioner:** raise gVisor PID limits and report pressure ([#1301](https://github.com/Heey-Global/verity/issues/1301)) ([1e4d3a5](https://github.com/Heey-Global/verity/commit/1e4d3a5c49ff26f12fb7d853efca0fc91119161d))
+
+## [4.25.0](https://github.com/Heey-Global/verity/compare/v4.24.1...v4.25.0) (2026-10-07)
+
+
+### Features
+
+* **tasks:** capture card redesign, shared action menu, agent steps end with their session ([#1292](https://github.com/Heey-Global/verity/issues/1292)) ([bed9367](https://github.com/Heey-Global/verity/commit/bed93677b8d93bf68f12c3d60651394a99ebf995))
+
+## [4.24.1](https://github.com/Heey-Global/verity/compare/v4.24.0...v4.24.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **web:** restore layouts and composer behavior and optimize loading ([#1273](https://github.com/Heey-Global/verity/issues/1273)) ([ba34bbb](https://github.com/Heey-Global/verity/commit/ba34bbb6118e5ee92d23ae027dca886c40e94a01))
+
+## [4.24.0](https://github.com/Heey-Global/verity/compare/v4.23.0...v4.24.0) (2026-10-07)
+
+
+### Features
+
+* **broker:** restore GitHub workflows and scoped GHCR reads ([#1280](https://github.com/Heey-Global/verity/issues/1280)) ([24cbf39](https://github.com/Heey-Global/verity/commit/24cbf395334129654f3931463cbac0037c41668b))
+
+
+### Bug Fixes
+
+* **release:** recover native staging plans and prevent promotion rollback ([#1274](https://github.com/Heey-Global/verity/issues/1274)) ([adffd1b](https://github.com/Heey-Global/verity/commit/adffd1bd9da542e898acd7e13a849f49866d1aff))
+* **session:** retry Codex SQLite backfill initialization timeouts ([#1281](https://github.com/Heey-Global/verity/issues/1281)) ([9967c0d](https://github.com/Heey-Global/verity/commit/9967c0d0b84aff4619b1b11dd67049a0a0e0e027))
+
+## [4.23.0](https://github.com/Heey-Global/verity/compare/v4.22.1...v4.23.0) (2026-10-07)
+
+
+### Features
+
+* **mobile:** add session favorites, swipe actions and context menu ([#1275](https://github.com/Heey-Global/verity/issues/1275)) ([4b5c745](https://github.com/Heey-Global/verity/commit/4b5c745650a691bcb8cd0d7f9792d055778ced93))
+* **tasks:** quieter task surfaces, agent steps apart, bubble physics ([#1276](https://github.com/Heey-Global/verity/issues/1276)) ([f656a4b](https://github.com/Heey-Global/verity/commit/f656a4bf505c977d3fc30e5dcca6ffadd938018c))
+
+## [4.22.1](https://github.com/Heey-Global/verity/compare/v4.22.0...v4.22.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **diagnostics:** retain host crash evidence across collector refreshes ([#1272](https://github.com/Heey-Global/verity/issues/1272)) ([60e96ac](https://github.com/Heey-Global/verity/commit/60e96ac71fafb44be6cc9ab1770dfd0bde52a8be))
+* **session:** improve knowledge retrieval and concise progress guidance ([#1269](https://github.com/Heey-Global/verity/issues/1269)) ([2e1d901](https://github.com/Heey-Global/verity/commit/2e1d9010663405cdb463c080868ec9074361fd18))
+
+## [4.22.0](https://github.com/Heey-Global/verity/compare/v4.21.1...v4.22.0) (2026-10-07)
+
+
+### Features
+
+* **live:** replace app polling with shared socket updates ([#1262](https://github.com/Heey-Global/verity/issues/1262)) ([bff9df1](https://github.com/Heey-Global/verity/commit/bff9df116a8175ba29edc07b3c2ba0014213c99f))
+
+
+### Bug Fixes
+
+* **server:** migrate host diagnostics mounts during managed updates ([#1263](https://github.com/Heey-Global/verity/issues/1263)) ([9935c4a](https://github.com/Heey-Global/verity/commit/9935c4a56aecd955b3276854f56e1aeb32fd9f87))
+
+## [4.21.1](https://github.com/Heey-Global/verity/compare/v4.21.0...v4.21.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **release:** preserve native promotion evidence after staging publication ([#1258](https://github.com/Heey-Global/verity/issues/1258)) ([5426c60](https://github.com/Heey-Global/verity/commit/5426c601bec954a266410a916179373b12760718))
+* **updater:** re-drive stalled companion reconciliation ([#1259](https://github.com/Heey-Global/verity/issues/1259)) ([02af6db](https://github.com/Heey-Global/verity/commit/02af6dbe5b07945825438d50fe11d5d1c0d19d92))
+
+## [4.21.0](https://github.com/Heey-Global/verity/compare/v4.20.1...v4.21.0) (2026-10-07)
+
+
+### Features
+
+* **tasks:** add offline capture and task panel ([#1238](https://github.com/Heey-Global/verity/issues/1238)) ([bb922ea](https://github.com/Heey-Global/verity/commit/bb922ead44386bf51f84ea5e7dc88106f6674685))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @fastify/websocket to v11.3.3 ([#1254](https://github.com/Heey-Global/verity/issues/1254)) ([900c1e1](https://github.com/Heey-Global/verity/commit/900c1e18a65a16f7ac65e46dcdd27312202e65d5))
+* **deps:** update dependency graphql to v17 ([#1256](https://github.com/Heey-Global/verity/issues/1256)) ([bf782be](https://github.com/Heey-Global/verity/commit/bf782be7e3422520e66ccc54a50b8d7f55ab4be3))
+* **deps:** update dependency pdfjs-dist to v6.4.299 ([#1255](https://github.com/Heey-Global/verity/issues/1255)) ([8e4ef60](https://github.com/Heey-Global/verity/commit/8e4ef60090e7e9b1b156982118671efabdc00c84))
+* **diagnostics:** explain unavailable host snapshots ([#1242](https://github.com/Heey-Global/verity/issues/1242)) ([213ec72](https://github.com/Heey-Global/verity/commit/213ec723816c4a2f6bb0c713d064cf37bc0afd76))
+* **self-update:** rediscover companions after handoff races ([#1244](https://github.com/Heey-Global/verity/issues/1244)) ([5fb2607](https://github.com/Heey-Global/verity/commit/5fb2607e9594eca9db48d8402559f5f45494c9f9))
+* **server:** avoid runner watchdog races during sandbox replacement ([#1257](https://github.com/Heey-Global/verity/issues/1257)) ([d480ac4](https://github.com/Heey-Global/verity/commit/d480ac48985431b3ed980b2b8ff6d404918fba1b))
+
+## [4.20.1](https://github.com/Heey-Global/verity/compare/v4.20.0...v4.20.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **preview:** unify detected server controls and require managed starts ([#1237](https://github.com/Heey-Global/verity/issues/1237)) ([98498d1](https://github.com/Heey-Global/verity/commit/98498d17d851cd342a4c8d69fd9796f25be8d838))
+
+## [4.20.0](https://github.com/Heey-Global/verity/compare/v4.19.0...v4.20.0) (2026-10-06)
+
+
+### Features
+
+* **diagnostics:** expose local and historical runtime evidence ([#1234](https://github.com/Heey-Global/verity/issues/1234)) ([7e39988](https://github.com/Heey-Global/verity/commit/7e3998869cbd828ae355d0c2d72ad0ea77fa6faf))
+* **preview:** support PIN authentication for WebSocket upgrades ([#1232](https://github.com/Heey-Global/verity/issues/1232)) ([1099441](https://github.com/Heey-Global/verity/commit/10994411ffe05e9cad9acd6f6d0f3c561a76a27d))
+
+
+### Bug Fixes
+
+* **broker:** resolve entry-script project paths from the session worktree ([#1233](https://github.com/Heey-Global/verity/issues/1233)) ([d385d82](https://github.com/Heey-Global/verity/commit/d385d82ab5230eead3bd37254d625d457f05cea3))
+* **tasks:** preserve captures and secure assignments and attachments ([#1230](https://github.com/Heey-Global/verity/issues/1230)) ([3ab8790](https://github.com/Heey-Global/verity/commit/3ab87905b222d9513c40165d710afcf937195621))
+
+## [4.19.0](https://github.com/Heey-Global/verity/compare/v4.18.0...v4.19.0) (2026-10-06)
+
+
+### Features
+
+* **live:** use one connection per device and route notifications per user ([#1225](https://github.com/Heey-Global/verity/issues/1225)) ([4b7b173](https://github.com/Heey-Global/verity/commit/4b7b173517c3a62cb7edf33fcb1192d1f4774fe4))
+
+## [4.18.0](https://github.com/Heey-Global/verity/compare/v4.17.0...v4.18.0) (2026-10-06)
+
+
+### Features
+
+* **tasks:** add durable task persistence and agent access ([#1226](https://github.com/Heey-Global/verity/issues/1226)) ([9f446ec](https://github.com/Heey-Global/verity/commit/9f446ec22f298a086db72803fca1403386075055))
+
+
+### Bug Fixes
+
+* **session:** restore Claude and OpenCode task checklists ([#1222](https://github.com/Heey-Global/verity/issues/1222)) ([47bdd2c](https://github.com/Heey-Global/verity/commit/47bdd2cb2774ee7e754d3e54303dab4a2c7d54fe))
+
+## [4.17.0](https://github.com/Heey-Global/verity/compare/v4.16.2...v4.17.0) (2026-10-06)
+
+
+### Features
+
+* **broker:** mediate GitHub sandbox traffic through HTTP secret broker ([#1204](https://github.com/Heey-Global/verity/issues/1204)) ([2ff5ca9](https://github.com/Heey-Global/verity/commit/2ff5ca92923fba2f989be248fcd907545c1ed990))
+* **mobile:** compact issue and branch refs in header and overview ([#1215](https://github.com/Heey-Global/verity/issues/1215)) ([e50cf97](https://github.com/Heey-Global/verity/commit/e50cf975272444bf7aeb6e958a756baafb8885cc))
+* **web:** ship browser client in Core Docker image ([#1216](https://github.com/Heey-Global/verity/issues/1216)) ([63bb411](https://github.com/Heey-Global/verity/commit/63bb411ecedce8c687a7025f43f9c1af57db2d4e))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @agentclientprotocol/sdk to v1.7.0 ([#1194](https://github.com/Heey-Global/verity/issues/1194)) ([7669e6e](https://github.com/Heey-Global/verity/commit/7669e6e896454294b3d136875df25ac06370da76))
+
 ## [4.16.2](https://github.com/Heey-Global/verity/compare/v4.16.1...v4.16.2) (2026-10-06)
 
 

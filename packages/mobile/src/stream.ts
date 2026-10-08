@@ -1,108 +1,47 @@
-import { VerityApiError } from './api.js';
-import { type AgentEvent, decodeStreamMessage, type StreamEventFrame } from './wire.js';
+import type { LiveEndedReason } from '@verity/events';
+import type { LiveSessionHandle, LiveSessionTransport } from './live/connection.js';
+import { type AgentEvent, type StreamEventFrame } from './wire.js';
 import { SessionReducer, type SessionState } from './reducer.js';
 
-/**
- * The minimal WebSocket surface the stream uses. The platform `WebSocket`
- * (React Native / browser / Node) satisfies it; tests inject a fake. We only
- * need the message/close/error events and `close()`.
- */
-export interface StreamSocket {
-  addEventListener(
-    type: 'message' | 'close' | 'error',
-    listener: (event: { data: unknown }) => void,
-  ): void;
-  close(): void;
-}
-
-// Ticket issuance is an HTTP request; a transport failure is not evidence of
-// invalid credentials. Never forward an arbitrary server body or native message.
-function streamTicketFailure(error: unknown): string {
-  if (
-    error instanceof VerityApiError &&
-    Number.isInteger(error.status) &&
-    error.status >= 400 &&
-    error.status <= 599
-  ) {
-    if (error.status === 401 || error.status === 403) {
-      return `Could not open the session: Core rejected this device's authorization (HTTP ${error.status}). Sign in again and retry.`;
-    }
-    return `Could not open the session: Core could not issue a stream ticket (HTTP ${error.status}). Retry in a moment.`;
+function endedMessage(reason: LiveEndedReason): string {
+  switch (reason) {
+    case 'forbidden':
+      return 'You no longer have access to this session.';
+    case 'not_found':
+      return 'This session no longer exists.';
+    case 'limit':
+      return 'Too many sessions are open at once. Close one and retry.';
+    default:
+      return 'The session stream could not be loaded. Retrying…';
   }
-  if (error instanceof Error && error.name === 'VerityConnectionError') {
-    const stage = error.message.match(
-      /^Uplink (routing|setup|admission|attachment|probe)(?: | and)/u,
-    )?.[1];
-    const admissionCode = error.message.match(
-      /^Uplink admission \(Remote admission failed: (unavailable|rate_limited|limit_reached|protocol_unsupported|timeout|cancelled|internal)\.\)/u,
-    )?.[1];
-    const missingDescriptor = error.message.startsWith(
-      'Uplink routing (no remote descriptor saved)',
-    );
-    const missingAuth = error.message.startsWith('Uplink routing (missing device authentication)');
-    const directAlsoFailed = / and direct Core requests? failed:/u.test(error.message);
-    if (missingAuth) {
-      return 'Could not open the session: this device is not signed in. Connect to Core and sign in again.';
-    }
-    if (missingDescriptor) {
-      return 'Could not open the session: Remote Control is not configured on this device and the direct Core connection failed. Connect to Core through VPN once, then retry without VPN. (Uplink routing)';
-    }
-    if (error.message.startsWith('Uplink ')) {
-      const diagnosis = `Uplink ${stage ?? 'connection'} failed${admissionCode ? ` (${admissionCode})` : ''}`;
-      return `Could not open the session: ${diagnosis}${directAlsoFailed ? ', and Core was unreachable directly' : ''}. Check your connection and retry.`;
-    }
-    if (error.message.startsWith('Direct Core request failed:')) {
-      return 'Could not open the session: Core is unreachable at the paired address. Connect through VPN or enable Remote Control, then retry. (Direct Core)';
-    }
-    return 'Could not open the session: the connection failed. Check your connection and retry.';
-  }
-  return 'Could not open the session: the connection failed before Core could authorize the stream. Retry in a moment.';
 }
-
-export type StreamSocketFactory = (url: string, protocols?: string | string[]) => StreamSocket;
 
 export interface SessionStreamOptions {
-  /** Control-plane base URL (http/https) — the scheme is switched to ws/wss. */
-  baseUrl: string;
   sessionId: string;
-  /** Opens a socket to the given URL (inject the platform `WebSocket` / a fake). */
-  connect: StreamSocketFactory;
+  /** The app's live connection (or a fake in tests). */
+  transport: LiveSessionTransport;
+  /** Whether the session is on screen; see {@link SessionStream.setView}. */
+  view?: boolean;
   /** Called with a fresh state snapshot after each applied event / caught_up. */
   onUpdate?: (state: SessionState) => void;
-  /** Called with a server `error` frame or a malformed/undecodable message. */
+  /** Called when the stream cannot be served (no access, gone, a failed read). */
   onError?: (message: string) => void;
-  /** Schedule a reconnect after an unexpected close. `delayMs` follows the
-   * built-in capped exponential policy. Injected in tests to drive retries
-   * deterministically without timers. */
-  scheduleReconnect?: (retry: () => void, delayMs: number) => void;
   /** Reports transport state for connection banners. */
   onConnectionStateChange?: (state: SessionStreamConnectionState) => void;
   /** Initial resume cursor; events with seq > this are streamed. Default 0. */
   sinceSeq?: number;
-  /** Mints a short-lived, single-use ticket over authenticated HTTPS before each
-   * WebSocket connection. The ticket is carried as a WebSocket subprotocol, never
-   * in the URL. Omit only when the server's authentication gate is disabled. */
-  getStreamTicket?: () => Promise<string>;
 }
 
 export type SessionStreamConnectionState =
   'connecting' | 'connected' | 'reconnecting' | 'paused' | 'stopped';
 
-const RECONNECT_BASE_DELAY_MS = 1_000;
-const RECONNECT_MAX_DELAY_MS = 30_000;
-
 /**
- * Drives a single session's live transcript: connects to
- * `WS /sessions/:id/stream?sinceSeq=N` (server `server.ts`), decodes each frame
- * (reusing {@link decodeStreamMessage}), feeds it into a {@link SessionReducer},
- * and tracks the last seq. On an unexpected close it reconnects, **resuming from
- * the last seq** — the server replays only events after the cursor, so the
- * reducer keeps accumulating with no gap or duplication. {@link stop} ends the
- * stream and suppresses further reconnects.
- *
- * Reconnect uses exponential backoff capped at 30 seconds. The attempt counter
- * resets only after `caught_up`, so a server that accepts sockets but cannot
- * serve the backlog cannot create a tight reconnect loop.
+ * Drives a single session's live transcript over the app's live connection: it
+ * subscribes to the session from its cursor, feeds every frame into a
+ * {@link SessionReducer}, and tracks the last seq. Reconnection belongs to the
+ * connection, which resubscribes from {@link newestSeq} — the server replays only
+ * events after the cursor, so the reducer keeps accumulating with no gap or
+ * duplication. {@link stop} ends the subscription.
  */
 export class SessionStream {
   // Reassigned (not readonly) when older history is prepended: the reducer is
@@ -111,9 +50,8 @@ export class SessionStream {
   // Every applied event frame, in seq order — retained so older history can be
   // prepended (scroll-up) and the transcript rebuilt deterministically.
   private eventFrames: StreamEventFrame[] = [];
-  private readonly wsBaseUrl: string;
-  private socket: StreamSocket | null = null;
-  private opening = false;
+  private handle: LiveSessionHandle | null = null;
+  private view: boolean;
   private lastSeq: number;
   private rateLimitClearedThroughSeq: number | undefined;
   // tool_use_ids whose permission prompt the server has already settled. Kept so
@@ -122,18 +60,15 @@ export class SessionStream {
   private started = false;
   private stopped = false;
   private paused = false;
-  private reconnectGeneration = 0;
-  private reconnectAttempt = 0;
   private connectionState: SessionStreamConnectionState | undefined;
   // True once the initial backlog has drained (the `caught_up` watermark). Until
   // then we apply events but suppress `onUpdate`, batching the backlog into one
   // render (see onMessage) so opening a session doesn't scroll wildly.
   private caughtUp = false;
-  private preparedTicket: { promise: Promise<string>; requestedAt: number } | undefined;
 
   constructor(private readonly opts: SessionStreamOptions) {
-    this.wsBaseUrl = opts.baseUrl.replace(/\/$/, '').replace(/^http/, 'ws');
     this.lastSeq = opts.sinceSeq ?? 0;
+    this.view = opts.view ?? false;
   }
 
   /** The live transcript state (a fresh snapshot). */
@@ -182,12 +117,19 @@ export class SessionStream {
   /**
    * Set the resume cursor BEFORE {@link start} — the WS then replays only events
    * with seq > `sinceSeq`. Used to open a long session from its tail (skip the
-   * whole backlog). No-op once the socket is open (the live cursor is owned by the
-   * message loop from then on).
+   * whole backlog). No-op once subscribed (the live cursor is owned by the
+   * frame loop from then on).
    */
   setSinceSeq(sinceSeq: number): void {
-    if (this.socket !== null) return;
+    if (this.handle !== null) return;
     this.lastSeq = sinceSeq;
+  }
+
+  /** Whether the session is on screen. While it is (and the app is in front),
+   * the server raises no notification about it for this user. */
+  setView(view: boolean): void {
+    this.view = view;
+    this.handle?.setView(view);
   }
 
   /** The seq of the oldest event currently loaded — the cursor for fetching the
@@ -261,179 +203,100 @@ export class SessionStream {
     if (notify) this.opts.onUpdate?.(this.reducer.state);
   }
 
-  /** Fetch the initial ticket alongside REST history without opening a socket. */
-  prepareConnection(): void {
-    if (this.stopped || this.paused || !this.opts.getStreamTicket || this.preparedTicket) return;
-    const promise = this.opts.getStreamTicket();
-    // History can fail or the screen can close before the ticket is consumed.
-    void promise.catch(() => undefined);
-    this.preparedTicket = { promise, requestedAt: Date.now() };
-  }
-
-  /** Open the stream. No-op if already started (call-once) or stopped. */
+  /** Subscribe. No-op if already started (call-once) or stopped. */
   start(): void {
     this.started = true;
-    if (this.stopped || this.paused || this.socket !== null) return;
-    this.open();
+    if (this.stopped || this.paused || this.handle !== null) return;
+    this.subscribe();
   }
 
-  /** Close the socket while the app is backgrounded, preserving reducer state
-   * and the resume cursor. Unlike stop(), this can be resumed. */
+  /** Leave the subscription while the app is backgrounded, preserving reducer
+   * state and the resume cursor. Unlike stop(), this can be resumed. */
   pause(): void {
     if (this.stopped || this.paused) return;
     this.paused = true;
     this.setConnectionState('paused');
-    this.reconnectGeneration += 1;
-    this.preparedTicket = undefined;
-    // The invalidated ticket request must not block a fresh request on resume.
-    this.opening = false;
-    const socket = this.socket;
-    this.socket = null;
-    socket?.close();
+    const handle = this.handle;
+    this.handle = null;
+    handle?.close();
   }
 
-  /** Reconnect from the last received sequence after a background pause. */
+  /** Resubscribe from the last received sequence after a background pause. */
   resume(): void {
     if (this.stopped || !this.paused) return;
     this.paused = false;
-    this.reconnectAttempt = 0;
-    if (this.started && this.socket === null) this.open();
+    if (this.started && this.handle === null) this.subscribe();
   }
 
-  /** Close the stream and stop reconnecting. Idempotent. */
+  /** End the subscription. Idempotent. */
   stop(): void {
     this.stopped = true;
     this.setConnectionState('stopped');
     this.paused = false;
-    this.reconnectGeneration += 1;
-    this.preparedTicket = undefined;
-    const socket = this.socket;
-    this.socket = null;
-    socket?.close();
+    const handle = this.handle;
+    this.handle = null;
+    handle?.close();
   }
 
-  private open(): void {
-    if (this.stopped || this.paused || this.socket !== null || this.opening) return;
-    // Every connection has its own replay watermark. Keeping the previous
-    // socket's value would publish replay frames as live updates before the new
-    // stream confirms it has caught up.
+  private subscribe(): void {
+    // Every subscription has its own replay watermark. Keeping the previous
+    // one would publish replay frames as live updates before this one confirms
+    // it has caught up.
     this.caughtUp = false;
-    this.setConnectionState(this.reconnectAttempt === 0 ? 'connecting' : 'reconnecting');
-    const prepared = this.preparedTicket;
-    this.preparedTicket = undefined;
-    // Tickets expire after 30s on Core; slow history scans need a fresh ticket.
-    const ticketPromise =
-      prepared && Date.now() - prepared.requestedAt < 10_000
-        ? prepared.promise
-        : this.opts.getStreamTicket?.();
-    if (ticketPromise !== undefined) {
-      this.opening = true;
-      const generation = this.reconnectGeneration;
-      void ticketPromise
-        .then((ticket) => {
-          if (this.stopped || this.paused || generation !== this.reconnectGeneration) return;
-          this.opening = false;
-          this.openSocket(`verity-stream-ticket.${ticket}`);
-        })
-        .catch((error: unknown) => {
-          if (this.stopped || generation !== this.reconnectGeneration) return;
-          this.opening = false;
-          this.opts.onError?.(streamTicketFailure(error));
-          this.reconnectAttempt += 1;
+    this.setConnectionState('connecting');
+    let handle: LiveSessionHandle | null = null;
+    const current = (): boolean => !this.stopped && !this.paused && this.handle === handle;
+    handle = this.opts.transport.subscribeSession(
+      this.opts.sessionId,
+      {
+        cursor: () => this.lastSeq,
+        event: (frame) => {
+          if (current()) this.onEvent(frame);
+        },
+        caughtUp: () => {
+          if (!current()) return;
+          this.caughtUp = true;
+          this.setConnectionState('connected');
+          this.opts.onUpdate?.(this.reducer.state);
+        },
+        ended: (reason) => {
+          if (!current()) return;
+          this.handle = null;
+          this.setConnectionState('stopped');
+          this.opts.onError?.(endedMessage(reason));
+        },
+        disconnected: (message) => {
+          if (!current()) return;
+          // The connection resubscribes from the cursor once it is back; the
+          // replay that follows waits for its own `caught_up` again.
+          this.caughtUp = false;
           this.setConnectionState('reconnecting');
-          const delayMs = Math.min(
-            RECONNECT_BASE_DELAY_MS * 2 ** (this.reconnectAttempt - 1),
-            RECONNECT_MAX_DELAY_MS,
-          );
-          const retry = (): void => {
-            if (!this.stopped && !this.paused && generation === this.reconnectGeneration) {
-              this.open();
-            }
-          };
-          if (this.opts.scheduleReconnect) this.opts.scheduleReconnect(retry, delayMs);
-          else setTimeout(retry, delayMs);
-        });
-      return;
-    }
-    this.openSocket();
-  }
-
-  private openSocket(protocol?: string): void {
-    if (this.stopped || this.paused || this.socket !== null) return;
-    const id = encodeURIComponent(this.opts.sessionId);
-    const url = `${this.wsBaseUrl}/sessions/${id}/stream?sinceSeq=${String(this.lastSeq)}`;
-    const socket = this.opts.connect(url, protocol);
-    this.socket = socket;
-    socket.addEventListener('message', (event) => {
-      if (this.socket !== socket) return;
-      this.onMessage(typeof event.data === 'string' ? event.data : String(event.data));
-    });
-    socket.addEventListener('close', () => {
-      this.onClose(socket);
-    });
-    socket.addEventListener('error', () => {
-      if (this.stopped || this.socket !== socket) return;
-      // The close handler drives reconnection; surface the error for the UI.
-      this.opts.onError?.('stream connection error');
-    });
-  }
-
-  private onMessage(raw: string): void {
-    if (this.stopped) return; // ignore late frames buffered on an abandoned socket
-    const decoded = decodeStreamMessage(raw);
-    if (!decoded.ok) {
-      this.opts.onError?.(`undecodable stream message: ${decoded.error}`);
-      return;
-    }
-    const frame = decoded.frame;
-    if (frame.k === 'error') {
-      this.opts.onError?.(frame.message);
-      return;
-    }
-    if (frame.k === 'event') {
-      // Replays can overlap after a reconnect. Never apply an already-seen frame
-      // or let an out-of-order frame move the resume cursor backwards.
-      if (frame.seq <= this.lastSeq) return;
-      this.reducer.applyFrame(frame);
-      this.eventFrames.push(frame);
-      this.lastSeq = frame.seq;
-    }
-    if (frame.k === 'caught_up') {
-      this.caughtUp = true;
-      this.reconnectAttempt = 0;
-      this.setConnectionState('connected');
-    }
-    // Batch the initial backlog: apply its events silently and emit ONCE at
-    // `caught_up`, so the screen renders the whole history in a single pass and the
-    // list anchors to the bottom without re-anchoring per backlog event (that
-    // per-event re-render was the "wild scroll on open"). After caught_up, emit per
-    // event for live streaming.
-    if (this.caughtUp) this.opts.onUpdate?.(this.reducer.state);
-  }
-
-  private onClose(socket: StreamSocket): void {
-    if (this.socket !== socket) return;
-    this.socket = null;
-    if (this.stopped || this.paused) return;
-    this.reconnectAttempt += 1;
-    this.setConnectionState('reconnecting');
-    const delayMs = Math.min(
-      RECONNECT_BASE_DELAY_MS * 2 ** (this.reconnectAttempt - 1),
-      RECONNECT_MAX_DELAY_MS,
+          if (message !== undefined) this.opts.onError?.(message);
+        },
+      },
+      this.view,
     );
-    const generation = this.reconnectGeneration;
-    const retry = (): void => {
-      if (
-        !this.stopped &&
-        !this.paused &&
-        this.socket === null &&
-        generation === this.reconnectGeneration
-      ) {
-        this.open();
-      }
+    this.handle = handle;
+  }
+
+  private onEvent(frame: { seq: number; ts?: number | undefined; event: AgentEvent }): void {
+    // Replays can overlap after a reconnect. Never apply an already-seen frame
+    // or let an out-of-order frame move the resume cursor backwards.
+    if (frame.seq <= this.lastSeq) return;
+    const eventFrame: StreamEventFrame = {
+      k: 'event',
+      seq: frame.seq,
+      ...(frame.ts !== undefined ? { ts: frame.ts } : {}),
+      event: frame.event,
     };
-    if (this.opts.scheduleReconnect) this.opts.scheduleReconnect(retry, delayMs);
-    else setTimeout(retry, delayMs);
+    this.reducer.applyFrame(eventFrame);
+    this.eventFrames.push(eventFrame);
+    this.lastSeq = frame.seq;
+    // Batch the initial backlog: apply its events silently and emit ONCE at
+    // `caught_up`, so the screen renders the whole history in a single pass and
+    // the list anchors to the bottom without re-anchoring per backlog event.
+    // After caught_up, emit per event for live streaming.
+    if (this.caughtUp) this.opts.onUpdate?.(this.reducer.state);
   }
 
   private setConnectionState(state: SessionStreamConnectionState): void {

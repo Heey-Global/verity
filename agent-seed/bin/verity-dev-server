@@ -48,7 +48,7 @@ function brokerUrl() {
   if (/\/internal\/project\/memory$/u.test(memory))
     return memory.replace(/\/internal\/project\/memory$/u, '/internal/dev-servers');
   fail(
-    'verity-dev-server: managed dev servers are unavailable in this sandbox. Start the server yourself and run: verity-dev-server announce --port <port> --name <name>',
+    'verity-dev-server: managed dev servers are unavailable in this sandbox. Report this blocker and restore the managed server capability before starting a server. Do not bypass it with a direct background process.',
   );
 }
 

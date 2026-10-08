@@ -389,6 +389,12 @@ export const agentEventSchema = z.discriminatedUnion('t', [
         message: z.string(),
       })
       .optional(),
+    // The local user the turn runs for (ADR 0023 §2): the authenticated caller of
+    // the turn route, or the confirming user of the automation that started it.
+    // Durable provenance set by the server, never taken from a request body, and
+    // the recipient of the turn's notifications. Absent for turns that predate it
+    // or have no user behind them (a linked peer's message, a meeting).
+    initiatedBy: z.object({ userId: z.string().min(1) }).optional(),
     // May be empty when the turn carries only attachments (e.g. a screenshot with
     // no caption); the dispatch boundary guarantees at least one of text/attachments.
     text: z.string(),
@@ -568,6 +574,15 @@ export const agentEventSchema = z.discriminatedUnion('t', [
     outcomeDelivered: z.boolean(),
     blocker: z.string().min(1).max(500).optional(),
     requiredDecision: z.string().min(1).max(500).optional(),
+  }),
+  // The user's durable task list changed for this session (tasks assigned to it,
+  // or written by its agent), so an open panel and the badge refresh live and
+  // the chat can show a compact line linking to the panel.
+  z.object({
+    t: z.literal('tasks_updated'),
+    origin: z.enum(['user', 'agent']),
+    change: z.enum(['added', 'updated', 'completed', 'dropped', 'deleted']),
+    taskIds: z.array(z.string().min(1).max(128)).min(1).max(100),
   }),
   z.object({
     t: z.literal('raw'),

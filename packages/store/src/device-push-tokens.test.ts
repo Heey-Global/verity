@@ -1,3 +1,4 @@
+import { sql } from 'kysely';
 import { createTestDb, truncateAll, type TestDb } from './testing.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -17,6 +18,23 @@ describe('device push tokens', () => {
   async function pair(id: string): Promise<void> {
     await ctx.store.insertAuthToken({ id, tokenHash: `hash-${id}`, label: id });
   }
+
+  it('excludes disabled users from targeted push delivery', async () => {
+    await pair('phone');
+    await ctx.store.upsertDevicePushToken({
+      authTokenId: 'phone',
+      expoToken: 'ExpoPushToken[phone]',
+      platform: 'ios',
+    });
+    const user = await ctx.db
+      .selectFrom('auth_tokens')
+      .select('user_id')
+      .where('id', '=', 'phone')
+      .executeTakeFirstOrThrow();
+    expect(await ctx.store.listDevicePushTokensForUsers([user.user_id])).toHaveLength(1);
+    await sql`update users set status = 'disabled' where id = ${user.user_id}`.execute(ctx.db);
+    expect(await ctx.store.listDevicePushTokensForUsers([user.user_id])).toEqual([]);
+  });
 
   it('registers and rotates one current token per paired device', async () => {
     await pair('phone');

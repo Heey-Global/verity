@@ -1,5 +1,5 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
 import {
-  isPullRequestCheckingMergeability,
   VerityApiError,
   type VerityClient,
   type BranchList,
@@ -18,14 +18,6 @@ import {
   takePrefetchedBranches,
 } from '../lib/branchesPrefetch';
 import { hasLocalSaveChanges } from '../lib/localSaveVisibility';
-
-const ACTIVE_PR_POLL_MS = 5_000;
-// Still discovering: no PR yet, so poll briskly to surface one the agent opens
-// after mount (the server keeps a "no PR" answer for only ~4s, so this converges
-// within a few seconds without hammering GitHub).
-const DISCOVER_PR_POLL_MS = 5_000;
-const SETTLED_PR_POLL_MS = 30_000;
-const TERMINAL_PR_POLL_MS = 60_000;
 
 export interface UseBranches {
   /** The branch currently checked out in the session's worktree (undefined until loaded). */
@@ -113,8 +105,6 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     };
   }, []);
 
-  const [discoveryPollMs, setDiscoveryPollMs] = useState(DISCOVER_PR_POLL_MS);
-  const discoveryBranch = useRef<string | undefined>(undefined);
   // All triggers share the request. Explicit refreshes queue one fresh read so
   // a response started before a mutation cannot become its final projection.
   const pending = useRef<{
@@ -132,8 +122,6 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     reqId.current += 1;
     if (pending.current) pending.current.followup = false;
     pending.current = null;
-    discoveryBranch.current = undefined;
-    setDiscoveryPollMs(DISCOVER_PR_POLL_MS);
     setCurrent(cached?.current);
     setSwitchable(cached?.switchable ?? []);
     setPreviewable(cached?.previewable ?? []);
@@ -189,13 +177,6 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
               setLocalMergeHasChanges(hasLocalSaveChanges(res.localMerge));
               setWorkspaceMissing(res.workspaceMissing === true);
               setError(undefined);
-              const sameBranch = discoveryBranch.current === res.current;
-              discoveryBranch.current = res.current;
-              setDiscoveryPollMs((previous) =>
-                res.pullRequest || !sameBranch
-                  ? DISCOVER_PR_POLL_MS
-                  : Math.min(previous * 2, 30_000),
-              );
             }
           } catch (err) {
             if (fresh()) setError(err instanceof Error ? err.message : String(err));
@@ -243,30 +224,18 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     return () => subscription.remove();
   }, []);
 
-  const activePr =
-    pullRequest !== null &&
-    pullRequest.phase === 'open' &&
-    (pullRequest.pipeline === 'running' ||
-      pullRequest.pipeline === 'pending' ||
-      (pullRequest.checks.failed === 0 && pullRequest.checks.total === 0) ||
-      // GitHub's merge test usually settles within seconds; the button waits on it.
-      isPullRequestCheckingMergeability(pullRequest));
-  const intervalMs =
-    pullRequest === null
-      ? discoveryPollMs
-      : pullRequest.phase !== 'open'
-        ? TERMINAL_PR_POLL_MS
-        : activePr
-          ? ACTIVE_PR_POLL_MS
-          : SETTLED_PR_POLL_MS;
-
   useEffect(() => {
     if (!focused || !appActive || !enabled || workspaceMissing) return undefined;
-    // Response objects change on every read; only a cadence change restarts the
-    // timer, and every trigger shares load's overlap guard.
-    const timer = setInterval(() => void load({ silent: true, force: false }), intervalMs);
-    return () => clearInterval(timer);
-  }, [load, intervalMs, focused, appActive, workspaceMissing, enabled]);
+    const path = `/sessions/${encodeURIComponent(sessionId)}/branches`;
+    // A prefetch from another client does not register this client's read observation.
+    // Live hints queue a fresh read behind any request already in flight.
+    return subscribeLiveRefresh(
+      client,
+      () => load({ silent: true }),
+      (resourcePath) => resourcePath.split('?')[0] === path,
+      [{ path }],
+    );
+  }, [client, sessionId, load, focused, appActive, workspaceMissing, enabled]);
 
   const refresh = useCallback(() => {
     if (enabled) void load();

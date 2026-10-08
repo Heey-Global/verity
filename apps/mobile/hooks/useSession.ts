@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
 import {
   type VerityClient,
   type PermissionDecision,
@@ -8,11 +9,13 @@ import {
   publishSettledPermission,
   publishSessionStatusMutation,
 } from '@verity/mobile';
+import type { LiveHint } from '@verity/mobile';
+import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AppState } from 'react-native';
 
+import { liveConnectionFor, useLiveHints } from '../lib/liveConnection';
 import { pendingSession } from '../lib/pendingSessions';
-import { createWebSocket } from '../lib/socket';
 
 export interface UseSession extends SessionModelState {
   /** Fire-and-forget an operator turn; the agent's reply streams back over WS.
@@ -80,9 +83,8 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
     const model = new SessionModel({
       client,
       sessionId,
-      baseUrl,
-      connect: createWebSocket,
-      getStreamTicket: async () => (await client.createStreamTicket(sessionId)).ticket,
+      transport: liveConnectionFor(baseUrl),
+      activityPollMs: 0,
       onChange: publish,
       onPermissionSettled: (toolUseId, accepted) => {
         if (accepted) publishSessionStatusMutation(sessionId, 'running');
@@ -131,6 +133,42 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
       model.stop();
     };
   }, [model, binding]);
+
+  // On screen: while focused, the server raises no notification about this
+  // session for this user — they are looking at it.
+  useFocusEffect(
+    useCallback(() => {
+      model.setView(true);
+      return () => model.setView(false);
+    }, [model]),
+  );
+
+  // The activity snapshot (working indicator, queue, pending requests) is not
+  // streamed; refresh it the moment the server says it changed.
+  const onHints = useCallback(
+    (hints: LiveHint[]) => {
+      if (
+        hints.some((hint) =>
+          hint.topics.some(
+            (topic) => topic === 'activity' || topic === 'status' || topic === 'permission',
+          ),
+        )
+      ) {
+        model.refreshActivity();
+      }
+    },
+    [model],
+  );
+  useLiveHints(baseUrl, onHints, sessionId);
+  useEffect(
+    () =>
+      subscribeLiveRefresh(
+        client,
+        () => model.refreshActivity(),
+        (path) => path === `/sessions/${encodeURIComponent(sessionId)}/activity`,
+      ),
+    [client, model, sessionId],
+  );
 
   const sendTurn = useCallback(
     (prompt: string, opts?: Omit<TurnRequest, 'prompt'>) => {

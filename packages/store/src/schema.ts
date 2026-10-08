@@ -59,6 +59,8 @@ export interface SessionsTable {
   >;
   planning_revision: ColumnType<number, number | undefined, number>;
   planning_plan: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Operator-marked favorite; highlighted in the session list. */
+  favorite: ColumnType<boolean, boolean | undefined, boolean>;
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
@@ -663,6 +665,8 @@ export interface QueuedTurnOpts {
   attachments?: Attachment[];
   displayPrompt?: string;
   peer?: { sessionId: string; projectId: string; label: string; message: string };
+  /** The local user the queued turn runs for; stamped on its `prompt` event. */
+  initiatedBy?: { userId: string };
 }
 
 /**
@@ -951,6 +955,8 @@ export interface SessionAutomationsTable {
   last_detail: ColumnType<string | null, string | null | undefined, string | null>;
   /** The scheduler's due-time index. NULL while paused. */
   next_run_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  /** The local user who confirmed it; its turns run for and notify that user. */
+  sponsor_user_id: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, string | undefined, never>;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
@@ -970,6 +976,38 @@ export interface ManagedDevServersTable {
   approved_workdir: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, string | undefined, never>;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
+}
+
+/** A durable task owned by one user (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md).
+ *  `project_id` null is the General bucket; `session_id` is the session the task
+ *  is assigned to, which is what the conductor injects into that session's turns.
+ *  `title`, `detail` and `result` hold cipher envelopes, never plaintext. */
+export interface TasksTable {
+  id: string;
+  owner_user_id: ColumnType<string, string, never>;
+  project_id: ColumnType<string | null, string | null | undefined, string | null>;
+  session_id: ColumnType<string | null, string | null | undefined, string | null>;
+  source_session_id: ColumnType<string | null, string | null | undefined, never>;
+  origin: ColumnType<TaskOrigin, TaskOrigin, TaskOrigin>;
+  title: string;
+  detail: ColumnType<string | null, string | null | undefined, string | null>;
+  attachments: ColumnType<TaskAttachment[], string | undefined, string>;
+  status: ColumnType<TaskStatus, TaskStatus | undefined, TaskStatus>;
+  result: ColumnType<string | null, string | null | undefined, string | null>;
+  sort: ColumnType<number, number | undefined, number>;
+  revision: ColumnType<number, number | undefined, number>;
+  created_at: ColumnType<Date, string | undefined, never>;
+  updated_at: ColumnType<Date, string | undefined, string | undefined>;
+  completed_at: ColumnType<Date | null, string | null | undefined, string | null>;
+}
+
+export type TaskOrigin = 'user' | 'agent';
+export type TaskStatus = 'open' | 'in_progress' | 'done' | 'dropped';
+/** Reference into the content-addressed `attachments` table. */
+export interface TaskAttachment {
+  hash: string;
+  filename: string;
+  mimeType: string;
 }
 
 /** One managed dev server bound to one session's worktree. */
@@ -1365,6 +1403,7 @@ export interface Database {
   session_automations: SessionAutomationsTable;
   managed_dev_servers: ManagedDevServersTable;
   managed_dev_server_instances: ManagedDevServerInstancesTable;
+  tasks: TasksTable;
   runner_frames: RunnerFramesTable;
   dev_servers: DevServersTable;
   dev_server_detection_state: DevServerDetectionStateTable;

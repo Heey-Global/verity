@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { VERITY_CONTROL_PROJECT_ID, buildServer } from './server.js';
+import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import {
   markInternalConnections,
   PROJECT_UDS_ROUTES,
@@ -81,6 +82,7 @@ function build(
     enforceAuth?: boolean;
     /** Advertise the control-plane session tools, as `embedded.ts` does for that project. */
     sessionTools?: boolean;
+    runtimeDiagnostics?: ReturnType<typeof createRuntimeDiagnostics>;
     linkedTools?: boolean;
     planningTools?: boolean;
     deferLinkedApproval?: boolean;
@@ -251,6 +253,7 @@ function build(
   } as unknown as Conductor;
   const app = buildServer({
     eventStore: store,
+    runtimeDiagnostics: options.runtimeDiagnostics,
     bus: new InMemoryEventBus(),
     conductor,
     secretCipher: cipher,
@@ -1253,7 +1256,7 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
   // projection. That interception is a seam, and a seam with no test through it is how the
   // 401 above survived. This is that test.
   it('serves diagnostics only for an authorized Control caller with an audited approval', async () => {
-    const harness = build({ sessionTools: true });
+    const harness = build({ sessionTools: true, runtimeDiagnostics: createRuntimeDiagnostics({}) });
     await harness.store.createSession({
       sessionId: 'control-diag',
       worktree: process.cwd(),
@@ -1279,6 +1282,11 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
         schemaVersion: 1,
         secretJobRuntime: { state: 'unknown' },
         session: null,
+        infrastructure: {
+          resources: { scope: 'server_process_and_visible_host', rssBytes: expect.any(Number) },
+          docker: { state: 'unavailable' },
+          host: { state: 'unavailable' },
+        },
       });
       expect(harness.invocations).toEqual([]);
       expect(harness.approvals).toEqual([

@@ -1,3 +1,4 @@
+jest.mock('./liveConnection', () => ({ subscribeLiveRefresh: () => () => {} }));
 import { createVerityClient, getActiveMeetingServerId } from './client';
 import { waitFor } from '@testing-library/react-native';
 import { AppState } from 'react-native';
@@ -16,9 +17,11 @@ import { startLiveMeetingSync, syncMeetingSession } from './liveMeetingSync';
 jest.mock('./client', () => ({
   createVerityClient: jest.fn(),
   getActiveMeetingServerId: jest.fn().mockReturnValue('server-1'),
+  subscribeVerityBaseUrl: () => () => {},
 }));
 jest.mock('./liveMeetingSession', () => ({
   currentMeeting: jest.fn().mockReturnValue(null),
+  subscribeMeeting: () => () => {},
   endMeeting: jest.fn().mockResolvedValue(undefined),
   pauseMeeting: jest.fn().mockResolvedValue(undefined),
   resumeMeeting: jest.fn().mockResolvedValue(undefined),

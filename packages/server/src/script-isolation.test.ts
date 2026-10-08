@@ -1,6 +1,15 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -229,9 +238,13 @@ describe('Runner start without script isolation', () => {
 });
 
 describe('spawn broker entry scripts', () => {
-  async function scriptFixture() {
-    const worktree = join(root, 'worktree');
-    await mkdir(worktree);
+  // Session worktrees are nested in the broker's configured root, as
+  // `/work/.verity-sessions/<agent>` is in a project Sandbox. A flat fixture
+  // whose cwd IS the root passes whether the broker measures the project path
+  // from the session or from the root, and so hides the wrong one.
+  async function scriptFixture(loading: 'isolated' | 'dynamic' = 'isolated') {
+    const worktree = join(root, '.verity-sessions', 'agent-1');
+    await mkdir(worktree, { recursive: true });
     // Readable to the script only if the helper is NOT confining it to its snapshot.
     await writeFile(join(worktree, 'mutable-dependency'), 'unconfined read\n');
     const script = join(worktree, 'deploy.sh');
@@ -251,9 +264,9 @@ describe('spawn broker entry scripts', () => {
         command: ['/bin/sh', script],
         entryScript: {
           path: script,
-          projectPath: 'worktree/deploy.sh',
+          projectPath: 'deploy.sh',
           sha256: createHash('sha256').update(contents).digest('hex'),
-          loading: 'isolated' as const,
+          loading,
         },
       },
     };
@@ -355,6 +368,49 @@ describe('spawn broker entry scripts', () => {
       }
     },
   );
+
+  it('measures an entry script from its session worktree, not the configured root', async () => {
+    // Reports isolation and runs nothing: the broker's own path handling is under test.
+    const helper = join(root, 'verity-script-sandbox-noop');
+    await writeFile(helper, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const spawned: string[][] = [];
+    const broker = await startBroker(helper, spawned);
+    // The client blanks the secrets it sent once a request settles.
+    const secrets = () => [
+      { secretAlias: 'DEPLOY_TOKEN', env: 'DEPLOY_TOKEN', secret: 'canary-value' },
+    ];
+    try {
+      const { request, worktree } = await scriptFixture('dynamic');
+      // Root-relative is what the agent cannot know: it names the session directory.
+      const rootRelativeRequest = {
+        ...request,
+        secrets: secrets(),
+        entryScript: { ...request.entryScript, projectPath: '.verity-sessions/agent-1/deploy.sh' },
+      };
+      const rootRelative = await runTrustedCliViaBroker(rootRelativeRequest, {
+        runtimeDir: root,
+        brokerSocket: broker.socketPath,
+      }).then(
+        () => undefined,
+        (error: Error & { trustedCliFailure?: unknown }) => error,
+      );
+      expect(rootRelative?.trustedCliFailure).toMatchObject({
+        phase: 'validation',
+        code: 'validation_entry_project_path_mismatch',
+      });
+
+      const result = await runTrustedCliViaBroker(
+        { ...request, secrets: secrets() },
+        { runtimeDir: root, brokerSocket: broker.socketPath },
+      );
+      expect(result).toMatchObject({ exitCode: 0 });
+      // A dynamic script reads live files of its own session, never a sibling's.
+      const argv = spawned[0]!;
+      expect(argv[argv.indexOf('--dynamic-root') + 1]).toBe(await realpath(worktree));
+    } finally {
+      await broker.close();
+    }
+  });
 
   it('relays the refusal to the Server as a named, non-started dispatch failure', async () => {
     const socketDir = join(root, 'project');

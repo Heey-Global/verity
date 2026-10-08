@@ -119,3 +119,22 @@ describe('agentEventDescriptor', () => {
     expect(d).toEqual({ kind: 'text', label: 'text', tone: 'neutral' });
   });
 });
+
+it('describes durable task updates as an actionable Tasks row', () => {
+  expect(
+    agentEventDescriptor({
+      t: 'tasks_updated',
+      origin: 'agent',
+      change: 'added',
+      taskIds: ['one', 'two'],
+    }),
+  ).toMatchObject({ label: 'Agent planned 2 steps', action: 'tasks' });
+  expect(
+    agentEventDescriptor({
+      t: 'tasks_updated',
+      origin: 'user',
+      change: 'completed',
+      taskIds: ['one'],
+    }),
+  ).toMatchObject({ label: 'You completed 1 task', action: 'tasks' });
+});

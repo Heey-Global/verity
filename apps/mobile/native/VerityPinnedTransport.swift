@@ -279,8 +279,8 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
       let id = UUID().uuidString
       let delegate = try CertificatePinDelegate(pin: tlsPin, origin: target)
       delegate.onOpen = { [weak self] in self?.sendEvent("onWebSocketEvent", ["id": id, "type": "open"]) }
-      delegate.onClose = { [weak self] reason in
-        self?.sendEvent("onWebSocketEvent", ["id": id, "type": "close", "data": reason ?? ""])
+      delegate.onClose = { [weak self] code, reason in
+        self?.sendEvent("onWebSocketEvent", ["id": id, "type": "close", "code": code, "data": reason ?? ""])
         self?.removeSocket(id)?.0.finishTasksAndInvalidate()
       }
       let session = URLSession(configuration: try self.configuration(proxyPort: proxyPort), delegate: delegate, delegateQueue: nil)
@@ -299,6 +299,13 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
         self?.receiveNextWebSocketMessage(id: id)
       }
       return id
+    }
+
+    // The live connection talks back (subscriptions, foreground state, pings).
+    // A failed send surfaces through the receive loop, which closes the socket.
+    AsyncFunction("sendWebSocket") { (id: String, text: String) in
+      guard let (_, task, _) = self.socket(id) else { return }
+      task.send(.string(text)) { _ in }
     }
 
     AsyncFunction("closeWebSocket") { (id: String) in
@@ -327,7 +334,7 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
         guard let self, let (session, _, _) = self.removeSocket(id) else { return }
         session.finishTasksAndInvalidate()
         self.sendEvent("onWebSocketEvent", ["id": id, "type": "error", "data": error.localizedDescription])
-        self.sendEvent("onWebSocketEvent", ["id": id, "type": "close", "data": error.localizedDescription])
+        self.sendEvent("onWebSocketEvent", ["id": id, "type": "close", "code": task.closeCode.rawValue, "data": error.localizedDescription])
       }
     }
   }

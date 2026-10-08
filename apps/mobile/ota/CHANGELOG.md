@@ -1,5 +1,118 @@
 # Changelog
 
+## [1.58.4](https://github.com/Heey-Global/verity/compare/mobile-v1.58.3...mobile-v1.58.4) (2026-10-07)
+
+
+### Features
+
+* **mobile:** move session markers to a trailing icon-and-bar column ([#1307](https://github.com/Heey-Global/verity/issues/1307)) ([a4b4c22](https://github.com/Heey-Global/verity/commit/a4b4c22cf3713c76b865912d3645372ca5c5863c))
+
+
+### Bug Fixes
+
+* **mobile:** stabilize meeting UI and isolate research replies ([#1308](https://github.com/Heey-Global/verity/issues/1308)) ([66ec3d5](https://github.com/Heey-Global/verity/commit/66ec3d567c629c534a8674ae5124809969e1e80d))
+* **mobile:** subscribe to PR updates after branch prefetch ([#1305](https://github.com/Heey-Global/verity/issues/1305)) ([9c07247](https://github.com/Heey-Global/verity/commit/9c072477d40dc8fe2f20a61440d0a4ad21e4cc00))
+* **session:** require actionable next steps for unfinished outcomes ([#1303](https://github.com/Heey-Global/verity/issues/1303)) ([1caf118](https://github.com/Heey-Global/verity/commit/1caf1184c24395765c3e06b3c8031f065d596b9c))
+
+## [1.58.3](https://github.com/Heey-Global/verity/compare/mobile-v1.58.2...mobile-v1.58.3) (2026-10-07)
+
+
+### Bug Fixes
+
+* **mobile:** avoid overview renders during settings navigation ([#1299](https://github.com/Heey-Global/verity/issues/1299)) ([c91c8e6](https://github.com/Heey-Global/verity/commit/c91c8e64f04de18b4fc281349b3846a59fdcb0c2))
+
+## [1.58.2](https://github.com/Heey-Global/verity/compare/mobile-v1.58.1...mobile-v1.58.2) (2026-10-07)
+
+
+### Features
+
+* **mobile:** mark sessions on the row edge and show sharing in green ([#1296](https://github.com/Heey-Global/verity/issues/1296)) ([495135a](https://github.com/Heey-Global/verity/commit/495135a54f409ce1ea8d8d08e207748349a4fc45))
+* **tasks:** capture card redesign, shared action menu, agent steps end with their session ([#1292](https://github.com/Heey-Global/verity/issues/1292)) ([bed9367](https://github.com/Heey-Global/verity/commit/bed93677b8d93bf68f12c3d60651394a99ebf995))
+
+
+### Bug Fixes
+
+* **mobile:** keep session swipe actions opaque and add Edit beside Delete ([#1293](https://github.com/Heey-Global/verity/issues/1293)) ([b7057b6](https://github.com/Heey-Global/verity/commit/b7057b6e7ced977faa8d2cc413c12ec7d7d86e79))
+* **web:** match browser sign-in to the preview code page ([#1295](https://github.com/Heey-Global/verity/issues/1295)) ([1e84862](https://github.com/Heey-Global/verity/commit/1e848627bbb218243ab9a4d29b41f187dfe56edb))
+* **web:** style the composer input and support drag and drop in the browser ([#1297](https://github.com/Heey-Global/verity/issues/1297)) ([dbc0368](https://github.com/Heey-Global/verity/commit/dbc03680831cec0b5dd95ab2112d324924787920))
+
+## [1.58.1](https://github.com/Heey-Global/verity/compare/mobile-v1.58.0...mobile-v1.58.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **mobile:** initialize Unistyles before loading routes ([#1288](https://github.com/Heey-Global/verity/issues/1288)) ([0f89d27](https://github.com/Heey-Global/verity/commit/0f89d27388c3a004aa0ca1c04c0b8e28d6b99a0f))
+* **web:** restore layouts and composer behavior and optimize loading ([#1273](https://github.com/Heey-Global/verity/issues/1273)) ([ba34bbb](https://github.com/Heey-Global/verity/commit/ba34bbb6118e5ee92d23ae027dca886c40e94a01))
+
+## [1.57.5](https://github.com/Heey-Global/verity/compare/mobile-v1.57.4...mobile-v1.57.5) (2026-10-07)
+
+
+### Bug Fixes
+
+* **mobile:** use general diagnostics settings label ([#1285](https://github.com/Heey-Global/verity/issues/1285)) ([915723e](https://github.com/Heey-Global/verity/commit/915723e19fc9311b5667eb6bcf6c83d056a04485))
+
+## [1.57.4](https://github.com/Heey-Global/verity/compare/mobile-v1.57.3...mobile-v1.57.4) (2026-10-07)
+
+
+### Features
+
+* **mobile:** export update diagnostics from settings ([#1282](https://github.com/Heey-Global/verity/issues/1282)) ([b5046ab](https://github.com/Heey-Global/verity/commit/b5046ab5149546445ecd2294df688c65630f6637))
+
+## [1.57.3](https://github.com/Heey-Global/verity/compare/mobile-v1.57.2...mobile-v1.57.3) (2026-10-07)
+
+
+### Features
+
+* **mobile:** add session favorites, swipe actions and context menu ([#1275](https://github.com/Heey-Global/verity/issues/1275)) ([4b5c745](https://github.com/Heey-Global/verity/commit/4b5c745650a691bcb8cd0d7f9792d055778ced93))
+* **tasks:** quieter task surfaces, agent steps apart, bubble physics ([#1276](https://github.com/Heey-Global/verity/issues/1276)) ([f656a4b](https://github.com/Heey-Global/verity/commit/f656a4bf505c977d3fc30e5dcca6ffadd938018c))
+
+## [1.57.2](https://github.com/Heey-Global/verity/compare/mobile-v1.57.1...mobile-v1.57.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* **session:** improve knowledge retrieval and concise progress guidance ([#1269](https://github.com/Heey-Global/verity/issues/1269)) ([2e1d901](https://github.com/Heey-Global/verity/commit/2e1d9010663405cdb463c080868ec9074361fd18))
+
+## [1.57.1](https://github.com/Heey-Global/verity/compare/mobile-v1.57.0...mobile-v1.57.1) (2026-10-07)
+
+
+### Features
+
+* **live:** replace app polling with shared socket updates ([#1262](https://github.com/Heey-Global/verity/issues/1262)) ([bff9df1](https://github.com/Heey-Global/verity/commit/bff9df116a8175ba29edc07b3c2ba0014213c99f))
+
+## [1.56.1](https://github.com/Heey-Global/verity/compare/mobile-v1.56.0...mobile-v1.56.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **mobile:** display readable names for all Verity tools ([#1236](https://github.com/Heey-Global/verity/issues/1236)) ([3c59133](https://github.com/Heey-Global/verity/commit/3c591338826d0ba376fab95f5e52ef7c98e6118b))
+
+## [1.54.3](https://github.com/Heey-Global/verity/compare/mobile-v1.54.2...mobile-v1.54.3) (2026-10-06)
+
+
+### Features
+
+* **tasks:** add durable task persistence and agent access ([#1226](https://github.com/Heey-Global/verity/issues/1226)) ([9f446ec](https://github.com/Heey-Global/verity/commit/9f446ec22f298a086db72803fca1403386075055))
+
+
+### Bug Fixes
+
+* **mobile:** match static folder breadcrumbs to explorer ([#1220](https://github.com/Heey-Global/verity/issues/1220)) ([31ced91](https://github.com/Heey-Global/verity/commit/31ced918a59f28a13fb54a3e4390943b4d2f79eb))
+
+## [1.54.2](https://github.com/Heey-Global/verity/compare/mobile-v1.54.1...mobile-v1.54.2) (2026-10-06)
+
+
+### Features
+
+* **broker:** mediate GitHub sandbox traffic through HTTP secret broker ([#1204](https://github.com/Heey-Global/verity/issues/1204)) ([2ff5ca9](https://github.com/Heey-Global/verity/commit/2ff5ca92923fba2f989be248fcd907545c1ed990))
+* **mobile:** compact issue and branch refs in header and overview ([#1215](https://github.com/Heey-Global/verity/issues/1215)) ([e50cf97](https://github.com/Heey-Global/verity/commit/e50cf975272444bf7aeb6e958a756baafb8885cc))
+* **web:** ship browser client in Core Docker image ([#1216](https://github.com/Heey-Global/verity/issues/1216)) ([63bb411](https://github.com/Heey-Global/verity/commit/63bb411ecedce8c687a7025f43f9c1af57db2d4e))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @agentclientprotocol/sdk to v1.7.0 ([#1194](https://github.com/Heey-Global/verity/issues/1194)) ([7669e6e](https://github.com/Heey-Global/verity/commit/7669e6e896454294b3d136875df25ac06370da76))
+
 ## [1.54.1](https://github.com/Heey-Global/verity/compare/mobile-v1.54.0...mobile-v1.54.1) (2026-10-06)
 
 

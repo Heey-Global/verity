@@ -1,8 +1,8 @@
 import type {
+  LiveSocket,
   SessionAutomation,
   SessionDetail,
   StreamEventFrame,
-  StreamSocket,
 } from '@verity/mobile';
 import { randomUUID } from 'expo-crypto';
 
@@ -160,8 +160,7 @@ function append(session: DemoSession, event: StreamEventFrame['event']): void {
   };
   session.events.push(frame);
   session.detail.eventCount = frame.seq;
-  for (const socket of sockets)
-    if (socket.sessionId === session.detail.sessionId) socket.deliverLive(frame);
+  for (const socket of sockets) socket.deliverLive(session.detail.sessionId, frame);
 }
 function clearTimers(session: DemoSession): void {
   for (const timer of session.timers) clearTimeout(timer);
@@ -351,7 +350,7 @@ const unsupported = () =>
     400,
   );
 /** The local transport never forwards unknown routes or hosts to network fetch. */
-export const demoFetch: typeof fetch = async (input, init) => {
+const demoFetchImpl: typeof fetch = async (input, init) => {
   if (init?.signal?.aborted) {
     const error = new Error('Demo request aborted');
     error.name = 'AbortError';
@@ -367,6 +366,8 @@ export const demoFetch: typeof fetch = async (input, init) => {
     typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : {};
   const path = url.pathname;
   const list = () => [...sessions.values()].map((session) => session.detail);
+  if (path === '/live/ticket' && method === 'POST')
+    return json({ ticket: 'd'.repeat(43), expiresAt: new Date(Date.now() + 60000).toISOString() });
   if (path === '/healthz' && method === 'GET')
     return json({
       status: 'ok',
@@ -558,7 +559,7 @@ export const demoFetch: typeof fetch = async (input, init) => {
       if (method === 'DELETE') {
         clearTimers(session);
         sessions.delete(id);
-        for (const socket of [...sockets]) if (socket.sessionId === id) socket.close();
+        for (const socket of [...sockets]) socket.endSession(id);
         return json({ sessionId: id });
       }
       if (method === 'PATCH') {
@@ -576,11 +577,6 @@ export const demoFetch: typeof fetch = async (input, init) => {
         return json({ sessionId: id, name: session.detail.name });
       }
     }
-    if (rest === '/stream-ticket' && method === 'POST')
-      return json({
-        ticket: 'd'.repeat(43),
-        expiresAt: new Date(Date.now() + 60000).toISOString(),
-      });
     if (rest === '/activity' && method === 'GET')
       return json({
         busy: session.detail.busy,
@@ -752,57 +748,125 @@ export const demoFetch: typeof fetch = async (input, init) => {
   }
   return unsupported();
 };
-class DemoSocket implements StreamSocket {
-  readonly sessionId: string;
-  private listeners = new Map<string, Array<(event: { data: unknown }) => void>>();
+/** Demo changes use the same resource invalidations as a connected Core. */
+export const demoFetch: typeof fetch = async (input, init) => {
+  const response = await demoFetchImpl(input, init);
+  const method = init?.method ?? 'GET';
+  if (response.ok && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    for (const socket of sockets) socket.invalidateResources();
+  }
+  return response;
+};
+/** The live connection (`WS /live`) of the local demo: session subscriptions
+ * replay from their cursor and then stream, and overview subscribers get hints. */
+class DemoSocket implements LiveSocket {
+  private listeners = new Map<string, Array<(event: { data?: unknown }) => void>>();
   private closed = false;
-  private replayed = false;
-  private replayTimer: ReturnType<typeof setTimeout>;
-  constructor(url: string) {
-    const parsed = new URL(url);
-    this.sessionId = decodeURIComponent(parsed.pathname.split('/')[2] ?? '');
+  private overview = false;
+  private readonly resources = new Set<string>();
+  /** Subscribed sessions; `true` once their replay has caught up. */
+  private readonly subscriptions = new Map<string, boolean>();
+  private readonly timers = new Set<ReturnType<typeof setTimeout>>();
+  constructor() {
     sockets.add(this);
-    this.replayTimer = setTimeout(() => {
-      const session = sessions.get(this.sessionId);
-      if (!session) {
-        this.deliver({ k: 'error', message: 'Demo session not found.' });
-        return;
-      }
-      const since = Number(parsed.searchParams.get('sinceSeq') ?? 0);
-      for (const frame of session.events) if (frame.seq > since) this.deliver(frame);
-      this.replayed = true;
-      this.deliver({ k: 'caught_up', seq: session.events.length });
+    this.later(() => this.deliver({ k: 'ready', v: 1, maxSessions: 8, resources: true }));
+  }
+  private later(callback: () => void): void {
+    const timer = setTimeout(() => {
+      this.timers.delete(timer);
+      callback();
     }, 0);
+    this.timers.add(timer);
   }
   addEventListener(
-    type: 'message' | 'close' | 'error',
-    listener: (event: { data: unknown }) => void,
+    type: 'open' | 'message' | 'close' | 'error',
+    listener: (event: { data?: unknown }) => void,
   ): void {
     const listeners = this.listeners.get(type) ?? [];
     listeners.push(listener);
     this.listeners.set(type, listeners);
+  }
+  send(data: string): void {
+    if (this.closed) return;
+    const frame = JSON.parse(data) as {
+      k: string;
+      ch?: string;
+      id?: string;
+      sinceSeq?: number;
+      n?: number;
+      resource?: { path: string };
+    };
+    if (frame.k === 'watch' && frame.resource) {
+      const path = frame.resource.path;
+      this.resources.add(path);
+      this.later(() => {
+        if (this.resources.has(path)) this.deliver({ k: 'invalidate', path });
+      });
+    }
+    if (frame.k === 'unwatch' && frame.resource) this.resources.delete(frame.resource.path);
+    if (frame.k === 'ping') this.deliver({ k: 'pong', n: frame.n ?? 0 });
+    if (frame.k === 'sub' && frame.ch === 'overview') this.overview = true;
+    if (frame.k === 'unsub' && frame.ch === 'overview') this.overview = false;
+    if (frame.k === 'unsub' && frame.ch === 'session' && frame.id) {
+      this.subscriptions.delete(frame.id);
+    }
+    if (frame.k === 'sub' && frame.ch === 'session' && frame.id) {
+      const id = frame.id;
+      const since = frame.sinceSeq ?? 0;
+      this.subscriptions.set(id, false);
+      this.later(() => {
+        if (!this.subscriptions.has(id)) return;
+        const session = sessions.get(id);
+        if (!session) {
+          this.subscriptions.delete(id);
+          this.deliver({ k: 'ended', id, reason: 'not_found' });
+          return;
+        }
+        for (const event of session.events) {
+          if (event.seq > since) this.deliver({ ...event, id });
+        }
+        this.subscriptions.set(id, true);
+        this.deliver({ k: 'caught_up', id, seq: session.events.length });
+      });
+    }
+  }
+  /** The session was deleted: its subscription ends, the connection stays. */
+  endSession(sessionId: string): void {
+    if (!this.subscriptions.delete(sessionId)) return;
+    this.deliver({ k: 'ended', id: sessionId, reason: 'not_found' });
   }
   deliver(frame: unknown): void {
     if (!this.closed)
       for (const listener of this.listeners.get('message') ?? [])
         listener({ data: JSON.stringify(frame) });
   }
-  deliverLive(frame: StreamEventFrame): void {
+  invalidateResources(): void {
+    for (const path of this.resources) this.deliver({ k: 'invalidate', path });
+  }
+  deliverLive(sessionId: string, frame: StreamEventFrame): void {
     // A turn can start before the scheduled replay. Replay owns these events
     // until caught up; sending them early drops older history in the reducer.
-    if (this.replayed) this.deliver(frame);
+    if (this.subscriptions.get(sessionId) === true) this.deliver({ ...frame, id: sessionId });
+    this.invalidateResources();
+    if (this.overview) {
+      this.deliver({
+        k: 'hint',
+        hints: [{ sessionId, projectId: PROJECT_ID, topics: ['events', 'status'] }],
+      });
+    }
   }
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    clearTimeout(this.replayTimer);
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear();
     sockets.delete(this);
     for (const listener of this.listeners.get('close') ?? []) listener({ data: null });
     this.listeners.clear();
   }
 }
-export function createDemoSocket(url: string, _protocols?: string | string[]): StreamSocket {
+export function createDemoSocket(url: string, _protocols?: string | string[]): LiveSocket {
   if (!isDemoUrl(url)) throw new Error('The demo socket only accepts the local demo address.');
-  return new DemoSocket(url);
+  return new DemoSocket();
 }
 resetDemoData();

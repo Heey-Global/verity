@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/Heey-Global/verity/compare/website-v2.1.1...website-v2.2.0) (2026-10-07)
+
+
+### Features
+
+* **website:** announce beta testing and link development ([#1266](https://github.com/Heey-Global/verity/issues/1266)) ([4f433eb](https://github.com/Heey-Global/verity/commit/4f433eb01bda78a6287b0f200c8e2b2320c44a3f))
+
 ## [2.1.1](https://github.com/Heey-Global/verity/compare/website-v2.1.0...website-v2.1.1) (2026-10-06)
 
 

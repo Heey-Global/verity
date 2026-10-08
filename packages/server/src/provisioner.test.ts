@@ -1101,7 +1101,7 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.restartPolicy).toBe('unless-stopped');
     // A hard memory ceiling is ALWAYS set so a runaway sandbox OOMs inside its own
     // cgroup instead of taking the whole host down.
-    expect(spec.pidsLimit).toBe(512);
+    expect(spec.pidsLimit).toBe(4096);
     expect(spec.memoryBytes).toBe(DEFAULT_SANDBOX_MEMORY_BYTES);
     // …and the combined ceiling matches it, so the container cannot swap. Omitting it
     // lets Docker default to twice the memory limit, which turns the OOM this cap
@@ -2549,6 +2549,26 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.memorySwapBytes).toBe(8 * 1024 ** 3);
   });
 
+  it('preserves an explicit sandbox PID limit', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker, calls } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/var/lib/verity-dev',
+      isDirectory: () => false,
+      sandboxPidsLimit: 8192,
+    });
+    await provisioner.provision(id);
+    const spec = calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
+    expect(spec.pidsLimit).toBe(8192);
+  });
+
   it('weights a sandbox below the containers it shares the host with', async () => {
     const id = await seedProject();
     const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
@@ -2691,6 +2711,205 @@ describe('ProvisionerImpl (#174)', () => {
     await expect(provisioner.reconcileRunnerSupervisors([result])).rejects.toThrow(
       /reconciliation failed for 1 project/,
     );
+  });
+
+  it('does not exec the Runner watchdog into a sandbox that a replacement is retiring', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker } = fakeDocker({ createdContainerId: 'cid-1' });
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
+      stdout: '',
+      stderr: '',
+    }));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/srv/verity/workspaces',
+      dataVolume: 'verity-data',
+      dataVolumeRoot: '/srv/verity',
+      runnerSupervisor: true,
+      runnerSupervisorTrustedDefaultImage: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      prepareRunnerRuntime: vi.fn(),
+      containerCommand,
+      isDirectory: (path) => path === `/srv/verity/runners/${id}`,
+    });
+    await provisioner.provision(id);
+
+    // Hold the replacement inside the stop of the old sandbox — the window in
+    // which the stored row still reads `active`.
+    let enterStop!: () => void;
+    let releaseStop!: () => void;
+    const stopEntered = new Promise<void>((resolve) => (enterStop = resolve));
+    const stopReleased = new Promise<void>((resolve) => (releaseStop = resolve));
+    const stopContainer = docker.stopContainer.bind(docker);
+    docker.stopContainer = async (name) => {
+      enterStop();
+      await stopReleased;
+      return stopContainer(name);
+    };
+    const recreate = provisioner.recreateContainer(id);
+    await stopEntered;
+
+    // Read the list the way the periodic watchdog does. If this stops reading
+    // `active` the test no longer exercises the race and must be re-anchored.
+    try {
+      const projects = await ctx.store.listProjects({ includeHidden: true });
+      expect(projects.find((project) => project.id === id)?.state).toBe('active');
+      const execsBefore = containerCommand.mock.calls.length;
+      await provisioner.reconcileRunnerSupervisors(projects);
+      // An exec here lands in a sandbox being stopped; under gVisor it fails with
+      // "connecting to control server ... connection refused" and is reported as
+      // a Runner supervisor failure although the Runner was never at fault.
+      expect(containerCommand.mock.calls.length).toBe(execsBefore);
+    } finally {
+      releaseStop();
+      await recreate;
+    }
+  });
+
+  it('keeps the Runner watchdog active while replacement image preparation is pending', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker } = fakeDocker({ createdContainerId: 'cid-1' });
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
+      stdout: '',
+      stderr: '',
+    }));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/srv/verity/workspaces',
+      dataVolume: 'verity-data',
+      dataVolumeRoot: '/srv/verity',
+      runnerSupervisor: true,
+      runnerSupervisorTrustedDefaultImage: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      prepareRunnerRuntime: vi.fn(),
+      containerCommand,
+      isDirectory: (path) => path === `/srv/verity/runners/${id}`,
+    });
+    await provisioner.provision(id);
+
+    let enterPull!: () => void;
+    let releasePull!: () => void;
+    const pullEntered = new Promise<void>((resolve) => (enterPull = resolve));
+    const pullReleased = new Promise<void>((resolve) => (releasePull = resolve));
+    docker.pullImage = async () => {
+      enterPull();
+      await pullReleased;
+    };
+    const recreate = provisioner.recreateContainer(id);
+    await pullEntered;
+
+    try {
+      const projects = await ctx.store.listProjects({ includeHidden: true });
+      expect(projects.find((project) => project.id === id)?.state).toBe('active');
+      const execsBefore = containerCommand.mock.calls.length;
+      await provisioner.reconcileRunnerSupervisors(projects);
+      // Image preparation must not disable recovery in the serving sandbox.
+      expect(containerCommand.mock.calls.length).toBe(execsBefore + 1);
+    } finally {
+      releasePull();
+      await recreate;
+    }
+  });
+
+  it('drops a Runner watchdog failure when a replacement began during the exec', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker } = fakeDocker({ createdContainerId: 'cid-1' });
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
+      stdout: '',
+      stderr: '',
+    }));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/srv/verity/workspaces',
+      dataVolume: 'verity-data',
+      dataVolumeRoot: '/srv/verity',
+      runnerSupervisor: true,
+      runnerSupervisorTrustedDefaultImage: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      prepareRunnerRuntime: vi.fn(),
+      containerCommand,
+      isDirectory: (path) => path === `/srv/verity/runners/${id}`,
+    });
+    const project = await provisioner.provision(id);
+
+    let enterStop!: () => void;
+    const stopEntered = new Promise<void>((resolve) => (enterStop = resolve));
+    let releaseStop!: () => void;
+    const stopReleased = new Promise<void>((resolve) => (releaseStop = resolve));
+    const stopContainer = docker.stopContainer.bind(docker);
+    docker.stopContainer = async (name) => {
+      enterStop();
+      await stopReleased;
+      return stopContainer(name);
+    };
+    let recreate: Promise<ProjectRecord> | undefined;
+    containerCommand.mockImplementationOnce(async () => {
+      recreate = provisioner.recreateContainer(id);
+      await stopEntered;
+      throw new Error('OCI runtime exec failed: connection refused');
+    });
+    try {
+      await provisioner.reconcileRunnerSupervisors([project]);
+    } finally {
+      releaseStop();
+      await recreate;
+    }
+  });
+
+  it('drops a Runner watchdog failure received after an overlapping replacement completed', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker } = fakeDocker({ createdContainerId: 'cid-1' });
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
+      stdout: '',
+      stderr: '',
+    }));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/srv/verity/workspaces',
+      dataVolume: 'verity-data',
+      dataVolumeRoot: '/srv/verity',
+      runnerSupervisor: true,
+      runnerSupervisorTrustedDefaultImage: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      prepareRunnerRuntime: vi.fn(),
+      containerCommand,
+      isDirectory: (path) => path === `/srv/verity/runners/${id}`,
+    });
+    const project = await provisioner.provision(id);
+
+    containerCommand.mockImplementationOnce(async () => {
+      await provisioner.recreateContainer(id);
+      throw new Error('OCI runtime exec failed: connection refused');
+    });
+    await provisioner.reconcileRunnerSupervisors([project]);
+    // The completed replacement must release the watchdog for subsequent passes.
+    const execsBefore = containerCommand.mock.calls.length;
+    await provisioner.reconcileRunnerSupervisors(await ctx.store.listProjects());
+    expect(containerCommand.mock.calls.length).toBe(execsBefore + 1);
   });
 
   describe('per-project node_modules volume', () => {

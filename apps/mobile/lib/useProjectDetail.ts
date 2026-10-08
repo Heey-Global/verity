@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from './liveConnection';
 // One project's live record for the project screen and each of its settings
 // routes.
 //
@@ -19,17 +20,11 @@ import {
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { projectLifecycleState } from './projectSetup';
-
 /** The `[id]` route param as one string. Expo Router hands back an array when a
  *  link repeats the segment; the first value is the project. */
 export function projectIdParam(value: string | string[] | undefined): string {
   return Array.isArray(value) ? (value[0] ?? '') : (value ?? '');
 }
-
-/** Matches the overview's project poll (`PROJECTS_POLL_MS` in app/index.tsx) so the
- *  container state ages the same wherever the operator is looking. */
-const PROJECT_DETAIL_POLL_MS = 15_000;
 
 export type ProjectDetailState = {
   detail: ProjectDetail | undefined;
@@ -150,48 +145,17 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
     }, [detailLoaded, load]),
   );
 
-  // Keep the container state live while the screen is open. `GET /projects/:id`
-  // reconciles the project against Docker, so this is what turns a sandbox that
-  // died under the operator into a visible "Needs repair" plus the Repair action,
-  // instead of a stale "Running" with a Pause button. Silent: a failing poll must
-  // not replace the rendered project with an error banner. Same cadence as the
-  // overview poll. Native timers resume after the app returns to the foreground.
-  useEffect(() => {
-    // The initial request owns the loading gate. Starting a silent generation
-    // before it settles could supersede it without any request clearing loading.
-    if (!detailLoaded) return;
-    const refresh = (): void => {
-      if (focusedRef.current) void load(true);
-    };
-    const timer = setInterval(refresh, PROJECT_DETAIL_POLL_MS);
-    return () => {
-      clearInterval(timer);
-    };
-  }, [detailLoaded, load]);
-
-  useEffect(() => {
-    const project = detail?.project;
-    if (project === undefined) return;
-    const state = projectLifecycleState(project);
-    if (
-      state !== 'cloning' &&
-      state !== 'container_starting' &&
-      state !== 'sleeping_starting' &&
-      state !== 'waking'
-    )
-      return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async (): Promise<void> => {
-      if (focusedRef.current) await load(true);
-      if (!cancelled) timer = setTimeout(() => void poll(), 2_000);
-    };
-    timer = setTimeout(() => void poll(), 2_000);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [detail?.project.lifecycleState, detail?.project.state, load]);
+  useEffect(
+    () =>
+      subscribeLiveRefresh(
+        client,
+        () => {
+          if (focusedRef.current && detailLoaded) return load(true);
+        },
+        (path) => path.split('?')[0] === `/projects/${encodeURIComponent(projectId)}`,
+      ),
+    [client, projectId, detailLoaded, load],
+  );
 
   return { detail, loading, error, setError, load, onProjectUpdated, onSettingsSaved };
 }

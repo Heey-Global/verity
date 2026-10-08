@@ -1293,7 +1293,10 @@ describe('release train concurrency', () => {
     // Removing the handoff must not turn every metadata invocation into a release.
     expect(backend.jobs['release-please']?.outputs?.['backend-release-created']).not.toBe('true');
     const callees = Object.values(backend.jobs).flatMap((job) => (job.uses ? [job.uses] : []));
-    expect(callees).toEqual(['./.github/workflows/self-update.yml']);
+    expect(callees).toEqual([
+      './.github/workflows/mobile-native-build.yml',
+      './.github/workflows/self-update.yml',
+    ]);
   });
 });
 
@@ -1685,7 +1688,9 @@ describe('publication reconciliation', () => {
       contents: 'write',
       'pull-requests': 'read',
     });
-    expect(job?.['timeout-minutes']).toBeLessThanOrEqual(10);
+    // Native fingerprint comparison installs dependencies for both revisions;
+    // the old publication-only budget can cancel recovery before dispatch.
+    expect(job?.['timeout-minutes']).toBe(20);
     const run = job?.steps?.find((step) => step.run?.includes('release-reconcile.mjs'));
     expect(run?.env?.GH_TOKEN).toContain('GITHUB_TOKEN');
     expect(run?.env?.GITHUB_REPOSITORY).toBe('${{ github.repository }}');
@@ -1709,8 +1714,8 @@ describe('publication reconciliation', () => {
     // run count for nothing.
     const [, title] = source.match(/const reconcileRunTitle = '([^']+)';/u) ?? [];
     expect(title).toBeDefined();
-    expect((dispatch as { 'run-name'?: string })['run-name']).toBe(
-      `\${{ format('{0}', inputs.reconcile) == 'true' && '${title}' || '' }}`,
+    expect((dispatch as { 'run-name'?: string })['run-name']).toContain(
+      `format('{0}', inputs.reconcile) == 'true' && '${title}' ||`,
     );
     // The checkout is all the sweep installs; a third-party import would fail
     // every sweep on a bare workspace.

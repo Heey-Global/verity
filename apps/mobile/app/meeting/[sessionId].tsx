@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -49,6 +50,7 @@ import {
 } from '../../lib/liveMeetingInsights';
 import {
   compactMeetingAnswer,
+  meetingAnswerTruncated,
   meetingAnswerCards,
   meetingAnswerSource,
   meetingRequestFromPrompt,
@@ -65,6 +67,7 @@ import {
 import { Icon } from '../../components/Icon';
 import {
   type CardAction,
+  MeetingAnswerText,
   NoticedCard,
   SectionLabel,
   SpeakerAvatar,
@@ -123,6 +126,11 @@ export default function MeetingScreen() {
   const [showNewMeeting, setShowNewMeeting] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [syncError, setSyncError] = useState(false);
+  // Every save is briefly pending; only a backlog that lasts is worth showing.
+  const [syncPendingSince, setSyncPendingSince] = useState<number | null>(null);
+  useEffect(() => {
+    setSyncPendingSince((since) => (syncError ? (since ?? Date.now()) : null));
+  }, [syncError]);
   const [pendingCommand, setPendingCommand] = useState<'pause' | 'resume' | 'stop' | null>(null);
   const [recorderOnline, setRecorderOnline] = useState(true);
   const [transcriptExpanded, setTranscriptExpanded] = useState(false);
@@ -204,9 +212,7 @@ export default function MeetingScreen() {
       const message = pendingNoteErrors.get(meetingId) ?? null;
       noteSaveErrorRef.current = message;
       setNoteSaveError(message ? { meetingId, message } : null);
-      setError(
-        (current) => message ?? (current?.startsWith('Note could not be saved:') ? null : current),
-      );
+      setError((current) => (current?.startsWith('Note could not be saved:') ? null : current));
     };
     pendingNoteListeners.add(listener);
     return () => {
@@ -234,11 +240,12 @@ export default function MeetingScreen() {
     if (!sessionId) return;
     let mounted = true;
     let polling = false;
+    const client = createVerityClient();
     const poll = async () => {
       if (polling) return;
       polling = true;
       try {
-        const sync = await syncMeetingSession(sessionId);
+        const sync = await syncMeetingSession(sessionId, client ?? undefined);
         if (!mounted) return;
         setSyncError(sync.pending);
         await refresh();
@@ -252,7 +259,7 @@ export default function MeetingScreen() {
                 if (note.meetingId === shown && !merged.has(note.id)) merged.set(note.id, note);
               return [...merged.values()].sort((a, b) => a.atSeconds - b.atSeconds);
             });
-          const control = await createVerityClient()?.getLiveMeetingCommands(sessionId, shown);
+          const control = await client?.getLiveMeetingCommands(sessionId, shown);
           if (mounted && control) {
             setRecorderOnline(control.recorderOnline);
             const latest = control.commands[0];
@@ -260,13 +267,12 @@ export default function MeetingScreen() {
             if (latest?.state === 'failed') setError(latest.error ?? 'Meeting control failed.');
           }
           try {
-            const found = await createVerityClient()?.getLiveMeetingInsights?.(sessionId, shown);
+            const found = await client?.getLiveMeetingInsights?.(sessionId, shown);
             if (mounted && displayedMeetingId.current === shown && found) setInsights(found);
           } catch {
             // An older server can still serve the meeting without insight support.
           }
           try {
-            const client = createVerityClient();
             if (client?.getHistory) {
               let page = await client.getHistory(sessionId, { limit: 200 });
               let events = page.events;
@@ -338,14 +344,19 @@ export default function MeetingScreen() {
       }
     };
     void poll();
-    const timer = setInterval(() => {
-      void poll();
-    }, 2000);
+    const detach = client
+      ? subscribeLiveRefresh(
+          client,
+          () => poll(),
+          (path) => path.startsWith(`/sessions/${encodeURIComponent(sessionId)}/`),
+          [{ path: `/sessions/${encodeURIComponent(sessionId)}/live-meetings` }],
+        )
+      : () => undefined;
     return () => {
       mounted = false;
-      clearInterval(timer);
+      detach();
     };
-  }, [sessionId, refresh]);
+  }, [sessionId, refresh, meeting?.id]);
 
   useEffect(() => {
     void refresh().catch((reason) => setError(String(reason)));
@@ -581,27 +592,31 @@ export default function MeetingScreen() {
     setSendingInsight(true);
     setError(null);
     const requestId = meetingRequestId();
+    // The card appears at once, so the suggestion it came from turns into it instead of
+    // waiting on the request; a failed send removes it and the suggestion returns.
+    const local: MeetingAnswerCard = {
+      id: `local-${requestId}`,
+      request: question.trim(),
+      requestId,
+      kind,
+      status: 'working',
+      answer: '',
+    };
+    setLocalAnswers((current) => [...current, local]);
     try {
       await client.sendTurn(sessionId, {
         prompt:
           kind === 'research'
             ? researchPrompt(meeting.id, question.trim(), meeting.transcript, requestId)
             : meetingRequestPrompt(meeting.id, question.trim(), meeting.transcript, requestId),
+        // Each request needs its own reply; steering would fold it into the running one.
+        queueBehindActiveTurn: true,
       });
-      if (displayedMeetingId.current === meeting.id)
-        setLocalAnswers((current) => [
-          ...current,
-          {
-            id: `local-${Date.now()}`,
-            request: question.trim(),
-            requestId,
-            kind,
-            status: 'working',
-            answer: '',
-          },
-        ]);
-      if (kind === 'request') setInsightQuestion('');
+      // A retried card must not clear what is being typed in the composer.
+      if (kind === 'request')
+        setInsightQuestion((current) => (current === question ? '' : current));
     } catch (reason) {
+      setLocalAnswers((current) => current.filter((card) => card.id !== local.id));
       setError(`Could not start meeting request: ${String(reason)}`);
     } finally {
       setSendingInsight(false);
@@ -781,6 +796,20 @@ export default function MeetingScreen() {
   const active = meeting?.state === 'active' && runningMeeting?.id === meeting.id;
   const live = meeting?.state === 'active';
   const noteUnsaved = noteSaveError?.meetingId === meeting?.id;
+  const syncDelayed = syncPendingSince !== null && now - syncPendingSince > 30_000;
+  // The live header shows only what needs attention, in one fixed slot so nothing moves.
+  const liveProblem =
+    error ??
+    meeting?.error ??
+    (noteUnsaved ? 'Note not saved yet. Use retry in the note field.' : null) ??
+    (pendingCommand
+      ? recorderOnline
+        ? `Waiting for recording device to ${pendingCommand}…`
+        : 'Recording device unreachable. Open Verity there.'
+      : null) ??
+    (syncDelayed && meeting?.serverId !== null
+      ? 'Server sync delayed · saved on this device'
+      : null);
   const speakers = [
     ...new Set([
       ...(meeting?.speakerTurns ?? []).map((turn) =>
@@ -821,36 +850,22 @@ export default function MeetingScreen() {
     (note) => !(live || noteUnsaved || draft) || note.id !== draft?.id,
   );
   const composerVisible = live || noteUnsaved || !!draft;
-  const where = active
-    ? meeting?.serverId === null
-      ? 'Saved only on this device'
-      : 'Saving to server'
-    : 'Live from recording device';
-  const statusText = noteUnsaved
-    ? active
-      ? '● Recording · note not saved'
-      : `${meeting?.state === 'interrupted' ? 'Interrupted' : 'Ended'} · note not saved`
-    : live
-      ? meeting.captureStatus === 'paused'
-        ? `Ⅱ Paused · ${where}`
-        : meeting.captureStatus === 'downloading'
-          ? 'Preparing language model…'
-          : meeting.captureStatus === 'preparing'
-            ? 'Preparing microphone…'
-            : `● Transcribing · ${where}`
-      : meeting
-        ? meeting.serverId === null
-          ? `${meeting.state === 'interrupted' ? 'Interrupted' : 'Ended'} · saved only on this device`
-          : meeting.state === 'interrupted'
-            ? meeting.error?.startsWith('Local save failed')
-              ? 'Interrupted · local save failed'
-              : syncError
-                ? 'Interrupted · server sync pending'
-                : 'Interrupted · saved on server'
+  // Shown after the meeting; the live screen reports problems in its header instead.
+  const statusText = !meeting
+    ? 'Ready to record'
+    : noteUnsaved
+      ? `${meeting.state === 'interrupted' ? 'Interrupted' : 'Ended'} · note not saved`
+      : meeting.serverId === null
+        ? `${meeting.state === 'interrupted' ? 'Interrupted' : 'Ended'} · saved only on this device`
+        : meeting.state === 'interrupted'
+          ? meeting.error?.startsWith('Local save failed')
+            ? 'Interrupted · local save failed'
             : syncError
-              ? 'Ended · server sync pending'
-              : 'Ended · saved on server'
-        : 'Ready to record';
+              ? 'Interrupted · server sync pending'
+              : 'Interrupted · saved on server'
+          : syncError
+            ? 'Ended · server sync pending'
+            : 'Ended · saved on server';
   const asNote = (text: string): CardAction | null =>
     // A point already saved as a note loses the action, so a second tap cannot duplicate it.
     meeting?.state === 'active' && !notes.some((note) => note.text === text.trim().slice(0, 10_000))
@@ -892,15 +907,21 @@ export default function MeetingScreen() {
     const cards: ReactNode[] = visibleAnswers.map((card) => {
       const source = card.status === 'ready' ? meetingAnswerSource(card.answer) : null;
       const note = card.status === 'ready' ? asNote(card.answer) : null;
+      const compact = compactMeetingAnswer(card.answer);
+      const expanded = expandedAnswer === card.id;
       return (
         <NoticedCard
           key={card.id}
           label={
             card.status === 'ready'
-              ? 'ANSWER READY'
+              ? 'ANSWER'
               : card.status === 'failed'
-                ? 'REQUEST INTERRUPTED'
-                : 'VERITY IS WORKING'
+                ? card.combined
+                  ? 'NOT ANSWERED SEPARATELY'
+                  : 'REQUEST INTERRUPTED'
+                : card.kind === 'research'
+                  ? 'RESEARCHING'
+                  : 'VERITY IS WORKING'
           }
           tone={
             card.status === 'ready'
@@ -910,15 +931,14 @@ export default function MeetingScreen() {
                 : theme.colors.primary
           }
           working={card.status === 'working'}
-          quote={card.request}
-          title={
-            card.status === 'ready'
-              ? expandedAnswer === card.id
-                ? card.answer
-                : compactMeetingAnswer(card.answer)
-              : card.status === 'failed'
-                ? 'Verity stopped before answering.'
-                : 'Project knowledge and the web …'
+          prominent
+          title={card.request}
+          body={
+            card.status === 'failed'
+              ? card.combined
+                ? 'This reply combined requests. Retry for a separate answer.'
+                : 'Verity stopped before answering.'
+              : undefined
           }
           source={source ? `Source: ${source}` : null}
           actions={
@@ -931,14 +951,13 @@ export default function MeetingScreen() {
                     onPress: () =>
                       router.push({ pathname: '/session/[id]', params: { id: sessionId } }),
                   },
-                  ...(card.answer.length > 360
+                  ...(meetingAnswerTruncated(card.answer)
                     ? [
                         {
-                          label: expandedAnswer === card.id ? 'Show less' : 'Show full answer',
-                          accessibilityLabel:
-                            expandedAnswer === card.id
-                              ? 'Collapse meeting answer'
-                              : 'Expand meeting answer',
+                          label: expanded ? 'Show less' : 'Show full answer',
+                          accessibilityLabel: expanded
+                            ? 'Collapse meeting answer'
+                            : 'Expand meeting answer',
                           onPress: () =>
                             setExpandedAnswer((current) => (current === card.id ? null : card.id)),
                         },
@@ -946,14 +965,34 @@ export default function MeetingScreen() {
                     : []),
                   ...(note ? [note] : []),
                 ]
-              : []
+              : card.status === 'failed' && live
+                ? [
+                    {
+                      label: 'Retry',
+                      accessibilityLabel: 'Retry meeting request',
+                      primary: true,
+                      disabled: sendingInsight,
+                      onPress: () => void openResearch(card.request, card.kind),
+                    },
+                  ]
+                : []
           }
-        />
+        >
+          {card.status === 'ready' ? (
+            <MeetingAnswerText text={expanded ? card.answer : compact} />
+          ) : null}
+        </NoticedCard>
       );
     });
+    // A suggestion that was sent becomes its answer card rather than staying beside it.
+    const requested = (text: string) => visibleAnswers.some((card) => card.request === text.trim());
     for (const insight of insights.slice(0, 4)) {
       if (dismissed.includes(insight.id)) continue;
       const contradiction = insight.kind === 'contradiction';
+      const researchText = contradiction
+        ? `Check whether “${insight.evidenceA}” conflicts with “${insight.evidenceB ?? insight.summary}”${insight.sourcePath ? ` in ${insight.sourcePath}` : ''}.`
+        : insight.evidenceA;
+      if ((contradiction || insight.kind === 'research') && requested(researchText)) continue;
       const note = asNote(insight.summary);
       cards.push(
         <NoticedCard
@@ -972,12 +1011,7 @@ export default function MeetingScreen() {
                     accessibilityLabel: contradiction ? 'Check meeting claim' : 'Research insight',
                     primary: true,
                     disabled: sendingInsight,
-                    onPress: () =>
-                      void openResearch(
-                        contradiction
-                          ? `Check whether “${insight.evidenceA}” conflicts with “${insight.evidenceB ?? insight.summary}”${insight.sourcePath ? ` in ${insight.sourcePath}` : ''}.`
-                          : insight.evidenceA,
-                      ),
+                    onPress: () => void openResearch(researchText),
                   },
                 ]
               : []),
@@ -993,6 +1027,7 @@ export default function MeetingScreen() {
     if (
       suggestedQuestion &&
       !dismissed.includes(suggestedQuestion) &&
+      !requested(suggestedQuestion) &&
       !insights.some((insight) => insight.evidenceA.includes(suggestedQuestion))
     )
       cards.push(
@@ -1000,6 +1035,7 @@ export default function MeetingScreen() {
           key="question"
           label="OPEN QUESTION"
           tone={theme.colors.primary}
+          prominent
           title={suggestedQuestion}
           actions={[
             {
@@ -1038,9 +1074,6 @@ export default function MeetingScreen() {
             ? `Waiting for recording device to ${pendingCommand}… Keep Verity open there.`
             : 'Recording device unreachable. Open Verity there to apply this command.'}
         </Text>
-      ) : null}
-      {syncError && meeting?.serverId !== null && meeting?.state === 'active' ? (
-        <Text style={styles.status}>Saved locally · server sync pending</Text>
       ) : null}
     </>
   );
@@ -1145,10 +1178,12 @@ export default function MeetingScreen() {
         autoFocus={autoFocus}
         placeholder="Ask Verity about this meeting…"
         placeholderTextColor={theme.colors.textFaint}
+        multiline
+        submitBehavior="submit"
+        returnKeyType="send"
         value={insightQuestion}
         onChangeText={setInsightQuestion}
         onSubmitEditing={() => void openResearch(insightQuestion, 'request')}
-        returnKeyType="go"
         style={styles.composerInput}
       />
       <Pressable
@@ -1188,6 +1223,8 @@ export default function MeetingScreen() {
           ref={transcriptList}
           testID="meeting-transcript"
           data={chunks}
+          // Rows read speaker names from the meeting; a rename must redraw them.
+          extraData={meeting.speakerNames}
           keyExtractor={(_, index) => String(index)}
           contentContainerStyle={styles.transcriptContent}
           renderItem={({ item }) =>
@@ -1253,9 +1290,28 @@ export default function MeetingScreen() {
           </View>
           {error ? <Text style={styles.error}>{error}</Text> : null}
           {noteUnsaved ? (
-            <Text style={styles.error}>
-              A note from the last meeting is not saved yet. Cancel to retry it.
-            </Text>
+            // The note is the only part of the last meeting at risk: the device could not
+            // write it to its own storage. Show it and let it be saved again from here.
+            <View style={styles.recoveryCard} testID="unsaved-note">
+              <Text style={styles.recoveryTitle}>A note from your last meeting isn’t saved</Text>
+              {draft?.text.trim() ? <Text style={styles.body}>“{draft.text.trim()}”</Text> : null}
+              <Text style={styles.hint}>
+                The meeting itself is kept. The note is still on screen and will be saved when you
+                retry.
+                {noteSaveError?.message
+                  ? ` (${noteSaveError.message.replace(/^Note could not be saved: /, '')})`
+                  : ''}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Retry saving note"
+                onPress={submitNote}
+                style={styles.recoveryButton}
+              >
+                <Icon name="rotate-cw" size={16} color={theme.colors.primary} />
+                <Text style={styles.recoveryButtonText}>Retry save</Text>
+              </Pressable>
+            </View>
           ) : null}
           <View style={styles.block}>
             <SectionLabel>WHO IS THERE?</SectionLabel>
@@ -1502,7 +1558,22 @@ export default function MeetingScreen() {
       >
         <Icon name="chevron-down" size={22} color={theme.colors.text} />
       </Pressable>
-      <View style={styles.fill} />
+      <Text
+        testID="meeting-live-status"
+        numberOfLines={2}
+        style={[styles.headerStatus, liveProblem !== null && styles.statusError]}
+      >
+        {liveProblem ??
+          (meeting.captureStatus === 'paused'
+            ? 'Ⅱ Paused'
+            : meeting.captureStatus === 'downloading'
+              ? 'Preparing language model…'
+              : meeting.captureStatus === 'preparing'
+                ? 'Preparing microphone…'
+                : meeting.serverId === null
+                  ? 'Saved only on this device'
+                  : '')}
+      </Text>
       <View
         style={[styles.pill, voiceSending && { borderColor: theme.colors.accent }]}
         accessibilityLabel={paused ? 'Paused' : `Recording ${elapsed(meeting.startedAt, now)}`}
@@ -1589,18 +1660,17 @@ export default function MeetingScreen() {
         <Stack.Screen options={{ headerShown: false }} />
         <View style={styles.page}>
           {header}
-          {statusLines}
           <View style={styles.columns}>
             <View style={styles.column}>
               <SectionLabel>IN THE ROOM</SectionLabel>
               {speakerRow(true)}
-              <SectionLabel right="Return saves a line">{`NOTES · ${finalizedNotes.length}`}</SectionLabel>
+              <SectionLabel>{`NOTES · ${finalizedNotes.length}`}</SectionLabel>
               <View style={styles.notesCard}>
                 <ScrollView style={styles.fill} keyboardShouldPersistTaps="handled">
                   {noteRows(finalizedNotes)}
                 </ScrollView>
-                {noteComposer(false)}
               </View>
+              {noteComposer(false)}
             </View>
             <View style={styles.divider} />
             <View style={styles.column}>
@@ -1633,7 +1703,6 @@ export default function MeetingScreen() {
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
         >
-          {statusLines}
           {speakerRow(false)}
           {noticed}
           {composing === 'note' && finalizedNotes.length ? (
@@ -1794,6 +1863,12 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface,
     justifyContent: 'center',
   },
+  headerStatus: {
+    flex: 1,
+    color: theme.colors.textFaint,
+    fontSize: theme.text.xs,
+    textAlign: 'right',
+  },
   endButtonText: { color: theme.colors.tone.danger, fontWeight: '700', fontSize: theme.text.md },
   status: { color: theme.colors.textMuted, fontSize: theme.text.xs },
   statusError: { color: theme.colors.tone.danger },
@@ -1922,6 +1997,27 @@ const styles = StyleSheet.create((theme) => ({
   },
   recordDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: theme.colors.tone.danger },
   startButtonText: { color: theme.colors.primary, fontSize: theme.text.lg, fontWeight: '700' },
+  recoveryCard: {
+    gap: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.tone.danger,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.lg,
+  },
+  recoveryTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
+  recoveryButton: {
+    flexDirection: 'row',
+    alignSelf: 'flex-start',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.primary,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.sm,
+  },
+  recoveryButtonText: { color: theme.colors.primary, fontWeight: '700' },
   savedCard: {
     flexDirection: 'row',
     alignItems: 'center',

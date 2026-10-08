@@ -195,6 +195,9 @@ const execFileAsync = promisify(execFile);
 // shmem), so the ceiling has to fit all of a project's concurrent turns, not a
 // single process. Override per-host with VERITY_SANDBOX_MEMORY (server-main.ts)
 // where the available RAM differs.
+// gVisor counts Sentry host threads as well as guest workload threads.
+export const DEFAULT_SANDBOX_PIDS_LIMIT = 4096;
+
 export const DEFAULT_SANDBOX_MEMORY_BYTES = 6 * 1024 * 1024 * 1024; // 6 GiB
 // Swap allowed per sandbox ON TOP of the memory ceiling (VERITY_SANDBOX_SWAP).
 // Off by default; see the `memorySwapBytes` comment at the container spec.
@@ -2203,6 +2206,8 @@ export class ProvisionerImpl implements Provisioner {
    *  freshly started container, and both surfaced misleading errors. Concurrent
    *  `provision` calls now coalesce onto the running attempt's promise. */
   private readonly inFlightProvisions = new Map<string, Promise<ProjectRecord>>();
+  private readonly retiringSandboxes = new Set<string>();
+  private readonly sandboxReplacementGenerations = new Map<string, number>();
   /** Per-project tail promises serialize managed-checkout fetch/reset operations.
    *  Unlike provisioning single-flight, every queued synchronization must run:
    *  a later request may correspond to a newer merge that was not visible when
@@ -2454,6 +2459,13 @@ export class ProvisionerImpl implements Provisioner {
             runtimeRoot !== undefined &&
             this.isDir(join(runtimeRoot, 'runners', project.id));
           if (!hasRunnerRuntime && !connectorEnabled) return undefined;
+          if (this.retiringSandboxes.has(project.id)) return undefined;
+          const replacementGeneration = this.sandboxReplacementGenerations.get(project.id);
+          // A replacement stops and removes the old sandbox while the row still
+          // reads `active` (it only moves to `container_starting` once the new
+          // container phase begins), and starts the stack itself in the new one.
+          // An exec landing in that window hits a sandbox that is going away and
+          // fails with a runtime error that says nothing about the Runner.
           try {
             await this.containerCommand({
               containerName: project.containerName,
@@ -2469,6 +2481,11 @@ export class ProvisionerImpl implements Provisioner {
             });
             return undefined;
           } catch (error) {
+            // The same race from the other side: the replacement began while
+            // this exec was already in flight.
+            if (this.sandboxReplacementGenerations.get(project.id) !== replacementGeneration) {
+              return undefined;
+            }
             return error;
           }
         }),
@@ -3984,6 +4001,11 @@ export class ProvisionerImpl implements Provisioner {
       this.resolveRelayClaudeGateway(project);
       await this.ensureSandboxRuntime(project);
       replacementStarted = true;
+      this.retiringSandboxes.add(project.id);
+      this.sandboxReplacementGenerations.set(
+        project.id,
+        (this.sandboxReplacementGenerations.get(project.id) ?? 0) + 1,
+      );
       await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
 
       // ADR 0004 — "Update & restart" actively fetched the target image in the
@@ -4013,6 +4035,8 @@ export class ProvisionerImpl implements Provisioner {
         );
       }
       throw cause;
+    } finally {
+      this.retiringSandboxes.delete(project.id);
     }
   }
 
@@ -5573,7 +5597,7 @@ export class ProvisionerImpl implements Provisioner {
       // agent workloads. Such a devcontainer must be adapted to the outer sandbox.
       securityOpt:
         this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges:true'],
-      pidsLimit: this.opts.sandboxPidsLimit ?? 512,
+      pidsLimit: this.opts.sandboxPidsLimit ?? DEFAULT_SANDBOX_PIDS_LIMIT,
       memoryBytes: sandboxMemoryBytes,
       // `MemorySwap` is the COMBINED memory+swap ceiling, so it is always derived
       // from the memory ceiling: equal to it means no swap. Leaving it out is not

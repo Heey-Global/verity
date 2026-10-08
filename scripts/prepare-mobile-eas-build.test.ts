@@ -189,8 +189,8 @@ describe('EAS archive preparation', () => {
   });
 
   it('keeps the cache bounded and enables Clang module reuse within toolchain and policy', () => {
-    const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8'));
-    const steps = workflow.jobs['publish-mobile-native'].steps as {
+    const workflow = parse(readFileSync('.github/workflows/mobile-native-build.yml', 'utf8'));
+    const steps = workflow.jobs.build.steps as {
       id?: string;
       name?: string;
       run: string;

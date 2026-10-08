@@ -26,6 +26,19 @@ const STORAGE_KEY = 'verity.serverUrl';
 // (re)configures the server.
 let currentBaseUrl: string | null = null;
 let configuredBaseUrl = false;
+const baseUrlListeners = new Set<() => void>();
+
+/** Observe runtime endpoint changes, including switches between paired endpoints. */
+export function subscribeVerityBaseUrl(listener: () => void): () => void {
+  baseUrlListeners.add(listener);
+  return () => {
+    baseUrlListeners.delete(listener);
+  };
+}
+
+function notifyBaseUrlChanged(): void {
+  for (const listener of baseUrlListeners) listener();
+}
 let lastDescriptorToken: string | null = null;
 let lastDescriptorAttempt = 0;
 
@@ -106,8 +119,12 @@ export async function setVerityBaseUrl(url: string): Promise<void> {
   if (normalized !== currentBaseUrl) resetVeritySettingsStore();
   currentBaseUrl = normalized;
   configuredBaseUrl = true;
+  if (!isDemoMode()) notifyBaseUrlChanged();
   await AsyncStorage.setItem(STORAGE_KEY, normalized);
-  if (isDemoMode()) await exitDemoMode();
+  if (isDemoMode()) {
+    await exitDemoMode();
+    notifyBaseUrlChanged();
+  }
 }
 
 /** Build the API client for the current base URL, or `null` when none is set.

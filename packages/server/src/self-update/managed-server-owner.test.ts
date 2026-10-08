@@ -2,6 +2,8 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { parseNonNegativeInt } from '../embedded.js';
+import { DEFAULT_SANDBOX_PIDS_LIMIT } from '../provisioner.js';
 import type { ContainerInspect } from '../docker.js';
 import {
   parseServerDeploymentSpec,
@@ -10,7 +12,10 @@ import {
   type ServerDeploymentSpecBody,
   type ServerDeploymentSpecResources,
 } from './deployment-spec.js';
-import { initializeManagedDeployment } from './managed-deployment.js';
+import {
+  initializeManagedDeployment,
+  migrateManagedHostDiagnostics,
+} from './managed-deployment.js';
 import {
   describeManagedContainerMismatch,
   MANAGED_DEPLOYMENT_LABEL,
@@ -200,6 +205,75 @@ const containerSpec = (spec: ServerDeploymentSpec) =>
     { DATABASE_URL: 'postgres://db', VERITY_MANAGED_DEPLOYMENT_ID: 'deployment-1' },
     async () => 'secret',
   );
+
+describe('managed Server legacy sandbox PID pin', () => {
+  const entry = {
+    name: 'VERITY_SANDBOX_PIDS_LIMIT',
+    source: { kind: 'env' as const, name: 'VERITY_SANDBOX_PIDS_LIMIT' },
+  };
+
+  it.each([
+    ['512', undefined, ''],
+    ['512', '0', ''],
+    ['512', '1', '512'],
+    ['4096', undefined, '4096'],
+    ['8192', undefined, '8192'],
+    ['0', undefined, '0'],
+  ])('resolves %s with legacy opt-in %s to %s', async (value, optIn, expected) => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const desired = await managedServerContainerSpec(
+        sealed(undefined, [entry]),
+        {
+          ...runtimeOptions('', docker()).environment,
+          VERITY_SANDBOX_PIDS_LIMIT: value,
+          VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY: optIn,
+        },
+        async () => 'secret',
+      );
+      expect(desired.env).toContain(`VERITY_SANDBOX_PIDS_LIMIT=${expected}`);
+      if (expected === '') {
+        // The Server parser and provisioner must agree that the migrated value
+        // selects the current default, rather than retaining the stale limit.
+        expect(parseNonNegativeInt(expected) ?? DEFAULT_SANDBOX_PIDS_LIMIT).toBe(4096);
+        expect(warning).toHaveBeenCalledWith(expect.stringContaining('Ignoring legacy'));
+      } else {
+        expect(warning).not.toHaveBeenCalled();
+      }
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it('preserves a deliberately file-backed 512', async () => {
+    const desired = await managedServerContainerSpec(
+      sealed(undefined, [{ ...entry, source: { kind: 'file', path: '/run/secrets/pids' } }]),
+      runtimeOptions('', docker()).environment,
+      async (path) => (path === '/run/secrets/pids' ? '512' : 'secret'),
+    );
+    expect(desired.env).toContain('VERITY_SANDBOX_PIDS_LIMIT=512');
+  });
+
+  it('reports drift without replacing a running Server still carrying 512', async () => {
+    const client = docker({
+      ...owned(true),
+      env: [...owned(true).env!, 'VERITY_SANDBOX_PIDS_LIMIT=512'],
+    });
+    const options = runtimeOptions(await authority([entry]), client);
+    await expect(
+      reconcileManagedServer({
+        ...options,
+        environment: { ...options.environment, VERITY_SANDBOX_PIDS_LIMIT: '512' },
+      }),
+    ).resolves.toEqual({
+      containerId: 'existing',
+      action: 'unchanged',
+      drift: ['VERITY_SANDBOX_PIDS_LIMIT'],
+    });
+    expect(client.createContainer).not.toHaveBeenCalled();
+    expect(client.removeContainer).not.toHaveBeenCalled();
+  });
+});
 
 describe('managed Server host limits', () => {
   it('gives a Server sealed before the limits existed the Compose guardrails', async () => {
@@ -1355,5 +1429,68 @@ describe('managed Server environment drift', () => {
         }),
       ).rejects.toThrow(/deployment ID does not match/);
     });
+  });
+});
+
+describe('recorded host diagnostic mount migration', () => {
+  const migrate = async (root: string) =>
+    migrateManagedHostDiagnostics({
+      root,
+      deploymentId: 'deployment-1',
+      image: body().image,
+      hostPath: '/var/lib/verity/host-diagnostics',
+    });
+  it('keeps a running pre-migration Server serving and reports its pending mount', async () => {
+    const root = await authority();
+    await migrate(root);
+    const client = docker(owned(true));
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).resolves.toEqual({
+      containerId: 'existing',
+      action: 'unchanged',
+      diagnosticMountPending: true,
+    });
+    expect(client.removeContainer).not.toHaveBeenCalled();
+    expect(client.createContainer).not.toHaveBeenCalled();
+  });
+  it('rebuilds a stopped pre-migration Server from complete sealed authority', async () => {
+    const root = await authority();
+    await migrate(root);
+    const client = docker(owned(false));
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).resolves.toEqual({
+      containerId: 'created',
+      action: 'created',
+    });
+    expect(client.removeContainer).toHaveBeenCalledWith('existing');
+    expect(client.createContainer.mock.calls[0]?.[0].binds).toContain(
+      '/var/lib/verity/host-diagnostics:/run/verity-host-diagnostics:ro',
+    );
+  });
+  it.each([true, false])('refuses other structural drift when running is %s', async (running) => {
+    const root = await authority();
+    await migrate(root);
+    const client = docker({ ...owned(running), readOnlyRootfs: true });
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).rejects.toThrow('conflicts');
+    expect(client.removeContainer).not.toHaveBeenCalled();
+  });
+  it('does not tolerate a missing mount without recorded pre-migration authority', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'managed-diagnostics-new-'));
+    await initializeManagedDeployment({
+      root,
+      deploymentId: 'deployment-1',
+      spec: {
+        ...body(),
+        mounts: [
+          ...body().mounts,
+          {
+            source: { kind: 'bind', path: '/var/lib/verity/host-diagnostics' },
+            target: '/run/verity-host-diagnostics',
+            readOnly: true,
+          },
+        ],
+      },
+    });
+    const client = docker(owned(true));
+    await expect(reconcileManagedServer(runtimeOptions(root, client))).rejects.toThrow('conflicts');
+    expect(client.removeContainer).not.toHaveBeenCalled();
   });
 });
