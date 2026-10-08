@@ -5,9 +5,13 @@ jest.mock('expo-router', () => ({
   useFocusEffect: (callback: () => void) =>
     jest.requireActual('react').useEffect(callback, [callback]),
 }));
+const mockQrFailure = { current: null as Error | null };
 jest.mock('react-native-qrcode-svg', () => {
   const { View } = jest.requireActual('react-native');
-  return () => <View testID="pairing-qr" />;
+  return () => {
+    if (mockQrFailure.current) throw mockQrFailure.current;
+    return <View testID="pairing-qr" />;
+  };
 });
 
 const mockCopy = jest.fn();
@@ -70,6 +74,11 @@ beforeEach(() => {
   });
 });
 
+afterEach(() => {
+  mockQrFailure.current = null;
+  jest.restoreAllMocks();
+});
+
 it('lists the current device and creates a copyable pairing invitation', async () => {
   render(<DevicesScreen />);
   // The row's name is the rename field itself, so it must arrive carrying the
@@ -81,10 +90,15 @@ it('lists the current device and creates a copyable pairing invitation', async (
   expect(screen.queryByLabelText('Remove iPhone')).not.toBeOnTheScreen();
   expect(screen.getByLabelText('Remove iPad')).toBeOnTheScreen();
   // Unseen devices fall back to the pairing date rather than claiming activity.
-  expect(screen.getAllByText(`Paired ${new Date(PAIRED_AT).toLocaleDateString()}`)).toHaveLength(2);
+  expect(
+    screen.getAllByText(`App · Paired ${new Date(PAIRED_AT).toLocaleDateString()}`),
+  ).toHaveLength(2);
 
-  fireEvent.press(screen.getByLabelText('Create pairing link'));
+  // The link is there on arrival, and only one: every invitation is a one-time
+  // code on the server, so a re-render must not mint another.
   expect(await screen.findByTestId('pairing-qr')).toBeOnTheScreen();
+  expect(screen.queryByLabelText('Create pairing link')).not.toBeOnTheScreen();
+  expect(mockInvite).toHaveBeenCalledTimes(1);
   fireEvent.press(screen.getByLabelText('Copy pairing link'));
   await waitFor(() =>
     expect(mockCopy).toHaveBeenCalledWith(expect.stringMatching(/^verity:\/\/pair\?/)),
@@ -102,7 +116,6 @@ it('offers the web address of the pinned endpoint on the Web Browser tab', async
   const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);
   try {
     render(<DevicesScreen />);
-    fireEvent.press(await screen.findByLabelText('Create pairing link'));
     expect(await screen.findByTestId('pairing-qr')).toBeOnTheScreen();
 
     fireEvent.press(screen.getByLabelText('Web Browser'));
@@ -127,15 +140,34 @@ it('removes an invitation when it expires', async () => {
     expiresAt: new Date(Date.now() + 1_000).toISOString(),
   });
   render(<DevicesScreen />);
-  await act(async () => Promise.resolve());
-
-  fireEvent.press(screen.getByLabelText('Create pairing link'));
   expect(await screen.findByTestId('pairing-qr')).toBeOnTheScreen();
   act(() => jest.advanceTimersByTime(1_000));
 
   expect(screen.queryByTestId('pairing-qr')).not.toBeOnTheScreen();
   expect(screen.queryByLabelText('Copy pairing link')).not.toBeOnTheScreen();
+  // An expired link is replaced on request, not silently every ten minutes.
+  expect(screen.getByLabelText('Create pairing link')).toBeOnTheScreen();
+  expect(mockInvite).toHaveBeenCalledTimes(1);
   jest.useRealTimers();
+});
+
+// A render error while drawing the link is fatal to the whole iOS app unless
+// something catches it; it has to stay a message inside the card.
+it('keeps a failure to draw the pairing link inside the card', async () => {
+  mockQrFailure.current = new Error('QR rendering failed');
+  jest.spyOn(console, 'error').mockImplementation(() => undefined);
+  render(<DevicesScreen />);
+
+  expect(
+    await screen.findByText('Could not show the pairing link: QR rendering failed'),
+  ).toBeOnTheScreen();
+  // The rest of the screen is still there.
+  expect(screen.getByLabelText('Remove iPad')).toBeOnTheScreen();
+
+  mockQrFailure.current = null;
+  fireEvent.press(screen.getByLabelText('Try again'));
+  fireEvent.press(await screen.findByLabelText('Create pairing link'));
+  expect(await screen.findByTestId('pairing-qr')).toBeOnTheScreen();
 });
 
 it('revokes the device the confirmed row belongs to', async () => {
@@ -408,5 +440,5 @@ it('shows real activity once the server has stamped a device', async () => {
     },
   ]);
   render(<DevicesScreen />);
-  expect(await screen.findByText('Active 2 hours ago')).toBeOnTheScreen();
+  expect(await screen.findByText('App · Active 2 hours ago')).toBeOnTheScreen();
 });
