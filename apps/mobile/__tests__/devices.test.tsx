@@ -100,21 +100,24 @@ it('lists the current device and creates a copyable pairing invitation', async (
 // signed identity check on the sign-in page compares against another server.
 it('offers the web address of the pinned endpoint on the Web Browser tab', async () => {
   const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);
-  render(<DevicesScreen />);
-  fireEvent.press(await screen.findByLabelText('Create pairing link'));
-  expect(await screen.findByTestId('pairing-qr')).toBeOnTheScreen();
+  try {
+    render(<DevicesScreen />);
+    fireEvent.press(await screen.findByLabelText('Create pairing link'));
+    expect(await screen.findByTestId('pairing-qr')).toBeOnTheScreen();
 
-  fireEvent.press(screen.getByLabelText('Web Browser'));
-  expect(screen.queryByTestId('pairing-qr')).not.toBeOnTheScreen();
-  expect(screen.getByText('https://verity-new.example:8082/app/')).toBeOnTheScreen();
-  fireEvent.press(screen.getByLabelText('Open web address'));
-  expect(openURL).toHaveBeenCalledWith('https://verity-new.example:8082/app/');
+    fireEvent.press(screen.getByLabelText('Web Browser'));
+    expect(screen.queryByTestId('pairing-qr')).not.toBeOnTheScreen();
+    expect(screen.getByText('https://verity-new.example:8082/app/')).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText('Open web address'));
+    expect(openURL).toHaveBeenCalledWith('https://verity-new.example:8082/app/');
 
-  fireEvent.press(screen.getByLabelText('Copy pairing link'));
-  await waitFor(() =>
-    expect(mockCopy).toHaveBeenCalledWith(expect.stringMatching(/^verity:\/\/pair\?/)),
-  );
-  openURL.mockRestore();
+    fireEvent.press(screen.getByLabelText('Copy pairing link'));
+    await waitFor(() =>
+      expect(mockCopy).toHaveBeenCalledWith(expect.stringMatching(/^verity:\/\/pair\?/)),
+    );
+  } finally {
+    openURL.mockRestore();
+  }
 });
 
 it('removes an invitation when it expires', async () => {

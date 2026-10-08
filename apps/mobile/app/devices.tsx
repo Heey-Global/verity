@@ -33,7 +33,7 @@ import {
 } from '../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../components/settings/settingsStyles';
 import { StatusPill } from '../components/StatusPill';
-import { createVerityClient, getVerityBaseUrl } from '../lib/client';
+import { createVerityClient } from '../lib/client';
 import { deviceActivityLabel } from '../lib/deviceActivity';
 import { createPairingUri } from '../lib/pairing';
 import { getBrowserSession, logoutBrowser } from '../lib/browserSession';
@@ -184,11 +184,9 @@ function DevicesView({ client }: { client: VerityClient }) {
                 }),
           expiresAt,
           minutes: Math.max(1, Math.round((expiresAt - Date.now()) / 60_000)),
-          webAddress: webAppAddress(
-            Platform.OS === 'web'
-              ? window.location.origin
-              : (direct?.url ?? getVerityBaseUrl() ?? profile!.activeUrl),
-          ),
+          // The same endpoint the link names, so the sign-in page's identity
+          // check runs against the server the browser was sent to.
+          webAddress: webAppAddress(Platform.OS === 'web' ? window.location.origin : direct!.url),
         });
       })
       .catch((caught: unknown) =>
@@ -327,7 +325,14 @@ function DevicesView({ client }: { client: VerityClient }) {
           </View>
           {pairingInvitation ? (
             <>
-              {tab === 'app' ? (
+              {tab === 'app' && !pairingInvitation.link.startsWith('verity:') ? (
+                // A bare code carries no server identity, which the app needs
+                // before it trusts a server; only a browser can redeem it.
+                <Text style={styles.footnote}>
+                  The Verity app needs a pairing link. Create it in the app on a device that is
+                  already paired.
+                </Text>
+              ) : tab === 'app' ? (
                 <View style={styles.qrFrame}>
                   <QRCode
                     value={pairingInvitation.link}
@@ -350,19 +355,21 @@ function DevicesView({ client }: { client: VerityClient }) {
                   accessibilityLabel="Open web address"
                 />
               )}
-              <CopyField
-                // Inside a browser without a pinned server profile the invitation
-                // is the bare code, which the browser sign-in accepts as well.
-                label={
-                  pairingInvitation.link.startsWith('verity:') ? 'Pairing link' : 'Pairing code'
-                }
-                value={pairingInvitation.link}
-                mono
-                action="Copy"
-                icon="copy"
-                onPress={() => void Clipboard.setStringAsync(pairingInvitation.link)}
-                accessibilityLabel="Copy pairing link"
-              />
+              {tab === 'app' && !pairingInvitation.link.startsWith('verity:') ? null : (
+                <CopyField
+                  // Inside a browser without a pinned server profile the invitation
+                  // is the bare code, which the browser sign-in accepts as well.
+                  label={
+                    pairingInvitation.link.startsWith('verity:') ? 'Pairing link' : 'Pairing code'
+                  }
+                  value={pairingInvitation.link}
+                  mono
+                  action="Copy"
+                  icon="copy"
+                  onPress={() => void Clipboard.setStringAsync(pairingInvitation.link)}
+                  accessibilityLabel="Copy pairing link"
+                />
+              )}
               <View style={styles.invitationHint}>
                 <Text style={styles.footnote}>
                   Valid for {pairingInvitation.minutes} minute
