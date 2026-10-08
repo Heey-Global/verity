@@ -1,5 +1,24 @@
 # Changelog
 
+## [4.28.0](https://github.com/Heey-Global/verity/compare/v4.27.0...v4.28.0) (2026-10-08)
+
+
+### Features
+
+* **mobile:** mark linked sessions with a violet chain icon ([#1338](https://github.com/Heey-Global/verity/issues/1338)) ([3d10fbc](https://github.com/Heey-Global/verity/commit/3d10fbc1ca6ab4e7735625ed48da1cadfeeb500e))
+* **projects:** restrict allowed agents per project ([#1326](https://github.com/Heey-Global/verity/issues/1326)) ([e309754](https://github.com/Heey-Global/verity/commit/e30975490d7b637b0bab69299b14ee7a2da039be))
+* **tasks:** unify task views and add project GitHub issues ([#1342](https://github.com/Heey-Global/verity/issues/1342)) ([01f8e0b](https://github.com/Heey-Global/verity/commit/01f8e0b66e0fc5977bcd40058276c5882a65f66d))
+
+
+### Bug Fixes
+
+* **matrix:** recover missing-target edits without endless retries ([#1340](https://github.com/Heey-Global/verity/issues/1340)) ([c401b9f](https://github.com/Heey-Global/verity/commit/c401b9f9f1d24926bccf6a8ed3a332fe5c5160b6))
+* **mobile:** apply native patches in local EAS builds ([#1332](https://github.com/Heey-Global/verity/issues/1332)) ([c68855a](https://github.com/Heey-Global/verity/commit/c68855a3cbdfb8ed22031bdf4800b7fd70676d90))
+* **preview:** display logo on static preview error pages ([#1333](https://github.com/Heey-Global/verity/issues/1333)) ([50c1459](https://github.com/Heey-Global/verity/commit/50c14599da7fd66fdedefb6d81f6d641c5c813d9))
+* **server:** read shared Google Docs links through connected account ([#1346](https://github.com/Heey-Global/verity/issues/1346)) ([ef21624](https://github.com/Heey-Global/verity/commit/ef21624aab03eeb7153f2b7eca3245391970c1e9))
+* **server:** reduce session-loading read amplification ([#1345](https://github.com/Heey-Global/verity/issues/1345)) ([62f7c1a](https://github.com/Heey-Global/verity/commit/62f7c1a773b48c9217b90605dc064dbab3bd1872))
+* synchronize PR overview markers and immediate status bar ([#1347](https://github.com/Heey-Global/verity/issues/1347)) ([d70103d](https://github.com/Heey-Global/verity/commit/d70103dfafd03f197a6bfa54af0f166f0371be82))
+
 ## [4.27.0](https://github.com/Heey-Global/verity/compare/v4.26.0...v4.27.0) (2026-10-08)
 
 
