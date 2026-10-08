@@ -1007,6 +1007,13 @@ jobs:
             publish_staging_release
           fi
 
+      # Merges received while this runtime was unpublished skipped OTA planning.
+      # Release publication has no push event to resume them automatically.
+      - name: Resume Staging OTA planning on the published runtime
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run mobile-ota.yml --ref main
+
   publish-website:
     # The Verity product website rides its own release train, so this job is
     # gated on `website-release-created` and not on the backend release. Two
