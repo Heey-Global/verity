@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.61.0](https://github.com/Heey-Global/verity/compare/mobile-v1.60.0...mobile-v1.61.0) (2026-10-08)
+
+
+### Features
+
+* **mobile:** add bounded interaction timing diagnostics ([#1365](https://github.com/Heey-Global/verity/issues/1365)) ([c8e0135](https://github.com/Heey-Global/verity/commit/c8e01355f1aebf5d0388ae85d253decf8709cb53))
+
+
+### Bug Fixes
+
+* **mobile:** backport safe Expo query serialization ([#1388](https://github.com/Heey-Global/verity/issues/1388)) ([b1de937](https://github.com/Heey-Global/verity/commit/b1de937f738f91dd4e88e9d91f3c53ca19beeb0f))
+* **mobile:** distinguish waiting, mergeable and blocked PR states ([#1382](https://github.com/Heey-Global/verity/issues/1382)) ([12bfacb](https://github.com/Heey-Global/verity/commit/12bfacb591825e8d248bf7afcada7b6b45f9324f))
+* **mobile:** keep task dictation active until save ([#1366](https://github.com/Heey-Global/verity/issues/1366)) ([db031c9](https://github.com/Heey-Global/verity/commit/db031c94c58a7b9e036fef58fd19ec0d10a3d165))
+* **mobile:** order quick capture projects by the operator's own captures ([#1380](https://github.com/Heey-Global/verity/issues/1380)) ([87ea19c](https://github.com/Heey-Global/verity/commit/87ea19cf358c92dd3ba8cd34c6d67a33d972b02a))
+* **mobile:** reduce session selection and history publication delays ([#1384](https://github.com/Heey-Global/verity/issues/1384)) ([a900c2a](https://github.com/Heey-Global/verity/commit/a900c2a55882ebb0b643142293d9aed769c64700))
+* **mobile:** save agent settings without shifting the screen ([#1372](https://github.com/Heey-Global/verity/issues/1372)) ([2ffddcc](https://github.com/Heey-Global/verity/commit/2ffddccad44e7aadcb8d7fb10601c055e0d06816))
+* **mobile:** show feedback while starting task sessions ([#1369](https://github.com/Heey-Global/verity/issues/1369)) ([c7a148f](https://github.com/Heey-Global/verity/commit/c7a148f2c7a2776c23935d181bc3885f345547b8))
+* **mobile:** use Command shortcuts for voice capture ([#1367](https://github.com/Heey-Global/verity/issues/1367)) ([e730119](https://github.com/Heey-Global/verity/commit/e730119b091c4822dd883df2b491ae989dd9d17c))
+* **mobile:** use silver for linked session markers ([#1381](https://github.com/Heey-Global/verity/issues/1381)) ([947a4f5](https://github.com/Heey-Global/verity/commit/947a4f5f2ae6cb6a752c8409efdb7c40893c3ffe))
+* **planning:** unify plan approval and label accepted proposals ([#1352](https://github.com/Heey-Global/verity/issues/1352)) ([6a53a3a](https://github.com/Heey-Global/verity/commit/6a53a3a6b41832a61816f073790cf86c30e45df5))
+* synchronize PR overview markers and immediate status bar ([#1347](https://github.com/Heey-Global/verity/issues/1347)) ([d70103d](https://github.com/Heey-Global/verity/commit/d70103dfafd03f197a6bfa54af0f166f0371be82))
+* **tasks:** require projects and retire General ([#1383](https://github.com/Heey-Global/verity/issues/1383)) ([b502c48](https://github.com/Heey-Global/verity/commit/b502c486d70dd15000af06076106fa4825f82c59))
+
 ## [1.60.0](https://github.com/Heey-Global/verity/compare/mobile-v1.59.0...mobile-v1.60.0) (2026-10-08)
 
 
