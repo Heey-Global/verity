@@ -1,3 +1,4 @@
+import { markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { subscribeLiveRefresh } from '../lib/liveConnection';
 import {
   type VerityClient,
@@ -62,13 +63,21 @@ export interface UseSession extends SessionModelState {
  */
 export function useSession(client: VerityClient, sessionId: string, baseUrl: string): UseSession {
   const binding = useMemo(() => {
+    const timing = sessionSwitchTiming(sessionId);
+    let timingPublished = false;
     let active = false;
     let frame: number | undefined;
     let latest: SessionModelState | undefined;
     const flush = (): void => {
       if (frame !== undefined) cancelAnimationFrame(frame);
       frame = undefined;
-      if (active && latest !== undefined) setState(latest);
+      if (active && latest !== undefined) {
+        if (!timingPublished && latest.loaded) {
+          markSessionSwitch(timing, 'loaded-model-state-react-dispatch');
+          timingPublished = true;
+        }
+        setState(latest);
+      }
       latest = undefined;
     };
     const publish = (snapshot: SessionModelState): void => {

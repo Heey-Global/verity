@@ -1,3 +1,5 @@
+import { beginSessionSwitch, type SwitchTiming } from '@verity/mobile';
+import { markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { PinnedPlan } from '../../components/PinnedPlan';
 import { shouldSendWebKey } from '../../lib/composerWebKey';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
@@ -650,6 +652,11 @@ export function SessionChat({
   initialTargetSearchQuery?: string;
   retrySecret?: string;
 }) {
+  const switchTiming = useMemo(() => sessionSwitchTiming(sessionId), [sessionId]);
+  useEffect(() => {
+    markSessionSwitch(switchTiming, 'session-screen-react-commit');
+    return () => markSessionSwitch(switchTiming, 'session-screen-cleanup');
+  }, [switchTiming]);
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const { theme } = useUnistyles();
@@ -1950,6 +1957,24 @@ export function SessionChat({
   // pass lands after layout/measurement.
   const [restoreTarget, setRestoreTarget] = useState<ScrollAnchor | null>(null);
   const [restoring, setRestoring] = useState(true);
+  const timingReadinessRef = useRef<string | null>(null);
+  const timingLoadedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!loaded || !switchTiming || timingLoadedRef.current === switchTiming.id) return;
+    timingLoadedRef.current = switchTiming.id;
+    markSessionSwitch(switchTiming, 'history-loaded-react-commit');
+  }, [loaded, switchTiming]);
+  useEffect(() => {
+    if (
+      !loaded ||
+      restoring ||
+      data.length === 0 ||
+      timingReadinessRef.current === switchTiming?.id
+    )
+      return;
+    timingReadinessRef.current = switchTiming?.id ?? null;
+    markSessionSwitch(switchTiming, 'transcript-ready-react-commit');
+  }, [loaded, restoring, data.length, switchTiming]);
   // Opening at the newest edge is offset ZERO in the inverted list — an exact constant
   // that no row measurement can invalidate. The former converging scroll-to-end (three
   // passes against progressively-measured estimates, each one visible) has no
@@ -1990,7 +2015,9 @@ export function SessionChat({
     // below) so an interrupt raised while older history is still paging in is preserved
     // into the convergence rather than discarded when the row finally loads.
     restoreInterruptedRef.current = false;
+    markSessionSwitch(switchTiming, 'anchor-read-start');
     void loadScrollAnchor(requestedSessionId).then((anchor) => {
+      markSessionSwitch(switchTiming, 'anchor-read-end');
       if (!active || sessionIdRef.current !== requestedSessionId) return;
       if (restoreInterruptedRef.current) {
         reportScrollDebug('restore-skipped-after-user-action');
@@ -2029,7 +2056,7 @@ export function SessionChat({
     return () => {
       active = false;
     };
-  }, [restoreToLatestEdge, loaded, hasRestoreData, reportScrollDebug, sessionId]);
+  }, [restoreToLatestEdge, loaded, hasRestoreData, reportScrollDebug, sessionId, switchTiming]);
   // Positioning loop. Restore only targets rows already present in the initial loaded
   // tail; it never fetches older history on open.
   useEffect(() => {
@@ -4234,6 +4261,7 @@ export function SessionChat({
                   }
                 >
                   <FlashList
+                    onLoad={() => markSessionSwitch(switchTiming, 'flash-list-on-load')}
                     ref={listRef}
                     data={data}
                     keyExtractor={rowKey}
@@ -4413,6 +4441,7 @@ export function SessionChat({
         isPlanImplementationPermission(session.pendingPermission)
       ) ? (
         <PermissionPrompt
+          sessionId={sessionId}
           pending={session.pendingPermission}
           deciding={decidingPermission === session.pendingPermission.toolUseId}
           dead={
@@ -4430,6 +4459,7 @@ export function SessionChat({
         .slice(0, 1)
         .map((item) => (
           <PermissionPrompt
+            sessionId={sessionId}
             key={item.id}
             pending={{
               toolUseId: item.id,
@@ -8261,12 +8291,14 @@ function EngineSwitcherSheet({
 // a readable request summary instead of raw JSON and offers scoped allows
 // for both HTTP and CLI: once, this session, or 30 days in the project.
 function PermissionPrompt({
+  sessionId,
   pending,
   deciding,
   dead,
   approvedForDelivery = false,
   onDecide,
 }: {
+  sessionId: string;
   pending: PendingPermission;
   /** A decision POST for THIS prompt is in flight — disable the buttons + spin. */
   deciding: boolean;
@@ -8288,7 +8320,15 @@ function PermissionPrompt({
     completedAt: null,
     description: null,
   });
+  const allowTiming = useRef<SwitchTiming | undefined>(undefined);
+  useEffect(() => {
+    if (deciding) markSessionSwitch(allowTiming.current, 'allow-spinner-react-commit');
+  }, [deciding]);
   const active = !deciding && !dead;
+  const allowTouch = (timestamp: number): void => {
+    allowTiming.current = beginSessionSwitch(sessionId, 'permission');
+    markSessionSwitch(allowTiming.current, 'allow-js-touch-start', timestamp);
+  };
   const isBrokeredHttp = pending.tool === 'verity_http_request';
   const isTrustedCli = pending.tool === 'verity_secret_run';
   const isSessionHandoff = pending.tool === 'verity_session_handoff';
@@ -8407,6 +8447,13 @@ function PermissionPrompt({
     `Allow ${spellOutBidiControls(view.title)}?`;
   const allow = (scope?: 'session' | 'project' | 'forever'): void => {
     if (!active) return;
+    if (
+      allowTiming.current !== sessionSwitchTiming(sessionId, 'permission') ||
+      allowTiming.current?.phases.some((p) => p.phase === 'allow-js-press-handler')
+    )
+      allowTiming.current = undefined;
+    allowTiming.current ??= beginSessionSwitch(sessionId, 'permission');
+    markSessionSwitch(allowTiming.current, 'allow-js-press-handler');
     onDecide(
       pending.toolUseId,
       scope === undefined ? { behavior: 'allow' } : { behavior: 'allow', scope },
@@ -8698,6 +8745,12 @@ function PermissionPrompt({
           )}
         </Pressable>
         <Pressable
+          onTouchStart={(event) => allowTouch(event.nativeEvent.timestamp)}
+          onPressIn={() => markSessionSwitch(allowTiming.current, 'allow-js-press-in')}
+          onTouchCancel={() => {
+            markSessionSwitch(allowTiming.current, 'allow-touch-cancel');
+            if (allowTiming.current) allowTiming.current.status = 'cancelled';
+          }}
           onPress={() => allow()}
           disabled={!active}
           accessibilityRole="button"
@@ -8740,6 +8793,12 @@ function PermissionPrompt({
         <View style={styles.permissionScopeRow}>
           {reusableScopes.includes('session') ? (
             <Pressable
+              onTouchStart={(event) => allowTouch(event.nativeEvent.timestamp)}
+              onPressIn={() => markSessionSwitch(allowTiming.current, 'allow-js-press-in')}
+              onTouchCancel={() => {
+                markSessionSwitch(allowTiming.current, 'allow-touch-cancel');
+                if (allowTiming.current) allowTiming.current.status = 'cancelled';
+              }}
               onPress={() => allow('session')}
               disabled={!active}
               accessibilityRole="button"
@@ -8756,6 +8815,12 @@ function PermissionPrompt({
           ) : null}
           {reusableScopes.includes('project') ? (
             <Pressable
+              onTouchStart={(event) => allowTouch(event.nativeEvent.timestamp)}
+              onPressIn={() => markSessionSwitch(allowTiming.current, 'allow-js-press-in')}
+              onTouchCancel={() => {
+                markSessionSwitch(allowTiming.current, 'allow-touch-cancel');
+                if (allowTiming.current) allowTiming.current.status = 'cancelled';
+              }}
               onPress={() => allow('project')}
               disabled={!active}
               accessibilityRole="button"
@@ -8772,6 +8837,12 @@ function PermissionPrompt({
           ) : null}
           {reusableScopes.includes('forever') ? (
             <Pressable
+              onTouchStart={(event) => allowTouch(event.nativeEvent.timestamp)}
+              onPressIn={() => markSessionSwitch(allowTiming.current, 'allow-js-press-in')}
+              onTouchCancel={() => {
+                markSessionSwitch(allowTiming.current, 'allow-touch-cancel');
+                if (allowTiming.current) allowTiming.current.status = 'cancelled';
+              }}
               onPress={() => allow('forever')}
               disabled={!active}
               accessibilityRole="button"

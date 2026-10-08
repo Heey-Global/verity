@@ -817,6 +817,99 @@ describe('project settings — agents', () => {
     expect(client.updateProjectSettings).not.toHaveBeenCalled();
   });
 
+  // A banner sliding in above the list while a toggle saves shifts the whole
+  // screen; the flipped toggle is the feedback.
+  it('flips a toggle at once without a saving banner or dimmed rows', async () => {
+    let finish: (() => void) | undefined;
+    const updateProjectSettings = jest.fn().mockImplementation(
+      (_id: string, patch: object) =>
+        new Promise((resolve) => {
+          finish = () => resolve({ ...makeDetail().settings, ...patch });
+        }),
+    );
+    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    render(<ProjectModelScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Codex'));
+    expect(screen.getByLabelText('Codex').props.accessibilityState).toMatchObject({
+      checked: false,
+      disabled: false,
+    });
+    expect(screen.queryByText('Saving changes…')).toBeNull();
+    await act(async () => finish?.());
+    expect(screen.getByLabelText('Codex').props.accessibilityState.checked).toBe(false);
+  });
+
+  // Dropping a tap that lands mid-save leaves the screen showing one state while
+  // the project keeps another.
+  it('sends a toggle tapped during a save once that save lands', async () => {
+    const finishers: (() => void)[] = [];
+    const updateProjectSettings = jest.fn().mockImplementation(
+      (_id: string, patch: object) =>
+        new Promise((resolve) => {
+          finishers.push(() => resolve({ ...makeDetail().settings, ...patch }));
+        }),
+    );
+    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    render(<ProjectModelScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Codex'));
+    fireEvent.press(screen.getByLabelText('OpenCode'));
+    expect(screen.getByLabelText('OpenCode').props.accessibilityState.checked).toBe(false);
+    expect(updateProjectSettings).toHaveBeenCalledTimes(1);
+
+    await act(async () => finishers[0]?.());
+    await waitFor(() =>
+      expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', { allowedAgents: ['claude'] }),
+    );
+    await act(async () => finishers[1]?.());
+    expect(screen.getByLabelText('Claude').props.accessibilityState.checked).toBe(true);
+    expect(screen.getByLabelText('OpenCode').props.accessibilityState.checked).toBe(false);
+  });
+
+  it('disables an excluded model while its agent restriction is saving', async () => {
+    let finish: (() => void) | undefined;
+    const updateProjectSettings = jest.fn().mockImplementation(
+      (_id: string, patch: object) =>
+        new Promise((resolve) => {
+          finish = () => resolve({ ...makeDetail().settings, ...patch });
+        }),
+    );
+    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    render(<ProjectModelScreen />);
+    fireEvent.press(await screen.findByLabelText('Codex'));
+    const model = screen.getByLabelText('Use model Codex, codex/default');
+    expect(model.props.accessibilityState.disabled).toBe(true);
+    fireEvent.press(model);
+    expect(updateProjectSettings).toHaveBeenCalledTimes(1);
+    await act(async () => finish?.());
+    expect(updateProjectSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears a queued default when its agent is subsequently excluded', async () => {
+    const finishers: (() => void)[] = [];
+    const updateProjectSettings = jest.fn().mockImplementation(
+      (_id: string, patch: object) =>
+        new Promise((resolve) => {
+          finishers.push(() => resolve({ ...makeDetail().settings, ...patch }));
+        }),
+    );
+    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    render(<ProjectModelScreen />);
+
+    fireEvent.press(await screen.findByLabelText('OpenCode'));
+    fireEvent.press(screen.getByLabelText('Use model Codex, codex/default'));
+    fireEvent.press(screen.getByLabelText('Codex'));
+    await act(async () => finishers[0]?.());
+    await waitFor(() =>
+      expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', {
+        defaultModel: null,
+        allowedAgents: ['claude'],
+      }),
+    );
+    await act(async () => finishers[1]?.());
+  });
+
   // Turning off the last connected agent would leave the project unable to start
   // any session, so its toggle cannot be switched off.
   it('locks the last connected allowed agent and lists the project models', async () => {

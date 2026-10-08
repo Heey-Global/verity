@@ -1,3 +1,4 @@
+import { beginSessionSwitch } from './sessionSwitchTiming.js';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
@@ -1675,6 +1676,39 @@ describe('VerityClient.getActivity', () => {
 });
 
 describe('VerityClient.getHistory', () => {
+  it('attributes history response phases to the request gesture, never a later return', async () => {
+    const first = beginSessionSwitch('timed-session');
+    let resolve!: (response: Response) => void;
+    const fetch = vi.fn(
+      () =>
+        new Promise<Response>((done) => {
+          resolve = done;
+        }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    const request = client.getHistory('timed-session');
+    beginSessionSwitch('other');
+    const returned = beginSessionSwitch('timed-session');
+    resolve(new Response(JSON.stringify({ events: [], hasMore: false })));
+    await request;
+    expect(first.phases.map((p) => p.phase)).toEqual(['events-request-start']);
+    expect(returned.phases).toEqual([]);
+  });
+  it('separates fetch, body read, JSON parse and schema processing', async () => {
+    const timing = beginSessionSwitch('phase-session');
+    const { fetch } = fakeFetch(json({ events: [], hasMore: false }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.getHistory('phase-session');
+    expect(timing.phases.map((p) => p.phase)).toEqual([
+      'events-request-start',
+      'events-fetch-return',
+      'events-body-read-start',
+      'events-body-read-end',
+      'events-json-parse-end',
+      'events-schema-end',
+    ]);
+  });
+
   it('assembles the query string and parses the page', async () => {
     const page = {
       events: [{ seq: 7, event: { t: 'text', delta: 'hi' } }],
@@ -3942,4 +3976,39 @@ describe('session reorder API', () => {
     expect(calls[0]?.init?.method).toBe('PATCH');
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ projectId: 'p', ids: ['b', 'a'] }));
   });
+});
+
+it.each([true, false])(
+  'measures Allow request with explicit context=%s without payload content',
+  async (explicit) => {
+    const trace = beginSessionSwitch('secret-session', 'permission');
+    const { fetch } = fakeFetch(
+      json({ sessionId: 'secret-session', toolUseId: 'private-tool-use', decided: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.decidePermission(
+      'secret-session',
+      'private-tool-use',
+      { behavior: 'allow' },
+      ...(explicit ? ([{ trace }] as const) : []),
+    );
+    expect(trace.phases.map((p) => p.phase)).toEqual([
+      'allow-request-start',
+      'allow-fetch-return',
+      'allow-response-processed',
+    ]);
+    expect(JSON.stringify(trace.phases)).not.toContain('private-tool-use');
+  },
+);
+
+it('does not attach continued old-model pagination to a returning gesture', async () => {
+  const original = beginSessionSwitch('paginate');
+  beginSessionSwitch('other-page');
+  const returned = beginSessionSwitch('paginate');
+  const fetch = vi.fn(async () => json({ events: [], hasMore: false }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.getHistory('paginate', { beforeSeq: 10, timing: original });
+  await client.getHistory('paginate', { beforeSeq: 5, timing: undefined });
+  expect(returned.phases).toEqual([]);
+  expect(original.phases).toEqual([]);
 });

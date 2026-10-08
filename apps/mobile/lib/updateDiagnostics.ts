@@ -1,3 +1,5 @@
+import { exportSessionSwitchTimings } from '@verity/mobile';
+import { BUILD_COMMIT } from './buildInfo.generated';
 import * as Application from 'expo-application';
 import * as Updates from 'expo-updates';
 import { Share } from 'react-native';
@@ -76,7 +78,9 @@ export async function shareUpdateDiagnostics(): Promise<void> {
     : [];
   const logs: ReturnType<typeof compactLog>[] = [];
   const report = {
-    schema: 2,
+    schema: 3,
+    commit: BUILD_COMMIT,
+    sessionSwitchTimings: exportSessionSwitchTimings(),
     exportedAt: new Date().toISOString(),
     version: shorten(runningReleaseVersion(Application.nativeApplicationVersion), 256),
     nativeVersion: boundedIdentity(Application.nativeApplicationVersion),

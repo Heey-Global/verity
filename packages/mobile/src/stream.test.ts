@@ -1,3 +1,4 @@
+import { beginSessionSwitch } from './sessionSwitchTiming.js';
 import { describe, expect, it } from 'vitest';
 import { FakeTransport } from './live/testing.js';
 import { SessionStream } from './stream.js';
@@ -349,4 +350,18 @@ describe('SessionStream', () => {
     connect.reconnect(); // a stopped stream is not resubscribed
     expect(sockets).toHaveLength(1);
   });
+});
+
+it('attributes replay timing to its original switch and ignores superseded callbacks', () => {
+  const first = beginSessionSwitch('timed-replay');
+  const { connect, sockets } = recordingConnect();
+  const stream = new SessionStream({ sessionId: 'timed-replay', transport: connect });
+  stream.start();
+  sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+  expect(first.phases.map((p) => p.phase)).toEqual(['replay-subscribe', 'replay-caught-up']);
+  beginSessionSwitch('other-replay');
+  const returned = beginSessionSwitch('timed-replay');
+  sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+  expect(returned.phases).toEqual([]);
+  stream.stop();
 });

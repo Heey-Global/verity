@@ -22,8 +22,12 @@ describe('modelDisplayName', () => {
     expect(modelDisplayName('claude-fable-5-1')).toBe('Claude Fable 5.1');
   });
 
+  it('displays the current Haiku model version', () => {
+    expect(modelDisplayName('claude-haiku-5-5')).toBe('Claude Haiku 5.5');
+  });
+
   it('drops an 8-digit date stamp from a dated Claude id', () => {
-    expect(modelDisplayName('claude-haiku-4-5-20251001')).toBe('Claude Haiku 4.5');
+    expect(modelDisplayName('claude-sonnet-4-5-20250929')).toBe('Claude Sonnet 4.5');
   });
 
   it('shows the Codex default as just "Codex"', () => {
@@ -77,10 +81,10 @@ describe('orderModels (#143)', () => {
       'deepinfra/zai-org/GLM-5.2',
       'codex/default',
       'deepinfra/moonshotai/Kimi-K2.7-Code',
-      'claude-haiku-4-5-20251001',
+      'claude-haiku-5-5',
     ];
     expect(orderModels(models)).toEqual([
-      'claude-haiku-4-5-20251001',
+      'claude-haiku-5-5',
       'claude-opus-4-8',
       'codex/default',
       'deepinfra/moonshotai/Kimi-K2.7-Code',
@@ -108,18 +112,18 @@ describe('orderModels (#143)', () => {
 
 describe('defaultModel (#143)', () => {
   it('uses the server default when it is an offered model', () => {
-    const models = ['claude-haiku-4-5-20251001', 'claude-opus-4-8'];
+    const models = ['claude-haiku-5-5', 'claude-opus-4-8'];
     expect(defaultModel(models, 'claude-opus-4-8')).toBe('claude-opus-4-8');
   });
 
   it('falls back to the first offered model when the default is not offered', () => {
-    const models = ['claude-haiku-4-5-20251001', 'deepinfra/zai-org/GLM-5.2'];
-    expect(defaultModel(models, 'claude-opus-4-8')).toBe('claude-haiku-4-5-20251001');
+    const models = ['claude-haiku-5-5', 'deepinfra/zai-org/GLM-5.2'];
+    expect(defaultModel(models, 'claude-opus-4-8')).toBe('claude-haiku-5-5');
   });
 
   it('falls back to the first offered model when no default is given', () => {
-    const models = ['claude-haiku-4-5-20251001', 'claude-opus-4-8'];
-    expect(defaultModel(models, undefined)).toBe('claude-haiku-4-5-20251001');
+    const models = ['claude-haiku-5-5', 'claude-opus-4-8'];
+    expect(defaultModel(models, undefined)).toBe('claude-haiku-5-5');
   });
 
   it('is undefined for an empty list (spawn sends no model -> server default)', () => {
@@ -132,12 +136,12 @@ describe('partitionModels', () => {
   it('keeps Claude and priority Codex models visible and moves only nominated models', () => {
     expect(
       partitionModels(
-        ['claude-opus-4-8', 'codex/gpt-5.6-sol', 'codex/gpt-5.4', 'claude-haiku-4-5'],
+        ['claude-opus-4-8', 'codex/gpt-5.6-sol', 'codex/gpt-5.4', 'claude-haiku-5-5'],
         ['codex/gpt-5.4'],
-        ['claude-haiku-4-5', 'claude-opus-4-8', 'codex/gpt-5.6-sol', 'codex/gpt-5.4'],
+        ['claude-haiku-5-5', 'claude-opus-4-8', 'codex/gpt-5.6-sol', 'codex/gpt-5.4'],
       ),
     ).toEqual({
-      primary: ['claude-haiku-4-5', 'claude-opus-4-8', 'codex/gpt-5.6-sol'],
+      primary: ['claude-haiku-5-5', 'claude-opus-4-8', 'codex/gpt-5.6-sol'],
       more: ['codex/gpt-5.4'],
     });
   });

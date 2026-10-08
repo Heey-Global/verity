@@ -7,8 +7,8 @@ import {
 } from './project-agent-policy.js';
 
 const list = {
-  models: ['claude-haiku-4-5', 'claude-opus-5-5', 'codex/gpt-5.6-sol', 'verity/kimi-k2'],
-  moreModels: ['claude-haiku-4-5'],
+  models: ['claude-haiku-5-5', 'claude-opus-5-5', 'codex/gpt-5.6-sol', 'verity/kimi-k2'],
+  moreModels: ['claude-haiku-5-5'],
   default: 'claude-opus-5-5',
 };
 

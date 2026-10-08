@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.60.2](https://github.com/Heey-Global/verity/compare/mobile-v1.60.1...mobile-v1.60.2) (2026-10-08)
+
+
+### Features
+
+* **mobile:** add bounded interaction timing diagnostics ([#1365](https://github.com/Heey-Global/verity/issues/1365)) ([c8e0135](https://github.com/Heey-Global/verity/commit/c8e01355f1aebf5d0388ae85d253decf8709cb53))
+* **models:** replace Haiku 4.5 with Haiku 5.5 ([#1363](https://github.com/Heey-Global/verity/issues/1363)) ([ee15eab](https://github.com/Heey-Global/verity/commit/ee15eabd94e5ad6b3aa24e2dabf333ce02864583))
+
+
+### Bug Fixes
+
+* **mobile:** keep task dictation active until save ([#1366](https://github.com/Heey-Global/verity/issues/1366)) ([db031c9](https://github.com/Heey-Global/verity/commit/db031c94c58a7b9e036fef58fd19ec0d10a3d165))
+* **mobile:** show feedback while starting task sessions ([#1369](https://github.com/Heey-Global/verity/issues/1369)) ([c7a148f](https://github.com/Heey-Global/verity/commit/c7a148f2c7a2776c23935d181bc3885f345547b8))
+* **planning:** unify plan approval and label accepted proposals ([#1352](https://github.com/Heey-Global/verity/issues/1352)) ([6a53a3a](https://github.com/Heey-Global/verity/commit/6a53a3a6b41832a61816f073790cf86c30e45df5))
+* **sessions:** append new sessions after manual ordering ([#1368](https://github.com/Heey-Global/verity/issues/1368)) ([a68e149](https://github.com/Heey-Global/verity/commit/a68e1497c42618efeff7013dc1045853827b397a))
+
 ## [1.60.1](https://github.com/Heey-Global/verity/compare/mobile-v1.60.0...mobile-v1.60.1) (2026-10-08)
 
 

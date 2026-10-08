@@ -1,6 +1,9 @@
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 import { act, render, fireEvent } from '@testing-library/react-native';
 import { TasksPanel } from './TasksPanel';
+import { Alert } from 'react-native';
+import { router } from 'expo-router';
+import { dispatchTasks } from '../lib/taskDispatch';
 import { saveTaskPreferences } from '../lib/taskPreferences';
 import { createVerityClient } from '../lib/client';
 import { patchTask, useTasks } from '../lib/tasksStore';
@@ -34,6 +37,9 @@ jest.mock('../lib/taskPreferences', () => {
   };
 });
 beforeEach(() => {
+  jest.mocked(dispatchTasks).mockReset();
+  jest.mocked(router.push).mockClear();
+  props.onClose.mockClear();
   jest.mocked(patchTask).mockClear();
   void saveTaskPreferences({ tab: 'mine' });
 });
@@ -69,6 +75,54 @@ it('offers no session action for General', () => {
   const ui = render(<TasksPanel {...props} />);
   expect(ui.queryByText(/New Session/)).toBeNull();
   expect(ui.queryByText(/This Session/)).toBeNull();
+});
+it.each([
+  ['+ New Session', 'Starting new session…', undefined],
+  ['↳ This Session', 'Sending task to session…', 's'],
+])('shows immediate feedback for %s until dispatch finishes', async (label, status, target) => {
+  let resolve!: (id: string) => void;
+  jest.mocked(dispatchTasks).mockReturnValue(new Promise((done) => (resolve = done)));
+  const projectTask = { ...task, projectId: 'p' };
+  jest.mocked(useTasks).mockReturnValue({ tasks: [projectTask], pending: [], conflicts: [] });
+  const ui = render(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 's' }} />);
+  fireEvent.press(ui.getByText(label));
+  expect(ui.getByText(status)).toBeTruthy();
+  expect(ui.getByRole('button', { name: '+ New Session' })).toBeDisabled();
+  expect(ui.getByRole('button', { name: '↳ This Session' })).toBeDisabled();
+  fireEvent.press(ui.getByText(label));
+  expect(dispatchTasks).toHaveBeenCalledTimes(1);
+  expect(dispatchTasks).toHaveBeenCalledWith([projectTask], target);
+  expect(props.onClose).not.toHaveBeenCalled();
+  expect(router.push).not.toHaveBeenCalled();
+  await act(async () => resolve('created'));
+  expect(ui.queryByText(status)).toBeNull();
+  expect(props.onClose).toHaveBeenCalledTimes(1);
+  expect(router.push).toHaveBeenCalledWith({
+    pathname: '/session/[id]',
+    params: { id: 'created' },
+  });
+});
+it('clears dispatch feedback on failure and allows retry without closing the panel', async () => {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  let reject!: (error: Error) => void;
+  jest.mocked(dispatchTasks).mockReturnValue(new Promise((_, fail) => (reject = fail)));
+  jest.mocked(useTasks).mockReturnValue({
+    tasks: [{ ...task, projectId: 'p' }],
+    pending: [],
+    conflicts: [],
+  });
+  const ui = render(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 's' }} />);
+  fireEvent.press(ui.getByText('+ New Session'));
+  await act(async () => reject(new Error('Connection lost')));
+  expect(ui.queryByText('Starting new session…')).toBeNull();
+  expect(alert).toHaveBeenCalledWith('Task action failed', 'Connection lost');
+  expect(props.onClose).not.toHaveBeenCalled();
+  expect(router.push).not.toHaveBeenCalled();
+  expect(ui.getByRole('button', { name: '+ New Session' })).not.toBeDisabled();
+  jest.mocked(dispatchTasks).mockResolvedValue('retry');
+  await act(async () => fireEvent.press(ui.getByText('+ New Session')));
+  expect(router.push).toHaveBeenCalledWith({ pathname: '/session/[id]', params: { id: 'retry' } });
+  alert.mockRestore();
 });
 it('offers both actions only in the matching project session', () => {
   jest

@@ -13,6 +13,7 @@ import {
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Modal,
   PanResponder,
@@ -65,6 +66,8 @@ export function TasksPanel({
   const [expanded, setExpanded] = useState<string[]>([]);
   const [moving, setMoving] = useState<Task | null>(null);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const [dispatching, setDispatching] = useState<'new' | 'existing' | null>(null);
   const [undo, setUndo] = useState<string[]>([]);
   const [menu, setMenu] = useState<{ task: Task; anchor: AttachAnchor } | null>(null);
   const anchors = useRef(new Map<string, View>());
@@ -113,12 +116,15 @@ export function TasksPanel({
   };
   const wide = width >= 900;
   const run = async (work: () => Promise<unknown>) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     try {
       await work();
     } catch (error) {
       Alert.alert('Task action failed', error instanceof Error ? error.message : 'Try again');
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };
@@ -126,9 +132,14 @@ export function TasksPanel({
     void run(async () => {
       if (items.some((task) => pending.some((op) => op.id === task.id)))
         throw new Error('Wait for these tasks to sync before starting');
-      const id = await dispatchTasks(items, sessionId);
-      onClose();
-      router.push({ pathname: '/session/[id]', params: { id } });
+      setDispatching(sessionId ? 'existing' : 'new');
+      try {
+        const id = await dispatchTasks(items, sessionId);
+        onClose();
+        router.push({ pathname: '/session/[id]', params: { id } });
+      } finally {
+        setDispatching(null);
+      }
     });
   };
   const complete = (task: Task) => {
@@ -218,6 +229,7 @@ export function TasksPanel({
     <Pressable
       key={label}
       disabled={(busy && !options.whileBusy) || options.disabled}
+      accessibilityState={{ disabled: (busy && !options.whileBusy) || !!options.disabled }}
       accessibilityRole="button"
       onPress={onPress}
       style={({ pressed }) => [
@@ -596,6 +608,14 @@ export function TasksPanel({
                 {githubError}
               </Text>
               {chip('Retry GitHub', () => setGithubRetry((value) => value + 1))}
+            </View>
+          ) : null}
+          {dispatching ? (
+            <View style={styles.dispatchStatus} accessibilityLiveRegion="polite">
+              <ActivityIndicator size="small" color={theme.colors.primary} />
+              <Text style={styles.meta}>
+                {dispatching === 'new' ? 'Starting new session…' : 'Sending task to session…'}
+              </Text>
             </View>
           ) : null}
           {moving ? (
@@ -1011,5 +1031,11 @@ const styles = StyleSheet.create((theme) => ({
   footer: {
     paddingTop: theme.spacing.md,
     gap: theme.spacing.sm,
+  },
+  dispatchStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
   },
 }));
