@@ -4566,13 +4566,13 @@ export class EventStore implements EventSink {
             change: 'added',
             taskIds: taskIds.slice(offset, offset + 100),
           };
-          const prepared = await this.prepareEventRow(event);
+          const eventRow = await this.prepareEventRow(event);
           await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(input.sessionId)}))`.execute(
             tx,
           );
           const row = await tx
             .insertInto('events')
-            .values({ session_id: input.sessionId, type: prepared.type, payload: prepared.payload })
+            .values({ session_id: input.sessionId, type: eventRow.type, payload: eventRow.payload })
             .returning(['id', 'created_at'])
             .executeTakeFirstOrThrow();
           persisted.push({ seq: Number(row.id), createdAt: row.created_at, event });
