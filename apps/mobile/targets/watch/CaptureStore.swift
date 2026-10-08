@@ -178,7 +178,13 @@ final class CaptureStore: NSObject, ObservableObject {
   private func resend() {
     let inFlight = Set(
       WCSession.default.outstandingFileTransfers.compactMap { $0.file.metadata?["id"] as? String })
-    for capture in captures where capture.state == .queued && !inFlight.contains(capture.id) {
+    // A delivered capture with no reply after a while may have been lost on the
+    // iPhone (reinstall, cleared inbox); the iPhone ignores a copy it already has.
+    let stale = Date().addingTimeInterval(-10 * 60)
+    for capture in captures
+    where (capture.state == .queued || (capture.state == .delivered && capture.createdAt < stale))
+      && !inFlight.contains(capture.id)
+    {
       update(capture.id) { $0.rejected = nil }
       send(capture)
     }

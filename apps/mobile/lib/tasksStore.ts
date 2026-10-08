@@ -86,7 +86,8 @@ export async function refreshTasks(force = false): Promise<void> {
 }
 /** `id` and `createdAt` come from captures made elsewhere (the Apple Watch). The
  *  stable id makes a repeated hand-over a no-op while the task is still in the
- *  local queue, and the server answers a PUT for an existing id with that task. */
+ *  local queue, and the server answers a PUT for an existing id with that task.
+ *  In that case the returned task is the one built here, not the stored row. */
 export async function captureTask(
   body: TaskCapture,
   origin: { id?: string; createdAt?: string } = {},
