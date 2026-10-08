@@ -245,7 +245,10 @@ export {
 export {
   isPullRequestCheckingMergeability,
   isPullRequestConflicted,
+  pullRequestMergeButton,
   pullRequestStatusText,
+  type PullRequestBlockReason,
+  type PullRequestMergeButton,
   type PullRequestStatusView,
 } from './ui/pullRequest.js';
 export {
