@@ -153,6 +153,23 @@ describe('bounded review base recovery', () => {
     expect(result.stdout).toContain('history recovery limit');
     expect(result.stderr.toString().match(/attempt/g)).toHaveLength(attempts);
   });
+  it('preserves already reachable history when a missing base exceeds the recovery budget', () => {
+    const source = readFileSync(helper, 'utf8');
+    const depth = Number(/--deepen=(\d+)/.exec(source)?.[1]);
+    const attempts = /for attempt in ([\d ]+);/.exec(source)![1].trim().split(' ').length;
+    const budget = depth * attempts;
+    const { repo } = fixture(budget * 5);
+    git(repo, 'fetch', '-q', `--deepen=${budget * 2 + 10}`, 'origin', 'feature');
+    const reachable = git(repo, 'rev-list', 'HEAD').split('\n');
+    expect(reachable.length).toBeGreaterThan(budget);
+    expect(git(repo, 'for-each-ref', 'refs/remotes/origin/main')).toBe('');
+    const result = resolve(repo);
+    expect(result.status).toBe(1);
+    // A shortened shallow boundary silently removes commits from secret scans.
+    const after = new Set(git(repo, 'rev-list', 'HEAD').split('\n'));
+    expect(reachable.every((sha) => after.has(sha))).toBe(true);
+    expect(result.stdout).toContain('history recovery limit');
+  });
   it('uses the timeout wrapper and treats its failure as an unavailable base', () => {
     const { repo } = fixture();
     const bin = join(repo, 'bin');

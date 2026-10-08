@@ -41,14 +41,10 @@ verity_resolve_review_base() {
   # At most three requests, each killed after ten seconds (plus one second
   # for termination). Never unshallow the entire repository or fetch all branches.
   for attempt in 1 2 3; do
-    local depth=(--deepen=128)
-    if ! git rev-parse --verify --quiet "$base_ref" >/dev/null 2>&1; then
-      depth=(--depth=128)
-    fi
     echo "review-base: recovering history for $base_ref (attempt $attempt/3)…" >&2
     if ! GIT_TERMINAL_PROMPT=0 timeout --kill-after=1s 10s \
       git -c credential.interactive=false fetch --quiet --no-tags --no-recurse-submodules \
-      "${depth[@]}" "$remote" "${refs[@]}" >/dev/null 2>&1; then
+      --deepen=128 "$remote" "${refs[@]}" >/dev/null 2>&1; then
       VERITY_BASE_REASON="history fetch failed or timed out"
       return 1
     fi
