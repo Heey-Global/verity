@@ -45,7 +45,7 @@ export function modelAgent(model: string): ProjectAgent {
   return model.includes('/') ? 'opencode' : 'claude';
 }
 
-export function agentDisplayName(agent: ProjectAgent): string {
+function agentDisplayName(agent: ProjectAgent): string {
   return agent === 'claude' ? 'Claude' : agent === 'codex' ? 'Codex' : 'OpenCode';
 }
 
@@ -56,14 +56,6 @@ export function isModelAllowedForProject(
 ): boolean {
   const allowed = settings?.allowedAgents ?? null;
   return allowed === null || allowed.includes(modelAgent(model));
-}
-
-/** Throws {@link ProjectAgentNotAllowedError} when the project's rule rejects `model`. */
-export function assertModelAllowedForProject(
-  model: string,
-  settings: ProjectAgentSettings | null | undefined,
-): void {
-  if (!isModelAllowedForProject(model, settings)) throw new ProjectAgentNotAllowedError(model);
 }
 
 /** Picker order: the server's ranking when it sends one, otherwise Claude → Codex → OpenCode. */
