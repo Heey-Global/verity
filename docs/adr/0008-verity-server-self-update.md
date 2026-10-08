@@ -938,7 +938,8 @@ What the condition gates is now open, and it is not a flag — there never was o
 "Enabling" means migrating a deployment into managed mode: the topology lives
 behind the `managed` Compose profile plus the ownership overlay, and
 `deploy/bin/verity-compose managed-up` is the single guarded path into it
-(`deploy/README.md`, "Migrate to managed Server updates"). A deployment that has
+(`docs/operations/server-updates-and-recovery.md`, "Migrate to managed Server
+updates"). A deployment that has
 not run that command is host-managed and reports Server self-update as
 unsupported, whatever this matrix says.
 
@@ -1257,8 +1258,8 @@ restarts the retained container **by id**, without comparing it to the spec. A
 rollback that started re-comparing would put the fatal refusal back inside the
 cutover, at the one point where there is nothing to fall back to.
 
-`deploy/README.md` documents the blunt manual repair for a host already in the
-crash loop — remove the Server container so the Updater takes the create path —
+`docs/operations/server-updates-and-recovery.md` documents the blunt manual
+repair for a host already in the crash loop — remove the Server container so the Updater takes the create path —
 including its cost: one hard control-plane restart, no drain, in-flight sessions
 lost.
 
