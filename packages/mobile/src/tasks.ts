@@ -68,6 +68,23 @@ export function taskContext(
     projectId: pathname.startsWith('/project/') ? (params.id ?? null) : null,
   };
 }
+/** Projects in the order the operator last captured into them, for the capture
+ *  pickers. Only the operator's own tasks count, by creation time: an agent
+ *  adding or ticking off steps in a busy project must not push that project
+ *  above the one the operator just saved to. Ties keep the incoming order. */
+export function projectsByRecentCapture<P extends { id: string }>(
+  projects: readonly P[],
+  tasks: readonly Pick<Task, 'projectId' | 'origin' | 'createdAt'>[],
+): P[] {
+  const latest = new Map<string, number>();
+  for (const task of tasks) {
+    if (task.origin !== 'user' || !task.projectId) continue;
+    const at = Date.parse(task.createdAt);
+    if (Number.isNaN(at)) continue;
+    latest.set(task.projectId, Math.max(latest.get(task.projectId) ?? 0, at));
+  }
+  return [...projects].sort((a, b) => (latest.get(b.id) ?? 0) - (latest.get(a.id) ?? 0));
+}
 /** "just now", "5 min ago", "2 h ago", "yesterday", "3 days ago": the age a task
  *  row shows. Coarse on purpose; the exact time is not what the list is for. */
 export function taskAge(createdAt: string, now = Date.now()): string {

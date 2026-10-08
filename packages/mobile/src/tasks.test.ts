@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bubbleRestingPlace, taskAge, taskContext } from './tasks.js';
+import { bubbleRestingPlace, projectsByRecentCapture, taskAge, taskContext } from './tasks.js';
 describe('task context', () => {
   const sessions = [{ sessionId: 's', projectId: 'p' }];
   it('uses the session project on phone and selected wide home', () => {
@@ -62,5 +62,37 @@ describe('bubble resting place', () => {
     expect(bubbleRestingPlace({ ...screen, x: 10, y: 300, vx: 0, vy: 0.5 }).y).toBe(410);
     expect(bubbleRestingPlace({ ...screen, x: 10, y: 300, vx: 0, vy: -3 }).y).toBe(100);
     expect(bubbleRestingPlace({ ...screen, x: 10, y: 650, vx: 0, vy: 4 }).y).toBe(700);
+  });
+});
+
+describe('projects by recent capture', () => {
+  const projects = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+  const task = (projectId: string | null, origin: 'user' | 'agent', createdAt: string) => ({
+    projectId,
+    origin,
+    createdAt,
+  });
+  it('puts the project the operator captured into last first', () => {
+    const order = projectsByRecentCapture(projects, [
+      task('b', 'user', '2026-10-08T10:00:00Z'),
+      task('c', 'user', '2026-10-08T11:00:00Z'),
+    ]);
+    expect(order.map((p) => p.id)).toEqual(['c', 'b', 'a']);
+  });
+  // The silent failure: a busy agent project jumping above the operator's own
+  // last capture, so the picker's first row is not where they just saved.
+  it('ignores agent steps however recent', () => {
+    const order = projectsByRecentCapture(projects, [
+      task('b', 'user', '2026-10-08T10:00:00Z'),
+      task('c', 'agent', '2026-10-08T12:00:00Z'),
+    ]);
+    expect(order.map((p) => p.id)).toEqual(['b', 'a', 'c']);
+  });
+  it('keeps the incoming order without captures and skips unassigned tasks and bad dates', () => {
+    const order = projectsByRecentCapture(projects, [
+      task(null, 'user', '2026-10-08T10:00:00Z'),
+      task('c', 'user', 'not a date'),
+    ]);
+    expect(order.map((p) => p.id)).toEqual(['a', 'b', 'c']);
   });
 });
