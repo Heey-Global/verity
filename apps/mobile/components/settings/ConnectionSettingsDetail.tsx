@@ -373,6 +373,11 @@ export function ConnectionSettingsDetail({
         <SettingsListPanel>
           <SettingsNavRow
             icon="mic"
+            title="Voice input vocabulary"
+            onPress={() => router.push('/settings/voice-input')}
+          />
+          <SettingsNavRow
+            icon="mic"
             title="Live transcription test"
             onPress={() => router.push('/settings/live-meeting-stt')}
           />

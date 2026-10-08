@@ -8,6 +8,22 @@ const handlers: Record<
   (event: { results?: { transcript: string }[]; isFinal?: boolean; value?: number }) => void
 > = {};
 
+// Keep the existing OS-recognizer regression suite on the Android path.
+jest.mock('../lib/voiceRecognition', () => {
+  const legacy = jest.requireMock('expo-speech-recognition');
+  return {
+    voiceRecognition: legacy.ExpoSpeechRecognitionModule,
+    useVoiceRecognitionEvent: legacy.useSpeechRecognitionEvent,
+  };
+});
+jest.mock('react-native/Libraries/Utilities/Platform', () => ({
+  __esModule: true,
+  default: {
+    OS: 'android',
+    select: (values: Record<string, unknown>) => values.android ?? values.default,
+  },
+}));
+
 jest.mock('expo-localization', () => ({ getLocales: () => [{ languageTag: 'en-US' }] }));
 jest.mock('expo-speech-recognition', () => {
   const React = jest.requireActual<typeof import('react')>('react');
