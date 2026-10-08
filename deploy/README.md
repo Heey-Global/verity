@@ -199,9 +199,11 @@ The Server image includes the browser build of the app and serves it at
 `https://<host>:8082/app/` (the API port, `VERITY_API_HOST_PORT`). The Server
 presents its self-signed certificate, so the browser shows a certificate
 warning on first use. Unlike the native app, a browser cannot check that
-certificate against the pin in the pairing link; a user who accepts the
-warning on an untrusted network has no protection against interception for
-that visit, so the first browser sign-in belongs on a trusted network or VPN.
+certificate against the pin in the pairing link. A user who accepts the
+warning on an untrusted network hands an interceptor the pairing capability
+and the master password typed on that page, which yields a durable paired
+session rather than a one-time exposure, so the first browser sign-in belongs
+on a trusted network or VPN.
 Sign-in on the "Connect this browser" page accepts the
 installer's `verity://pair?` line or a pairing link created from an already
 paired device, then creates or asks for the master password and issues a
@@ -264,8 +266,9 @@ sudo deploy/bin/verity-install                       # the same, from a checkout
 
 To discard an installation **and all of its data**, pass `--reinstall`. The
 installer asks for the exact phrase `DELETE VERITY` on the terminal before
-removing containers, volumes, the database, projects, sessions, stored
-secrets, and the pairing identity, then performs a fresh install:
+removing containers, volumes, the network, the database, projects, sessions,
+stored secrets, the pairing identity, and the installer state, then performs
+a fresh install:
 
 ```sh
 curl -fsSL https://verity.build/install.sh | bash -s -- --reinstall

@@ -133,7 +133,8 @@ Choose one. You can add the others later.
    certificate it created on your server rather than one from a public
    authority. The iPhone and iPad app checks that certificate against the
    pairing link; a browser cannot, so do this first sign-in only on a network
-   you trust, such as your home network or Tailscale. Confirm that the
+   you trust, such as your home network or Tailscale: on this visit you hand
+   the page your pairing link and your master password. Confirm that the
    address in the bar is your server, then choose the option to continue
    (often behind "Advanced").
 3. On the "Connect this browser" page, paste the full `verity://pair?` line
@@ -184,8 +185,9 @@ button "Open Verity" becomes active. Tap it.
 1. On the home screen, tap "Add your first project".
 2. Choose "Empty project", give it a name such as `my-first-project`, and tap
    "Create project". Verity prepares an isolated sandbox for it, which takes a
-   minute the first time. A sandbox is a private container on your server
-   where this project's agents work; nothing they do leaves it.
+   minute the first time. A sandbox is a container on your server where this
+   project's agents work, separate from your other projects and from the
+   server itself; agents can still reach the internet from it.
 3. Open the project and start a new session. A session is one conversation
    with one agent, with its own copy of the project files.
 4. Type a first task, for example:
