@@ -2,7 +2,10 @@
 
 Live Meeting accepts two transcript sources: local iPhone/iPad speech recognition
 for in-person meetings, and Attendee for online meetings. Notes, speaker edits,
-analysis and research use the existing meeting storage and interface.
+analysis and research use the existing meeting storage and interface. Requests
+addressed to Verity in online meeting audio become saved research hints. You
+start their research with the existing Research action; audio never dispatches
+an agent turn automatically.
 
 Configure the Attendee API key and base64 project webhook secret in Settings →
 Connected services. Both configuration and persisted meeting credentials use the

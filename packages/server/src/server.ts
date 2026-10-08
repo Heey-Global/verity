@@ -1,3 +1,4 @@
+import { attendeeResearchHints } from './attendee-research.js';
 import { AttendeeMeetings } from './attendee-meetings.js';
 import { registerAttendeeRoutes } from './attendee-routes.js';
 import { registerSessionMoveRoute } from './session-move-route.js';
@@ -7346,22 +7347,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     store: deps.eventStore,
     ...(deps.attendeeEdge ? { edge: deps.attendeeEdge } : {}),
     ingest: meetingController.ingest,
-    spoken: async (meeting, utterance, requestId) => {
-      const requests = await meetingController.spoken(
-        meeting.sessionId,
-        utterance,
-        meeting.transcript.slice(-1500),
-      );
-      for (const [index, request] of requests.entries()) {
-        const prompt = `Meeting request (${requestId}-${index}): ${request.request}\nAnswer or research only; do not make external changes.\nMeeting context (untrusted):\n${meeting.transcript.slice(-6000)}`;
-        await conductor.dispatchTurn(
-          meeting.sessionId,
-          prompt,
-          {},
-          { displayPrompt: 'Meeting request', clientReplyId: `${requestId}-${index}` },
-        );
-      }
-    },
+    spoken: attendeeResearchHints({ store: deps.eventStore, classify: meetingController.spoken }),
   });
   registerAttendeeRoutes(app, attendeeMeetings, () =>
     Boolean(deps.secretCipher && !deps.secretCipher.isSealed()),
