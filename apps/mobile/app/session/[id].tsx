@@ -6,6 +6,7 @@ import { shouldSendWebKey } from '../../lib/composerWebKey';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { openTasksPanel } from '../../lib/taskPanelEvents';
 import { ActionMenu } from '../../components/ActionMenu';
+import { SlowSpinner } from '../../components/SlowSpinner';
 import { FileTextEditor } from '../../components/files/FileTextEditor';
 import { FileContentPreview } from '../../components/files/FileContentPreview';
 // Session chat screen: the live transcript for one Claude Code session plus the
@@ -9101,7 +9102,7 @@ function PullRequestBar({
               <ActivityIndicator color={theme.colors.onPrimary} />
             ) : button.kind === 'waiting' ? (
               <View style={styles.prMergeWaiting}>
-                <ActivityIndicator size="small" color={theme.colors.textMuted} />
+                <SlowSpinner color={theme.colors.textMuted} />
                 <Text style={styles.prMergeWaitingText}>{button.label}</Text>
               </View>
             ) : button.kind === 'closed' ? null : (
@@ -10678,9 +10679,11 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0.8,
   },
   prMergeButtonWaiting: {
-    backgroundColor: theme.colors.surfaceAlt,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
+    // Same surface as the bar behind it would read as bare text, so the waiting button
+    // gets the stronger border tone as fill plus a visible edge to stay a button.
+    backgroundColor: theme.colors.border,
+    borderWidth: 1,
+    borderColor: theme.colors.textFaint,
   },
   prMergeButtonOutline: {
     backgroundColor: 'transparent',
@@ -10699,13 +10702,13 @@ const styles = StyleSheet.create((theme) => ({
   },
   prMergeWaitingText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontSize: theme.text.xs,
+    fontWeight: '600',
   },
   prRefreshText: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontSize: theme.text.xs,
+    fontWeight: '600',
   },
   prDismissButton: {
     width: 36,
