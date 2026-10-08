@@ -1243,7 +1243,7 @@ export default function MeetingScreen() {
               </View>
             ) : null}
           </View>
-          {live ? (
+          {live || (meeting.engine === 'attendee' && meeting.state === 'interrupted') ? (
             <View style={styles.controls}>
               <Pressable
                 disabled={

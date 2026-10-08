@@ -591,3 +591,54 @@ it('sends leave while research classification is still pending', async () => {
     await service.close();
   }
 });
+
+it('coalesces polling ticks while a provider snapshot is pending', async () => {
+  const rows = new Map<string, unknown>([
+    [
+      'meeting:poll',
+      {
+        meeting: { id: 'poll', sessionId: 'session', transcript: '', state: 'active', revision: 0 },
+        botId: 'bot',
+        phase: 'running',
+        credentials: { apiKey: 'fixture' },
+        identities: {},
+      },
+    ],
+  ]);
+  const store = {
+    getSession: async () => ({ id: 'session' }),
+    getAttendeeState: async (id: string) => rows.get(id),
+    putAttendeeState: async (id: string, state: unknown) => {
+      rows.set(id, structuredClone(state));
+    },
+    listAttendeeState: async () => [...rows].map(([id, state]) => ({ id, state })),
+  } as unknown as EventStore;
+  let release!: () => void;
+  const blocked = new Promise<[]>((resolve) => {
+    release = () => resolve([]);
+  });
+  const request = vi.fn(async () => ({ state: 'joined_recording' }));
+  const transcript = vi.fn(() => blocked);
+  const service = new AttendeeMeetings({
+    store,
+    ingest: vi.fn(),
+    client: () =>
+      ({ request, transcript }) as unknown as import('./attendee-client.js').AttendeeClient,
+  });
+  await service.open();
+  try {
+    await vi.waitFor(() => expect(transcript).toHaveBeenCalledOnce());
+    const ticks = service as unknown as { poll: () => void };
+    for (let i = 0; i < 10; i++) ticks.poll();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const stop = service.stop('session', 'poll');
+    release();
+    await stop;
+    // Slow snapshots must not accumulate ten more provider rounds ahead of End.
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(request).toHaveBeenCalledWith('bots/bot/leave', 'POST');
+  } finally {
+    release();
+    await service.close();
+  }
+});

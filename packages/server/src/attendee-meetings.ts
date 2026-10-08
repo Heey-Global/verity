@@ -49,6 +49,7 @@ export class AttendeeMeetings {
   private timer: NodeJS.Timeout | undefined;
   private tail: Promise<unknown> = Promise.resolve();
   private closed = false;
+  private polling: Promise<void> | undefined;
   private readonly researchJobs = new Map<string, Promise<void>>();
   private readonly connectors = new Map<string, PreviewConnector>();
   constructor(
@@ -155,14 +156,15 @@ export class AttendeeMeetings {
       throw new Error('Could not start meeting receiver');
     this.targetOrigin = `http://127.0.0.1:${address.port}`;
     this.timer = setInterval(() => {
-      void this.serial(() => this.reconcile()).catch(() => undefined);
+      this.poll();
     }, 10_000);
     this.timer.unref();
-    void this.serial(() => this.reconcile()).catch(() => undefined);
+    this.poll();
   }
   async close() {
     this.closed = true;
     clearInterval(this.timer);
+    await this.polling;
     await this.tail;
     await Promise.all(this.researchJobs.values());
     for (const connector of this.connectors.values()) connector.close();
@@ -330,28 +332,41 @@ export class AttendeeMeetings {
     });
   }
 
+  private poll() {
+    if (this.closed || this.polling) return;
+    this.polling = this.reconcile()
+      .catch(() => undefined)
+      .finally(() => {
+        this.polling = undefined;
+      });
+  }
   private async reconcile() {
     if (this.closed) return;
-    for (const { state } of await this.records()) {
-      try {
-        const deleted = !(await this.options.store.getSession(state.meeting.sessionId));
-        if (deleted) {
-          state.stopRequested = true;
-          state.pendingRequests = {};
-          state.meeting.transcript = '';
-          state.meeting.timedWords = [];
-          state.meeting.speakerTurns = [];
+    for (const { id } of await this.records()) {
+      await this.serial(async () => {
+        if (this.closed) return;
+        const state = await this.options.store.getAttendeeState<OnlineMeeting>(id);
+        if (!state) return;
+        try {
+          const deleted = !(await this.options.store.getSession(state.meeting.sessionId));
+          if (deleted) {
+            state.stopRequested = true;
+            state.pendingRequests = {};
+            state.meeting.transcript = '';
+            state.meeting.timedWords = [];
+            state.meeting.speakerTurns = [];
+            await this.save(state);
+          }
+          if (state.phase !== 'ended') await this.reconcileOne(state, deleted);
+          if (deleted && state.phase === 'ended') {
+            await this.options.store.deleteAttendeeState(`meeting:${state.meeting.id}`);
+            if (state.botId) await this.options.store.deleteAttendeeState(`event:${state.botId}`);
+          } else if (!deleted) this.schedulePendingRequests(state);
+        } catch {
+          state.error = 'Meeting connection interrupted; retrying recovery.';
           await this.save(state);
         }
-        if (state.phase !== 'ended') await this.reconcileOne(state, deleted);
-        if (deleted && state.phase === 'ended') {
-          await this.options.store.deleteAttendeeState(`meeting:${state.meeting.id}`);
-          if (state.botId) await this.options.store.deleteAttendeeState(`event:${state.botId}`);
-        } else if (!deleted) this.schedulePendingRequests(state);
-      } catch {
-        state.error = 'Meeting connection interrupted; retrying recovery.';
-        await this.save(state);
-      }
+      });
     }
   }
   private schedulePendingRequests(state: OnlineMeeting) {

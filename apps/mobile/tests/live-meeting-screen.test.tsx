@@ -1276,3 +1276,29 @@ it('explains online setup and opens services when Attendee is not configured', a
   fireEvent.press(screen.getByText('Start meeting'));
   expect(startMeeting).not.toHaveBeenCalled();
 });
+
+it('allows cancellation of an interrupted online bot start', async () => {
+  const remote: MeetingRecord = {
+    id: 'online-pending',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'attendee',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'interrupted',
+    captureStatus: 'preparing',
+    transcript: '',
+    error: 'Recovering bot creation',
+  };
+  const stopOnlineMeeting = jest.fn().mockResolvedValue({ accepted: true });
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
+  jest
+    .mocked(createVerityClient)
+    .mockReturnValue({ stopOnlineMeeting } as unknown as NonNullable<
+      ReturnType<typeof createVerityClient>
+    >);
+  jest.mocked(listMeetings).mockResolvedValue([remote]);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByText('End meeting'));
+  await waitFor(() => expect(stopOnlineMeeting).toHaveBeenCalledWith('session-1', remote.id));
+});
