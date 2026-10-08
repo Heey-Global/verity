@@ -5953,10 +5953,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const session = await deps.eventStore.getSession(sessionId);
           const settings = await deps.eventStore.getProjectSettings(projectId);
           const globalSettings = await deps.eventStore.getVeritySettings();
+          const driveRequest = googleDriveRequestSchema.parse(input.request);
           if (
             session?.projectId !== projectId ||
-            settings?.googleDriveFolderId === null ||
-            settings?.googleDriveFolderId === undefined ||
+            (driveRequest.action !== 'read_document_url' && !settings?.googleDriveFolderId) ||
             !hasGoogleDriveScopes(globalSettings?.googleGrantedScopes)
           ) {
             throw new ControlPlaneSessionAuthorityError(
@@ -5965,7 +5965,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           }
           if (
             googleDriveIsMutation(googleDriveRequestSchema.parse(input.request)) &&
-            settings.googleDriveAccessMode === 'read-only'
+            settings?.googleDriveAccessMode === 'read-only'
           )
             throw new ControlPlaneSessionAuthorityError(
               'This project has read-only Google Drive access',
@@ -6174,8 +6174,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const globalSettings = await deps.eventStore.getVeritySettings();
           return (
             session?.projectId === projectId &&
-            settings?.googleDriveFolderId !== null &&
-            settings?.googleDriveFolderId !== undefined &&
+            (googleDriveRequestSchema.parse(request).action === 'read_document_url' ||
+              Boolean(settings?.googleDriveFolderId)) &&
             hasGoogleDriveScopes(globalSettings?.googleGrantedScopes)
           );
         }

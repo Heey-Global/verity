@@ -67,13 +67,18 @@ async function harness(
     get: vi.fn(async (_token, id) => ({
       id,
       name: id === 'root' ? 'Root' : 'Note',
-      mimeType: id === 'root' ? 'application/vnd.google-apps.folder' : 'text/plain',
+      mimeType:
+        id === 'root'
+          ? 'application/vnd.google-apps.folder'
+          : id === 'shared'
+            ? 'application/vnd.google-apps.document'
+            : 'text/plain',
       parents: id === 'root' ? [] : ['root'],
       version: 'v1',
     })),
     list: vi.fn().mockResolvedValue({ files: [] }),
     download: vi.fn().mockResolvedValue(new Uint8Array()),
-    export: vi.fn(),
+    export: vi.fn().mockResolvedValue(new TextEncoder().encode('# Shared document')),
     create: vi.fn(),
     mutate,
   };
@@ -199,4 +204,21 @@ it('does not treat a denied card as permission to trash a file', async () => {
     undefined,
     false,
   );
+});
+
+it('allows a document URL read through the authenticated gateway without a project folder', async () => {
+  await harness(async ({ store, call, approvals, mutate }) => {
+    await store.updateProjectSettings('p1', { googleDriveFolderId: null });
+    const result = await call({
+      action: 'read_document_url',
+      url: 'https://docs.google.com/document/d/shared/edit',
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.result).toBeDefined();
+    expect(result.result?.isError).not.toBe(true);
+    expect(approvals).not.toHaveBeenCalled();
+    expect(mutate).not.toHaveBeenCalled();
+    const denied = await call({ action: 'list' });
+    expect(denied.error !== undefined || denied.result?.isError === true).toBe(true);
+  });
 });

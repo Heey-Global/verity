@@ -180,15 +180,15 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
       if (session === undefined || session.projectId !== input.projectId) {
         throw new Error('Google Drive is restricted to the calling session');
       }
+      const request = googleDriveRequestSchema.parse(input.request);
       const settings = await deps.eventStore.getProjectSettings(input.projectId);
       const rootId = settings?.googleDriveFolderId;
       const credential = await deps.eventStore.getVeritySettings?.();
-      if (rootId === undefined || rootId === null) {
+      if (request.action !== 'read_document_url' && (rootId === undefined || rootId === null)) {
         throw new Error('No Google Drive folder is linked to this project');
       }
       const token = await deps.googleAccessToken();
       if (token === undefined) throw new Error('Google Drive is not connected');
-      const request = googleDriveRequestSchema.parse(input.request);
       const mutation = googleDriveIsMutation(request);
       if (mutation && settings?.googleDriveAccessMode === 'read-only')
         throw new Error('This project has read-only Google Drive access');
@@ -202,7 +202,7 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
         const account = await deps.eventStore.getVeritySettings?.();
         if (
           current?.googleDriveFolderId !== rootId ||
-          (mutation && current.googleDriveAccessMode === 'read-only')
+          (mutation && current?.googleDriveAccessMode === 'read-only')
         )
           throw new Error('Google Drive project access changed during this operation');
         if (
@@ -212,6 +212,23 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
         )
           throw new Error('The connected Google account changed during this operation');
       };
+      if (request.action === 'read_document_url') {
+        await recheck();
+        const file = await drive.get(token, new URL(request.url).pathname.split('/')[3]!);
+        if (file.trashed || file.mimeType !== 'application/vnd.google-apps.document')
+          throw new Error('The link must reference an available Google Docs document');
+        const bytes = await drive.export(token, file.id, 'text/markdown');
+        await recheck();
+        return {
+          file,
+          mimeType: 'text/markdown',
+          encoding: 'utf8',
+          content: Buffer.from(bytes).toString('utf8'),
+        };
+      }
+      // Other actions retain the linked-folder boundary.
+      if (rootId === undefined || rootId === null)
+        throw new Error('No Google Drive folder is linked to this project');
       if (mutation) {
         await recheck();
         const completed = await deps.eventStore.getCompletedGoogleWorkspaceInvocation?.(input);
