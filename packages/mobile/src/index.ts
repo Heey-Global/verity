@@ -562,3 +562,11 @@ export {
 export { TaskQueue, type TaskQueueState } from './taskQueue.js';
 
 export { type ProjectGitHubIssues, type ProjectGitHubIssue } from './api.js';
+export {
+  cancelSessionSwitch,
+  exportSessionSwitchTimings,
+  beginSessionSwitch,
+  sessionSwitchTiming,
+  markSessionSwitch,
+  type SwitchTiming,
+} from './sessionSwitchTiming.js';
