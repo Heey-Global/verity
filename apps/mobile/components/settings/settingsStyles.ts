@@ -645,14 +645,32 @@ export const settingsStyles = StyleSheet.create((theme) => ({
   // An editable name in the title slot of a list row. Reads as the row's title
   // until tapped, so the underline is the only hint that it is a field — the
   // same treatment as the commit identity on the GitHub screen.
+  // Reads as the row's title; it only turns into a field once tapped.
   deviceNameInput: {
-    minHeight: 32,
-    paddingVertical: theme.spacing.xs,
+    flexShrink: 1,
+    padding: 0,
     color: theme.colors.text,
     fontSize: theme.text.md,
     fontWeight: '600',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.colors.setup.border,
+  },
+  deviceNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  accessCard: {
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.setup.border,
+    backgroundColor: theme.colors.surface,
+  },
+  groupFootnote: {
+    color: theme.colors.setup.textMuted,
+    fontSize: theme.text.xs,
+    lineHeight: 17 * theme.fontScale,
+    marginHorizontal: theme.spacing.xs,
   },
   // A QR code needs a white quiet zone to stay scannable, so this block keeps
   // its literal white on both themes rather than following the surface color.
