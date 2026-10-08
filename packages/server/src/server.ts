@@ -1,6 +1,10 @@
 import { attendeeResearchHints } from './attendee-research.js';
 import { AttendeeMeetings } from './attendee-meetings.js';
 import { registerAttendeeRoutes } from './attendee-routes.js';
+import {
+  registerProjectGitHubIssueRoutes,
+  type ProjectGitHubIssues,
+} from './project-github-issues.js';
 import { readMatrixDiagnosticSnapshot } from './matrix-diagnostic-snapshot.js';
 import { createControlDiagnosticsTool } from './control-diagnostics-tool.js';
 import type { createRuntimeDiagnostics } from './runtime-diagnostics.js';
@@ -1370,6 +1374,7 @@ export interface ServerDeps {
    * making the overview look like every repo has been created.
    */
   listAvailableRepositories?: () => Promise<ProjectRecord[]>;
+  listProjectGitHubIssues?: (project: ProjectRecord) => Promise<ProjectGitHubIssues>;
   /**
    * Provisioning worker (concept §19.3, #174). When `POST /sessions { project }`
    * targets a project whose `state !== 'active'`, the route fires this worker
@@ -6720,6 +6725,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const appearsInProjectOverview = (project: ProjectRecord): boolean =>
     project.state !== 'absent' || project.overviewVisible === true;
 
+  registerProjectGitHubIssueRoutes(app, {
+    store: deps.eventStore,
+    list: deps.listProjectGitHubIssues,
+  });
   registerProjectCollectionRoutes(app, {
     store: deps.eventStore,
     listOverview: async (userId) => {

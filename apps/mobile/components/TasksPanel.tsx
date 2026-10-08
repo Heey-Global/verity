@@ -1,10 +1,14 @@
 import { Icon } from './Icon';
+import { TaskIssuesList } from './TaskIssuesList';
+import { createVerityClient } from '../lib/client';
 import {
   projectDisplayName,
   taskAge,
   type ProjectRecord,
   type Task,
   type TaskContext,
+  type SessionSummary,
+  type ProjectGitHubIssues,
 } from '@verity/mobile';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
@@ -20,6 +24,7 @@ import {
 } from 'react-native';
 import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { saveTaskPreferences, useTaskPreferences } from '../lib/taskPreferences';
 import { openTaskAttachment } from '../lib/taskAttachments';
 import type { AttachAnchor } from '../lib/attachMenu';
 import { ActionMenu, type ActionMenuItem } from './ActionMenu';
@@ -35,16 +40,11 @@ interface TaskGroup {
   collapsible: boolean;
 }
 
-/**
- * The task list (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md §4.3): a bottom sheet
- * on the phone, a floating panel beside the bubble on wide layouts. Sections run
- * this session → current project → General → other projects collapsed. A task
- * already assigned to a session shows where it went instead of implement
- * buttons; General tasks have no session to run in and show none.
- */
+/** One task view at a time, with projects and sessions sharing the same row anatomy. */
 export function TasksPanel({
   context,
   projects,
+  sessions = [],
   side,
   y,
   onClose,
@@ -52,6 +52,7 @@ export function TasksPanel({
 }: {
   context: TaskContext;
   projects: ProjectRecord[];
+  sessions?: SessionSummary[];
   side: 'left' | 'right';
   y: number;
   onClose(): void;
@@ -74,7 +75,42 @@ export function TasksPanel({
       ?.measureInWindow((x, y, width, height) =>
         setMenu({ task, anchor: { x, y, width, height } }),
       );
-  const [agentOpen, setAgentOpen] = useState(false);
+  const preferences = useTaskPreferences();
+  const [github, setGithub] = useState<{ projectId: string; data: ProjectGitHubIssues } | null>(
+    null,
+  );
+  const [githubError, setGithubError] = useState<string | null>(null);
+  const [githubRetry, setGithubRetry] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setGithub(null);
+    setGithubError(null);
+    if (context.projectId) {
+      const projectId = context.projectId;
+      const client = createVerityClient();
+      if (client)
+        void client
+          .listProjectGitHubIssues(projectId)
+          .then((data) => {
+            if (active) setGithub({ projectId, data });
+          })
+          .catch(() => {
+            if (active) setGithubError('Could not load GitHub issues');
+          });
+    }
+    return () => {
+      active = false;
+    };
+  }, [context.projectId, githubRetry]);
+  const githubData = github?.projectId === context.projectId ? github.data : null;
+  const githubConnected = githubData?.connected === true;
+  const tab = preferences.tab === 'issues' && !githubConnected ? 'mine' : preferences.tab;
+  const selectTab = (value: 'mine' | 'agent' | 'issues') => {
+    setMoving(null);
+    void saveTaskPreferences({ tab: value }).catch(() =>
+      Alert.alert('Could not remember task view', 'Try again'),
+    );
+  };
   const wide = width >= 900;
   const run = async (work: () => Promise<unknown>) => {
     setBusy(true);
@@ -116,18 +152,10 @@ export function TasksPanel({
     (task) =>
       task.status !== 'dropped' && (task.status !== 'done' || showDone || undo.includes(task.id)),
   );
-  // The operator's own captures are the list; the agent's steps sit in a
-  // separate, quieter section below.
   const mine = visible.filter((task) => !isStep(task));
-  const agentScope = (task: Task) =>
-    isStep(task) &&
-    (context.sessionId !== null
-      ? task.sessionId === context.sessionId
-      : context.projectId !== null
-        ? task.projectId === context.projectId
-        : true);
-  const agentSteps = visible.filter(agentScope);
-  const agentAll = tasks.filter((task) => agentScope(task) && task.status !== 'dropped');
+  const agentAll = tasks.filter(
+    (task) => isStep(task) && task.sessionId !== null && task.status !== 'dropped',
+  );
   const agentDone = agentAll.filter((task) => task.status === 'done').length;
   const groups: TaskGroup[] = [
     ...(context.projectId
@@ -147,8 +175,8 @@ export function TasksPanel({
       label: 'General',
       current: context.projectId === null,
       items: mine.filter((t) => t.projectId === null),
-      expanded: true,
-      collapsible: false,
+      expanded: context.projectId === null || expanded.includes('general'),
+      collapsible: context.projectId !== null,
     },
     ...[
       ...new Set(
@@ -157,14 +185,27 @@ export function TasksPanel({
           .map((t) => t.projectId!),
       ),
     ].map((id) => ({
-      key: `other-${id}`,
+      key: id,
       label: projectName(id),
       current: false,
       items: mine.filter((t) => t.projectId === id),
       expanded: expanded.includes(id),
       collapsible: true,
     })),
-  ];
+  ].filter((group) => group.items.length > 0);
+  const sessionIds = [...new Set(agentAll.map((task) => task.sessionId!))];
+  sessionIds.sort((a, b) => (a === context.sessionId ? -1 : b === context.sessionId ? 1 : 0));
+  const agentGroups: TaskGroup[] = sessionIds.map((id) => ({
+    key: `session-${id}`,
+    label:
+      id === context.sessionId
+        ? 'This session'
+        : sessions.find((session) => session.sessionId === id)?.name || 'Session',
+    current: id === context.sessionId,
+    items: agentAll.filter((task) => task.sessionId === id),
+    expanded: id === context.sessionId || expanded.includes(`session-${id}`),
+    collapsible: id !== context.sessionId,
+  }));
   // Unassigned, not yet done, with a project to run in: the only tasks an
   // implement action may dispatch, whether from a row or from the selection.
   const implementable = (task: Task) =>
@@ -230,9 +271,15 @@ export function TasksPanel({
             style={styles.check}
           >
             <Icon
-              name={isDone ? 'check-circle' : 'circle'}
+              name={isDone ? 'check-circle' : task.status === 'in_progress' ? 'loader' : 'circle'}
               size={20}
-              color={isDone ? theme.colors.tone.done : theme.colors.textFaint}
+              color={
+                isDone
+                  ? theme.colors.tone.done
+                  : task.status === 'in_progress'
+                    ? theme.colors.primary
+                    : theme.colors.textFaint
+              }
             />
           </Pressable>
           {/* The text is the editor: tap to change it, leave the field to save. */}
@@ -326,42 +373,48 @@ export function TasksPanel({
       </View>
     );
   };
-  // An agent step: compact, muted, no implement buttons — the agent is already
-  // on it. Tap opens the same "…" card; adopting moves it into the list above.
   const agentRow = (task: Task) => {
     const isDone = task.status === 'done';
     return (
-      <View key={task.id} style={styles.agentRow}>
-        <Pressable
-          ref={(node) => {
-            if (node) anchors.current.set(task.id, node);
-            else anchors.current.delete(task.id);
-          }}
-          accessibilityRole="button"
-          accessibilityHint="Opens step actions"
-          onPress={() => openMenu(task)}
-          style={styles.agentMain}
-        >
-          <Icon
-            name={isDone ? 'check-circle' : 'circle'}
-            size={16}
-            color={isDone ? theme.colors.tone.done : theme.colors.textFaint}
-          />
+      <View key={task.id} style={styles.row}>
+        <View style={styles.rowMain}>
+          <View style={styles.check}>
+            <Icon
+              name={isDone ? 'check-circle' : task.status === 'in_progress' ? 'loader' : 'circle'}
+              size={20}
+              color={
+                isDone
+                  ? theme.colors.tone.done
+                  : task.status === 'in_progress'
+                    ? theme.colors.primary
+                    : theme.colors.textFaint
+              }
+            />
+          </View>
           <View style={styles.rowBody}>
-            <Text style={[styles.agentTitle, isDone ? styles.titleDone : null]}>{task.title}</Text>
-            <Text style={styles.agentMeta}>
-              {isDone
-                ? `done${task.result ? ` · ${task.result}` : ''}`
-                : task.status === 'in_progress'
-                  ? 'in progress'
-                  : 'open'}
-              {' · '}
+            <Text style={[styles.title, isDone ? styles.titleDone : null]}>{task.title}</Text>
+            <Text style={styles.meta}>
+              {isDone ? 'done' : task.status === 'in_progress' ? 'in progress' : 'open'} ·{' '}
               {taskAge(task.createdAt)}
             </Text>
           </View>
-        </Pressable>
+          <Pressable
+            ref={(node) => {
+              if (node) anchors.current.set(task.id, node);
+              else anchors.current.delete(task.id);
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Step actions"
+            accessibilityHint="Opens step actions"
+            onPress={() => openMenu(task)}
+            style={styles.more}
+            hitSlop={8}
+          >
+            <Icon name="more-horizontal" size={18} color={theme.colors.textMuted} />
+          </Pressable>
+        </View>
         {undo.includes(task.id) ? (
-          <Pressable style={styles.agentIndent} onPress={() => complete(task)}>
+          <Pressable style={styles.indent} onPress={() => complete(task)}>
             <Text style={styles.link}>Undo</Text>
           </Pressable>
         ) : null}
@@ -495,6 +548,56 @@ export function TasksPanel({
             {headerButton('Capture task', 'mic', onCapture)}
             {headerButton('Close', 'x', onClose)}
           </View>
+          <View style={styles.tabs} accessibilityRole="tablist">
+            {(['mine', 'agent', ...(githubConnected ? (['issues'] as const) : [])] as const).map(
+              (value) => (
+                <Pressable
+                  key={value}
+                  accessibilityRole="tab"
+                  disabled={preferences.loaded === false}
+                  accessibilityLabel={
+                    value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'GitHub Issues'
+                  }
+                  accessibilityState={{ selected: tab === value }}
+                  onPress={() => selectTab(value)}
+                  style={[styles.tab, tab === value ? styles.tabSelected : null]}
+                >
+                  <Text style={[styles.tabLabel, tab === value ? styles.tabLabelSelected : null]}>
+                    {value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'Issues'}
+                  </Text>
+                  <View style={[styles.count, tab === value ? styles.tabCountSelected : null]}>
+                    <Text
+                      style={[
+                        styles.countLabel,
+                        tab === value ? styles.tabCountLabelSelected : null,
+                      ]}
+                    >
+                      {value === 'mine'
+                        ? String(
+                            tasks.filter(
+                              (task) =>
+                                !isStep(task) &&
+                                task.status !== 'done' &&
+                                task.status !== 'dropped',
+                            ).length,
+                          )
+                        : value === 'agent'
+                          ? `${String(agentDone)}/${String(agentAll.length)}`
+                          : String(githubData?.issues.length ?? 0)}
+                    </Text>
+                  </View>
+                </Pressable>
+              ),
+            )}
+          </View>
+          {githubError ? (
+            <View style={styles.footer}>
+              <Text accessibilityRole="alert" style={styles.meta}>
+                {githubError}
+              </Text>
+              {chip('Retry GitHub', () => setGithubRetry((value) => value + 1))}
+            </View>
+          ) : null}
           {moving ? (
             <KeyboardAwareScrollView bottomOffset={24}>
               <Text style={styles.sectionLabel}>Move to</Text>
@@ -521,7 +624,21 @@ export function TasksPanel({
             </KeyboardAwareScrollView>
           ) : (
             <KeyboardAwareScrollView bottomOffset={24}>
-              {groups.map((group) => (
+              {tab === 'issues' && context.projectId && githubData ? (
+                <TaskIssuesList
+                  key={context.projectId}
+                  projectId={context.projectId}
+                  projectName={projectName(context.projectId)}
+                  currentSessionId={context.sessionId ?? undefined}
+                  issues={githubData.issues}
+                  viewerLogin={githubData.viewerLogin}
+                  onOpenSession={(id) => {
+                    onClose();
+                    router.push({ pathname: '/session/[id]', params: { id } });
+                  }}
+                />
+              ) : null}
+              {(tab === 'issues' ? [] : tab === 'agent' ? agentGroups : groups).map((group) => (
                 <View key={group.key}>
                   <Pressable
                     disabled={!group.collapsible}
@@ -530,96 +647,69 @@ export function TasksPanel({
                     accessibilityState={
                       group.collapsible ? { expanded: group.expanded } : undefined
                     }
-                    onPress={() => {
-                      const id = group.key.replace('other-', '');
+                    onPress={() =>
                       setExpanded((ids) =>
-                        ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id],
-                      );
-                    }}
+                        ids.includes(group.key)
+                          ? ids.filter((id) => id !== group.key)
+                          : [...ids, group.key],
+                      )
+                    }
                     style={styles.section}
                   >
-                    {group.collapsible ? (
+                    {group.current ? (
+                      <View style={styles.currentDot} />
+                    ) : (
                       <Icon
                         name={group.expanded ? 'chevron-down' : 'chevron-right'}
                         size={16}
                         color={theme.colors.textFaint}
                       />
-                    ) : group.current ? (
-                      <View style={styles.currentDot} />
-                    ) : null}
+                    )}
                     <Text
                       style={[
                         styles.sectionLabel,
-                        group.collapsible ? styles.sectionLabelCollapsed : null,
+                        !group.expanded ? styles.sectionLabelCollapsed : null,
                       ]}
                     >
                       {group.label}
                     </Text>
                     <View style={styles.count}>
-                      <Text style={styles.countLabel}>{String(group.items.length)}</Text>
-                    </View>
-                  </Pressable>
-                  {group.expanded ? group.items.map(row) : null}
-                </View>
-              ))}
-              {agentAll.length ? (
-                <View style={styles.agentSection}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ expanded: agentOpen }}
-                    accessibilityLabel={`Agent steps · ${String(agentDone)}/${String(agentAll.length)}`}
-                    onPress={() => setAgentOpen(!agentOpen)}
-                    style={styles.section}
-                  >
-                    <Icon
-                      name={agentOpen ? 'chevron-down' : 'chevron-right'}
-                      size={16}
-                      color={theme.colors.textFaint}
-                    />
-                    <Text style={styles.agentLabel}>
-                      {context.sessionId ? 'Agent’s steps in this session' : 'Agent’s steps'}
-                    </Text>
-                    <View style={styles.count}>
                       <Text style={styles.countLabel}>
-                        {String(agentDone)}/{String(agentAll.length)}
+                        {tab === 'agent'
+                          ? `${String(group.items.filter((task) => task.status === 'done').length)}/${String(group.items.length)}`
+                          : String(group.items.length)}
                       </Text>
                     </View>
-                    <View style={styles.bar}>
-                      <View
-                        style={[
-                          styles.barFill,
-                          {
-                            width:
-                              `${String(Math.round((agentDone / agentAll.length) * 100))}%` as `${number}%`,
-                          },
-                        ]}
-                      />
-                    </View>
+                    {tab === 'agent' && group.current ? (
+                      <View style={styles.bar}>
+                        <View
+                          style={[
+                            styles.barFill,
+                            {
+                              width:
+                                `${String(Math.round((group.items.filter((task) => task.status === 'done').length / group.items.length) * 100))}%` as `${number}%`,
+                            },
+                          ]}
+                        />
+                      </View>
+                    ) : null}
                   </Pressable>
-                  {agentOpen ? agentSteps.map(agentRow) : null}
-                  {agentOpen && agentSteps.length === 0 ? (
-                    <Text style={styles.agentMeta}>Every step is done.</Text>
-                  ) : null}
+                  {group.expanded ? group.items.map(tab === 'agent' ? agentRow : row) : null}
                 </View>
-              ) : null}
-              {!mine.length && !done.length ? (
-                <Text style={styles.empty}>
-                  {agentAll.length
-                    ? 'Nothing captured yet. Tap the bubble to add a task.'
-                    : 'Nothing here yet. Tap the bubble and say what needs doing.'}
-                </Text>
-              ) : null}
+              ))}
             </KeyboardAwareScrollView>
           )}
-          <Pressable
-            onPress={() => setShowDone(!showDone)}
-            accessibilityRole="button"
-            style={styles.footer}
-          >
-            <Text style={styles.meta}>
-              {showDone ? 'Hide done' : `Show done (${String(done.length)})`}
-            </Text>
-          </Pressable>
+          {tab === 'mine' ? (
+            <Pressable
+              onPress={() => setShowDone(!showDone)}
+              accessibilityRole="button"
+              style={styles.footer}
+            >
+              <Text style={styles.meta}>
+                {showDone ? 'Hide done' : `Show done (${String(done.length)})`}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
       </KeyboardAvoidingView>
       {menu ? (
@@ -755,6 +845,30 @@ const styles = StyleSheet.create((theme) => ({
   pressed: {
     opacity: 0.6,
   },
+  tabs: {
+    flexDirection: 'row',
+    backgroundColor: theme.colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
+    padding: 3,
+    gap: 3,
+    marginBottom: theme.spacing.xs,
+  },
+  tab: {
+    flex: 1,
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.xs,
+    borderRadius: theme.radius.md - 2,
+  },
+  tabSelected: { backgroundColor: theme.colors.surface },
+  tabLabel: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '500' },
+  tabLabelSelected: { color: theme.colors.text, fontWeight: '600' },
+  tabCountSelected: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
+  tabCountLabelSelected: { color: theme.colors.onPrimary },
   section: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -880,16 +994,6 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
-  agentSection: {
-    marginTop: theme.spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
-  },
-  agentLabel: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
-  },
   bar: {
     flex: 1,
     maxWidth: 56,
@@ -903,33 +1007,6 @@ const styles = StyleSheet.create((theme) => ({
     height: '100%',
     borderRadius: 2,
     backgroundColor: theme.colors.tone.done,
-  },
-  agentRow: {
-    paddingVertical: theme.spacing.xs,
-    gap: theme.spacing.xs,
-  },
-  agentMain: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: theme.spacing.sm,
-    paddingTop: 2,
-  },
-  agentTitle: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    lineHeight: 19 * theme.fontScale,
-  },
-  agentMeta: {
-    color: theme.colors.textFaint,
-    fontSize: theme.text.micro + 1,
-  },
-  agentIndent: {
-    marginLeft: 24,
-  },
-  empty: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    paddingVertical: theme.spacing.lg,
   },
   footer: {
     paddingTop: theme.spacing.md,

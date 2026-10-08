@@ -1,3 +1,4 @@
+import type { ProjectGitHubIssues } from './project-github-issues.js';
 import { Conductor, type Backend, type ConductorDeps, type EventBus } from '@verity/session';
 import { renderAssignedTasksPrompt } from '@verity/events';
 import type { VeritySettingsPatch, EventStore, SealableSecretCipher } from '@verity/store';
@@ -224,6 +225,8 @@ export interface ControlPlaneDeps {
    * so neither the write's response nor the next overview poll echoes the state
    * from before it. Omit when `listProjects` is not memoised. */
   invalidateProjectList?: (() => void) | undefined;
+  /** Open issues read with a repository-scoped GitHub App credential. */
+  listProjectGitHubIssues?: ((project: ProjectRecord) => Promise<ProjectGitHubIssues>) | undefined;
   /** Every GitHub-App installation repository that could become a project —
    * including `state='absent'` rows `listProjects` leaves out. Omit → the repo
    * picker falls back to the project overview. */
@@ -440,6 +443,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.listProjects !== undefined ? { listProjects: deps.listProjects } : {}),
     ...(deps.invalidateProjectList !== undefined
       ? { invalidateProjectList: deps.invalidateProjectList }
+      : {}),
+    ...(deps.listProjectGitHubIssues !== undefined
+      ? { listProjectGitHubIssues: deps.listProjectGitHubIssues }
       : {}),
     ...(deps.listAvailableRepositories !== undefined
       ? { listAvailableRepositories: deps.listAvailableRepositories }

@@ -1,3 +1,4 @@
+import { listProjectGitHubIssues } from './project-github-issues.js';
 import { createGhcrForgeAdapter } from './brokered-forge-ghcr.js';
 import { loadForgePackageMap } from './brokered-forge-package-map.js';
 import { createBrokeredForgeProxy } from './brokered-http-tool.js';
@@ -2340,6 +2341,10 @@ export async function buildEmbeddedServer(
       permissions: PROJECT_GITHUB_TOKEN_PERMISSIONS,
     });
 
+  const issuesTokenMint = createGitHubAppProjectTokenMint({
+    ...baseMintOpts,
+    permissions: { metadata: 'read', issues: 'read' },
+  });
   const cachedProjectTokenMint = createCachedProjectTokenMint(projectTokenMint, {
     authorityKey:
       config.githubProjectTokenMint === undefined
@@ -4380,6 +4385,8 @@ export async function buildEmbeddedServer(
     sshKeygen: defaultSshKeygenSpawner,
     // Give server-side model queries the configured repository as context.
     ...(config.repoDir ? { refineCwd: config.repoDir } : {}),
+    listProjectGitHubIssues: (project: ProjectRecord) =>
+      listProjectGitHubIssues(project, issuesTokenMint),
     latestRelease: (owner: string, repo: string) => releaseService.latestRelease(owner, repo),
     refreshLatestRelease: (owner: string, repo: string) =>
       releaseService.refreshLatestRelease(owner, repo),
