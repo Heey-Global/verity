@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.27.0](https://github.com/Heey-Global/verity/compare/v4.26.0...v4.27.0) (2026-10-08)
+
+
+### Features
+
+* **meetings:** add Attendee online source to Live Meeting ([#1325](https://github.com/Heey-Global/verity/issues/1325)) ([27f66ba](https://github.com/Heey-Global/verity/commit/27f66ba79dbdc9a602cb229c7b10467503769ec4))
+
+
+### Bug Fixes
+
+* **planning:** make plan proposals clear and actionable ([#1324](https://github.com/Heey-Global/verity/issues/1324)) ([fd78ac3](https://github.com/Heey-Global/verity/commit/fd78ac3388e089541c1da1d2d6a31c99d00dd11a))
+* **review:** recover shallow comparison bases with bounded fetches ([#1330](https://github.com/Heey-Global/verity/issues/1330)) ([c4f29a6](https://github.com/Heey-Global/verity/commit/c4f29a6fbe2b8211ba90a9000fa82e5b77f9a4fa))
+
 ## [4.26.0](https://github.com/Heey-Global/verity/compare/v4.25.3...v4.26.0) (2026-10-08)
 
 
