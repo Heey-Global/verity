@@ -298,6 +298,23 @@ if ! /usr/local/bin/verity-agent-spawn-broker --probe >/dev/null 2>&1; then
   fi
 fi
 
+# Memory guard (verity-memory-guard.mjs): under gVisor the host kills the whole
+# Sandbox when the memory ceiling is hit, so this root daemon kills the largest
+# agent-owned process first. Root because CAP_KILL is what reaches uid-1000
+# processes; launched here because this is the one root pass that runs on every
+# reconcile, and probe-idempotent like the broker. Best effort by design: a
+# missing node or a Sandbox without a readable limit must not fail the stack.
+GUARD_LOG="$BROKER_RUNTIME/memory-guard.log"
+if [ "${VERITY_MEMORY_GUARD:-1}" != '0' ] && [ -x /usr/local/bin/verity-memory-guard ]; then
+  if ! /usr/local/bin/verity-memory-guard --probe >/dev/null 2>&1; then
+    touch "$GUARD_LOG"
+    chown 0:0 "$GUARD_LOG"
+    chmod 0600 "$GUARD_LOG"
+    VERITY_AGENT_UID="$AGENT_UID" nohup /usr/local/bin/verity-memory-guard \
+      >>"$GUARD_LOG" 2>&1 </dev/null &
+  fi
+fi
+
 SUPERVISOR_ENTRY=/usr/local/bin/verity-runner-supervisor-start
 if [ "${VERITY_RUNNER_FOREGROUND:-0}" = '1' ]; then
   # A dedicated Runner service needs its supervisor to remain PID 1's child so

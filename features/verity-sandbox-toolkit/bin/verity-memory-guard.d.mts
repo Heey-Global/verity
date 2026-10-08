@@ -1,0 +1,70 @@
+export const DEFAULT_POLL_INTERVAL_MS: number;
+export const DEFAULT_RESERVE_FRACTION: number;
+export const DEFAULT_MINIMUM_RESERVE_BYTES: number;
+export const KILL_COOLDOWN_MS: number;
+export const MINIMUM_VICTIM_RSS_BYTES: number;
+export const DEFAULT_AGENT_UID: number;
+export const DEFAULT_CONTROL_DIR: string;
+export const PID_FILE_NAME: string;
+
+export type ReadFile = (path: string) => string;
+
+export interface MemoryCeiling {
+  limitBytes: number;
+  usageBytes: number;
+  source: 'cgroup-v1' | 'cgroup-v2';
+}
+
+export interface GuardedProcess {
+  pid: number;
+  ppid: number;
+  uid: number;
+  rssBytes: number;
+  name: string;
+}
+
+export interface MemoryGuardLogRecord {
+  event: string;
+  [key: string]: unknown;
+}
+
+export interface MemoryGuardOptions {
+  readFile?: ReadFile;
+  listPids?: () => string[];
+  readLink?: (path: string) => string;
+  kill?: (pid: number, signal: NodeJS.Signals) => void;
+  now?: () => number;
+  log?: (record: MemoryGuardLogRecord) => void;
+  env?: Record<string, string | undefined>;
+  agentUid?: number;
+  protectedPids?: Iterable<number>;
+  cgroupRoot?: string;
+  dryRun?: boolean;
+}
+
+export interface MemoryGuardTick {
+  outcome: 'no-ceiling' | 'below-threshold' | 'cooldown' | 'no-candidate' | 'would-kill' | 'kill';
+  limitBytes?: number;
+  usageBytes?: number;
+  source?: MemoryCeiling['source'];
+  thresholdBytes?: number;
+  victim?: GuardedProcess;
+}
+
+export function readMemoryCeiling(
+  readFile?: ReadFile,
+  cgroupRoot?: string,
+): MemoryCeiling | undefined;
+export function resolveReserveBytes(
+  limitBytes: number,
+  env?: Record<string, string | undefined>,
+): number;
+export function resolvePollIntervalMs(env?: Record<string, string | undefined>): number;
+export function listProcesses(readFile?: ReadFile, listPids?: () => string[]): GuardedProcess[];
+export function chooseVictim(
+  processes: readonly GuardedProcess[],
+  options: { agentUid: number; protectedPids?: Set<number> },
+): GuardedProcess | undefined;
+export function descendantsOf(pid: number, processes: readonly GuardedProcess[]): GuardedProcess[];
+export function createMemoryGuard(options: MemoryGuardOptions): { tick(): MemoryGuardTick };
+export function probeMemoryGuard(controlDir: string, readFile?: ReadFile): boolean;
