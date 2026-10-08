@@ -67,7 +67,7 @@ import Reanimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { AttentionMarkers } from '../components/AttentionMarkers';
+import { AttentionMarkers, drawsAttentionMarker } from '../components/AttentionMarkers';
 import { Icon } from '../components/Icon';
 import { ProjectPortChip, type ProjectPortLink } from '../components/ProjectPortChip';
 import { ProjectOverviewList } from '../components/ProjectOverviewList';
@@ -1817,33 +1817,29 @@ function SessionRow({
           finished session with something new to read), else nothing. */}
       <View style={styles.colChevron} />
       <View style={styles.colDot}>{running ? <WorkingDot /> : unread ? <UnreadDot /> : null}</View>
-      {/* Name with the attention markers and lifecycle label at its right end; below
-          it the model, followed directly by the session's standing features
-          (automation, preview). Attached to the model, they use the room a short
-          model name leaves free instead of competing for the right end, which on a
-          phone has no space for them beside the label. */}
+      {/* Name with the lifecycle label at its right end; below it the model,
+          followed by the issue and its PR status. Attached to the model, they use
+          the room a short model name leaves free instead of competing with the
+          marker column at the right end. */}
       <View style={[styles.titleBlock, styles.sessionTitleBlock]}>
         <View style={styles.sessionLine}>
           <Text style={styles.sessionTitle} numberOfLines={1}>
             {label}
           </Text>
-          {markers.length > 0 || showLabel ? (
+          {/* The lifecycle label is hidden while working since the left dot
+              already conveys it. */}
+          {showLabel ? (
             <View style={[styles.sessionLineEnd, styles.sessionTitleLineEnd]}>
-              <AttentionMarkers flags={markers} />
-              {/* The lifecycle label is hidden while working since the left dot
-                  already conveys it. */}
-              {showLabel ? (
-                <View
-                  style={[
-                    styles.statusPill,
-                    { borderColor: toneColor, backgroundColor: `${toneColor}1f` },
-                  ]}
-                >
-                  <Text style={[styles.statusPillText, { color: toneColor }]} numberOfLines={1}>
-                    {badge.label}
-                  </Text>
-                </View>
-              ) : null}
+              <View
+                style={[
+                  styles.statusPill,
+                  { borderColor: toneColor, backgroundColor: `${toneColor}1f` },
+                ]}
+              >
+                <Text style={[styles.statusPillText, { color: toneColor }]} numberOfLines={1}>
+                  {badge.label}
+                </Text>
+              </View>
             </View>
           ) : null}
         </View>
@@ -1859,12 +1855,15 @@ function SessionRow({
           >
             {notice ? attentionNoticeText(notice) : subtitle}
           </Text>
-          {hasIssue ? (
+          {/* The PR status sits after the issue it belongs to, not at the end of the
+              title line, where it collided with the marker column. */}
+          {hasIssue || drawsAttentionMarker(markers) ? (
             <View style={styles.sessionFeatures}>
               <Text style={styles.rowSub} accessible={false} importantForAccessibility="no">
                 ·
               </Text>
               <SessionIssueRef branch={session.branch} repo={repo} />
+              <AttentionMarkers flags={markers} size={13} inline />
             </View>
           ) : null}
         </View>
