@@ -103,10 +103,14 @@ function speakerLines(
     }
     const heard = heardFor([...covered.values()].flat());
     let speaker: number | null | undefined;
-    if (heard > 0) {
+    // A voice heard for only a sliver of a long span is not enough evidence; older
+    // phrase-level timings would otherwise go to whoever spoke briefly inside them.
+    if (heard >= duration * 0.25) {
       // Two voices each heard for most of the word is real overlap: leave it unknown.
       const dominant = [...covered].filter(([, spans]) => heardFor(spans) > heard * 0.6);
       speaker = dominant.length === 1 ? dominant[0]![0] : null;
+    } else if (heard > 0) {
+      speaker = null;
     } else if (word.start >= horizon) {
       // The diarizer has not reached this audio yet; it is pending, not unknown.
       speaker = undefined;

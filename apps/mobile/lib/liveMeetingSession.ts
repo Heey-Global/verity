@@ -144,14 +144,14 @@ async function sendVoiceRequest(
 
 // Speaker name suggestions: one model check at a time, per meeting.
 const nameHistory = new Map<number, SpeakerNameHistory>();
-const rejectedNames = new Set<string>();
+const rejectedSpeakers = new Set<number>();
 let nameCheckTimer: ReturnType<typeof setTimeout> | null = null;
 let nameCheckRunning = false;
 let nameChecksUnavailable = false;
 
 function resetSpeakerNameChecks() {
   nameHistory.clear();
-  rejectedNames.clear();
+  rejectedSpeakers.clear();
   if (nameCheckTimer) clearTimeout(nameCheckTimer);
   nameCheckTimer = null;
   nameChecksUnavailable = false;
@@ -184,6 +184,7 @@ async function runSpeakerNameCheck(): Promise<void> {
   const skip = new Set([
     ...Object.keys(meeting.speakerNames ?? {}).map(Number),
     ...(meeting.speakerNameSuggestions ?? []).map((suggestion) => suggestion.speaker),
+    ...rejectedSpeakers,
   ]);
   const lines = meetingTranscriptRows(meeting).filter((row): row is SpeakerLine => 'start' in row);
   const now = Date.now();
@@ -201,6 +202,7 @@ async function runSpeakerNameCheck(): Promise<void> {
   nameHistory.set(check.speaker, {
     openingChecked: (previous?.openingChecked ?? false) || check.opening,
     checkedThrough: Math.max(previous?.checkedThrough ?? -Infinity, check.through),
+    checks: (previous?.checks ?? 0) + 1,
     lastAt: Date.now(),
   });
   nameCheckRunning = true;
@@ -212,7 +214,7 @@ async function runSpeakerNameCheck(): Promise<void> {
     const name = result.name;
     if (!name || !result.quote || active?.id !== meeting.id || active.state !== 'active') return;
     if (active.speakerNames?.[check.speaker] !== undefined) return;
-    if (rejectedNames.has(`${String(check.speaker)}:${name.toLocaleLowerCase()}`)) return;
+    if (rejectedSpeakers.has(check.speaker)) return;
     active = {
       ...active,
       speakerNameSuggestions: [
@@ -224,6 +226,8 @@ async function runSpeakerNameCheck(): Promise<void> {
     };
     publish();
   } catch (error) {
+    // A check answered after the next meeting started must not touch its state.
+    if (active?.id !== meeting.id) return;
     if (error instanceof VerityApiError && error.status === 503) {
       nameChecksUnavailable = true;
       return;
@@ -232,16 +236,17 @@ async function runSpeakerNameCheck(): Promise<void> {
     nameHistory.set(check.speaker, {
       openingChecked: previous?.openingChecked ?? false,
       checkedThrough: previous?.checkedThrough ?? -Infinity,
+      checks: previous?.checks ?? 0,
       lastAt: Date.now(),
     });
   } finally {
     nameCheckRunning = false;
+    // Another speaker may be waiting.
+    if (active?.id === meeting.id) scheduleSpeakerNameCheck();
   }
-  // Another speaker may be waiting.
-  scheduleSpeakerNameCheck();
 }
 
-/** Removes a name suggestion; a rejected name is not suggested for that speaker again. */
+/** Removes a name suggestion; after a rejection that speaker is not checked again. */
 export function clearSpeakerNameSuggestion(
   meetingId: string,
   speaker: number,
@@ -250,7 +255,8 @@ export function clearSpeakerNameSuggestion(
   if (active?.id !== meetingId) return;
   const suggestion = active.speakerNameSuggestions?.find((item) => item.speaker === speaker);
   if (!suggestion) return;
-  if (rejected) rejectedNames.add(`${String(speaker)}:${suggestion.name.toLocaleLowerCase()}`);
+  // After a rejection the operator names this speaker; asking again would only repeat it.
+  if (rejected) rejectedSpeakers.add(speaker);
   active = {
     ...active,
     speakerNameSuggestions: (active.speakerNameSuggestions ?? []).filter(

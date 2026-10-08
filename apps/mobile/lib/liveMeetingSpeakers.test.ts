@@ -143,6 +143,14 @@ test('keeps the speaker of a phrase spoken with pauses', () => {
   ).toEqual([{ speaker: 0, text: 'Das wäre super', start: 0.2, end: 2.4 }]);
 });
 
+// Older phrase-level timings span seconds; a voice heard for a sliver of one is no
+// evidence of who said the rest.
+test('leaves a long span unknown when a voice covers only a sliver of it', () => {
+  expect(
+    speakerLines([{ text: 'Long phrase', start: 0, end: 4 }], [{ speaker: 1, start: 1, end: 1.2 }]),
+  ).toEqual([{ speaker: null, text: 'Long phrase', start: 0, end: 4 }]);
+});
+
 test('leaves a pause between two different speakers unknown', () => {
   expect(
     speakerLines(

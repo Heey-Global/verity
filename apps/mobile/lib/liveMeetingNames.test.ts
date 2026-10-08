@@ -36,7 +36,7 @@ test('checks a speaker’s opening words once after fifteen seconds of speech', 
     opening: true,
   });
   const done = new Map<number, SpeakerNameHistory>([
-    [1, { openingChecked: true, checkedThrough: 16, lastAt: 0 }],
+    [1, { openingChecked: true, checkedThrough: 16, checks: 1, lastAt: 0 }],
   ]);
   expect(nextSpeakerNameCheck(opening, new Set(), done, 60_000)).toBeNull();
 });
@@ -49,7 +49,7 @@ test('never checks a named speaker, pending or unknown words, or the same phrase
   ];
   expect(nextSpeakerNameCheck(lines, new Set([0]), new Map(), 0)).toBeNull();
   const asked = new Map<number, SpeakerNameHistory>([
-    [0, { openingChecked: false, checkedThrough: 1, lastAt: 0 }],
+    [0, { openingChecked: false, checkedThrough: 1, checks: 1, lastAt: 0 }],
   ]);
   expect(nextSpeakerNameCheck(lines, new Set(), asked, 60_000)).toBeNull();
   // A later introduction by the same speaker is checked, but not within ten seconds.
@@ -59,4 +59,15 @@ test('never checks a named speaker, pending or unknown words, or the same phrase
     speaker: 0,
     through: 22,
   });
+});
+
+// Every check is a model call, and "I'm" or "this is" come up constantly in English.
+test('stops checking a speaker after three attempts', () => {
+  const lines = [line(0, "I'm not sure this is right.", 0, 2)];
+  const spent = new Map<number, SpeakerNameHistory>([
+    [0, { openingChecked: true, checkedThrough: -Infinity, checks: 3, lastAt: 0 }],
+  ]);
+  expect(nextSpeakerNameCheck(lines, new Set(), spent, 60_000)).toBeNull();
+  spent.set(0, { ...spent.get(0)!, checks: 2 });
+  expect(nextSpeakerNameCheck(lines, new Set(), spent, 60_000)).toMatchObject({ speaker: 0 });
 });

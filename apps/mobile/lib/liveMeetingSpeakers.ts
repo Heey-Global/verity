@@ -96,10 +96,14 @@ export function speakerLines(
     }
     const heard = heardFor([...covered.values()].flat());
     let speaker: number | null | undefined;
-    if (heard > 0) {
+    // A voice heard for only a sliver of a long span is not enough evidence; older
+    // phrase-level timings would otherwise go to whoever spoke briefly inside them.
+    if (heard >= duration * 0.25) {
       // Two voices each heard for most of the word is real overlap: leave it unknown.
       const dominant = [...covered].filter(([, spans]) => heardFor(spans) > heard * 0.6);
       speaker = dominant.length === 1 ? dominant[0]![0] : null;
+    } else if (heard > 0) {
+      speaker = null;
     } else if (word.start >= horizon) {
       // The diarizer has not reached this audio yet; it is pending, not unknown.
       speaker = undefined;
@@ -201,7 +205,7 @@ export function meetingTranscriptRows(
     const aligned = reconcileTimedTranscript(meeting.transcript, meeting.timedWords);
     if (!aligned) return [{ text: meeting.transcript }];
     const diarizing = meeting.state === 'active' && meeting.speakerStatus !== 'unavailable';
-    const rows: Array<SpeakerLine | { text: string }> = speakerLines(
+    const rows: Array<SpeakerLine | { text: string; pending?: boolean }> = speakerLines(
       aligned.words,
       [
         ...(meeting.speakerTurns ?? []),
@@ -215,7 +219,7 @@ export function meetingTranscriptRows(
         ? (meeting.speakerHorizon ?? (meeting.speakerTurns?.length ? Infinity : 0))
         : Infinity,
     );
-    if (aligned.tail) rows.push({ text: aligned.tail });
+    if (aligned.tail) rows.push({ text: aligned.tail, pending: true });
     return rows;
   }
   const rows: Array<{ text: string }> = [];

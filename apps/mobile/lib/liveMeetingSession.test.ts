@@ -176,14 +176,19 @@ it('suggests a speaker name from an introduction without overwriting a typed nam
     expect(currentMeeting()?.speakerNameSuggestions).toEqual([
       { speaker: 0, name: 'Holger', quote: 'Hallo, ich bin Holger.' },
     ]);
+    // After a rejection the operator names that speaker; it is not asked about again.
     clearSpeakerNameSuggestion('meeting-1', 0, true);
+    expect(currentMeeting()?.speakerNameSuggestions).toEqual([]);
     introduce(20, 0);
     await jest.advanceTimersByTimeAsync(12_000);
-    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(2);
-    expect(currentMeeting()?.speakerNameSuggestions).toEqual([]);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(1);
 
     await updateSpeakerEdits('meeting-1', { '1': 'Anna' }, [], {});
     introduce(40, 1);
+    await jest.advanceTimersByTimeAsync(12_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(1);
+    // An unnamed new speaker is still checked.
+    introduce(60, 2);
     await jest.advanceTimersByTimeAsync(12_000);
     expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(2);
     expect(currentMeeting()?.speakerNames).toEqual({ '1': 'Anna' });

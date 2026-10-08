@@ -74,7 +74,7 @@ import {
   speakerTone,
 } from '../../components/meeting/MeetingUI';
 
-type TranscriptRow = SpeakerLine | { text: string };
+type TranscriptRow = SpeakerLine | { text: string; pending?: boolean };
 
 const pendingDrafts = new Map<string, MeetingNote>();
 const pendingNoteErrors = new Map<string, string>();
@@ -1317,7 +1317,9 @@ export default function MeetingScreen() {
               </Pressable>
             ) : (
               // Not yet attributed: shown without a speaker until the diarizer catches up.
-              <Text style={[styles.transcriptText, styles.transcriptPending]}>{item.text}</Text>
+              <Text style={[styles.transcriptText, item.pending && styles.transcriptPending]}>
+                {item.text}
+              </Text>
             )
           }
           ListEmptyComponent={<Text style={styles.hint}>Recognized speech will appear here.</Text>}

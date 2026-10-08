@@ -9,12 +9,16 @@ const INTRODUCTION =
  * this much speech, which also catches introductions the phrases do not cover. */
 const OPENING_SECONDS = 15;
 export const MIN_INTERVAL_MS = 10_000;
+/** "I'm" and "this is" are common in ordinary speech; each check is a model call, so a
+ * speaker who never introduces themselves is not asked about for the whole meeting. */
+const MAX_CHECKS = 3;
 const MAX_TEXT = 1500;
 
 export interface SpeakerNameHistory {
   openingChecked: boolean;
   /** Audio time up to which this speaker's lines were already sent. */
   checkedThrough: number;
+  checks: number;
   lastAt: number;
 }
 
@@ -40,7 +44,8 @@ export function nextSpeakerNameCheck(
   for (const speaker of speakers) {
     if (skip.has(speaker)) continue;
     const previous = history.get(speaker);
-    if (previous && now - previous.lastAt < MIN_INTERVAL_MS) continue;
+    if (previous && (previous.checks >= MAX_CHECKS || now - previous.lastAt < MIN_INTERVAL_MS))
+      continue;
     const spoken = lines.filter((line) => line.speaker === speaker && !line.pending);
     const index = spoken.findIndex(
       (line) => line.end > (previous?.checkedThrough ?? -Infinity) && INTRODUCTION.test(line.text),

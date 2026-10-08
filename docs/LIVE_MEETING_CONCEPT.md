@@ -216,7 +216,8 @@ a diarizer state reset in meetings longer than one hour.
   phrases only decide when to ask, the model decides whether a name was given. A returned
   name must appear in a verbatim quote of what was said. Mentioning a name is not proof of
   speaker identity, so nothing is named without confirmation, a named speaker is never
-  checked again, and a rejected name is not suggested again for that speaker.
+  checked again, and a speaker is checked at most three times and not again after a
+  rejected suggestion.
 - Calendar attendees may be considered later as name suggestions; an invitation does not
   identify a voice. No calendar access is required in V1 or V2.
 
