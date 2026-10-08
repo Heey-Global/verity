@@ -26,6 +26,7 @@ interface OnlineMeeting {
   stopRequested: boolean;
   listenForVerity: boolean;
   spokenThrough: number;
+  timeOriginMs?: number;
   botCreateAttempted?: boolean;
   error?: string;
 }
@@ -341,6 +342,9 @@ export class AttendeeMeetings {
       return;
     }
     if (!state.botId) {
+      if (state.binding && new Date(state.binding.expiresAt).getTime() > Date.now()) {
+        await this.connect(state);
+      }
       // A webhook can arrive before create returns; recover the provider ID from its signed metadata.
       const rows = await this.options.store.listAttendeeState<z.infer<typeof webhookSchema>>();
       const found = rows.find(
@@ -365,7 +369,14 @@ export class AttendeeMeetings {
     }
     const final = terminal.has(bot.state);
     const snapshot = await client.transcript(state.botId);
-    const normalized = normalizeAttendeeTranscript(snapshot, state.identities);
+    if (state.timeOriginMs === undefined && snapshot.length) {
+      state.timeOriginMs = snapshot.reduce(
+        (earliest, item) => Math.min(earliest, item.timestamp_ms),
+        Infinity,
+      );
+      await this.save(state);
+    }
+    const normalized = normalizeAttendeeTranscript(snapshot, state.identities, state.timeOriginMs);
     const previous = JSON.stringify(state.meeting);
     const speakerNames = { ...normalized.speakerNames, ...state.meeting.speakerNames };
     Object.assign(state.meeting, normalized, { speakerNames });

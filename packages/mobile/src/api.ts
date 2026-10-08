@@ -1843,7 +1843,11 @@ export class VerityClient {
   async saveAttendeeSettings(
     config: { apiKey: string; webhookSecret: string } | null,
   ): Promise<void> {
-    await this.request('/settings/attendee', { method: 'PUT', body: JSON.stringify(config) });
+    await this.request('/settings/attendee', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
   }
   async testAttendee(): Promise<void> {
     await this.request('/settings/attendee/test', { method: 'POST' });
@@ -1857,6 +1861,7 @@ export class VerityClient {
       await (
         await this.request(`/sessions/${encodeURIComponent(sessionId)}/live-meetings/online`, {
           method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ meetingUrl, listenForVerity }),
         })
       ).json(),
@@ -1879,7 +1884,11 @@ export class VerityClient {
   ): Promise<void> {
     await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/speakers`,
-      { method: 'PATCH', body: JSON.stringify(edits) },
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(edits),
+      },
     );
   }
 

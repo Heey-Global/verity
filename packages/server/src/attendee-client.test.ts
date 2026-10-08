@@ -30,14 +30,16 @@ describe('Attendee transcript ingestion', () => {
       timestamp_ms: 2000,
       transcription: { transcript: 'second' },
     };
-    const original = normalizeAttendeeTranscript([second, first], identities);
+    const original = normalizeAttendeeTranscript([second, first], identities, first.timestamp_ms);
     const corrected = normalizeAttendeeTranscript(
       [{ ...second, transcription: { transcript: 'corrected' } }],
       identities,
+      first.timestamp_ms,
     );
     expect(original.transcript).toBe('old\nsecond');
     expect(corrected.transcript).toBe('corrected');
     expect(corrected.speakerTurns[0]?.speaker).toBe(original.speakerTurns[1]?.speaker);
     expect(corrected.timedWords[0]?.text).toBe('corrected');
+    expect(corrected.speakerTurns[0]?.start).toBe(original.speakerTurns[1]?.start);
   });
 });

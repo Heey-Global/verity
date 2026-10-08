@@ -41,12 +41,13 @@ export function verifyAttendeeSignature(
 export function normalizeAttendeeTranscript(
   utterances: AttendeeUtterance[],
   identities: Record<string, number>,
+  timeOriginMs?: number,
 ) {
   const speakerNames: Record<string, string> = {};
   const speakerTurns: Array<{ speaker: number; start: number; end: number }> = [];
   const timedWords: Array<{ text: string; start: number; end: number }> = [];
   const sorted = [...utterances].sort((a, b) => a.timestamp_ms - b.timestamp_ms);
-  const startMs = sorted[0]?.timestamp_ms ?? 0;
+  const startMs = timeOriginMs ?? sorted[0]?.timestamp_ms ?? 0;
   const texts: string[] = [];
   for (const utterance of sorted) {
     if (!utterance.transcription.transcript.trim()) continue;

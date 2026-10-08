@@ -195,3 +195,41 @@ it('starts and stops the provider bot independently of the app', async () => {
     disconnected.mockRestore();
   }
 });
+
+it('reconnects callbacks after restarting an ambiguous provider submission', async () => {
+  const { PreviewConnector } = await import('@verity/preview-tunnel');
+  const connect = vi.spyOn(PreviewConnector.prototype, 'connect').mockResolvedValue(undefined);
+  const disconnected = vi
+    .spyOn(PreviewConnector.prototype, 'waitForDisconnect')
+    .mockImplementation(() => new Promise(() => undefined));
+  const state = {
+    meeting: { id: 'pending', sessionId: 'session' },
+    phase: 'interrupted',
+    botCreateAttempted: true,
+    binding: {
+      edgeUrl: 'wss://meeting.example.test/__verity/connector',
+      connectorToken: 'fixture',
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+    },
+  };
+  const rows = new Map<string, unknown>([['meeting:pending', state]]);
+  const store = {
+    getAttendeeState: async (id: string) => rows.get(id),
+    putAttendeeState: async (id: string, value: unknown) => {
+      rows.set(id, value);
+    },
+    listAttendeeState: async () => [...rows].map(([id, value]) => ({ id, state: value })),
+  } as unknown as EventStore;
+  const client = vi.fn();
+  const service = new AttendeeMeetings({ store, ingest: vi.fn(), client });
+  await service.open();
+  try {
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1));
+    expect(client).not.toHaveBeenCalled();
+    expect(rows.get('meeting:pending')).toMatchObject({ botCreateAttempted: true });
+  } finally {
+    await service.close();
+    connect.mockRestore();
+    disconnected.mockRestore();
+  }
+});
