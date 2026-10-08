@@ -1,4 +1,8 @@
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -412,6 +416,29 @@ describe('createMemoryGuard', () => {
     });
   });
 
+  it('never discovers children of a reused victim root', () => {
+    const files = { ...sandbox(), ...cgroup(5.5 * GIB) };
+    let statReads = 0;
+    const base = guestReader(files);
+    const read = (path: string): string => {
+      if (path === '/proc/6000/stat' && ++statReads > 1) {
+        files['/proc/6200/status'] = status('node', 6000, 1000, 100 * MIB);
+        return base(path).replace('6000 0 0', '99999 0 0');
+      }
+      return base(path);
+    };
+    const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>();
+    createMemoryGuard({
+      readFile: read,
+      listPids: listPids(files),
+      readLink: () => '/',
+      kill,
+    }).tick();
+    expect(kill).not.toHaveBeenCalledWith(6000, 'SIGSTOP');
+    expect(kill).not.toHaveBeenCalledWith(6200, 'SIGSTOP');
+    expect(kill).not.toHaveBeenCalledWith(6200, 'SIGKILL');
+  });
+
   it('also stops and kills a child forked after the snapshot', () => {
     const files = { ...sandbox(), ...cgroup(5.5 * GIB) };
     const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>((pid, signal) => {
@@ -801,4 +828,78 @@ describe('Sandbox wiring', () => {
     // Opt-out spelled the way the launcher reads it.
     expect(stackLauncher).toContain('VERITY_MEMORY_GUARD:-1');
   });
+});
+
+// A stale control record must not let overlapping stack passes poll independently.
+it('holds off daemon launches before stale-file recovery while the lifetime lock is held', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'verity-memory-guard-'));
+  const script = fileURLToPath(
+    new URL(
+      '../../../features/verity-sandbox-toolkit/bin/verity-memory-guard.mjs',
+      import.meta.url,
+    ),
+  );
+  const holder = spawn('/usr/bin/flock', [
+    '--no-fork',
+    join(dir, 'memory-guard.lock'),
+    process.execPath,
+    '-e',
+    'process.stdout.write("ready"); setInterval(() => {}, 1000)',
+  ]);
+  const children: ReturnType<typeof spawn>[] = [holder];
+  try {
+    await new Promise<void>((resolve, reject) => {
+      holder.stdout.once('data', () => resolve());
+      holder.once('error', reject);
+    });
+    await writeFile(join(dir, 'memory-guard.pid'), '999999999 1\n');
+    const outputs = await Promise.all(
+      Array.from(
+        { length: 3 },
+        () =>
+          new Promise<string>((resolve, reject) => {
+            const child = spawn(process.execPath, [script, '--dry-run'], {
+              env: { ...process.env, VERITY_AGENT_BROKER_RUNTIME: dir },
+              stdio: ['ignore', 'pipe', 'pipe'],
+            });
+            children.push(child);
+            let output = '';
+            child.stdout.on('data', (chunk) => {
+              output += String(chunk);
+            });
+            const deadline = setTimeout(() => {
+              child.kill('SIGTERM');
+              reject(new Error('contending guard did not exit'));
+            }, 2000);
+            child.once('error', reject);
+            child.once('exit', (code) => {
+              clearTimeout(deadline);
+              try {
+                expect(code).toBe(1);
+                resolve(output);
+              } catch (error) {
+                reject(error instanceof Error ? error : new Error(String(error)));
+              }
+            });
+          }),
+      ),
+    );
+    expect(outputs).toEqual(['', '', '']);
+    expect(await readFile(join(dir, 'memory-guard.pid'), 'utf8')).toBe('999999999 1\n');
+  } finally {
+    await Promise.all(
+      children.map(
+        (child) =>
+          new Promise<void>((resolve) => {
+            if (child.exitCode !== null || child.signalCode !== null) {
+              resolve();
+              return;
+            }
+            child.once('exit', () => resolve());
+            child.kill('SIGTERM');
+          }),
+      ),
+    );
+    await rm(dir, { recursive: true, force: true });
+  }
 });

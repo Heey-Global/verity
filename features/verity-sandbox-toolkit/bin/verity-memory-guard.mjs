@@ -407,9 +407,12 @@ export function createMemoryGuard(options) {
       [...processes].reverse().map((process) => [process.pid, process.startTime]);
     const targets = new Map(topDown([...descendants, victim]));
     const stopped = send(targets, 'SIGSTOP', stillTarget);
-    const late = topDown(descendantsOf(victim.pid, listProcesses(readFile, listPids))).filter(
-      ([pid]) => !targets.has(pid),
-    );
+    const late =
+      stopped.has(victim.pid) && stillTarget(victim.pid, victim.startTime)
+        ? topDown(descendantsOf(victim.pid, listProcesses(readFile, listPids))).filter(
+            ([pid]) => !targets.has(pid),
+          )
+        : [];
     for (const pid of send(late, 'SIGSTOP', stillTarget)) stopped.add(pid);
     for (const [pid, startTime] of late) targets.set(pid, startTime);
     // A process this pass stopped is killed on the start-time fence alone: left
@@ -583,10 +586,9 @@ export function probeMemoryGuard(controlDir, readFile = readFsFile) {
 /**
  * Claim the pid file before the first poll, exclusively, so two overlapping
  * stack passes cannot both start a guard that kills on its own cooldown. A file
- * left by a guard that is no longer running is replaced once. That replacement
- * can race with another launcher's; the loser notices on its next poll that the
- * file no longer holds the record it wrote, which this returns, and exits (see
- * `main`). Returns `undefined` when another guard holds the claim.
+ * left by a guard that is no longer running is replaced once. The lifetime
+ * flock acquired by `main` serializes replacement and all subsequent polls.
+ * Returns the record written, or `undefined` when another guard holds it.
  */
 function claimPidFile(controlDir) {
   const path = join(controlDir, PID_FILE_NAME);
@@ -640,6 +642,25 @@ function main() {
     writeLog({ event: 'once', ...result, victim: result.victim?.pid });
     process.exit(0);
   }
+  // util-linux is installed by the toolkit. Keep a kernel-owned lock for the
+  // entire daemon lifetime: stale pid-file recovery must never overlap a poll.
+  // The lock file is never unlinked; the kernel releases it on process exit.
+  if (!flags.has('--lock-held')) {
+    process.execve(
+      '/usr/bin/flock',
+      [
+        '/usr/bin/flock',
+        '--no-fork',
+        '--nonblock',
+        join(controlDir, 'memory-guard.lock'),
+        process.execPath,
+        fileURLToPath(import.meta.url),
+        ...process.argv.slice(2),
+        '--lock-held',
+      ],
+      Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined)),
+    );
+  }
   const ownRecord = claimPidFile(controlDir);
   if (ownRecord === undefined) {
     writeLog({ event: 'already-running' });
@@ -666,8 +687,7 @@ function main() {
   const intervalMs = resolvePollIntervalMs(process.env);
   let lastError;
   const timer = setInterval(() => {
-    // Replacing a stale pid file is not atomic across two launchers; the one
-    // whose record is no longer in the file steps aside within a poll.
+    // Also stop if the control record is replaced externally.
     if (tryRead(readFsFile, join(controlDir, PID_FILE_NAME)) !== ownRecord) {
       writeLog({ event: 'superseded' });
       process.exit(0);
