@@ -336,7 +336,7 @@ import { startAutomationScheduler } from './automation-scheduler.js';
 import { registerAutomationRoutes } from './automation-routes.js';
 import {
   createSessionPlanning,
-  hasTrustedPlanInstruction,
+  trustedPlanInstructionConsent,
   registerPlanningRoutes,
 } from './planning.js';
 import type { ListenerDiscovery } from './listener-discovery.js';
@@ -5815,6 +5815,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
     // Bind the eventual card answer to the plan that existed before the card opened.
     const planningApprovalRevisions = new WeakMap<object, number>();
+    const planningConsents = new WeakMap<object, import('@verity/store').PlanningConsent>();
     const gateway = createMcpGateway({
       ...gatewayDeps,
       // Runs before the card, so a caller that may not use these tools is turned away without
@@ -6052,17 +6053,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;
         }
-        // A chat instruction to implement already carries approval. Leaving without
-        // implementing still asks once before restoring file access.
-        if (
-          toolName === START_PLANNING_TOOL ||
-          toolName === PRESENT_PLAN_TOOL ||
-          (toolName === END_PLANNING_TOOL &&
-            (request as { action?: string }).action !== 'discard' &&
-            (await hasTrustedPlanInstruction(deps.eventStore, sessionId, turnId)))
-        ) {
+
+        if (toolName === START_PLANNING_TOOL || toolName === PRESENT_PLAN_TOOL) {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;
+        }
+        if (
+          toolName === END_PLANNING_TOOL &&
+          (request as { action?: string }).action !== 'discard'
+        ) {
+          const consent = await trustedPlanInstructionConsent(deps.eventStore, sessionId, turnId);
+          if (consent !== undefined) {
+            planningConsents.set(request as object, consent);
+            const session = await deps.eventStore.getSession(sessionId);
+            return session?.projectId === projectId;
+          }
         }
         if (toolName === 'verity_send_session_message') {
           const session = await deps.eventStore.getSession(sessionId);
@@ -6193,7 +6198,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const planningRevision = planningApprovalRevisions.get(input.request as object);
           if (
             planningRevision === undefined ||
-            !(await sessionPlanning.implement(input.sessionId, planningRevision))
+            !(await sessionPlanning.implement(
+              input.sessionId,
+              planningRevision,
+              planningConsents.get(input.request as object),
+            ))
           )
             throw new ControlPlaneSessionAuthorityError(
               'The plan was updated. Please review the current plan before implementing.',

@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import {
   createSessionPlanning,
   hasTrustedPlanInstruction,
+  trustedPlanInstructionConsent,
   isPlanImplementationInstruction,
   registerPlanningRoutes,
   type PlanningDeps,
@@ -38,6 +39,8 @@ beforeEach(async () => {
           opts: { displayPrompt: dispatchOpts.displayPrompt! },
         },
         dispatchOpts.planningRevision!,
+        undefined,
+        dispatchOpts.planningConsent,
       ),
     }),
   );
@@ -256,6 +259,46 @@ describe('trusted chat implementation instruction', () => {
     'Plan first',
   ])('refuses quoted or ambiguous instruction %s', (text) => {
     expect(isPlanImplementationInstruction(text)).toBe(false);
+  });
+
+  it('refuses revoked chat consent after dispatch preparation without ending planning', async () => {
+    await store.startSessionPlanning('s1');
+    const revision = await store.presentSessionPlan('s1', '1. First');
+    await store.appendEvent('s1', {
+      t: 'tool_call',
+      id: 'plan',
+      name: 'verity_present_plan',
+      input: { plan: '1. First' },
+    });
+    await store.appendEvent('s1', {
+      t: 'tool_result',
+      id: 'plan',
+      isError: false,
+      output: { planningRevision: revision },
+    });
+    const prompt = await store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'So umsetzen',
+      initiatedBy: { userId: 'u1' },
+    });
+    await store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+    await store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
+    const consent = await trustedPlanInstructionConsent(store, 's1', 't1');
+    expect(consent).toBeDefined();
+    const original = dispatchTurn.getMockImplementation()!;
+    dispatchTurn.mockImplementationOnce(async (...args) => {
+      await store.appendEvent('s1', {
+        t: 'prompt',
+        text: 'Wait, do not implement',
+        steered: true,
+        initiatedBy: { userId: 'u1' },
+      });
+      return original(...args);
+    });
+    const planning = createSessionPlanning({ eventStore: store, dispatchTurn });
+    expect(await planning.implement('s1', revision!, consent)).toBe(false);
+    expect((await store.getSession('s1'))?.planning).toBe('active');
+    expect(await store.listQueuedTurns()).toEqual([]);
   });
   it('binds consent to the current durable turn and latest trusted steering prompt', async () => {
     await store.startSessionPlanning('s1');

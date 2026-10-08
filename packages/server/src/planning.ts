@@ -9,7 +9,7 @@ import {
   planningToolName,
 } from '@verity/events';
 import type { DispatchTurnOptions, TurnOptions } from '@verity/session';
-import type { EventStore, SessionPlanning } from '@verity/store';
+import type { EventStore, PlanningConsent, SessionPlanning } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
@@ -21,25 +21,26 @@ export function isPlanImplementationInstruction(text: string): boolean {
   );
 }
 
-export async function hasTrustedPlanInstruction(
+export async function trustedPlanInstructionConsent(
   store: Pick<
     EventStore,
     'listRunningTurns' | 'getEventsAfter' | 'getEventsBeforeSeq' | 'getSession'
   >,
   sessionId: string,
   turnId: string,
-): Promise<boolean> {
+): Promise<PlanningConsent | undefined> {
   const running = (await store.listRunningTurns()).find((turn) => turn.sessionId === sessionId);
-  if (running?.turnId !== turnId) return false;
+  if (running?.turnId !== turnId) return undefined;
   const events = await store.getEventsAfter(sessionId, running.promptSeq - 1);
   const prompts = events.filter(({ event }) => event.t === 'prompt');
   const latest = prompts.at(-1);
-  if (latest?.event.t !== 'prompt' || latest.event.peer || !latest.event.initiatedBy) return false;
+  if (latest?.event.t !== 'prompt' || latest.event.peer || !latest.event.initiatedBy)
+    return undefined;
   // A successor prompt belongs to a different turn even before its marker is rebound.
-  if (latest.seq !== running.promptSeq && !latest.event.steered) return false;
-  if (!isPlanImplementationInstruction(latest.event.text)) return false;
+  if (latest.seq !== running.promptSeq && !latest.event.steered) return undefined;
+  if (!isPlanImplementationInstruction(latest.event.text)) return undefined;
   const session = await store.getSession(sessionId);
-  if (session?.planning !== 'active' || session.planningRevision === undefined) return false;
+  if (session?.planning !== 'active' || session.planningRevision === undefined) return undefined;
   const { events: preceding } = await store.getEventsBeforeSeq(sessionId, 200, latest.seq);
   const calls = new Set(
     preceding.flatMap(({ event }) =>
@@ -50,13 +51,24 @@ export async function hasTrustedPlanInstruction(
   );
   // Consent covers the revision the user could see when sending their message.
   // Missing or old backend results require the normal confirmation instead.
-  return preceding.some(
+  const approved = preceding.some(
     ({ event }) =>
       event.t === 'tool_result' &&
       !event.isError &&
       calls.has(event.id) &&
       presentedRevision(event.output) === session?.planningRevision,
   );
+  return approved
+    ? { turnId, promptSeq: latest.seq, runningPromptSeq: running.promptSeq }
+    : undefined;
+}
+
+export async function hasTrustedPlanInstruction(
+  store: Parameters<typeof trustedPlanInstructionConsent>[0],
+  sessionId: string,
+  turnId: string,
+): Promise<boolean> {
+  return (await trustedPlanInstructionConsent(store, sessionId, turnId)) !== undefined;
 }
 
 function presentedRevision(value: unknown): number | undefined {
@@ -98,7 +110,11 @@ export interface SessionPlanningActions {
   start(sessionId: string): Promise<boolean>;
   /** Leave planning mode and start the implementation as a turn of its own.
    *  Answers false when the session was not planning (already decided). */
-  implement(sessionId: string, planningRevision: number): Promise<boolean>;
+  implement(
+    sessionId: string,
+    planningRevision: number,
+    consent?: PlanningConsent,
+  ): Promise<boolean>;
   present(sessionId: string, plan: string): Promise<number | undefined>;
   /** Leave planning mode without implementing. False when it was not planning. */
   discard(sessionId: string, planningRevision?: number): Promise<boolean>;
@@ -114,7 +130,7 @@ export function createSessionPlanning(deps: PlanningDeps): SessionPlanningAction
     async present(sessionId, plan) {
       return store.presentSessionPlan(sessionId, plan);
     },
-    async implement(sessionId, planningRevision) {
+    async implement(sessionId, planningRevision, consent) {
       const session = await store.getSession(sessionId);
       if (session?.planningRevision !== planningRevision || session.planningPlan == null)
         return false;
@@ -124,7 +140,12 @@ export function createSessionPlanning(deps: PlanningDeps): SessionPlanningAction
         sessionId,
         `${IMPLEMENT_PLAN_PROMPT}\n\nApproved plan (revision ${planningRevision}):\n${session.planningPlan}`,
         {},
-        { displayPrompt: IMPLEMENT_PLAN_DISPLAY, queueBehindActiveTurn: true, planningRevision },
+        {
+          displayPrompt: IMPLEMENT_PLAN_DISPLAY,
+          queueBehindActiveTurn: true,
+          planningRevision,
+          ...(consent !== undefined ? { planningConsent: consent } : {}),
+        },
       );
       if (result.accepted === false) return false;
       return true;

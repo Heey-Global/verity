@@ -6577,6 +6577,59 @@ describe('Conductor mid-turn steering (#101)', () => {
     expect(prompts.find((event) => event.text === 'Merged PR #119')?.steered).toBe(true);
   });
 
+  it('refuses chat implementation while newer steering awaits prompt persistence', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', '1. First');
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'Implement plan');
+    await waitFor(fake.ready);
+    const running = (await ctx.store.listRunningTurns())[0]!;
+    let unblock!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    const append = ctx.store.appendEvent.bind(ctx.store);
+    const spy = vi.spyOn(ctx.store, 'appendEvent').mockImplementation(async (...args) => {
+      if (args[1].t === 'prompt' && args[1].steered) await barrier;
+      return append(...args);
+    });
+    const steer = conductor.dispatchTurn('s1', 'Wait, do not implement');
+    await waitFor(() => fake.steered.length === 1);
+    try {
+      // The backend already sees the cancellation, while durable history still
+      // contains the previous approval. It must not reopen write access.
+      expect(
+        await conductor.dispatchTurn(
+          's1',
+          'Implement',
+          {},
+          {
+            planningRevision: revision!,
+            queueBehindActiveTurn: true,
+            planningConsent: {
+              turnId: running.turnId!,
+              promptSeq: running.promptSeq,
+              runningPromptSeq: running.promptSeq,
+            },
+          },
+        ),
+      ).toEqual({ queued: false, accepted: false });
+      expect((await ctx.store.getSession('s1'))?.planning).toBe('active');
+      expect(await ctx.store.listQueuedTurns()).toEqual([]);
+    } finally {
+      unblock();
+      await steer;
+      spy.mockRestore();
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+  });
   it('keeps the live planning turn restricted after a planning decision', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.setSessionPlanning('s1', 'active');

@@ -40,6 +40,7 @@ export {
   EventStore,
   SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS,
   type EventSink,
+  type PlanningConsent,
   RUNNER_FRAME_PROTOCOL_VERSION,
   type RunnerFrameIngest,
   type RunnerFrameIngestResult,

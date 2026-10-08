@@ -929,6 +929,12 @@ export interface QueuedTurnRecord {
 
 /** Input to {@link EventStore.enqueueTurn}: a queued turn minus the `seq` the
  * database assigns. */
+export interface PlanningConsent {
+  turnId: string;
+  promptSeq: number;
+  runningPromptSeq: number;
+}
+
 export type QueuedTurnInput = Omit<QueuedTurnRecord, 'seq'>;
 
 /** The durable "a turn is in flight for this session" marker (lifecycle Phase 1).
@@ -4475,9 +4481,44 @@ export class EventStore implements EventSink {
     input: QueuedTurnInput,
     revision: number,
     onPersisted?: (event: SequencedEvent) => void,
+    consent?: PlanningConsent,
   ): Promise<boolean> {
     const persisted: { seq: number; createdAt: Date; event: AgentEvent }[] = [];
     const accepted = await this.db.transaction().execute(async (tx) => {
+      // A newer user prompt revokes chat consent before any tasks or work commit.
+      await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(input.sessionId)}))`.execute(
+        tx,
+      );
+      if (consent !== undefined) {
+        const running = await tx
+          .selectFrom('running_turns')
+          .select(['turn_id', 'prompt_seq'])
+          .where('session_id', '=', input.sessionId)
+          .forUpdate()
+          .executeTakeFirst();
+        const queuedPrompt = await tx
+          .selectFrom('queued_turns')
+          .select('id')
+          .where('session_id', '=', input.sessionId)
+          .limit(1)
+          .executeTakeFirst();
+        if (queuedPrompt !== undefined) return false;
+        const latest = await tx
+          .selectFrom('events')
+          .select('id')
+          .where('session_id', '=', input.sessionId)
+          .where('type', '=', 'prompt')
+          .orderBy('id', 'desc')
+          .limit(1)
+          .executeTakeFirst();
+        if (
+          running?.turn_id !== consent.turnId ||
+          Number(running.prompt_seq) !== consent.runningPromptSeq ||
+          Number(latest?.id) !== consent.promptSeq
+        )
+          return false;
+      }
+
       const result = await tx
         .updateTable('sessions')
         .set({ planning: 'implemented' })

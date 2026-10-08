@@ -17,6 +17,7 @@ import { isLocalProject } from '@verity/store';
 import { PLANNING_PERMISSION_MODE } from './runner.js';
 import type {
   EventStore,
+  PlanningConsent,
   QueuedTurnOpts,
   RunningTurnRecord,
   SessionRecord,
@@ -718,6 +719,7 @@ export interface DispatchTurnOptions extends PromptOrigin {
   queueBehindActiveTurn?: boolean;
   /** Atomically accept this plan revision with the durable implementation queue. */
   planningRevision?: number;
+  planningConsent?: PlanningConsent;
 }
 
 interface QueuedConductorTurn extends PromptOrigin {
@@ -904,6 +906,7 @@ export interface StartOptions {
  */
 export class Conductor {
   private readonly inFlight = new Set<string>();
+  private readonly pendingUserDispatches = new Map<string, number>();
   private readonly runningPlanning = new Map<string, boolean>();
   /** Stop-watchdog waiters woken by {@link releaseInFlight} — how the cancel path
    * observes "the session is actually free again" regardless of WHICH settle path
@@ -3102,13 +3105,28 @@ export class Conductor {
     opts: TurnOptions = {},
     dispatchOpts: DispatchTurnOptions = {},
   ): Promise<{ queued: boolean; accepted?: boolean }> {
+    const run = async () => {
+      const userDispatch = dispatchOpts.planningRevision === undefined;
+      if (userDispatch)
+        this.pendingUserDispatches.set(
+          sessionId,
+          (this.pendingUserDispatches.get(sessionId) ?? 0) + 1,
+        );
+      try {
+        return await this.dispatchTurnInner(sessionId, prompt, opts, dispatchOpts);
+      } finally {
+        if (userDispatch) {
+          const count = (this.pendingUserDispatches.get(sessionId) ?? 1) - 1;
+          if (count === 0) this.pendingUserDispatches.delete(sessionId);
+          else this.pendingUserDispatches.set(sessionId, count);
+        }
+      }
+    };
     const { clientReplyId } = dispatchOpts;
     if (clientReplyId === undefined) {
-      return this.dispatchTurnInner(sessionId, prompt, opts, dispatchOpts);
+      return run();
     }
-    return this.dispatchIdempotent(sessionId, clientReplyId, () =>
-      this.dispatchTurnInner(sessionId, prompt, opts, dispatchOpts),
-    );
+    return this.dispatchIdempotent(sessionId, clientReplyId, () => run());
   }
 
   /** Memoize a `clientReplyId`-keyed dispatch so a replayed quick reply returns the
@@ -3188,15 +3206,8 @@ export class Conductor {
           ...(opts.attachments ? { attachments: opts.attachments } : {}),
         }))
       ) {
-        // Delivered into the live turn. Persist the operator's prompt event so it
-        // shows in the transcript (claude's stream doesn't echo it). Fire-and-forget
-        // so it doesn't block the 202: claude can't answer the injected message
-        // before a model round-trip, which in practice dwarfs this local append, so
-        // the prompt event almost always lands ahead of the agent's reply to it.
-        // The seq counter orders by append time, not logical time, so under extreme
-        // store contention the prompt could theoretically land just after the reply
-        // — a transcript blemish, never a lost turn (the message is already in claude).
-        void this.persistSteeredPrompt(sessionId, displayPrompt, opts, originFields(dispatchOpts));
+        // Keep chat acceptance fenced until the steering prompt is durable.
+        await this.persistSteeredPrompt(sessionId, displayPrompt, opts, originFields(dispatchOpts));
         return { queued: false };
       }
       if (this.stopping.has(sessionId)) throw new SessionBusyError(sessionId);
@@ -3218,10 +3229,19 @@ export class Conductor {
         const input = { id, sessionId, prompt, opts: storedOpts };
         if (dispatchOpts.planningRevision !== undefined) {
           if (
+            dispatchOpts.planningConsent !== undefined &&
+            (this.pendingUserDispatches.get(sessionId) ?? 0) > 0
+          ) {
+            accepted = false;
+            return;
+          }
+
+          if (
             !(await this.deps.store.enqueuePlanImplementation(
               input,
               dispatchOpts.planningRevision,
               (event) => this.deps.bus?.publish(sessionId, event),
+              dispatchOpts.planningConsent,
             ))
           ) {
             accepted = false;

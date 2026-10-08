@@ -315,6 +315,55 @@ describe('accepted planning tasks', () => {
       taskIds: assigned.filter((task) => task.origin === 'agent').map((task) => task.id),
     });
   });
+
+  it.each([
+    'new prompt',
+    'replacement turn',
+    'same turn id with new anchor',
+    'queued prompt',
+    'unchanged',
+  ] as const)('fences chat consent against %s before committing tasks or work', async (change) => {
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', '1. Accepted step');
+    const prompt = await ctx.store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'Implement plan',
+      initiatedBy: { userId: ADMIN },
+    });
+    await ctx.store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+    await ctx.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
+    const consent = { turnId: 't1', promptSeq: prompt.seq, runningPromptSeq: prompt.seq };
+    // The user can revoke approval while dispatch is awaiting other work.
+    if (change === 'new prompt') {
+      await ctx.store.appendEvent('s1', {
+        t: 'prompt',
+        text: 'Wait, do not implement',
+        steered: true,
+        initiatedBy: { userId: ADMIN },
+      });
+    } else if (change === 'replacement turn') {
+      await ctx.store.bindTurnIdentity('s1', { turnId: 't2', startCommandId: 'c2' });
+    } else if (change === 'queued prompt') {
+      await ctx.store.enqueueTurn({ id: 'cancel', sessionId: 's1', prompt: 'Wait', opts: {} });
+    } else if (change === 'same turn id with new anchor') {
+      await ctx.store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq + 1 });
+      await ctx.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c2' });
+    }
+    const accepted = await ctx.store.enqueuePlanImplementation(
+      { id: 'implementation', sessionId: 's1', prompt: 'Implement', opts: {} },
+      revision!,
+      undefined,
+      consent,
+    );
+    expect(accepted).toBe(change === 'unchanged');
+    expect((await ctx.store.getSession('s1'))?.planning).toBe(
+      change === 'unchanged' ? 'implemented' : 'active',
+    );
+    expect(await ctx.store.listQueuedTurns()).toHaveLength(
+      change === 'unchanged' || change === 'queued prompt' ? 1 : 0,
+    );
+    expect(await tasks().listAssigned('s1')).toHaveLength(change === 'unchanged' ? 1 : 0);
+  });
   it('rolls back acceptance and tasks when persistence fails', async () => {
     await tasks().upsert({
       id: 'existing',
