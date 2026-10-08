@@ -259,10 +259,10 @@ describe('victim selection', () => {
     });
   });
 
-  it('finds the command under an adapter that runs commands as its own children', () => {
-    // codex-acp has no separate CLI process: the tool shell is the anchor's child.
-    // A topology-specific rule would call that shell "the CLI" and pick the 600 MiB
-    // detached tree instead, every cooldown, while the real culprit kept growing.
+  it('treats what an adapter runs directly as a command, however it is shaped', () => {
+    // codex-acp has no CLI process between it and the tool shell. Read as a CLI,
+    // a large command would be spared until it held a whole reserve, and the
+    // guard would kill the smaller detached tree, or nothing, instead.
     const files: Record<string, string> = {
       '/proc/1/status': status('docker-init', 0, 1000, 2 * MIB),
       '/proc/470/status': status('node', 1, 0, 150 * MIB),
@@ -273,9 +273,19 @@ describe('victim selection', () => {
       '/proc/8004/status': status('node', 8002, 1000, 1000 * MIB),
       '/proc/7000/status': status('node', 1, 1000, 600 * MIB),
     };
-    expect(
-      chooseVictim(listProcesses(reader(files), listPids(files)), { agentUid: 1000 }),
-    ).toMatchObject({ pid: 8002, tier: 'command', treeRssBytes: 2300 * MIB });
+    const options = { agentUid: 1000, minimumSessionRssBytes: 1.2 * GIB };
+    expect(chooseVictim(listProcesses(reader(files), listPids(files)), options)).toMatchObject({
+      pid: 8001,
+      tier: 'command',
+      treeRssBytes: 2305 * MIB,
+    });
+    // `bash -c 'node script.js'` execs node: one large process, no children.
+    for (const pid of [8001, 8002, 8003, 8004]) delete files[`/proc/${pid}/status`];
+    files['/proc/8005/status'] = status('node', 8000, 1000, 900 * MIB);
+    expect(chooseVictim(listProcesses(reader(files), listPids(files)), options)).toMatchObject({
+      pid: 8005,
+      tier: 'command',
+    });
   });
 
   it('declines when nothing agent-owned is large enough to matter', () => {
@@ -660,7 +670,7 @@ describe('Sandbox wiring', () => {
     expect(stackLauncher).toContain('nohup /usr/local/bin/verity-memory-guard');
     // The guard reaches uid-1000 processes through CAP_KILL, which this root pass
     // holds; it must not be deferred to the unprivileged supervisor launcher.
-    expect(stackLauncher.indexOf('verity-memory-guard')).toBeLessThan(
+    expect(stackLauncher.indexOf('nohup /usr/local/bin/verity-memory-guard')).toBeLessThan(
       stackLauncher.indexOf('exec /usr/bin/setpriv'),
     );
     // Opt-out spelled the way the launcher reads it.

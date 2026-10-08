@@ -59,6 +59,15 @@ export const KILL_COOLDOWN_MS = 2_000;
 export const REARM_GROWTH_FRACTION = 0.25;
 /** Below this RSS a process is not worth killing: it would not free enough to matter and is likely infrastructure. */
 export const MINIMUM_VICTIM_RSS_BYTES = 64 * 1024 ** 2;
+/**
+ * Process names of agent CLIs that sit between an ACP adapter and the commands
+ * they run. Only Claude has that layer (`claude-agent-acp` → `claude` → tool
+ * shell); `codex-acp` and `opencode acp` are the agent themselves and run
+ * commands as their own children. Matched on the kernel's process name, the
+ * `Name:` line of `/proc/<pid>/status`, which the agent cannot rename without
+ * exec'ing something else.
+ */
+const AGENT_CLI_NAMES = new Set(['claude']);
 const DEFAULT_AGENT_UID = 1000;
 const DEFAULT_CONTROL_DIR = '/run/verity-runner-broker';
 const PID_FILE_NAME = 'memory-guard.pid';
@@ -202,17 +211,16 @@ export function listProcesses(readFile = readFsFile, listPids = listProcDir) {
  * anchor — the ACP adapter the spawn broker started — and is never killed. The
  * candidate trees are rooted at an anchor's children and at agent processes
  * detached under init (a backgrounded dev server or database); the largest by
- * summed RSS wins. A tree rooted at an anchor's child is first narrowed: unless
- * that process's own RSS is most of its tree, the guard takes its largest child
- * tree instead. Under a Claude session the anchor's child is the agent CLI and
- * its children are the commands it ran, so a runaway `npm test` is killed while
- * the CLI survives to report exit 137, also when several commands run at once.
- * The CLI itself goes only when it is where the memory is and holds at least
- * `minimumSessionRssBytes` (the guard passes its reserve): an ordinary CLI is
- * no runaway, and killing it for cache pressure would cost a session for
- * nothing. Adapters that run commands as their own children (Codex) need no
- * special case: the command is then the anchor's child, and narrowing takes the
- * part of its tree that is large.
+ * summed RSS wins. A tree rooted at an anchor's child that is an agent CLI
+ * (`AGENT_CLI_NAMES`) is first narrowed: unless the CLI's own RSS is most of
+ * its tree, the guard takes its largest child tree, the command it ran. A
+ * runaway `npm test` is thus killed while the CLI survives to report exit 137,
+ * also when several commands run at once. The CLI itself goes only when it is
+ * where the memory is and its tree holds at least `minimumSessionRssBytes` (the
+ * guard passes its reserve): an ordinary CLI is no runaway, and killing it for
+ * cache pressure would cost a session for nothing. Any other child of an anchor
+ * is a command an adapter ran directly (Codex, OpenCode) and is a candidate
+ * with its whole tree, like any command.
  *
  * Trees below `MINIMUM_VICTIM_RSS_BYTES` are not worth killing. Ties go to the
  * higher pid, the younger tree.
@@ -246,6 +254,8 @@ export function chooseVictim(
   // A CLI of ordinary size is not a runaway either: with nothing larger to
   // blame, the pressure is likely cache or tmpfs, which no kill cures.
   const resolveSession = (cli, treeRssBytes) => {
+    // Not a CLI: a command an adapter ran directly, killable like any other.
+    if (!AGENT_CLI_NAMES.has(cli.name)) return { ...cli, tier: 'command', treeRssBytes };
     if (cli.rssBytes * 2 > treeRssBytes) {
       return treeRssBytes >= minimumSessionRssBytes
         ? { ...cli, tier: 'session', treeRssBytes }
