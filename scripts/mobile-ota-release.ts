@@ -370,8 +370,10 @@ function assertBaseline(candidate: Candidate) {
     `repos/${repository()}/contents/${manifestPath}?ref=main`,
   );
   const merged = validateCandidate(JSON.parse(Buffer.from(approved.content, 'base64').toString()));
-  if (merged.tag.localeCompare(delivered, 'en', { numeric: true }) > 0)
-    throw new Error('An approved promotion is undelivered; stage again once it publishes');
+  const pending = merged.tag.localeCompare(delivered, 'en', { numeric: true }) > 0;
+  if (pending && merged.tag.localeCompare(candidate.tag, 'en', { numeric: true }) >= 0)
+    throw new Error('An approved promotion owns this version; stage a later version');
+  return pending;
 }
 
 function stage(runtime: string, version: string) {
@@ -499,6 +501,13 @@ function stage(runtime: string, version: string) {
     git('push', 'origin', `refs/tags/${candidate.tag}`);
   }
   finishRelease(candidate, true);
+
+  // Delivery reads the merged approval, while the rolling branch remains its
+  // audit evidence. Publish Staging now and refresh the proposal after delivery.
+  if (assertBaseline(candidate)) {
+    console.log('Staging published; Production proposal waits for approved delivery');
+    return;
+  }
 
   const branch = `automation/promote-mobile-ota-${runtime}`;
   const open = json<Pull[]>(

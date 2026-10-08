@@ -28,7 +28,7 @@ permissions: read-all
 concurrency:
   # Never cancel an in-flight publish: a cancelled `eas update` can leave a
   # half-rolled-out update. Serialize back-to-back merges instead of racing them.
-  group: release-mobile
+  group: mobile-ota-staging
   queue: max
   cancel-in-progress: false
 

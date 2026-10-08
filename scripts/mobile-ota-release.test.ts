@@ -322,10 +322,14 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
     chmodSync(join(bin, name), 0o755);
   }
   return {
-    run: (command: 'stage' | 'promote', overrides: Record<string, string> = {}) =>
+    run: (
+      command: 'stage' | 'promote',
+      overrides: Record<string, string> = {},
+      version = artifact().version,
+    ) =>
       spawnSync(
         process.execPath,
-        [resolve('scripts/mobile-ota-release.ts'), command, '1.33.0', artifact().version],
+        [resolve('scripts/mobile-ota-release.ts'), command, '1.33.0', version],
         {
           cwd,
           encoding: 'utf8',
@@ -625,9 +629,21 @@ describe('OTA CLI interrupted external operations', () => {
   it('does not stage a version an approved promotion already owns', () => {
     const service = serviceFixture({ approvedOnMain: '1.33.3' });
     const result = service.run('stage');
-    expect(result.stderr).toContain('undelivered');
+    expect(result.stderr).toContain('owns this version');
     expect(service.state().calls.some((call) => call.includes('--force-with-lease'))).toBe(false);
     expect(service.state().calls.some((call) => call.startsWith('gh pr'))).toBe(false);
+  });
+
+  it('publishes a later Staging version while preserving an undelivered approval', () => {
+    const service = serviceFixture({ approvedOnMain: '1.33.3' });
+    const result = service.run('stage', {}, '1.33.4');
+    expect(result.status).toBe(0);
+    const calls = service.state().calls;
+    expect(calls.some((call) => call.includes('channel:edit staging'))).toBe(true);
+    expect(calls.some((call) => call.startsWith('gh release create mobile-v1.33.4'))).toBe(true);
+    expect(calls.some((call) => call.includes('--force-with-lease'))).toBe(false);
+    expect(calls.some((call) => call.startsWith('gh pr'))).toBe(false);
+    expect(calls.some((call) => call.includes('channel:edit production'))).toBe(false);
   });
 
   // Nothing pushes to main after a promotion, so a candidate stranded by this

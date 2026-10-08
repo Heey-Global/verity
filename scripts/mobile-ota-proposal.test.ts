@@ -263,7 +263,7 @@ it('rejects a mismatched public tag or a changed release PR version', () => {
   expect(detectFixture({ forged: true }).status).not.toBe(0);
 });
 
-it('publishes only merged fixed versions under the shared mobile release lock', () => {
+it('publishes only merged fixed versions under an independent staging lock', () => {
   const workflow = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')) as {
     concurrency: { group: string; 'cancel-in-progress': boolean };
     jobs: {
@@ -272,7 +272,9 @@ it('publishes only merged fixed versions under the shared mobile release lock', 
       };
     };
   };
-  expect(workflow.concurrency.group).toBe('release-mobile');
+  const promotion = parse(readFileSync('.github/workflows/mobile-ota-promote.yml', 'utf8'));
+  expect(workflow.concurrency.group).not.toBe(promotion.concurrency.group);
+  expect(workflow.concurrency.group).not.toBe('release-mobile');
   expect(workflow.concurrency['cancel-in-progress']).toBe(false);
   const steps = workflow.jobs.update.steps;
   const stage = steps.find((step) => step.run?.includes('mobile-ota-release.ts stage'));
