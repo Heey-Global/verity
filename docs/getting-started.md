@@ -45,8 +45,9 @@ Mac or Windows laptop:
    server. Choose Ubuntu as the operating system if asked.
 2. Pick a size with **16 GB of memory and 4 CPU cores**. That runs one project
    comfortably. Expect roughly 20 to 30 euros a month at Hetzner and more at
-   larger providers; prices change, so check the provider. A machine with
-   8 GB works for light use once you lower the
+   larger providers; prices change, so check the provider. This size is a
+   recommendation, not a tested minimum. A machine with 8 GB can work for
+   light use once you lower the
    [sandbox memory limit](../deploy/README.md#resource-guardrails) after
    installing.
 3. Add your SSH key when the provider asks, or let it email you a root
