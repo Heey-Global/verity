@@ -39,7 +39,7 @@ import { isDemoMode, useDemoRevision } from '../lib/demoMode';
 import { adjustFontScale, hydrateFontScale } from '../lib/fontZoom';
 import { prepareInstallationState } from '../lib/installationState';
 import { showsMessageSearch } from '../lib/headerRoutes';
-import { dispatchVoiceShortcut } from '../lib/voiceShortcut';
+import { dispatchTaskVoiceShortcut, dispatchVoiceShortcut } from '../lib/voiceShortcut';
 import { NO_WINDOW_CONTROLS_INSET, type WindowControlsInset } from '../lib/windowControls';
 
 // The app is dark-only. Force the native interface style to dark AT RUNTIME so all
@@ -178,7 +178,11 @@ function HydratedRoot() {
       style={{ flex: 1, backgroundColor: theme.colors.background }}
       onZoom={adjustFontScale}
       onSearch={handleSearchShortcut}
-      onVoice={() => {
+      onVoice={(action) => {
+        if (action === 'task') {
+          dispatchTaskVoiceShortcut();
+          return;
+        }
         if (pathname === '/' || pathname.startsWith('/session/')) dispatchVoiceShortcut();
       }}
     >

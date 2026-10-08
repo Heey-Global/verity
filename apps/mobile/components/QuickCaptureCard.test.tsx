@@ -115,3 +115,11 @@ it('renders a converted screenshot preview instead of a library URI', async () =
   expect(ui.getByText('Screenshot from just now')).toBeTruthy();
   expect(ui.UNSAFE_getAllByType(Image)[0].props.source.uri).toBe('data:image/jpeg;base64,preview');
 });
+
+it('starts dictation once when task capture opens and preserves it on rerender', () => {
+  const ui = render(<QuickCaptureCard {...props} />);
+  expect(toggle).toHaveBeenCalledTimes(1);
+  ui.rerender(<QuickCaptureCard {...props} />);
+  expect(toggle).toHaveBeenCalledTimes(1);
+  expect(captureTask).not.toHaveBeenCalled();
+});
