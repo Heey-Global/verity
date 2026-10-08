@@ -86,7 +86,12 @@ export const voiceRecognition = {
       typeof native.stopDictation !== 'function'
     )
       throw new Error('Voice input requires a new native app build.');
-    const locale = pickRecognitionLocale(await native.dictationLocales(), preferred);
+    const language = (tag: string) => tag.replace(/_/g, '-').split('-')[0]?.toLowerCase();
+    const languages = new Set(preferred.map(language));
+    const supported = (await native.dictationLocales()).filter((tag) =>
+      languages.has(language(tag)),
+    );
+    const locale = pickRecognitionLocale(supported, preferred);
     if (!locale) throw new Error('Speech recognition is unavailable for your device or language.');
     return locale;
   },

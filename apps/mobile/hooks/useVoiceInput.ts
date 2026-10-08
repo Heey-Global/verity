@@ -52,7 +52,7 @@ export interface UseVoiceInput {
  *      Hermes this returns a mangled UI-language + region combo (e.g. `en-DE`); the
  *      matcher's region step still maps that to the installed `de-DE`, so it's a safe
  *      backstop if `getLocales()` ever yields nothing. */
-function preferredLanguageTags(): string[] {
+function preferredLanguageTags(strict = false): string[] {
   const tags: string[] = [];
   try {
     for (const l of getLocales()) {
@@ -63,7 +63,7 @@ function preferredLanguageTags(): string[] {
   }
   try {
     const intl = Intl.DateTimeFormat().resolvedOptions().locale;
-    if (intl) tags.push(intl);
+    if (intl && (!strict || tags.length === 0)) tags.push(intl);
   } catch {
     // Intl unavailable — keep whatever getLocales provided.
   }
@@ -412,7 +412,7 @@ export function useVoiceInput(
         // natively. Android retains its existing OS-recognizer locale selection.
         const { lang, onDevice } =
           Platform.OS === 'ios'
-            ? { lang: await voiceRecognition.prepare(preferredLanguageTags()), onDevice: true }
+            ? { lang: await voiceRecognition.prepare(preferredLanguageTags(true)), onDevice: true }
             : await resolveRecognitionLocale();
         if (disposedRef.current || !listeningRef.current || startAttempt.current !== attempt)
           return;

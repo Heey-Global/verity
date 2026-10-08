@@ -182,3 +182,13 @@ it('sends corrected final text automatically and discards foreign-session events
   hook.unmount();
   jest.useRealTimers();
 });
+
+it('rejects unmatched preferred languages even when another model is supported', async () => {
+  mockNative.dictationLocales.mockResolvedValueOnce(['en-US']);
+  const hook = renderHook(() => useVoiceInput('', jest.fn()));
+  act(() => hook.result.current.toggle());
+  await waitFor(() => expect(hook.result.current.error).toMatch(/unavailable/));
+  expect(mockNative.startDictation).not.toHaveBeenCalled();
+  expect(ExpoSpeechRecognitionModule.start).not.toHaveBeenCalled();
+  hook.unmount();
+});
