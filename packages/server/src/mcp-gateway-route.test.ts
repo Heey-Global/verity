@@ -538,53 +538,41 @@ it('refuses an end-planning approval when the plan changed while the card was op
   expect((await harness.store.getSession('s1'))?.planning).toBe('active');
 });
 
-it('delivers linked agent messages automatically until a renewal card is needed', async () => {
-  const harness = build({ linkedTools: true });
-  for (const [id, repo] of [
-    ['p1', 'alpha'],
-    ['p2', 'beta'],
-  ] as const) {
-    await harness.store.createProject({
-      id,
-      kind: 'local',
-      owner: '__local__',
-      repo,
-      cloneDir: `__local__-${repo}`,
-      containerName: `verity-${repo}`,
-      state: 'active',
-    });
-  }
-  await harness.store.createSession({
-    sessionId: 's1',
-    projectId: 'p1',
-    worktree: '/tmp/verity-linked-s1',
-    model: 'claude-opus-5',
-  });
-  await harness.store.createSession({
-    sessionId: 's2',
-    projectId: 'p2',
-    worktree: '/tmp/verity-linked-s2',
-    model: 'claude-opus-5',
-  });
-  await harness.store.createSessionLink('s1', 's2');
-  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
-  await withListener(harness, async (socketPath) => {
-    for (let id = 1; id <= 7; id += 1) {
-      const response = await postUnix(socketPath, `Bearer ${token}`, {
-        jsonrpc: '2.0',
+it.each(['p1', 'p2'])(
+  'delivers linked agent messages to project %s until a renewal card is needed',
+  async (targetProjectId) => {
+    const harness = build({ linkedTools: true });
+    for (const [id, repo] of [
+      ['p1', 'alpha'],
+      ['p2', 'beta'],
+    ] as const) {
+      await harness.store.createProject({
         id,
-        method: 'tools/call',
-        params: {
-          name: 'verity_send_session_message',
-          arguments: { targetSessionId: 's2', message: `Question ${id}` },
-        },
+        kind: 'local',
+        owner: '__local__',
+        repo,
+        cloneDir: `__local__-${repo}`,
+        containerName: `verity-${repo}`,
+        state: 'active',
       });
-      expect(response.status).toBe(200);
-      expect(
-        (JSON.parse(response.body) as { result: { isError?: boolean } }).result.isError,
-      ).toBeUndefined();
-      if (id === 6) {
-        const retry = await postUnix(socketPath, `Bearer ${token}`, {
+    }
+    await harness.store.createSession({
+      sessionId: 's1',
+      projectId: 'p1',
+      worktree: '/tmp/verity-linked-s1',
+      model: 'claude-opus-5',
+    });
+    await harness.store.createSession({
+      sessionId: 's2',
+      projectId: targetProjectId,
+      worktree: '/tmp/verity-linked-s2',
+      model: 'claude-opus-5',
+    });
+    await harness.store.createSessionLink('s1', 's2');
+    const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+    await withListener(harness, async (socketPath) => {
+      for (let id = 1; id <= 7; id += 1) {
+        const response = await postUnix(socketPath, `Bearer ${token}`, {
           jsonrpc: '2.0',
           id,
           method: 'tools/call',
@@ -593,22 +581,37 @@ it('delivers linked agent messages automatically until a renewal card is needed'
             arguments: { targetSessionId: 's2', message: `Question ${id}` },
           },
         });
-        expect(retry.status).toBe(200);
-        expect(harness.approvals).toHaveLength(0);
-        expect(harness.dispatches).toHaveLength(6);
+        expect(response.status).toBe(200);
+        expect(
+          (JSON.parse(response.body) as { result: { isError?: boolean } }).result.isError,
+        ).toBeUndefined();
+        if (id === 6) {
+          const retry = await postUnix(socketPath, `Bearer ${token}`, {
+            jsonrpc: '2.0',
+            id,
+            method: 'tools/call',
+            params: {
+              name: 'verity_send_session_message',
+              arguments: { targetSessionId: 's2', message: `Question ${id}` },
+            },
+          });
+          expect(retry.status).toBe(200);
+          expect(harness.approvals).toHaveLength(0);
+          expect(harness.dispatches).toHaveLength(6);
+        }
       }
-    }
-  });
-  expect(harness.dispatches).toHaveLength(7);
-  expect(
-    harness.approvals.filter((approval) => approval.toolName === 'verity_send_session_message'),
-  ).toHaveLength(1);
-  expect(harness.dispatches[0]).toMatchObject({
-    sessionId: 's2',
-    dispatchOpts: { peer: { sessionId: 's1', projectId: 'p1', message: 'Question 1' } },
-  });
-  expect(harness.dispatches[0]?.prompt).toContain('agent-to-agent material');
-});
+    });
+    expect(harness.dispatches).toHaveLength(7);
+    expect(
+      harness.approvals.filter((approval) => approval.toolName === 'verity_send_session_message'),
+    ).toHaveLength(1);
+    expect(harness.dispatches[0]).toMatchObject({
+      sessionId: 's2',
+      dispatchOpts: { peer: { sessionId: 's1', projectId: 'p1', message: 'Question 1' } },
+    });
+    expect(harness.dispatches[0]?.prompt).toContain('agent-to-agent material');
+  },
+);
 
 it('hands a linked message for a sleeping project to the turn that wakes it', async () => {
   const harness = build({ linkedTools: true });

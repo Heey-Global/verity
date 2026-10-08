@@ -63,9 +63,13 @@ export function registerSessionLinkRoutes(app: FastifyInstance, store: EventStor
       reply.code(404);
       return { error: 'session not found' };
     }
-    if (!source.projectId || !target.projectId || source.projectId === target.projectId) {
+    if (id === targetSessionId) {
       reply.code(400);
-      return { error: 'choose a session in another project' };
+      return { error: 'choose a different session' };
+    }
+    if (!source.projectId || !target.projectId) {
+      reply.code(400);
+      return { error: 'both sessions must belong to available projects' };
     }
     const [sourceProject, targetProject] = await Promise.all([
       store.getProject(source.projectId),

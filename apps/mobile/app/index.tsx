@@ -1,3 +1,4 @@
+import { isLinkableSession } from '../lib/sessionLinks';
 import { subscribeLiveRefresh } from '../lib/liveConnection';
 import { SessionIssueRef } from '../components/SessionIssueRef';
 import { SwipeableSessionRow } from '../components/SessionRowActions';
@@ -793,18 +794,7 @@ function SessionList({ client }: { client: VerityClient }) {
             .filter((project) => project.kind === 'local')
             .map((project) => ({ id: project.id, name: project.repo }))}
           linkableSessions={sessions
-            .filter(
-              (candidate) =>
-                candidate.projectId !== renaming.projectId &&
-                candidate.projectId !== null &&
-                candidate.resumable !== false &&
-                projects.some(
-                  (project) =>
-                    project.id === candidate.projectId &&
-                    project.state === 'active' &&
-                    project.kind !== 'control_plane',
-                ),
-            )
+            .filter((candidate) => isLinkableSession(candidate, renaming.sessionId, projects))
             .map((candidate) => ({
               id: candidate.sessionId,
               name: sessionLabel(candidate),
