@@ -83,3 +83,9 @@ test('protects bare domains and non-HTTP URLs while normalizing public product s
     'github.com/docs ftp://github.com git@github.com GitHub TestFlight',
   );
 });
+
+test('protects domain suffixes outside common public defaults from custom replacements', () => {
+  const rules = { enabled: true, terms: [{ term: 'Replacement', aliases: ['github', 'example'] }] };
+  const text = 'github.co example.technology example.xyz/path example.рф';
+  expect(correctVoiceText(text, rules)).toBe(text);
+});

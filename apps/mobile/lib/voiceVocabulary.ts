@@ -118,7 +118,7 @@ export function correctVoiceText(text: string, vocabulary: VoiceVocabulary): str
   // Code and address tokens must not be silently rewritten by vocabulary rules.
   const protectedRanges = [
     ...text.matchAll(
-      /```[\s\S]*?(?:```|$)|`[^`\n]*(?:`|$)|(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s]+|[\p{L}\p{N}_-]+(?:\.[\p{L}\p{N}_-]+)*\.(?:com|org|net|io|dev|app|edu|gov|de)(?:[/:?#][^\s]*)?|[\w.+-]+@[\w.-]+\.[\p{L}]+/giu,
+      /```[\s\S]*?(?:```|$)|`[^`\n]*(?:`|$)|(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s]+|[\p{L}\p{N}_-]+(?:\.[\p{L}\p{N}_-]+)*\.[\p{L}]{2,63}(?:[/:?#][^\s]*)?|[\w.+-]+@[\w.-]+\.[\p{L}]+/giu,
     ),
   ].map((match) => [match.index, match.index + match[0].length]);
   return text.replace(pattern, (match: string, offset: number) => {
