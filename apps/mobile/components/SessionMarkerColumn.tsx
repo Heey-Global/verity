@@ -13,13 +13,16 @@ import { Icon, type IconName } from './Icon';
 export type SessionMarker =
   | { kind: 'favorite' }
   | { kind: 'automation'; paused: boolean }
+  | { kind: 'linked' }
   | { kind: 'shared'; online: boolean };
 
 export function sessionMarkers({
   favorite,
   automation,
   shared,
+  linked = false,
 }: {
+  linked?: boolean;
   favorite: boolean;
   automation: 'enabled' | 'paused' | undefined;
   /** How far the preview reaches; `online` wins when both are shared. */
@@ -28,6 +31,7 @@ export function sessionMarkers({
   const markers: SessionMarker[] = [];
   if (favorite) markers.push({ kind: 'favorite' });
   if (automation) markers.push({ kind: 'automation', paused: automation === 'paused' });
+  if (linked) markers.push({ kind: 'linked' });
   if (shared) markers.push({ kind: 'shared', online: shared === 'online' });
   return markers;
 }
@@ -39,6 +43,7 @@ export function sessionMarkersLabel(markers: readonly SessionMarker[]): string {
       if (marker.kind === 'favorite') return 'favorite';
       if (marker.kind === 'automation')
         return marker.paused ? 'automation paused' : 'automation active';
+      if (marker.kind === 'linked') return 'linked sessions';
       return marker.online ? 'shared online' : 'shared on the local network';
     })
     .join(', ');
@@ -47,13 +52,16 @@ export function sessionMarkersLabel(markers: readonly SessionMarker[]): string {
 export function markerIcon(marker: SessionMarker): IconName {
   if (marker.kind === 'favorite') return 'star';
   if (marker.kind === 'automation') return 'repeat';
+  if (marker.kind === 'linked') return 'link';
   return marker.online ? 'globe' : 'wifi';
 }
 
 export function SessionMarkerColumn({
   markers,
   previewUrl,
+  onOpenLinks,
 }: {
+  onOpenLinks?: () => void;
   markers: readonly SessionMarker[];
   /** Where the share entry leads; null while a public share has no origin yet. */
   previewUrl: string | null;
@@ -61,14 +69,19 @@ export function SessionMarkerColumn({
   const { theme } = useUnistyles();
   if (markers.length === 0) return null;
   return (
-    <View style={styles.column} testID="session-marker-column">
+    <View
+      style={[styles.column, markers.length === 4 ? styles.compact : null]}
+      testID="session-marker-column"
+    >
       {markers.map((marker) => {
         const color =
           marker.kind === 'favorite'
             ? theme.colors.accent
             : marker.kind === 'automation'
               ? theme.colors.primary
-              : theme.colors.tone.done;
+              : marker.kind === 'linked'
+                ? theme.colors.linked
+                : theme.colors.tone.done;
         const entry = (
           <View
             testID={`session-marker-${marker.kind}`}
@@ -82,6 +95,17 @@ export function SessionMarkerColumn({
             <View style={[styles.bar, { backgroundColor: color }]} />
           </View>
         );
+        if (marker.kind === 'linked')
+          return (
+            <Pressable
+              key={marker.kind}
+              onPress={onOpenLinks}
+              accessibilityRole="button"
+              accessibilityLabel="Open linked sessions"
+            >
+              {entry}
+            </Pressable>
+          );
         if (marker.kind !== 'shared') {
           return (
             <View
@@ -119,6 +143,7 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     gap: theme.spacing.xs,
   },
+  compact: { gap: 0 },
   entry: {
     height: 18,
     flexDirection: 'row',

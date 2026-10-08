@@ -27,6 +27,7 @@ const optionHeight = 48;
 
 type MoveResult = Awaited<ReturnType<VerityClient['moveSession']>>;
 export function SessionSettingsDialog({
+  initialSection,
   sessionId,
   sessionName,
   displayName,
@@ -41,6 +42,7 @@ export function SessionSettingsDialog({
   onChanged,
   onDelete,
 }: {
+  initialSection?: 'links';
   sessionId: string;
   sessionName: string | null;
   displayName: string;
@@ -76,6 +78,15 @@ export function SessionSettingsDialog({
     h: number;
     cardHeight: number;
   }>();
+  const settingsScrollRef = useRef<ScrollView>(null);
+  const linksOffset = useRef(0);
+  const openedLinks = useRef(false);
+  const scrollToLinks = () => {
+    if (initialSection === 'links' && !openedLinks.current && linksOffset.current > 0) {
+      settingsScrollRef.current?.scrollTo({ y: linksOffset.current, animated: false });
+      openedLinks.current = true;
+    }
+  };
   const cardRef = useRef<View>(null);
   const selectRef = useRef<View>(null);
   // A pending wait for the keyboard to hide; dropped whenever the list closes so
@@ -399,6 +410,8 @@ export function SessionSettingsDialog({
     <>
       {header(result ? 'Session moved' : 'Session settings', undefined)}
       <ScrollView
+        ref={settingsScrollRef}
+        onContentSizeChange={scrollToLinks}
         style={styles.body}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
@@ -516,7 +529,13 @@ export function SessionSettingsDialog({
                 original project.
               </Text>
             )}
-            <View style={styles.sectionHeaderRow}>
+            <View
+              style={styles.sectionHeaderRow}
+              onLayout={(event) => {
+                linksOffset.current = event.nativeEvent.layout.y;
+                scrollToLinks();
+              }}
+            >
               <Text style={styles.label} accessibilityRole="header">
                 Linked sessions
               </Text>
