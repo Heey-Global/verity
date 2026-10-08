@@ -105,6 +105,7 @@ export {
   planProposal,
   planProposalRevision,
   planProposalDisplay,
+  isPlanImplementationPermission,
   planProposalHeadline,
   planProposalContent,
   planProposalFullyRepresented,

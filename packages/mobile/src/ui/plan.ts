@@ -1,4 +1,9 @@
-import { PRESENT_PLAN_TOOL, planningToolName, parsePlanningProposal } from '@verity/events';
+import {
+  END_PLANNING_TOOL,
+  PRESENT_PLAN_TOOL,
+  planningToolName,
+  parsePlanningProposal,
+} from '@verity/events';
 
 import type { ToolCall } from '../happy/message.js';
 
@@ -145,5 +150,16 @@ export function planProposalFullyRepresented(markdown: string): boolean {
   const content = planProposalContent(markdown);
   return (
     normalize(markdown) === normalize([content.title, content.goal, ...content.steps].join('\n'))
+  );
+}
+
+/** A presented plan owns implementation approval; exiting without implementation keeps its prompt. */
+export function isPlanImplementationPermission(
+  pending: { tool: string; input: unknown } | null | undefined,
+): boolean {
+  return (
+    pending != null &&
+    planningToolName(pending.tool) === END_PLANNING_TOOL &&
+    record(pending.input)?.action !== 'discard'
   );
 }

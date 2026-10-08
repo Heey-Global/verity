@@ -46,6 +46,7 @@ import {
   planProposal,
   planProposalRevision,
   planProposalDisplay,
+  isPlanImplementationPermission,
   planProposalHeadline,
   planProposalContent,
   planningToolName,
@@ -3403,10 +3404,15 @@ export function SessionChat({
   }, [session.messages]);
   const implementPlan = useCallback(
     (revision?: number) => {
-      decidePlanning('implement', revision);
+      const pending = session.pendingPermission;
+      if (pending && isPlanImplementationPermission(pending)) {
+        decidePermission(pending.toolUseId, { behavior: 'allow' });
+      } else {
+        decidePlanning('implement', revision);
+      }
       scrollToLatest(true);
     },
-    [decidePlanning, scrollToLatest],
+    [decidePermission, decidePlanning, scrollToLatest, session.pendingPermission],
   );
   const dismissPlan = useCallback(() => {
     Alert.alert('Cancel this plan?', 'The plan stays in the chat. Nothing is implemented.', [
@@ -3414,10 +3420,16 @@ export function SessionChat({
       {
         text: 'Cancel plan',
         style: 'destructive',
-        onPress: () => decidePlanning('discard', planningRevision),
+        onPress: () => {
+          const pending = session.pendingPermission;
+          if (pending && isPlanImplementationPermission(pending)) {
+            decidePermission(pending.toolUseId, { behavior: 'deny' });
+          }
+          decidePlanning('discard', planningRevision);
+        },
       },
     ]);
-  }, [decidePlanning, planningRevision]);
+  }, [decidePermission, decidePlanning, planningRevision, session.pendingPermission]);
   const actions = useMemo<SessionActions>(
     () => ({
       sendTurn: sendQuickReply,
@@ -4394,7 +4406,12 @@ export function SessionChat({
           tool, render an approve/deny prompt above the input. Sits below the
           transcript so it reads as "the agent is waiting on YOU", and POSTs the
           decision back. Hidden once answered (the stream clears `pendingPermission`). */}
-      {session.pendingPermission ? (
+      {session.pendingPermission &&
+      !(
+        planning === 'active' &&
+        planningPlan != null &&
+        isPlanImplementationPermission(session.pendingPermission)
+      ) ? (
         <PermissionPrompt
           pending={session.pendingPermission}
           deciding={decidingPermission === session.pendingPermission.toolUseId}
@@ -4466,7 +4483,11 @@ export function SessionChat({
           )}
           markdown={planningPlan}
           updated={planUpdated}
-          deciding={decidingPlanning}
+          deciding={
+            decidingPlanning ||
+            (isPlanImplementationPermission(session.pendingPermission) &&
+              decidingPermission === session.pendingPermission?.toolUseId)
+          }
           disabled={dead || planningRevision === undefined}
           error={planningError}
           onDismiss={dismissPlan}
@@ -7523,7 +7544,7 @@ function PlanProposalCard({
   const status = !latest
     ? 'Earlier version'
     : planning === 'implemented'
-      ? 'Implemented'
+      ? 'Approved'
       : planning === 'discarded'
         ? 'Cancelled'
         : null;
