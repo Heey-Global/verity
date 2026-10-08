@@ -825,7 +825,7 @@ most memory. A tree is ranked by the memory of all its processes, because a
 worker pool respawns a single killed worker. Under a session the guard narrows
 to the command the agent ran — the tool shell with `npm test`, the test runner
 and its workers — whenever that command holds most of the memory, so the agent
-CLI goes only when it is itself the consumer, and the ACP adapter never does. A
+CLI goes only when it is itself the consumer, and the ACP adapter the broker started never does. A
 process tree detached under init (a backgrounded dev server or database) is a
 candidate of its own. If a kill does not lower usage by at least a quarter of what
 the victim held, the guard assumes the memory is page cache or tmpfs that no
