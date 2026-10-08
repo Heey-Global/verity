@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.26.0](https://github.com/Heey-Global/verity/compare/v4.25.3...v4.26.0) (2026-10-08)
+
+
+### Features
+
+* **mobile:** reorder sessions within projects by long press ([#1323](https://github.com/Heey-Global/verity/issues/1323)) ([98c77f3](https://github.com/Heey-Global/verity/commit/98c77f30a6f92203cf48a5cc506e598309193d9e))
+* **sessions:** allow linking sessions in the same project ([#1317](https://github.com/Heey-Global/verity/issues/1317)) ([c366cf3](https://github.com/Heey-Global/verity/commit/c366cf3749b2621a3de769e1761122a310192457))
+
+
+### Bug Fixes
+
+* **broker:** remove sandbox GitHub token issuance ([#1314](https://github.com/Heey-Global/verity/issues/1314)) ([799c268](https://github.com/Heey-Global/verity/commit/799c2689e6f14c5f2c0e065493fcc13c3cc19f01))
+* **sandbox:** kill the largest agent command before gVisor's host OOM kill ([#1322](https://github.com/Heey-Global/verity/issues/1322)) ([3be664e](https://github.com/Heey-Global/verity/commit/3be664e9126103d028915f386834ddbf239d0e08))
+* **session:** stabilize cancellation, activity and unread indicators ([#1316](https://github.com/Heey-Global/verity/issues/1316)) ([59f357b](https://github.com/Heey-Global/verity/commit/59f357b2e41095590e581e1745118cec6ac78dc7))
+
 ## [4.25.3](https://github.com/Heey-Global/verity/compare/v4.25.2...v4.25.3) (2026-10-07)
 
 
