@@ -87,7 +87,13 @@ function migrateAppDelegate(contents) {
         '  var window: UIWindow?',
         '  var window: UIWindow?\n  var sceneLaunchOptions: [UIApplication.LaunchOptionsKey: Any]?',
       )
-      .replace(LEGACY_START, '    sceneLaunchOptions = launchOptions') + SCENE_DELEGATE
+      // iOS launches the app without a scene to deliver Apple Watch captures, and
+      // React Native only starts with a scene: the native inbox must be listening
+      // from launch (native/VerityWatchInbox.swift).
+      .replace(
+        LEGACY_START,
+        '    sceneLaunchOptions = launchOptions\n    VerityWatchInbox.shared.activate()',
+      ) + SCENE_DELEGATE
   );
 }
 

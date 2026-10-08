@@ -5279,6 +5279,7 @@ describe('changed-area detector', () => {
       expect.arrayContaining([
         'apps/mobile/app.config.ts',
         'apps/mobile/native/**',
+        'apps/mobile/targets/**',
         'apps/mobile/package.json',
         'package-lock.json',
         'scripts/mobile-native-lock-changes.mjs',

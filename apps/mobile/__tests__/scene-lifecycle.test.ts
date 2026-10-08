@@ -84,6 +84,21 @@ describe('iOS scene lifecycle', () => {
     }
   });
 
+  // The silent failure: iOS launches Verity without a scene to deliver a watch
+  // recording, React Native never starts, and nobody receives the file.
+  it('activates the watch inbox at launch, outside the scene', async () => {
+    const native = readFileSync(resolve(__dirname, '../native/VerityWatchInbox.swift'), 'utf8');
+    const inbox = native.match(/final class (\w+): NSObject, WCSessionDelegate/)?.[1];
+    expect(inbox).toBeDefined();
+    expect(native).toContain('static let shared');
+    const { swift } = await generate();
+    const launch = swift.slice(
+      swift.indexOf('didFinishLaunchingWithOptions launchOptions'),
+      swift.indexOf('return super.application(application, didFinishLaunchingWithOptions'),
+    );
+    expect(launch).toContain(`${inbox}.shared.activate()`);
+  });
+
   it('is idempotent and rejects template drift rather than retaining legacy startup', async () => {
     const { swift } = await generate();
     expect((await generate(swift)).swift).toBe(swift);

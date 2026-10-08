@@ -61,6 +61,9 @@ export class TaskQueue {
   create(task: Task, body: TaskCapture): Promise<void> {
     return this.serial(async () => {
       if (!this.deps.active()) throw new Error('Sign in again before saving');
+      // A capture handed over again with its original id (a watch recording
+      // redelivered after a crash) is already here; a second row would sync twice.
+      if (this.state.tasks.some((existing) => existing.id === task.id)) return;
       await this.commit({
         ...this.state,
         tasks: [...this.state.tasks, task],

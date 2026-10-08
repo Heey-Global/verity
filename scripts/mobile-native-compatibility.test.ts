@@ -84,6 +84,7 @@ describe('mobile native compatibility', () => {
 
   it.each([
     'apps/mobile/native/Drop.swift',
+    'apps/mobile/targets/watch/CaptureStore.swift',
     'apps/mobile/plugins/withConfig.js',
     'apps/mobile/patches/fix.patch',
     'scripts/prepare-mobile-eas-build.mjs',

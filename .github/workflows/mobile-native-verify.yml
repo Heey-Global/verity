@@ -18,6 +18,7 @@ on:
       - 'apps/mobile/package.json'
       - 'apps/mobile/patches/**'
       - 'apps/mobile/plugins/**'
+      - 'apps/mobile/targets/**'
       # OTA promotion only moves an already-published EAS branch. It neither
       # changes nor rebuilds the native app.
       - 'package.json'

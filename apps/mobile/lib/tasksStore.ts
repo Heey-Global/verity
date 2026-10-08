@@ -84,7 +84,12 @@ export async function refreshTasks(force = false): Promise<void> {
   await ready;
   await queue?.sync(force);
 }
-export async function captureTask(body: TaskCapture): Promise<Task> {
+/** `id` and `createdAt` come from captures made elsewhere (the Apple Watch): the
+ *  stable id makes a repeated hand-over idempotent locally and on the server. */
+export async function captureTask(
+  body: TaskCapture,
+  origin: { id?: string; createdAt?: string } = {},
+): Promise<Task> {
   switchScope();
   const startedScope = scope;
   await ready;
@@ -92,7 +97,7 @@ export async function captureTask(body: TaskCapture): Promise<Task> {
   if (!queue) throw new Error('Sign in to save tasks');
   const now = new Date().toISOString();
   const task: Task = {
-    id: randomUUID(),
+    id: origin.id ?? randomUUID(),
     title: body.title,
     projectId: body.projectId,
     sourceSessionId: body.sourceSessionId ?? null,
@@ -108,7 +113,7 @@ export async function captureTask(body: TaskCapture): Promise<Task> {
     result: null,
     sort: 0,
     revision: 0,
-    createdAt: now,
+    createdAt: origin.createdAt ?? now,
     updatedAt: now,
     completedAt: null,
   };

@@ -45,6 +45,7 @@ import { getVerityBaseUrl } from '../lib/client';
 import { useCallback } from 'react';
 import { QuickCaptureCard } from './QuickCaptureCard';
 import { QuickCaptureIntro } from './QuickCaptureIntro';
+import { startWatchInbox } from '../lib/watchCapture';
 import { TasksPanel } from './TasksPanel';
 
 /** Bubble diameter; half of it sits outside the screen edge. */
@@ -215,6 +216,8 @@ export function QuickCaptureBubble() {
     [position, squash, width, height, top, bottom, preferences.side, preferences.fraction],
   );
   useEffect(() => startTasksStore(), []);
+  // Apple Watch captures land in the same queue once the store is running.
+  useEffect(() => startWatchInbox(), []);
   useEffect(() => {
     const load = async () => {
       const generation = ++loadGeneration.current;

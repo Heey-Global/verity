@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, AppState, Linking } from 'react-native';
+import { Alert, AppState, Linking, Share } from 'react-native';
 import {
   SettingsGroup,
   SettingsListPanel,
@@ -14,6 +14,12 @@ import {
   screenshotAccess,
   type ScreenshotAccess,
 } from '../../lib/taskScreenshot';
+import {
+  watchBridgeAvailable,
+  watchInboxLog,
+  watchStatus,
+  type WatchStatus,
+} from '../../lib/watchCapture';
 
 const ACCESS_LABEL: Record<ScreenshotAccess, string> = {
   granted: 'Allowed',
@@ -21,6 +27,18 @@ const ACCESS_LABEL: Record<ScreenshotAccess, string> = {
   denied: 'Not allowed',
   unavailable: 'Unavailable on this device',
 };
+
+function watchLabel(status: WatchStatus): string {
+  if (!status.supported) return 'Unavailable on this device';
+  if (!status.paired) return 'No watch paired';
+  if (!status.watchAppInstalled) return 'Verity not installed on the watch';
+  return status.reachable ? 'Connected' : 'Installed, not reachable now';
+}
+
+async function shareWatchLog(): Promise<void> {
+  const lines = await watchInboxLog();
+  await Share.share({ message: lines.length ? lines.join('\n') : 'No watch captures yet.' });
+}
 
 function save(patch: Parameters<typeof saveTaskPreferences>[0]): void {
   void saveTaskPreferences(patch).catch((error: unknown) =>
@@ -31,12 +49,17 @@ function save(patch: Parameters<typeof saveTaskPreferences>[0]): void {
 export default function TasksSettingsScreen() {
   const preferences = useTaskPreferences();
   const [access, setAccess] = useState<ScreenshotAccess | null>(null);
+  const [watch, setWatch] = useState<WatchStatus | null>(null);
   useEffect(() => {
     let active = true;
     const refresh = () => {
       void screenshotAccess().then((next) => {
         if (active) setAccess(next);
       });
+      if (watchBridgeAvailable)
+        void watchStatus().then((next) => {
+          if (active) setWatch(next);
+        });
     };
     refresh();
     const subscription = AppState.addEventListener('change', (state) => {
@@ -101,6 +124,35 @@ export default function TasksSettingsScreen() {
           </SettingsListPanel>
         ) : null}
       </SettingsGroup>
+      {watch ? (
+        <SettingsGroup
+          title="Apple Watch"
+          description="Record on the watch; your iPhone transcribes the audio and saves it as a task. Prototype."
+        >
+          <SettingsListPanel>
+            <SettingsNavRow
+              icon="watch"
+              title="Watch app"
+              value={watchLabel(watch)}
+              onPress={() => void watchStatus().then(setWatch)}
+              accessibilityLabel={`Watch app, ${watchLabel(watch)}`}
+            />
+            <SettingsNavRow
+              icon="share"
+              title="Share watch log"
+              subtitle="Receive and transcription timings"
+              onPress={() =>
+                void shareWatchLog().catch((error: unknown) =>
+                  Alert.alert(
+                    'Could not share log',
+                    error instanceof Error ? error.message : 'Try again',
+                  ),
+                )
+              }
+            />
+          </SettingsListPanel>
+        </SettingsGroup>
+      ) : null}
       <SettingsGroup title="Position">
         <SettingsListPanel>
           <SettingsNavRow
