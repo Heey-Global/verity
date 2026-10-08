@@ -15,11 +15,9 @@
  */
 
 /** Ordered list of credential patterns. Each match is replaced wholesale by
- *  {@link REDACTED}. Anchored on distinctive prefixes / armored blocks to keep
+ *  {@link REDACTED}. Anchored on distinctive prefixes to keep
  *  false positives negligible on ordinary transcript text. */
 const SECRET_PATTERNS: RegExp[] = [
-  // Armored private keys (OpenSSH / PEM RSA / EC / PGP) — match the whole block.
-  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/g,
   // Anthropic / Claude keys: sk-ant-oat01-…, sk-ant-api03-…
   /sk-ant-[a-z0-9-]{8,}/gi,
   // GitHub tokens: ghp_/gho_/ghu_/ghs_/ghr_ + fine-grained github_pat_…
@@ -38,6 +36,25 @@ const SECRET_PATTERNS: RegExp[] = [
 /** The placeholder a matched secret is replaced with. */
 export const REDACTED = '[REDACTED]';
 
+/** Repeated opening markers must not restart a search through the remaining body. */
+function redactPrivateKeys(text: string): string {
+  const markers = /-----(BEGIN|END) [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/gu;
+  const parts: string[] = [];
+  let start: number | undefined;
+  let cursor = 0;
+  for (const match of text.matchAll(markers)) {
+    if (match[1] === 'BEGIN') {
+      start ??= match.index;
+    } else if (start !== undefined) {
+      parts.push(text.slice(cursor, start), REDACTED);
+      cursor = match.index + match[0].length;
+      start = undefined;
+    }
+  }
+  parts.push(text.slice(cursor));
+  return parts.join('');
+}
+
 /**
  * Replace any recognized credential in `text` with {@link REDACTED}. Safe to run
  * over a JSON-serialized event payload: token characters never include JSON
@@ -45,7 +62,7 @@ export const REDACTED = '[REDACTED]';
  * the surrounding JSON valid. Returns the input unchanged when nothing matches.
  */
 export function redactSecrets(text: string): string {
-  let out = text;
+  let out = redactPrivateKeys(text);
   for (const pattern of SECRET_PATTERNS) {
     out = out.replace(pattern, REDACTED);
   }

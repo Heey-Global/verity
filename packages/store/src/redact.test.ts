@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { REDACTED, redactSecrets, redactProcessStderr } from './redact.js';
 
@@ -42,6 +43,36 @@ describe('redactSecrets (M9)', () => {
     const out = redactSecrets(`before\n${key}\nafter`);
     expect(out).toBe(`before\n${REDACTED}\nafter`);
     expect(out).not.toContain('notarealkeybody');
+  });
+
+  it('handles repeated opening markers with no closing marker without rescanning the body', () => {
+    const begin = ['-----BEGIN', 'PRIVATE KEY-----'].join(' ');
+    const text = begin.repeat(50_000);
+    const run = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `
+      const { redactSecrets } = await import(process.argv[1]);
+      const begin = ['-----BEGIN', 'PRIVATE KEY-----'].join(' ');
+      const text = begin.repeat(50_000);
+      if (redactSecrets(text) !== text) process.exit(1);
+    `,
+        new URL('./redact.ts', import.meta.url).href,
+      ],
+      { timeout: 5_000, encoding: 'utf8' },
+    );
+    expect(run.error).toBeUndefined();
+    expect(run.status, run.stderr).toBe(0);
+    expect(redactProcessStderr(text)).toBe('[truncated stderr line omitted]');
+  });
+
+  it('redacts repeated openings and consecutive complete key blocks', () => {
+    const begin = ['-----BEGIN', 'PRIVATE KEY-----'].join(' ');
+    const end = ['-----END', 'PRIVATE KEY-----'].join(' ');
+    const text = `before${begin.repeat(1_000)}body${end}between${begin}body${end}after`;
+    expect(redactSecrets(text)).toBe(`before${REDACTED}between${REDACTED}after`);
   });
 
   it('redacts a secret embedded in a JSON-serialized payload, keeping it valid JSON', () => {

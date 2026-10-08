@@ -29341,8 +29341,6 @@ var AcpTextStream = class _AcpTextStream {
 
 // packages/store/dist/redact.js
 var SECRET_PATTERNS = [
-  // Armored private keys (OpenSSH / PEM RSA / EC / PGP) — match the whole block.
-  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/g,
   // Anthropic / Claude keys: sk-ant-oat01-…, sk-ant-api03-…
   /sk-ant-[a-z0-9-]{8,}/gi,
   // GitHub tokens: ghp_/gho_/ghu_/ghs_/ghr_ + fine-grained github_pat_…
@@ -29358,8 +29356,25 @@ var SECRET_PATTERNS = [
   /sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g
 ];
 var REDACTED = "[REDACTED]";
+function redactPrivateKeys(text) {
+  const markers = /-----(BEGIN|END) [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/gu;
+  const parts = [];
+  let start;
+  let cursor = 0;
+  for (const match of text.matchAll(markers)) {
+    if (match[1] === "BEGIN") {
+      start ??= match.index;
+    } else if (start !== void 0) {
+      parts.push(text.slice(cursor, start), REDACTED);
+      cursor = match.index + match[0].length;
+      start = void 0;
+    }
+  }
+  parts.push(text.slice(cursor));
+  return parts.join("");
+}
 function redactSecrets(text) {
-  let out = text;
+  let out = redactPrivateKeys(text);
   for (const pattern of SECRET_PATTERNS) {
     out = out.replace(pattern, REDACTED);
   }
