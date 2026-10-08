@@ -108,6 +108,7 @@ import {
   toolCallView,
   planHeadline,
   type PlanView,
+  type PullRequestBlockReason,
   trustedCliUnlockCandidate,
   type AgentEventTone,
   type FrozenTranscriptTail,
@@ -8975,7 +8976,7 @@ function PullRequestBar({
   // Static on purpose: the waiting states show their spinner on the button, and a
   // second animation beside it only competed with it.
   const statusColor =
-    button.kind === 'blocked'
+    button.kind === 'blocked' || (button.kind === 'closed' && pullRequest.pipeline === 'failure')
       ? theme.colors.tone.danger
       : button.kind === 'waiting'
         ? theme.colors.tone.idle
@@ -8983,20 +8984,23 @@ function PullRequestBar({
           ? theme.colors.tone.attention
           : theme.colors.tone.done;
   const conflictTarget = pullRequest.baseRef ?? 'the base branch';
+  const prNumber = String(pullRequest.number);
+  const blockedLabels: Record<PullRequestBlockReason, string> = {
+    rejected: `Merge blocked because GitHub rejected pull request ${prNumber}`,
+    conflict: `Merge blocked because pull request ${prNumber} conflicts with ${conflictTarget}`,
+    ci_failed: `Merge blocked because CI failed for pull request ${prNumber}`,
+    blocked: `Merge blocked for pull request ${prNumber}`,
+  };
   const buttonLabel =
-    button.kind === 'merge' || button.kind === 'merging'
-      ? `Merge pull request ${String(pullRequest.number)}`
+    button.kind === 'blocked'
+      ? blockedLabels[button.reason]
       : button.kind === 'refresh'
-        ? `Refresh status of pull request ${String(pullRequest.number)}`
+        ? `Refresh status of pull request ${prNumber}`
         : button.kind === 'waiting'
-          ? `Merge unavailable for pull request ${String(pullRequest.number)}: ${checksText}`
-          : mergeRejected
-            ? `Merge blocked because GitHub rejected pull request ${String(pullRequest.number)}`
-            : button.label === 'Conflict'
-              ? `Merge blocked because pull request ${String(pullRequest.number)} conflicts with ${conflictTarget}`
-              : button.label === 'CI failed'
-                ? `Merge blocked because CI failed for pull request ${String(pullRequest.number)}`
-                : `Merge blocked for pull request ${String(pullRequest.number)}`;
+          ? `Merge unavailable for pull request ${prNumber}: ${checksText}`
+          : button.kind === 'closed'
+            ? `Pull request ${prNumber} is ${pullRequest.phase}`
+            : `Merge pull request ${prNumber}`;
 
   useEffect(() => {
     return () => {
@@ -9098,7 +9102,7 @@ function PullRequestBar({
                 <ActivityIndicator size="small" color={theme.colors.textMuted} />
                 <Text style={styles.prMergeWaitingText}>{button.label}</Text>
               </View>
-            ) : (
+            ) : button.kind === 'closed' ? null : (
               <Text style={button.kind === 'refresh' ? styles.prRefreshText : styles.prMergeText}>
                 {button.label}
               </Text>

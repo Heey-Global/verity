@@ -147,21 +147,23 @@ describe('pullRequestMergeButton', () => {
   it('names the cause of a block', () => {
     expect(pullRequestMergeButton(pr({ pipeline: 'unknown', mergeState: 'dirty' }), idle)).toEqual({
       kind: 'blocked',
+      reason: 'conflict',
       label: 'Conflict',
     });
     expect(pullRequestMergeButton(pr({ pipeline: 'failure' }), idle)).toEqual({
       kind: 'blocked',
+      reason: 'ci_failed',
       label: 'CI failed',
     });
     expect(
       pullRequestMergeButton(pr({ pipeline: 'success', checks: green, mergeable: false }), idle),
-    ).toEqual({ kind: 'blocked', label: 'Blocked' });
+    ).toEqual({ kind: 'blocked', reason: 'blocked', label: 'Blocked' });
     expect(
       pullRequestMergeButton(pr({ pipeline: 'success', checks: green, mergeable: true }), {
         merging: false,
         mergeRejected: true,
       }),
-    ).toEqual({ kind: 'blocked', label: 'Blocked' });
+    ).toEqual({ kind: 'blocked', reason: 'rejected', label: 'Blocked' });
   });
 
   it('offers a refresh when GitHub reported neither checks nor a merge verdict', () => {
@@ -177,6 +179,22 @@ describe('pullRequestMergeButton', () => {
       expect(
         pullRequestMergeButton(pr({ pipeline, checks: none, mergeable: true }), idle).kind,
       ).toBe('merge');
+  });
+
+  it('lets GitHub merge past a failing check it does not require', () => {
+    const unstable = pr({ pipeline: 'failure', mergeable: true, mergeState: 'unstable' });
+    expect(pullRequestMergeButton(unstable, idle).kind).toBe('merge');
+    // A required failure leaves the PR `blocked`, even though `mergeable` stays true.
+    const required = pr({ pipeline: 'failure', mergeable: true, mergeState: 'blocked' });
+    expect(pullRequestMergeButton(required, idle)).toMatchObject({ reason: 'ci_failed' });
+  });
+
+  it('treats a merged or closed PR as finished, not blocked', () => {
+    // A blocked verdict there would paint a successfully merged PR's status red.
+    for (const phase of ['merged', 'closed'] as const)
+      expect(pullRequestMergeButton(pr({ phase, pipeline: 'success' }), idle)).toEqual({
+        kind: 'closed',
+      });
   });
 
   it('defers to an in-flight merge over every other state', () => {

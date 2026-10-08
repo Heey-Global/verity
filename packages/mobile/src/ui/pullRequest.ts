@@ -80,25 +80,44 @@ export function pullRequestStatusText(pr: PullRequestStatusView): string {
  * own (checks pending or running, GitHub computing mergeability): the button carries
  * the spinner, so nothing else on the screen has to pulse. `blocked` names its cause
  * so the button never just says "no" while the reason sits in a different line.
+ * `closed` is a terminal PR, which has nothing left to merge.
  */
+export type PullRequestBlockReason = 'rejected' | 'conflict' | 'ci_failed' | 'blocked';
+
 export type PullRequestMergeButton =
   | { kind: 'merge'; label: 'Merge' }
   | { kind: 'merging' }
   | { kind: 'waiting'; label: string }
-  | { kind: 'blocked'; label: string }
-  | { kind: 'refresh'; label: 'Refresh' };
+  | { kind: 'blocked'; reason: PullRequestBlockReason; label: string }
+  | { kind: 'refresh'; label: 'Refresh' }
+  | { kind: 'closed' };
+
+const BLOCK_LABELS: Record<PullRequestBlockReason, string> = {
+  rejected: 'Blocked',
+  conflict: 'Conflict',
+  ci_failed: 'CI failed',
+  blocked: 'Blocked',
+};
+
+const blocked = (reason: PullRequestBlockReason): PullRequestMergeButton => ({
+  kind: 'blocked',
+  reason,
+  label: BLOCK_LABELS[reason],
+});
 
 export function pullRequestMergeButton(
   pr: PullRequestStatusView,
   state: { merging: boolean; mergeRejected: boolean },
 ): PullRequestMergeButton {
   if (state.merging) return { kind: 'merging' };
-  if (pr.phase !== 'open') {
-    return { kind: 'blocked', label: pr.phase === 'merged' ? 'Merged' : 'Closed' };
+  if (pr.phase !== 'open') return { kind: 'closed' };
+  if (state.mergeRejected) return blocked('rejected');
+  if (isPullRequestConflicted(pr)) return blocked('conflict');
+  // A failing check that is not required leaves the PR `unstable`, and GitHub still
+  // merges it; only a failure GitHub enforces blocks the button.
+  if (pr.pipeline === 'failure' && !(pr.mergeable === true && pr.mergeState === 'unstable')) {
+    return blocked('ci_failed');
   }
-  if (state.mergeRejected) return { kind: 'blocked', label: 'Blocked' };
-  if (isPullRequestConflicted(pr)) return { kind: 'blocked', label: 'Conflict' };
-  if (pr.pipeline === 'failure') return { kind: 'blocked', label: 'CI failed' };
   if (pr.pipeline === 'pending' || pr.pipeline === 'running') {
     return pr.checks.total === 0
       ? { kind: 'waiting', label: 'Waiting…' }
@@ -110,7 +129,7 @@ export function pullRequestMergeButton(
   // GitHub's own merge verdict outranks a CI status it could not report: a repository
   // without checks still merges, and a confirmed block is still a block.
   if (pr.mergeable === true) return { kind: 'merge', label: 'Merge' };
-  if (pr.mergeable === false) return { kind: 'blocked', label: 'Blocked' };
+  if (pr.mergeable === false) return blocked('blocked');
   if (pr.pipeline === 'unknown') return { kind: 'refresh', label: 'Refresh' };
   return { kind: 'waiting', label: 'Checking…' };
 }
