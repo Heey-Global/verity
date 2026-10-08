@@ -242,7 +242,7 @@ the same place and are explained in the [connections guide](connections.md).
 | "Could not reach the server address in this pairing code"                    | Your device cannot reach the address you chose during installation. Connect it to the same network or to Tailscale, then run the installer again to get a new pairing link.   |
 | "Invalid pairing code" or the code is more than 15 minutes old               | Run the install command again, choose "Repair this installation", and use the new link it prints.                                                                             |
 | The AI provider sign-in never completes                                      | Tap "Copy code again" and paste the code on the provider's page in the browser that opened. Make sure you signed in to the account that holds the subscription.               |
-| "Incorrect password" after a restart                                         | The master password is the one you created in step 3. Verity cannot reset it; without it, the stored provider logins must be connected again after a reinstall.               |
+| "Incorrect password" after a restart                                         | The master password is the one you created in step 3. Verity cannot reset it. Without it, the only way forward is a reinstall, which deletes all projects, sessions, and stored secrets. |
 | The project stays in "preparing" for a long time                             | The first sandbox downloads a large image. Wait a few minutes. On a server with 8 GB of memory, lower the sandbox limit as described in the deployment guide.                 |
 
 If you are stuck, open an issue at

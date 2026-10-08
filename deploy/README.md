@@ -204,8 +204,8 @@ warning on an untrusted network has no protection against interception for
 that visit, so the first browser sign-in belongs on a trusted network or VPN.
 Sign-in on the "Connect this browser" page accepts the
 installer's `verity://pair?` line or a pairing link created from an already
-paired device, then asks for the master password and issues a private session
-cookie for that browser. A browser can therefore be the first paired client.
+paired device, then creates or asks for the master password and issues a
+private session cookie for that browser. A browser can therefore be the first paired client.
 Browsers sign out and create invitations for further browsers under
 Settings → Devices.
 
