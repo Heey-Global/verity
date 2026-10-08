@@ -35,7 +35,7 @@ export interface MeetingRecord {
   syncedRevision?: number;
 }
 
-export interface SpeakerNameSuggestion {
+interface SpeakerNameSuggestion {
   speaker: number;
   name: string;
   quote: string;
