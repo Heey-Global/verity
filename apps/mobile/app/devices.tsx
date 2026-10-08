@@ -1,5 +1,5 @@
-// Devices: the paired phones, tablets and Macs that hold a bearer token for
-// this server, plus the pairing code that adds one more.
+// Devices & Web Browsers: the paired phones, tablets, Macs and browsers that
+// hold access to this server, plus the pairing link that adds one more.
 //
 // Reached from Settings and dressed in the same chrome as the screens under
 // /settings: the scaffold, grouped sections and list rows all come from
@@ -10,7 +10,16 @@ import type { PairedDevice, VerityClient } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
-import { ActivityIndicator, Alert, Platform, Pressable, Text, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Linking,
+  Platform,
+  Pressable,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
 import { useUnistyles } from 'react-native-unistyles';
 
@@ -24,7 +33,7 @@ import {
 } from '../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../components/settings/settingsStyles';
 import { StatusPill } from '../components/StatusPill';
-import { createVerityClient } from '../lib/client';
+import { createVerityClient, getVerityBaseUrl } from '../lib/client';
 import { deviceActivityLabel } from '../lib/deviceActivity';
 import { createPairingUri } from '../lib/pairing';
 import { getBrowserSession, logoutBrowser } from '../lib/browserSession';
@@ -34,6 +43,7 @@ import { setVeritySettingsError } from '../lib/settingsStore';
 /** Pick the row glyph from the label the device reported when it paired. */
 function iconForDevice(label: string | null): IconName {
   if (label === null) return 'smartphone';
+  if (/browser|safari|chrome|firefox|edge/iu.test(label)) return 'globe';
   if (/ipad|tablet/iu.test(label)) return 'tablet';
   if (/mac|desktop|laptop/iu.test(label)) return 'monitor';
   return 'smartphone';
@@ -41,14 +51,25 @@ function iconForDevice(label: string | null): IconName {
 
 type RenameOutcome = 'submitted' | 'pending' | 'noop';
 
+type AccessTab = 'app' | 'browser';
+const ACCESS_TABS: readonly { id: AccessTab; label: string; icon: IconName }[] = [
+  { id: 'app', label: 'App', icon: 'smartphone' },
+  { id: 'browser', label: 'Web Browser', icon: 'globe' },
+];
+
+/** The browser client is served under `/app/` on the same origin as the API. */
+function webAppAddress(base: string): string {
+  return `${base.replace(/\/+$/u, '')}/app/`;
+}
+
 export default function DevicesScreen() {
   const client = useMemo(() => createVerityClient(), []);
   if (!client) {
     return (
       <SettingsMessage
         title="Not connected"
-        subtitle="Configure your Verity server address in setup to manage paired devices."
-        screenTitle="Devices"
+        subtitle="Configure your Verity server address in setup to manage devices and web browsers."
+        screenTitle="Devices & Web Browsers"
       />
     );
   }
@@ -61,7 +82,12 @@ function DevicesView({ client }: { client: VerityClient }) {
   const [pairingInvitation, setPairingInvitation] = useState<{
     link: string;
     expiresAt: number;
+    minutes: number;
+    webAddress: string;
   } | null>(null);
+  // A browser is most likely inviting another browser; the app most likely
+  // another device of its own kind.
+  const [tab, setTab] = useState<AccessTab>(Platform.OS === 'web' ? 'browser' : 'app');
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const renameQueues = useRef(new Map<string, Promise<void>>());
@@ -157,6 +183,12 @@ function DevicesView({ client }: { client: VerityClient }) {
                   expiresAt: invitation.expiresAt,
                 }),
           expiresAt,
+          minutes: Math.max(1, Math.round((expiresAt - Date.now()) / 60_000)),
+          webAddress: webAppAddress(
+            Platform.OS === 'web'
+              ? window.location.origin
+              : (direct?.url ?? getVerityBaseUrl() ?? profile!.activeUrl),
+          ),
         });
       })
       .catch((caught: unknown) =>
@@ -239,7 +271,7 @@ function DevicesView({ client }: { client: VerityClient }) {
   };
 
   return (
-    <SettingsScaffold title="Devices" detail onRetry={load}>
+    <SettingsScaffold title="Devices & Web Browsers" detail onRetry={load}>
       {Platform.OS === 'web' && (
         <SettingsGroup title="This browser">
           <SettingsPanel>
@@ -263,62 +295,109 @@ function DevicesView({ client }: { client: VerityClient }) {
         </SettingsGroup>
       )}
       <SettingsGroup
-        title="Add a device"
-        description={
-          Platform.OS === 'web'
-            ? 'Create an invitation code for another browser. Native devices use the installer or a native app pairing link.'
-            : 'Pair another phone, tablet, or the iPad app on a Mac. Each device receives its own revocable access token.'
-        }
+        title="Add access"
+        description="Scan the code in the Verity app, or open Verity in a web browser and paste the link."
       >
         <SettingsPanel>
+          <View style={styles.accessTabs} accessibilityRole="tablist">
+            {ACCESS_TABS.map((option) => {
+              const selected = option.id === tab;
+              return (
+                <Pressable
+                  key={option.id}
+                  style={[styles.accessTab, selected ? styles.accessTabSelected : null]}
+                  onPress={() => setTab(option.id)}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected }}
+                  accessibilityLabel={option.label}
+                >
+                  <Icon
+                    name={option.icon}
+                    size={15}
+                    color={selected ? theme.colors.text : theme.colors.textMuted}
+                  />
+                  <Text
+                    style={[styles.accessTabLabel, selected ? styles.accessTabLabelSelected : null]}
+                  >
+                    {option.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
           {pairingInvitation ? (
             <>
-              <View style={styles.qrFrame}>
-                <QRCode
-                  value={pairingInvitation.link}
-                  size={220}
-                  backgroundColor="#ffffff"
-                  color="#000000"
+              {tab === 'app' ? (
+                <View style={styles.qrFrame}>
+                  <QRCode
+                    value={pairingInvitation.link}
+                    size={200}
+                    backgroundColor="#ffffff"
+                    color="#000000"
+                  />
+                </View>
+              ) : (
+                <CopyField
+                  label="Web address"
+                  value={pairingInvitation.webAddress}
+                  action="Open"
+                  icon="external-link"
+                  onPress={() => void Linking.openURL(pairingInvitation.webAddress)}
+                  accessibilityLabel="Open web address"
                 />
-              </View>
-              <Text style={styles.footnote}>
-                This code expires after five minutes and works once.
-                {Platform.OS === 'web' ? ' Paste it into another browser on this Core.' : ''}
-              </Text>
-              <Pressable
-                style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
+              )}
+              <CopyField
+                // Inside a browser without a pinned server profile the invitation
+                // is the bare code, which the browser sign-in accepts as well.
+                label={
+                  pairingInvitation.link.startsWith('verity:') ? 'Pairing link' : 'Pairing code'
+                }
+                value={pairingInvitation.link}
+                mono
+                action="Copy"
+                icon="copy"
                 onPress={() => void Clipboard.setStringAsync(pairingInvitation.link)}
-                accessibilityRole="button"
                 accessibilityLabel="Copy pairing link"
-              >
-                <Text style={styles.reproButtonLabel}>Copy pairing link</Text>
-              </Pressable>
+              />
+              <View style={styles.invitationHint}>
+                <Text style={styles.footnote}>
+                  Valid for {pairingInvitation.minutes} minute
+                  {pairingInvitation.minutes === 1 ? '' : 's'} · works once ·
+                </Text>
+                <Pressable
+                  onPress={createInvitation}
+                  disabled={working}
+                  accessibilityRole="button"
+                  accessibilityLabel="Create a new pairing link"
+                >
+                  <Text style={styles.linkText}>{working ? 'Creating…' : 'New link'}</Text>
+                </Pressable>
+              </View>
             </>
-          ) : null}
-          <Pressable
-            style={({ pressed }) => [
-              styles.primaryButton,
-              styles.selfStart,
-              working ? styles.buttonDisabled : null,
-              pressed ? styles.pressed : null,
-            ]}
-            onPress={createInvitation}
-            disabled={working}
-            accessibilityRole="button"
-            accessibilityState={{ disabled: working }}
-            accessibilityLabel="Pair another device"
-          >
-            {working ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
-            <Text style={styles.primaryButtonLabel}>
-              {pairingInvitation ? 'Create a new code' : 'Pair another device'}
-            </Text>
-          </Pressable>
+          ) : (
+            <Pressable
+              style={({ pressed }) => [
+                styles.primaryButton,
+                styles.selfStart,
+                working ? styles.buttonDisabled : null,
+                pressed ? styles.pressed : null,
+              ]}
+              onPress={createInvitation}
+              disabled={working}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: working }}
+              accessibilityLabel="Create pairing link"
+            >
+              {working ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
+              <Text style={styles.primaryButtonLabel}>Create pairing link</Text>
+            </Pressable>
+          )}
         </SettingsPanel>
       </SettingsGroup>
 
       <SettingsGroup
-        title="Paired devices"
-        description="A device is named by the platform it paired from, so several can arrive with the same name. Tap a name to change it."
+        title="Connected"
+        description="Tap a name to change it. Removing a device or browser signs it out immediately."
       >
         {loading && devices.length === 0 ? (
           <SettingsPanel>
@@ -401,7 +480,7 @@ function DeviceRow({
           <StatusPill quiet intent="ready" label="This device" />
         ) : (
           <Pressable
-            style={({ pressed }) => [styles.dangerButton, pressed ? styles.pressed : null]}
+            style={({ pressed }) => [styles.quietDangerButton, pressed ? styles.pressed : null]}
             onPress={onRemove}
             accessibilityRole="button"
             accessibilityLabel={`Remove ${device.label ?? 'paired device'}`}
@@ -409,6 +488,50 @@ function DeviceRow({
             <Text style={styles.dangerButtonLabel}>Remove</Text>
           </Pressable>
         )}
+      </View>
+    </View>
+  );
+}
+
+function CopyField({
+  label,
+  value,
+  mono = false,
+  action,
+  icon,
+  onPress,
+  accessibilityLabel,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  action: string;
+  icon: IconName;
+  onPress: () => void;
+  accessibilityLabel: string;
+}): ReactElement {
+  const { theme } = useUnistyles();
+  return (
+    <View style={styles.copyField}>
+      <Text style={styles.copyFieldLabel}>{label}</Text>
+      <View style={styles.copyFieldBox}>
+        <Text
+          style={[styles.copyFieldValue, mono ? styles.monoText : null]}
+          numberOfLines={1}
+          ellipsizeMode="middle"
+          selectable
+        >
+          {value}
+        </Text>
+        <Pressable
+          style={({ pressed }) => [styles.copyFieldButton, pressed ? styles.pressed : null]}
+          onPress={onPress}
+          accessibilityRole="button"
+          accessibilityLabel={accessibilityLabel}
+        >
+          <Icon name={icon} size={14} color={theme.colors.primary} />
+          <Text style={styles.copyFieldButtonLabel}>{action}</Text>
+        </Pressable>
       </View>
     </View>
   );
