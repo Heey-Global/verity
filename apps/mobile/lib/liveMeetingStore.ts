@@ -27,10 +27,18 @@ export interface MeetingRecord {
   tentativeSpeakerTurns?: SpeakerTurn[];
   /** In memory only: audio seconds the diarizer has processed through. */
   speakerHorizon?: number;
+  /** In memory only: names speakers introduced themselves with, awaiting confirmation. */
+  speakerNameSuggestions?: SpeakerNameSuggestion[];
   error: string | null;
   ownerToken?: string | null;
   revision?: number;
   syncedRevision?: number;
+}
+
+export interface SpeakerNameSuggestion {
+  speaker: number;
+  name: string;
+  quote: string;
 }
 
 export interface SpeakerTurn {

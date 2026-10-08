@@ -20,6 +20,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { LiveMeetingInsight, SessionHistoryPage } from '@verity/mobile';
 
 import {
+  clearSpeakerNameSuggestion,
   currentMeeting,
   endMeeting,
   pauseMeeting,
@@ -59,9 +60,8 @@ import {
   unacknowledgedMeetingAnswers,
 } from '../../lib/liveMeetingAnswers';
 import {
+  meetingTranscriptRows,
   resolvedSpeaker,
-  speakerLines,
-  reconcileTimedTranscript,
   type SpeakerLine,
 } from '../../lib/liveMeetingSpeakers';
 import { Icon } from '../../components/Icon';
@@ -451,44 +451,22 @@ export default function MeetingScreen() {
       .catch((reason) => setError(String(reason)));
   }, []);
 
-  const chunks = useMemo(() => {
-    if (meeting?.timedWords?.length) {
-      const aligned = reconcileTimedTranscript(meeting.transcript, meeting.timedWords);
-      if (!aligned) return [{ text: meeting.transcript }];
-      const diarizing = meeting.state === 'active' && meeting.speakerStatus !== 'unavailable';
-      const lines: TranscriptRow[] = speakerLines(
-        aligned.words,
-        [
-          ...(meeting.speakerTurns ?? []),
-          ...(diarizing ? (meeting.tentativeSpeakerTurns ?? []) : []),
-        ],
-        meeting.speakerCorrections ?? [],
-        meeting.speakerMerges ?? {},
-        // Native builds without progress reports leave words pending only until the
-        // first finalized turn arrives.
-        diarizing
-          ? (meeting.speakerHorizon ?? (meeting.speakerTurns?.length ? Infinity : 0))
-          : Infinity,
-      );
-      if (aligned.tail) lines.push({ text: aligned.tail });
-      return lines;
-    }
-    const text = meeting?.transcript ?? '';
-    const result: TranscriptRow[] = [];
-    for (let start = 0; start < text.length; start += 900)
-      result.push({ text: text.slice(start, start + 900) });
-    return result;
-  }, [
-    meeting?.transcript,
-    meeting?.timedWords,
-    meeting?.speakerTurns,
-    meeting?.tentativeSpeakerTurns,
-    meeting?.speakerHorizon,
-    meeting?.speakerStatus,
-    meeting?.state,
-    meeting?.speakerCorrections,
-    meeting?.speakerMerges,
-  ]);
+  const chunks = useMemo<TranscriptRow[]>(
+    () => (meeting ? meetingTranscriptRows(meeting) : []),
+    // Recomputed only when the transcript or its attribution changes, not on every tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      meeting?.transcript,
+      meeting?.timedWords,
+      meeting?.speakerTurns,
+      meeting?.tentativeSpeakerTurns,
+      meeting?.speakerHorizon,
+      meeting?.speakerStatus,
+      meeting?.state,
+      meeting?.speakerCorrections,
+      meeting?.speakerMerges,
+    ],
+  );
   const suggestedQuestion = useMemo(
     () => latestResearchQuestion(meeting?.transcript ?? ''),
     [meeting?.transcript],
@@ -970,6 +948,38 @@ export default function MeetingScreen() {
   };
 
   const noticedCards = (): ReactNode[] => {
+    // Only the recording device asks the model; a typed name always wins over a suggestion.
+    const nameCards: ReactNode[] =
+      meeting?.state === 'active'
+        ? (meeting.speakerNameSuggestions ?? [])
+            .filter((suggestion) => meeting.speakerNames?.[suggestion.speaker] === undefined)
+            .map((suggestion) => (
+              <NoticedCard
+                key={`name-${String(suggestion.speaker)}`}
+                label="NAME SUGGESTION"
+                tone={speakerTone(theme.colors, suggestion.speaker)}
+                quote={`“${suggestion.quote}”`}
+                title={`${speakerLabel(suggestion.speaker)} is ${suggestion.name}?`}
+                onDismiss={() => clearSpeakerNameSuggestion(meeting.id, suggestion.speaker, true)}
+                dismissLabel={`Not ${suggestion.name}`}
+                actions={[
+                  {
+                    label: `Yes, ${suggestion.name}`,
+                    primary: true,
+                    onPress: () => {
+                      const names = {
+                        ...(speakerEditDraft.current?.names ?? meeting.speakerNames ?? {}),
+                      };
+                      if (names[suggestion.speaker] === undefined)
+                        names[suggestion.speaker] = suggestion.name;
+                      clearSpeakerNameSuggestion(meeting.id, suggestion.speaker, false);
+                      void persistSpeakerEdits({ names });
+                    },
+                  },
+                ]}
+              />
+            ))
+        : [];
     const cards: ReactNode[] = visibleAnswers.map((card) => {
       const source = card.status === 'ready' ? meetingAnswerSource(card.answer) : null;
       const note = card.status === 'ready' ? asNote(card.answer) : null;
@@ -1118,7 +1128,7 @@ export default function MeetingScreen() {
           ]}
         />,
       );
-    return cards;
+    return [...nameCards, ...cards];
   };
 
   const statusLines = (

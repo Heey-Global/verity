@@ -1,10 +1,12 @@
+import { VerityApiError } from '@verity/mobile';
 import { liveMeetingSTT, type STTEvent, type STTEngineId } from './liveMeetingSTT';
 import { createVerityClient, getVerityBaseUrl } from './client';
 import { isDemoMode, isEnteringDemoMode } from './demoMode';
 import { registerMeetingCaptureStatus } from './meetingCaptureStatus';
 import { meetingRequestId, meetingRequestPrompt, researchPrompt } from './liveMeetingInsights';
 import { VoiceMeetingCommandDetector, type VoiceMeetingCommand } from './liveMeetingVoice';
-import { wordsFromRuns } from './liveMeetingSpeakers';
+import { meetingTranscriptRows, wordsFromRuns, type SpeakerLine } from './liveMeetingSpeakers';
+import { MIN_INTERVAL_MS, nextSpeakerNameCheck, type SpeakerNameHistory } from './liveMeetingNames';
 import {
   applySTTEvent,
   emptySTTTranscript,
@@ -140,6 +142,124 @@ async function sendVoiceRequest(
   }
 }
 
+// Speaker name suggestions: one model check at a time, per meeting.
+const nameHistory = new Map<number, SpeakerNameHistory>();
+const rejectedNames = new Set<string>();
+let nameCheckTimer: ReturnType<typeof setTimeout> | null = null;
+let nameCheckRunning = false;
+let nameChecksUnavailable = false;
+
+function resetSpeakerNameChecks() {
+  nameHistory.clear();
+  rejectedNames.clear();
+  if (nameCheckTimer) clearTimeout(nameCheckTimer);
+  nameCheckTimer = null;
+  nameChecksUnavailable = false;
+}
+
+function scheduleSpeakerNameCheck(delayMs = 1500) {
+  if (nameCheckTimer || nameCheckRunning || nameChecksUnavailable) return;
+  // Settles a burst of word and turn events into one look at the transcript.
+  nameCheckTimer = setTimeout(() => {
+    nameCheckTimer = null;
+    void runSpeakerNameCheck();
+  }, delayMs);
+}
+
+async function runSpeakerNameCheck(): Promise<void> {
+  const meeting = active;
+  if (
+    !meeting ||
+    meeting.state !== 'active' ||
+    meeting.engine === 'attendee' ||
+    meeting.serverId === null ||
+    !recordingServerUrl ||
+    getVerityBaseUrl() !== recordingServerUrl
+  )
+    return;
+  const client = createVerityClient();
+  if (!client) return;
+  // A named speaker is never checked again: a name typed or confirmed by the operator
+  // stays, whatever anyone says later.
+  const skip = new Set([
+    ...Object.keys(meeting.speakerNames ?? {}).map(Number),
+    ...(meeting.speakerNameSuggestions ?? []).map((suggestion) => suggestion.speaker),
+  ]);
+  const lines = meetingTranscriptRows(meeting).filter((row): row is SpeakerLine => 'start' in row);
+  const now = Date.now();
+  const check = nextSpeakerNameCheck(lines, skip, nameHistory, now);
+  if (!check) {
+    // A speaker held back by the interval would otherwise wait for the next word event,
+    // which may never come once the meeting falls quiet.
+    const waits = [...nameHistory.values()]
+      .map((entry) => entry.lastAt + MIN_INTERVAL_MS - now)
+      .filter((wait) => wait > 0);
+    if (waits.length) scheduleSpeakerNameCheck(Math.min(...waits) + 100);
+    return;
+  }
+  const previous = nameHistory.get(check.speaker);
+  nameHistory.set(check.speaker, {
+    openingChecked: (previous?.openingChecked ?? false) || check.opening,
+    checkedThrough: Math.max(previous?.checkedThrough ?? -Infinity, check.through),
+    lastAt: Date.now(),
+  });
+  nameCheckRunning = true;
+  try {
+    const result = await client.checkMeetingSpeakerName(meeting.sessionId, meeting.id, {
+      text: check.text,
+      hints: [],
+    });
+    const name = result.name;
+    if (!name || !result.quote || active?.id !== meeting.id || active.state !== 'active') return;
+    if (active.speakerNames?.[check.speaker] !== undefined) return;
+    if (rejectedNames.has(`${String(check.speaker)}:${name.toLocaleLowerCase()}`)) return;
+    active = {
+      ...active,
+      speakerNameSuggestions: [
+        ...(active.speakerNameSuggestions ?? []).filter(
+          (suggestion) => suggestion.speaker !== check.speaker,
+        ),
+        { speaker: check.speaker, name, quote: result.quote },
+      ],
+    };
+    publish();
+  } catch (error) {
+    if (error instanceof VerityApiError && error.status === 503) {
+      nameChecksUnavailable = true;
+      return;
+    }
+    // Ask about the same words again after the interval rather than losing them.
+    nameHistory.set(check.speaker, {
+      openingChecked: previous?.openingChecked ?? false,
+      checkedThrough: previous?.checkedThrough ?? -Infinity,
+      lastAt: Date.now(),
+    });
+  } finally {
+    nameCheckRunning = false;
+  }
+  // Another speaker may be waiting.
+  scheduleSpeakerNameCheck();
+}
+
+/** Removes a name suggestion; a rejected name is not suggested for that speaker again. */
+export function clearSpeakerNameSuggestion(
+  meetingId: string,
+  speaker: number,
+  rejected: boolean,
+): void {
+  if (active?.id !== meetingId) return;
+  const suggestion = active.speakerNameSuggestions?.find((item) => item.speaker === speaker);
+  if (!suggestion) return;
+  if (rejected) rejectedNames.add(`${String(speaker)}:${suggestion.name.toLocaleLowerCase()}`);
+  active = {
+    ...active,
+    speakerNameSuggestions: (active.speakerNameSuggestions ?? []).filter(
+      (item) => item.speaker !== speaker,
+    ),
+  };
+  publish();
+}
+
 function publish() {
   for (const listener of listeners) listener(active);
 }
@@ -223,6 +343,7 @@ function onEvent(event: STTEvent) {
     const id = active.id;
     active = { ...active, timedWords: next };
     publish();
+    scheduleSpeakerNameCheck();
     void enqueueWrite(() => saveTimedWords(id, next)).catch(() => {
       if (active?.id === id) {
         active = { ...active, speakerStatus: 'unavailable' };
@@ -266,6 +387,7 @@ function onEvent(event: STTEvent) {
       lastSpeakerAt: Date.now(),
     };
     publish();
+    scheduleSpeakerNameCheck();
     void enqueueWrite(() => saveSpeakerTurns(id, next)).catch(() => {
       if (active?.id === id) {
         active = { ...active, speakerStatus: 'unavailable' };
@@ -294,6 +416,7 @@ function onEvent(event: STTEvent) {
       ...(current ? { activeSpeaker: current.speaker, lastSpeakerAt: Date.now() } : {}),
     };
     publish();
+    scheduleSpeakerNameCheck();
     return;
   }
   if (event.kind === 'words') {
@@ -404,6 +527,10 @@ export async function updateSpeakerEdits(
       speakerNames: names,
       speakerCorrections: corrections,
       speakerMerges: merges,
+      // A name given by the operator supersedes any suggestion for that speaker.
+      speakerNameSuggestions: (active.speakerNameSuggestions ?? []).filter(
+        (suggestion) => names[suggestion.speaker] === undefined,
+      ),
     };
     publish();
     await enqueueWrite(() => saveSpeakerEdits(meetingId, names, corrections, merges));
@@ -469,6 +596,7 @@ async function startMeetingUnlocked(
   }
   const meeting = await createMeeting(sessionId, engine, expectedParticipants);
   active = meeting;
+  resetSpeakerNameChecks();
   transcript = emptySTTTranscript;
   stopVoiceDetector();
   recordingServerUrl = getVerityBaseUrl();

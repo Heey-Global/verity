@@ -10,6 +10,7 @@ import {
   setMeetingState,
 } from './liveMeetingStore';
 import {
+  clearSpeakerNameSuggestion,
   currentMeeting,
   hasActiveMeetingCapture,
   endMeeting,
@@ -136,6 +137,60 @@ it('records Apple runs as word timings and keeps open diarizer turns unsaved', a
   expect(currentMeeting()?.activeSpeaker).toBe(1);
   expect(saveSpeakerTurns).not.toHaveBeenCalled();
   await endMeeting();
+});
+
+// A name the model hears is only a suggestion: it must never replace a name the
+// operator typed, and a rejected one must not come back.
+it('suggests a speaker name from an introduction without overwriting a typed name', async () => {
+  jest.useFakeTimers();
+  try {
+    let onEvent!: (event: STTEvent) => void;
+    jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+      onEvent = listener;
+      return { remove: jest.fn() };
+    });
+    const checkMeetingSpeakerName = jest
+      .fn()
+      .mockResolvedValue({ name: 'Holger', quote: 'Hallo, ich bin Holger.' });
+    jest.mocked(createVerityClient).mockReturnValue({
+      checkMeetingSpeakerName,
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    await startMeeting('session-1');
+    const introduce = (start: number, speaker: number) => {
+      onEvent({
+        kind: 'segment',
+        text: 'Hallo, ich bin Holger.',
+        final: true,
+        start,
+        end: start + 2,
+        runs: [{ text: 'Hallo, ich bin Holger.', start, end: start + 2 }],
+      });
+      onEvent({ kind: 'speaker', speaker, start, end: start + 2 });
+    };
+    introduce(0, 0);
+    await jest.advanceTimersByTimeAsync(2_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledWith('session-1', 'meeting-1', {
+      text: 'Hallo, ich bin Holger.',
+      hints: [],
+    });
+    expect(currentMeeting()?.speakerNameSuggestions).toEqual([
+      { speaker: 0, name: 'Holger', quote: 'Hallo, ich bin Holger.' },
+    ]);
+    clearSpeakerNameSuggestion('meeting-1', 0, true);
+    introduce(20, 0);
+    await jest.advanceTimersByTimeAsync(12_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(2);
+    expect(currentMeeting()?.speakerNameSuggestions).toEqual([]);
+
+    await updateSpeakerEdits('meeting-1', { '1': 'Anna' }, [], {});
+    introduce(40, 1);
+    await jest.advanceTimersByTimeAsync(12_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(2);
+    expect(currentMeeting()?.speakerNames).toEqual({ '1': 'Anna' });
+    await endMeeting();
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 // Stands in for the server's model: treats "Verity, <request>." as addressed to it.

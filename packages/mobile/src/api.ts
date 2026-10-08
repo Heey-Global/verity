@@ -2064,6 +2064,26 @@ export class VerityClient {
       .parse(await res.json()).requests;
   }
 
+  /** Asks the server's model whether these words of one speaker introduce them by name.
+   * The name is only a suggestion: the app asks the operator before using it. */
+  async checkMeetingSpeakerName(
+    sessionId: string,
+    meetingId: string,
+    body: { text: string; hints: string[] },
+  ): Promise<{ name: string | null; quote?: string | undefined }> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/speaker-name`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    return z
+      .object({ name: z.string().nullable(), quote: z.string().optional() })
+      .parse(await res.json());
+  }
+
   async putLiveMeeting(meeting: LiveMeeting & { ownerToken: string }): Promise<void> {
     await this.request(
       `/sessions/${encodeURIComponent(meeting.sessionId)}/live-meetings/${encodeURIComponent(meeting.id)}`,

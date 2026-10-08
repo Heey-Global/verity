@@ -210,8 +210,13 @@ a diarizer state reset in meetings longer than one hour.
   A rename alone must not be the only way to repair misattribution.
 - Use an unknown/uncertain attribution when evidence is insufficient; do not force a name onto
   overlapping or ambiguous speech.
-- Optionally recognize clear introductions such as "I'm Anna" locally and offer "Name this
-  speaker Anna?" for confirmation. Mentioning a name is not proof of speaker identity.
+- Recognize introductions such as "I'm Anna" or "ich bin Holger" and offer "Speaker 2 is
+  Anna?" for confirmation. The recorder sends a speaker's words to the server's model when
+  they contain an introduction phrase, and once after about 15 seconds of their speech; the
+  phrases only decide when to ask, the model decides whether a name was given. A returned
+  name must appear in a verbatim quote of what was said. Mentioning a name is not proof of
+  speaker identity, so nothing is named without confirmation, a named speaker is never
+  checked again, and a rejected name is not suggested again for that speaker.
 - Calendar attendees may be considered later as name suggestions; an invitation does not
   identify a voice. No calendar access is required in V1 or V2.
 

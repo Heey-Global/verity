@@ -1,4 +1,4 @@
-import type { SpeakerCorrection, SpeakerTurn, TimedWord } from './liveMeetingStore';
+import type { MeetingRecord, SpeakerCorrection, SpeakerTurn, TimedWord } from './liveMeetingStore';
 
 export interface SpeakerLine {
   speaker: number | null;
@@ -190,4 +190,36 @@ export function wordsFromRuns(
     orphan = '';
   }
   return words;
+}
+
+/** Transcript rows as the meeting screen shows them: attributed lines where word
+ * timings align with the text, then any text the timings have not reached yet. */
+export function meetingTranscriptRows(
+  meeting: MeetingRecord,
+): Array<SpeakerLine | { text: string }> {
+  if (meeting.timedWords?.length) {
+    const aligned = reconcileTimedTranscript(meeting.transcript, meeting.timedWords);
+    if (!aligned) return [{ text: meeting.transcript }];
+    const diarizing = meeting.state === 'active' && meeting.speakerStatus !== 'unavailable';
+    const rows: Array<SpeakerLine | { text: string }> = speakerLines(
+      aligned.words,
+      [
+        ...(meeting.speakerTurns ?? []),
+        ...(diarizing ? (meeting.tentativeSpeakerTurns ?? []) : []),
+      ],
+      meeting.speakerCorrections ?? [],
+      meeting.speakerMerges ?? {},
+      // Native builds without progress reports leave words pending only until the
+      // first finalized turn arrives.
+      diarizing
+        ? (meeting.speakerHorizon ?? (meeting.speakerTurns?.length ? Infinity : 0))
+        : Infinity,
+    );
+    if (aligned.tail) rows.push({ text: aligned.tail });
+    return rows;
+  }
+  const rows: Array<{ text: string }> = [];
+  for (let start = 0; start < meeting.transcript.length; start += 900)
+    rows.push({ text: meeting.transcript.slice(start, start + 900) });
+  return rows;
 }

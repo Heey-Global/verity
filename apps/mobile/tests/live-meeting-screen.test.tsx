@@ -5,6 +5,7 @@ import { router } from 'expo-router';
 import MeetingScreen from '../app/meeting/[sessionId]';
 import { createVerityClient, getActiveMeetingServerId } from '../lib/client';
 import {
+  clearSpeakerNameSuggestion,
   currentMeeting,
   endMeeting,
   pauseMeeting,
@@ -59,6 +60,7 @@ jest.mock('../lib/liveMeetingSession', () => ({
   pauseMeeting: jest.fn().mockResolvedValue(undefined),
   resumeMeeting: jest.fn().mockResolvedValue(undefined),
   updateSpeakerEdits: jest.fn().mockResolvedValue(undefined),
+  clearSpeakerNameSuggestion: jest.fn(),
 }));
 jest.mock('../lib/liveMeetingStore', () => ({
   listMeetings: jest.fn().mockResolvedValue([]),
@@ -453,6 +455,46 @@ it('saves a correction for one speaker segment without changing the other', asyn
     ),
   );
   alert.mockRestore();
+});
+
+it('names a speaker only after the suggestion is confirmed', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-suggest',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hallo, ich bin Holger. Hi',
+    error: null,
+    ownerToken: 'owner',
+    speakerTurns: [
+      { speaker: 0, start: 0, end: 2 },
+      { speaker: 1, start: 3, end: 4 },
+    ],
+    timedWords: [
+      { text: 'Hallo, ich bin Holger.', start: 0, end: 2 },
+      { text: 'Hi', start: 3, end: 3.5 },
+    ],
+    speakerNameSuggestions: [
+      { speaker: 0, name: 'Holger', quote: 'Hallo, ich bin Holger.' },
+      { speaker: 1, name: 'Anna', quote: 'Hi' },
+    ],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Speaker 1 is Holger?')).toBeOnTheScreen();
+  expect(updateSpeakerEdits).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByLabelText('Yes, Holger'));
+  await waitFor(() =>
+    expect(updateSpeakerEdits).toHaveBeenCalledWith(meeting.id, { '0': 'Holger' }, [], {}),
+  );
+  expect(clearSpeakerNameSuggestion).toHaveBeenCalledWith(meeting.id, 0, false);
+  fireEvent.press(screen.getByLabelText('Not Anna'));
+  expect(clearSpeakerNameSuggestion).toHaveBeenCalledWith(meeting.id, 1, true);
+  expect(updateSpeakerEdits).toHaveBeenCalledTimes(1);
 });
 
 it('renames a speaker across the current meeting', async () => {
