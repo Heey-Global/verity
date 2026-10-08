@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.60.3](https://github.com/Heey-Global/verity/compare/mobile-v1.60.2...mobile-v1.60.3) (2026-10-08)
+
+
+### Bug Fixes
+
+* **mobile:** save agent settings without shifting the screen ([#1372](https://github.com/Heey-Global/verity/issues/1372)) ([2ffddcc](https://github.com/Heey-Global/verity/commit/2ffddccad44e7aadcb8d7fb10601c055e0d06816))
+
 ## [1.60.2](https://github.com/Heey-Global/verity/compare/mobile-v1.60.1...mobile-v1.60.2) (2026-10-08)
 
 
