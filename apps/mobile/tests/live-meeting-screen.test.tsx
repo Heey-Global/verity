@@ -357,7 +357,41 @@ it('keeps the unfinished transcript visible after timed words', async () => {
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Open full transcript'));
   expect(screen.getByText('Speaker 1: Hello,')).toBeOnTheScreen();
-  expect(screen.getByText('Speaker pending: from the meeting')).toBeOnTheScreen();
+  expect(screen.getByText('from the meeting')).toBeOnTheScreen();
+});
+
+// Words the diarizer had not reached yet were labelled Unknown speaker for about a
+// second; open turns now attribute them live and the rest wait without a label.
+it('attributes live words from open diarizer turns and leaves unreached words pending', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-pending',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hello there. Still talking',
+    error: null,
+    speakerStatus: 'ready',
+    speakerTurns: [{ speaker: 0, start: 0, end: 0.6 }],
+    tentativeSpeakerTurns: [{ speaker: 1, start: 0.8, end: 1.4 }],
+    speakerHorizon: 1.5,
+    timedWords: [
+      { text: 'Hello', start: 0, end: 0.4 },
+      { text: 'there.', start: 0.9, end: 1.3 },
+      { text: 'Still', start: 2, end: 2.3 },
+      { text: 'talking', start: 2.4, end: 2.8 },
+    ],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('Open full transcript'));
+  expect(screen.getByText('Speaker 1: Hello')).toBeOnTheScreen();
+  expect(screen.getByText('Speaker 2: there.')).toBeOnTheScreen();
+  expect(screen.getByText('Still talking')).toBeOnTheScreen();
+  expect(screen.queryByText(/Unknown speaker/)).toBeNull();
 });
 
 it('shows the transcript once when its text no longer matches the timed words', async () => {

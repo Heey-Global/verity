@@ -98,6 +98,46 @@ it('keeps a renamed speaker when another live speaker update arrives', async () 
   await endMeeting();
 });
 
+// A whole Apple phrase stored as one timed word spanned its pauses and lost its
+// speaker; the runs must become per-word timings, and open turns stay in memory only.
+it('records Apple runs as word timings and keeps open diarizer turns unsaved', async () => {
+  let onEvent!: (event: STTEvent) => void;
+  jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+    onEvent = listener;
+    return { remove: jest.fn() };
+  });
+  await startMeeting('session-1');
+  onEvent({
+    kind: 'segment',
+    text: 'Hallo zusammen',
+    final: true,
+    start: 0,
+    end: 3,
+    runs: [
+      { text: 'Hallo', start: 0.1, end: 0.5 },
+      { text: ' ' },
+      { text: 'zusammen', start: 2, end: 2.6 },
+    ],
+  });
+  expect(currentMeeting()?.timedWords).toEqual([
+    { text: 'Hallo', start: 0.1, end: 0.5 },
+    { text: 'zusammen', start: 2, end: 2.6 },
+  ]);
+  onEvent({
+    kind: 'speaker-tentative',
+    turns: [
+      { speaker: 1, start: 2, end: 2.7 },
+      { speaker: 9, start: 2, end: 2.7 },
+    ],
+    through: 3.1,
+  });
+  expect(currentMeeting()?.tentativeSpeakerTurns).toEqual([{ speaker: 1, start: 2, end: 2.7 }]);
+  expect(currentMeeting()?.speakerHorizon).toBe(3.1);
+  expect(currentMeeting()?.activeSpeaker).toBe(1);
+  expect(saveSpeakerTurns).not.toHaveBeenCalled();
+  await endMeeting();
+});
+
 // Stands in for the server's model: treats "Verity, <request>." as addressed to it.
 const checkSpokenMeetingRequest = jest.fn(
   async (_sessionId: string, _meetingId: string, { utterance }: { utterance: string }) => {

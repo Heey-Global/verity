@@ -1,4 +1,9 @@
-import { reconcileTimedTranscript, resolvedSpeaker, speakerLines } from './liveMeetingSpeakers';
+import {
+  reconcileTimedTranscript,
+  resolvedSpeaker,
+  speakerLines,
+  wordsFromRuns,
+} from './liveMeetingSpeakers';
 
 test('attributes words through a speaker change and leaves overlapping speech unknown', () => {
   const lines = speakerLines(
@@ -111,13 +116,113 @@ test('attributes a word that spans adjacent turns of the same speaker', () => {
       ],
     ),
   ).toEqual([{ speaker: 0, text: 'Holger', start: 0.8, end: 1.3 }]);
+});
+
+// A single person speaking with pauses showed as Unknown speaker: the phrase's
+// timing includes the pauses, and the diarizer marks only the speech in between.
+test('keeps the speaker of a phrase spoken with pauses', () => {
+  const turns = [
+    { speaker: 0, start: 0.2, end: 1.1 },
+    { speaker: 0, start: 1.9, end: 2.4 },
+    { speaker: 0, start: 3.3, end: 3.9 },
+  ];
+  expect(
+    speakerLines([{ text: 'Das wäre ja super, wenn das klappt.', start: 0, end: 4.2 }], turns),
+  ).toEqual([{ speaker: 0, text: 'Das wäre ja super, wenn das klappt.', start: 0, end: 4.2 }]);
+  // The same holds per word: a word falling in a short pause belongs to the speaker
+  // around it.
   expect(
     speakerLines(
-      [{ text: 'gap', start: 0.8, end: 1.3 }],
       [
-        { speaker: 0, start: 0, end: 0.9 },
-        { speaker: 0, start: 0.85, end: 0.95 },
+        { text: 'Das', start: 0.2, end: 0.5 },
+        { text: 'wäre', start: 1.3, end: 1.7 },
+        { text: 'super', start: 1.9, end: 2.4 },
+      ],
+      turns,
+    ),
+  ).toEqual([{ speaker: 0, text: 'Das wäre super', start: 0.2, end: 2.4 }]);
+});
+
+test('leaves a pause between two different speakers unknown', () => {
+  expect(
+    speakerLines(
+      [{ text: 'hm', start: 1.2, end: 1.4 }],
+      [
+        { speaker: 0, start: 0, end: 1 },
+        { speaker: 1, start: 1.6, end: 2 },
       ],
     ),
-  ).toEqual([{ speaker: null, text: 'gap', start: 0.8, end: 1.3 }]);
+  ).toEqual([{ speaker: null, text: 'hm', start: 1.2, end: 1.4 }]);
+});
+
+// Diarization runs about a second behind transcription; words it has not reached
+// were shown as Unknown speaker until it caught up.
+test('marks words the diarizer has not processed yet as pending', () => {
+  const words = [
+    { text: 'Hello', start: 0, end: 0.5 },
+    { text: 'everyone', start: 2, end: 2.5 },
+  ];
+  const turns = [{ speaker: 0, start: 0, end: 0.6 }];
+  expect(speakerLines(words, turns, [], {}, 1.5)).toEqual([
+    { speaker: 0, text: 'Hello', start: 0, end: 0.5 },
+    { speaker: null, text: 'everyone', start: 2, end: 2.5, pending: true },
+  ]);
+  // Without a horizon (the filed transcript), the same word is simply unattributed.
+  expect(speakerLines(words, turns)[1]).toEqual({
+    speaker: null,
+    text: 'everyone',
+    start: 2,
+    end: 2.5,
+  });
+  // A correction still wins over a pending state.
+  expect(speakerLines(words, turns, [{ start: 2, end: 2.5, speaker: 0 }], {}, 1.5)[1]).toEqual({
+    speaker: 0,
+    text: 'everyone',
+    start: 2,
+    end: 2.5,
+  });
+});
+
+test('aligns timed words across punctuation that stands as its own token', () => {
+  expect(
+    reconcileTimedTranscript('alles erkennt . Das klappt', [
+      { text: 'alles', start: 0, end: 0.4 },
+      { text: 'erkennt', start: 0.5, end: 1 },
+      { text: '.', start: 1, end: 1.1 },
+      { text: 'Das', start: 2, end: 2.3 },
+      { text: 'klappt', start: 2.4, end: 2.8 },
+    ]),
+  ).toEqual({
+    words: [
+      { text: 'alles', start: 0, end: 0.4 },
+      { text: 'erkennt', start: 0.5, end: 1 },
+      { text: '', start: 1, end: 1.1 },
+      { text: 'Das', start: 2, end: 2.3 },
+      { text: 'klappt', start: 2.4, end: 2.8 },
+    ],
+    tail: '',
+  });
+});
+
+test('regroups Apple runs into timed words', () => {
+  expect(
+    wordsFromRuns([
+      { text: '.', start: 0.9, end: 1 },
+      { text: ' ' },
+      { text: 'Hallo', start: 1, end: 1.4 },
+      { text: ',', start: 1.4, end: 1.45 },
+      { text: ' ' },
+      { text: 'zusammen' },
+      { text: ' ' },
+      { text: 'heute', start: 2, end: 2.3 },
+      { text: '.' },
+    ]),
+  ).toEqual([
+    { text: 'Hallo, zusammen', start: 1, end: 1.45 },
+    { text: 'heute.', start: 2, end: 2.3 },
+  ]);
+  // A leading untimed word joins the first timed one instead of being dropped.
+  expect(wordsFromRuns([{ text: 'Ja ' }, { text: 'gut', start: 0, end: 0.3 }])).toEqual([
+    { text: 'Ja gut', start: 0, end: 0.3 },
+  ]);
 });

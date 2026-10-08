@@ -4,6 +4,7 @@ import { isDemoMode, isEnteringDemoMode } from './demoMode';
 import { registerMeetingCaptureStatus } from './meetingCaptureStatus';
 import { meetingRequestId, meetingRequestPrompt, researchPrompt } from './liveMeetingInsights';
 import { VoiceMeetingCommandDetector, type VoiceMeetingCommand } from './liveMeetingVoice';
+import { wordsFromRuns } from './liveMeetingSpeakers';
 import {
   applySTTEvent,
   emptySTTTranscript,
@@ -273,6 +274,28 @@ function onEvent(event: STTEvent) {
     });
     return;
   }
+  if (event.kind === 'speaker-tentative') {
+    const limit = (active.expectedParticipants ?? 4) > 4 ? 10 : 4;
+    const turns = event.turns.filter(
+      (turn) =>
+        Number.isInteger(turn.speaker) &&
+        turn.speaker >= 0 &&
+        turn.speaker < limit &&
+        Number.isFinite(turn.start) &&
+        Number.isFinite(turn.end) &&
+        turn.start >= 0 &&
+        turn.end > turn.start,
+    );
+    const current = turns.at(-1);
+    active = {
+      ...active,
+      tentativeSpeakerTurns: turns,
+      ...(Number.isFinite(event.through) ? { speakerHorizon: event.through } : {}),
+      ...(current ? { activeSpeaker: current.speaker, lastSpeakerAt: Date.now() } : {}),
+    };
+    publish();
+    return;
+  }
   if (event.kind === 'words') {
     recordWords(event.words);
     return;
@@ -330,8 +353,12 @@ function onEvent(event: STTEvent) {
     }
     return;
   }
-  if (event.kind === 'segment' && event.final)
-    recordWords([{ text: event.text, start: event.start, end: event.end }]);
+  if (event.kind === 'segment' && event.final) {
+    // Per-word timing lets a phrase spoken with pauses keep its speaker; older native
+    // builds send only the phrase range.
+    const words = event.runs ? wordsFromRuns(event.runs) : [];
+    recordWords(words.length ? words : [{ text: event.text, start: event.start, end: event.end }]);
+  }
   transcript = applySTTEvent(transcript, event);
   const text = transcriptText(transcript);
   const id = active.id;

@@ -455,13 +455,22 @@ export default function MeetingScreen() {
     if (meeting?.timedWords?.length) {
       const aligned = reconcileTimedTranscript(meeting.transcript, meeting.timedWords);
       if (!aligned) return [{ text: meeting.transcript }];
+      const diarizing = meeting.state === 'active' && meeting.speakerStatus !== 'unavailable';
       const lines: TranscriptRow[] = speakerLines(
         aligned.words,
-        meeting.speakerTurns ?? [],
+        [
+          ...(meeting.speakerTurns ?? []),
+          ...(diarizing ? (meeting.tentativeSpeakerTurns ?? []) : []),
+        ],
         meeting.speakerCorrections ?? [],
         meeting.speakerMerges ?? {},
+        // Native builds without progress reports leave words pending only until the
+        // first finalized turn arrives.
+        diarizing
+          ? (meeting.speakerHorizon ?? (meeting.speakerTurns?.length ? Infinity : 0))
+          : Infinity,
       );
-      if (aligned.tail) lines.push({ text: `Speaker pending: ${aligned.tail}` });
+      if (aligned.tail) lines.push({ text: aligned.tail });
       return lines;
     }
     const text = meeting?.transcript ?? '';
@@ -473,6 +482,10 @@ export default function MeetingScreen() {
     meeting?.transcript,
     meeting?.timedWords,
     meeting?.speakerTurns,
+    meeting?.tentativeSpeakerTurns,
+    meeting?.speakerHorizon,
+    meeting?.speakerStatus,
+    meeting?.state,
     meeting?.speakerCorrections,
     meeting?.speakerMerges,
   ]);
@@ -1281,7 +1294,7 @@ export default function MeetingScreen() {
           keyExtractor={(_, index) => String(index)}
           contentContainerStyle={styles.transcriptContent}
           renderItem={({ item }) =>
-            'start' in item ? (
+            'start' in item && !item.pending ? (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Correct speaker for ${item.text}`}
@@ -1293,7 +1306,8 @@ export default function MeetingScreen() {
                 </Text>
               </Pressable>
             ) : (
-              <Text style={styles.transcriptText}>{item.text}</Text>
+              // Not yet attributed: shown without a speaker until the diarizer catches up.
+              <Text style={[styles.transcriptText, styles.transcriptPending]}>{item.text}</Text>
             )
           }
           ListEmptyComponent={<Text style={styles.hint}>Recognized speech will appear here.</Text>}
@@ -2155,4 +2169,5 @@ const styles = StyleSheet.create((theme) => ({
   sheetTitle: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '700' },
   transcriptContent: { gap: theme.spacing.md, paddingBottom: theme.spacing.xl },
   transcriptText: { color: theme.colors.text, fontSize: theme.text.md, lineHeight: 24 },
+  transcriptPending: { color: theme.colors.textMuted },
 }));

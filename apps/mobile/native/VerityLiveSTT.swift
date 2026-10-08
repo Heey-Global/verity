@@ -63,6 +63,14 @@ private struct SpeakerAudio: Sendable {
   let sampleRate: Double
 }
 
+private struct SpeakerUpdate: Sendable {
+  let finalized: [DiarizerSegment]
+  /// Turns still open at the end of the processed audio; replaced by the next update.
+  let tentative: [DiarizerSegment]
+  /// Audio seconds the diarizer has processed through, finalized or not.
+  let through: Double
+}
+
 private actor LiveSpeakerProcessor {
   private enum Model {
     case sortformer(SortformerDiarizer)
@@ -71,27 +79,54 @@ private actor LiveSpeakerProcessor {
 
   private let model: Model
 
+  // FluidAudio's default timeline turns raw frame decisions into segments with no
+  // smoothing, so every breath split a turn and words in the gaps lost their speaker.
+  // These are NeMo's CALLHOME-tuned post-processing values for streaming Sortformer
+  // v2 (diar_streaming_sortformer_4spk-v2_callhome-part1.yaml), except the minimum
+  // speech length, shortened from 0.51 s so a brief "yes" keeps its speaker.
+  private static func timelineConfig(frameDuration: Float) -> DiarizerTimelineConfig {
+    DiarizerTimelineConfig(
+      frameDurationSeconds: frameDuration,
+      onsetThreshold: 0.641,
+      offsetThreshold: 0.561,
+      onsetPadSeconds: 0.229,
+      offsetPadSeconds: 0.079,
+      minDurationOn: 0.16,
+      minDurationOff: 0.296)
+  }
+
   init(participants: Int) async throws {
     if participants > 4 {
-      model = .lsEend(try await LSEENDDiarizer(variant: .dihard3))
+      model = .lsEend(
+        try await LSEENDDiarizer(
+          variant: .dihard3, timelineConfig: Self.timelineConfig(frameDuration: 0.1)))
     } else {
       let config = SortformerConfig.default
       let models = try await SortformerModels.loadFromHuggingFace(config: config)
-      let diarizer = SortformerDiarizer(config: config)
+      let diarizer = SortformerDiarizer(
+        config: config, timelineConfig: Self.timelineConfig(frameDuration: 0.08))
       diarizer.initialize(models: models)
       model = .sortformer(diarizer)
     }
   }
 
-  func process(_ audio: SpeakerAudio) throws -> [DiarizerSegment] {
+  func process(_ audio: SpeakerAudio) throws -> SpeakerUpdate? {
     let update: DiarizerTimelineUpdate?
+    let frameDuration: Float
     switch model {
     case .sortformer(let diarizer):
       update = try diarizer.process(samples: audio.samples, sourceSampleRate: audio.sampleRate)
+      frameDuration = diarizer.timeline.config.frameDurationSeconds
     case .lsEend(let diarizer):
       update = try diarizer.process(samples: audio.samples, sourceSampleRate: audio.sampleRate)
+      frameDuration = diarizer.timeline.config.frameDurationSeconds
     }
-    return update?.finalizedSegments ?? []
+    guard let update else { return nil }
+    let chunk = update.chunkResult
+    let frames = chunk.startFrame + chunk.finalizedFrameCount + chunk.tentativeFrameCount
+    return SpeakerUpdate(
+      finalized: update.finalizedSegments, tentative: update.tentativeSegments,
+      through: Double(Float(frames) * frameDuration))
   }
 
   func finish() throws -> [DiarizerSegment] {
@@ -323,7 +358,7 @@ private final class LiveSTTService {
     resultsTask = Task {
       for try await result in transcriber.results {
         self.emitAppleResult(
-          text: String(result.text.characters), start: result.range.start,
+          text: result.text, start: result.range.start,
           end: CMTimeRangeGetEnd(result.range), final: result.isFinal)
       }
     }
@@ -355,7 +390,7 @@ private final class LiveSTTService {
     resultsTask = Task {
       for try await result in transcriber.results {
         self.emitAppleResult(
-          text: String(result.text.characters), start: result.range.start,
+          text: result.text, start: result.range.start,
           end: CMTimeRangeGetEnd(result.range), final: result.isFinal)
       }
     }
@@ -440,11 +475,26 @@ private final class LiveSTTService {
     }
   }
 
-  private func emitAppleResult(text: String, start: CMTime, end: CMTime, final: Bool) {
-    emit?([
-      "kind": "segment", "text": text, "final": final,
+  private func emitAppleResult(text: AttributedString, start: CMTime, end: CMTime, final: Bool) {
+    var event: [String: Any] = [
+      "kind": "segment", "text": String(text.characters), "final": final,
       "start": CMTimeGetSeconds(start), "end": CMTimeGetSeconds(end),
-    ])
+    ]
+    // One range for the whole phrase includes its pauses, which the diarizer does not
+    // mark as anyone's speech; per-run ranges let each word find its speaker.
+    if final {
+      event["runs"] = text.runs.map { run -> [String: Any] in
+        var entry: [String: Any] = ["text": String(text[run.range].characters)]
+        if let range = run[AttributeScopes.SpeechAttributes.TimeRangeAttribute.self],
+          range.isValid, CMTimeGetSeconds(range.duration) > 0
+        {
+          entry["start"] = CMTimeGetSeconds(range.start)
+          entry["end"] = CMTimeGetSeconds(CMTimeRangeGetEnd(range))
+        }
+        return entry
+      }
+    }
+    emit?(event)
   }
 
   private func startNemotron(
@@ -528,8 +578,10 @@ private final class LiveSTTService {
         for await chunk in speakerStream {
           if speakerUnavailable { break }
           do {
-            let segments = try await speakerProcessor.process(chunk)
-            emitSpeakerSegments(segments)
+            if let update = try await speakerProcessor.process(chunk) {
+              emitSpeakerSegments(update.finalized)
+              emitTentativeSpeakers(update)
+            }
           } catch {
             speakerUnavailable = true
             speakerInput?.finish()
@@ -603,6 +655,16 @@ private final class LiveSTTService {
         "start": segment.startTime, "end": segment.endTime,
       ])
     }
+  }
+
+  private func emitTentativeSpeakers(_ update: SpeakerUpdate) {
+    emit?([
+      "kind": "speaker-tentative",
+      "turns": update.tentative.filter { $0.endTime > $0.startTime }.map {
+        ["speaker": $0.speakerIndex, "start": $0.startTime, "end": $0.endTime] as [String: Any]
+      },
+      "through": update.through,
+    ])
   }
 
   private func emitWords(_ words: [WordTiming], includeLast: Bool) {
