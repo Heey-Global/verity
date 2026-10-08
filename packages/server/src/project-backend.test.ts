@@ -103,6 +103,7 @@ describe('DockerExecBackend (#174)', () => {
         worktree: '/data/dev/heey-global-verity/.verity-sessions/agent-x',
         cwd: '/data/dev/heey-global-verity/.verity-sessions/agent-x',
         prompt: 'go',
+        storeSessionId: 'backend-session-fixture',
       })
       .catch(() => undefined);
 
@@ -117,7 +118,7 @@ describe('DockerExecBackend (#174)', () => {
       '-e',
       SIGNING_DOCKER_CONTAINER,
       '-e',
-      expect.stringMatching(/^VERITY_SESSION_ID=.+$/),
+      'VERITY_SESSION_ID=backend-session-fixture',
       '-w',
       '/work/.verity-sessions/agent-x',
       'dev-heey-global--verity',
