@@ -4,7 +4,7 @@ import { type SessionSummary } from '@verity/mobile';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon } from './Icon';
 import { createVerityClient } from '../lib/client';
-import { dispatchTaskIssue } from '../lib/taskIssueDispatch';
+import { dispatchTaskIssue, taskIssueRetry } from '../lib/taskIssueDispatch';
 
 type Issue = {
   number: number;
@@ -33,6 +33,29 @@ export function TaskIssuesList({
   const [expanded, setExpanded] = useState(false);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [busy, setBusy] = useState(false);
+  const [retries, setRetries] = useState<Record<number, { targetSessionId?: string }>>({});
+  useEffect(() => {
+    let active = true;
+    setRetries({});
+    void Promise.all(
+      issues.map(
+        async (issue) => [issue.number, await taskIssueRetry(projectId, issue.number)] as const,
+      ),
+    )
+      .then((entries) => {
+        if (active)
+          setRetries(
+            Object.fromEntries(entries.filter((entry) => entry[1] !== null)) as Record<
+              number,
+              { targetSessionId?: string }
+            >,
+          );
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [projectId, issues]);
   useEffect(() => {
     let active = true;
     setSessions([]);
@@ -80,9 +103,19 @@ export function TaskIssuesList({
     setBusy(true);
     void dispatchTaskIssue(projectId, issue, target)
       .then(onOpenSession)
-      .catch((error) =>
-        Alert.alert('Issue action failed', error instanceof Error ? error.message : 'Try again'),
-      )
+      .catch((error) => {
+        void taskIssueRetry(projectId, issue.number)
+          .then((retry) => {
+            setRetries((value) => {
+              const next = { ...value };
+              if (retry) next[issue.number] = retry;
+              else delete next[issue.number];
+              return next;
+            });
+          })
+          .catch(() => undefined);
+        Alert.alert('Issue action failed', error instanceof Error ? error.message : 'Try again');
+      })
       .finally(() => setBusy(false));
   };
   return (
@@ -157,16 +190,20 @@ export function TaskIssuesList({
               </View>
             </View>
             <View style={[styles.chips, styles.indent]}>
-              {session ? (
-                chip('↳ Open session', () => onOpenSession(session.sessionId), true)
-              ) : (
+              {session
+                ? chip('↳ Open session', () => onOpenSession(session.sessionId), true)
+                : null}
+              {retries[issue.number]
+                ? chip('Retry', () => dispatch(issue, retries[issue.number]?.targetSessionId), true)
+                : null}
+              {!session ? (
                 <>
                   {currentSessionId
                     ? chip('↳ This Session', () => dispatch(issue, currentSessionId), true)
                     : null}
                   {chip('+ New Session', () => dispatch(issue))}
                 </>
-              )}
+              ) : null}
             </View>
           </View>
         );

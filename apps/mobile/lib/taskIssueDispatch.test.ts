@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { dispatchTaskIssue } from './taskIssueDispatch';
+import { dispatchTaskIssue, taskIssueRetry } from './taskIssueDispatch';
 import { createSessionConfirmingWarnings } from './startSession';
 const mockClient = {
   sendTurn: jest.fn(async () => ({ accepted: true })),
@@ -33,7 +33,12 @@ beforeEach(async () => {
 it('retries a lost turn response with the same session and reply IDs', async () => {
   mockClient.sendTurn.mockRejectedValueOnce(new Error('Network lost'));
   await expect(dispatchTaskIssue('p', issue)).rejects.toThrow('Network lost');
+  expect(await taskIssueRetry('p', issue.number)).toEqual({});
+  mockClient.listSessions.mockResolvedValue([
+    { sessionId: 'uuid-1', projectId: 'p', resumable: true },
+  ]);
   const id = await dispatchTaskIssue('p', issue);
+  expect(await taskIssueRetry('p', issue.number)).toBeNull();
   expect(id).toBe('uuid-1');
   expect(createSessionConfirmingWarnings).toHaveBeenCalledWith(mockClient, {
     sessionId: id,
@@ -78,3 +83,59 @@ it('revalidates explicit targets even after a completed dispatch', async () => {
   await expect(dispatchTaskIssue('p', issue, 's')).rejects.toThrow('Choose a resumable session');
   expect(mockClient.sendTurn).toHaveBeenCalledTimes(1);
 });
+
+it('discovers an unsent This Session turn after leaving that session', async () => {
+  mockClient.sendTurn.mockRejectedValueOnce(new Error('Lost response'));
+  await expect(dispatchTaskIssue('p', issue, 's')).rejects.toThrow('Lost response');
+  expect(await taskIssueRetry('p', issue.number)).toEqual({ targetSessionId: 's' });
+  await dispatchTaskIssue('p', issue, 's');
+  expect(mockClient.sendTurn.mock.calls[1]).toEqual(mockClient.sendTurn.mock.calls[0]);
+});
+it.each([
+  { sessions: [] },
+  { sessions: [{ sessionId: 'uuid-1', projectId: 'p', resumable: false }] },
+])(
+  'recovers an unsent issue turn after its created session becomes unavailable: %j',
+  async ({ sessions }) => {
+    mockClient.sendTurn.mockRejectedValueOnce(new Error('Lost response'));
+    await expect(dispatchTaskIssue('p', issue)).rejects.toThrow('Lost response');
+    mockClient.listSessions.mockResolvedValue(sessions);
+    expect(await dispatchTaskIssue('p', issue)).toBe('uuid-3');
+    expect(mockClient.sendTurn).toHaveBeenLastCalledWith('uuid-3', expect.anything());
+  },
+);
+
+it.each([
+  { sessions: [] },
+  { sessions: [{ sessionId: 'uuid-1', projectId: 'p', resumable: false }] },
+])(
+  'keeps the original ID after a lost create response while provisioning is unresolved: %j',
+  async ({ sessions }) => {
+    jest
+      .mocked(createSessionConfirmingWarnings)
+      .mockRejectedValueOnce(new Error('Lost create response'));
+    await expect(dispatchTaskIssue('p', issue)).rejects.toThrow('Lost create response');
+    mockClient.listSessions.mockResolvedValue(sessions);
+    expect(await dispatchTaskIssue('p', issue)).toBe('uuid-1');
+    expect(createSessionConfirmingWarnings).toHaveBeenNthCalledWith(
+      2,
+      mockClient,
+      expect.objectContaining({ sessionId: 'uuid-1' }),
+    );
+    expect(mockClient.sendTurn).toHaveBeenCalledTimes(1);
+  },
+);
+
+it.each([{ sessions: [] }, { sessions: [{ sessionId: 's', projectId: 'p', resumable: false }] }])(
+  'retires unsent invalid explicit targets before starting a new session: %j',
+  async ({ sessions }) => {
+    mockClient.sendTurn.mockRejectedValueOnce(new Error('Lost response'));
+    await expect(dispatchTaskIssue('p', issue, 's')).rejects.toThrow('Lost response');
+    expect(await taskIssueRetry('p', issue.number)).toEqual({ targetSessionId: 's' });
+    mockClient.listSessions.mockResolvedValue(sessions);
+    await expect(dispatchTaskIssue('p', issue, 's')).rejects.toThrow('Choose a resumable session');
+    expect(await taskIssueRetry('p', issue.number)).toBeNull();
+    await dispatchTaskIssue('p', issue);
+    expect(await taskIssueRetry('p', issue.number)).toBeNull();
+  },
+);
