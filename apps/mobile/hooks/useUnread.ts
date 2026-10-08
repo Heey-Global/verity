@@ -14,7 +14,7 @@ export interface UseUnread {
   /** Mark a session seen at its current event count — call when opening it so its
    * unread dot clears on every device. A `undefined` count (older server) is a safe
    * no-op. */
-  markSeen: (sessionId: string, eventCount?: number) => void;
+  markSeen: (sessionId: string, eventCount?: number, counterVersion?: string) => void;
 }
 
 /**
@@ -34,6 +34,25 @@ export function useUnread(client: VerityClient, sessions: readonly SessionSummar
   // re-send an unchanged mark. Kept in a ref so `markSeen` stays referentially
   // stable regardless of poll cadence.
   const sentRef = useRef<Map<string, number>>(new Map());
+  const writesRef = useRef(new Map<string, symbol>());
+
+  const versionsRef = useRef(new Map(sessions.map((s) => [s.sessionId, s.eventCountVersion])));
+  useEffect(() => {
+    const changed = sessions.filter(
+      (s) => versionsRef.current.get(s.sessionId) !== s.eventCountVersion,
+    );
+    for (const s of sessions) versionsRef.current.set(s.sessionId, s.eventCountVersion);
+    for (const s of changed) {
+      sentRef.current.delete(s.sessionId);
+      writesRef.current.delete(s.sessionId);
+    }
+    if (changed.length)
+      setOverrides((current) => {
+        const next = new Map(current);
+        for (const s of changed) next.delete(s.sessionId);
+        return next;
+      });
+  }, [sessions]);
 
   // Once the polled list confirms the server mark reached an optimistic override,
   // drop the override so the server value (which follows across devices) takes over.
@@ -42,20 +61,24 @@ export function useUnread(client: VerityClient, sessions: readonly SessionSummar
   }, [sessions]);
 
   const markSeen = useCallback(
-    (sessionId: string, eventCount?: number) => {
+    (sessionId: string, eventCount?: number, counterVersion?: string) => {
       if (eventCount === undefined) return;
       // Skip a redundant write: we've already told the server about this count (or a
       // newer one). Advancing is monotonic, so an older count is never re-sent.
       const alreadySent = sentRef.current.get(sessionId);
       if (alreadySent !== undefined && alreadySent >= eventCount) return;
       sentRef.current.set(sessionId, eventCount);
+      const write = Symbol('seen-write');
+      writesRef.current.set(sessionId, write);
       setOverrides((prev) => advanceOverride(prev, sessionId, eventCount));
       // Persist the mark so the dot clears on every device. A failed write rolls the
       // override + sent-mark back to server truth so a dot isn't stranded cleared
       // locally only, and the next open/poll can retry the write. Both rollbacks are
       // guarded on the value still equaling THIS failed count, so a newer in-flight
       // markSeen(sessionId, N2) that already advanced past N1 is left untouched.
-      void client.setSessionSeen(sessionId, eventCount).catch(() => {
+      void client.setSessionSeen(sessionId, eventCount, counterVersion).catch(() => {
+        // A pre-migration write can fail after a new counter reused the same count.
+        if (writesRef.current.get(sessionId) !== write) return;
         if (sentRef.current.get(sessionId) === eventCount) sentRef.current.delete(sessionId);
         setOverrides((current) => {
           if (current.get(sessionId) !== eventCount) return current;

@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage } from 'node:http';
 import { connect } from 'node:net';
 import type { Duplex } from 'node:stream';
@@ -8,6 +8,7 @@ import {
   CONNECTOR_MAX_RECONNECT_ATTEMPTS,
   PreviewConnector,
   PreviewEdge,
+  type PreviewEdgeOptions,
   generatePreviewSecret,
   hashPreviewPin,
   hashPreviewSecret,
@@ -19,6 +20,15 @@ import { expiredPage, loginPage, unavailablePage } from './preview-page.js';
 
 const cleanups: Array<() => Promise<void> | void> = [];
 const sessionSecretHash = hashPreviewSecret('independent-edge-session-secret');
+
+it('asks visitors for exactly six digits', () => {
+  const page = loginPage('/');
+  const input = page.match(/<input id="pin"[^>]*>/)?.[0];
+  expect(input).toContain('pattern="[0-9]{6}"');
+  expect(input).toContain('minlength="6"');
+  expect(input).toContain('maxlength="6"');
+  expect(input).toContain('placeholder="6 digits"');
+});
 
 it('escapes the return path in the code form', () => {
   const page = loginPage('/?next="<script>');
@@ -51,6 +61,469 @@ it('uses the code-entry page chrome for unavailable previews', () => {
 });
 afterEach(async () => {
   while (cleanups.length) await cleanups.pop()?.();
+});
+
+describe('preview browser origin protection', () => {
+  const shareId = 'share-origin-guard';
+  const origin = `https://${shareId}.preview.example.test`;
+  const rejectedHeaders = [
+    { origin: 'https://hostile.preview.example.test' },
+    { origin: 'https://unrelated.example.org' },
+    { origin: 'null' },
+    { origin: `${origin}/` },
+    { origin: 'malformed' },
+    { 'sec-fetch-site': 'same-site' },
+    { 'sec-fetch-site': 'cross-site' },
+  ];
+
+  it('blocks unsafe HTTP from sibling origins before forwarding or setting a login cookie', async () => {
+    const forwarded = vi.fn();
+    const target = createServer((request, response) => {
+      forwarded(request.method);
+      response.end('target');
+    });
+    const port = await listen(target);
+    cleanups.push(() => closeServer(target));
+    const { edgePort, cookie } = await bridge(shareId, port);
+    // SameSite cookies still accompany requests between sibling preview hosts.
+    for (const headers of rejectedHeaders) {
+      for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+        const response = await fetch(`http://127.0.0.1:${edgePort}/private`, {
+          method,
+          headers: { cookie, ...headers },
+          redirect: 'manual',
+          body: 'hostile',
+        });
+        expect(response.status).toBe(403);
+        await response.text();
+      }
+      const loginResponse = await fetch(`http://127.0.0.1:${edgePort}/__verity/login`, {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
+        redirect: 'manual',
+        body: 'pin=123456&next=%2F',
+      });
+      expect(loginResponse.status).toBe(403);
+      expect(loginResponse.headers.get('set-cookie')).toBeNull();
+      await loginResponse.text();
+    }
+    expect(forwarded).not.toHaveBeenCalled();
+  });
+
+  it('preserves same-origin writes, headerless tools, reads and code-link login', async () => {
+    const target = createServer((request, response) => response.end(request.method));
+    const port = await listen(target);
+    cleanups.push(() => closeServer(target));
+    const { edgePort, cookie } = await bridge(shareId, port);
+    for (const headers of [{ origin }, {}, { 'sec-fetch-site': 'same-origin' }]) {
+      const write = await fetch(`http://127.0.0.1:${edgePort}/private`, {
+        method: 'POST',
+        headers: { cookie, ...headers },
+        body: 'valid',
+      });
+      expect(write.status).toBe(200);
+      expect(await write.text()).toBe('POST');
+      const loginResponse = await fetch(`http://127.0.0.1:${edgePort}/__verity/login`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
+        body: 'pin=123456&next=%2F',
+      });
+      expect(loginResponse.status).toBe(303);
+      expect(loginResponse.headers.get('set-cookie')).toContain('__Host-verity-preview=');
+      await loginResponse.text();
+    }
+    const read = await fetch(`http://127.0.0.1:${edgePort}/private`, {
+      headers: { cookie, origin: 'https://hostile.preview.example.test' },
+    });
+    expect(await read.text()).toBe('GET');
+    const link = await fetch(`http://127.0.0.1:${edgePort}/?pin=123456`, {
+      headers: { 'sec-fetch-site': 'cross-site' },
+      redirect: 'manual',
+    });
+    expect(link.status).toBe(303);
+    expect(link.headers.get('set-cookie')).toContain('__Host-verity-preview=');
+    await link.text();
+  });
+
+  it('refuses sibling-origin WebSockets before opening a private target stream', async () => {
+    const reached = vi.fn();
+    const port = await wsTarget(reached);
+    const { edgePort, cookie } = await bridge(shareId, port);
+    for (const headers of rejectedHeaders) {
+      const client = new WebSocket(`ws://127.0.0.1:${edgePort}/private`, {
+        headers: { cookie, ...headers },
+      });
+      cleanups.push(() => client.terminate());
+      const status = await new Promise<number>((resolve, reject) => {
+        client.once('unexpected-response', (_request, response) => {
+          response.resume();
+          resolve(response.statusCode!);
+          client.terminate();
+        });
+        client.on('error', () => {});
+        client.once('open', () => reject(new Error('cross-origin WebSocket opened')));
+      });
+      expect(status).toBe(403);
+    }
+    expect(reached).not.toHaveBeenCalled();
+  });
+
+  it('keeps connector upgrades governed by bearer authentication', async () => {
+    const token = generatePreviewSecret();
+    const edge = new PreviewEdge({
+      shareId,
+      pinHash: hashPreviewPin('123456'),
+      connectorTokenHash: hashPreviewSecret(token),
+      sessionSecretHash,
+      publicOrigin: origin,
+    });
+    const port = await edge.listen();
+    cleanups.push(() => edge.close());
+    const client = new WebSocket(`ws://127.0.0.1:${port}/__verity/connector`, {
+      headers: { authorization: `Bearer ${token}`, origin: 'https://hostile.preview.example.test' },
+    });
+    cleanups.push(() => client.terminate());
+    await opened(client);
+    const unauthorized = new WebSocket(`ws://127.0.0.1:${port}/__verity/connector`, {
+      headers: { origin },
+    });
+    cleanups.push(() => unauthorized.terminate());
+    unauthorized.on('error', () => {});
+    const status = await new Promise<number>((resolve, reject) => {
+      unauthorized.once('unexpected-response', (_request, response) => {
+        response.resume();
+        resolve(response.statusCode!);
+        unauthorized.terminate();
+      });
+      unauthorized.once('open', () => reject(new Error('anonymous connector opened')));
+    });
+    expect(status).toBe(401);
+  });
+
+  it('preserves same-origin and headerless application WebSockets', async () => {
+    const port = await wsTarget((socket) => socket.on('message', (data) => socket.send(data)));
+    const { edgePort, cookie } = await bridge(shareId, port);
+    for (const headers of [{ origin }, {}, { 'sec-fetch-site': 'same-origin' }]) {
+      const client = new WebSocket(`ws://127.0.0.1:${edgePort}/private`, {
+        headers: { cookie, ...headers },
+      });
+      cleanups.push(() => client.terminate());
+      await opened(client);
+      const reply = new Promise<string>((resolve) =>
+        client.once('message', (data) => resolve((data as Buffer).toString())),
+      );
+      client.send('private data');
+      expect(await reply).toBe('private data');
+      client.close();
+    }
+  });
+});
+
+describe('preview session cookie expiry', () => {
+  const lifetime = 8 * 60 * 60 * 1000;
+
+  function clock() {
+    const issuedAt = Date.now();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(issuedAt);
+    cleanups.push(() => now.mockRestore());
+    return { issuedAt, now };
+  }
+
+  async function target() {
+    const server = createServer((_request, response) => response.end('private preview'));
+    const port = await listen(server);
+    cleanups.push(() => closeServer(server));
+    return port;
+  }
+
+  async function read(edgePort: number, cookie: string) {
+    const response = await fetch(`http://127.0.0.1:${edgePort}/private`, {
+      headers: { cookie },
+      redirect: 'manual',
+    });
+    await response.text();
+    return response;
+  }
+
+  it('rejects replay at eight hours and permits a fresh PIN login', async () => {
+    const { issuedAt, now } = clock();
+    const { edgePort, cookie } = await bridge('cookie-expiry', await target());
+    expect(cookie.split('.')[1]).toBe(String(issuedAt + lifetime));
+    expect((await read(edgePort, cookie)).status).toBe(200);
+    now.mockReturnValue(issuedAt + lifetime - 1);
+    expect((await read(edgePort, cookie)).status).toBe(200);
+    now.mockReturnValue(issuedAt + lifetime);
+    expect((await read(edgePort, cookie)).status).toBe(303);
+    now.mockReturnValue(issuedAt + lifetime + 1);
+    expect((await read(edgePort, cookie)).status).toBe(303);
+    const renewed = await login(edgePort, '123456');
+    expect(renewed).not.toBe(cookie);
+    expect((await read(edgePort, renewed)).status).toBe(200);
+    expect((await read(edgePort, cookie)).status).toBe(303);
+  });
+
+  it('rejects modified expiry, signatures, malformed values and legacy cookies', async () => {
+    const { edgePort, cookie } = await bridge('cookie-integrity', await target());
+    const [prefix, expiresAt, signature] = cookie.split('.') as [string, string, string];
+    const legacy = createHmac('sha256', sessionSecretHash)
+      .update('preview-session:cookie-integrity')
+      .digest('base64url');
+    for (const invalid of [
+      `${prefix}.${Number(expiresAt) + lifetime}.${signature}`,
+      `${prefix}.${expiresAt}.${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`,
+      `${prefix}.NaN.${signature}`,
+      `${prefix}.9007199254740992.${signature}`,
+      `${prefix}.${expiresAt}.${signature}.extra`,
+      `__Host-verity-preview=v2.${expiresAt}.${signature}`,
+      `__Host-verity-preview=${legacy}`,
+    ]) {
+      expect((await read(edgePort, invalid)).status).toBe(303);
+    }
+    expect((await read(edgePort, cookie)).status).toBe(200);
+  });
+
+  it('binds the signed cookie to its share even when signing secrets match', async () => {
+    const port = await target();
+    const first = await bridge('cookie-first', port);
+    const second = await bridge('cookie-second', port);
+    expect((await read(second.edgePort, first.cookie)).status).toBe(303);
+    expect((await read(second.edgePort, second.cookie)).status).toBe(200);
+  });
+
+  it('rejects expired cookies on new WebSocket handshakes before reaching the target', async () => {
+    const { issuedAt, now } = clock();
+    let connections = 0;
+    const port = await wsTarget(() => {
+      connections += 1;
+    });
+    const { edgePort, cookie } = await bridge('cookie-websocket', port);
+    const client = new WebSocket(`ws://127.0.0.1:${edgePort}/socket`, { headers: { cookie } });
+    cleanups.push(() => client.terminate());
+    await opened(client);
+    expect(connections).toBe(1);
+    now.mockReturnValue(issuedAt + lifetime);
+    const response = await rawUpgrade(edgePort, cookie, handshakeKey());
+    expect(response).toContain('401 Unauthorized');
+    expect(connections).toBe(1);
+  });
+});
+
+describe('WebSocket PIN query authentication', () => {
+  async function refused(url: string, headers?: Record<string, string>): Promise<number> {
+    const client = new WebSocket(url, { headers });
+    cleanups.push(() => client.terminate());
+    return new Promise((resolve, reject) => {
+      client.once('unexpected-response', (_request, response) => {
+        response.resume();
+        client.terminate();
+        resolve(response.statusCode!);
+      });
+      client.once('error', () => {});
+      client.once('open', () => reject(new Error('unauthorized socket opened')));
+    });
+  }
+
+  it('authenticates without cookies and strips all PIN parameters while preserving application queries and duplex audio', async () => {
+    const paths: string[] = [];
+    const targetPort = await wsTarget((socket, request) => {
+      paths.push(request.url!);
+      socket.on('message', (data: WebSocket.RawData) => socket.send(data));
+    });
+    const { edgePort } = await bridge('ws-pin-query', targetPort);
+    const client = new WebSocket(
+      `ws://127.0.0.1:${edgePort}/attendee?pin=123456&?token=audio%20~&p%69n=secret`,
+    );
+    cleanups.push(() => client.terminate());
+    await opened(client);
+    const echo = new Promise<string>((resolve) =>
+      client.once('message', (data: WebSocket.RawData) => resolve(rawText(data))),
+    );
+    client.send('audio chunk');
+    expect(await echo).toBe('audio chunk');
+    expect(paths).toEqual(['/attendee??token=audio%20~']);
+  });
+
+  it('preserves raw application query encoding when authenticating with a cookie', async () => {
+    const paths: string[] = [];
+    const targetPort = await wsTarget((_socket, request) => paths.push(request.url!));
+    const { edgePort, cookie } = await bridge('ws-query-encoding', targetPort);
+    const client = new WebSocket(`ws://127.0.0.1:${edgePort}/socket?signature=a%20~&value=%2f`, {
+      headers: { cookie },
+    });
+    cleanups.push(() => client.terminate());
+    await opened(client);
+    expect(paths).toEqual(['/socket?signature=a%20~&value=%2f']);
+  });
+
+  it.each(['', '?pin=000000'])(
+    'releases rejected sockets even when clients withhold FIN (%s)',
+    async (query) => {
+      const edge = new PreviewEdge({
+        shareId: 'ws-half-open',
+        pinHash: hashPreviewPin('123456'),
+        connectorTokenHash: hashPreviewSecret('connector'),
+        sessionSecretHash,
+        publicOrigin: 'https://ws-half-open.preview.example.test',
+      });
+      const port = await edge.listen();
+      const client = connect({ port, host: '127.0.0.1', allowHalfOpen: true });
+      client.on('error', () => {});
+      const ended = new Promise<string>((resolve) => {
+        let response = '';
+        client.on('data', (chunk: Buffer) => {
+          response += chunk.toString();
+        });
+        client.once('end', () => resolve(response));
+      });
+      client.write(
+        `GET /attendee${query} HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n${handshakeKey()}\r\n`,
+      );
+      let closing: Promise<void> | undefined;
+      try {
+        expect(await ended).toContain('401 Unauthorized');
+        // An unclosed upgrade can keep server shutdown waiting for the client's FIN.
+        closing = edge.close();
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            closing,
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(
+                () => reject(new Error('rejected socket retained by server')),
+                1000,
+              );
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+        expect(client.writableEnded).toBe(false);
+      } finally {
+        client.destroy();
+        await (closing ?? edge.close());
+      }
+    },
+  );
+
+  it('survives a peer reset while the PIN budget verification is pending', async () => {
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const beginning = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const edge = new PreviewEdge({
+      shareId: 'ws-reset',
+      pinHash: hashPreviewPin('123456'),
+      connectorTokenHash: hashPreviewSecret('connector'),
+      sessionSecretHash,
+      publicOrigin: 'https://ws-reset.preview.example.test',
+      pinBudget: {
+        begin: async () => {
+          started();
+          await pending;
+          return { state: 'allowed', attemptId: 'attempt' };
+        },
+        finish: async () => ({ state: 'allowed' }),
+      },
+    });
+    const port = await edge.listen();
+    cleanups.push(() => edge.close());
+    const client = connect({ port, host: '127.0.0.1' });
+    cleanups.push(() => {
+      release();
+      client.destroy();
+    });
+    client.on('error', () => {});
+    client.write(
+      `GET /attendee?pin=123456 HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n${handshakeKey()}\r\n`,
+    );
+    await beginning;
+    const closed = new Promise<void>((resolve) => client.once('close', () => resolve()));
+    client.resetAndDestroy();
+    await closed;
+    // Allow the reset to reach the edge while verification remains suspended.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    release();
+    const response = await fetch(`http://127.0.0.1:${port}/__verity/login`);
+    expect(response.status).toBe(200);
+    await response.arrayBuffer();
+  });
+
+  it('shares the failed-attempt limit with HTTP and rejects foreign browser origins', async () => {
+    const reached = vi.fn();
+    const targetPort = await wsTarget(reached);
+    const { edgePort } = await bridge('ws-pin-limits', targetPort);
+    const base = `ws://127.0.0.1:${edgePort}/attendee`;
+    expect(await refused(`${base}?pin=123456`, { origin: 'https://hostile.example.test' })).toBe(
+      403,
+    );
+    expect(await refused(base)).toBe(401);
+    expect(await refused(`${base}?pin=bad`)).toBe(401);
+    for (let i = 0; i < 9; i++) {
+      const response = await fetch(`http://127.0.0.1:${edgePort}/__verity/login?pin=000000`, {
+        redirect: 'manual',
+      });
+      expect(response.status).toBe(401);
+      await response.arrayBuffer();
+    }
+    expect(await refused(`${base}?pin=123456`)).toBe(429);
+    expect(reached).not.toHaveBeenCalled();
+  });
+
+  it('requires durable PIN budget completion before opening a target socket', async () => {
+    const reached = vi.fn();
+    const targetPort = await wsTarget(reached);
+    const begin = vi.fn().mockResolvedValue({ state: 'allowed', attemptId: 'attempt' });
+    const finish = vi.fn().mockResolvedValue({ state: 'allowed' });
+    const { edgePort } = await bridge('ws-pin-budget', targetPort, {
+      pinBudget: { begin, finish },
+    });
+    begin.mockClear();
+    finish.mockClear();
+    const url = `ws://127.0.0.1:${edgePort}/attendee?pin=123456`;
+    finish.mockResolvedValueOnce({ state: 'unavailable' });
+    expect(await refused(url)).toBe(503);
+    expect(begin).toHaveBeenCalledOnce();
+    expect(finish).toHaveBeenCalledWith('attempt', true);
+    begin.mockResolvedValueOnce({ state: 'cooldown', retryAfterSeconds: 60 });
+    expect(await refused(url)).toBe(429);
+    begin.mockResolvedValueOnce({ state: 'locked' });
+    expect(await refused(url)).toBe(403);
+    begin.mockRejectedValueOnce(new Error('offline'));
+    expect(await refused(url)).toBe(503);
+    expect(reached).not.toHaveBeenCalled();
+  });
+});
+
+describe('application WebSocket receiver errors', () => {
+  it('closes oversized messages while keeping the edge and stream slots usable', async () => {
+    const port = await wsTarget((socket) => {
+      socket.on('message', (data, binary) => socket.send(data, { binary }));
+    });
+    const { edgePort, cookie } = await bridge('receiver-errors', port, {
+      maxBodyBytes: 128,
+      maxConcurrentStreams: 1,
+    });
+    const client = new WebSocket(`ws://127.0.0.1:${edgePort}/socket`, { headers: { cookie } });
+    cleanups.push(() => client.terminate());
+    await opened(client);
+    const closed = new Promise<number>((resolve) => client.once('close', resolve));
+    client.send(Buffer.alloc(129));
+    expect(await closed).toBe(1009);
+
+    const next = new WebSocket(`ws://127.0.0.1:${edgePort}/socket`, { headers: { cookie } });
+    cleanups.push(() => next.terminate());
+    await opened(next);
+    const echoed = new Promise<string>((resolve) =>
+      next.once('message', (data: WebSocket.RawData) => resolve(rawText(data))),
+    );
+    next.send('still available');
+    expect(await echoed).toBe('still available');
+  });
 });
 
 describe('connector reconnect policy', () => {
@@ -123,7 +596,7 @@ describe('preview tunnel', () => {
     const timeout = vi.spyOn(global, 'setTimeout');
     const edge = new PreviewEdge({
       shareId: 'share-month',
-      pinHash: hashPreviewPin('123456789012'),
+      pinHash: hashPreviewPin('123456'),
       connectorTokenHash: hashPreviewSecret('connector'),
       sessionSecretHash,
       publicOrigin: 'https://share-month.preview.example.test',
@@ -1805,6 +2278,7 @@ async function bridge(
   targetPort: number,
   options: Partial<{
     webhookPath: '/webhooks/attendee';
+    pinBudget: NonNullable<PreviewEdgeOptions['pinBudget']>;
     expiresAt: string;
     maxConcurrentStreams: number;
     requestTimeoutMs: number;
@@ -2124,4 +2598,32 @@ it('rejects noncanonical and reserved webhook paths', () => {
     expect(validWebhookPath(path)).toBe(false);
   }
   expect(validWebhookPath('/' + 'a'.repeat(1024))).toBe(false);
+});
+
+it('requires a durably completed PIN reservation before forwarding a webhook', async () => {
+  const forwarded = vi.fn();
+  const target = createServer((request, response) => {
+    forwarded(request.url);
+    response.end();
+  });
+  const port = await listen(target);
+  cleanups.push(() => closeServer(target));
+  const begin = vi.fn(async () => ({ state: 'allowed' as const, attemptId: 'webhook-attempt' }));
+  const finish = vi.fn(async () => ({ state: 'locked' as const }));
+  const { edgePort } = await bridge('webhook-budget', port, {
+    webhookPath: '/webhooks/attendee',
+    pinBudget: { begin, finish },
+  });
+  const path = `http://127.0.0.1:${edgePort}/webhooks/attendee`;
+  expect((await fetch(path, { method: 'POST' })).status).toBe(401);
+  expect(begin).not.toHaveBeenCalled();
+  const blocked = await fetch(`${path}?pin=123456`, {
+    method: 'POST',
+    body: 'provider body',
+    redirect: 'manual',
+  });
+  expect(blocked.status).toBe(403);
+  expect(blocked.headers.get('set-cookie')).toBeNull();
+  expect(finish).toHaveBeenCalledWith('webhook-attempt', true);
+  expect(forwarded).not.toHaveBeenCalled();
 });

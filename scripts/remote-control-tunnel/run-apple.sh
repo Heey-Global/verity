@@ -75,7 +75,8 @@ xcrun simctl boot "$simulator_udid"
 xcrun simctl bootstatus "$simulator_udid" -b
 app="$tmp/VerityRemoteTunnel.app"
 mkdir -p "$app"
-xcrun swiftc -parse-as-library -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+xcrun swiftc -parse-as-library -module-name VerityRemoteTunnel \
+  -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
   -target "$(uname -m)-apple-ios17.0-simulator" "${sources[@]}" -framework UIKit -o "$app/VerityRemoteTunnel"
 python3 - "$app_plist" "$app/Info.plist" <<'PY'
 import plistlib,sys
@@ -83,7 +84,12 @@ with open(sys.argv[1],'rb') as f: source=plistlib.load(f)
 info={'CFBundleExecutable':'VerityRemoteTunnel','CFBundleIdentifier':'app.verity.remote-tunnel-spike',
 'CFBundleName':'VerityRemoteTunnel','CFBundlePackageType':'APPL','CFBundleShortVersionString':'1.0',
 'CFBundleVersion':'1','CFBundleSupportedPlatforms':['iPhoneSimulator'],'MinimumOSVersion':'17.0',
-'LSRequiresIPhoneOS':True,'UILaunchScreen':{}}
+'LSRequiresIPhoneOS':True,'UILaunchScreen':{},
+# Current iOS SDKs refuse to launch an app without scene adoption.
+'UIApplicationSceneManifest':{'UIApplicationSupportsMultipleScenes':False,
+  'UISceneConfigurations':{'UIWindowSceneSessionRoleApplication':[{
+    'UISceneConfigurationName':'VerityRemoteTunnel',
+    'UISceneDelegateClassName':'VerityRemoteTunnel.TunnelSmokeSceneDelegate'}]}}}
 if 'NSAppTransportSecurity' in source: info['NSAppTransportSecurity']=source['NSAppTransportSecurity']
 with open(sys.argv[2],'wb') as f: plistlib.dump(info,f)
 PY

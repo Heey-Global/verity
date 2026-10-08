@@ -1,3 +1,10 @@
+import {
+  diagnosticsRequestSchema,
+  DIAGNOSTICS_TOOL_DESCRIPTION,
+} from './control-diagnostics-tool.js';
+import { googleDriveRequestSchema } from './google-drive-request.js';
+import { googleContactsRequestSchema } from './google-contacts.js';
+import { googleCalendarRequestSchema } from './google-calendar.js';
 import { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from './mcp-gateway-timeout.js';
 import { randomUUID } from 'node:crypto';
 import { KnowledgeError } from '@verity/store';
@@ -24,6 +31,8 @@ import {
   sessionProgressRequestSchema,
   recentSessionMessagesRequestSchema,
   publishSessionProgressRequestSchema,
+  TASKS_TOOL_DESCRIPTION,
+  tasksRequestSchema,
 } from '@verity/events';
 import {
   TrustedCliDispatchError,
@@ -256,6 +265,7 @@ const TOOL_SCHEMAS = {
   verity_knowledge: knowledgeToolRequestSchema,
   verity_http_request: brokeredHttpRequestSchema,
   verity_secret_run: trustedCliRequestSchema,
+  verity_diagnostics: diagnosticsRequestSchema,
   verity_list_sessions: listSessionsRequestSchema,
   verity_session_handoff: sessionHandoffRequestSchema,
   verity_send_session_message: z
@@ -268,6 +278,10 @@ const TOOL_SCHEMAS = {
   verity_session_progress: sessionProgressRequestSchema,
   verity_recent_session_messages: recentSessionMessagesRequestSchema,
   verity_publish_session_progress: publishSessionProgressRequestSchema,
+  verity_start_planning: z.object({}).strict(),
+  verity_present_plan: z.object({ plan: z.string().trim().min(1).max(50_000) }).strict(),
+  verity_end_planning: z.object({}).strict(),
+  verity_tasks: tasksRequestSchema,
   verity_google_slides: z
     .object({
       action: z.enum(['inspect_deck', 'read_slide', 'edit', 'thumbnail', 'insert_image']),
@@ -311,6 +325,8 @@ const TOOL_SCHEMAS = {
       requests: z.array(z.record(z.string(), z.unknown())).min(1).max(25).optional(),
     })
     .strict(),
+  verity_google_calendar: googleCalendarRequestSchema,
+  verity_google_contacts: googleContactsRequestSchema,
   verity_gmail: z.discriminatedUnion('action', [
     z
       .object({
@@ -365,25 +381,14 @@ const TOOL_SCHEMAS = {
       })
       .strict(),
   ]),
-  verity_google_drive: z
-    .object({
-      action: z.enum(['list', 'search', 'read', 'upload', 'select_workspace_file']),
-      folderId: z.string().min(1).max(512).optional(),
-      fileId: z.string().min(1).max(512).optional(),
-      name: z.string().min(1).max(255).optional(),
-      query: z.string().min(1).max(200).optional(),
-      mimeType: z.string().min(1).max(255).optional(),
-      content: z.string().max(10_000_000).optional(),
-      encoding: z.enum(['utf8', 'base64']).optional(),
-      pageToken: z.string().min(1).max(4096).optional(),
-    })
-    .strict(),
+  verity_google_drive: googleDriveRequestSchema,
 } as const satisfies Record<GatewayToolName, z.ZodType>;
 
 const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_knowledge: KNOWLEDGE_TOOL_DESCRIPTION,
   verity_http_request: BROKERED_HTTP_TOOL_DESCRIPTION,
   verity_secret_run: TRUSTED_CLI_TOOL_DESCRIPTION,
+  verity_diagnostics: DIAGNOSTICS_TOOL_DESCRIPTION,
   verity_list_sessions: LIST_SESSIONS_TOOL_DESCRIPTION,
   verity_session_handoff: SESSION_HANDOFF_TOOL_DESCRIPTION,
   verity_send_session_message:
@@ -393,16 +398,27 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_session_progress: SESSION_PROGRESS_TOOL_DESCRIPTION,
   verity_recent_session_messages: RECENT_SESSION_MESSAGES_TOOL_DESCRIPTION,
   verity_publish_session_progress: PUBLISH_SESSION_PROGRESS_TOOL_DESCRIPTION,
+  verity_start_planning:
+    'Put this session into planning mode. Call it when the user chooses to plan first or asks you to plan before implementing. From the next message on you cannot change files until the user ends planning.',
+  verity_present_plan:
+    'Submit the complete current plan as Markdown (goal, steps, open questions or risks) while the session is in planning mode. Verity shows it to the user with an "Implement plan" button. Submit the whole revised plan again whenever it changes, instead of writing the plan into your reply.',
+  verity_end_planning:
+    'Ask the user to confirm ending planning mode and implementing the latest presented plan. Call it only when the user tells you in the chat to go ahead. On approval Verity starts the implementation as a new turn, so end your turn right after it returns.',
+  verity_tasks: TASKS_TOOL_DESCRIPTION,
   verity_google_slides:
     'Read or edit the native Google Slides deck currently assigned to this session. Use inspect_deck first; read_slide needs slideId; edit accepts any structurally valid Google Slides batchUpdate request and requires revisionId for offset- or state-dependent writes; thumbnail is returned only when explicitly requested; insert_image accepts a Verity session attachmentId, a public HTTP(S) imageUrl, or an imagePath relative to this session worktree.',
   verity_google_docs:
     'Read or edit the native Google Doc currently assigned to this session. Inspect and read before editing; edit accepts any structurally valid Google Docs batchUpdate request and requires the revisionId returned by the read.',
   verity_google_sheets:
     'Read or edit the native Google Sheet currently assigned to this session. Inspect metadata first, read only explicit ranges, and use bounded range writes or any structurally valid Google Sheets batchUpdate request.',
+  verity_google_contacts:
+    'Search the Google Contacts address book explicitly connected to this session by name or email. Read-only: returns names and email addresses for Gmail recipients and Calendar attendees. If multiple contacts or email addresses match, ask the user to select or confirm the intended address; never guess. Use only the confirmed email address when inviting or emailing.',
+  verity_google_calendar:
+    'Read Google Calendar calendars and events when access is enabled for this session. Creating, updating, and deleting events always require user approval. Before EVERY create_event, ask the user whether to add Google Meet and set required addGoogleMeet to their explicit answer; never assume a default. Use only attendee email addresses supplied or confirmed by the user; use verity_google_contacts only when Contacts access is separately enabled for this session. Google Meet creation may be pending: inspect conferenceData.createRequest.status and read_event later to retrieve the link; do not create another event or report a link before Google returns it. Read an event before updating or deleting it and use its etag as expectedEtag to avoid overwriting concurrent changes. Use sendUpdates: all only when invitations or updates should be emailed to attendees.',
   verity_gmail:
     'Search and read Gmail, create drafts, or send the approved snapshot of a draft after mandatory user approval. Before send_draft, call prepare_draft_send and copy its complete snapshot unchanged. After sending, the original draft is deleted if a final read matches the approved snapshot; a concurrent edit during cleanup can still be lost. Report draftRetained and draftCleanup accurately. Use Gmail search syntax; read the thread before drafting a reply.',
   verity_google_drive:
-    'Work with files inside the Google Drive folder connected to this project. List or search before reading. Use select_workspace_file before editing a native Google Docs, Sheets, or Slides file with its dedicated tool. Upload writes a new file into the connected folder.',
+    'Work with files inside the Google Drive folder connected to this project. List or search before reading. Use select_workspace_file before editing a native Google Docs, Sheets, or Slides file with its dedicated tool. Upload creates a new regular file; create_folder creates a folder. Read a file or folder to obtain expectedVersion before overwrite, rename, move, or trash. Those actions require explicit approval. Trash is recoverable through Google Drive and includes folder contents; the linked root cannot be changed. Overwrite only replaces regular file bytes, never native Workspace contents. Read-only projects cannot mutate files.',
 };
 
 type JsonSchemaObject = Record<string, unknown>;

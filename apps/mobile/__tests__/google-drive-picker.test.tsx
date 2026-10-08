@@ -1,11 +1,10 @@
-import { VerityApiError, type VerityClient } from '@verity/mobile';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
+import { type VerityClient } from '@verity/mobile';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 const mockBack = jest.fn();
 const mockCreateVerityClient = jest.fn<VerityClient | null, []>();
 const mockRunGoogleDriveAuth = jest.fn();
-let mockParams = { sessionId: 'session-1', purpose: 'workspace' };
+let mockParams = { sessionId: 'session-1', purpose: 'folder' };
 
 jest.mock('expo-router', () => ({
   Stack: { Screen: () => null },
@@ -17,6 +16,8 @@ jest.mock('../lib/client', () => ({
 }));
 jest.mock('../lib/googleDrive', () => ({
   runGoogleDriveAuth: (...args: unknown[]) => mockRunGoogleDriveAuth(...args),
+  runGoogleWorkspaceAuth: (...args: unknown[]) => mockRunGoogleDriveAuth(...args),
+  ensureGoogleWorkspaceAccess: jest.fn().mockResolvedValue(true),
 }));
 
 import GoogleDrivePickerScreen from '../app/google-drive/[sessionId]';
@@ -26,7 +27,7 @@ afterEach(() => {
   mockBack.mockReset();
   mockCreateVerityClient.mockReset();
   mockRunGoogleDriveAuth.mockReset();
-  mockParams = { sessionId: 'session-1', purpose: 'workspace' };
+  mockParams = { sessionId: 'session-1', purpose: 'folder' };
 });
 
 it('uses an existing Drive connection without authorizing it again', async () => {
@@ -77,65 +78,36 @@ it('opens a shared drive from the combined Shared view', async () => {
   );
 });
 
-it('reconnects an old Drive grant and retries the Workspace assignment', async () => {
-  const assign = jest
+it('selects a folder without importing or assigning a document', async () => {
+  const connectFolder = jest.fn().mockResolvedValue({});
+  const listFiles = jest
     .fn()
-    .mockRejectedValueOnce(
-      new VerityApiError(403, 'Reconnect Google Drive to grant Workspace editing access'),
-    )
-    .mockResolvedValueOnce({});
-  const connect = jest.fn().mockResolvedValue(undefined);
-  const client = {
-    getVeritySettings: jest.fn().mockResolvedValue({
-      googleDriveClientId: '123-example.apps.googleusercontent.com',
-      googleDriveConnected: true,
-    }),
-    listGoogleDriveFiles: jest.fn().mockResolvedValue({
+    .mockResolvedValueOnce({
       files: [
         {
-          id: 'slides-1',
-          name: 'Customer pitch',
-          mimeType: 'application/vnd.google-apps.presentation',
-          canEdit: true,
+          id: 'folder-1',
+          name: 'Project documents',
+          mimeType: 'application/vnd.google-apps.folder',
         },
+        { id: 'doc-1', name: 'Notes', mimeType: 'application/vnd.google-apps.document' },
       ],
-    }),
+    })
+    .mockResolvedValue({ files: [] });
+  const assign = jest.fn();
+  const importFile = jest.fn();
+  mockCreateVerityClient.mockReturnValue({
+    getVeritySettings: jest.fn().mockResolvedValue({ googleDriveConnected: true }),
+    listGoogleDriveFiles: listFiles,
+    connectProjectGoogleDriveFolder: connectFolder,
     assignSessionGoogleWorkspaceFile: assign,
-    connectGoogleDrive: connect,
-  } as unknown as VerityClient;
-  mockCreateVerityClient.mockReturnValue(client);
-  mockRunGoogleDriveAuth.mockResolvedValue({
-    kind: 'success',
-    code: 'fresh-code',
-    codeVerifier: 'fresh-verifier',
-    redirectUri: 'verity-google:/oauthredirect',
-  });
-  const alert = jest.spyOn(Alert, 'alert');
-
+    importGoogleDriveFile: importFile,
+  } as unknown as VerityClient);
   render(<GoogleDrivePickerScreen />);
-  fireEvent.press(await screen.findByText('Customer pitch'));
-
-  await waitFor(() =>
-    expect(alert).toHaveBeenCalledWith(
-      'Reconnect Google Drive',
-      expect.any(String),
-      expect.any(Array),
-    ),
-  );
-  const buttons = alert.mock.calls.at(-1)?.[2];
-  const reconnect = buttons?.find((button) => button.text === 'Reconnect');
-  await act(async () => {
-    reconnect?.onPress?.();
-    await Promise.resolve();
-  });
-
-  await waitFor(() =>
-    expect(connect).toHaveBeenCalledWith({
-      code: 'fresh-code',
-      codeVerifier: 'fresh-verifier',
-      redirectUri: 'verity-google:/oauthredirect',
-    }),
-  );
-  await waitFor(() => expect(assign).toHaveBeenCalledTimes(2));
-  expect(mockBack).toHaveBeenCalledTimes(1);
+  fireEvent.press(await screen.findByText('Notes'));
+  expect(assign).not.toHaveBeenCalled();
+  expect(importFile).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByText('Project documents'));
+  fireEvent.press(await screen.findByText('Connect this folder'));
+  await waitFor(() => expect(connectFolder).toHaveBeenCalledWith('session-1', 'folder-1'));
+  await waitFor(() => expect(mockBack).toHaveBeenCalledTimes(1));
 });

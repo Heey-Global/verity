@@ -1,3 +1,14 @@
+import { isLinkableSession } from '../lib/sessionLinks';
+import { subscribeLiveRefresh } from '../lib/liveConnection';
+import { moveProjectIdToIndex } from '../lib/projectReorder';
+import { SessionDragSlot } from '../components/SessionDragSlot';
+import { SessionIssueRef } from '../components/SessionIssueRef';
+import { SwipeableSessionRow } from '../components/SessionRowActions';
+import {
+  SessionMarkerColumn,
+  sessionMarkers,
+  sessionMarkersLabel,
+} from '../components/SessionMarkerColumn';
 import { SessionSettingsDialog } from '../components/SessionSettingsDialog';
 // Sessions home screen: the live list of Claude Code sessions, bound to
 // @verity/mobile's SessionListModel via useSessionList. Renders loading / error /
@@ -9,7 +20,6 @@ import {
   VerityApiError,
   type VerityClient,
   type DevServer,
-  type DevServerStatusMutation,
   type DevServerDetection,
   type ProjectRecord,
   type ProviderLimitRow,
@@ -26,7 +36,6 @@ import {
   sandboxUpdateAlertMessage,
   sandboxUpdateIndicator,
   subscribeProjectStatusMutations,
-  subscribeDevServerStatusMutations,
   sandboxUpdateNeedsAttention,
   sessionBadge,
   attentionNotice,
@@ -36,9 +45,20 @@ import {
   UNAVAILABLE_PROJECT_BADGE,
   UNTRACKED_PROJECT_BADGE,
   type ProjectBadge,
+  type RepoIdentity,
+  parseBranchIssue,
 } from '@verity/mobile';
 import { Link, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefCallback,
+} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -58,7 +78,7 @@ import Reanimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { AttentionMarkers } from '../components/AttentionMarkers';
+import { AttentionMarkers, drawsAttentionMarker } from '../components/AttentionMarkers';
 import { Icon } from '../components/Icon';
 import { ProjectPortChip, type ProjectPortLink } from '../components/ProjectPortChip';
 import { ProjectOverviewList } from '../components/ProjectOverviewList';
@@ -75,8 +95,16 @@ import { WorkingDot } from '../components/WorkingDot';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import { useSessionList } from '../hooks/useSessionList';
 import { useUnread } from '../hooks/useUnread';
-import { prefetchBranches } from '../lib/branchesPrefetch';
 import { createVerityClient, getVerityBaseUrl } from '../lib/client';
+import {
+  localPreviewLinks,
+  mergeSessionPreviewUrls,
+  nextProjectPreviewLinks,
+  publicPreviewLinks,
+  publicPreviewSessionIds,
+  type ProjectPreviewLinks,
+} from '../lib/sessionPreviewLinks';
+import { prefetchBranches } from '../lib/branchesPrefetch';
 import { newSessionId, registerPendingSession } from '../lib/pendingSessions';
 import { createProjectCollapseQueue } from '../lib/projectCollapseQueue';
 import { createSessionConfirmingWarnings } from '../lib/startSession';
@@ -84,11 +112,7 @@ import { devServerUrl } from '../lib/devServerUrl';
 import { repairProject } from '../lib/projectRepair';
 import { sessionLoadError } from '../lib/sessionLoadError';
 import { mergeProjectStatusMutation } from '../lib/projectStatusMutation';
-import {
-  hasPendingProjectSetup,
-  projectOverviewStatus,
-  type ProjectOverviewStatus,
-} from '../lib/projectSetup';
+import { projectOverviewStatus, type ProjectOverviewStatus } from '../lib/projectSetup';
 import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
 
@@ -184,8 +208,26 @@ function SessionList({ client }: { client: VerityClient }) {
       });
     }
   }, [selected, selectedId, wide]);
-  const { sessions, loading, error, refresh, remove, providerLimitRows, serverAttention } =
-    useSessionList(client);
+  const {
+    sessions,
+    loading,
+    error,
+    refresh,
+    remove,
+    setFavorite,
+    sessionReordering,
+    reorder: reorderSessions,
+    providerLimitRows,
+    serverAttention,
+  } = useSessionList(client);
+  const onToggleFavoriteSession = useCallback(
+    (session: SessionSummary) => setFavorite(session.sessionId, session.favorite !== true),
+    [setFavorite],
+  );
+  const onDeleteSession = useCallback(
+    (session: SessionSummary) => confirmDeleteSession(session, remove),
+    [remove],
+  );
   const authRequired = error !== undefined && isAuthRequiredError(error);
   const { unread, markSeen } = useUnread(client, sessions);
   useEffect(() => {
@@ -198,7 +240,8 @@ function SessionList({ client }: { client: VerityClient }) {
     refresh: refreshProjects,
     devServersByProject,
     detectionsByProject,
-    previewSessionIds,
+    previewUrls,
+    publicPreviews,
   } = useProjects(client);
   // Returning to the overview refetches the sessions too, not just the projects
   // (`useProjects` does its own). Deleting a project takes its sessions with it,
@@ -224,7 +267,10 @@ function SessionList({ client }: { client: VerityClient }) {
     () => orderedGroups.filter((group) => !isPausedProjectGroup(group)),
     [orderedGroups],
   );
-  const pausedGroups = useMemo(() => orderedGroups.filter(isPausedProjectGroup), [orderedGroups]);
+  const livePausedGroups = useMemo(
+    () => orderedGroups.filter(isPausedProjectGroup),
+    [orderedGroups],
+  );
   const liveActiveGroupIds = useMemo(
     () => liveActiveGroups.map((group) => group.id),
     [liveActiveGroups],
@@ -261,19 +307,57 @@ function SessionList({ client }: { client: VerityClient }) {
     },
     [client, refreshProjects, sortableGroupIds],
   );
+  const sessionOrders = useMemo(
+    () =>
+      sessionReordering
+        ? Object.fromEntries(
+            orderedGroups
+              .filter((group) => !group.inactiveProjectId)
+              .map((group) => [
+                group.id,
+                group.sessions.map((session) => `session:${session.sessionId}`),
+              ]),
+          )
+        : {},
+    [orderedGroups, sessionReordering],
+  );
+  const onDropSession = useCallback(
+    (scope: string, order: readonly string[]) => {
+      const group = orderedGroups.find((entry) => entry.id === scope);
+      if (!group) return;
+      const ids = order.map((id) => id.slice('session:'.length));
+      void reorderSessions(group.project?.id ?? null, ids);
+    },
+    [orderedGroups, reorderSessions],
+  );
   const reorder = useProjectReorder({
     order: liveActiveGroupIds,
     sortable: sortableGroupIds,
     onDrop: onDropProject,
+    sessionOrders,
+    onDropSession,
   });
   const draggingProjectId = reorder.draggingId;
+  const draggingSessionId = reorder.draggingSessionId;
+  const draggingAnything = draggingProjectId !== null || draggingSessionId !== null;
   // A poll landing mid-drag must not reshuffle the rows under the finger: the
   // list keeps the groups it was showing at pickup until the drop commits.
   const frozenActiveGroups = useRef(liveActiveGroups);
   useEffect(() => {
-    if (draggingProjectId === null) frozenActiveGroups.current = liveActiveGroups;
-  }, [draggingProjectId, liveActiveGroups]);
-  const activeGroups = draggingProjectId === null ? liveActiveGroups : frozenActiveGroups.current;
+    if (!draggingAnything) frozenActiveGroups.current = liveActiveGroups;
+  }, [draggingAnything, liveActiveGroups]);
+  const activeGroups = draggingAnything ? frozenActiveGroups.current : liveActiveGroups;
+  const frozenPausedGroups = useRef(livePausedGroups);
+  useEffect(() => {
+    if (!draggingAnything) frozenPausedGroups.current = livePausedGroups;
+  }, [draggingAnything, livePausedGroups]);
+  const pausedGroups = draggingAnything ? frozenPausedGroups.current : livePausedGroups;
+  const floatingSessionGroup = [...activeGroups, ...pausedGroups].find(
+    (group) => group.id === reorder.draggingSessionScope,
+  );
+  const floatingSession = floatingSessionGroup?.sessions.find(
+    (session) => `session:${session.sessionId}` === draggingSessionId,
+  );
   const activeGroupIds = useMemo(() => activeGroups.map((group) => group.id), [activeGroups]);
   const defaultNewSessionProject = useMemo(
     () =>
@@ -408,8 +492,8 @@ function SessionList({ client }: { client: VerityClient }) {
   // at its current event count, clearing its unread dot.
   const onOpenSession = useCallback(
     (session: SessionSummary) => {
-      prefetchBranches(client, session.sessionId);
-      markSeen(session.sessionId, session.eventCount);
+      if (client) prefetchBranches(client, session.sessionId);
+      markSeen(session.sessionId, session.eventCount, session.eventCountVersion);
     },
     [client, markSeen],
   );
@@ -513,7 +597,7 @@ function SessionList({ client }: { client: VerityClient }) {
             (collapsedOverride.get(item.id) ?? item.project?.collapsed ?? false)
           }
           onToggle={() => {
-            if (draggingProjectId !== null) return;
+            if (draggingAnything) return;
             const nextValue = !(collapsedOverride.get(item.id) ?? item.project?.collapsed ?? false);
             setCollapsedOverride((current) => {
               const next = new Map(current);
@@ -549,8 +633,12 @@ function SessionList({ client }: { client: VerityClient }) {
           renderedOrder={activeGroupIds}
           sortable={isReorderableGroup(item)}
           dragging={draggingProjectId === item.id}
-          reordering={draggingProjectId !== null}
+          reordering={draggingAnything}
+          sessionReordering={sessionReordering && !item.inactiveProjectId}
+          onReorderSession={onDropSession}
           onRenameSession={setRenaming}
+          onToggleFavoriteSession={onToggleFavoriteSession}
+          onDeleteSession={onDeleteSession}
           onSelectSession={wide ? setSelectedId : undefined}
           onNewSession={wide ? createSessionInPane : undefined}
           onOpenSession={onOpenSession}
@@ -558,7 +646,8 @@ function SessionList({ client }: { client: VerityClient }) {
           onRepairProject={(projectId) => void repairProjectRow(projectId)}
           defaultNewSessionProject={defaultNewSessionProject}
           unread={unread}
-          previewSessionIds={previewSessionIds}
+          previewUrls={previewUrls}
+          publicPreviews={publicPreviews}
           selectedId={wide ? selectedId : null}
           renamingId={renaming?.sessionId ?? null}
           updatingProjectIds={updatingProjectIds}
@@ -570,12 +659,16 @@ function SessionList({ client }: { client: VerityClient }) {
       activeGroupIds,
       collapsedOverride,
       draggingProjectId,
+      draggingAnything,
+      sessionReordering,
+      onDropSession,
       enqueueProjectCollapse,
       reorder,
       wide,
       selectedId,
       unread,
-      previewSessionIds,
+      previewUrls,
+      publicPreviews,
       onOpenSession,
       createSessionInPane,
       renaming,
@@ -585,6 +678,8 @@ function SessionList({ client }: { client: VerityClient }) {
       repairingProjectIds,
       defaultNewSessionProject,
       refreshProjects,
+      onToggleFavoriteSession,
+      onDeleteSession,
     ],
   );
   const renderItem = useCallback(
@@ -597,7 +692,7 @@ function SessionList({ client }: { client: VerityClient }) {
   useEffect(() => {
     if (!selectedId) return;
     const open = sessions.find((s) => s.sessionId === selectedId);
-    if (open) markSeen(open.sessionId, open.eventCount);
+    if (open) markSeen(open.sessionId, open.eventCount, open.eventCountVersion);
   }, [selectedId, sessions, markSeen]);
 
   const onRefreshOverview = useCallback(async () => {
@@ -615,8 +710,8 @@ function SessionList({ client }: { client: VerityClient }) {
   // stale banner.
   const onDeleteRenaming = useCallback(() => {
     if (!renaming) return;
-    void confirmDeleteSession(renaming, client, remove, refresh, () => setRenaming(null));
-  }, [client, refresh, renaming, remove]);
+    confirmDeleteSession(renaming, remove, () => setRenaming(null));
+  }, [renaming, remove]);
 
   if (loading && sessions.length === 0) {
     return (
@@ -663,7 +758,7 @@ function SessionList({ client }: { client: VerityClient }) {
             onContentSizeChange={reorder.onContentSizeChange}
             onScroll={reorder.onScroll}
             scrollEventThrottle={16}
-            draggingProjectId={draggingProjectId}
+            draggingProjectId={draggingProjectId ?? draggingSessionId}
             refreshing={refreshingOverview}
             onRefresh={onRefreshOverview}
             data={activeGroups}
@@ -716,6 +811,32 @@ function SessionList({ client }: { client: VerityClient }) {
               </>
             }
           />
+          {floatingSession ? (
+            <Reanimated.View
+              pointerEvents="none"
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+              style={[reorder.overlayStyle, styles.sessionDragOverlay]}
+            >
+              <SessionRow
+                session={floatingSession}
+                onRename={() => {}}
+                onToggleFavorite={() => {}}
+                onDelete={() => {}}
+                unread={unread.has(floatingSession.sessionId)}
+                previewActive={previewUrls.has(floatingSession.sessionId)}
+                previewPublic={publicPreviews.has(floatingSession.sessionId)}
+                previewUrl={previewUrls.get(floatingSession.sessionId) ?? null}
+                repo={
+                  floatingSessionGroup?.project?.kind === 'github'
+                    ? floatingSessionGroup.project
+                    : undefined
+                }
+                selected={selectedId === floatingSession.sessionId}
+                floating
+              />
+            </Reanimated.View>
+          ) : null}
           {draggingProjectId !== null ? (
             <Reanimated.View
               pointerEvents="none"
@@ -743,7 +864,6 @@ function SessionList({ client }: { client: VerityClient }) {
             projects.find((project) => project.id === renaming.projectId)?.repo ?? 'No project'
           }
           canMove={
-            renaming.kind !== 'agent_loop' &&
             renaming.status !== 'running' &&
             projects.some(
               (project) => project.id === renaming.projectId && project.kind === 'local',
@@ -759,19 +879,7 @@ function SessionList({ client }: { client: VerityClient }) {
             .filter((project) => project.kind === 'local')
             .map((project) => ({ id: project.id, name: project.repo }))}
           linkableSessions={sessions
-            .filter(
-              (candidate) =>
-                candidate.projectId !== renaming.projectId &&
-                candidate.projectId !== null &&
-                candidate.kind !== 'agent_loop' &&
-                candidate.resumable !== false &&
-                projects.some(
-                  (project) =>
-                    project.id === candidate.projectId &&
-                    project.state === 'active' &&
-                    project.kind !== 'control_plane',
-                ),
-            )
+            .filter((candidate) => isLinkableSession(candidate, renaming.sessionId, projects))
             .map((candidate) => ({
               id: candidate.sessionId,
               name: sessionLabel(candidate),
@@ -827,35 +935,26 @@ function RightPanePlaceholder() {
   );
 }
 
-// How often the overview silently re-fetches projects so the container-lifecycle
-// state and the GitHub release version stay current without a pull-to-refresh.
-// Coarser than the 2s session poll — project/release data changes slowly and the
-// server throttles the underlying GitHub calls (installation list ~60s, latest
-// release ~5min), so a tighter interval would only add no-op round-trips.
-const PROJECTS_POLL_MS = 15_000;
-const PROJECT_SETUP_POLL_MS = 2_000;
-
+// Project and preview changes arrive over the shared live connection.
 function useProjects(client: VerityClient) {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const [devServersByProject, setDevServersByProject] = useState<Map<string, DevServer[]>>(
+  const devServersByProject = new Map<string, DevServer[]>();
+  const detectionsByProject = new Map<string, DevServerDetection>();
+  // Session id → the URL its preview icon opens; see mergeSessionPreviewUrls.
+  const [previewUrls, setPreviewUrls] = useState<ReadonlyMap<string, string | null>>(
     () => new Map(),
   );
-  const devServersByProjectRef = useRef<Map<string, DevServer[]>>(new Map());
-  const pendingDevServerMutations = useRef(
-    new Map<string, Map<string, { mutation: DevServerStatusMutation; generation: number }>>(),
-  );
-  const [detectionsByProject, setDetectionsByProject] = useState<Map<string, DevServerDetection>>(
-    () => new Map(),
-  );
-  const [previewSessionIds, setPreviewSessionIds] = useState<ReadonlySet<string>>(() => new Set());
+  // Sessions with an unexpired public share: their row shows "online" even when
+  // the preview entry opens the local link.
+  const [publicPreviews, setPublicPreviews] = useState<ReadonlySet<string>>(() => new Set());
+  const publicPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
+  const localPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
   const loadGeneration = useRef(0);
   const pendingProjectMutations = useRef(
     new Map<string, { project: ProjectRecord; generation: number }>(),
   );
-  const detectionAttemptedProjectIds = useRef(new Set<string>());
-  devServersByProjectRef.current = devServersByProject;
 
   useEffect(
     () =>
@@ -875,45 +974,6 @@ function useProjects(client: VerityClient) {
     [],
   );
 
-  useEffect(
-    () =>
-      subscribeDevServerStatusMutations((mutation) => {
-        const projectPending =
-          pendingDevServerMutations.current.get(mutation.projectId) ??
-          new Map<string, { mutation: DevServerStatusMutation; generation: number }>();
-        projectPending.set(mutation.id, { mutation, generation: loadGeneration.current });
-        pendingDevServerMutations.current.set(mutation.projectId, projectPending);
-        const known = devServersByProjectRef.current.get(mutation.projectId);
-        if (known === undefined) return;
-        setDevServersByProject((current) => {
-          const servers = current.get(mutation.projectId);
-          if (!servers) return current;
-          const found = servers.some((server) => server.id === mutation.id);
-          const next = new Map(current);
-          next.set(
-            mutation.projectId,
-            found
-              ? servers.map((server) =>
-                  server.id === mutation.id
-                    ? (mutation.devServer ?? {
-                        ...server,
-                        ...(mutation.running === undefined ? {} : { running: mutation.running }),
-                        ...(mutation.previewSessionId === undefined
-                          ? {}
-                          : { previewSessionId: mutation.previewSessionId }),
-                      })
-                    : server,
-                )
-              : mutation.devServer
-                ? [...servers, mutation.devServer]
-                : servers,
-          );
-          return next;
-        });
-      }),
-    [],
-  );
-
   // `silent` skips the loading-spinner flip so the interval poll refreshes in
   // place (no flicker); the initial load + pull-to-refresh flip it as before.
   const load = useCallback(
@@ -923,50 +983,33 @@ function useProjects(client: VerityClient) {
       try {
         const nextProjects = await client.listProjects();
         const activeProjects = nextProjects.filter((project) => project.state === 'active');
-        const devServerResultsPromise = Promise.allSettled(
-          activeProjects.map(
-            async (project) => [project.id, await client.listDevServers(project.id)] as const,
+        const projectIds = activeProjects.map((project) => project.id);
+        const [publicResults, localResults] = await Promise.all([
+          Promise.allSettled(
+            projectIds.map((id) => client.listPublicPreviewShares(id).then(publicPreviewLinks)),
           ),
-        );
-        const previewResultsPromise = Promise.allSettled(
-          activeProjects.map((project) => client.listPublicPreviewShares(project.id)),
-        );
-        const projectsToAnalyze = nextProjects.filter(
-          ({ id, state }) => state === 'active' && !detectionAttemptedProjectIds.current.has(id),
-        );
-        for (const { id } of projectsToAnalyze) detectionAttemptedProjectIds.current.add(id);
-        const detectionResultsPromise = Promise.allSettled(
-          projectsToAnalyze.map(async (project) => {
-            try {
-              return [project.id, await client.getDevServerDetection(project.id)] as const;
-            } catch (error) {
-              detectionAttemptedProjectIds.current.delete(project.id);
-              throw error;
-            }
-          }),
-        );
-        const [devServerResults, previewResults, detectionResults] = await Promise.all([
-          devServerResultsPromise,
-          previewResultsPromise,
-          detectionResultsPromise,
+          Promise.allSettled(
+            projectIds.map((id) =>
+              client.listProjectLocalPreviewShares(id).then(localPreviewLinks),
+            ),
+          ),
         ]);
         if (generation !== loadGeneration.current) return;
-        if (previewResults.every((result) => result.status === 'fulfilled')) {
-          const next = new Set<string>();
-          for (const result of previewResults) {
-            if (result.status !== 'fulfilled') continue;
-            for (const share of result.value) {
-              if (
-                share.sessionId &&
-                share.targetKind === 'static-folder' &&
-                share.state === 'active' &&
-                new Date(share.expiresAt).getTime() > Date.now()
-              )
-                next.add(share.sessionId);
-            }
-          }
-          setPreviewSessionIds(next);
-        }
+        publicPreviewLinksRef.current = nextProjectPreviewLinks(
+          publicPreviewLinksRef.current,
+          projectIds,
+          publicResults,
+        );
+        localPreviewLinksRef.current = nextProjectPreviewLinks(
+          localPreviewLinksRef.current,
+          projectIds,
+          localResults,
+        );
+        const now = Date.now();
+        setPreviewUrls(
+          mergeSessionPreviewUrls(publicPreviewLinksRef.current, localPreviewLinksRef.current, now),
+        );
+        setPublicPreviews(publicPreviewSessionIds(publicPreviewLinksRef.current, now));
         const pending = new Map(
           [...pendingProjectMutations.current].filter(
             ([, entry]) => entry.generation >= generation,
@@ -980,61 +1023,6 @@ function useProjects(client: VerityClient) {
             .filter((project) => !seen.has(project.id)),
         ]);
         pendingProjectMutations.current.clear();
-        setDevServersByProject((current) => {
-          const projectIds = new Set(nextProjects.map(({ id }) => id));
-          const next = new Map([...current].filter(([projectId]) => projectIds.has(projectId)));
-          for (const result of devServerResults) {
-            if (result.status === 'fulfilled') {
-              const [projectId, servers] = result.value;
-              const pendingEntries = pendingDevServerMutations.current.get(projectId);
-              const pending = new Map(
-                [...(pendingEntries ?? [])]
-                  .filter(([, entry]) => entry.generation >= generation)
-                  .map(([id, entry]) => [id, entry.mutation]),
-              );
-              if (pending.size === 0) {
-                next.set(projectId, servers);
-                pendingDevServerMutations.current.delete(projectId);
-                continue;
-              }
-              const seen = new Set(servers.map((server) => server.id));
-              next.set(projectId, [
-                ...servers.map((server) => {
-                  const mutation = pending.get(server.id);
-                  return (
-                    mutation?.devServer ??
-                    (mutation
-                      ? {
-                          ...server,
-                          ...(mutation.running === undefined ? {} : { running: mutation.running }),
-                          ...(mutation.previewSessionId === undefined
-                            ? {}
-                            : { previewSessionId: mutation.previewSessionId }),
-                        }
-                      : server)
-                  );
-                }),
-                ...[...pending.values()].flatMap((mutation) =>
-                  !seen.has(mutation.id) && mutation.devServer ? [mutation.devServer] : [],
-                ),
-              ]);
-              pendingDevServerMutations.current.delete(projectId);
-            }
-          }
-          // Mutation callbacks run between renders and consult the ref. Keep it
-          // in lockstep with the committed cache instead of waiting for the next
-          // render, which could otherwise merge a fresh event into stale data.
-          devServersByProjectRef.current = next;
-          return next;
-        });
-        setDetectionsByProject((current) => {
-          const projectIds = new Set(nextProjects.map(({ id }) => id));
-          const next = new Map([...current].filter(([projectId]) => projectIds.has(projectId)));
-          for (const result of detectionResults) {
-            if (result.status === 'fulfilled') next.set(...result.value);
-          }
-          return next;
-        });
         setError(undefined); // recovered — clear any stale banner
       } catch (caught) {
         if (generation !== loadGeneration.current) return;
@@ -1065,20 +1053,22 @@ function useProjects(client: VerityClient) {
     }, [load]),
   );
 
-  const setupRunning = hasPendingProjectSetup(projects);
-  useEffect(() => {
-    const timer = setInterval(
-      () => void load({ silent: true }),
-      setupRunning ? PROJECT_SETUP_POLL_MS : PROJECTS_POLL_MS,
-    );
-    return () => clearInterval(timer);
-  }, [load, setupRunning]);
+  useEffect(
+    () =>
+      subscribeLiveRefresh(
+        client,
+        () => load({ silent: true }),
+        (path) => path.startsWith('/projects'),
+      ),
+    [client, load],
+  );
 
   return {
     projects,
     devServersByProject,
     detectionsByProject,
-    previewSessionIds,
+    previewUrls,
+    publicPreviews,
     loading,
     error,
     refresh: () => load(),
@@ -1202,7 +1192,11 @@ function ProjectGroup({
   sortable,
   dragging,
   reordering,
+  sessionReordering,
+  onReorderSession,
   onRenameSession,
+  onToggleFavoriteSession,
+  onDeleteSession,
   onSelectSession,
   onNewSession,
   onOpenSession,
@@ -1210,7 +1204,8 @@ function ProjectGroup({
   onRepairProject,
   defaultNewSessionProject,
   unread,
-  previewSessionIds,
+  previewUrls,
+  publicPreviews,
   selectedId,
   renamingId,
   updatingProjectIds,
@@ -1227,7 +1222,11 @@ function ProjectGroup({
   sortable: boolean;
   dragging: boolean;
   reordering: boolean;
+  sessionReordering: boolean;
+  onReorderSession: (scope: string, order: readonly string[]) => void;
   onRenameSession: (session: SessionSummary) => void;
+  onToggleFavoriteSession: (session: SessionSummary) => void;
+  onDeleteSession: (session: SessionSummary) => void;
   onSelectSession?: (id: string) => void;
   // Wide layout only: create a session inline for this project (no /new route).
   // Undefined on narrow, where the "+" falls back to navigating to /new.
@@ -1237,7 +1236,8 @@ function ProjectGroup({
   onRepairProject?: ((projectId: string) => void) | undefined;
   defaultNewSessionProject?: ProjectRecord | undefined;
   unread: ReadonlySet<string>;
-  previewSessionIds: ReadonlySet<string>;
+  previewUrls: ReadonlyMap<string, string | null>;
+  publicPreviews: ReadonlySet<string>;
   selectedId?: string | null;
   renamingId?: string | null;
   updatingProjectIds?: ReadonlySet<string>;
@@ -1498,26 +1498,71 @@ function ProjectGroup({
           <ProjectSessionsCollapse collapsed={collapsed}>
             <View style={styles.projectSessions}>
               {group.sessions.map((session, index) => (
-                <Fragment key={session.sessionId}>
-                  {/* Quiet inset hairline between sessions (never above the first — the
+                <SessionDragSlot
+                  key={session.sessionId}
+                  id={`session:${session.sessionId}`}
+                  scope={group.id}
+                  order={group.sessions.map((entry) => `session:${entry.sessionId}`)}
+                  reorder={reorder}
+                  enabled={sessionReordering && !collapsed}
+                >
+                  {(handle) => (
+                    <Fragment>
+                      {/* Quiet inset hairline between sessions (never above the first — the
                   project header already draws its own bottom border). Inset to start
                   under the session title, leaving the dot gutter clear (iOS-style
                   leading inset), so adjacent session blocks read as separate without
                   the restless full-width line grid the group had before. */}
-                  {index > 0 ? <View style={styles.sessionDivider} /> : null}
-                  <SessionRow
-                    session={session}
-                    onRename={() => onRenameSession(session)}
-                    onSelect={
-                      onSelectSession ? () => onSelectSession(session.sessionId) : undefined
-                    }
-                    onOpen={() => onOpenSession(session)}
-                    unread={unread.has(session.sessionId)}
-                    previewActive={previewSessionIds.has(session.sessionId)}
-                    selected={selectedId === session.sessionId}
-                    renaming={renamingId === session.sessionId}
-                  />
-                </Fragment>
+                      {index > 0 ? <View style={styles.sessionDivider} /> : null}
+                      <SessionRow
+                        session={session}
+                        dragHandleRef={handle}
+                        reorderable={sessionReordering}
+                        interactionsLocked={reordering}
+                        onMoveUp={
+                          sessionReordering && index > 0
+                            ? () =>
+                                onReorderSession(
+                                  group.id,
+                                  moveProjectIdToIndex(
+                                    group.sessions.map((entry) => `session:${entry.sessionId}`),
+                                    `session:${session.sessionId}`,
+                                    index - 1,
+                                  ),
+                                )
+                            : undefined
+                        }
+                        onMoveDown={
+                          sessionReordering && index < group.sessions.length - 1
+                            ? () =>
+                                onReorderSession(
+                                  group.id,
+                                  moveProjectIdToIndex(
+                                    group.sessions.map((entry) => `session:${entry.sessionId}`),
+                                    `session:${session.sessionId}`,
+                                    index + 1,
+                                  ),
+                                )
+                            : undefined
+                        }
+                        onRename={() => onRenameSession(session)}
+                        onToggleFavorite={() => onToggleFavoriteSession(session)}
+                        onDelete={() => onDeleteSession(session)}
+                        onSelect={
+                          onSelectSession ? () => onSelectSession(session.sessionId) : undefined
+                        }
+                        onOpen={() => onOpenSession(session)}
+                        unread={unread.has(session.sessionId)}
+                        previewActive={previewUrls.has(session.sessionId)}
+                        previewPublic={publicPreviews.has(session.sessionId)}
+                        previewUrl={previewUrls.get(session.sessionId) ?? null}
+                        repo={group.project?.kind === 'github' ? group.project : undefined}
+                        selected={selectedId === session.sessionId}
+                        renaming={renamingId === session.sessionId}
+                      />
+                    </Fragment>
+                  )}
+                </SessionDragSlot>
               ))}
             </View>
           </ProjectSessionsCollapse>
@@ -1529,14 +1574,13 @@ function ProjectGroup({
 
 // Delete is destructive + irreversible (drops history, removes the worktree), so
 // confirm with a native alert before firing. Called from the rename modal (opened
-// by a row long-press); `onConfirmed` lets the modal close itself after the delete.
-async function confirmDeleteSession(
+// by a row long-press) and from the row's swipe/context-menu action; `onConfirmed`
+// lets the modal close itself after the delete.
+function confirmDeleteSession(
   session: SessionSummary,
-  client: VerityClient,
   remove: (sessionId: string, opts?: { force?: boolean }) => Promise<void>,
-  refresh: () => Promise<void>,
   onConfirmed?: () => void,
-): Promise<void> {
+): void {
   const deleteSession = (force = false) => {
     void remove(session.sessionId, { force }).catch((error: unknown) => {
       if (error instanceof VerityApiError && error.status === 409 && !force) {
@@ -1562,53 +1606,9 @@ async function confirmDeleteSession(
     onConfirmed?.();
   };
 
-  if (session.kind === 'agent_loop' && session.projectId) {
-    try {
-      const loops = await client.listAgentLoops(session.projectId);
-      const loop = loops.find((candidate) => candidate.sessionId === session.sessionId);
-      if (loop) {
-        Alert.alert(
-          'Delete Agent Loop session?',
-          `Choose whether to remove only the chat for "${sessionLabel(session)}" or the Agent Loop and its schedule too.`,
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Session only',
-              onPress: () => {
-                deleteSession();
-              },
-            },
-            {
-              text: 'Session + loop',
-              style: 'destructive',
-              onPress: () => {
-                void client
-                  .deleteAgentLoop(loop.id, { deleteSession: true })
-                  .then(refresh)
-                  .catch((error: unknown) =>
-                    Alert.alert(
-                      'Could not delete Agent Loop',
-                      error instanceof Error ? error.message : 'Please try again.',
-                    ),
-                  );
-                onConfirmed?.();
-              },
-            },
-          ],
-        );
-        return;
-      }
-    } catch (error) {
-      Alert.alert(
-        'Could not load Agent Loop',
-        error instanceof Error ? error.message : 'Please try again.',
-      );
-      return;
-    }
-  }
   Alert.alert(
     'Delete session?',
-    `This permanently removes "${sessionLabel(session)}" — its history and worktree. This can't be undone.`,
+    `This permanently removes "${sessionLabel(session)}" — its history${session.automation ? ', its automation,' : ''} and worktree. This can't be undone.`,
     [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -1854,29 +1854,55 @@ function ProviderLimitSegment({
 function SessionRow({
   session,
   onRename,
+  onToggleFavorite,
+  onDelete,
   onSelect,
   onOpen,
   unread,
   previewActive,
+  previewPublic,
+  previewUrl,
+  repo,
   selected,
   renaming,
+  dragHandleRef,
+  reorderable = false,
+  interactionsLocked = false,
+  floating = false,
+  onMoveUp,
+  onMoveDown,
 }: {
   session: SessionSummary;
   onRename: () => void;
+  onToggleFavorite: () => void;
+  onDelete: () => void;
   onSelect?: () => void;
   onOpen?: () => void;
   unread?: boolean;
   previewActive?: boolean;
+  /** An unexpired public share exists, whichever link the preview entry opens. */
+  previewPublic?: boolean;
+  /** Where the preview icon leads; null while a public share has no origin yet. */
+  previewUrl?: string | null;
+  /** The GitHub repo the issue number links into; absent for local projects. */
+  repo?: RepoIdentity | undefined;
   selected?: boolean;
   renaming?: boolean;
+  dragHandleRef?: RefCallback<View>;
+  reorderable?: boolean;
+  interactionsLocked?: boolean;
+  floating?: boolean;
+  onMoveUp?: (() => void) | undefined;
+  onMoveDown?: (() => void) | undefined;
 }) {
   const { theme } = useUnistyles();
   const [hovered, setHovered] = useState(false);
   const badge = sessionBadge(session.status);
   const toneColor = theme.colors.tone[badge.tone];
   const label = sessionLabel(session);
+  const favorite = session.favorite === true;
   const subtitle = modelDisplayName(session.model);
-  const running = session.status === 'running';
+  const running = session.status === 'running' || session.backgroundWorking === true;
   // "Done"/"Idle" are implicit from the ABSENCE of the working dot, so they get no
   // label — only states worth actively noticing keep a pill (see showsSessionLabel).
   const showLabel = showsSessionLabel(session.status);
@@ -1895,6 +1921,15 @@ function SessionRow({
   // would have used is not the thing to say — and the row keeps its height, which
   // this list re-measures on every poll.
   const notice = attentionNotice(session.attention);
+  const edgeMarkers = sessionMarkers({
+    favorite,
+    automation: session.automation?.status,
+    shared: previewActive ? (previewPublic ? 'online' : 'local') : undefined,
+  });
+  const a11yLabel = edgeMarkers.length
+    ? `Open session ${label}, ${sessionMarkersLabel(edgeMarkers)}`
+    : `Open session ${label}`;
+  const hasIssue = parseBranchIssue(session.branch) !== null;
   // Accent wash marking the row whose rename sheet is open. Driven by an animated
   // value so that on close it lingers a beat and fades out (rather than vanishing)
   // as the sheet dismisses; on open it snaps in.
@@ -1923,45 +1958,95 @@ function SessionRow({
           finished session with something new to read), else nothing. */}
       <View style={styles.colChevron} />
       <View style={styles.colDot}>{running ? <WorkingDot /> : unread ? <UnreadDot /> : null}</View>
-      <View style={styles.titleBlock}>
-        <View style={styles.sessionTitleLine}>
-          {previewActive ? <Icon name="monitor" size={14} color={theme.colors.primary} /> : null}
-          <Text style={styles.sessionTitle} numberOfLines={1}>
-            {label}
-          </Text>
-        </View>
-        <Text
-          style={[styles.rowSub, notice ? { color: theme.colors.tone.danger } : null]}
-          numberOfLines={1}
-          {...(notice ? { accessibilityRole: 'alert' as const } : {})}
-        >
-          {notice ? attentionNoticeText(notice) : subtitle}
-        </Text>
-      </View>
-      {/* Right: attention icons, then the lifecycle label — hidden while working
-          since the left dot already conveys it. */}
-      <View style={styles.rowTrail}>
-        <AttentionMarkers flags={markers} />
-        {showLabel ? (
-          <View
-            style={[
-              styles.statusPill,
-              { borderColor: toneColor, backgroundColor: `${toneColor}1f` },
-            ]}
-          >
-            <Text style={[styles.statusPillText, { color: toneColor }]} numberOfLines={1}>
-              {badge.label}
+      {/* Name with the lifecycle label at its right end; below it the model,
+          followed by the issue and its PR status. Attached to the model, they use
+          the room a short model name leaves free instead of competing with the
+          marker column at the right end. */}
+      <View style={[styles.titleBlock, styles.sessionTitleBlock]}>
+        <View style={styles.sessionLine}>
+          <View ref={dragHandleRef} collapsable={false} style={styles.sessionDragHandle}>
+            <Text style={styles.sessionTitle} numberOfLines={1}>
+              {label}
             </Text>
           </View>
-        ) : null}
+          {/* The lifecycle label is hidden while working since the left dot
+              already conveys it. */}
+          {showLabel ? (
+            <View style={[styles.sessionLineEnd, styles.sessionTitleLineEnd]}>
+              <View
+                style={[
+                  styles.statusPill,
+                  { borderColor: toneColor, backgroundColor: `${toneColor}1f` },
+                ]}
+              >
+                <Text style={[styles.statusPillText, { color: toneColor }]} numberOfLines={1}>
+                  {badge.label}
+                </Text>
+              </View>
+            </View>
+          ) : null}
+        </View>
+        <View style={styles.sessionLine}>
+          <Text
+            style={[
+              styles.rowSub,
+              styles.sessionSub,
+              notice ? { color: theme.colors.tone.danger } : null,
+            ]}
+            numberOfLines={1}
+            {...(notice ? { accessibilityRole: 'alert' as const } : {})}
+          >
+            {notice ? attentionNoticeText(notice) : subtitle}
+          </Text>
+          {/* The PR status sits after the issue it belongs to, not at the end of the
+              title line, where it collided with the marker column. */}
+          {hasIssue || drawsAttentionMarker(markers) ? (
+            <View style={styles.sessionFeatures}>
+              <Text style={styles.rowSub} accessible={false} importantForAccessibility="no">
+                ·
+              </Text>
+              <SessionIssueRef branch={session.branch} repo={repo} />
+              <AttentionMarkers flags={markers} size={13} inline />
+            </View>
+          ) : null}
+        </View>
       </View>
+      {/* Favorite, automation and sharing: icon + short bar on the trailing edge,
+          so the leading edge stays with the working/unread dot. */}
+      <SessionMarkerColumn markers={edgeMarkers} previewUrl={previewUrl ?? null} />
     </View>
   );
 
+  if (floating) return <View style={styles.row}>{rowBody}</View>;
+  const moveActions = {
+    accessibilityActions: [
+      ...(onMoveUp ? [{ name: 'moveUp', label: 'Move up' }] : []),
+      ...(onMoveDown ? [{ name: 'moveDown', label: 'Move down' }] : []),
+    ],
+    onAccessibilityAction: ({ nativeEvent }: { nativeEvent: { actionName: string } }) => {
+      if (interactionsLocked) return;
+      if (nativeEvent.actionName === 'moveUp') onMoveUp?.();
+      if (nativeEvent.actionName === 'moveDown') onMoveDown?.();
+    },
+  };
+
   // Wide layout: select into the right pane instead of navigating. Narrow layout:
   // navigate to the full-screen session via the Link, exactly as before.
+  const swipeable = (row: ReactNode) => (
+    <SwipeableSessionRow
+      favorite={favorite}
+      label={label}
+      onToggleFavorite={onToggleFavorite}
+      onDelete={onDelete}
+      onEdit={onRename}
+      disabled={interactionsLocked}
+    >
+      {row}
+    </SwipeableSessionRow>
+  );
+
   if (onSelect) {
-    return (
+    return swipeable(
       <Pressable
         style={({ pressed }) => [
           styles.row,
@@ -1971,26 +2056,33 @@ function SessionRow({
         ]}
         onHoverIn={() => setHovered(true)}
         onHoverOut={() => setHovered(false)}
+        disabled={interactionsLocked}
+        {...moveActions}
         onPress={() => {
+          if (interactionsLocked) return;
           onOpen?.();
           onSelect();
         }}
-        onLongPress={onRename}
+        onLongPress={reorderable ? undefined : onRename}
         delayLongPress={300}
         accessibilityRole="button"
         accessibilityState={{ selected: !!selected }}
-        accessibilityLabel={`Open session ${label}`}
-        accessibilityHint="Long press to edit session settings"
+        accessibilityLabel={a11yLabel}
+        accessibilityHint={
+          reorderable
+            ? 'Hold the session title to move it within this project. Swipe for settings.'
+            : 'Long press to edit session settings'
+        }
       >
         {rowBody}
-      </Pressable>
+      </Pressable>,
     );
   }
 
-  return (
+  return swipeable(
     <Link
       href={{ pathname: '/session/[id]', params: { id: session.sessionId } }}
-      accessibilityLabel={`Open session ${label}`}
+      accessibilityLabel={a11yLabel}
       asChild
     >
       <Pressable
@@ -2001,14 +2093,22 @@ function SessionRow({
         ]}
         onHoverIn={() => setHovered(true)}
         onHoverOut={() => setHovered(false)}
-        onPress={() => onOpen?.()}
-        onLongPress={onRename}
+        disabled={interactionsLocked}
+        {...moveActions}
+        onPress={() => {
+          if (!interactionsLocked) onOpen?.();
+        }}
+        onLongPress={reorderable ? undefined : onRename}
         delayLongPress={300}
-        accessibilityHint="Long press to edit session settings"
+        accessibilityHint={
+          reorderable
+            ? 'Hold the session title to move it within this project. Swipe for settings.'
+            : 'Long press to edit session settings'
+        }
       >
         {rowBody}
       </Pressable>
-    </Link>
+    </Link>,
   );
 }
 
@@ -2536,10 +2636,11 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 48,
     backgroundColor: theme.colors.surface,
   },
-  // The [chevron | dot | title | trail] grid. Lives on a plain child View (not the
-  // Pressable) because `<Link asChild>` drops the Pressable's style in the narrow
-  // layout; `flex: 1` fills the Pressable's width in both layouts. paddingLeft ==
-  // the project header's, so a session's leading columns line up under the project's.
+  // The [chevron | dot | title] grid; the title block carries its own right ends.
+  // Lives on a plain child View (not the Pressable) because `<Link asChild>` drops
+  // the Pressable's style in the narrow layout; `flex: 1` fills the Pressable's
+  // width in both layouts. paddingLeft == the project header's, so a session's
+  // leading columns line up under the project's.
   rowInner: {
     flex: 1,
     flexDirection: 'row',
@@ -2570,18 +2671,13 @@ const styles = StyleSheet.create((theme) => ({
   rowPressed: {
     opacity: 0.6,
   },
-  rowTrail: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    paddingLeft: theme.spacing.sm,
-    paddingRight: theme.spacing.lg,
-  },
   rowSub: {
     color: theme.colors.textMuted,
     fontSize: theme.text.xs,
     lineHeight: 17 * theme.fontScale,
   },
+  sessionDragHandle: { flex: 1, minWidth: 0 },
+  sessionDragOverlay: { backgroundColor: theme.colors.surfaceAlt, borderRadius: theme.radius.sm },
   sessionTitle: {
     minWidth: 0,
     flexShrink: 1,
@@ -2590,7 +2686,28 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: '600',
     lineHeight: 19 * theme.fontScale,
   },
-  sessionTitleLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
+  // The session row has no separate trail column: the title line carries its own
+  // right end, so the block runs to the row's right edge.
+  sessionTitleBlock: { paddingRight: theme.spacing.lg },
+  sessionLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  // Shrinks never: the model name gives way first, so the features stay visible.
+  sessionFeatures: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 0,
+    gap: theme.spacing.xs,
+  },
+  sessionSub: { minWidth: 0, flexShrink: 1 },
+  // Held to the title's line height so the label, which is a hair taller, cannot
+  // grow the row when it appears or hides on a working <-> idle switch; this list
+  // re-measures rows on every poll.
+  sessionTitleLineEnd: { height: 19 * theme.fontScale },
+  sessionLineEnd: {
+    marginLeft: 'auto',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
   statusPill: {
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: 2,

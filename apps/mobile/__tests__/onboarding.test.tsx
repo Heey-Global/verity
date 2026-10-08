@@ -1,3 +1,12 @@
+const mockLiveRefresh = new Set<() => void>();
+jest.mock('../lib/liveConnection', () => ({
+  subscribeLiveRefresh: (_client: unknown, refresh: () => void) => {
+    mockLiveRefresh.add(refresh);
+    return () => mockLiveRefresh.delete(refresh);
+  },
+}));
+afterEach(() => mockLiveRefresh.clear());
+
 // Smoke tests for the onboarding wizard SHELL (#320, PR 1). Two concerns:
 //   1. A step screen renders its "Step N of M" progress + placeholder note and the
 //      accessible Back/Next controls navigate (via router.replace) to the right
@@ -12,7 +21,7 @@
 // in-memory fake we control per test.
 import { VerityApiError } from '@verity/mobile';
 import type { VerityClient, OnboardingStatus } from '@verity/mobile';
-import { fireEvent, render, screen } from '@testing-library/react-native';
+import { act, fireEvent, render, screen } from '@testing-library/react-native';
 
 jest.mock('expo-application', () => ({ nativeApplicationVersion: '1.30.0' }));
 
@@ -23,6 +32,12 @@ const mockCanGoBack = jest.fn<boolean, []>(() => false);
 let mockSegments: string[] = [];
 let mockPathname = '/';
 let mockSearchParams: Record<string, string | string[]> = {};
+let mockDemoMode = false;
+const mockEnterDemoMode = jest.fn<Promise<void>, []>();
+jest.mock('../lib/demoMode', () => ({
+  isDemoMode: () => mockDemoMode,
+  enterDemoMode: () => mockEnterDemoMode(),
+}));
 
 jest.mock('expo-router', () => ({
   router: {
@@ -55,7 +70,7 @@ jest.mock('../lib/client', () => ({
 }));
 
 import OnboardingWelcome from '../app/onboarding/welcome';
-import OnboardingGithub from '../app/onboarding/github';
+import OnboardingAiBackends from '../app/onboarding/ai-backends';
 import { useOnboardingGate } from '../hooks/useOnboardingGate';
 import { Text } from 'react-native';
 
@@ -93,6 +108,9 @@ function makeClient(
 }
 
 beforeEach(() => {
+  mockDemoMode = false;
+  mockEnterDemoMode.mockReset();
+  mockEnterDemoMode.mockResolvedValue(undefined);
   mockReplace.mockReset();
   mockPush.mockReset();
   mockBack.mockReset();
@@ -115,6 +133,22 @@ beforeEach(() => {
 });
 
 describe('onboarding wizard shell — step screen', () => {
+  it('opens the demo from the welcome screen without pairing', async () => {
+    render(<OnboardingWelcome />);
+    await act(async () => fireEvent.press(screen.getByLabelText('Try demo')));
+    expect(mockEnterDemoMode).toHaveBeenCalledTimes(1);
+    expect(mockReplace).toHaveBeenCalledWith('/');
+    expect(mockCreateVerityClient).not.toHaveBeenCalled();
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it('keeps Continue from racing a demo that is still starting', async () => {
+    mockEnterDemoMode.mockReturnValue(new Promise<void>(() => undefined));
+    render(<OnboardingWelcome />);
+    await act(async () => fireEvent.press(screen.getByLabelText('Try demo')));
+    expect(screen.getByLabelText('Continue')).toBeDisabled();
+  });
+
   it('renders the welcome step with its progress indicator and product orientation', () => {
     render(<OnboardingWelcome />);
     // Welcome is preflight before any server/secret setup, not a numbered wizard step.
@@ -139,9 +173,15 @@ describe('onboarding wizard shell — step screen', () => {
         jest.fn().mockResolvedValue(makeStatus({ masterPasswordSet: true, sealed: false })),
       ),
     );
-    render(<OnboardingGithub />);
+    mockCreateVerityClient.mockReturnValue({
+      fetchOnboardingStatus: jest
+        .fn()
+        .mockResolvedValue(makeStatus({ masterPasswordSet: true, sealed: false })),
+      getVeritySettings: jest.fn().mockResolvedValue({}),
+    } as unknown as VerityClient);
+    render(<OnboardingAiBackends />);
     // GitHub is step 2 of 4 and can go back to the master-password step.
-    expect(screen.getByLabelText('Step 2 of 4')).toBeOnTheScreen();
+    expect(screen.getByLabelText('Step 2 of 2')).toBeOnTheScreen();
     mockCanGoBack.mockReturnValue(true);
     fireEvent.press(screen.getByLabelText('Back'));
     expect(mockBack).not.toHaveBeenCalled();
@@ -150,6 +190,60 @@ describe('onboarding wizard shell — step screen', () => {
 });
 
 describe('onboarding first-run gate', () => {
+  it('opens demo screens without reading real authentication or contacting the saved server', async () => {
+    mockDemoMode = true;
+    mockHasConfiguredVerityBaseUrl.mockReturnValue(false);
+    render(<GateProbe />);
+    expect(await screen.findByText('gate:done')).toBeOnTheScreen();
+    expect(mockCreateVerityClient).not.toHaveBeenCalled();
+    expect(mockGetAuthToken).not.toHaveBeenCalled();
+    expect(mockHasStoredAuthToken).not.toHaveBeenCalled();
+  });
+
+  it.each(['onboarding', 'unlock-device'])('keeps %s routes out of the demo', async (route) => {
+    mockDemoMode = true;
+    mockSegments = [route];
+    render(<GateProbe />);
+    expect(await screen.findByText('gate:done:/')).toBeOnTheScreen();
+    expect(mockCreateVerityClient).not.toHaveBeenCalled();
+  });
+
+  it('does not refetch on ordinary navigation and uses the latest route when sealed', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchStatus = jest.fn().mockResolvedValue(
+        makeStatus({
+          complete: true,
+          claudeConfigured: true,
+          sealed: false,
+          masterPasswordSet: true,
+        }),
+      );
+      const secretStatus = jest.fn().mockResolvedValue('unlocked');
+      mockCreateVerityClient.mockReturnValue(makeClient(fetchStatus, secretStatus));
+      const view = render(<GateProbe />);
+      await screen.findByText('gate:done');
+      mockPathname = '/session/new';
+      mockSegments = ['session', 'new'];
+      mockSearchParams = { targetMessageId: '42' };
+      view.rerender(<GateProbe />);
+      expect(fetchStatus).toHaveBeenCalledTimes(1);
+      expect(secretStatus).toHaveBeenCalledTimes(1);
+      secretStatus.mockResolvedValue('sealed');
+      await act(async () => {
+        for (const refresh of mockLiveRefresh) refresh();
+      });
+      expect(
+        screen.getByText(
+          'gate:done:/unlock-device?returnTo=%2Fsession%2Fnew%3FtargetMessageId%3D42&serverSecret=1',
+        ),
+      ).toBeOnTheScreen();
+      view.unmount();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('redirects to welcome when the device has no base URL (never fetches status)', async () => {
     mockGetVerityBaseUrl.mockReturnValue(null);
     mockHasConfiguredVerityBaseUrl.mockReturnValue(false);
@@ -186,7 +280,7 @@ describe('onboarding first-run gate', () => {
     mockCreateVerityClient.mockReturnValue(makeClient(jest.fn().mockResolvedValue(status)));
     render(<GateProbe />);
 
-    expect(await screen.findByText('gate:done:/onboarding/github')).toBeOnTheScreen();
+    expect(await screen.findByText('gate:done:/onboarding/ai-backends')).toBeOnTheScreen();
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
@@ -197,7 +291,7 @@ describe('onboarding first-run gate', () => {
     render(<GateProbe />);
 
     expect(
-      await screen.findByText('gate:done:/unlock-device?returnTo=%2Fonboarding%2Fgithub'),
+      await screen.findByText('gate:done:/unlock-device?returnTo=%2Fonboarding%2Fai-backends'),
     ).toBeOnTheScreen();
     expect(mockReplace).not.toHaveBeenCalledWith('/onboarding/github');
     expect(mockReplace).not.toHaveBeenCalled();
@@ -285,6 +379,7 @@ describe('onboarding first-run gate', () => {
             signingKeyConfigured: true,
             hasProject: true,
             complete: true,
+            claudeConfigured: true,
             nextStep: null,
           }),
         ),
@@ -305,11 +400,15 @@ describe('onboarding first-run gate', () => {
     mockGetAuthToken.mockReturnValue(null);
     mockCreateVerityClient.mockReturnValue(
       makeClient(
-        jest
-          .fn()
-          .mockResolvedValue(
-            makeStatus({ sealed: false, masterPasswordSet: true, complete: true, nextStep: null }),
-          ),
+        jest.fn().mockResolvedValue(
+          makeStatus({
+            sealed: false,
+            masterPasswordSet: true,
+            complete: true,
+            claudeConfigured: true,
+            nextStep: null,
+          }),
+        ),
       ),
     );
     render(<GateProbe />);
@@ -334,6 +433,7 @@ describe('onboarding first-run gate', () => {
             signingKeyConfigured: true,
             hasProject: true,
             complete: true,
+            claudeConfigured: true,
             nextStep: null,
           }),
         ),
@@ -353,6 +453,7 @@ describe('onboarding first-run gate', () => {
             sealed: true,
             masterPasswordSet: true,
             complete: true,
+            claudeConfigured: true,
             nextStep: null,
           }),
         ),
@@ -374,6 +475,7 @@ describe('onboarding first-run gate', () => {
             sealed: false,
             masterPasswordSet: true,
             complete: true,
+            claudeConfigured: true,
             nextStep: null,
           }),
         ),

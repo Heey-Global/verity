@@ -1,4 +1,5 @@
-import type { DockerClient } from '../docker.js';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { DockerError, type DockerClient } from '../docker.js';
 import {
   dockerStandbyPromotion,
   type DockerStandbyPromotionOptions,
@@ -56,6 +57,7 @@ const OFFICIAL_DIGEST = /^ghcr\.io\/heey-global\/verity\/verity-server@sha256:[a
 const FAILABLE: readonly UpdatePhase[] = ['requested', 'pulling', 'verifying-image', 'preflight'];
 
 const PREPARING: readonly UpdatePhase[] = [...FAILABLE, 'creating-standby'];
+const RESUME_RETRY_DELAYS_MS = [1_000, 2_000, 4_000] as const;
 
 function isFailablePhase(
   phase: UpdatePhase,
@@ -69,8 +71,17 @@ function isPreparingPhase(
   return PREPARING.includes(phase);
 }
 
-const describe = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
+const describe = (error: unknown): string => {
+  if (error instanceof DockerError) {
+    const context = [
+      `kind=${error.kind}`,
+      ...(error.id === undefined ? [] : [`container=${error.id}`]),
+      ...(error.status === undefined ? [] : [`status=${String(error.status)}`]),
+    ];
+    return `${error.message} (${context.join(', ')})`;
+  }
+  return error instanceof Error ? error.message : String(error);
+};
 
 const defaultLog = (message: string): void => {
   console.log(`[self-update] ${message}`);
@@ -118,6 +129,8 @@ export function createOfficialImageVerifier(
 export type UpdateRunnerDocker = StandbyPromotionDocker & UpdatePreparationDocker;
 
 export interface UpdateRunnerOptions {
+  /** Host capability receipt directory; defaults to the installed status bind. */
+  readonly hostRuntimeDir?: string;
   /** Updater-owned root holding both the sealed spec and the update journal. */
   readonly managedRoot: string;
   readonly docker: UpdateRunnerDocker;
@@ -135,6 +148,8 @@ export interface UpdateRunnerOptions {
     DockerStandbyPromotionOptions,
     'managedRoot' | 'docker' | 'environment' | 'readFile'
   >;
+  /** Backoff between resumable attempts; defaults to a timer. */
+  readonly retrySleep?: (milliseconds: number) => Promise<void>;
   readonly log?: (message: string) => void;
 }
 
@@ -173,6 +188,7 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
   const shared = {
     managedRoot: options.managedRoot,
     docker: options.docker,
+    ...(options.hostRuntimeDir === undefined ? {} : { hostRuntimeDir: options.hostRuntimeDir }),
     ...(options.environment === undefined ? {} : { environment: options.environment }),
     ...(options.readFile === undefined ? {} : { readFile: options.readFile }),
   };
@@ -188,7 +204,7 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
     if (isPreparingPhase(journal.phase)) {
       const prepared = await resumeUpdatePreparation(
         options.managedRoot,
-        await dockerUpdatePreparation({ ...shared, verifyImage }),
+        await dockerUpdatePreparation({ ...shared, verifyImage, log }),
       );
       // Preparation reports failure by journalling it rather than by throwing,
       // so an unprepared operation has to be checked for, not caught.
@@ -201,7 +217,7 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
     let phase = journal.phase;
     if (phase !== 'committed' && phase !== 'reconciling-companions') {
       const state = await resumeUpdateCutover(
-        await dockerStandbyPromotion({ ...shared, ...(options.cutover ?? {}) }),
+        await dockerStandbyPromotion({ ...shared, log, ...(options.cutover ?? {}) }),
       );
       phase = state.phase;
     }
@@ -240,8 +256,8 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
    * Docker actions, reading the sealed authority — so the single slot does not
    * stay occupied by an operation that will never move and refuse every later
    * request with `operation-in-progress`. Phases from `standby` on are left
-   * alone deliberately: there the operation is genuinely resumable, and the next
-   * Updater start picks it up where it stopped.
+   * alone deliberately: there the operation is genuinely resumable. The runner
+   * retries it, and a later request or Updater restart can resume it again.
    */
   const recordStuckFailure = async (): Promise<void> => {
     try {
@@ -259,11 +275,34 @@ export function createUpdateRunner(options: UpdateRunnerOptions): UpdateRunner {
   };
 
   const run = async (): Promise<void> => {
-    try {
-      await execute();
-    } catch (error) {
-      log(`update operation failed: ${describe(error)}`);
-      await recordStuckFailure();
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await execute();
+        return;
+      } catch (error) {
+        log(`update operation failed: ${describe(error)}`);
+        if (error instanceof Error && error.stack !== undefined)
+          log(`update operation failure stack: ${error.stack}`);
+        await recordStuckFailure();
+      }
+      // Read durable intent again after the failed attempt releases its lease.
+      // Backoff stays inside the queue so other Docker work cannot interleave.
+      try {
+        const current = await readUpdateJournal(options.managedRoot);
+        const delay = RESUME_RETRY_DELAYS_MS[attempt];
+        if (
+          delay === undefined ||
+          current === null ||
+          isPreparingPhase(current.phase) ||
+          isTerminalOperationState(projectUpdateOperation(current).state)
+        )
+          return;
+        log(`operation ${current.updateId} retrying ${current.phase} in ${String(delay)}ms`);
+        await (options.retrySleep ?? sleep)(delay);
+      } catch (error) {
+        log(`could not retry the operation: ${describe(error)}`);
+        return;
+      }
     }
   };
 
@@ -317,15 +356,25 @@ export async function recoverManagedUpdater(
 ): Promise<ManagedUpdaterRecovery> {
   const runner = createUpdateRunner(options);
   const verdict = (result: ManagedServerReconcileResult): ManagedServerReconcileVerdict =>
-    result.drift === undefined || result.drift.length === 0
+    (result.drift === undefined || result.drift.length === 0) &&
+    result.diagnosticMountPending !== true
       ? { status: 'ok' }
-      : { status: 'drift', environment: result.drift };
+      : {
+          status: 'drift',
+          environment: result.drift ?? [],
+          ...(result.diagnosticMountPending ? { diagnosticMountPending: true } : {}),
+        };
   // `'unknown'` until a reconcile actually returns one. The catch below swallows
   // the failure when an operation is unfinished, and claiming `'ok'` there would
   // report a verdict nothing reached.
   let reconcile: ManagedServerReconcileVerdict = { status: 'unknown' };
   const reportDrift = (result: ManagedServerReconcileVerdict): void => {
     if (result.status !== 'drift') return;
+    if (result.diagnosticMountPending)
+      (options.log ?? defaultLog)(
+        'the running Server predates the diagnostic mount; its next guarded replacement will apply it',
+      );
+    if (result.environment.length === 0) return;
     // The Server is up and serving on values the spec now resolves differently.
     // Names only: these are secrets, and the log is not the place to widen the
     // blast radius of a configuration mistake.
@@ -385,6 +434,7 @@ export async function recoverManagedUpdater(
       }
       const reconciled = await reconcileManagedServer({
         managedRoot: options.managedRoot,
+        allowDiagnosticMountMigration: pending === null,
         docker: options.docker,
         ...(options.environment === undefined ? {} : { environment: options.environment }),
         ...(options.readFile === undefined ? {} : { readFile: options.readFile }),

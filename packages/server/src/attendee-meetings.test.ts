@@ -178,7 +178,8 @@ it('starts and stops the provider bot independently of the app', async () => {
     expect(body.meeting_url).toBe('https://meet.google.com/abc-defg-hij');
     const callback = new URL(body.webhooks[0]!.url);
     expect(callback.pathname).toBe('/webhooks/attendee');
-    expect(callback.searchParams.get('pin')).toMatch(/^\d{9}$/);
+    const { hashPreviewPin } = await import('@verity/preview-tunnel');
+    expect(() => hashPreviewPin(callback.searchParams.get('pin') ?? '')).not.toThrow();
     await service.stop('session', result.meetingId);
     expect(
       fetcher.mock.calls.some(

@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
 // First-run onboarding gate (#320, PR 1). On mount, fetch `/onboarding/status`
 // (sealed-safe on the server) and, when setup is incomplete, redirect into the
 // wizard at the resume step. Deliberately FAIL-OPEN: a failed status fetch must
@@ -11,15 +12,19 @@ import {
   type OnboardingStatus,
 } from '@verity/mobile';
 import { useGlobalSearchParams, usePathname, useSegments } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { AppState } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { AppState, Platform } from 'react-native';
 
 import { getAuthToken, hasStoredAuthToken } from '../lib/authToken';
 import { createVerityClient, getVerityBaseUrl, hasConfiguredVerityBaseUrl } from '../lib/client';
+import {
+  getBrowserSession,
+  refreshBrowserSession,
+  subscribeBrowserSession,
+} from '../lib/browserSession';
+import { isDemoMode } from '../lib/demoMode';
 
 export type OnboardingGateState = { status: 'checking' } | { status: 'done'; redirectTo?: string };
-
-const SERVER_SECRET_CHECK_INTERVAL_MS = 15_000;
 
 function onboardingRoute(status: OnboardingStatus): string {
   if (isCoreOnboardingComplete(status)) return '/';
@@ -44,20 +49,24 @@ export function useOnboardingGate(): OnboardingGateState {
   const pathname = usePathname();
   const searchParams = useGlobalSearchParams<Record<string, string | string[]>>();
   const inOnboarding = segments[0] === 'onboarding';
+  const inWebConnect = Platform.OS === 'web' && segments[0] === 'web-connect';
   const inUnlockDevice = segments[0] === 'unlock-device';
   // The standalone GitHub reconnect screen is exempt from the "setup incomplete"
   // redirect: disconnecting GitHub there flips `status.complete` false, and bouncing
   // the operator into the wizard mid-reconnect would defeat the screen's purpose.
   // The sealed→unlock and missing-auth-token→unlock redirects still apply.
   const inGithubConnect = segments[0] === 'github-connect';
+  const route = useRef({ pathname, searchParams });
+  route.current = { pathname, searchParams };
   const [state, setState] = useState<OnboardingGateState>({ status: 'checking' });
 
   useEffect(() => {
     let active = true;
     let inFlight = false;
-    let interval: ReturnType<typeof setInterval> | undefined;
+    let detachLive: (() => void) | undefined;
 
     const currentReturnTo = (): string => {
+      const { pathname, searchParams } = route.current;
       if (!pathname || pathname.length === 0 || pathname === '/unlock-device') return '/';
       const query = new URLSearchParams();
       for (const [key, value] of Object.entries(searchParams)) {
@@ -67,16 +76,61 @@ export function useOnboardingGate(): OnboardingGateState {
       return encoded ? `${pathname}?${encoded}` : pathname;
     };
 
+    const watch = (client: NonNullable<ReturnType<typeof createVerityClient>>): void => {
+      if (!active || detachLive) return;
+      detachLive = subscribeLiveRefresh(
+        client,
+        () => check(),
+        (path) => path === '/onboarding/status' || path === '/secret/status',
+        [{ path: '/onboarding/status' }, { path: '/secret/status' }],
+      );
+    };
+
     const check = async (): Promise<void> => {
       if (inFlight) return;
       inFlight = true;
       try {
+        if (isDemoMode()) {
+          setState({
+            status: 'done',
+            ...(inOnboarding || inUnlockDevice ? { redirectTo: '/' } : {}),
+          });
+          return;
+        }
         if (!hasConfiguredVerityBaseUrl()) {
           if (!inOnboarding) {
             setState({ status: 'done', redirectTo: '/onboarding/welcome' });
             return;
           }
           setState((current) => (current.status === 'checking' ? { status: 'done' } : current));
+          return;
+        }
+
+        if (Platform.OS === 'web') {
+          if (inWebConnect) {
+            setState({ status: 'done' });
+            return;
+          }
+          const session = await refreshBrowserSession();
+          if (!active) return;
+          if (session === null) {
+            setState({ status: 'done', redirectTo: '/web-connect' });
+            return;
+          }
+          const client = createVerityClient()!;
+          watch(client);
+          if ((await client.getSecretStatus()) === 'sealed') {
+            if (active) setState({ status: 'done', redirectTo: '/web-connect?unlock=1' });
+            return;
+          }
+          const status = await client.fetchOnboardingStatus();
+          if (!active) return;
+          setState({
+            status: 'done',
+            ...(!inOnboarding && !inGithubConnect && !isCoreOnboardingComplete(status)
+              ? { redirectTo: onboardingRoute(status) }
+              : {}),
+          });
           return;
         }
 
@@ -102,6 +156,7 @@ export function useOnboardingGate(): OnboardingGateState {
           return;
         }
 
+        watch(client);
         // This endpoint distinguishes a configured-but-sealed store from an
         // uninitialized one directly. Treat it as authoritative for the unlock
         // decision: onboarding metadata can be absent or redacted after an
@@ -171,6 +226,16 @@ export function useOnboardingGate(): OnboardingGateState {
 
         setState((current) => (current.status === 'checking' ? { status: 'done' } : current));
       } catch (error) {
+        if (Platform.OS === 'web') {
+          if (active)
+            setState({
+              status: 'done',
+              ...(getBrowserSession() === null && !inWebConnect
+                ? { redirectTo: '/web-connect' }
+                : {}),
+            });
+          return;
+        }
         // A race can seal the store between the first probe and a failed richer
         // status read. Recheck before preserving the gate's fail-open behavior.
         try {
@@ -199,18 +264,20 @@ export function useOnboardingGate(): OnboardingGateState {
       }
     };
 
+    const unsubscribeBrowser =
+      Platform.OS === 'web' ? subscribeBrowserSession(() => void check()) : undefined;
     void check();
-    interval = setInterval(() => void check(), SERVER_SECRET_CHECK_INTERVAL_MS);
     const subscription = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active') void check();
     });
 
     return () => {
       active = false;
-      if (interval !== undefined) clearInterval(interval);
+      unsubscribeBrowser?.();
+      detachLive?.();
       subscription.remove();
     };
-  }, [inOnboarding, inUnlockDevice, inGithubConnect, pathname, searchParams]);
+  }, [inOnboarding, inUnlockDevice, inGithubConnect, inWebConnect]);
 
   return state;
 }

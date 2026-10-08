@@ -54,9 +54,15 @@ export {
   type PermissionDecisionSource,
   type StartOptions,
   type TurnOptions,
+  type DispatchTurnOptions,
   type TurnPreparationContext,
 } from './conductor.js';
-export { ALLOWED_PERMISSION_MODES, assertSafeArgs, nodeSpawner } from './runner.js';
+export {
+  ALLOWED_PERMISSION_MODES,
+  PLANNING_PERMISSION_MODE,
+  assertSafeArgs,
+  nodeSpawner,
+} from './runner.js';
 export {
   PROCESS_TREE_KILL_GRACE_MS,
   collectEscapedProcessTree,
@@ -160,5 +166,3 @@ export {
   transcriptPath,
   type TailState,
 } from './transcript-sync.js';
-
-export { KnowledgeSessionClosedError } from './conductor.js';

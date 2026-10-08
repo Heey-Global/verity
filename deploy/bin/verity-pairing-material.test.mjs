@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { X509Certificate } from 'node:crypto';
 import {
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   statSync,
   symlinkSync,
@@ -230,4 +231,48 @@ test('bounds CA-era certificate addresses across repeated host changes', () => {
   const retainedHosts = certificate.stdout.match(/DNS:verity-[0-9]+\.home\.example/g) ?? [];
   assert.ok(retainedHosts.length <= 17, retainedHosts.join(', '));
   assert.match(certificate.stdout, /DNS:verity-19\.home\.example/);
+});
+
+test('automatic pairing excludes Docker bridges and keeps private LAN addresses', () => {
+  const state = mkdtempSync(join(tmpdir(), 'verity-pairing-addresses-'));
+  const bin = join(state, 'bin');
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, 'ip'),
+    `#!/bin/sh
+printf '%s\\n' '2: docker0 inet 172.17.0.1/16 scope global docker0' '3: br-abcdef inet 172.18.0.1/16 scope global br-abcdef' '4: eth0 inet 172.17.10.20/24 scope global eth0' '5: tailscale0 inet 100.64.0.1/32 scope global tailscale0'
+`,
+    { mode: 0o755 },
+  );
+  const result = run(state, {
+    PATH: `${bin}:${process.env.PATH}`,
+    VERITY_PAIRING_IPS: '',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(
+    Buffer.from(new URL(result.stdout.trim()).searchParams.get('payload'), 'base64url').toString(),
+  );
+  assert.equal(payload.url, 'https://172.17.10.20:8082');
+  const certificate = new X509Certificate(readFileSync(join(state, 'tls-cert.pem')));
+  assert.match(certificate.subjectAltName, /IP Address:100\.64\.0\.1/);
+  assert.doesNotMatch(certificate.subjectAltName, /IP Address:172\.(17\.0\.1|18\.0\.1)(?:,|$)/);
+});
+
+test('address discovery falls back on hosts without usable ip tooling', () => {
+  const bin = mkdtempSync(join(tmpdir(), 'verity-pairing-fallback-'));
+  writeFileSync(join(bin, 'ip'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  writeFileSync(join(bin, 'hostname'), "#!/bin/sh\nprintf '%s\\n' '192.168.1.42'\n", {
+    mode: 0o755,
+  });
+  const helper = fileURLToPath(new URL('./verity-pairing-addresses', import.meta.url));
+  const result = spawnSync(
+    'bash',
+    ['-c', 'source "$1"; verity_pairing_ipv4_addresses', 'bash', helper],
+    {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), '192.168.1.42');
 });

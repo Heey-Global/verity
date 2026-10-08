@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+verity_pairing_ipv4_addresses() {
+  local addresses
+  if addresses="$(ip -o -4 address show scope global 2>/dev/null)"; then
+    # Docker addresses can precede LAN or Tailscale addresses in hostname -I.
+    # Filter interfaces rather than private ranges, which may be real LANs.
+    printf '%s\n' "$addresses" | awk '
+      $2 !~ /^(docker[0-9]+|br-.+|veth.+)(@.*)?$/ && $3 == "inet" {
+        split($4, address, "/")
+        print address[1]
+      }'
+  else
+    hostname -I 2>/dev/null || true
+  fi
+}

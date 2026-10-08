@@ -38,6 +38,12 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var incomingWrite: Task<Void, Never>?
     var closed = false
     var worker: Task<Void, Never>?
+    // Armed when the first local bytes have gone out; Core's TLS reply to a
+    // ClientHello arrives within milliseconds, so a stream still without any
+    // reply after the deadline is on an attachment that has gone dead without
+    // saying so. Ending the attachment lets the app open a fresh one instead
+    // of waiting out every request's own timeout.
+    var stallWatch: Task<Void, Never>?
     var sentBytes = 0
     var receivedBytes = 0
     var deliveredBytes = 0
@@ -47,6 +53,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
     // the stream. On a device this is the only view of a handshake that the
     // app's TLS client abandons without reporting why.
     let proxy: String
+    /** First characters of the stream ID, so Core's record of the same stream can be matched. */
+    let key: String
     let openedAt = Date()
     var firstRemoteAt: Date?
     var endedAt: Date?
@@ -54,9 +62,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var outgoing = RecordTrace()
     var incoming = RecordTrace()
 
-    init(_ connection: NWConnection, proxy: String) {
+    init(_ connection: NWConnection, proxy: String, key: String) {
       self.connection = connection
       self.proxy = proxy
+      self.key = key
     }
 
     func noteRecord(_ data: Data, incoming isIncoming: Bool) {
@@ -74,7 +83,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
       let list: ([UInt8]) -> String = {
         $0.isEmpty ? "none" : $0.map { String($0) }.joined(separator: "-")
       }
-      return "up\(min(sentBytes, 999_999_999)).dn\(min(receivedBytes, 999_999_999)).t\(firstRemote)"
+      return "k\(key).up\(min(sentBytes, 999_999_999)).dn\(min(receivedBytes, 999_999_999))"
+        + ".fo\(min(outgoingSequence, 9_999_999)).fi\(min(incomingSequence, 9_999_999)).t\(firstRemote)"
         + ".d\(millis(ended, 99_999_999)).\(endedBy).p\(proxy)"
         + ".o\(list(outgoing.types)).i\(list(incoming.types)).h\(incoming.firstHandshake)"
     }
@@ -124,7 +134,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
         }
         remaining = Int(header[3]) << 8 | Int(header[4])
         header = []
-        if types.count < 6 { types.append(type) }
+        if types.count < 8 { types.append(type) }
         if type == 22, firstHandshake == "none", !capturePrefix { capturePrefix = true }
         if remaining == 0, capturePrefix { classifyPrefix() }
       }
@@ -157,6 +167,13 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private var stopReasonText: String?
   private var heartbeat: Task<Void, Never>?
   private var unansweredPingSince: Date?
+  // Liveness of the inbound half of the data socket, separately from data:
+  // a pong that still arrives while stream frames do not says the relay is
+  // not forwarding; a pong that stops too says the socket's inbound is dead.
+  private var attachedAt: Date?
+  private var pingsSent = 0
+  private var pongsReceived = 0
+  private var lastPongAt: Date?
   private var localConnections = 0
   private var openedStreams = 0
   private var receivedStreamFrames = 0
@@ -177,7 +194,16 @@ final class RemoteAppTunnel: @unchecked Sendable {
     lock.withLock {
       let traces = recentStreams.enumerated()
         .map { "s\($0.offset + 1)=\($0.element.traceToken)" }.joined(separator: ";")
+      // Clamped both ways: a clock step must not push the summary out of the
+      // shape the app accepts, which would lose every counter beside it.
+      let now = Date()
+      let millis: (Date?) -> String = { date in
+        date.map { String(max(0, min(Int(now.timeIntervalSince($0) * 1000), 99_999_999))) } ?? "none"
+      }
+      let age = millis(attachedAt)
+      let pongAge = millis(lastPongAt)
       return "local=\(localConnections), opened=\(openedStreams), received=\(receivedStreamFrames), last=\(lastStreamEvent), sentBytes=\(sentBytes), receivedBytes=\(receivedBytes), deliveredBytes=\(deliveredBytes), localResets=\(localResets), remoteResets=\(remoteResets), lastReset=\(lastReset)"
+        + ", age=\(age), pings=\(min(pingsSent, 999_999))/\(min(pongsReceived, 999_999)), pongAge=\(pongAge)"
         + (traces.isEmpty ? "" : ", streams=\(traces)")
     }
   }
@@ -277,6 +303,14 @@ final class RemoteAppTunnel: @unchecked Sendable {
         guard let self else { return }
         await self.readFrames()
       }
+      // One attachment per instance (the socket is created in init and resumed
+      // once); reset together anyway so the fields can never mix two lives.
+      lock.withLock {
+        attachedAt = Date()
+        pingsSent = 0
+        pongsReceived = 0
+        lastPongAt = nil
+      }
       startHeartbeat()
       return port
     } catch {
@@ -287,6 +321,12 @@ final class RemoteAppTunnel: @unchecked Sendable {
 
   func stop(reason: String = "stopped by app") {
     lock.lock()
+    stopLocked(reason: reason)
+  }
+
+  /// Expects the lock held and releases it; the caller decides under that
+  /// same lock, so nothing can revive the attachment between verdict and stop.
+  private func stopLocked(reason: String) {
     guard !stopped else { lock.unlock(); return }
     stopped = true
     stopReasonText = reason
@@ -294,6 +334,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     for (id, stream) in streams {
       logStream(id, stream, event: "session_stopped")
       stream.closed = true
+      stream.stallWatch?.cancel()
       if stream.endedBy == "open" { stream.endedBy = "stopped"; stream.endedAt = Date() }
     }
     streams.removeAll()
@@ -350,10 +391,17 @@ final class RemoteAppTunnel: @unchecked Sendable {
           return
         }
         guard due else { continue }
+        self.lock.withLock { self.pingsSent += 1 }
         self.socket.sendPing { [weak self] error in
           guard let self else { return }
           if let error { self.stop(reason: "heartbeat failed: \(error)") }
-          else { self.lock.withLock { self.unansweredPingSince = nil } }
+          else {
+            self.lock.withLock {
+              self.unansweredPingSince = nil
+              self.pongsReceived += 1
+              self.lastPongAt = Date()
+            }
+          }
         }
       }
     }
@@ -399,7 +447,11 @@ final class RemoteAppTunnel: @unchecked Sendable {
       else { throw RemoteSmokeError.invalidFrame }
       lock.withLock {
         let first = stream.receivedBytes == 0 && !data.isEmpty
-        if first { stream.firstRemoteAt = Date() }
+        if first {
+          stream.firstRemoteAt = Date()
+          stream.stallWatch?.cancel()
+          stream.stallWatch = nil
+        }
         stream.noteRecord(data, incoming: true)
         stream.receivedBytes += data.count
         receivedBytes += data.count
@@ -509,9 +561,36 @@ final class RemoteAppTunnel: @unchecked Sendable {
     let exhausted = stream != nil && usedIds.count >= 4_096 && streams.isEmpty
     lock.unlock()
     stream?.worker?.cancel()
+    stream?.stallWatch?.cancel()
     stream?.connection.cancel()
     if exhausted { stop(reason: "stream IDs exhausted") }
     return stream != nil
+  }
+
+  static let stallDeadlineSeconds: UInt64 = 10
+
+  private func armStallWatch(_ stream: Stream, id: String) {
+    // The attachment is judged, not the stream: a slow Core on one stream
+    // while others keep receiving is not a dead socket.
+    let receivedWhenArmed = lock.withLock { receivedBytes }
+    let task = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: Self.stallDeadlineSeconds * 1_000_000_000)
+      guard !Task.isCancelled, let self else { return }
+      // Verdict and stop under one lock acquisition: a first reply landing in
+      // between must not have a live attachment torn down.
+      self.lock.lock()
+      let stalled = !self.stopped && !stream.closed && stream.receivedBytes == 0
+        && self.receivedBytes == receivedWhenArmed
+      guard stalled else { self.lock.unlock(); return }
+      self.logStream(id, stream, event: "stalled")
+      self.stopLocked(reason: "stall: no reply on a stream within \(Self.stallDeadlineSeconds) s")
+    }
+    let alreadyDone = lock.withLock { () -> Bool in
+      if stream.closed || stream.receivedBytes > 0 { return true }
+      stream.stallWatch = task
+      return false
+    }
+    if alreadyDone { task.cancel() }
   }
 
   private func reset(_ id: String, code: String) async {
@@ -576,7 +655,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       try await reserveStreamSlot()
       reserved = true
       let id = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-      let stream = Stream(connection, proxy: proxy)
+      let stream = Stream(connection, proxy: proxy, key: String(id.prefix(8)))
       let available = lock.withLock {
         reservedSlots -= 1
         reserved = false
@@ -685,13 +764,15 @@ final class RemoteAppTunnel: @unchecked Sendable {
       }
       try await writer.send(["type": "stream.data", "streamId": id,
         "seq": stream.outgoingSequence, "payload": bytes.base64EncodedString()])
-      lock.withLock {
+      let first = lock.withLock { () -> Bool in
         let first = stream.sentBytes == 0
         stream.noteRecord(bytes, incoming: false)
         stream.sentBytes += bytes.count
         sentBytes += bytes.count
         if first { logStream(id, stream, event: "first_local_data_sent") }
+        return first
       }
+      if first { armStallWatch(stream, id: id) }
       stream.outgoingSequence += 1
     }
   }

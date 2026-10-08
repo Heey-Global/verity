@@ -71,7 +71,6 @@ it('restores knowledge, revisions, grants and access provenance from a complete 
       revisions: await store.knowledge.listRevisions(document.id),
       grants: await store.knowledge.getGrants(actor.projectId),
       folders: await store.knowledge.listFolders(),
-      invalidated: await store.knowledge.listInvalidatedSessions(),
       audit: await source.selectFrom('knowledge_access_events').selectAll().orderBy('id').execute(),
     };
     await store.waitForMessageProjectionIdle();
@@ -96,7 +95,6 @@ it('restores knowledge, revisions, grants and access provenance from a complete 
     expect(await recovered.knowledge.listRevisions(document.id)).toEqual(expected.revisions);
     expect(await recovered.knowledge.getGrants(actor.projectId)).toEqual(expected.grants);
     expect(await recovered.knowledge.listFolders()).toEqual(expected.folders);
-    expect(await recovered.knowledge.listInvalidatedSessions()).toEqual(expected.invalidated);
     expect(
       await restored.selectFrom('knowledge_access_events').selectAll().orderBy('id').execute(),
     ).toEqual(expected.audit);
@@ -106,7 +104,7 @@ it('restores knowledge, revisions, grants and access provenance from a complete 
     ).resolves.toEqual(expected.document);
     await expect(
       recovered.knowledge.runAgent(actor, 'read', { documentId: document.id }),
-    ).rejects.toMatchObject({ code: 'forbidden' });
+    ).resolves.toEqual(expected.document);
     await recovered.waitForMessageProjectionIdle();
   } finally {
     await archiveDb?.close();

@@ -118,7 +118,7 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) 
       }
     }
     let summary = tunnel.diagnosticSummary
-    guard summary.contains(", streams=s1=up"), summary.contains(connect ? ".pconnect." : ".psocks."),
+    guard summary.contains(", streams=s1=k"), summary.contains(connect ? ".pconnect." : ".psocks."),
       summary.contains(".o22"), summary.contains(".i22")
     else { throw ProductionProbeFailure.transport("stream trace missing: \(summary)") }
     print("production app case passed: \(expectedFailure.isEmpty ? "valid-private-ca" : expectedFailure) via \(connect ? "connect" : "socks")")
@@ -293,17 +293,26 @@ func smokeResult() async -> String {
 }
 
 #if canImport(UIKit)
+// Current iOS SDKs refuse to launch even a test-only app without scene adoption.
+final class TunnelSmokeSceneDelegate: UIResponder, UIWindowSceneDelegate {
+  var window: UIWindow?
+
+  func scene(_ scene: UIScene, willConnectTo session: UISceneSession,
+    options connectionOptions: UIScene.ConnectionOptions) {
+    guard let windowScene = scene as? UIWindowScene else { return }
+    let window = UIWindow(windowScene: windowScene)
+    window.rootViewController = UIViewController()
+    self.window = window
+    window.makeKeyAndVisible()
+  }
+}
+
 @main
 @available(iOS 17.0, *)
 final class TunnelSmokeApp: UIResponder, UIApplicationDelegate {
-  var window: UIWindow?
   func application(_ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool
   {
-    let window = UIWindow(frame: UIScreen.main.bounds)
-    window.rootViewController = UIViewController()
-    window.makeKeyAndVisible()
-    self.window = window
     Task {
       let result = await smokeResult()
       print(result)

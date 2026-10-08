@@ -232,6 +232,7 @@ export function SessionSettingsDialog({
   const canSave =
     !busy &&
     !linkBusy &&
+    (draftName.trim() !== (savedName ?? '') || willMove) &&
     (!willMove || (canMove && !!target && (!commitConfirmation || leaveCommits)));
   const save = async () => {
     if (!canSave) return;
@@ -411,7 +412,7 @@ export function SessionSettingsDialog({
                 editable={!busy && !unresolved}
                 maxLength={80}
                 placeholder={displayName}
-                placeholderTextColor={theme.colors.textFaint}
+                placeholderTextColor={theme.colors.textMuted}
                 style={[styles.nameInput, nameFocused && styles.inputFocused]}
                 onFocus={() => setNameFocused(true)}
                 onBlur={() => setNameFocused(false)}
@@ -509,12 +510,14 @@ export function SessionSettingsDialog({
                 />
               </Pressable>
             </View>
-            <Text style={styles.description}>Share messages with agents in other projects.</Text>
+            <Text style={styles.description}>
+              Share messages with agents in this or other projects.
+            </Text>
             {linkInfoOpen ? (
               <Text style={styles.hint}>
-                Linked agents can share messages across projects, including information they can
-                access there. Disconnecting stops future messages; it cannot remove messages already
-                delivered.
+                Linked agents can share messages within and across projects, including information
+                they can access there. Disconnecting stops future messages; it cannot remove
+                messages already delivered.
               </Text>
             ) : null}
             <View style={styles.group}>
@@ -717,7 +720,7 @@ export function SessionSettingsDialog({
         {linkGroups.length === 0 ? (
           <Text style={styles.emptyText}>
             {linkableSessions.length === 0
-              ? 'No sessions in other projects to link.'
+              ? 'No other sessions available to link.'
               : 'No sessions match your search.'}
           </Text>
         ) : null}
@@ -1050,7 +1053,7 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
     nameInput: {
       minHeight: 48,
       borderWidth: 1,
-      borderColor: 'transparent',
+      borderColor: theme.colors.border,
       borderRadius: 12,
       paddingHorizontal: 14,
       paddingVertical: 10,

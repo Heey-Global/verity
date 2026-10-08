@@ -119,7 +119,6 @@ class FileEventSink implements EventSink {
       model: session.model,
       name: session.name ?? null,
       projectId: session.projectId ?? null,
-      kind: session.kind ?? 'normal',
       lastSeenEventCount: null,
     });
     return Promise.resolve();

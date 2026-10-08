@@ -1,6 +1,8 @@
 import * as Updates from 'expo-updates';
 
-const CHECK_TIMEOUT_MS = 5_000;
+const STARTUP_CHECK_TIMEOUT_MS = 5_000;
+// Interactive checks must tolerate slow connections without delaying app launch.
+const INTERACTIVE_CHECK_TIMEOUT_MS = 30_000;
 const FETCH_TIMEOUT_MS = 30_000;
 
 type UpdatesClient = Pick<
@@ -8,13 +10,40 @@ type UpdatesClient = Pick<
   'isEnabled' | 'checkForUpdateAsync' | 'fetchUpdateAsync' | 'reloadAsync'
 >;
 
-export type StartupUpdateResult = 'disabled' | 'current' | 'reloading' | 'failed';
+type UpdatePhase = 'check' | 'download' | 'reload';
+type UpdateFailure = {
+  status: 'failed';
+  phase: UpdatePhase;
+  timedOut: boolean;
+  message: string;
+};
+export type StartupUpdateResult = 'disabled' | 'current' | 'reloading' | UpdateFailure;
+
+class UpdateTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`Request timed out after ${timeoutMs / 1_000} seconds.`);
+  }
+}
+
+function updateFailure(phase: UpdatePhase, error: unknown): UpdateFailure {
+  const reason =
+    error instanceof Error ? error.message : typeof error === 'string' ? error : 'Unknown error';
+  const label = { check: 'Update check', download: 'Update download', reload: 'App restart' }[
+    phase
+  ];
+  return {
+    status: 'failed',
+    phase,
+    timedOut: error instanceof UpdateTimeoutError,
+    message: `${label} failed.\n\n${reason || 'Unknown error'}\n\nTry again later.`,
+  };
+}
 export type SerialUpdateResult = StartupUpdateResult | 'downloaded' | 'busy';
 
 function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('Update request timed out')), timeoutMs);
+    timer = setTimeout(() => reject(new UpdateTimeoutError(timeoutMs)), timeoutMs);
   });
   return Promise.race([task, timeout]).finally(() => {
     if (timer) clearTimeout(timer);
@@ -29,19 +58,29 @@ function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
 export async function applyStartupUpdate(
   client: UpdatesClient = Updates,
 ): Promise<StartupUpdateResult> {
+  return applyUpdate(client, STARTUP_CHECK_TIMEOUT_MS);
+}
+
+async function applyUpdate(
+  client: UpdatesClient,
+  checkTimeoutMs: number,
+): Promise<StartupUpdateResult> {
   if (!client.isEnabled) return 'disabled';
 
+  let phase: UpdatePhase = 'check';
   try {
-    const check = await withTimeout(client.checkForUpdateAsync(), CHECK_TIMEOUT_MS);
+    const check = await withTimeout(client.checkForUpdateAsync(), checkTimeoutMs);
     if (!check.isAvailable && !check.isRollBackToEmbedded) return 'current';
 
+    phase = 'download';
     const fetched = await withTimeout(client.fetchUpdateAsync(), FETCH_TIMEOUT_MS);
     if (!fetched.isNew && !fetched.isRollBackToEmbedded) return 'current';
 
+    phase = 'reload';
     await client.reloadAsync();
     return 'reloading';
-  } catch {
-    return 'failed';
+  } catch (error) {
+    return updateFailure(phase, error);
   }
 }
 
@@ -49,13 +88,15 @@ export async function applyStartupUpdate(
  * apply the downloaded bundle on the next cold start, preserving unsaved work. */
 async function downloadForegroundUpdate(client: UpdatesClient): Promise<SerialUpdateResult> {
   if (!client.isEnabled) return 'disabled';
+  let phase: UpdatePhase = 'check';
   try {
-    const check = await withTimeout(client.checkForUpdateAsync(), CHECK_TIMEOUT_MS);
+    const check = await withTimeout(client.checkForUpdateAsync(), INTERACTIVE_CHECK_TIMEOUT_MS);
     if (!check.isAvailable && !check.isRollBackToEmbedded) return 'current';
+    phase = 'download';
     const fetched = await withTimeout(client.fetchUpdateAsync(), FETCH_TIMEOUT_MS);
     return fetched.isNew || fetched.isRollBackToEmbedded ? 'downloaded' : 'current';
-  } catch {
-    return 'failed';
+  } catch (error) {
+    return updateFailure(phase, error);
   }
 }
 
@@ -73,7 +114,9 @@ export function createSerialUpdateChecker(
     if (inFlight) return 'busy';
     inFlight = true;
     try {
-      return reload ? await applyStartupUpdate(client) : await downloadForegroundUpdate(client);
+      return reload
+        ? await applyUpdate(client, INTERACTIVE_CHECK_TIMEOUT_MS)
+        : await downloadForegroundUpdate(client);
     } finally {
       inFlight = false;
     }

@@ -7,6 +7,7 @@
 // of retrying them every sweep.
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { nativePathKind } from './mobile-native-compatibility.mjs';
 import { pendingReleasePrs } from './pending-release-prs.mjs';
 
 const repository = process.env.GITHUB_REPOSITORY;
@@ -253,6 +254,93 @@ if (stranded.length) {
   }
 }
 
+// A newer Server release push can displace Mobile planning without owning it.
+// Publication recovery alone cannot notice a release PR that was never created.
+function reconcileNativePlanning() {
+  const tag = manifestTag('mobile');
+  const boundary = published.find((entry) => entry.tag_name === tag);
+  if (!boundary || boundary.draft || stranded.some((entry) => entry.train === 'mobile')) {
+    notes.push('Mobile planning: native publication must finish before planning another release.');
+    return;
+  }
+  const openNativePrs = () =>
+    gh(
+      'api',
+      '--paginate',
+      `repos/${repository}/pulls?state=open&base=main&per_page=100`,
+      '--jq',
+      '.[] | select(.head.ref == "release-please--branches--main--components--mobile") | .number',
+    );
+  if (openNativePrs()) {
+    notes.push('Mobile planning: a native Staging release PR already exists.');
+    return;
+  }
+  const head = git('rev-parse', 'HEAD');
+  const currentMain = () => {
+    const value = /** @type {unknown} */ (
+      JSON.parse(gh('api', `repos/${repository}/git/ref/heads/main`))
+    );
+    const ref = /** @type {{object: {sha: string}}} */ (value);
+    if (!/^[a-f0-9]{40}$/.test(ref.object.sha)) throw new Error('Invalid Main revision');
+    return ref.object.sha;
+  };
+  if (currentMain() !== head) {
+    notes.push('Mobile planning: Main advanced; a later sweep will evaluate it.');
+    return;
+  }
+  const headTime = Date.parse(git('log', '-1', '--format=%cI'));
+  if (!Number.isFinite(headTime)) throw new Error('Invalid Main commit time');
+  if (headTime > now - graceMs) {
+    notes.push('Mobile planning: Main is younger than the push run lag.');
+    return;
+  }
+  git('merge-base', '--is-ancestor', tag, head);
+  const baselineTime = Date.parse(git('log', '-1', '--format=%cI', tag));
+  if (!Number.isFinite(baselineTime)) throw new Error('Invalid native boundary time');
+  const runs = workflowRuns(releaseWorkflow, baselineTime);
+  const active = runs.find((run) => run.status !== 'completed');
+  if (active) {
+    notes.push(`Mobile planning: dispatcher ${active.html_url} is still ${active.status}.`);
+    return;
+  }
+  const paths = git('diff', '--no-renames', '--name-only', '-z', tag, head, '--')
+    .split('\0')
+    .filter(Boolean);
+  if (!paths.some((path) => nativePathKind(path) !== 'ota')) {
+    notes.push('Mobile planning: only OTA-compatible source paths changed.');
+    return;
+  }
+  if (!paths.some((path) => nativePathKind(path) === 'native')) {
+    // Fingerprinting needs the locked Expo tooling, unlike the cheap path filter.
+    execFileSync('npm', ['ci'], { stdio: 'inherit' });
+  }
+  const changes = execFileSync(
+    process.execPath,
+    ['scripts/mobile-native-compatibility.mjs', tag, head],
+    { encoding: 'utf8' },
+  ).trim();
+  if (!changes) {
+    notes.push('Mobile planning: native fingerprint is unchanged; updates stay on OTA.');
+    return;
+  }
+  const title = `Replan native mobile ${head}`;
+  const previous = runs.find((run) => run.display_title === title);
+  if (previous) {
+    problems.push(
+      `Mobile planning: ${previous.html_url} ended with ${previous.conclusion ?? 'no conclusion'} but no native Staging PR exists; inspect and retry that planning run.`,
+    );
+    return;
+  }
+  if (currentMain() !== head || openNativePrs()) {
+    notes.push('Mobile planning: Main or its release PR changed during classification.');
+    return;
+  }
+  gh('workflow', 'run', releaseWorkflow, '--ref', 'main', '-f', 'mobile-replan=true');
+  dispatched.push(`${releaseWorkflow} (mobile-replan=true)`);
+  notes.push(`Mobile planning: native changes since ${tag} had no Staging release PR: ${changes}`);
+}
+reconcileNativePlanning();
+
 if (existsSync(otaManifest)) {
   const candidate = /** @type {unknown} */ (JSON.parse(readFileSync(otaManifest, 'utf8')));
   if (
@@ -264,7 +352,9 @@ if (existsSync(otaManifest)) {
   )
     throw new Error('Invalid OTA promotion manifest');
   const tag = candidate.tag;
-  const delivered = published.some((entry) => entry.tag_name === tag && !entry.draft);
+  const delivered = published.some(
+    (entry) => entry.tag_name === tag && !entry.draft && !entry.prerelease,
+  );
   if (!delivered) {
     // The manifest on main only changes through a merged promotion PR, so an
     // unpublished tag means an approved candidate whose delivery never ran or

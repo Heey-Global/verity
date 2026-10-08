@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
 import { router, usePathname } from 'expo-router';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -97,6 +98,7 @@ export function ActiveMeetingOverlay() {
     if (!followed || pathname.startsWith('/meeting/')) return;
     let mounted = true;
     let polling = false;
+    const client = createVerityClient();
     const poll = async () => {
       if (polling) return;
       polling = true;
@@ -125,7 +127,7 @@ export function ActiveMeetingOverlay() {
           }
           return;
         }
-        const control = await createVerityClient()?.getLiveMeetingCommands(
+        const control = await client?.getLiveMeetingCommands(
           followed.sessionId,
           followed.meetingId,
         );
@@ -144,12 +146,17 @@ export function ActiveMeetingOverlay() {
       }
     };
     void poll();
-    const timer = setInterval(() => {
-      void poll();
-    }, 2000);
+    const detach = client
+      ? subscribeLiveRefresh(
+          client,
+          () => poll(),
+          (path) => path.includes('/live-meetings'),
+          [{ path: `/sessions/${encodeURIComponent(followed.sessionId)}/live-meetings` }],
+        )
+      : () => undefined;
     return () => {
       mounted = false;
-      clearInterval(timer);
+      detach();
     };
   }, [followed?.serverId, followed?.sessionId, followed?.meetingId, pathname, pendingCommand]);
   useEffect(() => {

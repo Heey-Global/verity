@@ -10,11 +10,10 @@ import {
   reportDirectRouteSuccess,
 } from './remoteControlTransport';
 
-interface NativeResponse {
+type NativeResponse = {
   status: number;
   headers: Record<string, string>;
-  bodyBase64: string;
-}
+} & ({ bodyBase64: string; bodyText?: never } | { bodyText: string; bodyBase64?: never });
 
 interface NativePinnedTransport {
   request(
@@ -26,6 +25,8 @@ interface NativePinnedTransport {
     tlsPin: string,
     proxyPort: number,
   ): Promise<NativeResponse>;
+  /** New native builds decode textual bodies without a Base64 bridge round-trip. */
+  requestV2?: NativePinnedTransport['request'];
   download(
     url: string,
     headers: Record<string, string>,
@@ -56,12 +57,14 @@ interface NativePinnedTransport {
     proxyPort: number,
   ): Promise<string>;
   closeWebSocket(id: string): Promise<void>;
+  sendWebSocket(id: string, text: string): Promise<void>;
   addListener(
     event: 'onWebSocketEvent',
     listener: (event: {
       id: string;
       type: 'open' | 'message' | 'error' | 'close';
       data?: string;
+      code?: number;
     }) => void,
   ): { remove(): void };
 }
@@ -98,6 +101,15 @@ function native(): NativePinnedTransport {
   return nativeModule;
 }
 
+function requestNative(
+  transport: NativePinnedTransport,
+  ...args: Parameters<NativePinnedTransport['request']>
+): Promise<NativeResponse> {
+  // OTA JavaScript also runs on older native builds. Select by capability once
+  // per request; a failed V2 mutation must never be replayed through the old API.
+  return transport.requestV2 ? transport.requestV2(...args) : transport.request(...args);
+}
+
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (let offset = 0; offset < bytes.length; offset += 0x8000) {
@@ -116,6 +128,10 @@ function base64ToBuffer(encoded: string): ArrayBuffer {
 
 function utf8ResponseBody(response: NativeResponse): BodyInit | null {
   if ([204, 205, 304].includes(response.status)) return null;
+  if (response.bodyText !== undefined) {
+    // Match TextDecoder's default BOM handling, including retaining a second BOM.
+    return response.bodyText.startsWith('\uFEFF') ? response.bodyText.slice(1) : response.bodyText;
+  }
   const buffer = base64ToBuffer(response.bodyBase64);
   const contentType = Object.entries(response.headers).find(
     ([name]) => name.toLowerCase() === 'content-type',
@@ -222,7 +238,8 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
               tlsPin,
               port,
             )
-          : await transport.request(
+          : await requestNative(
+              transport,
               requestId,
               url,
               init.method ?? 'GET',
@@ -237,17 +254,28 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
         settled = true;
         let directFailed = port === 0;
         let failure: Error = error instanceof Error ? error : new Error('native transport error');
-        if (
+        // The port to retry on may be a fresh attachment's when the old one stalled.
+        const retryPort =
           port > 0 &&
           replayable &&
           failure.message.includes('NO_AUTH_CHALLENGE') &&
-          !init.signal?.aborted &&
-          (await recoverRemoteControlRead(url, port))
-        ) {
+          !init.signal?.aborted
+            ? await recoverRemoteControlRead(url, port)
+            : 0;
+        if (retryPort > 0) {
           if (init.signal?.aborted)
             throw new DOMException('The operation was aborted.', 'AbortError');
           try {
-            response = await transport.request(requestId, url, 'GET', headers, null, tlsPin, port);
+            response = await requestNative(
+              transport,
+              requestId,
+              url,
+              'GET',
+              headers,
+              null,
+              tlsPin,
+              retryPort,
+            );
             if (init.signal?.aborted) {
               throw new DOMException('The operation was aborted.', 'AbortError');
             }
@@ -270,7 +298,16 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           try {
             // A failed read has no uncertain mutation to replay. Keep the same
             // paired URL and pin when a reachable direct route can recover it.
-            response = await transport.request(requestId, url, 'GET', headers, null, tlsPin, 0);
+            response = await requestNative(
+              transport,
+              requestId,
+              url,
+              'GET',
+              headers,
+              null,
+              tlsPin,
+              0,
+            );
             if (init.signal?.aborted) {
               throw new DOMException('The operation was aborted.', 'AbortError');
             }
@@ -312,7 +349,8 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           if (remotePort > 0) {
             remoteAttempted = true;
             try {
-              response = await transport.request(
+              response = await requestNative(
+                transport,
                 requestId,
                 url,
                 'GET',
@@ -408,7 +446,7 @@ export async function verifyPairedIdentity(input: {
   }
 }
 
-type SocketListener = (event: { data: unknown }) => void;
+type SocketListener = (event: { data: unknown; code?: number }) => void;
 
 export function createPinnedWebSocket(
   url: string,
@@ -416,14 +454,19 @@ export function createPinnedWebSocket(
   protocols: string | string[] = [],
   useRemote = false,
 ) {
-  const listeners = new Map<'message' | 'close' | 'error', Set<SocketListener>>();
+  const listeners = new Map<'open' | 'message' | 'close' | 'error', Set<SocketListener>>();
   let socketId: string | null = null;
   let closed = false;
   const subscription = native().addListener('onWebSocketEvent', (event) => {
     if (event.id !== socketId) return;
-    if (event.type === 'open') return;
-    if (event.type === 'message' || event.type === 'close' || event.type === 'error') {
-      for (const listener of listeners.get(event.type) ?? []) listener({ data: event.data });
+    if (
+      event.type === 'open' ||
+      event.type === 'message' ||
+      event.type === 'close' ||
+      event.type === 'error'
+    ) {
+      for (const listener of listeners.get(event.type) ?? [])
+        listener({ data: event.data, ...(event.code !== undefined ? { code: event.code } : {}) });
     }
     if (event.type === 'close') subscription.remove();
   });
@@ -446,10 +489,18 @@ export function createPinnedWebSocket(
       subscription.remove();
     });
   return {
-    addEventListener(type: 'message' | 'close' | 'error', listener: SocketListener) {
+    addEventListener(type: 'open' | 'message' | 'close' | 'error', listener: SocketListener) {
       const registered = listeners.get(type) ?? new Set<SocketListener>();
       registered.add(listener);
       listeners.set(type, registered);
+    },
+    send(data: string) {
+      // The live connection sends only after the server's `ready`, so the native
+      // socket exists by then; anything earlier would have nowhere to go.
+      if (closed || socketId === null) return;
+      void native()
+        .sendWebSocket(socketId, data)
+        .catch(() => undefined);
     },
     close() {
       closed = true;

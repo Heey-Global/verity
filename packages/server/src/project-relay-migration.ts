@@ -378,6 +378,23 @@ export const ORPHAN_DEFER_TICK_LIMIT = 5;
 export const IMAGE_UPDATE_DEFER_REPORT_AFTER_MS = 30 * 60_000;
 
 /**
+ * How many recreates one project may spend on an image update that does not land.
+ *
+ * An image update is the one automatic recreate whose success the reconciler can
+ * only observe afterwards: the checker compares the running container with the
+ * target, and nothing about the recreate itself proves the replacement is on that
+ * target. A devcontainer whose Dockerfile builds `FROM` something other than the
+ * pinned base comes back exactly as far behind as before, the checker reports the
+ * same update on the next tick, and the project container — with every session
+ * running in it — is torn down once a minute while those sessions are working.
+ *
+ * Two, not one: a single recreate that raced a release, or whose target moved
+ * while it built, deserves another try. Cleared once the update stops being
+ * reported for the sandbox, which is the only observation that says it landed.
+ */
+export const IMAGE_UPDATE_RECREATE_LIMIT = 2;
+
+/**
  * How many CONSECUTIVE failed automatic recreates make a sandbox's self-repair
  * count as stalled rather than merely in progress.
  *

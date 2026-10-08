@@ -136,6 +136,7 @@ describe('PushSender', () => {
         body: 'Open Verity to continue.',
         categoryId: 'PERMISSION_PROMPT',
         data: { sessionId: 'session-1', kind: 'permission' },
+        sound: 'default',
       }),
     ).resolves.toEqual({
       targets: 3,
@@ -154,6 +155,7 @@ describe('PushSender', () => {
         body: 'Open Verity to continue.',
         categoryId: 'PERMISSION_PROMPT',
         data: { sessionId: 'session-1', kind: 'permission', deviceId: 'auth-0' },
+        sound: 'default',
       },
       { to: 'ExpoPushToken[two]', data: { deviceId: 'auth-1' } },
       { to: 'ExpoPushToken[dead]', data: { deviceId: 'auth-2' } },
@@ -166,6 +168,24 @@ describe('PushSender', () => {
       'ExpoPushToken[two]',
     ]);
     expect(JSON.stringify(logger.info.mock.calls)).not.toContain('ExpoPushToken');
+  });
+
+  it('sends an informational push without a sound', async () => {
+    // A `sound` key on every message would buzz the operator for each finished
+    // turn; only the pushes that block on them should ask for one.
+    const store = new FakeStore('ExpoPushToken[one]');
+    const transport = new FakeTransport();
+    transport.tickets = [{ status: 'ok', id: 'receipt-1' }];
+    const sender = createPushSender({ store, transport, now: () => 1_000 });
+
+    await sender.send({
+      title: 'Turn complete',
+      body: 'A session finished its turn.',
+      categoryId: 'SESSION_STATUS',
+      data: { sessionId: 'session-1', kind: 'completed' },
+    });
+
+    expect(transport.sent.flat()[0]).not.toHaveProperty('sound');
   });
 
   it('settles delivery receipts, prunes dead tokens, and retries missing receipts', async () => {

@@ -69,7 +69,7 @@ const net = require('node:net');
 const [relay, expected, forbiddenRelay, forbiddenControl, forbiddenRelayIp, forbiddenControlIp] = process.argv.slice(1);
 async function request() {
   return await new Promise((resolve, reject) => {
-    const outgoing = http.request({host: relay, port: 8080, method: 'POST', path: '/internal/github/token', timeout: 5000}, response => {
+    const outgoing = http.request({host: relay, port: 8080, method: 'POST', path: '/internal/project/memory', timeout: 5000}, response => {
       const chunks = [];
       response.on('data', chunk => chunks.push(chunk));
       response.once('error', reject);

@@ -31,6 +31,11 @@ function makeClient(): {
   deleteSession: ReturnType<
     typeof vi.fn<(id: string, opts?: { force?: boolean }) => Promise<{ sessionId: string }>>
   >;
+  setSessionFavorite: ReturnType<
+    typeof vi.fn<
+      (id: string, favorite: boolean) => Promise<{ sessionId: string; favorite: boolean }>
+    >
+  >;
 } {
   const listSessions = vi.fn<() => Promise<SessionSummary[]>>();
   const listProviderLimits = vi.fn<() => Promise<SessionSummary['rateLimits']>>();
@@ -41,17 +46,21 @@ function makeClient(): {
     >();
   const deleteSession =
     vi.fn<(id: string, opts?: { force?: boolean }) => Promise<{ sessionId: string }>>();
+  const setSessionFavorite =
+    vi.fn<(id: string, favorite: boolean) => Promise<{ sessionId: string; favorite: boolean }>>();
   return {
     client: {
       listSessions,
       listProviderLimits,
       renameSession,
       deleteSession,
+      setSessionFavorite,
     } as unknown as VerityClient,
     listSessions,
     listProviderLimits,
     renameSession,
     deleteSession,
+    setSessionFavorite,
   };
 }
 
@@ -158,10 +167,9 @@ describe('SessionListModel.refresh', () => {
     expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['b', 'a']); // crashed first
     expect(model.state.attentionCount).toBe(1);
     expect(model.state.error).toBeUndefined();
-    expect(model.state.providerLimitRows).toEqual([
-      { providerLabel: 'Claude', fiveHour: null, weekly: null },
-      { providerLabel: 'Codex', fiveHour: null, weekly: null },
-    ]);
+    // Neither the probes nor a session reported a limit, so no agent is shown
+    // as connected — a placeholder row here is a meter for an absent agent.
+    expect(model.state.providerLimitRows).toEqual([]);
     expect(states[0]?.loading).toBe(true); // emitted loading first
     expect(model.state.loading).toBe(false);
     expect(states.at(-1)?.loading).toBe(false);
@@ -379,11 +387,6 @@ describe('SessionListModel.refresh', () => {
 
       expect(model.state.providerLimitRows).toEqual([
         {
-          providerLabel: 'Claude',
-          fiveHour: null,
-          weekly: null,
-        },
-        {
           providerLabel: 'Codex',
           fiveHour: {
             status: 'allowed',
@@ -398,6 +401,36 @@ describe('SessionListModel.refresh', () => {
             usedPercent: 100,
           },
         },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a row for a provider that reports only a model-scoped limit', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1_700_000_000_000));
+    try {
+      const { client, listSessions, listProviderLimits } = makeClient();
+      listSessions.mockResolvedValueOnce([]);
+      listProviderLimits.mockResolvedValueOnce([
+        {
+          status: 'allowed',
+          resetsAt: 1_700_000_200,
+          window: 'weekly',
+          usedPercent: 10,
+          providerLabel: 'Claude',
+          scope: 'opus',
+        },
+      ]);
+      const model = new SessionListModel({ client });
+
+      await model.refresh();
+
+      // The reading proves Claude is connected, but a model-scoped limit must not
+      // stand in for the provider-wide meter; Codex never reported, so no row.
+      expect(model.state.providerLimitRows).toEqual([
+        { providerLabel: 'Claude', fiveHour: null, weekly: null },
       ]);
     } finally {
       vi.useRealTimers();
@@ -446,7 +479,6 @@ describe('SessionListModel.refresh', () => {
             usedPercent: 100,
           },
         },
-        { providerLabel: 'Codex', fiveHour: null, weekly: null },
       ]);
     } finally {
       vi.useRealTimers();
@@ -709,6 +741,26 @@ describe('SessionListModel.applyPullRequestStatus', () => {
   });
 });
 
+describe('SessionListModel.applySessionAutomation', () => {
+  it('marks and unmarks a session without waiting for the next poll', async () => {
+    const { client, listSessions } = makeClient();
+    listSessions.mockResolvedValueOnce([session('s1', 'completed'), session('s2', 'completed')]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+
+    model.applySessionAutomation('s1', { status: 'enabled' });
+    expect(model.state.sessions.find((s) => s.sessionId === 's1')?.automation).toEqual({
+      status: 'enabled',
+    });
+    expect(model.state.sessions.find((s) => s.sessionId === 's2')?.automation).toBeUndefined();
+
+    model.applySessionAutomation('s1', undefined);
+    expect('automation' in (model.state.sessions.find((s) => s.sessionId === 's1') ?? {})).toBe(
+      false,
+    );
+  });
+});
+
 describe('SessionListModel.applySessionStatus', () => {
   it('removes a stale needs-input status immediately after an accepted action', async () => {
     const { client, listSessions } = makeClient();
@@ -799,6 +851,151 @@ describe('SessionListModel.rename', () => {
     // The optimistic name showed mid-flight, then reverted to the original.
     expect(states[0]?.sessions[0]?.name).toBe('doomed');
     expect(model.state.sessions[0]?.name).toBe('original');
+    expect(model.state.error).toBe('session a not found');
+  });
+});
+
+describe('SessionListModel.setFavorite', () => {
+  it('highlights immediately, then keeps the server-confirmed flag', async () => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    listSessions.mockResolvedValue([session('a', 'idle'), session('b', 'idle')]);
+    setSessionFavorite.mockResolvedValueOnce({ sessionId: 'a', favorite: true });
+    const states: SessionListState[] = [];
+    const model = new SessionListModel({ client, onChange: (s) => states.push(s) });
+    await model.refresh();
+
+    states.length = 0;
+    await model.setFavorite('a', true);
+
+    expect(states[0]?.sessions.find((s) => s.sessionId === 'a')?.favorite).toBe(true);
+    expect(model.state.sessions.find((s) => s.sessionId === 'a')?.favorite).toBe(true);
+    expect(model.state.sessions.find((s) => s.sessionId === 'b')?.favorite).toBeUndefined();
+    expect(setSessionFavorite).toHaveBeenCalledWith('a', true);
+  });
+
+  it.each(['success', 'failure'])('ignores an older %s after a newer update', async (outcome) => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    listSessions.mockResolvedValue([session('a', 'idle')]);
+    let resolve!: (value: { sessionId: string; favorite: boolean }) => void;
+    let reject!: (error: Error) => void;
+    setSessionFavorite.mockImplementationOnce(
+      () =>
+        new Promise((yes, no) => {
+          resolve = yes;
+          reject = no;
+        }),
+    );
+    setSessionFavorite.mockResolvedValueOnce({ sessionId: 'a', favorite: false });
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    const older = model.setFavorite('a', true);
+    const newer = model.setFavorite('a', false);
+    expect(setSessionFavorite).toHaveBeenCalledTimes(1);
+    if (outcome === 'success') resolve({ sessionId: 'a', favorite: true });
+    else reject(new Error('older request failed'));
+    await older;
+    await newer;
+    expect(model.state.sessions[0]?.favorite).toBeUndefined();
+    expect(model.state.error).toBeUndefined();
+  });
+
+  it('preserves a confirmed favorite against an older refresh', async () => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    listSessions.mockResolvedValueOnce([session('a', 'idle')]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    let resolve!: (sessions: SessionSummary[]) => void;
+    listSessions.mockImplementationOnce(
+      () =>
+        new Promise((yes) => {
+          resolve = yes;
+        }),
+    );
+    const refresh = model.refresh({ silent: true });
+    setSessionFavorite.mockResolvedValueOnce({ sessionId: 'a', favorite: true });
+    await model.setFavorite('a', true);
+    resolve([session('a', 'idle')]);
+    await refresh;
+    expect(model.state.sessions[0]?.favorite).toBe(true);
+    listSessions.mockResolvedValueOnce([session('a', 'idle')]);
+    await model.refresh();
+    expect(model.state.sessions[0]?.favorite).toBeUndefined();
+  });
+
+  it('restores confirmed state when overlapping updates both fail', async () => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    listSessions.mockResolvedValueOnce([session('a', 'idle')]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    let reject!: (error: Error) => void;
+    setSessionFavorite.mockImplementationOnce(
+      () =>
+        new Promise((_yes, no) => {
+          reject = no;
+        }),
+    );
+    setSessionFavorite.mockRejectedValueOnce(new Error('second failed'));
+    const first = model.setFavorite('a', true);
+    const second = model.setFavorite('a', false);
+    reject(new Error('first failed'));
+    await first;
+    await second;
+    expect(model.state.sessions[0]?.favorite).toBeUndefined();
+    expect(model.state.error).toBe('failed to update favorite');
+  });
+
+  it('persists queued changes in order and restores the last successful value on failure', async () => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    let persisted = false;
+    listSessions.mockImplementation(async () => [
+      { ...session('a', 'idle'), ...(persisted ? { favorite: true } : {}) },
+    ]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    let finish!: () => void;
+    setSessionFavorite.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = () => {
+            persisted = true;
+            resolve({ sessionId: 'a', favorite: persisted });
+          };
+        }),
+    );
+    setSessionFavorite.mockImplementationOnce(async (_id, favorite) => {
+      persisted = favorite;
+      return { sessionId: 'a', favorite: persisted };
+    });
+    const first = model.setFavorite('a', true);
+    const second = model.setFavorite('a', false);
+    expect(setSessionFavorite).toHaveBeenCalledTimes(1);
+    expect(model.state.sessions[0]?.favorite).toBeUndefined();
+    finish();
+    await Promise.all([first, second]);
+    expect(persisted).toBe(false);
+    await model.refresh();
+    expect(model.state.sessions[0]?.favorite).toBeUndefined();
+
+    setSessionFavorite.mockResolvedValueOnce({ sessionId: 'a', favorite: true });
+    setSessionFavorite.mockRejectedValueOnce(new Error('latest failed'));
+    await Promise.all([model.setFavorite('a', true), model.setFavorite('a', false)]);
+    expect(model.state.sessions[0]?.favorite).toBe(true);
+    expect(model.state.error).toBe('failed to update favorite');
+  });
+
+  it('reverts only that flag and surfaces the error when the update fails', async () => {
+    const { client, listSessions, setSessionFavorite } = makeClient();
+    listSessions.mockResolvedValue([{ ...session('a', 'idle'), favorite: true }]);
+    setSessionFavorite.mockRejectedValueOnce(new VerityApiError(404, 'session a not found'));
+    const states: SessionListState[] = [];
+    const model = new SessionListModel({ client, onChange: (s) => states.push(s) });
+    await model.refresh();
+
+    states.length = 0;
+    await model.setFavorite('a', false);
+
+    expect(states[0]?.sessions[0]?.favorite).toBeUndefined();
+    expect(model.state.sessions[0]?.favorite).toBe(true);
     expect(model.state.error).toBe('session a not found');
   });
 });
@@ -967,8 +1164,9 @@ describe('SessionListModel polling', () => {
     const cancelled: boolean[] = [];
     const model = new SessionListModel({
       client,
+      pollIntervalMs: 5_000,
       schedule: (p, intervalMs) => {
-        if (intervalMs === 2000) poll = p;
+        if (intervalMs === 5_000) poll = p;
         if (intervalMs === 30_000) tick = p;
         const idx = cancelled.length;
         cancelled.push(false);
@@ -1033,20 +1231,21 @@ describe('SessionListModel polling', () => {
     }
   });
 
-  it('coalesces interval ticks while a slow poll is still in flight', async () => {
+  it('coalesces requests while a slow poll is in flight, then answers the latest once', async () => {
     const { client, listSessions } = makeClient();
-    let resolve!: (sessions: SessionSummary[]) => void;
+    const resolvers: ((sessions: SessionSummary[]) => void)[] = [];
     listSessions.mockImplementation(
       () =>
         new Promise<SessionSummary[]>((done) => {
-          resolve = done;
+          resolvers.push(done);
         }),
     );
     let poll: () => void = () => undefined;
     const model = new SessionListModel({
       client,
+      pollIntervalMs: 5_000,
       schedule: (scheduled, intervalMs) => {
-        if (intervalMs === 2000) poll = scheduled;
+        if (intervalMs === 5_000) poll = scheduled;
         return () => undefined;
       },
     });
@@ -1054,14 +1253,70 @@ describe('SessionListModel polling', () => {
     model.start();
     expect(listSessions).toHaveBeenCalledTimes(1);
     poll();
-    poll();
+    model.applyHints([{ sessionId: 's1', topics: ['status'] }]);
     expect(listSessions).toHaveBeenCalledTimes(1);
 
-    resolve([]);
+    // The change announced mid-request gets exactly one fresh request.
+    resolvers[0]?.([]);
     await new Promise<void>((done) => setTimeout(done, 0));
-    poll();
+    expect(listSessions).toHaveBeenCalledTimes(2);
+    resolvers[1]?.([]);
+    await new Promise<void>((done) => setTimeout(done, 0));
     expect(listSessions).toHaveBeenCalledTimes(2);
     model.stop();
+  });
+
+  it('refetches on a live hint and drops a deleted session at once', async () => {
+    const { client, listSessions } = makeClient();
+    listSessions.mockResolvedValue([session('s1', 'idle'), session('s2', 'idle')]);
+    const model = new SessionListModel({ client, schedule: () => () => undefined });
+    model.start();
+    await vi.waitFor(() => expect(model.state.sessions).toHaveLength(2));
+    listSessions.mockResolvedValue([session('s1', 'idle')]);
+
+    model.applyHints([{ sessionId: 's2', topics: ['session'], deleted: true }]);
+    expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['s1']);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
+    model.stop();
+  });
+
+  it('does not restore a deleted session from a stale outstanding list response', async () => {
+    const { client, listSessions } = makeClient();
+    listSessions.mockResolvedValueOnce([session('s1', 'idle')]);
+    let poll = (): void => undefined;
+    const model = new SessionListModel({
+      client,
+      pollIntervalMs: 5000,
+      schedule: (callback, interval) => {
+        if (interval === 5000) poll = callback;
+        return () => undefined;
+      },
+    });
+    model.start();
+    await vi.waitFor(() => expect(model.state.sessions).toHaveLength(1));
+    let resolve!: (sessions: SessionSummary[]) => void;
+    listSessions
+      .mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      )
+      .mockRejectedValue(new Error('offline'));
+    poll();
+    model.applyHints([{ sessionId: 's1', topics: ['session'], deleted: true }]);
+    resolve([session('s1', 'idle')]);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(3));
+    expect(model.state.sessions).toEqual([]);
+    model.stop();
+  });
+
+  it('ignores hints while stopped', () => {
+    const { client, listSessions } = makeClient();
+    listSessions.mockResolvedValue([]);
+    const model = new SessionListModel({ client, schedule: () => () => undefined });
+    model.applyHints([{ sessionId: 's1', topics: ['status'] }]);
+    expect(listSessions).not.toHaveBeenCalled();
   });
 
   it('re-emits on the time tick so expired provider windows disappear without a network poll', async () => {
@@ -1100,5 +1355,165 @@ describe('SessionListModel polling', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+it.each([{ status: 'paused' as const }, undefined])(
+  'preserves automation mutation %j across an older overview response',
+  async (automation) => {
+    const { client, listSessions } = makeClient();
+    const previous = { ...session('a', 'idle'), automation: { status: 'enabled' as const } };
+    listSessions.mockResolvedValueOnce([previous]);
+    const model = new SessionListModel({ client });
+    await model.refresh();
+    let resolve!: (sessions: SessionSummary[]) => void;
+    listSessions.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const loading = model.refresh();
+    model.applySessionAutomation('a', automation);
+    resolve([previous]);
+    await loading;
+    expect(model.state.sessions[0]?.automation).toEqual(automation);
+    listSessions.mockResolvedValueOnce([previous]);
+    await model.refresh();
+    expect(model.state.sessions[0]?.automation).toEqual(previous.automation);
+  },
+);
+
+it('retains the initial load and live invalidations when periodic polling is disabled', async () => {
+  const { client, listSessions } = makeClient();
+  listSessions.mockResolvedValue([]);
+  const schedule = vi.fn(() => () => {});
+  const model = new SessionListModel({ client, pollIntervalMs: 0, schedule });
+  model.start();
+  await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(1));
+  // The remaining timer updates relative timestamps without making requests.
+  expect(schedule).toHaveBeenCalledTimes(1);
+  model.applyHints([]);
+  await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
+  model.stop();
+});
+
+describe('session ordering', () => {
+  function setup(rows: SessionSummary[]) {
+    const { client } = makeClient();
+    const overview = vi
+      .fn()
+      .mockResolvedValue({ sessions: rows, attention: [], sessionReordering: true });
+    const reorderSessions = vi.fn<(projectId: string | null, ids: string[]) => Promise<string[]>>();
+    Object.assign(client, { listSessionOverview: overview, reorderSessions });
+    return { model: new SessionListModel({ client }), overview, reorderSessions };
+  }
+
+  it('keeps manual groups stable while new sessions precede ranked sessions', async () => {
+    const { model } = setup([
+      { ...session('a', 'crashed'), projectId: 'p', sortOrder: 1 },
+      { ...session('new', 'idle'), projectId: 'p' },
+      { ...session('b', 'idle'), projectId: 'p', sortOrder: 0 },
+    ]);
+    await model.refresh();
+    expect(model.state.sessionReordering).toBe(true);
+    expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['new', 'b', 'a']);
+  });
+
+  it('serializes drags and rolls the latest failure back to the preceding confirmed order', async () => {
+    const { model, reorderSessions, overview } = setup([
+      session('a', 'idle'),
+      session('b', 'idle'),
+    ]);
+    await model.refresh();
+    let resolve!: (ids: string[]) => void;
+    reorderSessions.mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    );
+    reorderSessions.mockRejectedValueOnce(new Error('offline'));
+    const first = model.reorder(null, ['b', 'a']);
+    const second = model.reorder(null, ['a', 'b']);
+    expect(reorderSessions).toHaveBeenCalledTimes(1);
+    // An overlapping snapshot must not revert the newest optimistic drag.
+    await model.refresh();
+    expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['a', 'b']);
+    resolve(['b', 'a']);
+    await Promise.all([first, second]);
+    expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['b', 'a']);
+    expect(model.state.error).toBe('failed to reorder sessions');
+    expect(overview).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves new sessions and moved project membership during a canonical save', async () => {
+    const { model, overview, reorderSessions } = setup([
+      { ...session('a', 'idle'), projectId: 'p', sortOrder: 0 },
+      { ...session('b', 'idle'), projectId: 'p', sortOrder: 1 },
+    ]);
+    await model.refresh();
+    let resolve!: (ids: string[]) => void;
+    reorderSessions.mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    );
+    const saving = model.reorder('p', ['b', 'a']);
+    overview.mockResolvedValue({
+      attention: [],
+      sessionReordering: true,
+      sessions: [
+        { ...session('new', 'idle'), projectId: 'p' },
+        { ...session('a', 'idle'), projectId: 'other', sortOrder: 0 },
+        { ...session('b', 'idle'), projectId: 'p', sortOrder: 1 },
+      ],
+    });
+    await model.refresh();
+    resolve(['b']);
+    await saving;
+    expect(model.state.sessions.filter((s) => s.projectId === 'p').map((s) => s.sessionId)).toEqual(
+      ['new', 'b'],
+    );
+    expect(model.state.sessions.find((s) => s.sessionId === 'a')?.projectId).toBe('other');
+  });
+
+  it('ignores a pre-write snapshot after a successful save', async () => {
+    const { model, overview, reorderSessions } = setup([
+      session('a', 'idle'),
+      session('b', 'idle'),
+    ]);
+    await model.refresh();
+    let snapshot!: (value: {
+      sessions: SessionSummary[];
+      attention: never[];
+      sessionReordering: boolean;
+    }) => void;
+    overview.mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          snapshot = r;
+        }),
+    );
+    const refresh = model.refresh();
+    reorderSessions.mockResolvedValueOnce(['b', 'a']);
+    await model.reorder(null, ['b', 'a']);
+    snapshot({
+      sessions: [session('a', 'idle'), session('b', 'idle')],
+      attention: [],
+      sessionReordering: true,
+    });
+    await refresh;
+    expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['b', 'a']);
+  });
+
+  it('retains legacy behavior without advertised capability', async () => {
+    const { model, overview, reorderSessions } = setup([session('a', 'idle')]);
+    overview.mockResolvedValue({ sessions: [session('a', 'idle')], attention: [] });
+    await model.refresh();
+    await model.reorder(null, ['a']);
+    expect(model.state.sessionReordering).toBe(false);
+    expect(reorderSessions).not.toHaveBeenCalled();
   });
 });

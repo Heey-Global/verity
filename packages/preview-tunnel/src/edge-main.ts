@@ -1,3 +1,4 @@
+import { createPreviewPinBudget } from './pin-budget.js';
 import { validWebhookPath, PreviewEdge } from './index.js';
 
 const maxBodyBytes = optionalPositiveInteger('VERITY_PREVIEW_MAX_BODY_BYTES');
@@ -6,9 +7,15 @@ const trustedProxyHops = optionalPositiveInteger('VERITY_PREVIEW_TRUSTED_PROXY_H
 const webhookPath = process.env.VERITY_PREVIEW_WEBHOOK_PATH;
 if (webhookPath !== undefined && !validWebhookPath(webhookPath))
   throw new Error('unsupported VERITY_PREVIEW_WEBHOOK_PATH');
+const shareId = required('VERITY_PREVIEW_SHARE_ID');
 const edge = new PreviewEdge({
   ...(webhookPath === undefined ? {} : { webhookPath }),
-  shareId: required('VERITY_PREVIEW_SHARE_ID'),
+  pinBudget: createPreviewPinBudget(
+    required('VERITY_PREVIEW_PIN_BUDGET_URL'),
+    required('VERITY_PREVIEW_PIN_BUDGET_TOKEN'),
+    shareId,
+  ),
+  shareId,
   pinHash: required('VERITY_PREVIEW_PIN_HASH'),
   connectorTokenHash: required('VERITY_PREVIEW_CONNECTOR_TOKEN_HASH'),
   sessionSecretHash: required('VERITY_PREVIEW_SESSION_SECRET_HASH'),

@@ -1,10 +1,9 @@
 import type { ScheduleConfig } from './schema.js';
 
 /**
- * Pure schedule arithmetic for the Agent Loop scheduler (ADR 0008 §3). Kept free of
- * any DB/timer dependency so it is unit-tested in isolation. All times are
- * server-local (no per-operator timezone in v1 — see the ADR's accepted
- * negatives).
+ * Pure schedule arithmetic for the session automation scheduler (ADR 0008 §3). Kept free of
+ * any DB/timer dependency so it is unit-tested in isolation. Calendar schedules
+ * use their saved IANA time zone; zone-less legacy schedules remain server-local.
  */
 
 const MINUTE_MS = 60_000;
@@ -19,6 +18,9 @@ export const MIN_INTERVAL_MINUTES = 15;
  * instead of re-firing on the same tick.
  */
 export function computeNextRun(schedule: ScheduleConfig, from: Date): Date {
+  if (schedule.kind !== 'interval' && schedule.timeZone) {
+    return computeZonedNextRun(schedule, from);
+  }
   switch (schedule.kind) {
     case 'interval': {
       const minutes = Math.max(MIN_INTERVAL_MINUTES, Math.floor(schedule.everyMinutes));
@@ -45,6 +47,13 @@ export function computeNextRun(schedule: ScheduleConfig, from: Date): Date {
 /** Whether a schedule is structurally valid (defensive; the route also validates
  *  via zod). Returns a short reason string when invalid, else null. */
 export function validateSchedule(schedule: ScheduleConfig): string | null {
+  if (schedule.kind !== 'interval' && schedule.timeZone !== undefined) {
+    try {
+      new Intl.DateTimeFormat('en', { timeZone: schedule.timeZone });
+    } catch {
+      return 'invalid time zone';
+    }
+  }
   switch (schedule.kind) {
     case 'interval':
       return Number.isSafeInteger(schedule.everyMinutes) &&
@@ -68,4 +77,55 @@ function isMinute(n: number): boolean {
 }
 function isWeekday(n: number): boolean {
   return Number.isInteger(n) && n >= 0 && n <= 6;
+}
+
+/** Treat civil dates as UTC only for calendar arithmetic, never as instants. */
+function computeZonedNextRun(
+  schedule: Extract<ScheduleConfig, { kind: 'daily' | 'weekly' }>,
+  from: Date,
+): Date {
+  const formatter = new Intl.DateTimeFormat('en-GB', {
+    timeZone: schedule.timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  });
+  const civilTime = (instant: number): number => {
+    const parts = formatter.formatToParts(instant);
+    const value = (type: Intl.DateTimeFormatPartTypes): number =>
+      Number(parts.find((part) => part.type === type)?.value);
+    return Date.UTC(
+      value('year'),
+      value('month') - 1,
+      value('day'),
+      value('hour'),
+      value('minute'),
+      value('second'),
+    );
+  };
+  const day = new Date(civilTime(from.getTime()));
+  day.setUTCHours(schedule.hour, schedule.minute, 0, 0);
+  for (let i = 0; i <= 8; i += 1) {
+    if (schedule.kind === 'daily' || day.getUTCDay() === schedule.weekday) {
+      const target = day.getTime();
+      // Sample both sides of a possible offset transition. On overlaps choose
+      // the first occurrence; on gaps advance by the skipped clock duration.
+      const offsets = new Set(
+        [-1, 0, 1].map((delta) => {
+          const sample = target + delta * 86_400_000;
+          return civilTime(sample) - sample;
+        }),
+      );
+      const candidates = [...offsets].map((offset) => target - offset);
+      const matching = candidates.filter((instant) => civilTime(instant) === target);
+      const instant = matching.length > 0 ? Math.min(...matching) : Math.max(...candidates);
+      if (instant > from.getTime()) return new Date(instant);
+    }
+    day.setUTCDate(day.getUTCDate() + 1);
+  }
+  throw new Error('Unable to compute next scheduled run');
 }

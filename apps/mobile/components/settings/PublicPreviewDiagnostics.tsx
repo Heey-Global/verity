@@ -1,4 +1,9 @@
-import { VerityApiError, type UplinkDiagnostics, type VerityClient } from '@verity/mobile';
+import {
+  VerityApiError,
+  type RemoteStreamRecord,
+  type UplinkDiagnostics,
+  type VerityClient,
+} from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Pressable, Text } from 'react-native';
@@ -10,6 +15,28 @@ import {
 } from '../../lib/remoteControlTransport';
 import { settingsStyles as styles } from './settingsStyles';
 import { SettingsPanel } from './SettingsChrome';
+
+// One line per stream, in Core's words: what arrived from the phone, what the
+// local TLS ingress answered, and what went back out. Read beside the phone's
+// own `streams=` trace (matched by the stream key) it shows which hop lost a
+// reply, which otherwise only the server log could tell.
+function streamLine(record: RemoteStreamRecord): string {
+  const seconds = (record.durationMs / 1000).toFixed(1);
+  const reply =
+    record.firstLocalReplyMs === null
+      ? 'Core never answered'
+      : `Core answered after ${String(record.firstLocalReplyMs)} ms`;
+  return (
+    `${record.streamId}: from phone ${String(record.receivedFromAppBytes)} B, ` +
+    `to Core ${String(record.writtenToLocalBytes)} B, ${reply}, ` +
+    `from Core ${String(record.receivedFromLocalBytes)} B, ` +
+    `accepted by Core transport ${String(record.sentToUplinkBytes)} B` +
+    (record.framesToApp === undefined
+      ? ''
+      : ` in ${String(record.framesToApp)} attempted frames (${String(record.framesFromApp ?? 0)} from phone)`) +
+    `, ${record.state}, ${seconds} s`
+  );
+}
 
 function controlLabel(value: UplinkDiagnostics): string {
   if (value.control === 'connected') return 'Connected to Uplink';
@@ -130,6 +157,14 @@ export function PublicPreviewDiagnostics({
         </Pressable>
       ) : null}
       {testResult ? <Text style={styles.reproHint}>{testResult}</Text> : null}
+      {status?.remoteStreams !== undefined ? (
+        <Text style={styles.reproHint}>
+          Core streams:{' '}
+          {status.remoteStreams.length === 0
+            ? 'none since Core started'
+            : status.remoteStreams.map(streamLine).join('\n')}
+        </Text>
+      ) : null}
       <Text style={styles.reproHint}>
         Sharing status reports the granted capability. Creating a public preview checks the full
         sharing path.

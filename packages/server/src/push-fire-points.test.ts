@@ -1,7 +1,8 @@
 import { SANDBOX_NOT_READY_ERROR_KIND, type AgentEvent } from '@verity/events';
 import type { SequencedEvent } from '@verity/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createPushFirePoints, createPushForegroundPresence } from './push-fire-points.js';
+import { createPushFirePoints, persistedTurnInitiator } from './push-fire-points.js';
+import type { PushRouter, SessionNotification } from './push-router.js';
 import type { PushLogger, PushSendResult, PushSender } from './push-sender.js';
 
 const SENT: PushSendResult = {
@@ -57,6 +58,21 @@ function fakeSender(): Omit<PushSender, 'send'> & {
   };
 }
 
+/** A router that pushes every notification, so these tests see exactly what the
+ * fire points decided to send; per-user routing is `push-router.test.ts`'s. */
+function routerFor(sender: Pick<PushSender, 'send'>): Pick<PushRouter, 'notify' | 'cancel'> & {
+  notify: ReturnType<typeof vi.fn<PushRouter['notify']>>;
+  cancel: ReturnType<typeof vi.fn<PushRouter['cancel']>>;
+} {
+  return {
+    notify: vi.fn<PushRouter['notify']>(async (input: SessionNotification) => {
+      await sender.send(input.notification);
+      return 'delivered';
+    }),
+    cancel: vi.fn<PushRouter['cancel']>(),
+  };
+}
+
 function fakeLogger(): Omit<PushLogger, 'warn'> & {
   warn: ReturnType<typeof vi.fn<PushLogger['warn']>>;
 } {
@@ -73,8 +89,7 @@ describe('PushFirePoints', () => {
   it('sends a generic permission payload without agent-generated content', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       debounceMs: 750,
     });
 
@@ -96,6 +111,7 @@ describe('PushFirePoints', () => {
       categoryId: 'PERMISSION_PROMPT',
       data: { sessionId: 'session-1', kind: 'permission', toolUseId: 'tool-use-1' },
       priority: 'high',
+      sound: 'default',
     });
     expect(JSON.stringify(sender.send.mock.calls)).not.toContain('sensitive command');
     await firePoints.close();
@@ -104,8 +120,7 @@ describe('PushFirePoints', () => {
   it('adds project and session context without exposing tool input', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       debounceMs: 10,
       describeSession: async () => ({ project: 'heey-global/verity', session: 'Push polish' }),
     });
@@ -131,58 +146,10 @@ describe('PushFirePoints', () => {
     await firePoints.close();
   });
 
-  it('suppresses fan-out while any device has the session open', async () => {
-    const sender = fakeSender();
-    const presence = createPushForegroundPresence();
-    const detachPhone = presence.attach('session-1');
-    const detachTablet = presence.attach('session-1');
-    const firePoints = createPushFirePoints({ sender, presence, debounceMs: 100 });
-
-    firePoints.observe(
-      'session-1',
-      event({ t: 'permission', id: 'p1', tool: 'Bash', input: {}, riskClass: 'ask' }),
-    );
-    await vi.advanceTimersByTimeAsync(100);
-    detachPhone();
-    firePoints.observe(
-      'session-1',
-      event({ t: 'permission', id: 'p2', tool: 'Bash', input: {}, riskClass: 'ask' }, 2),
-    );
-    await vi.advanceTimersByTimeAsync(100);
-    expect(sender.send).not.toHaveBeenCalled();
-
-    detachTablet();
-    firePoints.observe(
-      'session-1',
-      event({ t: 'permission', id: 'p3', tool: 'Bash', input: {}, riskClass: 'ask' }, 3),
-    );
-    await vi.advanceTimersByTimeAsync(100);
-    expect(sender.send).toHaveBeenCalledOnce();
-    await firePoints.close();
-  });
-
-  it('lets a reconnect during the debounce window suppress the push', async () => {
-    const sender = fakeSender();
-    const presence = createPushForegroundPresence();
-    const firePoints = createPushFirePoints({ sender, presence, debounceMs: 750 });
-
-    firePoints.observe(
-      'session-1',
-      event({ t: 'permission', id: 'p1', tool: 'Bash', input: {}, riskClass: 'ask' }),
-    );
-    await vi.advanceTimersByTimeAsync(500);
-    presence.attach('session-1');
-    await vi.advanceTimersByTimeAsync(250);
-
-    expect(sender.send).not.toHaveBeenCalled();
-    await firePoints.close();
-  });
-
   it('cancels a permission push resolved during the debounce window', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       debounceMs: 100,
     });
     firePoints.observe(
@@ -199,8 +166,7 @@ describe('PushFirePoints', () => {
   it('cancels a stale permission when its turn settles during debounce', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       debounceMs: 100,
     });
     firePoints.observe(
@@ -220,8 +186,7 @@ describe('PushFirePoints', () => {
   it('deduplicates result plus status and emits a later crashed turn separately', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       debounceMs: 10,
     });
 
@@ -253,8 +218,7 @@ describe('PushFirePoints', () => {
     // badge, just harder to ignore.
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       debounceMs: 10,
     });
 
@@ -271,8 +235,7 @@ describe('PushFirePoints', () => {
   it('lets an authoritative crash replace a pending optimistic result notification', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       debounceMs: 100,
     });
 
@@ -290,8 +253,7 @@ describe('PushFirePoints', () => {
   it('cancels a stale completion when the next turn starts during debounce', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       debounceMs: 100,
     });
     firePoints.observe('session-1', event(resultEvent()));
@@ -306,8 +268,7 @@ describe('PushFirePoints', () => {
   it('does not treat a result with an open background task as turn completion', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       debounceMs: 10,
     });
     firePoints.observe('session-1', event({ t: 'task', id: 'task-1', phase: 'started' }));
@@ -328,8 +289,7 @@ describe('PushFirePoints', () => {
   it('does not let a stale task id suppress completion of a later turn', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       debounceMs: 10,
     });
     firePoints.observe('session-1', event({ t: 'task', id: 'old-task', phase: 'started' }));
@@ -343,8 +303,7 @@ describe('PushFirePoints', () => {
   it('fires AGENT_QUESTION when a turn ends on a prose question', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       debounceMs: 10,
     });
     firePoints.observe('session-1', event({ t: 'prompt', text: 'do the thing' }));
@@ -362,6 +321,7 @@ describe('PushFirePoints', () => {
       categoryId: 'AGENT_QUESTION',
       data: { sessionId: 'session-1', kind: 'question' },
       priority: 'high',
+      sound: 'default',
     });
     await firePoints.close();
   });
@@ -369,8 +329,7 @@ describe('PushFirePoints', () => {
   it('sees through trailing markdown wrappers around the question mark', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       debounceMs: 10,
     });
     firePoints.observe('session-1', event({ t: 'prompt', text: 'go' }));
@@ -390,8 +349,7 @@ describe('PushFirePoints', () => {
   it('fires the ordinary completion when the final prose is not a question', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       debounceMs: 10,
     });
     firePoints.observe('session-1', event({ t: 'prompt', text: 'go' }));
@@ -411,8 +369,7 @@ describe('PushFirePoints', () => {
   it('ignores tool-nested text when deciding whether a turn asked a question', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       debounceMs: 10,
     });
     firePoints.observe('session-1', event({ t: 'prompt', text: 'audit it' }));
@@ -433,8 +390,7 @@ describe('PushFirePoints', () => {
   it('resets the question tail across turns so a prior question does not taint a later completion', async () => {
     const sender = fakeSender();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       debounceMs: 10,
     });
     firePoints.observe('session-1', event({ t: 'prompt', text: 'one' }));
@@ -456,27 +412,12 @@ describe('PushFirePoints', () => {
     await firePoints.close();
   });
 
-  it('suppresses the question push while a device views the session', async () => {
-    const sender = fakeSender();
-    const presence = createPushForegroundPresence();
-    presence.attach('session-1');
-    const firePoints = createPushFirePoints({ sender, presence, debounceMs: 10 });
-    firePoints.observe('session-1', event({ t: 'prompt', text: 'go' }));
-    firePoints.observe('session-1', textEvent('Which one?', 2));
-    firePoints.observe('session-1', event(resultEvent(), 3));
-    await vi.advanceTimersByTimeAsync(10);
-
-    expect(sender.send).not.toHaveBeenCalled();
-    await firePoints.close();
-  });
-
   it('contains sender failures and logs no upstream detail', async () => {
     const sender = fakeSender();
     sender.send.mockRejectedValueOnce(new Error('sensitive Expo response'));
     const logger = fakeLogger();
     const firePoints = createPushFirePoints({
-      sender,
-      presence: createPushForegroundPresence(),
+      router: routerFor(sender),
       logger,
       debounceMs: 10,
     });
@@ -490,4 +431,202 @@ describe('PushFirePoints', () => {
     expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('sensitive');
     await firePoints.close();
   });
+
+  describe('recipient and alert', () => {
+    function permission(id: string, seq: number): SequencedEvent {
+      return event({ t: 'permission', id, tool: 'Bash', input: {}, riskClass: 'ask' }, seq);
+    }
+
+    it('addresses a turn to the user who started it, not to whoever steered it', async () => {
+      const router = routerFor(fakeSender());
+      const firePoints = createPushFirePoints({ router, debounceMs: 10 });
+      firePoints.observe(
+        'session-1',
+        event({ t: 'prompt', text: 'go', initiatedBy: { userId: 'user-a' } }),
+      );
+      // A steering message from someone else stays part of A's turn.
+      firePoints.observe(
+        'session-1',
+        event({ t: 'prompt', text: 'also', steered: true, initiatedBy: { userId: 'user-b' } }, 2),
+      );
+      firePoints.observe('session-1', permission('p1', 3));
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(router.notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: 'permission:session-1:p1',
+          initiatorUserId: 'user-a',
+          alert: expect.objectContaining({ kind: 'permission', toolUseId: 'p1' }),
+        }),
+      );
+      expect(await firePoints.initiatorOf('session-1')).toBe('user-a');
+      await firePoints.close();
+    });
+
+    it('keeps the last initiator for a prompt without one', async () => {
+      const router = routerFor(fakeSender());
+      const firePoints = createPushFirePoints({ router, debounceMs: 10 });
+      firePoints.observe(
+        'session-1',
+        event({ t: 'prompt', text: 'go', initiatedBy: { userId: 'user-a' } }),
+      );
+      // A server-authored follow-up (no user behind it) continues A's work.
+      firePoints.observe('session-1', event({ t: 'prompt', text: 'follow-up' }, 2));
+      firePoints.observe('session-1', event(resultEvent(), 3));
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(router.notify).toHaveBeenCalledWith(
+        expect.objectContaining({ initiatorUserId: 'user-a' }),
+      );
+      await firePoints.close();
+    });
+
+    it('turns a turn that ends on fixed choices into a question with their labels', async () => {
+      const router = routerFor(fakeSender());
+      const firePoints = createPushFirePoints({ router, debounceMs: 10 });
+      firePoints.observe('session-1', event({ t: 'prompt', text: 'go' }));
+      firePoints.observe('session-1', textEvent('Ready to ship.', 2));
+      firePoints.observe(
+        'session-1',
+        event(
+          { t: 'choices', options: [{ label: 'Push + PR', recommended: true }, { label: 'Wait' }] },
+          3,
+        ),
+      );
+      firePoints.observe('session-1', event(resultEvent(), 4));
+      await vi.advanceTimersByTimeAsync(10);
+
+      const input = router.notify.mock.calls[0]?.[0];
+      expect(input?.notification.categoryId).toBe('AGENT_QUESTION');
+      expect(input?.alert?.choices).toEqual(['Push + PR', 'Wait']);
+      // The labels are agent text: they ride the live socket, never the push.
+      expect(JSON.stringify(input?.notification)).not.toContain('Push + PR');
+      await firePoints.close();
+    });
+
+    it('offers no buttons for choices that do not fit on a notification', async () => {
+      const router = routerFor(fakeSender());
+      const firePoints = createPushFirePoints({ router, debounceMs: 10 });
+      firePoints.observe('session-1', event({ t: 'prompt', text: 'go' }));
+      firePoints.observe(
+        'session-1',
+        event(
+          {
+            t: 'choices',
+            options: ['a', 'b', 'c', 'd', 'e'].map((label) => ({ label })),
+          },
+          2,
+        ),
+      );
+      firePoints.observe('session-1', event(resultEvent(), 3));
+      await vi.advanceTimersByTimeAsync(10);
+
+      const input = router.notify.mock.calls[0]?.[0];
+      expect(input?.notification.categoryId).toBe('AGENT_QUESTION');
+      expect(input?.alert).toBeDefined();
+      expect(input?.alert?.choices).toBeUndefined();
+      await firePoints.close();
+    });
+
+    it('withdraws the escalation of a permission once it is answered', async () => {
+      const router = routerFor(fakeSender());
+      const firePoints = createPushFirePoints({ router, debounceMs: 10 });
+      firePoints.observe('session-1', permission('p1', 1));
+      await vi.advanceTimersByTimeAsync(10);
+      firePoints.permissionResolved('session-1', 'p1');
+
+      expect(router.cancel).toHaveBeenCalledWith('permission:session-1:p1');
+      await firePoints.close();
+    });
+
+    it('withdraws an open question when the next prompt arrives', async () => {
+      const router = routerFor(fakeSender());
+      const firePoints = createPushFirePoints({ router, debounceMs: 10 });
+      firePoints.observe('session-1', event({ t: 'prompt', text: 'answer' }));
+
+      expect(router.cancel).toHaveBeenCalledWith('question:session-1');
+      await firePoints.close();
+    });
+
+    it('sends informational notifications without an in-app alert', async () => {
+      const router = routerFor(fakeSender());
+      const firePoints = createPushFirePoints({ router, debounceMs: 10 });
+      firePoints.observe('session-1', event(resultEvent()));
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(router.notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          notification: expect.objectContaining({ categoryId: 'SESSION_STATUS' }),
+        }),
+      );
+      expect(router.notify.mock.calls[0]?.[0].alert).toBeUndefined();
+      await firePoints.close();
+    });
+  });
+});
+
+it('recovers the last identified turn owner while preserving anonymous follow-ups and steering', () => {
+  expect(
+    persistedTurnInitiator([
+      { t: 'prompt', text: 'first', initiatedBy: { userId: 'alice' } },
+      { t: 'prompt', text: 'second', initiatedBy: { userId: 'bob' } },
+      { t: 'prompt', text: 'steering', steered: true, initiatedBy: { userId: 'alice' } },
+      { t: 'prompt', text: 'follow-up' },
+    ]),
+  ).toBe('bob');
+});
+
+it('recovers ownership for permission alerts following an anonymous post-restart prompt', async () => {
+  vi.useFakeTimers();
+  const router = routerFor(fakeSender());
+  const firePoints = createPushFirePoints({
+    router,
+    debounceMs: 10,
+    getEvents: async () => [
+      { t: 'prompt', text: 'original', initiatedBy: { userId: 'alice' } },
+      { t: 'prompt', text: 'follow-up' },
+    ],
+  });
+  try {
+    firePoints.observe('s1', event({ t: 'prompt', text: 'follow-up' }));
+    firePoints.observe(
+      's1',
+      event({ t: 'permission', id: 'p1', tool: 'Bash', input: {}, riskClass: 'ask' }, 2),
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    expect(router.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ initiatorUserId: 'alice' }),
+    );
+  } finally {
+    await firePoints.close();
+    vi.useRealTimers();
+  }
+});
+
+it('does not route a permission resolved while ownership recovery is pending', async () => {
+  vi.useFakeTimers();
+  let resolve!: (events: AgentEvent[]) => void;
+  const router = routerFor(fakeSender());
+  const firePoints = createPushFirePoints({
+    router,
+    debounceMs: 10,
+    getEvents: () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  });
+  try {
+    firePoints.observe(
+      's1',
+      event({ t: 'permission', id: 'p1', tool: 'Bash', input: {}, riskClass: 'ask' }),
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    firePoints.permissionResolved('s1', 'p1');
+    resolve([{ t: 'prompt', text: 'original', initiatedBy: { userId: 'alice' } }]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(router.notify).not.toHaveBeenCalled();
+  } finally {
+    await firePoints.close();
+    vi.useRealTimers();
+  }
 });

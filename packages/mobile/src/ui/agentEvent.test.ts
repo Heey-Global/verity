@@ -37,6 +37,11 @@ describe('agentEventDescriptor', () => {
     'rate limit exceeded',
     'Your weekly quota has been reached. Internal error: request rejected',
     'Too many requests',
+    "You've reached your Fable limit. Switch to another model to continue.",
+    "Internal error: You've reached your Fable limit. Switch to another model to continue.",
+    "agent exited with code 1 without a terminal event: [session/load] diagnostic data\nInternal error: You've reached your Fable limit. Switch to another model to continue.",
+    "You've hit your session limit · resets 7:30pm (UTC)",
+    "Internal error: You've hit your session limit · resets 7:30pm (UTC)",
   ])('shows a compact system notice for a provider limit: %s', (message) => {
     expect(agentEventDescriptor({ t: 'error', kind: 'run_failed', message })).toEqual({
       kind: 'limit-reached',
@@ -113,4 +118,23 @@ describe('agentEventDescriptor', () => {
     const d = agentEventDescriptor({ t: 'text', delta: 'hi' });
     expect(d).toEqual({ kind: 'text', label: 'text', tone: 'neutral' });
   });
+});
+
+it('describes durable task updates as an actionable Tasks row', () => {
+  expect(
+    agentEventDescriptor({
+      t: 'tasks_updated',
+      origin: 'agent',
+      change: 'added',
+      taskIds: ['one', 'two'],
+    }),
+  ).toMatchObject({ label: 'Agent planned 2 steps', action: 'tasks' });
+  expect(
+    agentEventDescriptor({
+      t: 'tasks_updated',
+      origin: 'user',
+      change: 'completed',
+      taskIds: ['one'],
+    }),
+  ).toMatchObject({ label: 'You completed 1 task', action: 'tasks' });
 });

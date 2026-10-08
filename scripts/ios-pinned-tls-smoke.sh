@@ -79,24 +79,33 @@ cat "$tmp/leaf.pem" "$tmp/ca.pem" >"$tmp/cert.pem"
 pin="sha256-$(openssl pkey -in "$tmp/key.pem" -pubout -outform DER | tail -c 65 | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')"
 
 cp scripts/ios-pinned-tls-smoke.swift "$tmp/main.swift"
-swiftc apps/mobile/native/CertificatePinDelegate.swift "$tmp/main.swift" -o "$tmp/smoke"
+swiftc apps/mobile/native/CertificatePinDelegate.swift \
+  apps/mobile/native/PinnedHTTPSessionPool.swift scripts/pinned-http-pool-smoke.swift \
+  "$tmp/main.swift" -target "$(uname -m)-apple-macosx14.0" -o "$tmp/smoke"
 addresses=(127.0.0.1)
 if [[ -n "$host_ip" ]]; then addresses+=("$host_ip"); fi
 python3 - "$tmp/cert.pem" "$tmp/key.pem" "$tmp/server-ready" "${addresses[@]}" <<'PY' &
-import asyncio, faulthandler, http.server, os, socketserver, ssl, sys, threading
+import asyncio, faulthandler, http.server, os, socketserver, ssl, sys, threading, time
 from scripts.ios_pinned_tls_relay import relay
 
 faulthandler.dump_traceback_later(15, repeat=True)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
     # The socket is reachable from the runner's subnet for the ATS case, so this
     # answers a fixed body instead of serving the checkout.
     def do_GET(self):
+        if self.path == '/slow':
+            time.sleep(0.3)
         self.send_response(200)
         self.send_header('Content-Length', '2')
+        self.send_header('X-Smoke-Peer-Port', str(self.client_address[1]))
         self.end_headers()
-        self.wfile.write(b'ok')
+        try:
+            self.wfile.write(b'ok')
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def log_message(self, *args):
         pass
@@ -255,8 +264,10 @@ mkdir -p "$app"
 xcrun swiftc \
   -sdk "$simulator_sdk" \
   -target "$(uname -m)-apple-ios${target_version}-simulator" \
-  -parse-as-library \
+  -parse-as-library -module-name VerityPinnedTLSSmoke \
   apps/mobile/native/CertificatePinDelegate.swift \
+  apps/mobile/native/PinnedHTTPSessionPool.swift \
+  scripts/pinned-http-pool-smoke.swift \
   scripts/ios-pinned-tls-smoke-app.swift \
   -framework UIKit \
   -o "$app/VerityPinnedTLSSmoke"
@@ -277,6 +288,16 @@ cat >"$app/Info.plist" <<PLIST
   <key>MinimumOSVersion</key><string>${target_version}</string>
   <key>LSRequiresIPhoneOS</key><true/>
   <key>UILaunchScreen</key><dict/>
+  <!-- Current iOS SDKs refuse to launch an app without scene adoption. -->
+  <key>UIApplicationSceneManifest</key><dict>
+    <key>UIApplicationSupportsMultipleScenes</key><false/>
+    <key>UISceneConfigurations</key><dict>
+      <key>UIWindowSceneSessionRoleApplication</key><array><dict>
+        <key>UISceneConfigurationName</key><string>VerityPinnedTLSSmoke</string>
+        <key>UISceneDelegateClassName</key><string>VerityPinnedTLSSmoke.PinnedTLSSmokeSceneDelegate</string>
+      </dict></array>
+    </dict>
+  </dict>
 </dict></plist>
 PLIST
 # Canonical JSON, so the comparison below is about content: PlistBuddy prints a

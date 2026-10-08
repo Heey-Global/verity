@@ -14,24 +14,37 @@ export {
   type PullRequestStatusMutation,
 } from './pullRequestStatusMutation.js';
 export {
-  publishAgentLoopMutation,
   publishDevServerStatusMutation,
   publishProjectStatusMutation,
   publishSessionStatusMutation,
   publishServerUpdateStatusMutation,
-  subscribeAgentLoopMutations,
+  publishSessionAutomationMutation,
   subscribeDevServerStatusMutations,
   subscribeProjectStatusMutations,
+  subscribeSessionAutomationMutations,
   subscribeSessionStatusMutations,
   subscribeServerUpdateStatusMutations,
   type DevServerStatusMutation,
 } from './liveStatusMutation.js';
+export { SessionStream, type SessionStreamOptions } from './stream.js';
 export {
-  SessionStream,
-  type SessionStreamOptions,
-  type StreamSocket,
-  type StreamSocketFactory,
-} from './stream.js';
+  LiveConnection,
+  type LiveConnectionOptions,
+  type LiveConnectionState,
+  type LiveSessionHandle,
+  type LiveSessionSink,
+  type LiveSessionTransport,
+  type LiveSocket,
+  type LiveSocketFactory,
+} from './live/connection.js';
+export type {
+  LiveResource,
+  LiveAlert,
+  LiveHint,
+  LiveHintTopic,
+  LiveServerFrame,
+} from '@verity/events';
+export { decodeLiveServerFrame } from '@verity/events';
 export {
   needsAttention,
   sessionBadge,
@@ -69,16 +82,34 @@ export {
   isSessionImageFilePath,
   parseInline,
   sessionFilePathFromLocalLink,
+  sessionFileTargetFromLocalLink,
   splitRichText,
   type InlineSpan,
   type RichBlock,
 } from './ui/richText.js';
-export { groupRows, rowKey, rowRecycleType, type Row } from './ui/transcriptRows.js';
+export {
+  groupRows,
+  reconcileTranscriptRows,
+  withPlanningSnapshot,
+  rowKey,
+  rowRecycleType,
+  type Row,
+} from './ui/transcriptRows.js';
 export {
   freezeTranscriptTail,
   frozenTranscriptRows,
   type FrozenTranscriptTail,
 } from './ui/transcriptFreeze.js';
+export {
+  planHeadline,
+  planProposal,
+  planProposalRevision,
+  planProposalDisplay,
+  planView,
+  type PlanEntry,
+  type PlanEntryStatus,
+  type PlanView,
+} from './ui/plan.js';
 export { parseMarkdownBlocks, splitTableCells, type MdBlock } from './ui/markdownTable.js';
 export { chunkFilePreview } from './ui/filePreview.js';
 export { printableFileHtml, markdownToHtml, isMarkdownPath } from './ui/printDocument.js';
@@ -130,6 +161,10 @@ export {
 export { spellOutBidiControls } from './ui/bidi.js';
 export { permissionInputText } from './ui/permissionInput.js';
 export {
+  knowledgePublishSummary,
+  KNOWLEDGE_PUBLISH_EXPLANATION,
+} from './ui/knowledgePublishSummary.js';
+export {
   gmailPreviewHtml,
   gmailSendSummary,
   type GmailSendSummary,
@@ -161,6 +196,12 @@ export {
   showsServerUpdatePanel,
   type ServerUpdateView,
 } from './ui/serverUpdate.js';
+export {
+  SERVER_RELEASES_URL,
+  serverReleaseNotes,
+  type ReleaseNoteSection,
+  type ServerReleaseNotes,
+} from './ui/releaseNotes.js';
 export {
   serverUpdateOperationSchema,
   serverUpdateStatusSchema,
@@ -194,6 +235,7 @@ export {
   type AttentionKind,
 } from './ui/attention.js';
 export {
+  isPullRequestCheckingMergeability,
   isPullRequestConflicted,
   pullRequestStatusText,
   type PullRequestStatusView,
@@ -207,6 +249,7 @@ export {
   type SeenOverrides,
 } from './unread.js';
 export {
+  overviewProviderLimitRows,
   SessionListModel,
   type CancelPoll,
   type ProviderLimitRow,
@@ -250,9 +293,8 @@ export {
   projectRuntimeStartedSchema,
   projectSettingsSchema,
   projectStateSchema,
-  agentLoopSchema,
-  agentLoopRunSchema,
-  agentLoopScheduleSchema,
+  automationScheduleSchema,
+  sessionAutomationSchema,
   type Attachment,
   type AgentLogin,
   type AgentLoginProvider,
@@ -272,12 +314,9 @@ export {
   type MeetingTranscriptCreated,
   type MeetingTranscriptUpload,
   type ModelList,
-  type AgentLoop,
-  type AgentLoopRun,
-  type AgentLoopSchedule,
-  type AgentLoopCreateRequest,
-  type AgentLoopPatchRequest,
-  type AgentLoopTestResult,
+  type AutomationSchedule,
+  type SessionAutomation,
+  type SessionAutomationRequest,
   type DevServer,
   type DevServerCreateRequest,
   type DevServerPatchRequest,
@@ -287,7 +326,6 @@ export {
   type PublicPreviewShare,
   type SessionDevServer,
   type PublicPreviewShareCreateRequest,
-  agentLoopConfigFingerprint,
   type PermissionDecided,
   type PermissionDecision,
   type ProjectDetail,
@@ -303,6 +341,7 @@ export {
   type MessageSearchResult,
   type SandboxUpdate,
   type SessionActivity,
+  type SessionPlanning,
   type SessionAwaitingProvisioning,
   type SessionCreated,
   type SessionCreateResult,
@@ -315,6 +354,8 @@ export {
   type SessionStatus,
   type SessionGoogleWorkspaceFile,
   type GmailSessionConnection,
+  type CalendarSessionConnection,
+  type ContactsSessionConnection,
   type SessionSummary,
   type SessionListEnvelope,
   type AttentionSignal,
@@ -327,7 +368,7 @@ export {
 export type {
   AgentTextMessage,
   ChoicesMessage,
-  AgentLoopProposalMessage,
+  AutomationProposalMessage,
   Message,
   ModeSwitchMessage,
   PendingPermission,
@@ -338,6 +379,7 @@ export type {
 } from './happy/message.js';
 export { formatChoiceAnswer, type ChoicesOption, type RiskClass } from '@verity/events';
 export { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
+export { END_PLANNING_TOOL, START_PLANNING_TOOL, planningToolName } from '@verity/events';
 export {
   reprovisionActiveProjects,
   type ReprovisionProgress,
@@ -397,6 +439,7 @@ export {
   type RemoteControlDescriptor,
   uplinkDiagnosticsSchema,
   type UplinkDiagnostics,
+  type RemoteStreamRecord,
 } from './api.js';
 export { canCreatePublicPreviewTarget, type PublicPreviewTargetKind } from './publicPreview.js';
 export { secretUnlockedSchema, type SecretUnlocked } from './api.js';
@@ -455,6 +498,8 @@ export {
   PUSH_ACTION,
   PUSH_CATEGORY,
   PUSH_NOTIFICATION_CATEGORIES,
+  PUSH_CHOICE_ACTIONS,
+  choiceCategorySpec,
   type PushActionId,
   type PushCategoryId,
   type PushCategoryAction,
@@ -484,3 +529,24 @@ export {
   type KnowledgeGrant,
   type KnowledgeExport,
 } from './api.js';
+
+export { calendarChangeSummary, type CalendarChangeSummary } from './ui/calendarChangeSummary.js';
+
+export type { LocalPreviewShare, ManagedDevServer } from './api.js';
+
+export { localPreviewReachable } from './localPreview.js';
+export { selectedOpenCodeModels } from '@verity/events';
+
+export {
+  taskSchema,
+  bubbleRestingPlace,
+  taskAge,
+  taskContext,
+  TASK_SILENCE_MS,
+  type Task,
+  type TaskCapture,
+  type TaskPatch,
+  type TaskContext,
+  type BubbleRest,
+} from './tasks.js';
+export { TaskQueue, type TaskQueueState } from './taskQueue.js';

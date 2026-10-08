@@ -1,3 +1,16 @@
+const mockWatch = jest.fn();
+const mockLive = new Set<() => void>();
+jest.mock('../lib/liveConnection', () => ({
+  subscribeLiveRefresh: (_client: unknown, refresh: () => void) => {
+    mockWatch();
+    mockLive.add(refresh);
+    return () => mockLive.delete(refresh);
+  },
+}));
+beforeEach(() => {
+  mockLive.clear();
+  mockWatch.mockClear();
+});
 import { type AgentLogin, type VerityClient } from '@verity/mobile';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 
@@ -15,7 +28,7 @@ const waitingLogin = {
   message: null,
 } as AgentLogin;
 
-describe('AgentLoginPanel polling', () => {
+describe('AgentLoginPanel live updates', () => {
   it('uses the shared primary palette for agent login actions', () => {
     const client = {} as VerityClient;
     render(<AgentLoginPanel client={client} configured={{ claude: false, codex: false }} />);
@@ -28,7 +41,7 @@ describe('AgentLoginPanel polling', () => {
     });
   });
 
-  it('keeps configured provider actions collapsed in compact settings', () => {
+  it('shows configured provider actions directly in compact settings', () => {
     render(
       <AgentLoginPanel
         client={{} as VerityClient}
@@ -37,15 +50,28 @@ describe('AgentLoginPanel polling', () => {
         allowDisconnect
       />,
     );
-    expect(screen.queryByLabelText('Logout Claude')).toBeNull();
-    fireEvent.press(screen.getByLabelText('Claude'));
     expect(screen.getByLabelText('Logout Claude')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Logout Codex')).toBeNull();
-    fireEvent.press(screen.getByLabelText('Claude'));
-    expect(screen.queryByLabelText('Logout Claude')).toBeNull();
+    expect(screen.getByLabelText('Logout Codex')).toBeOnTheScreen();
   });
 
-  it('does not overlap polls for the same login session', async () => {
+  it.each(['claude', 'codex'] as const)('shows only the selected %s provider', (provider) => {
+    render(
+      <AgentLoginPanel
+        client={{} as VerityClient}
+        configured={{ claude: true, codex: true }}
+        selectedProvider={provider}
+        compact
+        allowDisconnect
+      />,
+    );
+    const title = provider === 'claude' ? 'Claude' : 'Codex';
+    const otherTitle = provider === 'claude' ? 'Codex' : 'Claude';
+    expect(screen.getByLabelText('Logout ' + title)).toBeOnTheScreen();
+    expect(screen.queryByText(otherTitle)).toBeNull();
+    expect(screen.queryByLabelText('Logout ' + otherTitle)).toBeNull();
+  });
+
+  it('does not overlap refreshes for the same login session', async () => {
     jest.useFakeTimers();
     let resolvePoll!: (login: AgentLogin) => void;
     const getAgentLogin = jest.fn(
@@ -62,11 +88,20 @@ describe('AgentLoginPanel polling', () => {
 
     fireEvent.press(screen.getByLabelText('Connect Claude'));
     await act(async () => undefined);
-    await act(async () => jest.advanceTimersByTime(7_500));
+    await act(async () => {
+      for (const refresh of mockLive) {
+        refresh();
+        refresh();
+      }
+    });
     expect(getAgentLogin).toHaveBeenCalledTimes(1);
 
-    await act(async () => resolvePoll(waitingLogin));
-    await act(async () => jest.advanceTimersByTime(2_500));
+    const watchCount = mockWatch.mock.calls.length;
+    await act(async () => resolvePoll({ ...waitingLogin }));
+    expect(mockWatch).toHaveBeenCalledTimes(watchCount);
+    await act(async () => {
+      for (const refresh of mockLive) refresh();
+    });
     expect(getAgentLogin).toHaveBeenCalledTimes(2);
     jest.useRealTimers();
   });

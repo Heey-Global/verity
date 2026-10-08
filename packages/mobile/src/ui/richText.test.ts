@@ -4,6 +4,7 @@ import {
   markdownSectionTitle,
   parseInline,
   sessionFilePathFromLocalLink,
+  sessionFileTargetFromLocalLink,
   splitRichText,
 } from './richText.js';
 
@@ -199,6 +200,32 @@ describe('sessionFilePathFromLocalLink', () => {
     expect(sessionFilePathFromLocalLink('docs/../secret.txt')).toBeNull();
     expect(sessionFilePathFromLocalLink('docs/.git/config')).toBeNull();
     expect(sessionFilePathFromLocalLink('#heading')).toBeNull();
+  });
+});
+
+describe('sessionFileTargetFromLocalLink', () => {
+  it('opens knowledge mount links in the knowledge roots, not the worktree', () => {
+    expect(
+      sessionFileTargetFromLocalLink('/knowledge/sources/meetings/2026-10-01-live-meeting-abc.md'),
+    ).toEqual({ root: 'knowledge', path: 'sources/meetings/2026-10-01-live-meeting-abc.md' });
+    expect(sessionFileTargetFromLocalLink('/knowledge/shared/insights/a.md:4')).toEqual({
+      root: 'shared',
+      path: 'insights/a.md',
+    });
+    expect(sessionFileTargetFromLocalLink('docs/a.md')).toEqual({
+      root: 'worktree',
+      path: 'docs/a.md',
+    });
+    // A knowledge path must not leak into callers that only read the worktree.
+    expect(sessionFilePathFromLocalLink('/knowledge/sources/meetings/a.md')).toBeNull();
+  });
+
+  it('rejects traversal out of the knowledge mount', () => {
+    expect(sessionFileTargetFromLocalLink('/knowledge/../etc/passwd')).toBeNull();
+    expect(sessionFileTargetFromLocalLink('/knowledge/')).toBeNull();
+    expect(sessionFileTargetFromLocalLink('/knowledge/shared')).toBeNull();
+    expect(sessionFileTargetFromLocalLink('/knowledge/shared/')).toBeNull();
+    expect(sessionFileTargetFromLocalLink('/knowledgebase/a.md')).toBeNull();
   });
 });
 

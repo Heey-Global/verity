@@ -3,6 +3,7 @@ import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { SandboxUnavailableError } from './sandbox-git.js';
+import { WORKTREE_SIDECAR } from './worktree.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -229,6 +230,8 @@ export interface GitBranchService {
   sessionBranches(worktreePath: string): Promise<string[]>;
   /** Whether the worktree has uncommitted (or untracked) changes. */
   isDirty(worktreePath: string): Promise<boolean>;
+  /** Uncommitted files or committed file changes since branching from the project base. */
+  hasProjectChanges(worktreePath: string, base: string): Promise<boolean>;
   /** Local branches the worktree could switch to (not checked out elsewhere). */
   switchable(worktreePath: string): Promise<string[]>;
   /** Pushed branches (`origin/*`) the worktree can PREVIEW (issue #122) — open-PR
@@ -553,6 +556,29 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
 
   async function isDirty(worktreePath: string): Promise<boolean> {
     const out = await git(['-C', worktreePath, 'status', '--porcelain']);
+    return out.trim().length > 0;
+  }
+
+  async function hasProjectChanges(worktreePath: string, base: string): Promise<boolean> {
+    // Recovery metadata is not a project change, even when local Git excludes are missing.
+    const paths = [
+      '.',
+      `:(top,exclude)${WORKTREE_SIDECAR}`,
+      `:(top,exclude)${WORKTREE_SIDECAR}.tmp`,
+    ];
+    const pending = await git(['-C', worktreePath, 'status', '--porcelain', '--', ...paths]);
+    if (pending.trim().length > 0) return true;
+    const out = await git([
+      '-C',
+      worktreePath,
+      'diff',
+      '--name-only',
+      '--no-ext-diff',
+      '--no-textconv',
+      `refs/heads/${base}...HEAD`,
+      '--',
+      ...paths,
+    ]);
     return out.trim().length > 0;
   }
 
@@ -1137,6 +1163,7 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
     current,
     sessionBranches,
     isDirty,
+    hasProjectChanges,
     switchable,
     previewable,
     switch: doSwitch,

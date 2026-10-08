@@ -3,8 +3,11 @@
 // not the server: we run the authorization request in the system browser against
 // the iOS OAuth client and hand the resulting one-time `code` + PKCE verifier to
 // the server, which does the token exchange outbound and keeps the refresh token.
+import type { VerityClient } from '@verity/mobile';
+import { Alert, Platform } from 'react-native';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
+import { isDemoMode } from './demoMode';
 
 // Dismisses any lingering auth session view when the app is re-focused. Safe to
 // call at module load; a no-op on native but recommended by expo-auth-session.
@@ -18,12 +21,7 @@ const DISCOVERY: AuthSession.DiscoveryDocument = {
 // A linked folder is a read/write project workspace. Google does not grant
 // folder-wide access to existing children through `drive.file`, so request the
 // Drive scope and enforce the selected folder at Verity's project boundary.
-const SCOPES = [
-  'https://www.googleapis.com/auth/drive',
-  'https://www.googleapis.com/auth/presentations',
-  'https://www.googleapis.com/auth/documents',
-  'https://www.googleapis.com/auth/spreadsheets',
-];
+const SCOPES = ['https://www.googleapis.com/auth/drive'];
 const GMAIL_SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.compose',
@@ -51,17 +49,111 @@ export type GoogleDriveAuthResult =
  * mint a refresh token every time (so a reconnect always yields a fresh token).
  */
 export async function runGoogleDriveAuth(clientId: string): Promise<GoogleDriveAuthResult> {
+  if (
+    !(await explainGoogleAccess(
+      'Google Drive',
+      'Browse and import files, and use connected project folders as read/write workspaces. Docs, Sheets, and Slides editing is requested together when you first select a native file.',
+    ))
+  )
+    return { kind: 'cancelled' };
   return runGoogleAuth(clientId, SCOPES);
 }
 
-/** Authorize Gmail while retaining the existing Workspace grants. Google can
- * replace the stored refresh token during incremental authorization, so the
- * request deliberately includes the full union rather than Gmail alone. */
+/** Incremental authorization retains existing grants without requesting unrelated services. */
 export async function runGmailAuth(clientId: string): Promise<GoogleDriveAuthResult> {
-  return runGoogleAuth(clientId, [...SCOPES, ...GMAIL_SCOPES]);
+  if (
+    !(await explainGoogleAccess(
+      'Gmail',
+      'Read email, create drafts, and send only after your approval. Verity also reads your Gmail signature for drafts.',
+    ))
+  )
+    return { kind: 'cancelled' };
+  return runGoogleAuth(clientId, GMAIL_SCOPES);
+}
+
+/** Calendar mutations are gated by per-action approval on the server. */
+export async function runCalendarAuth(clientId: string): Promise<GoogleDriveAuthResult> {
+  if (
+    !(await explainGoogleAccess(
+      'Google Calendar',
+      'Read calendars and events. Creating, changing, or deleting events requires your approval, including attendee invitations and Google Meet links. Your account email identifies the connection.',
+    ))
+  )
+    return { kind: 'cancelled' };
+  return runGoogleAuth(clientId, [
+    'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
+    'https://www.googleapis.com/auth/calendar.events',
+    'https://www.googleapis.com/auth/userinfo.email',
+  ]);
+}
+
+export async function runContactsAuth(clientId: string): Promise<GoogleDriveAuthResult> {
+  if (
+    !(await explainGoogleAccess(
+      'Google Contacts',
+      'Read contact names and email addresses to find recipients for email and calendar invitations. Verity cannot change your contacts. Your account email identifies the connection.',
+    ))
+  )
+    return { kind: 'cancelled' };
+  return runGoogleAuth(clientId, [
+    'https://www.googleapis.com/auth/contacts.readonly',
+    'https://www.googleapis.com/auth/userinfo.email',
+  ]);
+}
+
+const WORKSPACE_SCOPES = ['documents', 'spreadsheets', 'presentations'].map(
+  (name) => `https://www.googleapis.com/auth/${name}`,
+);
+
+function googleWorkspaceScope(mimeType: string): string | null {
+  const scopes: Record<string, string> = {
+    'application/vnd.google-apps.document': 'documents',
+    'application/vnd.google-apps.spreadsheet': 'spreadsheets',
+    'application/vnd.google-apps.presentation': 'presentations',
+  };
+  const name = scopes[mimeType];
+  return name ? `https://www.googleapis.com/auth/${name}` : null;
+}
+
+export async function runGoogleWorkspaceAuth(
+  clientId: string,
+  mimeType: string,
+): Promise<GoogleDriveAuthResult> {
+  const scope = googleWorkspaceScope(mimeType);
+  if (!scope) throw new Error('Unsupported Google Workspace file type');
+  if (
+    !(await explainGoogleAccess(
+      'Workspace editing',
+      'Read and edit Google Docs, Sheets, and Slides together. Google grants access to all three file types across your account; Verity limits edits to the file you select for this session.',
+    ))
+  )
+    return { kind: 'cancelled' };
+  return runGoogleAuth(clientId, WORKSPACE_SCOPES);
+}
+
+function explainGoogleAccess(service: string, purpose: string): Promise<boolean> {
+  if (Platform.OS === 'web') {
+    return Promise.resolve(
+      typeof globalThis.confirm === 'function' &&
+        globalThis.confirm(`Connect ${service}?\n\n${purpose}`),
+    );
+  }
+  return new Promise((resolve) =>
+    Alert.alert(
+      `Connect ${service}?`,
+      purpose,
+      [
+        { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+        { text: 'Continue', onPress: () => resolve(true) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(false) },
+    ),
+  );
 }
 
 async function runGoogleAuth(clientId: string, scopes: string[]): Promise<GoogleDriveAuthResult> {
+  if (isDemoMode())
+    throw new Error('Google sign-in requires your own Verity server. Exit the demo to connect.');
   const redirectUri = googleDriveRedirectUri(clientId);
   const request = new AuthSession.AuthRequest({
     clientId,
@@ -82,4 +174,19 @@ async function runGoogleAuth(clientId: string, scopes: string[]): Promise<Google
     throw new Error('Google authorization did not produce a PKCE verifier');
   }
   return { kind: 'success', code: result.params.code, codeVerifier, redirectUri };
+}
+
+export async function ensureGoogleWorkspaceAccess(
+  client: VerityClient,
+  mimeType: string,
+): Promise<boolean> {
+  const scope = googleWorkspaceScope(mimeType);
+  if (!scope) throw new Error('Unsupported Google Workspace file type');
+  const connection = await client.getGoogleDriveConnection();
+  if (WORKSPACE_SCOPES.every((required) => connection.scopes.includes(required))) return true;
+  if (!connection.clientId) throw new Error('Google sign-in is not configured');
+  const auth = await runGoogleWorkspaceAuth(connection.clientId, mimeType);
+  if (auth.kind === 'cancelled') return false;
+  await client.connectGoogleDrive(auth);
+  return true;
 }

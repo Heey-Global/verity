@@ -1,11 +1,18 @@
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { bearerToken, type AuthTokenRegistry } from './auth.js';
+import {
+  browserOriginAllowed,
+  clearBrowserSession,
+  setBrowserSession,
+  requestCredential,
+  type AuthTokenRegistry,
+} from './auth.js';
 import { DevicePairingRejectedError, type DevicePairingManager } from './device-pairing.js';
 import { createUnlockThrottle } from './unlock-throttle.js';
 
 export interface PairingRouteDeps {
   devicePairing?: DevicePairingManager | undefined;
+  browserRequestOrigin?: ((request: FastifyRequest) => string | undefined) | undefined;
   authRegistry?: AuthTokenRegistry | undefined;
 }
 
@@ -76,7 +83,9 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
     }
   });
 
-  app.post('/pair/enroll', { bodyLimit: 1_024 }, async (request, reply) => {
+  const enroll = (browser: boolean) => async (request: FastifyRequest, reply: FastifyReply) => {
+    if (browser && !browserOriginAllowed(request, deps.browserRequestOrigin?.(request)))
+      return reply.code(403).send({ error: 'invalid origin' });
     const registry = deps.authRegistry;
     const pairing = deps.devicePairing;
     if (registry === undefined || pairing === undefined) {
@@ -87,8 +96,15 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
     const { code, enrollmentId, deviceLabel } = pairingEnrollBody.parse(request.body);
     const credential = pairing.enrollmentCredential(code, enrollmentId);
     if (registry.resolveId(credential.token) === credential.id) {
+      if (browser !== registry.isBrowserToken(credential.token))
+        return reply
+          .code(409)
+          .send({ error: 'invitation already enrolled a different device type' });
       pairingThrottle.recordSuccess(request.ip);
-      return { token: credential.token, tokenId: credential.id };
+      if (browser) setBrowserSession(reply, credential.token);
+      return browser
+        ? { tokenId: credential.id }
+        : { token: credential.token, tokenId: credential.id };
     }
     const invitation = pairing.claimInvitation(code);
     if (invitation === undefined) {
@@ -100,13 +116,36 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
         credential.token,
         credential.id,
         deviceLabel ?? null,
+        browser,
       );
       pairingThrottle.recordSuccess(request.ip);
-      return { token: enrolled.token, tokenId: enrolled.id };
+      if (browser) setBrowserSession(reply, enrolled.token);
+      return browser ? { tokenId: enrolled.id } : { token: enrolled.token, tokenId: enrolled.id };
     } catch (error) {
       invitation.release();
       throw error;
     }
+  };
+  app.post('/pair/enroll', { bodyLimit: 1024 }, enroll(false));
+  app.post('/pair/enroll/browser', { bodyLimit: 1024 }, enroll(true));
+
+  app.get('/auth/session', (request, reply) => {
+    reply.header('cache-control', 'no-store');
+    const credential = requestCredential(request);
+    const tokenId = deps.authRegistry?.resolveId(credential);
+    if (tokenId === undefined) return reply.code(401).send({ error: 'unauthorized' });
+    return {
+      authenticated: true,
+      tokenId,
+      userId: deps.authRegistry?.resolveUserId(credential),
+      ...deps.devicePairing?.identity(),
+    };
+  });
+  app.post('/auth/logout', async (request, reply) => {
+    const id = deps.authRegistry?.resolveId(requestCredential(request));
+    if (id !== undefined) await deps.authRegistry?.revoke(id);
+    clearBrowserSession(reply);
+    return reply.code(204).send();
   });
 
   app.get('/devices', async (request, reply) => {
@@ -114,7 +153,7 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
     if (registry === undefined || !registry.isEnabled()) {
       return reply.code(401).send({ error: 'unauthorized' });
     }
-    const currentId = registry.resolveId(bearerToken(request.headers.authorization));
+    const currentId = registry.resolveId(requestCredential(request));
     if (currentId === undefined) return reply.code(401).send({ error: 'unauthorized' });
     return {
       devices: (await registry.list()).map((device) => ({
@@ -129,7 +168,7 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
     if (
       registry === undefined ||
       !registry.isEnabled() ||
-      registry.resolveId(bearerToken(request.headers.authorization)) === undefined
+      registry.resolveId(requestCredential(request)) === undefined
     ) {
       return reply.code(401).send({ error: 'unauthorized' });
     }
@@ -147,7 +186,7 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
     if (registry === undefined || !registry.isEnabled()) {
       return reply.code(401).send({ error: 'unauthorized' });
     }
-    if (registry.resolveId(bearerToken(request.headers.authorization)) === undefined) {
+    if (registry.resolveId(requestCredential(request)) === undefined) {
       return reply.code(401).send({ error: 'unauthorized' });
     }
     const { id } = deviceParams.parse(request.params);
@@ -164,7 +203,7 @@ export function registerPairingRoutes(app: FastifyInstance, deps: PairingRouteDe
       return reply.code(401).send({ error: 'unauthorized' });
     }
     const { id } = deviceParams.parse(request.params);
-    const currentId = registry.resolveId(bearerToken(request.headers.authorization));
+    const currentId = registry.resolveId(requestCredential(request));
     if (currentId === undefined) return reply.code(401).send({ error: 'unauthorized' });
     if (id === currentId) {
       return reply.code(409).send({ error: 'the current device cannot revoke itself' });

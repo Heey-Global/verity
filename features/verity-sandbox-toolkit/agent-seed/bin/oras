@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+self="$(readlink -f "$0")"
+real=""
+for candidate in "${VERITY_ORAS_REAL_BIN:-}" /usr/local/lib/verity/oras-real /usr/bin/oras /usr/local/bin/oras; do
+  [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+  [ "$(readlink -f "$candidate")" != "$self" ] || continue
+  real="$candidate"
+  break
+done
+if [ -z "$real" ]; then
+  echo "oras wrapper: install the ORAS client to use registry workflows" >&2
+  exit 127
+fi
+if [ -z "${VERITY_FORGE_MODE:-}" ]; then
+  exec "$real" "$@"
+fi
+[ "$VERITY_FORGE_MODE" = proxy-test ] || exit 1
+capability="$(verity-gh-token)"
+export HTTPS_PROXY="${VERITY_FORGE_PROXY_URL:?}" https_proxy="${VERITY_FORGE_PROXY_URL:?}"
+export SSL_CERT_FILE="${VERITY_FORGE_PROXY_CA_FILE:?}" NO_PROXY= no_proxy=
+directory="$(mktemp -d)"
+trap 'rm -rf -- "$directory"' EXIT
+auth="$(printf 'x-access-token:%s' "$capability" | base64 | tr -d '\n')"
+printf '{"auths":{"ghcr.io":{"auth":"%s"}}}\n' "$auth" > "$directory/config.json"
+"$real" "$@" --registry-config "$directory/config.json"

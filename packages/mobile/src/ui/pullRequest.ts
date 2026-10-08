@@ -35,6 +35,24 @@ export function isPullRequestConflicted(pr: PullRequestStatusView): boolean {
   return pr.phase === 'open' && pr.mergeState === 'dirty';
 }
 
+/**
+ * Whether GitHub is still computing mergeability for a PR whose checks are green.
+ *
+ * Right after a push (or a base-branch move) GitHub answers `mergeable: null` until
+ * its background merge test finishes — the "Checking for the ability to merge
+ * automatically…" box on github.com. The merge button must stay off until it
+ * settles, and without naming the wait it reads as a dead green button next to
+ * "all checks passed".
+ */
+export function isPullRequestCheckingMergeability(pr: PullRequestStatusView): boolean {
+  return (
+    pr.phase === 'open' &&
+    pr.pipeline === 'success' &&
+    pr.mergeable === null &&
+    !isPullRequestConflicted(pr)
+  );
+}
+
 /** The status line's second half ("open · <this>"). */
 export function pullRequestStatusText(pr: PullRequestStatusView): string {
   const merged = pr.phase === 'merged';
@@ -53,5 +71,6 @@ export function pullRequestStatusText(pr: PullRequestStatusView): string {
   if (pr.pipeline === 'pending' || pr.pipeline === 'running') {
     return `${String(checks.completed)}/${String(checks.total)} ${unit} run`;
   }
+  if (isPullRequestCheckingMergeability(pr)) return 'checks passed · checking mergeability';
   return `${String(checks.total)}/${String(checks.total)} ${unit} passed`;
 }

@@ -1,14 +1,18 @@
 {
   "schema": 1,
-  "version": "1.46.2",
-  "runtime": "1.46.0",
-  "channel": "testflight",
-  "commit": "95038d10b4723efc4b9d1fc45e8a01d83198f24e",
-  "tag": "mobile-v1.46.2",
-  "branch": "staging-mobile-v1.46.2-95038d10b4723efc4b9d1fc45e8a01d83198f24e",
-  "baseline": "mobile-v1.46.1",
-  "group": "c11d6d79-94fd-4dc6-a804-6622cf1df82f",
+  "version": "1.53.1",
+  "runtime": "1.53.0",
+  "channel": "production",
+  "commit": "6295153442b688218c2d7bc33aec341a255331ba",
+  "tag": "mobile-v1.53.1",
+  "branch": "staging-mobile-v1.53.1-6295153442b688218c2d7bc33aec341a255331ba",
+  "baseline": "mobile-v1.53.0",
+  "group": "3cc94933-6a59-4f0e-ae0c-ce7a9ae192fe",
   "notes": [
-    "retry stalled Remote Control reads through alternate proxy (#945)"
+    "manage session servers from Preview and chat (#1175)",
+    "keep chat-enabled Google services scoped to the session (#1171)",
+    "add persistent planning with synchronized plan approvals (#1163)",
+    "even out preview cards and name running servers by state (#1167)",
+    "pin session row icons to the row's right edge (#1166)"
   ]
 }

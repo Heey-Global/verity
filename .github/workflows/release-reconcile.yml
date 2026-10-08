@@ -34,7 +34,7 @@ concurrency:
 jobs:
   reconcile:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       # `actions: write` dispatches the release and promotion workflows.
       # `contents: write` is only for reading: GitHub lists draft releases to

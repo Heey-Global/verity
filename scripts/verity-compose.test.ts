@@ -112,6 +112,25 @@ afterEach(() => {
 });
 
 describe('deploy/bin/verity-compose', () => {
+  it('keeps the Compose sandbox PID default aligned with the provisioner', () => {
+    const compose = parse(readFileSync('deploy/docker-compose.yml', 'utf8')) as {
+      services: Record<string, { environment?: Record<string, string> }>;
+    };
+    const value = compose.services['verity']?.environment?.['VERITY_SANDBOX_PIDS_LIMIT'];
+    const composeDefault = Number(
+      /^\$\{VERITY_SANDBOX_PIDS_LIMIT:-(\d+)\}$/.exec(value ?? '')?.[1],
+    );
+    const codeDefault = Number(
+      /^export const DEFAULT_SANDBOX_PIDS_LIMIT = (\d+);$/m.exec(
+        readFileSync('packages/server/src/provisioner.ts', 'utf8'),
+      )?.[1],
+    );
+    // Managed and Compose deployments must not silently receive different ceilings.
+    expect(Number.isFinite(composeDefault)).toBe(true);
+    expect(composeDefault).toBe(codeDefault);
+    expect(composeDefault).toBeGreaterThanOrEqual(4096);
+  });
+
   it('keeps direct Server TLS and pairing identity in the runner overlay', () => {
     const base = parse(readFileSync('deploy/docker-compose.yml', 'utf8')) as {
       services: Record<string, { command?: string[]; environment?: Record<string, string> }>;

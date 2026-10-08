@@ -283,7 +283,11 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
       ((posix.basename(source.path) === 'docker.sock' &&
         mount.target === '/var/run/docker.sock' &&
         !mount.readOnly) ||
-        (mount.target === '/run/verity-pairing' && mount.readOnly))
+        (mount.target === '/run/verity-pairing' && mount.readOnly) ||
+        (mount.target === '/run/verity-host-diagnostics' &&
+          source.path !== '/' &&
+          !source.path.includes(':') &&
+          mount.readOnly))
     ) {
       mounts.push({
         source: { kind: 'bind', path: source.path },
@@ -313,8 +317,12 @@ export function parseServerDeploymentSpec(value: unknown): ServerDeploymentSpec 
   // builds its update controller only when the socket is actually there.
   if (
     mounts.length < 3 ||
-    mounts.length > 7 ||
-    mounts.some((mount) => mount.readOnly !== (mount.target === '/run/verity-pairing')) ||
+    mounts.length > 8 ||
+    mounts.some(
+      (mount) =>
+        mount.readOnly !==
+        (mount.target === '/run/verity-pairing' || mount.target === '/run/verity-host-diagnostics'),
+    ) ||
     new Set(mountKeys).size !== mountKeys.length ||
     // Distinct targets, not just distinct keys: two binds from different host
     // paths onto /var/run/docker.sock produce different keys, and with a fourth

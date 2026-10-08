@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from './liveConnection';
 /**
  * Whether the app chrome should show that a Server update is waiting.
  *
@@ -13,25 +14,24 @@
  */
 
 import { useEffect, useState } from 'react';
-import { serverUpdateAwaitsAttention, subscribeServerUpdateStatusMutations } from '@verity/mobile';
-import { createVerityClient, getVerityBaseUrl } from './client';
+import {
+  serverUpdateAwaitsAttention,
+  subscribeServerUpdateStatusMutations,
+  type ServerUpdateStatus,
+} from '@verity/mobile';
+import { createVerityClient, getVerityBaseUrl, subscribeVerityBaseUrl } from './client';
 
 /**
- * Five minutes, because that is the server's own availability cache: asking more
- * often re-reads the same answer, and the question is "is there a release", not
- * "has one appeared in the last few seconds". The push notification is what makes
- * it timely; this is what keeps the chrome honest between pushes.
- */
-export const SERVER_UPDATE_BADGE_POLL_MS = 5 * 60_000;
-
-/**
+ * The version waiting to be installed, or null when there is nothing to announce.
+ * A version rather than a flag because the overview banner names it.
+ *
  * `enabled` is the screen asking for the badge, not a preference. Every screen in
  * the stack renders this header and the previous ones stay mounted behind it, so a
  * hook that polled unconditionally would run one timer per screen the operator has
  * pushed and fire a request on every navigation — for a dot only the overview
- * draws. Passing the caller's own `isHome` keeps exactly one poller alive.
+ * draws. Passing the caller's own `isHome` keeps the overview subscription active.
  */
-export function useServerUpdateBadge(enabled: boolean): boolean {
+export function useServerUpdateBadge(enabled: boolean): string | null {
   /**
    * The server an update is pending for, rather than a bare flag — the dot is a
    * claim about one particular server, and this hook outlives the choice of it.
@@ -41,29 +41,30 @@ export function useServerUpdateBadge(enabled: boolean): boolean {
    * to the base URL, an answer expires the moment it stops being about the server
    * in front of the operator.
    */
-  const [pendingFor, setPendingFor] = useState<string | null>(null);
+  const [pending, setPending] = useState<{ baseUrl: string; version: string } | null>(null);
 
   useEffect(
     () =>
       subscribeServerUpdateStatusMutations((status) => {
         if (!enabled) return;
-        const baseUrl = getVerityBaseUrl();
-        setPendingFor(baseUrl !== null && serverUpdateAwaitsAttention(status) ? baseUrl : null);
+        setPending(pendingRelease(getVerityBaseUrl(), status));
       }),
     [enabled],
   );
 
   useEffect(() => {
     if (!enabled) {
-      // Nothing is polling any more, so nothing is keeping this fresh. Whatever
+      // This view no longer subscribes, so nothing is keeping this fresh. Whatever
       // was true when the operator navigated away must be re-earned on the way
       // back rather than shown while the first request is still in flight.
-      setPendingFor(null);
+      setPending(null);
       return;
     }
     let cancelled = false;
+    let generation = 0;
 
-    const read = (): void => {
+    const read = (): void | Promise<void> => {
+      const requestGeneration = ++generation;
       // Both read per pass rather than captured: the client is null until the
       // operator has chosen a server, and that can happen after this header
       // mounted. Captured once, the badge would stay dark until the app restarts.
@@ -71,32 +72,59 @@ export function useServerUpdateBadge(enabled: boolean): boolean {
       const client = createVerityClient();
       if (client === null || baseUrl === null) {
         // No server configured — there is nothing a dot could be about.
-        setPendingFor(null);
+        setPending(null);
         return;
       }
-      void client
-        .getServerUpdates()
-        .then((status) => {
-          if (!cancelled) setPendingFor(serverUpdateAwaitsAttention(status) ? baseUrl : null);
-        })
-        // A server that cannot answer is not evidence that an update is waiting.
-        // In particular, the previous `true` may be the answer from immediately
-        // before that same server activated the update.
-        // The last successful answer may predate an update cutover. Once that
-        // server disappears, retaining `true` turns a transient outage into a
-        // stale badge for the full five-minute poll interval.
-        .catch(() => {
-          if (!cancelled) setPendingFor(null);
-        });
+      return (
+        client
+          .getServerUpdates()
+          .then((status) => {
+            if (!cancelled && generation === requestGeneration)
+              setPending(pendingRelease(baseUrl, status));
+          })
+          // A server that cannot answer is not evidence that an update is waiting.
+          // In particular, the previous `true` may be the answer from immediately
+          // before that same server activated the update.
+          // The last successful answer may predate an update cutover. Once that
+          // server disappears, retaining `true` turns a transient outage into a
+          // stale badge until the next live refresh.
+          .catch(() => {
+            if (!cancelled && generation === requestGeneration) setPending(null);
+          })
+      );
     };
 
-    read();
-    const timer = setInterval(read, SERVER_UPDATE_BADGE_POLL_MS);
+    let detachLive = () => {};
+    const bind = (): void => {
+      detachLive();
+      read();
+      const client = createVerityClient();
+      detachLive = client
+        ? subscribeLiveRefresh(client, read, (path) => path.startsWith('/server/'), [
+            { path: '/server/updates' },
+          ])
+        : () => {};
+    };
+    bind();
+    const detachBase = subscribeVerityBaseUrl(bind);
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      detachLive();
+      detachBase();
     };
   }, [enabled]);
 
-  return enabled && pendingFor !== null && pendingFor === getVerityBaseUrl();
+  return enabled && pending !== null && pending.baseUrl === getVerityBaseUrl()
+    ? pending.version
+    : null;
+}
+
+function pendingRelease(
+  baseUrl: string | null,
+  status: ServerUpdateStatus,
+): { baseUrl: string; version: string } | null {
+  if (baseUrl === null || !serverUpdateAwaitsAttention(status)) return null;
+  // `serverUpdateAwaitsAttention` only answers yes for `available`, which always
+  // carries a release; the narrowing is for the compiler.
+  return status.state === 'available' ? { baseUrl, version: status.release.version } : null;
 }

@@ -45,7 +45,7 @@ import { deviceLabel } from '../../lib/deviceLabel';
 import { getServerProfile } from '../../lib/serverProfile';
 import { safeReturnTo } from '../../lib/safeReturnTo';
 
-const NEXT = { href: '/onboarding/github' } as const;
+const NEXT = { href: '/onboarding/ai-backends' } as const;
 const BACK = '/onboarding/server-url';
 
 export default function OnboardingMasterPassword() {

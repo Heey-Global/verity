@@ -1,24 +1,9 @@
 #!/usr/bin/env bash
-# Verity git wrapper — refuses to let an agent remove its OWN (or another
-# session's) Verity worktree from inside a session.
-#
-# Why: each Verity session runs in a git worktree at `.verity-sessions/agent-<id>`
-# and its PR/Issue chip + resumability are resolved live from that worktree's
-# HEAD on disk (packages/server/src/branches.ts, github.ts). If a turn runs
-# `git worktree remove <its own worktree>` (e.g. during post-merge "cleanup"),
-# the directory vanishes mid-session: `worktreeExists()` then returns false and
-# the session is permanently marked "workspace no longer exists — can't be
-# resumed". Worktree lifecycle is Verity's job (it removes trees server-side via
-# packages/server/src/worktree.ts, which does NOT go through this wrapper), so an
-# agent should never remove a session worktree itself.
-#
-# Transparent by default: this wrapper only ever blocks a `git worktree remove`
-# whose target is a live Verity session worktree. Every other git invocation —
-# including `worktree add`, `worktree list`, and `worktree prune` — execs the
-# real git verbatim, so it is safe to put first on PATH unconditionally.
-#
-# Escape hatch: set VERITY_GIT_GUARD_DISABLE=1 to make the wrapper fully
-# transparent (operator-directed removals only).
+# Verity git wrapper: worktree lifecycle belongs to the server. A shared
+# repository can contain live sessions invisible in this mount namespace;
+# prune would delete their indices even though their checkouts still exist.
+# This is defense in depth, not a filesystem isolation boundary.
+# VERITY_GIT_GUARD_DISABLE=1 is an explicit administrative escape hatch.
 set -euo pipefail
 
 # --- locate the real git (never re-enter this wrapper) -----------------------
@@ -119,6 +104,13 @@ while [ "$j" -lt "$n" ]; do
       ;;
   esac
 done
+
+case "$action" in
+  prune | unlock | move | repair)
+    echo "verity git guard: refusing 'git worktree $action'; Verity owns worktree administration" >&2
+    exit 1
+    ;;
+esac
 
 if [ "$action" != "remove" ]; then
   exec "$REAL_GIT" "$@"

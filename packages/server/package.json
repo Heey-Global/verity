@@ -17,22 +17,25 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
+    "@fastify/compress": "9.2.0",
     "@fastify/rate-limit": "11.2.0",
-    "@fastify/websocket": "11.3.1",
-    "@napi-rs/canvas": "1.0.9",
+    "@fastify/websocket": "11.3.3",
+    "@napi-rs/canvas": "1.0.10",
     "@verity/events": "*",
+    "@verity/preview-tunnel": "*",
     "@verity/secret-contracts": "*",
     "@verity/session": "*",
     "@verity/store": "*",
     "expo-server-sdk": "7.2.0",
-    "fast-xml-parser": "5.11.1",
+    "fast-xml-parser": "5.11.2",
     "fastify": "5.12.5",
     "fflate": "0.8.3",
+    "graphql": "17.0.2",
     "ipaddr.js": "2.5.0",
     "minimatch": "10.2.6",
-    "pdfjs-dist": "6.3.289",
+    "pdfjs-dist": "6.4.299",
     "qrcode": "1.5.4",
-    "sanitize-html": "2.17.7",
+    "sanitize-html": "2.18.0",
     "sharp": "0.35.5",
     "sigstore": "5.0.0",
     "ws": "8.22.0",
@@ -41,7 +44,7 @@
   },
   "devDependencies": {
     "@types/qrcode": "1.5.6",
-    "@types/sanitize-html": "2.16.1",
-    "@types/ws": "8.18.1"
+    "@types/sanitize-html": "2.16.2",
+    "@types/ws": "8.18.2"
   }
 }

@@ -32,8 +32,7 @@ export function brokeredGrantTarget(
     const secrets = input['secrets'];
     const command = input['command'];
     const entryScript = input['entryScript'];
-    if (!Array.isArray(secrets) || !Array.isArray(command) || !isRecord(entryScript))
-      return undefined;
+    if (!Array.isArray(secrets) || !Array.isArray(command)) return undefined;
     const secretMappings = secrets.map((secret) => {
       if (
         !isRecord(secret) ||
@@ -50,6 +49,34 @@ export function brokeredGrantTarget(
         injection: secret['injection'] ?? 'env',
       };
     });
+    if (
+      entryScript === undefined ||
+      (isRecord(entryScript) && entryScript['loading'] === 'dynamic')
+    ) {
+      if (
+        secretMappings.length === 0 ||
+        secretMappings.some((mapping) => mapping === undefined) ||
+        command.length === 0 ||
+        command.some((token) => typeof token !== 'string') ||
+        typeof command[0] !== 'string' ||
+        !command[0].startsWith('/')
+      )
+        return undefined;
+      const sortedMappings = secretMappings
+        .filter((mapping) => mapping !== undefined)
+        .sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right)));
+      // Include the whole invocation so options and execution context cannot inherit consent.
+      const descriptor = createHash('sha256')
+        .update(canonicalJson({ ...input, secrets: sortedMappings }))
+        .digest('hex');
+      return {
+        secretAlias: sortedMappings[0]!.secretAlias,
+        secretAliases: [...new Set(sortedMappings.map((mapping) => mapping.secretAlias))],
+        toolName,
+        target: `v2:${command[0]}#${descriptor}`,
+      };
+    }
+    if (!isRecord(entryScript)) return undefined;
     const path = entryScript['path'];
     const projectPath = entryScript['projectPath'];
     const sha256 = entryScript['sha256'];

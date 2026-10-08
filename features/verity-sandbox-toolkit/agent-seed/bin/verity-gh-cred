@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# Verity git credential helper backed by the GitHub-token broker.
-#
-# Wired as `credential.helper` for github.com HTTPS remotes (see verity-agent-run
-# / the devcontainer Feature). On `get`, it redeems the container capability for a
-# fresh repo-scoped token via verity-gh-token and hands git the standard
-# username/password pair. `store`/`erase` are no-ops — there is nothing to cache
-# or forget, since every token is minted on demand and never persisted.
+# Git credential helper: return a project capability placeholder for the proxy.
+# Store and erase are no-ops; GitHub credentials remain server-side.
 set -euo pipefail
 
 [ "${1:-}" = "get" ] || exit 0
 
-token="$(verity-gh-token 2>/dev/null)" || exit 0
-[ -n "$token" ] || exit 0
+[ "${VERITY_FORGE_MODE:-}" = "proxy-test" ] || exit 1
+protocol=""; host=""
+while IFS='=' read -r key value; do
+  case "$key" in protocol) protocol="$value" ;; host) host="$value" ;; esac
+done
+[ "$protocol" = "https" ] && { [ "$host" = "github.com" ] || [ "$host" = "github.com:443" ]; } || exit 1
+token="$(verity-gh-token)" || exit 1
 
-printf 'username=x-access-token\n'
-printf 'password=%s\n' "$token"
+printf 'username=x-access-token\npassword=%s\n' "$token"

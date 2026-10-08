@@ -1,524 +1,255 @@
-// Connected services: the credentials and optional integrations Verity hands to
-// project containers. Everything on this screen is gated on the secret store —
-// while it is sealed the boxes are read-only, because a write would 503 and the
-// operator would be left guessing why.
 import {
-  secretStoreManaged,
-  secretWritable,
-  transcriptionBackendStatus,
-  type AgentLoginProvider,
-  type IntegrationAccount,
+  githubRepositoryAccessReady,
+  selectedOpenCodeModels,
   type VerityClient,
 } from '@verity/mobile';
-import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, type Href } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
-
-import { AgentLoginPanel } from '../../../components/AgentLoginPanel';
-import { SecretStoreSection } from '../../../components/settings/SecretStoreSection';
-import { PublicPreviewDiagnostics } from '../../../components/settings/PublicPreviewDiagnostics';
+import { Text } from 'react-native';
 import {
-  SecretPasteField,
-  SettingsDisclosure,
-  SettingsField,
   SettingsGroup,
   SettingsListPanel,
   SettingsMessage,
-  SettingsNavRow,
   SettingsPanel,
-  SettingsSaveState,
+  SettingsNavRow,
   SettingsScaffold,
 } from '../../../components/settings/SettingsChrome';
+import { type IconName } from '../../../components/Icon';
 import { settingsStyles as styles } from '../../../components/settings/settingsStyles';
-import { StatusPill } from '../../../components/StatusPill';
 import { createVerityClient } from '../../../lib/client';
-import {
-  patchVeritySettingsLocally,
-  refreshSecretStatus,
-  retryFailedVeritySettings,
-  saveVeritySettings,
-  setVeritySettingsError,
-  useLoadVeritySettings,
-  useVeritySettings,
-} from '../../../lib/settingsStore';
-import { useSecretFields } from '../../../lib/useSecretFields';
-import { useSettingsFields } from '../../../lib/useSettingsFields';
+import { useLoadVeritySettings, useVeritySettings } from '../../../lib/settingsStore';
 
-// Module-level: these arrays' identity drives the field hooks, and they are the
-// complete list of keys a save from this screen may contain.
-const TEXT_FIELDS = ['transcribeBaseUrl', 'transcribeModel'] as const;
-const SECRET_FIELDS = ['uplinkSubscriptionKey', 'transcribeApiKey', 'dopplerServiceToken'] as const;
+type Usage = Awaited<ReturnType<VerityClient['getConnectionUsage']>>;
 
-/**
- * Which login the `?agentLogin=` deep link should open on arrival, if any.
- *
- * Matched against the known providers rather than cast: the parameter comes off a
- * URL and can say anything — including, when it is repeated, an array — and an
- * unrecognised value has to land on the panel doing nothing rather than
- * auto-start a provider that does not exist.
- */
-function autoStartLoginProvider(
-  agentLogin: string | string[] | undefined,
-): AgentLoginProvider | undefined {
-  return agentLogin === 'claude' || agentLogin === 'codex' ? agentLogin : undefined;
-}
+type Connection = {
+  usageKey: keyof Usage;
+  title: string;
+  group: string;
+  icon: IconName;
+  subtitle: string;
+  route: Href;
+  connected: boolean;
+  status?: string;
+};
 
-export default function ServicesSettingsScreen() {
-  const { agentLogin } = useLocalSearchParams<{ agentLogin?: string | string[] }>();
+export default function ConnectionsScreen() {
   const client = useMemo(() => createVerityClient(), []);
-  if (!client) {
-    return (
-      <SettingsMessage
-        title="Not connected"
-        subtitle="Configure your Verity server address in setup to edit Verity settings."
-        screenTitle="Connected services"
-      />
-    );
-  }
-  return <ServicesSettingsView client={client} agentLogin={agentLogin} />;
-}
-
-function ServicesSettingsView({
-  client,
-  agentLogin,
-}: {
-  client: VerityClient;
-  agentLogin?: string | string[];
-}) {
-  const reload = useLoadVeritySettings(client);
-  const { settings, secretStatus } = useVeritySettings();
-  const text = useSettingsFields(client, TEXT_FIELDS);
-  const secrets = useSecretFields(client, SECRET_FIELDS);
-  const matrixAccount = useMatrixAccount(client);
-
-  // Secret values may only be written once the store is unlocked (a write while
-  // sealed 503s). Until the first status resolves, treat as not-yet-writable.
-  const writable = secretStatus !== undefined && secretWritable(secretStatus);
-  // Whether this deployment manages a cipher at all. `unmanaged` (and the
-  // pre-fetch `undefined`) mean there is no secret store, so the paste fields and
-  // the unlock hints hide — matching SecretStoreSection, which renders nothing.
-  const managed = secretStoreManaged(secretStatus);
-  const backendMode = settings?.transcribeBackendMode ?? null;
-  const opencodeReady =
-    (settings?.opencodeApiKeyConfigured ?? false) &&
-    (settings?.opencodeBaseUrl ?? '').trim() !== '' &&
-    (settings?.opencodeModels ?? '').trim() !== '';
-
-  return (
-    <SettingsScaffold
-      title="Services"
-      detail
-      onRetry={() => {
-        const hasDirtyFields = text.dirty || secrets.dirty;
-        if (text.dirty) text.commit();
-        if (secrets.dirty) secrets.commit();
-        if (!hasDirtyFields) {
-          void retryFailedVeritySettings(client).then((retried) => {
-            if (!retried) reload();
-          });
-        }
-      }}
-    >
-      <SecretStoreSection client={client} />
-
-      {managed ? (
-        <SettingsGroup title="AI backends" description="Subscriptions and API providers.">
-          {writable ? (
-            <View style={styles.panelStack}>
-              <AgentLoginPanel
-                client={client}
-                configured={{
-                  claude: settings?.claudeCodeOauthCredentialsConfigured ?? false,
-                  codex: settings?.codexAuthJsonConfigured ?? false,
-                }}
-                onConfiguredChange={(provider, configured) =>
-                  patchVeritySettingsLocally((current) => ({
-                    ...current,
-                    ...(provider === 'claude'
-                      ? { claudeCodeOauthCredentialsConfigured: configured }
-                      : { codexAuthJsonConfigured: configured }),
-                  }))
-                }
-                onSealed={() => {
-                  setVeritySettingsError('Unlock the secret store first.');
-                  void refreshSecretStatus(client);
-                }}
-                compact
-                showGuidance={false}
-                allowDisconnect
-                autoStartProvider={autoStartLoginProvider(agentLogin)}
-              />
-            </View>
-          ) : (
-            <SettingsPanel>
-              <Text style={styles.reproHint}>
-                {autoStartLoginProvider(agentLogin) === undefined
-                  ? 'Unlock the secret store to change these.'
-                  : // Arrived from the banner's "Sign in to Codex", into a store
-                    // that cannot hold the new login yet. Saying only "unlock to
-                    // change these" reads as if the tap went nowhere; the panel
-                    // mounts and auto-starts the moment the store is unlocked.
-                    'Unlock the secret store to sign in — the login will start once it is open.'}
-              </Text>
-            </SettingsPanel>
-          )}
-
-          <SettingsListPanel>
-            <SettingsNavRow
-              icon="terminal"
-              title="OpenCode"
-              subtitle="Provider connection and available models"
-              status={{
-                intent: opencodeReady ? 'ready' : 'needsSetup',
-                label: opencodeReady ? 'Configured' : 'Not configured',
-              }}
-              onPress={() => router.push('/settings/services/opencode')}
-            />
-          </SettingsListPanel>
-        </SettingsGroup>
-      ) : null}
-
-      {managed ? (
-        <SettingsGroup title="Meeting transcription">
-          <SettingsDisclosure
-            onCollapse={() => {
-              text.commit();
-              secrets.commit();
-            }}
-            title="Transcription"
-            icon="mic"
-            summary={
-              transcriptionBackendStatus(
-                backendMode,
-                settings?.transcribeExternalConfigured === true,
-              ).label
-            }
-          >
-            <View style={styles.sectionHeaderRow}>
-              <Text style={styles.disclosureTitle}>Backend</Text>
-              {/*
-                What counts as "set up" is a contract with the server, not a
-                rendering detail — it lives in `transcriptionBackendStatus` and
-                is tested there. Neither a backend this deployment cannot run
-                (the removed local one) nor one it cannot reach (external with
-                no URL/model) may read as ready while uploads are rejected.
-                `transcribeExternalConfigured` is the server's own answer, so
-                the pill agrees with the upload path even when the endpoint
-                comes from the deployment environment rather than these fields.
-              */}
-              <StatusPill
-                quiet
-                {...transcriptionBackendStatus(
-                  backendMode,
-                  settings?.transcribeExternalConfigured === true,
-                )}
-              />
-            </View>
-            <Text style={styles.reproSubtitle}>
-              Choose where Verity processes meeting audio. You can change this later.
-            </Text>
-            <View style={styles.backendChoices} accessibilityRole="radiogroup">
-              <Pressable
-                accessibilityRole="radio"
-                accessibilityState={{
-                  checked: backendMode === 'local',
-                  disabled: settings?.transcribeLocalAvailable !== true,
-                }}
-                accessibilityLabel="Use local transcription"
-                disabled={settings?.transcribeLocalAvailable !== true}
-                onPress={() => void saveVeritySettings(client, { transcribeBackendMode: 'local' })}
-                style={[
-                  styles.backendChoice,
-                  backendMode === 'local' ? styles.backendChoiceSelected : null,
-                  settings?.transcribeLocalAvailable !== true ? styles.backendChoiceDisabled : null,
-                ]}
-              >
-                <Text style={styles.backendChoiceTitle}>Local</Text>
-                <Text style={styles.reproHint}>
-                  {settings?.transcribeLocalAvailable
-                    ? 'Audio stays on your Verity host.'
-                    : 'Not available in this deployment.'}
-                </Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="radio"
-                accessibilityState={{ checked: backendMode === 'external' }}
-                accessibilityLabel="Use external transcription"
-                onPress={() =>
-                  void saveVeritySettings(client, { transcribeBackendMode: 'external' })
-                }
-                style={[
-                  styles.backendChoice,
-                  backendMode === 'external' ? styles.backendChoiceSelected : null,
-                ]}
-              >
-                <Text style={styles.backendChoiceTitle}>External service</Text>
-                <Text style={styles.reproHint}>Use an OpenAI-compatible speech API.</Text>
-              </Pressable>
-            </View>
-            {backendMode === 'external' ? (
-              <>
-                <SettingsField
-                  label="API base URL"
-                  value={text.values.transcribeBaseUrl}
-                  onChangeText={(value) => text.set('transcribeBaseUrl', value)}
-                  onBlur={text.commit}
-                  placeholder="https://api.example.com/v1/openai"
-                  accessibilityLabel="Transcription API base URL"
-                  keyboardType="url"
-                />
-                <SecretPasteField
-                  label="API token"
-                  placeholder="Paste the transcription token…"
-                  value={secrets.values.transcribeApiKey}
-                  onChangeText={(value) => secrets.set('transcribeApiKey', value)}
-                  configured={settings?.transcribeApiKeyConfigured ?? false}
-                  editable={writable}
-                  onBlur={secrets.commit}
-                  masked
-                />
-                <SettingsField
-                  label="Model"
-                  value={text.values.transcribeModel}
-                  onChangeText={(value) => text.set('transcribeModel', value)}
-                  onBlur={text.commit}
-                  placeholder="openai/whisper-large-v3"
-                  accessibilityLabel="Transcription model"
-                />
-                {!writable ? (
-                  <Text style={styles.reproHint}>Unlock the secret store to change the token.</Text>
-                ) : null}
-              </>
-            ) : null}
-          </SettingsDisclosure>
-        </SettingsGroup>
-      ) : null}
-
-      <AttendeeSettings client={client} writable={writable} />
-
-      {/* Not gated on the secret store: the server encrypts the Matrix password
-          on its own, so the account stays editable while the store is sealed. */}
-      <SettingsGroup title="Knowledge sources" description="Chats imported into project knowledge.">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="message-circle"
-            title="Matrix"
-            subtitle="Bridged WhatsApp and Signal rooms"
-            status={
-              matrixAccount
-                ? {
-                    intent: matrixAccount.status === 'online' ? 'ready' : 'transient',
-                    label: matrixAccount.status,
-                  }
-                : undefined
-            }
-            onPress={() => router.push('/settings/services/matrix')}
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
-
-      <SettingsGroup title="Tools">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="link"
-            title="MCP connections"
-            subtitle="Remote HTTP MCP servers, enabled per project"
-            onPress={() => router.push('/settings/services/mcp')}
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
-
-      {managed ? (
-        <SettingsGroup title="Credentials">
-          <SettingsDisclosure
-            onCollapse={() => {
-              text.commit();
-              secrets.commit();
-            }}
-            title="Doppler"
-            icon="cloud"
-            summary={settings?.dopplerServiceTokenConfigured ? 'Configured' : 'Optional'}
-          >
-            <Text style={styles.reproSubtitle}>
-              Account token used by project-level Doppler bindings. Stored encrypted and never shown
-              again.
-            </Text>
-            <SecretPasteField
-              label="Service Account token (dp.sa.…)"
-              placeholder="Paste the Doppler token…"
-              value={secrets.values.dopplerServiceToken}
-              onChangeText={(value) => secrets.set('dopplerServiceToken', value)}
-              configured={settings?.dopplerServiceTokenConfigured ?? false}
-              editable={writable}
-              onBlur={secrets.commit}
-            />
-            {!writable ? (
-              <Text style={styles.reproHint}>Unlock the secret store to change this.</Text>
-            ) : null}
-          </SettingsDisclosure>
-
-          <SettingsDisclosure
-            onCollapse={() => {
-              text.commit();
-              secrets.commit();
-            }}
-            title="Public Preview"
-            icon="globe"
-            summary={settings?.uplinkSubscriptionKeyConfigured ? 'Configured' : 'Optional'}
-          >
-            <Text style={styles.reproSubtitle}>
-              Subscription key for paid public links through Verity Uplink. Stored encrypted and
-              never shown again.
-            </Text>
-            <SecretPasteField
-              label="Verity subscription key"
-              placeholder="Paste subscription key…"
-              value={secrets.values.uplinkSubscriptionKey}
-              onChangeText={(value) => secrets.set('uplinkSubscriptionKey', value)}
-              configured={settings?.uplinkSubscriptionKeyConfigured ?? false}
-              editable={writable}
-              onBlur={secrets.commit}
-            />
-            {!writable ? (
-              <Text style={styles.reproHint}>Unlock the secret store to change this.</Text>
-            ) : null}
-            <PublicPreviewDiagnostics
-              client={client}
-              keyConfigured={settings?.uplinkSubscriptionKeyConfigured}
-            />
-          </SettingsDisclosure>
-        </SettingsGroup>
-      ) : null}
-
-      <SettingsSaveState dirty={text.dirty || secrets.dirty} />
-    </SettingsScaffold>
+  return client ? (
+    <ConnectionsView client={client} />
+  ) : (
+    <SettingsMessage
+      title="Not connected"
+      subtitle="Connect to your Verity server first."
+      screenTitle="Connections"
+    />
   );
 }
 
-/**
- * The Matrix account's connection state for the row's status pill.
- *
- * Refetched on focus so returning from the account screen shows the new state.
- * A failed or unsupported fetch leaves the row without a pill rather than
- * blocking the screen — the Matrix screen itself reports the error.
- */
-function useMatrixAccount(client: VerityClient): IntegrationAccount | null {
-  const [account, setAccount] = useState<IntegrationAccount | null>(null);
+function ConnectionsView({ client }: { client: VerityClient }) {
+  const reload = useLoadVeritySettings(client);
+  const { settings } = useVeritySettings();
+  const [matrix, setMatrix] = useState<{ connected: boolean; status?: string }>({
+    connected: false,
+  });
+  const [mcpCount, setMcpCount] = useState(0);
+  const [usage, setUsage] = useState<Awaited<
+    ReturnType<VerityClient['getConnectionUsage']>
+  > | null>(null);
+  const [google, setGoogle] = useState<{ connected: boolean; accountEmail: string | null } | null>(
+    null,
+  );
+  const [error, setError] = useState(false);
+  const [retry, setRetry] = useState(0);
   useFocusEffect(
     useCallback(() => {
       let active = true;
-      void (async () => {
-        try {
-          const { accounts } = await client.listIntegrations();
-          if (active) setAccount(accounts.find((item) => item.provider === 'matrix') ?? null);
-        } catch {
-          if (active) setAccount(null);
+      void Promise.allSettled([
+        client.listIntegrations(),
+        client.listHttpMcpConnections(),
+        Promise.resolve().then(() => client.getGoogleConnection()),
+        Promise.resolve().then(() => client.getConnectionUsage()),
+      ]).then(([integrations, mcp, googleAccount, connectionUsage]) => {
+        if (!active) return;
+        setError(
+          integrations.status === 'rejected' ||
+            mcp.status === 'rejected' ||
+            googleAccount.status === 'rejected',
+        );
+        if (connectionUsage.status === 'fulfilled') setUsage(connectionUsage.value);
+        if (googleAccount.status === 'fulfilled')
+          setGoogle({
+            connected: googleAccount.value.connected,
+            accountEmail: googleAccount.value.accountEmail,
+          });
+        if (integrations.status === 'fulfilled') {
+          const account = integrations.value.accounts.find((item) => item.provider === 'matrix');
+          setMatrix(account ? { connected: true, status: account.status } : { connected: false });
         }
-      })();
+        if (mcp.status === 'fulfilled') setMcpCount(mcp.value.length);
+      });
       return () => {
         active = false;
       };
-    }, [client]),
+    }, [client, retry]),
   );
-  return account;
-}
-
-function AttendeeSettings({ client, writable }: { client: VerityClient; writable: boolean }) {
-  const [configured, setConfigured] = useState(false);
-  const [apiKey, setApiKey] = useState('');
-  const [webhookSecret, setWebhookSecret] = useState('');
-  const [message, setMessage] = useState('');
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    void client
-      .getAttendeeSettings?.()
-      .then((value) => setConfigured(value.configured))
-      .catch(() => undefined);
-  }, [client]);
-  const run = async (action: 'save' | 'test' | 'remove') => {
-    setBusy(true);
-    setMessage('');
-    try {
-      if (action === 'test') {
-        await client.testAttendee();
-        setMessage('Connection verified.');
-      } else {
-        await client.saveAttendeeSettings(
-          action === 'remove'
-            ? null
-            : { apiKey: apiKey.trim(), webhookSecret: webhookSecret.trim() },
-        );
-        setConfigured(action !== 'remove');
-        setApiKey('');
-        setWebhookSecret('');
-        setMessage(
-          action === 'remove'
-            ? 'Attendee disconnected. Active meetings continue until ended.'
-            : 'Attendee saved.',
-        );
-      }
-    } catch (error) {
-      setMessage(String(error));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const rows: Connection[] = [
+    {
+      title: 'GitHub',
+      usageKey: 'github',
+      group: 'Code',
+      icon: 'github',
+      subtitle: 'Repository access, commit author, signing key',
+      route: '/settings/github',
+      connected: githubRepositoryAccessReady(settings),
+    },
+    {
+      title: 'Claude',
+      usageKey: 'claude',
+      group: 'AI',
+      icon: 'terminal',
+      subtitle: 'Use your Claude subscription',
+      route: '/settings/services/claude',
+      connected: settings?.claudeCodeOauthCredentialsConfigured === true,
+    },
+    {
+      title: 'Codex',
+      usageKey: 'codex',
+      group: 'AI',
+      icon: 'terminal',
+      subtitle: 'Use your Codex subscription',
+      route: '/settings/services/codex',
+      connected: settings?.codexAuthJsonConfigured === true,
+    },
+    {
+      title: 'OpenCode',
+      usageKey: 'opencode',
+      group: 'AI',
+      icon: 'terminal',
+      subtitle: 'Custom providers and models',
+      route: '/settings/services/opencode',
+      connected:
+        settings?.opencodeApiKeyConfigured === true &&
+        Boolean(settings.opencodeBaseUrl?.trim()) &&
+        selectedOpenCodeModels(settings).length > 0,
+    },
+    {
+      title: 'Google',
+      usageKey: 'google',
+      group: 'Files & documents',
+      icon: 'folder',
+      subtitle: 'Drive, Docs, Sheets, Slides, mail and calendar',
+      route: '/settings/google' as Href,
+      connected: google?.connected ?? settings?.googleDriveConnected === true,
+      ...(google?.accountEmail ? { status: google.accountEmail } : {}),
+    },
+    {
+      title: 'Matrix',
+      usageKey: 'matrix',
+      group: 'Messaging',
+      icon: 'message-circle',
+      subtitle: 'Import room messages into project knowledge',
+      route: '/settings/services/matrix',
+      ...matrix,
+    },
+    {
+      title: 'Doppler',
+      usageKey: 'doppler',
+      group: 'Secrets',
+      icon: 'cloud',
+      subtitle: 'Managed secrets for your projects',
+      route: '/settings/services/doppler' as Href,
+      connected: settings?.dopplerServiceTokenConfigured === true,
+    },
+    {
+      title: 'MCP servers',
+      usageKey: 'mcp',
+      group: 'Advanced',
+      icon: 'link',
+      subtitle: 'Connect additional agent tools',
+      route: '/settings/services/mcp',
+      connected: mcpCount > 0,
+      ...(mcpCount > 0 ? { status: `${mcpCount} configured` } : {}),
+    },
+  ];
+  const renderRows = (items: Connection[]) => (
+    <SettingsListPanel>
+      {items.map((item) => (
+        <SettingsNavRow
+          key={item.title}
+          icon={item.icon}
+          title={item.title}
+          subtitle={
+            usage && item.connected
+              ? `${item.subtitle} · Used in ${usage[item.usageKey]} ${usage[item.usageKey] === 1 ? 'project' : 'projects'}`
+              : item.subtitle
+          }
+          status={{
+            intent: item.connected
+              ? item.status && item.status !== 'online' && item.title === 'Matrix'
+                ? 'transient'
+                : 'ready'
+              : 'optional',
+            label: item.status ?? (item.connected ? 'Connected' : 'Connect'),
+          }}
+          onPress={() => router.push(item.route)}
+        />
+      ))}
+    </SettingsListPanel>
+  );
   return (
-    <SettingsGroup
-      title="Attendee"
-      description="Online meeting bots and live transcripts. Requires premium Uplink / Online Sharing."
+    <SettingsScaffold
+      title="Connections"
+      detail
+      onRetry={() => {
+        reload();
+        setRetry((value) => value + 1);
+      }}
     >
-      <SettingsPanel>
-        <SecretPasteField
-          label="API key"
-          onBlur={() => undefined}
-          value={apiKey}
-          onChangeText={setApiKey}
-          configured={configured}
-          editable={writable && !busy}
-          masked
-          placeholder="Paste the Attendee API key…"
-        />
-        <SecretPasteField
-          label="Webhook secret"
-          onBlur={() => undefined}
-          value={webhookSecret}
-          onChangeText={setWebhookSecret}
-          configured={configured}
-          editable={writable && !busy}
-          masked
-          placeholder="From Attendee Settings → Webhooks…"
-        />
-        {!writable ? (
-          <Text style={styles.reproHint}>Unlock the secret store to configure Attendee.</Text>
-        ) : null}
-        <Pressable
-          accessibilityRole="button"
-          disabled={!writable || busy || !apiKey.trim() || !webhookSecret.trim()}
-          onPress={() => void run('save')}
-        >
-          <Text style={styles.reproHint}>Save Attendee</Text>
-        </Pressable>
-        {configured ? (
-          <>
-            <Pressable
-              accessibilityRole="button"
-              disabled={!writable || busy}
-              onPress={() => void run('test')}
-            >
-              <Text style={styles.reproHint}>Test connection</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              disabled={!writable || busy}
-              onPress={() => void run('remove')}
-            >
-              <Text style={styles.reproHint}>Remove connection</Text>
-            </Pressable>
-          </>
-        ) : null}
-        {message ? <Text style={styles.reproHint}>{message}</Text> : null}
-      </SettingsPanel>
-    </SettingsGroup>
+      <SettingsGroup title="Connected" description="Manage the services you use.">
+        {rows.some((item) => item.connected) ? (
+          renderRows(rows.filter((item) => item.connected))
+        ) : (
+          <SettingsPanel>
+            <Text style={styles.reproHint}>No connections yet. Add only what you need below.</Text>
+          </SettingsPanel>
+        )}
+      </SettingsGroup>
+      <SettingsGroup title="Meetings">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="mic"
+            title="Attendee"
+            subtitle="Online meeting bots and transcripts"
+            onPress={() => router.push('/settings/services/attendee')}
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
+      {error ? (
+        <SettingsPanel>
+          <Text style={styles.reproHint}>
+            Some connection statuses could not be loaded. Open a connection to check its status.
+          </Text>
+        </SettingsPanel>
+      ) : null}
+      {rows.some((item) => !item.connected) ? (
+        <Text accessibilityRole="header" style={styles.disclosureTitle}>
+          Available
+        </Text>
+      ) : null}
+      {['AI', 'Code', 'Files & documents', 'Messaging', 'Secrets', 'Advanced'].map((group) => {
+        const available = rows.filter((item) => !item.connected && item.group === group);
+        return available.length > 0 ? (
+          <SettingsGroup
+            key={group}
+            title={group}
+            description={
+              group === 'AI' ? 'Available connections — add only what you need.' : undefined
+            }
+          >
+            {renderRows(available)}
+          </SettingsGroup>
+        ) : null;
+      })}
+    </SettingsScaffold>
   );
 }

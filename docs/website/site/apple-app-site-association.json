@@ -2,7 +2,7 @@
   "applinks": {
     "details": [
       {
-        "appIDs": ["__APPLE_TEAM_ID__.build.verity.app"],
+        "appIDs": ["__APPLE_TEAM_ID__.build.verity.app", "__APPLE_TEAM_ID__.build.verity.app.staging"],
         "components": [
           { "/": "/github/app/callback", "comment": "GitHub App manifest callbacks" },
           { "/": "/mcp/oauth/callback", "comment": "Remote MCP OAuth callbacks" }
@@ -11,6 +11,6 @@
     ]
   },
   "webcredentials": {
-    "apps": ["__APPLE_TEAM_ID__.build.verity.app"]
+    "apps": ["__APPLE_TEAM_ID__.build.verity.app", "__APPLE_TEAM_ID__.build.verity.app.staging"]
   }
 }

@@ -95,3 +95,29 @@ test('keeps source punctuation and casing across a timed segment', () => {
     reconcileTimedTranscript('Hello, WORLD!', [{ text: 'hello world', start: 0, end: 1 }]),
   ).toEqual({ words: [{ text: 'Hello, WORLD!', start: 0, end: 1 }], tail: '' });
 });
+
+// Streaming diarization splits one voice into short turns. A word across such a
+// boundary used to match neither turn on its own and showed as Unknown speaker.
+test('attributes a word that spans adjacent turns of the same speaker', () => {
+  expect(
+    speakerLines(
+      [{ text: 'Holger', start: 0.8, end: 1.3 }],
+      [
+        { speaker: 0, start: 0, end: 1 },
+        { speaker: 0, start: 1, end: 2 },
+        // A repeated turn must not make a partial overlap look complete.
+        { speaker: 1, start: 1.1, end: 1.2 },
+        { speaker: 1, start: 1.1, end: 1.2 },
+      ],
+    ),
+  ).toEqual([{ speaker: 0, text: 'Holger', start: 0.8, end: 1.3 }]);
+  expect(
+    speakerLines(
+      [{ text: 'gap', start: 0.8, end: 1.3 }],
+      [
+        { speaker: 0, start: 0, end: 0.9 },
+        { speaker: 0, start: 0.85, end: 0.95 },
+      ],
+    ),
+  ).toEqual([{ speaker: null, text: 'gap', start: 0.8, end: 1.3 }]);
+});

@@ -40,11 +40,13 @@ import {
   devcontainerImageTag,
   DEVCONTAINER_IMAGE_PREFIX,
   projectNetworkName,
+  projectDevcontainerVolumeBind,
   projectNodeModulesVolumeName,
   NODE_MODULES_TARGET,
   RUNNER_AGENT_GID,
   RUNNER_AGENT_UID,
   devcontainerBuildArgs,
+  defaultDevcontainerBuildSpawner,
   devcontainerLifecycleCommand,
   devcontainerLifecyclePath,
   unsupportedDevcontainerRuntimeKeys,
@@ -81,6 +83,7 @@ import {
   ENV_DRIFT_RECREATE_LIMIT,
   ENV_DRIFT_RECREATES_PER_TICK,
   IMAGE_UPDATE_DEFER_REPORT_AFTER_MS,
+  IMAGE_UPDATE_RECREATE_LIMIT,
   ORPHAN_DEFER_TICK_LIMIT,
   PROJECT_ID_LABEL,
   SANDBOX_ENV_COHORTS,
@@ -1098,7 +1101,7 @@ describe('ProvisionerImpl (#174)', () => {
     expect(spec.restartPolicy).toBe('unless-stopped');
     // A hard memory ceiling is ALWAYS set so a runaway sandbox OOMs inside its own
     // cgroup instead of taking the whole host down.
-    expect(spec.pidsLimit).toBe(512);
+    expect(spec.pidsLimit).toBe(4096);
     expect(spec.memoryBytes).toBe(DEFAULT_SANDBOX_MEMORY_BYTES);
     // …and the combined ceiling matches it, so the container cannot swap. Omitting it
     // lets Docker default to twice the memory limit, which turns the OOM this cap
@@ -2430,7 +2433,7 @@ describe('ProvisionerImpl (#174)', () => {
     expect(again.state).toBe('active');
   });
 
-  it('publishes every configured dev-server port pair', async () => {
+  it('does not publish legacy configured dev-server ports', async () => {
     const id = await seedProject();
     await ctx.store.createDevServer({
       projectId: id,
@@ -2459,10 +2462,8 @@ describe('ProvisionerImpl (#174)', () => {
     await provisioner.provision(id);
 
     const spec = calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
-    expect(spec.portBindings).toEqual([
-      { hostPort: '3000', containerPort: '3000' },
-      { hostPort: '3001', containerPort: '4173' },
-    ]);
+    // Old persisted configuration must never reopen unauthenticated sandbox ports.
+    expect(spec.portBindings).toBeUndefined();
   });
 
   it('keeps the swap ceiling pinned to a configured memory ceiling', async () => {
@@ -2546,6 +2547,26 @@ describe('ProvisionerImpl (#174)', () => {
     // to its memory: 6 GiB of host swap instead of the 2 GiB configured.
     expect(spec.memoryBytes).toBe(6 * 1024 ** 3);
     expect(spec.memorySwapBytes).toBe(8 * 1024 ** 3);
+  });
+
+  it('preserves an explicit sandbox PID limit', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker, calls } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/var/lib/verity-dev',
+      isDirectory: () => false,
+      sandboxPidsLimit: 8192,
+    });
+    await provisioner.provision(id);
+    const spec = calls.find((call) => call.method === 'createContainer')?.payload as ContainerSpec;
+    expect(spec.pidsLimit).toBe(8192);
   });
 
   it('weights a sandbox below the containers it shares the host with', async () => {
@@ -2690,6 +2711,205 @@ describe('ProvisionerImpl (#174)', () => {
     await expect(provisioner.reconcileRunnerSupervisors([result])).rejects.toThrow(
       /reconciliation failed for 1 project/,
     );
+  });
+
+  it('does not exec the Runner watchdog into a sandbox that a replacement is retiring', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker } = fakeDocker({ createdContainerId: 'cid-1' });
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
+      stdout: '',
+      stderr: '',
+    }));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/srv/verity/workspaces',
+      dataVolume: 'verity-data',
+      dataVolumeRoot: '/srv/verity',
+      runnerSupervisor: true,
+      runnerSupervisorTrustedDefaultImage: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      prepareRunnerRuntime: vi.fn(),
+      containerCommand,
+      isDirectory: (path) => path === `/srv/verity/runners/${id}`,
+    });
+    await provisioner.provision(id);
+
+    // Hold the replacement inside the stop of the old sandbox — the window in
+    // which the stored row still reads `active`.
+    let enterStop!: () => void;
+    let releaseStop!: () => void;
+    const stopEntered = new Promise<void>((resolve) => (enterStop = resolve));
+    const stopReleased = new Promise<void>((resolve) => (releaseStop = resolve));
+    const stopContainer = docker.stopContainer.bind(docker);
+    docker.stopContainer = async (name) => {
+      enterStop();
+      await stopReleased;
+      return stopContainer(name);
+    };
+    const recreate = provisioner.recreateContainer(id);
+    await stopEntered;
+
+    // Read the list the way the periodic watchdog does. If this stops reading
+    // `active` the test no longer exercises the race and must be re-anchored.
+    try {
+      const projects = await ctx.store.listProjects({ includeHidden: true });
+      expect(projects.find((project) => project.id === id)?.state).toBe('active');
+      const execsBefore = containerCommand.mock.calls.length;
+      await provisioner.reconcileRunnerSupervisors(projects);
+      // An exec here lands in a sandbox being stopped; under gVisor it fails with
+      // "connecting to control server ... connection refused" and is reported as
+      // a Runner supervisor failure although the Runner was never at fault.
+      expect(containerCommand.mock.calls.length).toBe(execsBefore);
+    } finally {
+      releaseStop();
+      await recreate;
+    }
+  });
+
+  it('keeps the Runner watchdog active while replacement image preparation is pending', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker } = fakeDocker({ createdContainerId: 'cid-1' });
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
+      stdout: '',
+      stderr: '',
+    }));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/srv/verity/workspaces',
+      dataVolume: 'verity-data',
+      dataVolumeRoot: '/srv/verity',
+      runnerSupervisor: true,
+      runnerSupervisorTrustedDefaultImage: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      prepareRunnerRuntime: vi.fn(),
+      containerCommand,
+      isDirectory: (path) => path === `/srv/verity/runners/${id}`,
+    });
+    await provisioner.provision(id);
+
+    let enterPull!: () => void;
+    let releasePull!: () => void;
+    const pullEntered = new Promise<void>((resolve) => (enterPull = resolve));
+    const pullReleased = new Promise<void>((resolve) => (releasePull = resolve));
+    docker.pullImage = async () => {
+      enterPull();
+      await pullReleased;
+    };
+    const recreate = provisioner.recreateContainer(id);
+    await pullEntered;
+
+    try {
+      const projects = await ctx.store.listProjects({ includeHidden: true });
+      expect(projects.find((project) => project.id === id)?.state).toBe('active');
+      const execsBefore = containerCommand.mock.calls.length;
+      await provisioner.reconcileRunnerSupervisors(projects);
+      // Image preparation must not disable recovery in the serving sandbox.
+      expect(containerCommand.mock.calls.length).toBe(execsBefore + 1);
+    } finally {
+      releasePull();
+      await recreate;
+    }
+  });
+
+  it('drops a Runner watchdog failure when a replacement began during the exec', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker } = fakeDocker({ createdContainerId: 'cid-1' });
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
+      stdout: '',
+      stderr: '',
+    }));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/srv/verity/workspaces',
+      dataVolume: 'verity-data',
+      dataVolumeRoot: '/srv/verity',
+      runnerSupervisor: true,
+      runnerSupervisorTrustedDefaultImage: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      prepareRunnerRuntime: vi.fn(),
+      containerCommand,
+      isDirectory: (path) => path === `/srv/verity/runners/${id}`,
+    });
+    const project = await provisioner.provision(id);
+
+    let enterStop!: () => void;
+    const stopEntered = new Promise<void>((resolve) => (enterStop = resolve));
+    let releaseStop!: () => void;
+    const stopReleased = new Promise<void>((resolve) => (releaseStop = resolve));
+    const stopContainer = docker.stopContainer.bind(docker);
+    docker.stopContainer = async (name) => {
+      enterStop();
+      await stopReleased;
+      return stopContainer(name);
+    };
+    let recreate: Promise<ProjectRecord> | undefined;
+    containerCommand.mockImplementationOnce(async () => {
+      recreate = provisioner.recreateContainer(id);
+      await stopEntered;
+      throw new Error('OCI runtime exec failed: connection refused');
+    });
+    try {
+      await provisioner.reconcileRunnerSupervisors([project]);
+    } finally {
+      releaseStop();
+      await recreate;
+    }
+  });
+
+  it('drops a Runner watchdog failure received after an overlapping replacement completed', async () => {
+    const id = await seedProject();
+    const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+    const { client: docker } = fakeDocker({ createdContainerId: 'cid-1' });
+    const containerCommand = vi.fn<ContainerCommandRunner>(async () => ({
+      stdout: '',
+      stderr: '',
+    }));
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      git,
+      projectTokenMint: async () => 'tok',
+      defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+      hostCloneRoot: '/srv/verity/workspaces',
+      dataVolume: 'verity-data',
+      dataVolumeRoot: '/srv/verity',
+      runnerSupervisor: true,
+      runnerSupervisorTrustedDefaultImage: true,
+      dockerHostForBuild: 'unix:///var/run/docker.sock',
+      prepareRunnerRuntime: vi.fn(),
+      containerCommand,
+      isDirectory: (path) => path === `/srv/verity/runners/${id}`,
+    });
+    const project = await provisioner.provision(id);
+
+    containerCommand.mockImplementationOnce(async () => {
+      await provisioner.recreateContainer(id);
+      throw new Error('OCI runtime exec failed: connection refused');
+    });
+    await provisioner.reconcileRunnerSupervisors([project]);
+    // The completed replacement must release the watchdog for subsequent passes.
+    const execsBefore = containerCommand.mock.calls.length;
+    await provisioner.reconcileRunnerSupervisors(await ctx.store.listProjects());
+    expect(containerCommand.mock.calls.length).toBe(execsBefore + 1);
   });
 
   describe('per-project node_modules volume', () => {
@@ -3019,7 +3239,11 @@ describe('ProvisionerImpl (#174)', () => {
           ],
         }),
       );
-      expect(spec.binds).toContain('project-dependencies:/work/node_modules');
+      expect(spec.binds).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^verity-devc-volume-[a-f0-9]{64}:\/work\/node_modules$/),
+        ]),
+      );
       expect(
         spec.volumeMounts?.filter((mount) => mount.target === NODE_MODULES_TARGET) ?? [],
       ).toEqual([]);
@@ -3623,6 +3847,9 @@ describe('ProvisionerImpl (#174)', () => {
         googleDriveClientId: null,
         googleDriveAccountEmail: null,
         gmailAuthorized: false,
+        calendarAuthorized: false,
+        contactsAuthorized: false,
+        googleGrantedScopes: [],
         googleDriveRefreshToken: null,
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -3698,6 +3925,9 @@ describe('ProvisionerImpl (#174)', () => {
           googleDriveClientId: null,
           googleDriveAccountEmail: null,
           gmailAuthorized: false,
+          calendarAuthorized: false,
+          contactsAuthorized: false,
+          googleGrantedScopes: [],
           googleDriveRefreshToken: null,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -4268,6 +4498,9 @@ describe('ProvisionerImpl (#174)', () => {
           googleDriveClientId: null,
           googleDriveAccountEmail: null,
           gmailAuthorized: false,
+          calendarAuthorized: false,
+          contactsAuthorized: false,
+          googleGrantedScopes: [],
           googleDriveRefreshToken: null,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -4343,6 +4576,9 @@ describe('ProvisionerImpl (#174)', () => {
           googleDriveClientId: null,
           googleDriveAccountEmail: null,
           gmailAuthorized: false,
+          calendarAuthorized: false,
+          contactsAuthorized: false,
+          googleGrantedScopes: [],
           googleDriveRefreshToken: null,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -4441,6 +4677,9 @@ describe('ProvisionerImpl (#174)', () => {
           googleDriveClientId: null,
           googleDriveAccountEmail: null,
           gmailAuthorized: false,
+          calendarAuthorized: false,
+          contactsAuthorized: false,
+          googleGrantedScopes: [],
           googleDriveRefreshToken: null,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -4524,6 +4763,9 @@ describe('ProvisionerImpl (#174)', () => {
           googleDriveClientId: null,
           googleDriveAccountEmail: null,
           gmailAuthorized: false,
+          calendarAuthorized: false,
+          contactsAuthorized: false,
+          googleGrantedScopes: [],
           googleDriveRefreshToken: null,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -4895,7 +5137,7 @@ describe('ProvisionerImpl (#174)', () => {
       expect(methods.indexOf('stopContainer')).toBeLessThan(methods.indexOf('createContainer'));
       expect(methods.indexOf('removeContainer')).toBeLessThan(methods.indexOf('createContainer'));
       const spec = created?.payload as ContainerSpec;
-      expect(spec.env).toContain('VERITY_GH_TOKEN_URL=http://relay:8080/internal/github/token');
+      expect(spec.env?.some((entry) => entry.startsWith('VERITY_GH_TOKEN_URL='))).toBe(false);
       expect(spec.env).toContain('VERITY_CLAUDE_EGRESS_URL=https://relay:8443');
       expect(readFileSync(join(secretRoot, 'git', `gh_token_capability.${id}`), 'utf8')).toBe(
         'github-capability\n',
@@ -5608,88 +5850,113 @@ describe('ProvisionerImpl (#174)', () => {
     }
   });
 
-  it('issues a per-project capability + mounts it (broker URL env) when the token broker is wired', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'verity-ghcap-clone-'));
-    const secretRoot = mkdtempSync(join(tmpdir(), 'verity-ghcap-secret-'));
-    try {
-      const id = await seedProject('absent');
-      const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
-      const { client: docker, calls: dockerCalls } = fakeDocker({
-        inspectContainer: vi.fn(async (container: string) => ({
-          id: container,
-          running: true,
-          networks: { 'verity-net': { ipAddress: '172.19.0.4' } },
-        })),
-      });
-      const capabilities = createGhTokenCapabilityRegistry(ctx.db);
-      const provisioner = createProvisioner({
-        store: ctx.store,
-        db: ctx.db,
-        docker,
-        defaultImageRef: 'default',
-        hostCloneRoot: root,
-        gitSecretRoot: secretRoot,
-        ghTokenCapabilities: capabilities,
-        projectRelay: {
-          async start(binding) {
-            const githubCapability = await capabilities.issue({
-              projectId: binding.projectId,
-              owner: 'example-org',
-              repo: 'example-repo',
-              containerGeneration: binding.containerGeneration,
-            });
-            return {
-              identity: {
+  it.each([false, true])(
+    'issues a per-project capability + mounts it (proxy test mode: %s)',
+    async (proxyTest) => {
+      const root = mkdtempSync(join(tmpdir(), 'verity-ghcap-clone-'));
+      const secretRoot = mkdtempSync(join(tmpdir(), 'verity-ghcap-secret-'));
+      try {
+        const id = await seedProject('absent');
+        const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+        const { client: docker, calls: dockerCalls } = fakeDocker({
+          inspectContainer: vi.fn(async (container: string) => ({
+            id: container,
+            running: true,
+            networks: { 'verity-net': { ipAddress: '172.19.0.4' } },
+          })),
+        });
+        const capabilities = createGhTokenCapabilityRegistry(ctx.db);
+        const provisioner = createProvisioner({
+          store: ctx.store,
+          db: ctx.db,
+          docker,
+          defaultImageRef: 'default',
+          hostCloneRoot: root,
+          gitSecretRoot: secretRoot,
+          ghTokenCapabilities: capabilities,
+          forgeProxy: proxyTest
+            ? { caCertPem: 'public-forge-ca', enabled: (projectId) => projectId === id }
+            : undefined,
+          projectRelay: {
+            async start(binding) {
+              const githubCapability = await capabilities.issue({
                 projectId: binding.projectId,
+                owner: 'example-org',
+                repo: 'example-repo',
                 containerGeneration: binding.containerGeneration,
-              },
-              signingCapability: 'test-signing-capability',
-              githubCapability,
-            };
+              });
+              return {
+                identity: {
+                  projectId: binding.projectId,
+                  containerGeneration: binding.containerGeneration,
+                },
+                signingCapability: 'test-signing-capability',
+                githubCapability,
+              };
+            },
+            async stop() {},
+            brokerUrl: () => 'http://relay:8080',
+            claudeGatewayUrl: () => 'https://relay:8443',
           },
-          async stop() {},
-          brokerUrl: () => 'http://relay:8080',
-          claudeGatewayUrl: () => 'https://relay:8443',
-        },
-        projectTokenMint: async () => 'server-side-token',
-        git,
-        isDirectory: () => false,
-      });
+          projectTokenMint: async () => 'server-side-token',
+          git,
+          isDirectory: () => false,
+        });
 
-      await provisioner.provision(id);
+        await provisioner.provision(id);
 
-      const created = dockerCalls.find((c) => c.method === 'createContainer');
-      const spec = created?.payload as ContainerSpec;
-      // The capability is materialized as a read-only file and mounted (never env).
-      const capPath = join(secretRoot, 'git', `gh_token_capability.${id}`);
-      expect(spec.binds).toContain(`${capPath}:/run/verity/gh-token-capability:ro`);
-      expect(statSync(capPath).mode & 0o777).toBe(0o600);
-      // The endpoint URL is non-secret env; no gh-token file anywhere.
-      expect(spec.env).toContain('VERITY_GH_TOKEN_URL=http://relay:8080/internal/github/token');
-      expect(spec.env).toContain(`VERITY_GH_TOKEN_DOCKER_CONTAINER=${spec.name}`);
-      expect(spec.env).toContain(
-        'VERITY_GH_BROKER_CAPABILITY_FILE=/run/verity/gh-token-capability',
-      );
-      // The memory broker (ADR 0008) rides the same capability + broker URL.
-      expect(spec.env).toContain(
-        'VERITY_PROJECT_MEMORY_URL=http://relay:8080/internal/project/memory',
-      );
-      expect(spec.env).toContain('GIT_CONFIG_COUNT=1');
-      expect(spec.env).toContain('GIT_CONFIG_KEY_0=credential.https://github.com.helper');
-      expect(spec.env).toContain('GIT_CONFIG_VALUE_0=/opt/agent-seed/bin/verity-gh-cred');
-      expect((spec.binds ?? []).some((b) => b.includes('.gh-token'))).toBe(false);
-      // The materialized capability resolves back to THIS project's binding.
-      expect(await capabilities.resolve(readFileSync(capPath, 'utf8').trim())).toEqual({
-        projectId: id,
-        owner: 'example-org',
-        repo: 'example-repo',
-        containerGeneration: expect.any(String),
-      });
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-      rmSync(secretRoot, { recursive: true, force: true });
-    }
-  });
+        const created = dockerCalls.find((c) => c.method === 'createContainer');
+        const spec = created?.payload as ContainerSpec;
+        // The capability is materialized as a read-only file and mounted (never env).
+        const capPath = join(secretRoot, 'git', `gh_token_capability.${id}`);
+        expect(spec.binds).toContain(`${capPath}:/run/verity/gh-token-capability:ro`);
+        expect(statSync(capPath).mode & 0o777).toBe(0o600);
+        // Legacy token redemption must not be reachable from the container.
+        expect(spec.env?.some((entry) => entry.startsWith('VERITY_GH_TOKEN_URL='))).toBe(false);
+        expect(
+          spec.env?.some((entry) => entry.startsWith('VERITY_GH_TOKEN_DOCKER_CONTAINER=')),
+        ).toBe(false);
+        expect(spec.env).toContain(
+          'VERITY_GH_BROKER_CAPABILITY_FILE=/run/verity/gh-token-capability',
+        );
+        // The memory broker (ADR 0008) rides the same capability + broker URL.
+        expect(spec.env).toContain(
+          'VERITY_PROJECT_MEMORY_URL=http://relay:8080/internal/project/memory',
+        );
+        expect(spec.env).toContain(`GIT_CONFIG_COUNT=${proxyTest ? 6 : 1}`);
+        if (proxyTest) {
+          const caPath = join(secretRoot, 'git', `forge_proxy_ca.${id}.crt`);
+          expect(spec.binds).toContain(`${caPath}:/run/verity/forge-proxy/ca.crt:ro`);
+          expect(readFileSync(caPath, 'utf8').trim()).toBe('public-forge-ca');
+          expect(statSync(caPath).mode & 0o777).toBe(0o644);
+          expect(spec.env).toContain('VERITY_FORGE_MODE=proxy-test');
+          expect(spec.env).toContain('VERITY_FORGE_PROXY_URL=http://relay:8080');
+          expect(spec.env).toContain('GIT_TERMINAL_PROMPT=0');
+          expect(spec.env).toContain('NO_PROXY=');
+          expect(spec.env).toContain('no_proxy=');
+          expect(spec.env).toContain('GIT_CONFIG_KEY_2=http.https://github.com.proxy');
+          expect(spec.env).toContain('GIT_CONFIG_VALUE_2=http://relay:8080');
+          expect(spec.env).toContain('GIT_CONFIG_VALUE_3=/run/verity/forge-proxy/ca.crt');
+        } else
+          expect(spec.env?.some((entry) => entry.startsWith('VERITY_FORGE_MODE='))).toBe(false);
+        expect(spec.env).toContain('GIT_CONFIG_KEY_0=credential.https://github.com.helper');
+        expect(spec.env).toContain(
+          `GIT_CONFIG_VALUE_${proxyTest ? 1 : 0}=/opt/agent-seed/bin/verity-gh-cred`,
+        );
+        expect((spec.binds ?? []).some((b) => b.includes('.gh-token'))).toBe(false);
+        // The materialized capability resolves back to THIS project's binding.
+        expect(await capabilities.resolve(readFileSync(capPath, 'utf8').trim())).toEqual({
+          projectId: id,
+          owner: 'example-org',
+          repo: 'example-repo',
+          containerGeneration: expect.any(String),
+        });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+        rmSync(secretRoot, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('mounts per-project data as named-volume subpaths (M16) while keeping deploy binds', async () => {
     // The data volume is mounted at <vol> inside the server; clones + secrets live
@@ -6442,12 +6709,72 @@ describe('devcontainerBuildInputsConfined', () => {
   });
 });
 
+describe('projectDevcontainerVolumeBind', () => {
+  it('keeps a logical volume stable within one project and separates projects and names', () => {
+    const bind = 'verity-data:/work/cache:ro';
+    const first = projectDevcontainerVolumeBind('project-a', bind);
+    expect(projectDevcontainerVolumeBind('project-a', bind)).toBe(first);
+    expect(projectDevcontainerVolumeBind('project-b', bind)).not.toBe(first);
+    expect(projectDevcontainerVolumeBind('project-a', 'another:/work/cache:ro')).not.toBe(first);
+    expect(first.endsWith(':/work/cache:ro')).toBe(true);
+    expect(first.startsWith('verity-data:')).toBe(false);
+    // A guessed generated name is still an alias, not a way to select its resource.
+    expect(projectDevcontainerVolumeBind('project-b', first)).not.toBe(first);
+  });
+});
+
 describe('devcontainerBuildArgs (R3.1/#299)', () => {
+  it('gives the builder an isolated home and no ambient service secrets', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'verity-builder-env-'));
+    const previousPath = process.env.PATH;
+    const previousSecret = process.env.VERITY_BUILD_TEST_SECRET;
+    try {
+      writeFileSync(
+        join(directory, 'devcontainer'),
+        `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({ secret: process.env.VERITY_BUILD_TEST_SECRET ?? null, home: process.env.HOME, dockerConfig: process.env.DOCKER_CONFIG, dockerHost: process.env.DOCKER_HOST, args: process.argv.slice(2) }));
+`,
+        { mode: 0o755 },
+      );
+      process.env.PATH = `${directory}:${previousPath ?? ''}`;
+      process.env.VERITY_BUILD_TEST_SECRET = 'must-not-reach-image-metadata';
+      const result = await defaultDevcontainerBuildSpawner({
+        workspaceFolder: '/project',
+        imageName: 'test:1',
+        dockerHost: 'unix:///test/docker.sock',
+      });
+      const output = JSON.parse(result.stdout) as {
+        secret: string | null;
+        home: string;
+        dockerConfig: string;
+        dockerHost: string;
+        args: string[];
+      };
+      // Image metadata has its own substitution pass, outside config validation.
+      expect(output.secret).toBeNull();
+      expect(output.home).not.toBe(process.env.HOME);
+      expect(output.dockerConfig).toBe(output.home);
+      expect(output.dockerHost).toBe('unix:///test/docker.sock');
+      expect(existsSync(output.home)).toBe(false);
+      const configIndex = output.args.indexOf('--config');
+      expect(configIndex).toBeGreaterThan(-1);
+      expect(output.args[configIndex + 1]).toBe('/project/.devcontainer/devcontainer.json');
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousSecret === undefined) delete process.env.VERITY_BUILD_TEST_SECRET;
+      else process.env.VERITY_BUILD_TEST_SECRET = previousSecret;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('omits --additional-features entirely when no feature ref is present', () => {
     expect(devcontainerBuildArgs({ workspaceFolder: '/work', imageName: 'tag:1' })).toEqual([
       'build',
       '--workspace-folder',
       '/work',
+      '--config',
+      '/work/.devcontainer/devcontainer.json',
       '--image-name',
       'tag:1',
     ]);
@@ -6470,7 +6797,16 @@ describe('devcontainerBuildArgs (R3.1/#299)', () => {
     ).not.toContain('--no-cache');
     expect(
       devcontainerBuildArgs({ workspaceFolder: '/work', imageName: 'tag:1', noCache: true }),
-    ).toEqual(['build', '--workspace-folder', '/work', '--image-name', 'tag:1', '--no-cache']);
+    ).toEqual([
+      'build',
+      '--workspace-folder',
+      '/work',
+      '--config',
+      '/work/.devcontainer/devcontainer.json',
+      '--image-name',
+      'tag:1',
+      '--no-cache',
+    ]);
   });
 
   it('appends the node Feature plus the Verity toolkit when a toolkit ref is present', () => {
@@ -6618,7 +6954,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       const expectedTag = devcontainerImageTag('example-org', 'example-repo', expectedHash);
       expect(imageExists).toHaveBeenCalledWith(expectedTag);
       expect(build).toHaveBeenCalledWith({
-        workspaceFolder: clonePath,
+        workspaceFolder: expect.stringMatching(/verity-build-/),
         imageName: expectedTag,
         dockerHost: 'unix:///var/run/docker.sock',
         additionalFeatures: toolkitFeature.ref,
@@ -7066,12 +7402,14 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     }
   });
 
-  it('tolerates devcontainer UI/workspace fields and translates safe workspace volume mounts', async () => {
-    const { root, clonePath } = makeCloneRoot(true);
-    try {
-      writeFileSync(
-        join(clonePath, '.devcontainer', 'devcontainer.json'),
-        `{
+  it.each(['example-app-node-modules', 'verity-data', 'other-project-volume'])(
+    'isolates repository volume %s while preserving workspace settings',
+    async (volume) => {
+      const { root, clonePath } = makeCloneRoot(true);
+      try {
+        writeFileSync(
+          join(clonePath, '.devcontainer', 'devcontainer.json'),
+          `{
           "image": "node:24-bookworm",
           "remoteUser": "node",
           "workspaceFolder": "/workspaces/example-app",
@@ -7081,52 +7419,91 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
             "3000": { "label": "Next.js dev server", "onAutoForward": "notify" }
           },
           "mounts": [
-            "source=example-app-node-modules,target=\${containerWorkspaceFolder}/node_modules,type=volume"
+            "source=${volume},target=\${containerWorkspaceFolder}/node_modules,type=volume"
           ],
           "postCreateCommand": "sudo chown node:node node_modules && npm ci"
         }`,
-      );
+        );
+        const id = await seedProject();
+        const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
+        const imageExists = vi.fn(async () => false);
+        const command = vi.fn<ContainerCommandRunner>(async () => ({ stdout: '', stderr: '' }));
+        const { client: docker, calls: dockerCalls } = fakeDocker({ imageExists });
+        const provisioner = createProvisioner({
+          store: ctx.store,
+          db: ctx.db,
+          docker,
+          projectTokenMint: async () => 'tok',
+          defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+          hostCloneRoot: root,
+          devcontainerBuild: build,
+          dockerHostForBuild: 'unix:///var/run/docker.sock',
+          devcontainerFeature: toolkitFeature,
+          containerCommand: command,
+        });
+
+        const result = await provisioner.provision(id);
+
+        expect(result.state).toBe('active');
+        expect(result.provisionError).toBeNull();
+        expect(build).toHaveBeenCalledTimes(1);
+        const created = dockerCalls.find((c) => c.method === 'createContainer');
+        const spec = created?.payload as ContainerSpec;
+        expect(spec.user).toBe('node');
+        // A repository name must never select an existing control-plane or foreign volume.
+        expect(spec.binds).not.toContain(`${volume}:/work/node_modules`);
+        expect(spec.binds).toEqual(
+          expect.arrayContaining([
+            expect.stringMatching(/^verity-devc-volume-[a-f0-9]{64}:\/work\/node_modules$/),
+          ]),
+        );
+        expect(spec.binds).toContain(`${clonePath}:/work`);
+        expect(command).toHaveBeenCalledWith(
+          expect.objectContaining({
+            command: 'sudo chown node:node node_modules && npm ci',
+            user: 'node',
+            workdir: '/work',
+          }),
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
+    { build: { context: '/srv/verity' } },
+    { build: { context: '../..' } },
+    { build: { options: ['--secret=id=server,src=/srv/verity/secret'] } },
+    { build: { args: { LEAK: '${localEnv:VERITY_BUILD_TEST_SECRET}' } } },
+  ])('rejects unsafe build inputs before cache lookup or execution: %j', async (config) => {
+    const { root, clonePath } = makeCloneRoot(true);
+    try {
+      writeFileSync(join(clonePath, '.devcontainer', 'devcontainer.json'), JSON.stringify(config));
       const id = await seedProject();
       const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
-      const imageExists = vi.fn(async () => false);
-      const command = vi.fn<ContainerCommandRunner>(async () => ({ stdout: '', stderr: '' }));
-      const { client: docker, calls: dockerCalls } = fakeDocker({ imageExists });
+      const imageExists = vi.fn(async () => true);
+      const { client: docker, calls } = fakeDocker({ imageExists });
       const provisioner = createProvisioner({
         store: ctx.store,
         db: ctx.db,
         docker,
-        projectTokenMint: async () => 'tok',
-        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        defaultImageRef: 'base:latest',
         hostCloneRoot: root,
         devcontainerBuild: build,
         dockerHostForBuild: 'unix:///var/run/docker.sock',
         devcontainerFeature: toolkitFeature,
-        containerCommand: command,
       });
-
-      const result = await provisioner.provision(id);
-
-      expect(result.state).toBe('active');
-      expect(result.provisionError).toBeNull();
-      expect(build).toHaveBeenCalledTimes(1);
-      const created = dockerCalls.find((c) => c.method === 'createContainer');
-      const spec = created?.payload as ContainerSpec;
-      expect(spec.user).toBe('node');
-      expect(spec.binds).toContain('example-app-node-modules:/work/node_modules');
-      expect(spec.binds).toContain(`${clonePath}:/work`);
-      expect(command).toHaveBeenCalledWith(
-        expect.objectContaining({
-          command: 'sudo chown node:node node_modules && npm ci',
-          user: 'node',
-          workdir: '/work',
-        }),
-      );
+      await expect(provisioner.provision(id)).rejects.toThrow(/unsafe devcontainer build/);
+      expect(imageExists).not.toHaveBeenCalled();
+      expect(build).not.toHaveBeenCalled();
+      expect(calls.some((call) => call.method === 'createContainer')).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('tolerates devcontainer compose build metadata while Verity owns runtime start', async () => {
+  it('rejects unconfined compose builds before invoking the builder', async () => {
     const { root, clonePath } = makeCloneRoot(true);
     try {
       writeFileSync(
@@ -7158,28 +7535,13 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
         containerCommand: command,
       });
 
-      const result = await provisioner.provision(id);
-
-      expect(result.state).toBe('active');
-      expect(build).toHaveBeenCalledWith(
-        expect.objectContaining({
-          workspaceFolder: clonePath,
-        }),
+      await expect(provisioner.provision(id)).rejects.toThrow(
+        /Docker Compose builds are unsupported/,
       );
-      const spec = dockerCalls.find((c) => c.method === 'createContainer')
-        ?.payload as ContainerSpec;
-      expect(spec.user).toBe('node');
-      expect(command).toHaveBeenCalledWith(
-        expect.objectContaining({
-          command: 'npm install',
-          workdir: '/work',
-        }),
-      );
-      expect(command).not.toHaveBeenCalledWith(
-        expect.objectContaining({
-          command: 'echo ready',
-        }),
-      );
+      expect(build).not.toHaveBeenCalled();
+      expect(imageExists).not.toHaveBeenCalled();
+      expect(dockerCalls.find((call) => call.method === 'createContainer')).toBeUndefined();
+      expect(command).not.toHaveBeenCalled();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -7590,13 +7952,71 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       const expectedTag = devcontainerImageTag('example-org', 'example-repo', expectedHash);
       expect(imageExists).toHaveBeenCalledWith(expectedTag);
       expect(build).toHaveBeenCalledWith({
-        workspaceFolder: clonePath,
+        workspaceFolder: expect.stringMatching(/verity-build-/),
         imageName: expectedTag,
         dockerHost: 'unix:///var/run/docker.sock',
         additionalFeatures: feature.ref,
       });
       const created = dockerCalls.find((c) => c.method === 'createContainer');
       expect((created?.payload as ContainerSpec).image).toBe(expectedTag);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('builds a devcontainer that declares the base ARG on the base it is hashed against', async () => {
+    // A build left on the Dockerfile's own `:latest` lags a staging Server
+    // release; the update checker reports the sandbox behind after every
+    // recreate and the reconciler loops on it.
+    const { root, clonePath } = makeCloneRoot(true);
+    try {
+      const dir = join(clonePath, '.devcontainer');
+      writeFileSync(join(dir, 'devcontainer.json'), '{ "build": { "dockerfile": "Dockerfile" } }');
+      writeFileSync(
+        join(dir, 'Dockerfile'),
+        'ARG VERITY_SANDBOX_IMAGE=example/base:latest\nFROM ${VERITY_SANDBOX_IMAGE}\n',
+      );
+      const id = await seedProject();
+      const seenArgs: unknown[] = [];
+      const build = vi.fn<DevcontainerBuildSpawner>(async ({ workspaceFolder }) => {
+        const config = JSON.parse(
+          readFileSync(join(workspaceFolder, '.devcontainer', 'devcontainer.json'), 'utf8'),
+        ) as { build: { args?: unknown } };
+        seenArgs.push(config.build.args);
+        return { stdout: 'built', stderr: '' };
+      });
+      const base = 'ghcr.io/heey-global/dev-base:v1.2.3@sha256:' + 'b'.repeat(64);
+      // The tag an earlier Server cached this exact checkout under, built on the
+      // Dockerfile's default. Reusing it would keep the stale image forever.
+      const staleTag = devcontainerImageTag(
+        'example-org',
+        'example-repo',
+        devcontainerContentHash(
+          dir,
+          base,
+          `ghcr.io/devcontainers/features/node:1:${JSON.stringify({ version: '24' })}\n${toolkitFeature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
+        ),
+      );
+      const imageExists = vi.fn(async (tag: string) => tag === staleTag);
+      const { client: docker } = fakeDocker({ imageExists });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        defaultImageRef: base,
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+      });
+
+      await provisioner.provision(id);
+
+      expect(imageExists).toHaveBeenCalled();
+      expect(imageExists).not.toHaveBeenCalledWith(staleTag);
+      expect(seenArgs).toEqual([{ VERITY_SANDBOX_IMAGE: base }]);
+      // The clone itself is never rewritten.
+      expect(readFileSync(join(dir, 'devcontainer.json'), 'utf8')).not.toContain('args');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -8981,6 +9401,39 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       envDrift: false,
       imageUpdate: true,
     });
+  });
+
+  it('stops recreating a sandbox whose image update never lands, and reports it stalled', async () => {
+    // The loop this bounds: a recreate that rebuilds the same stale image leaves
+    // the update reported, and every tick tore the project container — and all of
+    // the sessions in it — down again while sessions were working.
+    const p = await seedActive('image-loop', 'dev-image-loop');
+    const { client } = dockerInspecting({ 'dev-image-loop': migratedInspect(p.id) });
+    const provisioner = makeProvisioner(client);
+    provisioner.attachProjectBusyProbe(async () => false);
+    const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
+    const unresolved = vi.fn();
+    const tick = (updateAvailable?: ReadonlySet<string>) =>
+      provisioner.reconcileRelays([p], {
+        ...(updateAvailable !== undefined ? { updateAvailable } : {}),
+        onImageUpdateUnresolved: unresolved,
+      });
+
+    for (let i = 0; i < IMAGE_UPDATE_RECREATE_LIMIT + 3; i++) await tick(new Set([p.id]));
+    expect(recreate).toHaveBeenCalledTimes(IMAGE_UPDATE_RECREATE_LIMIT);
+    expect(unresolved).toHaveBeenCalledTimes(1);
+    expect(unresolved).toHaveBeenCalledWith(p.id, { attempts: IMAGE_UPDATE_RECREATE_LIMIT });
+    expect([...provisioner.unrepairedSandboxes()]).toEqual([p.id]);
+
+    // A pass whose update discovery failed says nothing about the image.
+    await tick(undefined);
+    await tick(new Set([p.id]));
+    expect(recreate).toHaveBeenCalledTimes(IMAGE_UPDATE_RECREATE_LIMIT);
+
+    // The update landed (no longer reported): a later update gets a fresh budget.
+    await tick(new Set());
+    await tick(new Set([p.id]));
+    expect(recreate).toHaveBeenCalledTimes(IMAGE_UPDATE_RECREATE_LIMIT + 1);
   });
 
   it('waits indefinitely for a busy project before updating its sandbox image', async () => {

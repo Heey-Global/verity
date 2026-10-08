@@ -59,6 +59,9 @@ function harness() {
     close: vi.fn(async () => {
       calls.push('runtime.close');
     }),
+    ensureRunning: vi.fn(async () => {
+      calls.push('runtime.ensureRunning');
+    }),
   };
   const startBrokerListener = vi.fn(async () => {
     calls.push('broker.start');
@@ -140,6 +143,53 @@ describe('ProjectRelayLifecycle', () => {
     expect(h.github.issue).not.toHaveBeenCalled();
     expect(h.calls).toEqual(['broker.start', 'claude.start', 'runtime.start']);
     expect(h.startRelay).toHaveBeenCalledWith(expect.objectContaining({ resumeExisting: true }));
+  });
+
+  it('restarts the exited container of a generation it already holds instead of ignoring it', async () => {
+    // The silent failure: the health probe finds the relay container exited, asks
+    // for a resume, and a resume that returns on "already active" leaves it down
+    // for good — the sandbox then reads orphaned every tick until the recreate
+    // interrupts its turn. Holding the generation must mean restarting ITS
+    // container, not rebuilding listeners or rotating the capabilities that the
+    // running sandbox still carries.
+    const h = harness();
+    await h.lifecycle.start(binding);
+    h.calls.length = 0;
+
+    await h.lifecycle.resume(binding);
+
+    expect(h.calls).toEqual(['runtime.ensureRunning']);
+    expect(h.startRelay).toHaveBeenCalledOnce();
+    expect(h.signing.issue).toHaveBeenCalledOnce();
+    expect(h.github.issue).toHaveBeenCalledOnce();
+    expect(h.lifecycle.isActive('p1', 'generation-1')).toBe(true);
+  });
+
+  it('leaves a held generation alone when asked to resume a different one', async () => {
+    // Another generation's container is owned by a start or stop that is still
+    // converging; restarting what this process holds on its behalf would report
+    // the wrong generation healthy.
+    const h = harness();
+    await h.lifecycle.start(binding);
+    h.calls.length = 0;
+
+    await h.lifecycle.resume({ ...binding, containerGeneration: 'generation-2' });
+
+    expect(h.calls).toEqual([]);
+    expect(h.lifecycle.isActive('p1', 'generation-1')).toBe(true);
+  });
+
+  it('surfaces a restart failure without dropping the generation it still holds', async () => {
+    // The caller maps "container gone" to an orphan verdict and anything else to
+    // unknown health; both need the error, and neither is grounds to forget the
+    // listeners and capabilities that are still live.
+    const h = harness();
+    await h.lifecycle.start(binding);
+    h.runtime.ensureRunning.mockRejectedValueOnce(new Error('container gone'));
+
+    await expect(h.lifecycle.resume(binding)).rejects.toThrow('container gone');
+    expect(h.lifecycle.isActive('p1', 'generation-1')).toBe(true);
+    expect(h.signing.revokeProject).not.toHaveBeenCalled();
   });
 
   it('sleeps by revoking authority and quiescing the retained relay generation', async () => {

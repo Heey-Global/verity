@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Export classified host evidence without granting the Server access to raw journals.
+# This read-only collector never changes containers or runtime registrations.
+set -euo pipefail
+umask 0077
+state_dir="${VERITY_HOST_DIAGNOSTIC_DIR:-/var/lib/verity/host-diagnostics}"
+[[ ! -L $state_dir ]] || { echo 'Host diagnostic directory must not be a symlink' >&2; exit 1; }
+mkdir -p "$state_dir"
+chmod 0755 "$state_dir"
+# Serialize timer and manual runs so a stale collector cannot overwrite evidence.
+exec 9>"$state_dir/.collector.lock"
+flock --exclusive --nonblock 9 || exit 0
+work_dir="$(mktemp -d "$state_dir/.collect.XXXXXX")"
+trap 'rm -rf "$work_dir"' EXIT
+until="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+since="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+collect() {
+  local source=$1
+  shift
+  local state=available byte_truncated=false pipeline_failed=false
+  if ! command -v journalctl >/dev/null; then
+    state=unavailable
+    : >"$work_dir/$source.jsonl"
+  else
+    # Retain one sentinel byte to distinguish a full response from a capped one.
+    # A producer's SIGPIPE at the cap must not erase earlier complete entries.
+    timeout 10s journalctl --no-pager --quiet --output=json \
+      --output-fields=__REALTIME_TIMESTAMP,MESSAGE,_BOOT_ID --since="$since" --until="$until" \
+      -n 2001 "$@" | head -c 1048577 >"$work_dir/$source.raw" || pipeline_failed=true
+    if [[ $(wc -c <"$work_dir/$source.raw") -gt 1048576 ]]; then
+      byte_truncated=true
+      # Drop the final line, which may be an incomplete JSON object at the cap.
+      head -n -1 "$work_dir/$source.raw" >"$work_dir/$source.jsonl"
+    elif [[ $pipeline_failed == true ]]; then
+      state=failed
+      : >"$work_dir/$source.jsonl"
+    else
+      mv "$work_dir/$source.raw" "$work_dir/$source.jsonl"
+    fi
+  fi
+  jq -s --arg source "$source" --arg state "$state" --argjson byteTruncated "$byte_truncated" '
+    def code:
+      if test("out of memory|oom-kill|killed process"; "i") then "oom_kill"
+      elif test("memory pressure|memory allocation failed"; "i") then "memory_pressure"
+      elif test("segfault|general protection fault|kernel panic"; "i") then "kernel_fault"
+      elif test("no space left on device|ENOSPC"; "i") then "disk_pressure"
+      elif test("too many open files|EMFILE|resource temporarily unavailable|pids limit"; "i") then "resource_limit"
+      elif test("daemon has completed initialization|starting docker application container engine"; "i") then "runtime_started"
+      elif test("daemon shutdown complete|processing signal.*(terminated|SIGTERM)|stopping docker application container engine"; "i") then "runtime_stopped"
+      elif test("WaitPID.*EOF|containerManager.*EOF|sandbox.*(disconnect|connection.*closed)"; "i") then "runtime_disconnect"
+      elif test("runner.*reconcil.*(fail|error)|(fail|error).*runner.*reconcil"; "i") then "runner_reconcile_failed"
+      elif test("(runsc|sandbox runtime|containerd).*(panic|fatal|crash|failed)"; "i") then "runtime_failure"
+      elif test("\\b(error|failed|fatal|panic)\\b"; "i") then "runtime_error"
+      else null end;
+    . as $input |
+    [ .[] | select((.MESSAGE | type) == "string") |
+      (.MESSAGE | code) as $code | select($code != null) |
+      select(.__REALTIME_TIMESTAMP | type == "string") |
+      {at: ((.__REALTIME_TIMESTAMP | tonumber / 1000000) | floor | strftime("%Y-%m-%dT%H:%M:%SZ")), source: $source, code: $code} +
+      (if (._BOOT_ID // "" | test("^[a-f0-9]{32}$")) then {bootId: ._BOOT_ID} else {} end) +
+      ((try (.MESSAGE | capture("(?:docker[-/]|container[ =])(?<id>[a-f0-9]{64})(?:[./ :]|$)") | {containerId: .id}) catch {}) // {})
+    ] as $records |
+    {state: $state, truncated: ($byteTruncated or ($input | length) >= 2001 or ($records | length) > 200), records: $records[-200:]}
+  ' "$work_dir/$source.jsonl" >"$work_dir/$source.json" || \
+    printf '{"state":"failed","truncated":true,"records":[]}\n' >"$work_dir/$source.json"
+}
+collect kernel _TRANSPORT=kernel
+collect runtime -u docker.service -u containerd.service -u verity-host-runtime.service
+# Reuse only a bounded, previously classified snapshot. Journal rotation or an
+# unavailable daemon must not erase facts already captured in the same window.
+printf '{"records":[],"truncated":false}\n' >"$work_dir/previous.json"
+if [[ -f $state_dir/snapshot.json && ! -L $state_dir/snapshot.json ]] && \
+   [[ $(stat -c %s "$state_dir/snapshot.json") -le 262144 ]]; then
+  jq -e 'select(.schemaVersion == 1 and (.records | type == "array") and (.records | length <= 400))' \
+    "$state_dir/snapshot.json" >"$work_dir/previous.tmp" && \
+    mv "$work_dir/previous.tmp" "$work_dir/previous.json" || true
+fi
+# Docker's event history is finite and disappears on daemon restart. Save only
+# lifecycle facts before the next refresh, never labels, names or raw attributes.
+# Keep one minute of overlap for late events. Advance even after a capped
+# response: its gap stays marked, while old history must not starve new exits.
+docker_since="$(jq -r --arg since "$since" --arg until "$until" '
+  ((try (.dockerUntil | fromdateiso8601 - 60 | todateiso8601) catch null) // $since) as $cursor |
+  if $cursor > $since and $cursor <= $until then $cursor else $since end
+' "$work_dir/previous.json")"
+docker_state=unavailable
+docker_truncated=false
+: >"$work_dir/docker.jsonl"
+if command -v docker >/dev/null; then
+  docker_state=available
+  docker_failed=false
+  timeout 5s docker events --since "$docker_since" --until "$until" \
+    --filter type=container --format '{{json .}}' \
+    | head -c 262145 >"$work_dir/docker.raw" || docker_failed=true
+  if [[ $(wc -c <"$work_dir/docker.raw") -gt 262144 ]]; then
+    docker_truncated=true
+    head -n -1 "$work_dir/docker.raw" >"$work_dir/docker.jsonl"
+  elif [[ $docker_failed == true ]]; then
+    docker_state=failed
+  else
+    mv "$work_dir/docker.raw" "$work_dir/docker.jsonl"
+  fi
+fi
+jq -s --arg state "$docker_state" --argjson truncated "$docker_truncated" '
+  [ .[] | select(.Type == "container") |
+    (.Action // .status) as $code |
+    select(["die", "kill", "oom", "stop", "restart", "start", "destroy"] | index($code)) |
+    (.Actor.ID // .id) as $id | select($id | type == "string") |
+    select($id | test("^[a-f0-9]{64}$")) |
+    select(.time | type == "number") |
+    {at: (.time | floor | strftime("%Y-%m-%dT%H:%M:%SZ")), source: "docker", code: $code, containerId: $id} +
+    (if $code == "die" then
+      (try (.Actor.Attributes.exitCode | tonumber | select(. == floor) | {exitCode: .}) catch {}) // {}
+     elif $code == "kill" then
+      (try (.Actor.Attributes.signal | tonumber | select(. == floor) | {signal: .}) catch {}) // {}
+     else {} end)
+  ] as $records |
+  {state: $state, truncated: ($truncated or ($records | length) > 100), records: $records[-100:]}
+' "$work_dir/docker.jsonl" >"$work_dir/docker.json" || \
+  printf '{"state":"failed","truncated":true,"records":[]}\n' >"$work_dir/docker.json"
+
+jq -n --arg observedAt "$until" --arg since "$since" --arg until "$until" \
+  --slurpfile kernel "$work_dir/kernel.json" --slurpfile runtime "$work_dir/runtime.json" \
+  --slurpfile docker "$work_dir/docker.json" --slurpfile previous "$work_dir/previous.json" '
+    ($kernel[0].truncated or $runtime[0].truncated or $docker[0].truncated) as $capped |
+    (($previous[0].records + $kernel[0].records + $runtime[0].records + $docker[0].records) |
+      map(select(.at >= $since and .at <= $until)) | unique | sort_by(.at)) as $records |
+    (($capped or ($records | length) > 400) as $newGap |
+      if $newGap then ($until | fromdateiso8601) + 86400 | todateiso8601
+      else ($previous[0].truncatedUntil // "") end) as $gapUntil |
+    {schemaVersion: 1, observedAt: $observedAt, since: $since, until: $until,
+     sources: {kernel: $kernel[0].state, runtime: $runtime[0].state, docker: $docker[0].state},
+     truncated: ($gapUntil > $until),
+     records: $records[-400:]} +
+     (if $gapUntil > $until then {truncatedUntil: $gapUntil} else {} end) +
+     (if $docker[0].state == "available" then {dockerUntil: $until}
+      elif ($previous[0].dockerUntil | type) == "string" then {dockerUntil: $previous[0].dockerUntil}
+      else {} end)
+  ' >"$work_dir/snapshot.json"
+chmod 0644 "$work_dir/snapshot.json"
+mv -f "$work_dir/snapshot.json" "$state_dir/snapshot.json"
+# The Updater sees runtime status, not the snapshot directory. Publish capability
+# only after the snapshot rename, so an interrupted collection cannot authorize
+# a mount based on evidence that was never written.
+if [[ -n ${VERITY_HOST_RUNTIME_DIR:-} ]]; then
+  [[ -d $VERITY_HOST_RUNTIME_DIR && ! -L $VERITY_HOST_RUNTIME_DIR ]] || exit 1
+  receipt="$(mktemp "$VERITY_HOST_RUNTIME_DIR/.diagnostics.XXXXXX")"
+  jq --arg hostPath "$state_dir" \
+    '{version: 1, hostPath: $hostPath, snapshot: del(.records)}' \
+    "$state_dir/snapshot.json" >"$receipt"
+  chmod 0644 "$receipt"
+  mv -f "$receipt" "$VERITY_HOST_RUNTIME_DIR/diagnostics.json"
+fi

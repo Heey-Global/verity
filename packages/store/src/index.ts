@@ -1,4 +1,11 @@
 export {
+  createRequestLatencyTrace,
+  withRequestLatencyTrace,
+  measureLatencyPhase,
+  recordRequestQuery,
+  type RequestLatencyTrace,
+} from './request-latency.js';
+export {
   createPostgresDb,
   withUnpairedDeviceFence,
   migrateToLatest,
@@ -18,6 +25,8 @@ export {
 } from './db.js';
 export {
   IntegrationStore,
+  integrationImportCodes,
+  type IntegrationImportDiagnostic,
   type IntegrationAccount,
   type IntegrationSource,
   type IntegrationEvent,
@@ -29,8 +38,7 @@ export {
 // harness reaches it through `@verity/store/testing`.
 export {
   EventStore,
-  AgentLoopNotReadyError,
-  agentLoopConfigFingerprint,
+  SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS,
   type EventSink,
   RUNNER_FRAME_PROTOCOL_VERSION,
   type RunnerFrameIngest,
@@ -38,10 +46,14 @@ export {
   type AttachmentBlob,
   type SequencedEvent,
   type SessionProjectionFacts,
+  type SessionEventStats,
   type SessionRecord,
+  type SessionPlanning,
   type SessionSlideDeckRecord,
   type SessionWorkspaceFileRecord,
   type SessionGmailConnection,
+  type SessionCalendarConnection,
+  type SessionContactsConnection,
   type GoogleWorkspaceFileKind,
   type GoogleSlideImageCleanupRecord,
   type SessionInput,
@@ -78,12 +90,11 @@ export {
   isSessionLinkProject,
   isInstallationPlaceholder,
   ProjectIdentityClaimConflict,
-  type AgentLoopRecord,
-  type AgentLoopStatus,
-  type AgentLoopCreateInput,
-  type AgentLoopPatch,
-  type AgentLoopRunRecord,
-  type AgentLoopRunOutcome,
+  type SessionAutomationRecord,
+  type SessionAutomationStatus,
+  type SessionAutomationInput,
+  SessionAutomationWorkspaceChangedError,
+  type SessionAutomationOutcome,
   type SecretKeyMetaRecord,
   type AuthTokenRecord,
   type DevicePushTokenRecord,
@@ -91,9 +102,42 @@ export {
 } from './store.js';
 export { TranscriptStore } from './transcript.js';
 export {
+  ManagedDevServerStore,
+  ManagedDevServerConflictError,
+  ManagedDevServerInputError,
+  ManagedDevServerPortsFullError,
+  managedDevServerNameKey,
+  normalizeManagedDevServerWorkdir,
+  type ManagedDevServerRecord,
+  type ManagedDevServerInstanceRecord,
+  type ManagedDevServerDesired,
+  type ManagedDevServerState,
+  type ManagedDevServerInstancePatch,
+} from './managed-dev-servers.js';
+export {
+  TaskStore,
+  TaskNotFoundError,
+  TaskRevisionConflictError,
+  TaskInputError,
+  TASK_STATUSES,
+  OPEN_TASK_STATUSES,
+  TASK_TITLE_MAX,
+  TASK_DETAIL_MAX,
+  TASK_RESULT_MAX,
+  TASK_ATTACHMENTS_MAX,
+  type TaskRecord,
+  type TaskInput,
+  type TaskPatch,
+  type TaskListFilter,
+  type TaskAttachment,
+  type TaskOrigin,
+  type TaskStatus,
+} from './tasks.js';
+export {
   LiveMeetingStore,
   type LiveMeetingSyncRecord,
   type LiveMeetingNoteSyncRecord,
+  type LiveMeetingInsight,
 } from './live-meetings.js';
 export {
   migrationProvider,
@@ -136,8 +180,7 @@ export type {
   DevicePushTokensTable,
   ProjectsTable,
   SessionBackendStateTable,
-  AgentLoopsTable,
-  AgentLoopRunsTable,
+  SessionAutomationsTable,
   SecretRunGrantsTable,
   SecretApprovalsTable,
   SecretRevocationsTable,

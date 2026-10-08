@@ -14,7 +14,7 @@ export interface ProjectSetupStatus {
   intent: 'progress' | 'ready' | 'error';
 }
 
-export function projectLifecycleState(project: ProjectRecord) {
+function projectLifecycleState(project: ProjectRecord) {
   return project.lifecycleState ?? project.state;
 }
 

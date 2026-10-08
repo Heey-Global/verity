@@ -196,15 +196,17 @@ describe('sessionAttention', () => {
     }
   });
 
-  it('emits no PR flag when checks passed but mergeability is still unknown (null)', () => {
-    // GitHub returns mergeable=null for a few seconds after a push. This must NOT
-    // read as merge_blocked (red, blocking) — the row would flash red the moment a
-    // fix goes green. No flag until the next poll resolves it to ready/blocked.
+  it('marks checks-passed-but-mergeability-unknown as a non-blocking merge_checking', () => {
+    // GitHub returns mergeable=null for a while after a push. It must NOT read as
+    // merge_blocked (red, blocking) — the row would flash red the moment a fix goes
+    // green — but it must not drop the PR marker either, which made the row's green
+    // check vanish while github.com showed "Checking for the ability to merge".
     const flags = sessionAttention({
       status: 'idle',
       pr: openPr({ mergeable: null, pipeline: 'success' }),
     });
-    expect(flags).toEqual([]);
+    expect(flags.map((f) => f.kind)).toEqual(['merge_checking']);
+    expect(flags[0]).toMatchObject({ tone: 'done', blocking: false });
   });
 
   it('does not surface an unknown-mergeability PR in the attention queue', () => {
@@ -347,6 +349,7 @@ describe('sandbox_disconnected (server-reported)', () => {
       'ci_failed',
       'merge_blocked',
       'merge_ready',
+      'merge_checking',
       'ci_running',
       'unread',
     ];
@@ -358,6 +361,7 @@ describe('sandbox_disconnected (server-reported)', () => {
       { status: 'idle', pr: openPr({ pipeline: 'failure' }) },
       { status: 'idle', pr: openPr({ pipeline: 'success', mergeable: true }) },
       { status: 'idle', pr: openPr({ pipeline: 'success', mergeable: false }) },
+      { status: 'idle', pr: openPr({ pipeline: 'success', mergeable: null }) },
       { status: 'idle', pr: openPr({ pipeline: 'running' }) },
       { status: 'idle', unread: true },
     ];

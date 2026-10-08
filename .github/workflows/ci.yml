@@ -113,7 +113,7 @@ jobs:
           fi
 
           run_all() {
-            lint=true; typecheck=true; test=true; contract_test=true; coverage=true
+            lint=true; typecheck=true; test=true; contract_test=true
             installer=true; mobile=true; mobile_app=true; server_image=true; agent_seed_drift=true
           }
 
@@ -163,7 +163,7 @@ jobs:
                   website:docs/website/CHANGELOG.md|website:docs/website/version.txt|website:.release-please-manifest.website.json)
                     :
                     ;;
-                  mobile-ota:apps/mobile/ota-promotion.json)
+                  mobile-ota:apps/mobile/ota-promotion.json|mobile-ota:apps/mobile/ota/version.txt|mobile-ota:apps/mobile/ota/CHANGELOG.md|mobile-ota:.release-please-manifest.mobile-ota.json)
                     :
                     ;;
                   *)
@@ -179,24 +179,16 @@ jobs:
               full)
                 ;;
               backend)
-                # A generated backend release PR changes only version metadata.
-                # Let the release-only verifier below inherit the green base. If
-                # that proof fails, leave it unscoped so normal path routing runs.
                 release_scoped=false
                 ;;
               mobile)
-                # mobile-app builds @verity/mobile before checking the Expo app.
                 mobile_app=true
                 release_scoped=true
                 ;;
               website)
-                # The website has no gated CI job. public-snapshot and ci-checks
-                # are unconditional, and release.yml owns its image build.
                 release_scoped=true
                 ;;
               mobile-ota)
-                # The promotion workflow validates and applies this approval
-                # record; no application or backend source changed here.
                 release_scoped=true
                 ;;
               *)
@@ -382,9 +374,7 @@ jobs:
                   typecheck=true
                   test=true
                   ;;
-                # Swift sources and their native TLS harness are compiled by
-                # verity-mobile-native-verify on macOS. Root TypeScript, backend,
-                # image and Jest jobs cannot exercise them.
+                # Native Swift inputs are verified separately on macOS.
                 apps/mobile/native/*|scripts/ios-pinned-tls-smoke.sh|scripts/ios-pinned-tls-smoke.swift)
                   :
                   ;;
@@ -407,6 +397,7 @@ jobs:
                   server_image=true
                   ;;
                 packages/mobile/*)
+                  case $file in */src/api.ts) contract_test=true;; esac
                   lint=true
                   typecheck=true
                   mobile=true
@@ -441,7 +432,7 @@ jobs:
                   ;;
                 # The workflow contract suite validates this approval boundary.
                 # Its merge is intentionally also routed to the normal app checks.
-                apps/mobile/ota-promotion.json)
+                apps/mobile/ota-promotion.json|apps/mobile/ota/*|apps/mobile/version.txt)
                   lint=true
                   typecheck=true
                   contract_test=true
@@ -533,10 +524,11 @@ jobs:
                 docs/runbooks/*)
                   test=true
                   ;;
-                # Prose. Nothing builds it, `.prettierignore` excludes it from the
-                # formatter, and no test reads what the arm above leaves — asserted
-                # in scripts/ci-workflow.test.ts rather than trusted, since this arm
-                # is the only thing between this directory and the full suite.
+                # Mobile auth callback authorization is covered by a root test.
+                docs/website/site/apple-app-site-association.json)
+                  test=true
+                  ;;
+                # Prose stays inert only when no suite reads it, checked by ci-workflow.test.ts.
                 docs/*)
                   ;;
                 # Everything this table does not name. Matching nothing used to
@@ -1227,37 +1219,16 @@ jobs:
           # public package; this build reads it without logging in.
           cache-from: type=registry,ref=ghcr.io/heey-global/verity/verity-matrix-connector:buildcache-amd64
 
-  server-image:
+  server-image-build:
     needs: changes
     if: needs.changes.outputs.server_image == 'true'
     runs-on: ubuntu-24.04
-    # Bounded below the cache janitor's grace period (`CACHE_MIN_AGE_MINUTES` in
-    # cache-janitor.yml). The janitor only deletes entries nothing has read for
-    # that long, and that is the whole reason it cannot pull a cache out from
-    # under a build still restoring it — but a job with no `timeout-minutes`
-    # inherits GitHub's 360-minute default and can outlive the window six times
-    # over. This is a single-arch amd64 build that finishes in minutes, so the
-    # bound only ever catches a hang. scripts/ci-workflow.test.ts enforces it for
-    # every step in the repo that reads or writes a gha cache.
     timeout-minutes: 45
-    # Two legs, one per installer acceptance. Each boots its own empty Docker
-    # host and loads the whole image into it, which is minutes of work apiece;
-    # serialized on one runner they were the bulk of the slowest PR check. Each
-    # leg builds the image itself from the shared cache — cheaper than moving a
-    # multi-GB image between runners — and the quick image checks run once, in
-    # the compose leg. Not fail-fast: each leg is a separate verdict.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - installer: compose
-          - installer: managed
-    # Namespace every mutable smoke-test resource. This remains useful for local
-    # reproduction and protects against future runner-layout changes.
+    # Failed installer reruns reuse the successful producer from the same run.
     env:
-      VERITY_CI_IMAGE: verity-server:ci-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_IMAGE: verity-server:ci-${{ github.run_id }}
       # Under $RUNNER_TEMP; `runner` is not available to job-level env.
-      VERITY_CI_IMAGE_ARCHIVE: verity-server-ci-${{ github.run_id }}-${{ github.run_attempt }}.tar
+      VERITY_CI_IMAGE_ARCHIVE: verity-server-ci-${{ github.run_id }}.tar
       VERITY_CI_SERVER: verity-server-ci-${{ github.run_id }}-${{ github.run_attempt }}
       VERITY_CI_POSTGRES: verity-postgres-ci-${{ github.run_id }}-${{ github.run_attempt }}
       VERITY_CI_NETWORK: verity-ci-net-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1394,9 +1365,77 @@ jobs:
           # was evicting the very blobs being written.
           cache-from: type=gha,scope=verity-server-amd64
           #
-          # One writer per run: both matrix legs build the same image, and two
-          # exports into one scope only race each other for the same index.
-          cache-to: ${{ github.event_name != 'pull_request' && matrix.installer == 'compose' && 'type=gha,mode=max,scope=verity-server-amd64,ignore-error=true' || '' }}
+          # One producer writes this scope; both installer legs only load its archive.
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=verity-server-amd64,ignore-error=true' || '' }}
+      # Avoid recompressing the multi-GB Docker archive on the runner.
+      - name: Upload Server image archive
+        # renovate: datasource=github-actions depName=actions/upload-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: server-image-${{ github.run_id }}
+          path: ${{ runner.temp }}/${{ env.VERITY_CI_IMAGE_ARCHIVE }}
+          compression-level: 0
+          overwrite: true
+          # Failed-job reruns can reuse the successful build for 30 days.
+          retention-days: 30
+          if-no-files-found: error
+      - name: Bound persistent build cache
+        if: always()
+        run: docker buildx prune --builder verity-ci-bounded-v1 --force --keep-storage 40GB >/dev/null 2>&1 || true
+      - name: Clean image archive
+        if: always()
+        run: rm -f "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
+
+  server-image:
+    needs: [changes, server-image-build]
+    if: needs.changes.outputs.server_image == 'true'
+    runs-on: ubuntu-24.04
+    # Bounded below the cache janitor's grace period (`CACHE_MIN_AGE_MINUTES` in
+    # cache-janitor.yml). The janitor only deletes entries nothing has read for
+    # that long, and that is the whole reason it cannot pull a cache out from
+    # under a build still restoring it — but a job with no `timeout-minutes`
+    # inherits GitHub's 360-minute default and can outlive the window six times
+    # over. This is a single-arch amd64 build that finishes in minutes, so the
+    # bound only ever catches a hang. scripts/ci-workflow.test.ts enforces it for
+    # every step in the repo that reads or writes a gha cache.
+    timeout-minutes: 45
+    # Both installer paths exercise the exact same archive from one build.
+    # Independent verdicts remain visible when either installer fails.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - installer: compose
+          - installer: managed
+    # Namespace every mutable smoke-test resource. This remains useful for local
+    # reproduction and protects against future runner-layout changes.
+    env:
+      VERITY_CI_IMAGE: verity-server:ci-${{ github.run_id }}
+      # Under $RUNNER_TEMP; `runner` is not available to job-level env.
+      VERITY_CI_IMAGE_ARCHIVE: verity-server-ci-${{ github.run_id }}.tar
+      VERITY_CI_SERVER: verity-server-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_POSTGRES: verity-postgres-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_NETWORK: verity-ci-net-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_CLEAN_DIND: verity-clean-install-dind-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_CLEAN_DIND_VOLUME: verity-clean-install-dind-${{ github.run_id }}-${{ github.run_attempt }}-data
+      VERITY_CI_MANAGED_DIND: verity-managed-install-dind-${{ github.run_id }}-${{ github.run_attempt }}
+      VERITY_CI_MANAGED_DIND_VOLUME: verity-managed-install-dind-${{ github.run_id }}-${{ github.run_attempt }}-data
+      # The relay-only server validates an immutable relay reference at startup.
+      # The image is never pulled in this health-only smoke because no project is
+      # provisioned.
+      VERITY_CI_RELAY_IMAGE: ghcr.io/heey-global/verity/verity-project-relay@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      # Health-only smoke values. No gateway is contacted until a Claude turn;
+      # these exercise the server's mandatory routing configuration at boot.
+      VERITY_CI_GATEWAY_UNSEAL_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download Server image archive
+        # renovate: datasource=github-actions depName=actions/download-artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: server-image-${{ github.run_id }}
+          path: ${{ runner.temp }}
       - name: Load Verity server image into the runner's Docker
         if: matrix.installer == 'compose'
         run: docker load --input "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
@@ -1689,7 +1728,7 @@ jobs:
           set -euo pipefail
           feature=features/verity-sandbox-toolkit/agent-seed
           status=0
-          for rel in README.md hooks/pre-push hooks/pre-commit bin/gh bin/git bin/verity-code-review bin/verity-secret-scan bin/verity-git-sign code-review-prompt.md; do
+          for rel in README.md hooks/pre-push hooks/pre-commit bin/gh bin/git bin/verity-code-review bin/verity-secret-scan bin/verity-git-sign bin/verity-dev-server code-review-prompt.md; do
             if cmp -s "agent-seed/$rel" "$feature/$rel"; then
               echo "OK: $rel matches agent-seed/ source"
             else
@@ -1721,6 +1760,7 @@ jobs:
         mobile,
         mobile-app,
         matrix-connector-image,
+        server-image-build,
         server-image,
         agent-seed-drift,
       ]
@@ -1773,5 +1813,6 @@ jobs:
           require_when_changed mobile "${{ needs.mobile.result }}" "${{ needs.changes.outputs.mobile }}"
           require_when_changed mobile-app "${{ needs.mobile-app.result }}" "${{ needs.changes.outputs.mobile_app }}"
           require_success matrix-connector-image "${{ needs.matrix-connector-image.result }}"
+          require_when_changed server-image-build "${{ needs.server-image-build.result }}" "${{ needs.changes.outputs.server_image }}"
           require_when_changed server-image "${{ needs.server-image.result }}" "${{ needs.changes.outputs.server_image }}"
           echo "all required CI jobs succeeded"

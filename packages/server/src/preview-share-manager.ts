@@ -1,3 +1,10 @@
+import {
+  STANDARD_MOUNTS,
+  DEFAULT_AGENT_SEED_SOURCE,
+  GATEWAY_MOUNTS,
+  standardDataMountPaths,
+  PUBLIC_SSH_MOUNTS,
+} from './sandbox-standard-mounts.js';
 import { randomBytes } from 'node:crypto';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import {
@@ -41,7 +48,6 @@ const CONNECTOR_READY_TIMEOUT_MS = 15_000;
 const CONNECTOR_READY_POLL_MS = 250;
 const CONNECTOR_READY_MARKER = 'preview connector established';
 const PREVIEW_TTL_SECONDS = [60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60, 30 * 24 * 60 * 60];
-const LONG_PREVIEW_TTL_SECONDS = 24 * 60 * 60;
 
 export interface PreviewEdgeCreate {
   webhook?: { path: string };
@@ -81,12 +87,20 @@ export interface PreviewShareManagerOptions {
   dataVolume?: string;
   dataVolumeRoot?: string;
   hostCloneRoot?: string;
+  /** Host source the provisioner binds onto `/opt/agent-seed`. Legacy
+   *  unversioned seed sources remain supported for existing containers. */
+  agentSeedHostPath?: string;
   isDevServerRunning: (input: {
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>;
     devServer: NonNullable<Awaited<ReturnType<EventStore['getDevServer']>>>;
   }) => Promise<boolean>;
   /** Lists the sandbox's TCP listeners; absent where no project runtime exists,
    *  which leaves session dev servers undiscoverable rather than guessed. */
+  listSessionServers?: (sessionId: string) => Promise<SessionDevServer[]>;
+  prepareTargetPort?: (
+    project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
+    port: number,
+  ) => Promise<number>;
   listListeningProcesses?: (
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
   ) => Promise<ListeningProcess[]>;
@@ -110,6 +124,9 @@ export interface PreviewShareManagerOptions {
    * round trip, the connector start and the wait for its edge connection all
    * sit behind the same spinner. */
   log?: Pick<Console, 'info' | 'warn'>;
+  /** Called once a share has ended, revoked or expired. Managed dev servers stop
+   *  when their last access ends (concept 2.6). */
+  onShareEnded?: (share: { id: string; managedInstanceId: string | null }) => void;
 }
 
 /** Records the milliseconds spent in each named step, in the order they ran. */
@@ -141,6 +158,7 @@ function phaseTimer(): PhaseTimer {
 }
 
 export interface CreatePreviewShareInput {
+  managedInstanceId?: string | undefined;
   projectId?: string;
   sessionId?: string;
   devServerId?: string;
@@ -152,6 +170,8 @@ export interface CreatePreviewShareInput {
 }
 
 export interface PublicPreviewShare {
+  managedInstanceId: string | null;
+  pinLocked?: boolean;
   id: string;
   projectId: string;
   devServerId: string | null;
@@ -179,6 +199,42 @@ export class PreviewShareManager {
 
   constructor(private readonly options: PreviewShareManagerOptions) {
     this.now = options.now ?? (() => new Date());
+  }
+
+  async prepareLocalTarget(
+    sessionId: string,
+    target: { targetPort?: number | undefined; staticPath?: string | undefined },
+  ) {
+    const session = await this.options.store.getSession(sessionId);
+    if (!session?.projectId) throw new PreviewShareNotFoundError('project session not found');
+    const project = await this.options.store.getProject(session.projectId);
+    if (!project) throw new PreviewShareNotFoundError('project not found');
+    if (project.state !== 'active') throw new PreviewShareConflictError('project is not active');
+    const sandbox = await this.options.docker.inspectContainer(project.containerName);
+    const generation = containerGenerationOf(sandbox);
+    if (!sandbox.running || !generation)
+      throw new PreviewShareConflictError('sandbox is not running');
+    await assertEligibleSandbox(
+      sandbox,
+      projectNetworkName(project.id),
+      project.id,
+      projectWorkspaceSubpath(project, this.options),
+      this.options,
+      target.staticPath !== undefined,
+    );
+    let staticMount: ReturnType<PreviewShareManager['staticMount']> | undefined;
+    if (target.staticPath !== undefined) {
+      const path = target.staticPath.trim() === '.' ? '.' : normalizedStaticPath(target.staticPath);
+      const root = await this.staticSourceRoot(project, session.worktree);
+      await this.validateStaticDirectory(root, path);
+      staticMount = this.staticMount(root, path);
+    } else if (
+      target.targetPort !== undefined &&
+      !(await this.sessionPortReachable(project, session.worktree, target.targetPort))
+    ) {
+      throw new PreviewShareConflictError('nothing in this session listens on that port');
+    }
+    return { project, session, generation, staticMount };
   }
 
   isAvailable(): boolean {
@@ -242,12 +298,21 @@ export class PreviewShareManager {
     const project = await this.options.store.getProject(session.projectId);
     if (!project) throw new PreviewShareNotFoundError('project not found');
     if (project.state !== 'active') return [];
-    const sandbox = await this.options.docker.inspectContainer(project.containerName);
+    let sandbox;
+    try {
+      sandbox = await this.options.docker.inspectContainer(project.containerName);
+    } catch (error) {
+      // Project state can outlive its container after cleanup or replacement.
+      if (error instanceof DockerError && error.kind === 'container_not_found') return [];
+      throw error;
+    }
     if (!sandbox.running) return [];
     // Without discovery wired there is simply nothing to show; a 409 here would
     // park the sheet's default tab on an error it can never leave.
     if (!this.options.listListeningProcesses || !this.options.hostCloneRoot) return [];
-    return this.sessionServers(project, session.worktree);
+    return (
+      this.options.listSessionServers?.(sessionId) ?? this.sessionServers(project, session.worktree)
+    );
   }
 
   private async sessionServers(
@@ -284,8 +349,17 @@ export class PreviewShareManager {
     worktree: string,
     port: number,
   ): Promise<boolean> {
-    return (await this.sessionServers(project, worktree)).some(
-      (server) => server.port === port && server.reachable,
+    const session = this.options.listSessionServers
+      ? (await this.options.store.listSessions()).find(
+          (entry) => entry.projectId === project.id && entry.worktree === worktree,
+        )
+      : undefined;
+    const servers = session
+      ? await this.options.listSessionServers!(session.sessionId)
+      : await this.sessionServers(project, worktree);
+    return servers.some(
+      (server) =>
+        server.port === port && (server.reachable || this.options.prepareTargetPort !== undefined),
     );
   }
 
@@ -301,14 +375,8 @@ export class PreviewShareManager {
     let reachable = false;
     try {
       if (!this.options.listListeningProcesses || !this.options.hostCloneRoot) return false;
-      const sandboxWorktree = containerPathFor(
-        worktree,
-        projectClonePath(this.options.hostCloneRoot, project),
-      );
       const processes = await this.options.listListeningProcesses(project);
-      reachable = sessionDevServers(processes, sandboxWorktree).some(
-        (server) => server.port === port && server.reachable,
-      );
+      reachable = await this.sessionPortReachable(project, worktree, port);
       // A different session now owns the forwarded port. Waiting through the
       // restart grace period would expose that session through the old link.
       if (!reachable && processes.some((process) => process.port === port)) return false;
@@ -387,16 +455,21 @@ export class PreviewShareManager {
     ) {
       throw new PreviewShareInputError('TTL must be 1 hour, 24 hours, 7 days, or 30 days');
     }
-    if (!/^\d{6,12}$/.test(input.pin)) {
-      throw new PreviewShareInputError('PIN must contain 6 to 12 digits');
-    }
-    if (input.ttlSeconds >= LONG_PREVIEW_TTL_SECONDS && input.pin.length !== 12) {
-      throw new PreviewShareInputError(
-        'PIN must contain 12 digits for shares lasting 24 hours or more',
-      );
+    if (!/^\d{6}$/.test(input.pin)) {
+      throw new PreviewShareInputError('PIN must contain exactly 6 digits');
     }
     const isStatic = input.staticPath !== undefined;
-    const port = input.targetPort;
+    const managed = input.managedInstanceId
+      ? await this.options.store.managedDevServers.getInstance(input.managedInstanceId)
+      : undefined;
+    if (
+      input.managedInstanceId &&
+      (!managed || managed.sessionId !== input.sessionId || managed.state !== 'running')
+    )
+      throw new PreviewShareConflictError('managed server is not running in this session');
+    if (managed && input.targetPort !== undefined && input.targetPort !== managed.sandboxPort)
+      throw new PreviewShareInputError('managed server port changed; refresh and try again');
+    const port = managed?.sandboxPort ?? input.targetPort;
     if (
       [isStatic, input.devServerId !== undefined, port !== undefined].filter(Boolean).length !== 1
     ) {
@@ -428,6 +501,8 @@ export class PreviewShareManager {
     }
     const project = await this.options.store.getProject(projectId);
     if (!project) throw new PreviewShareNotFoundError('project not found');
+    if (managed && managed.projectId !== project.id)
+      throw new PreviewShareInputError('managed server does not belong to project');
     if (project.state !== 'active') throw new PreviewShareConflictError('project is not active');
     if (devServer && !(await this.options.isDevServerRunning({ project, devServer }))) {
       throw new PreviewShareConflictError('dev server is not running');
@@ -440,6 +515,13 @@ export class PreviewShareManager {
         'nothing in this session listens on that port on a reachable address',
       );
     }
+    if (
+      managed &&
+      !(await this.options.listListeningProcesses?.(project))?.some(
+        (listener) => listener.instanceId === managed.id && listener.port === managed.sandboxPort,
+      )
+    )
+      throw new PreviewShareConflictError('managed server listener is unavailable');
     const staticPath = isStatic
       ? input.sessionId && input.staticPath?.trim() === '.'
         ? '.'
@@ -451,7 +533,9 @@ export class PreviewShareManager {
         (devServer
           ? share.devServerId === devServer.id
           : port !== undefined
-            ? sessionPortShare(share, input.sessionId!, port)
+            ? managed
+              ? share.managedInstanceId === managed.id
+              : sessionPortShare(share, input.sessionId!, port)
             : share.staticPath !== null &&
               (input.sessionId
                 ? share.sessionId === input.sessionId
@@ -542,6 +626,7 @@ export class PreviewShareManager {
       id: shareId,
       projectId: project.id,
       devServerId: devServer?.id ?? null,
+      managedInstanceId: managed?.id ?? null,
       containerGeneration: generation,
       targetPort: devServer ? Number(devServer.containerPort) : (port ?? null),
       targetKind: devServer || port !== undefined ? 'dev-server' : 'static-folder',
@@ -578,6 +663,7 @@ export class PreviewShareManager {
         if (recovery) {
           await this.options.store.transitionPublicPreviewShare(shareId, ['creating'], 'revoking', {
             failure: safeFailure(error),
+            revokedAt: this.now(),
           });
         }
         throw new AggregateError(
@@ -594,7 +680,9 @@ export class PreviewShareManager {
           (devServer
             ? share.devServerId === devServer.id
             : port !== undefined
-              ? sessionPortShare(share, input.sessionId!, port)
+              ? managed
+                ? share.managedInstanceId === managed.id
+                : sessionPortShare(share, input.sessionId!, port)
               : share.staticPath === staticPath &&
                 (share.sessionId ?? null) === (input.sessionId ?? null)),
       );
@@ -698,7 +786,7 @@ export class PreviewShareManager {
           shareId,
           becameActive ? ['active'] : ['creating'],
           'revoking',
-          { failure: safeFailure(error) },
+          { failure: safeFailure(error), revokedAt: this.now() },
         );
         throw new AggregateError(
           [error, ...cleanupFailures],
@@ -738,7 +826,12 @@ export class PreviewShareManager {
 
   async withProjectMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
     return this.withLifecycleLocks([`project:${projectId}`], async () => {
-      await this.stopProject(projectId);
+      for (const share of await this.options.store.listPublicPreviewShares(projectId)) {
+        if (!ACTIVE_STATES.includes(share.state)) continue;
+        if (share.managedInstanceId && share.state === 'active')
+          await this.replaceManagedConnector(share, true);
+        else await this.stop(share.id);
+      }
       return mutation();
     });
   }
@@ -838,7 +931,7 @@ export class PreviewShareManager {
             share.id,
             ['creating', 'active'],
             'revoking',
-            { failure: reason },
+            { failure: reason, revokedAt: this.now() },
           );
           const current = claimed ?? (await this.options.store.getPublicPreviewShare(share.id));
           if (!current || current.state !== 'revoking') return;
@@ -853,10 +946,11 @@ export class PreviewShareManager {
             'revoked',
             {
               connectorContainerId: null,
-              revokedAt: this.now(),
+              revokedAt: current.revokedAt ?? current.updatedAt,
               failure: current.failure,
             },
           );
+          this.notifyEnded(current);
         }),
     );
     const rejected: unknown[] = [];
@@ -876,6 +970,7 @@ export class PreviewShareManager {
       id,
       ['creating', 'active'],
       'revoking',
+      { revokedAt: this.now() },
     );
     const current = claimed ?? (await this.options.store.getPublicPreviewShare(id));
     if (!current || current.state === 'revoked' || current.state === 'expired') return true;
@@ -922,9 +1017,21 @@ export class PreviewShareManager {
       current.expiresAt.getTime() <= this.now().getTime() ? 'expired' : terminal;
     await this.options.store.transitionPublicPreviewShare(id, ['revoking'], resolvedTerminal, {
       connectorContainerId: null,
-      revokedAt: this.now(),
+      revokedAt: current.revokedAt ?? current.updatedAt,
     });
+    this.notifyEnded(current);
     return true;
+  }
+
+  private notifyEnded(share: { id: string; managedInstanceId?: string | null | undefined }) {
+    try {
+      this.options.onShareEnded?.({
+        id: share.id,
+        managedInstanceId: share.managedInstanceId ?? null,
+      });
+    } catch {
+      /* A listener must not turn a completed revocation into a failure. */
+    }
   }
 
   /** The Uplink has authoritatively expired and removed the public edge. Only
@@ -936,6 +1043,7 @@ export class PreviewShareManager {
       id,
       ['creating', 'active'],
       'revoking',
+      { revokedAt: this.now() },
     );
     const current = claimed ?? (await this.options.store.getPublicPreviewShare(id));
     if (!current || current.state !== 'revoking') return;
@@ -946,8 +1054,9 @@ export class PreviewShareManager {
     );
     await this.options.store.transitionPublicPreviewShare(id, ['revoking'], 'expired', {
       connectorContainerId: null,
-      revokedAt: this.now(),
+      revokedAt: current.revokedAt ?? current.updatedAt,
     });
+    this.notifyEnded(current);
   }
 
   /** Startup/periodic convergence: TTL, missing or replaced sandboxes, and
@@ -969,6 +1078,13 @@ export class PreviewShareManager {
           ) {
             await this.stop(share.id);
           }
+          continue;
+        }
+        if (share.managedInstanceId) {
+          await this.withLifecycleLocks([`project:${share.projectId}`], async () => {
+            const current = await this.options.store.getPublicPreviewShare(share.id);
+            if (current?.state === 'active') await this.reconcileManaged(current);
+          });
           continue;
         }
         const project = await this.options.store.getProject(share.projectId);
@@ -1007,6 +1123,15 @@ export class PreviewShareManager {
             matches =
               sandbox.running && containerGenerationOf(sandbox) === share.containerGeneration;
             matches = matches && connector.running;
+            if (matches && share.targetPort !== null) {
+              const preparedPort =
+                (await this.options.prepareTargetPort?.(project, share.targetPort)) ??
+                share.targetPort;
+              const origin = connector.env
+                ?.find((entry) => entry.startsWith('VERITY_PREVIEW_TARGET_ORIGIN='))
+                ?.slice('VERITY_PREVIEW_TARGET_ORIGIN='.length);
+              if (origin && Number(new URL(origin).port || '80') !== preparedPort) matches = false;
+            }
             if (matches && share.sessionId && session && share.staticPath) {
               const root = await this.staticSourceRoot(project, session.worktree);
               await this.validateStaticDirectory(root, share.staticPath);
@@ -1034,13 +1159,115 @@ export class PreviewShareManager {
     }
   }
 
+  private async reconcileManaged(share: PublicPreviewShareRecord): Promise<void> {
+    const instance = await this.options.store.managedDevServers.getInstance(
+      share.managedInstanceId!,
+    );
+    const session = share.sessionId
+      ? await this.options.store.getSession(share.sessionId)
+      : undefined;
+    const project = await this.options.store.getProject(share.projectId);
+    if (
+      !instance ||
+      !project ||
+      instance.projectId !== project.id ||
+      session?.projectId !== project.id
+    ) {
+      await this.stop(share.id);
+      return;
+    }
+    let offline = true;
+    let generation = share.containerGeneration;
+    if (
+      project.state === 'active' &&
+      instance.state === 'running' &&
+      instance.desired === 'running'
+    ) {
+      const sandbox = await this.options.docker.inspectContainer(project.containerName);
+      const currentGeneration = containerGenerationOf(sandbox);
+      const listeners = (await this.options.listListeningProcesses?.(project)) ?? [];
+      offline =
+        !sandbox.running ||
+        !currentGeneration ||
+        !listeners.some(
+          (listener) =>
+            listener.instanceId === instance.id && listener.port === instance.sandboxPort,
+        );
+      if (currentGeneration) generation = currentGeneration;
+    }
+    const connector = share.connectorContainerId
+      ? await this.options.docker
+          .inspectContainer(share.connectorContainerId)
+          .catch(() => undefined)
+      : undefined;
+    const wasOffline = connector?.env?.includes('VERITY_PREVIEW_OFFLINE=1') ?? false;
+    const origin = connector?.env
+      ?.find((value) => value.startsWith('VERITY_PREVIEW_TARGET_ORIGIN='))
+      ?.slice('VERITY_PREVIEW_TARGET_ORIGIN='.length);
+    const preparedPort = offline
+      ? instance.sandboxPort
+      : ((await this.options.prepareTargetPort?.(project, instance.sandboxPort)) ??
+        instance.sandboxPort);
+    if (
+      connector?.running &&
+      wasOffline === offline &&
+      (offline ||
+        (share.containerGeneration === generation &&
+          origin === `http://${project.containerName}:${preparedPort}`))
+    )
+      return;
+    await this.replaceManagedConnector(
+      { ...share, targetPort: instance.sandboxPort, containerGeneration: generation },
+      offline,
+    );
+  }
+
+  private async replaceManagedConnector(
+    share: PublicPreviewShareRecord,
+    offline: boolean,
+  ): Promise<void> {
+    await removeContainer(
+      this.options.docker,
+      share.connectorContainerId ?? share.connectorContainerName,
+    );
+    const current = await this.options.store.getPublicPreviewShare(share.id);
+    if (current?.state !== 'active') return;
+    const project = await this.options.store.getProject(share.projectId);
+    if (!project) return;
+    const id = await this.createConnector(
+      share,
+      project.containerName,
+      await this.resolveConnectorImage(),
+      undefined,
+      undefined,
+      offline,
+    );
+    const updated = await this.options.store.transitionPublicPreviewShare(
+      share.id,
+      ['active'],
+      'active',
+      {
+        connectorContainerId: id,
+        targetPort: share.targetPort!,
+        containerGeneration: share.containerGeneration,
+      },
+    );
+    if (!updated) await removeContainer(this.options.docker, id);
+  }
+
   private async createConnector(
     share: PublicPreviewShareRecord,
     targetContainerName: string,
     connectorImage: string,
     staticMount?: NonNullable<import('./docker.js').ContainerSpec['volumeMounts']>[number],
     timer?: PhaseTimer,
+    offline = false,
   ): Promise<string> {
+    const project = await this.options.store.getProject(share.projectId);
+    const targetPort =
+      offline || share.targetPort === null || !project
+        ? share.targetPort
+        : ((await this.options.prepareTargetPort?.(project, share.targetPort)) ?? share.targetPort);
     const spec = {
       image: connectorImage,
       name: share.connectorContainerName,
@@ -1057,12 +1284,13 @@ export class PreviewShareManager {
       env: [
         `VERITY_PREVIEW_EDGE_URL=${share.edgeUrl}`,
         `VERITY_PREVIEW_CONNECTOR_TOKEN=${share.connectorToken}`,
+        ...(offline ? ['VERITY_PREVIEW_OFFLINE=1'] : []),
         ...(share.targetKind === 'static-folder'
           ? ['VERITY_PREVIEW_STATIC_ROOT=/preview-workspace', 'VERITY_PREVIEW_STATIC_PATH=public']
-          : [`VERITY_PREVIEW_TARGET_ORIGIN=http://${targetContainerName}:${share.targetPort}`]),
+          : [`VERITY_PREVIEW_TARGET_ORIGIN=http://${targetContainerName}:${targetPort}`]),
       ],
       ...(staticMount ? { volumeMounts: [staticMount] } : {}),
-      network: projectNetworkName(share.projectId),
+      network: offline ? 'verity-net' : projectNetworkName(share.projectId),
       restartPolicy: 'on-failure' as const,
       readOnlyRootfs: true,
       tmpfs: { '/tmp': 'rw,noexec,nosuid,nodev,size=16m,mode=1777' },
@@ -1253,6 +1481,7 @@ export async function sweepOrphanedPreviewShares(options: {
   store: EventStore;
   docker: DockerClient;
   now?: () => Date;
+  onShareEnded?: PreviewShareManagerOptions['onShareEnded'];
 }): Promise<number> {
   const now = options.now ?? (() => new Date());
   const shares = await options.store.listPublicPreviewShares();
@@ -1267,8 +1496,16 @@ export async function sweepOrphanedPreviewShares(options: {
       );
       await options.store.transitionPublicPreviewShare(share.id, ACTIVE_STATES, 'revoked', {
         connectorContainerId: null,
-        revokedAt: now(),
+        revokedAt: share.revokedAt ?? now(),
       });
+      try {
+        options.onShareEnded?.({
+          id: share.id,
+          managedInstanceId: share.managedInstanceId ?? null,
+        });
+      } catch {
+        /* Cleanup remains complete if a listener fails. */
+      }
       swept += 1;
     } catch (error) {
       // One unreachable container must not strand the remaining records.
@@ -1291,6 +1528,7 @@ function publicShare(record: PublicPreviewShareRecord): PublicPreviewShare {
     id: record.id,
     projectId: record.projectId,
     devServerId: record.devServerId,
+    managedInstanceId: record.managedInstanceId ?? null,
     targetKind: record.targetKind ?? 'dev-server',
     targetPort: record.targetPort,
     staticPath: record.staticPath ?? null,
@@ -1298,6 +1536,7 @@ function publicShare(record: PublicPreviewShareRecord): PublicPreviewShare {
     state: record.state,
     publicOrigin: record.publicOrigin,
     pin: record.pin!,
+    pinLocked: record.pinLocked ?? false,
     expiresAt: record.expiresAt,
     revokedAt: record.revokedAt,
     failure: record.failure,
@@ -1346,7 +1585,11 @@ async function assertEligibleSandbox(
   workspaceSubpath: string,
   options: Pick<
     PreviewShareManagerOptions,
-    'dataVolume' | 'dataVolumeRoot' | 'inspectArtifact' | 'listArtifactDirectory'
+    | 'dataVolume'
+    | 'dataVolumeRoot'
+    | 'agentSeedHostPath'
+    | 'inspectArtifact'
+    | 'listArtifactDirectory'
   >,
   staticFolder = false,
 ): Promise<void> {
@@ -1386,10 +1629,6 @@ async function assertEligibleSandbox(
     ['VERITY_GH_BROKER_CAPABILITY_FILE', '/run/verity/gh-token-capability'],
     ['VERITY_AGENT_GATEWAY_CLIENT_KEY_FILE', '/run/verity/claude-egress/client.key'],
   ]);
-  const nonSecretBrokerCoordinates = new Set([
-    'VERITY_GH_TOKEN_URL',
-    'VERITY_GH_TOKEN_DOCKER_CONTAINER',
-  ]);
   if (sandbox.env === undefined) {
     throw new PreviewShareConflictError('sandbox environment metadata is incomplete');
   }
@@ -1399,7 +1638,6 @@ async function assertEligibleSandbox(
     const value = separator < 0 ? '' : entry.slice(separator + 1);
     const allowedPath = allowedSensitivePathEnv.get(name);
     if (allowedPath !== undefined) return value !== allowedPath;
-    if (nonSecretBrokerCoordinates.has(name)) return false;
     return (
       /(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_KEY|API_KEY|ACCESS_KEY|CREDENTIALS?)(_|$)/.test(
         name,
@@ -1412,53 +1650,44 @@ async function assertEligibleSandbox(
   // Static shares mount only their selected directory into the connector. Other
   // mounts on the agent sandbox cannot become visible through that connector.
   if (staticFolder) return;
-  const publicSshDestinations = new Map([
-    ['/home/dev/.ssh/id_ed25519.pub', '/git/id_ed25519.pub'],
-    ['/home/dev/.ssh/known_hosts', '/git/known_hosts'],
-    ['/home/dev/.ssh/allowed_signers', '/git/allowed_signers'],
-    ['/run/verity/ssh/id_ed25519.pub', '/git/id_ed25519.pub'],
-    ['/run/verity/ssh/known_hosts', '/git/known_hosts'],
-    ['/run/verity/ssh/allowed_signers', '/git/allowed_signers'],
-  ]);
+  const publicSshDestinations = new Map<string, string>(
+    Object.entries(PUBLIC_SSH_MOUNTS).flatMap(([filename, targets]) =>
+      targets.map((target) => [target, `/git/${filename}`] as const),
+    ),
+  );
   for (const mount of sandbox.mounts) {
     const allowedSourceSuffix =
       mount.destination === undefined ? undefined : publicSshDestinations.get(mount.destination);
     if (
       mount.readWrite === false &&
       allowedSourceSuffix !== undefined &&
-      mount.source?.endsWith(allowedSourceSuffix) === true
+      ((options.dataVolumeRoot !== undefined &&
+        mountMatchesProjectData(
+          mount,
+          `secrets${allowedSourceSuffix}`,
+          options.dataVolume,
+          options.dataVolumeRoot,
+        )) ||
+        (mount.type === 'bind' && mount.source?.endsWith(allowedSourceSuffix) === true))
+    ) {
+      continue;
+    }
+    // Compare against the source the provisioner actually binds, not a guessed
+    // suffix: since seeds are published atomically the source is `<root>/.current`,
+    // and a hard-coded suffix rejected every share once that layout changed.
+    if (
+      mount.readWrite === STANDARD_MOUNTS.agentSeed.writable &&
+      mount.destination === STANDARD_MOUNTS.agentSeed.target &&
+      mount.source !== undefined &&
+      (mount.source === (options.agentSeedHostPath ?? DEFAULT_AGENT_SEED_SOURCE) ||
+        mount.source.endsWith('/agent-seed'))
     ) {
       continue;
     }
     if (
-      mount.destination === '/work' &&
-      mount.type === 'volume' &&
-      mount.name === options.dataVolume &&
-      mount.readWrite === true &&
-      mount.subpath === workspaceSubpath
-    ) {
-      continue;
-    }
-    if (
-      mount.readWrite === false &&
-      mount.destination === '/opt/agent-seed' &&
-      mount.source?.endsWith('/agent-seed') === true
-    ) {
-      continue;
-    }
-    if (
-      mount.readWrite === false &&
-      mount.destination === '/etc/profile.d/gh-token.sh' &&
+      mount.readWrite === STANDARD_MOUNTS.disabledTokenScript.writable &&
+      mount.destination === STANDARD_MOUNTS.disabledTokenScript.target &&
       mount.source === '/dev/null'
-    ) {
-      continue;
-    }
-    if (
-      mount.destination === '/run/verity-runner' &&
-      mount.type === 'volume' &&
-      mount.name === options.dataVolume &&
-      mount.readWrite === true &&
-      mount.subpath === `runners/${projectId}`
     ) {
       continue;
     }
@@ -1484,12 +1713,13 @@ function isPreviewArtifactDestination(destination: string | undefined): boolean 
   return new Set([
     '/home/dev/.codex/auth.json',
     '/run/verity/gh-token-capability',
+    '/run/verity/forge-proxy/ca.crt',
     '/run/verity/ssh/signing_broker_token',
     '/run/verity/claude-egress/ca.crt',
     '/run/verity/claude-egress/client.crt',
     '/run/verity/claude-egress/client.key',
-    '/run/verity/codex/config.toml',
-    '/run/verity/opencode-config',
+    `${GATEWAY_MOUNTS.codex.directory}/${GATEWAY_MOUNTS.codex.filename}`,
+    GATEWAY_MOUNTS.opencode.directory,
   ]).has(destination ?? '');
 }
 
@@ -1500,30 +1730,15 @@ function knownStandardPreviewMount(
   options: Pick<PreviewShareManagerOptions, 'dataVolume' | 'dataVolumeRoot'>,
 ): boolean {
   if (options.dataVolumeRoot === undefined) return false;
-  const entries = [
-    ['/knowledge', `knowledge/${projectId}`, false],
-    ['/knowledge/insights', `knowledge/${projectId}/insights`, true],
-    ['/knowledge/shared', 'knowledge/shared', false],
-    ['/etc/resolv.conf', `secrets/dns/resolv.${projectId}.conf`, false],
-  ] as const;
-  for (const [destination, subpath, writable] of entries) {
-    if (
-      mount.destination === destination &&
-      mount.readWrite === writable &&
-      mountMatchesProjectData(mount, subpath, options.dataVolume, options.dataVolumeRoot)
-    )
-      return true;
-  }
-  return (
-    mount.destination === '/work/.git/config' &&
-    mount.readWrite === false &&
-    mountMatchesProjectData(
-      mount,
-      `${workspaceSubpath}/.git/config`,
-      options.dataVolume,
-      options.dataVolumeRoot,
-    )
-  );
+  const paths = standardDataMountPaths(projectId, workspaceSubpath);
+  return Object.entries(paths).some(([kind, subpath]) => {
+    const expected = STANDARD_MOUNTS[kind as keyof typeof paths];
+    return (
+      mount.destination === expected.target &&
+      mount.readWrite === expected.writable &&
+      mountMatchesProjectData(mount, subpath, options.dataVolume, options.dataVolumeRoot!)
+    );
+  });
 }
 
 function projectWorkspaceSubpath(
@@ -1557,6 +1772,12 @@ async function knownPreviewArtifact(
 ): Promise<boolean> {
   if (mount.readWrite !== false || options.dataVolumeRoot === undefined) return false;
   const specs = [
+    {
+      destination: '/run/verity/forge-proxy/ca.crt',
+      relative: `secrets/git/forge_proxy_ca.${projectId}.crt`,
+      mode: 0o644,
+      kind: 'file' as const,
+    },
     {
       destination: '/run/verity/gh-token-capability',
       relative: `secrets/git/gh_token_capability.${projectId}`,
@@ -1592,19 +1813,19 @@ async function knownPreviewArtifact(
       kind: 'file' as const,
     },
     {
-      destination: '/run/verity/codex/config.toml',
-      relative: 'secrets/codex/config.toml',
-      mode: 0o644,
+      destination: `${GATEWAY_MOUNTS.codex.directory}/${GATEWAY_MOUNTS.codex.filename}`,
+      relative: `secrets/${GATEWAY_MOUNTS.codex.subdir}/${GATEWAY_MOUNTS.codex.filename}`,
+      mode: GATEWAY_MOUNTS.codex.mode,
       kind: 'file' as const,
       validate: validCodexGatewayConfig,
     },
     {
-      destination: '/run/verity/opencode-config',
-      relative: 'secrets/opencode',
+      destination: GATEWAY_MOUNTS.opencode.directory,
+      relative: `secrets/${GATEWAY_MOUNTS.opencode.subdir}`,
       mode: 0o755,
       kind: 'directory' as const,
-      child: 'opencode.json',
-      childMode: 0o644,
+      child: GATEWAY_MOUNTS.opencode.filename,
+      childMode: GATEWAY_MOUNTS.opencode.mode,
       validate: validOpenCodeGatewayConfig,
     },
   ];
@@ -1632,7 +1853,24 @@ async function knownPreviewArtifact(
   if (spec.child !== undefined) {
     const directory = join(options.dataVolumeRoot, relative);
     const entries = await listArtifactDirectory(options, directory).catch(() => undefined);
-    if (entries === undefined || entries.length !== 1 || entries[0] !== spec.child) return false;
+    if (
+      entries === undefined ||
+      !entries.includes(spec.child) ||
+      entries.some((entry) => entry !== spec.child && entry !== '.gitignore')
+    )
+      return false;
+    if (entries.includes('.gitignore')) {
+      const ignore = await inspect(join(directory, '.gitignore'), true).catch(() => undefined);
+      if (
+        ignore === undefined ||
+        ignore.kind !== 'file' ||
+        ignore.uid !== ownerUid ||
+        (ignore.mode & 0o022) !== 0 ||
+        ignore.contents === undefined ||
+        !/^[a-zA-Z0-9.*_!/?\-\r\n]*$/u.test(ignore.contents)
+      )
+        return false;
+    }
     const child = await inspect(join(directory, spec.child), true).catch(() => undefined);
     return (
       child !== undefined &&
@@ -1657,11 +1895,49 @@ async function listArtifactDirectory(
   return readdir(path);
 }
 
+// Whitespace and comments do not change a TOML value. Preserve quoted contents
+// so a credential cannot be disguised as a formatting-only change.
+function normalizedTomlLine(line: string): string {
+  let quoted = false;
+  let escaped = false;
+  let result = '';
+  for (const char of line) {
+    if (!quoted && char === '#') break;
+    if (char === '"' && !escaped) quoted = !quoted;
+    if (quoted || !/\s/u.test(char)) result += char;
+    escaped = quoted && char === '\\' && !escaped;
+  }
+  return result;
+}
+
 function validCodexGatewayConfig(contents: string): boolean {
-  const port = /^base_url = "http:\/\/127\.0\.0\.1:(\d+)\/codex"$/mu.exec(contents)?.[1];
+  const lines = contents.split(/\r?\n/u).map(normalizedTomlLine).filter(Boolean);
+  const port = lines.join('\n').match(/^base_url="http:\/\/127\.0\.0\.1:(\d+)\/codex"$/mu)?.[1];
   if (port === undefined) return false;
   try {
-    return contents.trim() === codexGatewayConfig(Number(port)).trim();
+    const required = new Set(codexGatewayConfig(Number(port)).split('\n').map(normalizedTomlLine));
+    const seen = new Set<string>();
+    let providerSection = false;
+    for (const line of lines) {
+      if (required.has(line)) {
+        if (seen.has(line)) return false;
+        // TOML keys must stay in the table where the gateway reads them.
+        if (line.startsWith('model_provider=') && providerSection) return false;
+        if (line.startsWith('[')) providerSection = true;
+        else if (!line.startsWith('model_provider=') && !providerSection) return false;
+        seen.add(line);
+      } else if (
+        providerSection ||
+        !/^(model|model_reasoning_effort|model_verbosity)="[a-zA-Z0-9._/:-]+"$/u.test(line)
+      ) {
+        return false;
+      } else {
+        const key = line.split('=', 1)[0]!;
+        if (seen.has(key)) return false;
+        seen.add(key);
+      }
+    }
+    return [...required].every((line) => seen.has(line));
   } catch {
     return false;
   }
@@ -1671,11 +1947,96 @@ function exactKeys(value: object, allowed: readonly string[]): boolean {
   return Object.keys(value).every((key) => allowed.includes(key));
 }
 
+function validKnowledgePermission(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const actual = value as Record<string, unknown>;
+  return (
+    exactKeys(actual, Object.keys(OPENCODE_KNOWLEDGE_READ_PERMISSION)) &&
+    Object.entries(OPENCODE_KNOWLEDGE_READ_PERMISSION).every(([key, expected]) => {
+      const rule = actual[key];
+      return (
+        typeof rule === 'object' &&
+        rule !== null &&
+        !Array.isArray(rule) &&
+        exactKeys(rule, Object.keys(expected)) &&
+        Object.entries(expected).every(
+          ([pattern, action]) => (rule as Record<string, unknown>)[pattern] === action,
+        )
+      );
+    })
+  );
+}
+
+function validModelMetadata(value: object): boolean {
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'name') {
+      if (typeof child !== 'string') return false;
+    } else if (['attachment', 'reasoning', 'temperature', 'tool_call'].includes(key)) {
+      if (typeof child !== 'boolean') return false;
+    } else if (key === 'limit' || key === 'cost') {
+      if (typeof child !== 'object' || child === null || Array.isArray(child)) return false;
+      const allowed =
+        key === 'limit'
+          ? ['input', 'output', 'context']
+          : ['input', 'output', 'cache_read', 'cache_write'];
+      if (
+        !exactKeys(child, allowed) ||
+        !Object.values(child).every(
+          (number) => typeof number === 'number' && Number.isFinite(number) && number >= 0,
+        )
+      )
+        return false;
+    } else if (key === 'modalities') {
+      if (
+        typeof child !== 'object' ||
+        child === null ||
+        Array.isArray(child) ||
+        !exactKeys(child, ['input', 'output'])
+      )
+        return false;
+      if (
+        !Object.values(child).every(
+          (list) =>
+            Array.isArray(list) &&
+            list.every(
+              (item: unknown) =>
+                typeof item === 'string' &&
+                ['text', 'audio', 'image', 'video', 'pdf'].includes(item),
+            ),
+        )
+      )
+        return false;
+    } else return false;
+  }
+  return true;
+}
+
 function validOpenCodeGatewayConfig(contents: string): boolean {
   try {
     const parsed = JSON.parse(contents) as unknown;
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false;
-    if (!exactKeys(parsed, ['$schema', 'autoupdate', 'permission', 'provider'])) return false;
+    if (
+      !exactKeys(parsed, [
+        '$schema',
+        'autoupdate',
+        'permission',
+        'provider',
+        'model',
+        'small_model',
+        'theme',
+        'username',
+        'logLevel',
+      ])
+    )
+      return false;
+    for (const key of ['model', 'small_model', 'theme', 'username', 'logLevel']) {
+      const value = (parsed as Record<string, unknown>)[key];
+      if (
+        value !== undefined &&
+        (typeof value !== 'string' || !/^[a-zA-Z0-9._ /:-]+$/u.test(value))
+      )
+        return false;
+    }
     const { $schema, autoupdate, permission, provider } = parsed as {
       $schema?: unknown;
       autoupdate?: unknown;
@@ -1683,8 +2044,9 @@ function validOpenCodeGatewayConfig(contents: string): boolean {
       provider?: unknown;
     };
     if ($schema !== 'https://opencode.ai/config.json' || autoupdate !== false) return false;
-    if (JSON.stringify(permission) !== JSON.stringify(OPENCODE_KNOWLEDGE_READ_PERMISSION))
-      return false;
+    if (permission !== undefined && !validKnowledgePermission(permission)) return false;
+    // Provisioning also emits a credential-free config when no provider is selected.
+    if (provider === undefined) return true;
     if (typeof provider !== 'object' || provider === null || Array.isArray(provider)) return false;
     if (!exactKeys(provider, ['verity'])) return false;
     const verity = (provider as { verity?: unknown }).verity;
@@ -1703,7 +2065,13 @@ function validOpenCodeGatewayConfig(contents: string): boolean {
     };
     if (npm !== '@ai-sdk/openai-compatible' || name !== 'OpenAI-compatible') return false;
     if (typeof gateway !== 'object' || gateway === null || Array.isArray(gateway)) return false;
-    if (!exactKeys(gateway, ['baseURL', 'apiKey'])) return false;
+    if (!exactKeys(gateway, ['baseURL', 'apiKey', 'timeout'])) return false;
+    const timeout = (gateway as { timeout?: unknown }).timeout;
+    if (
+      timeout !== undefined &&
+      (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout < 0)
+    )
+      return false;
     const { baseURL, apiKey } = gateway as { baseURL?: unknown; apiKey?: unknown };
     if (
       typeof baseURL !== 'string' ||
@@ -1712,12 +2080,25 @@ function validOpenCodeGatewayConfig(contents: string): boolean {
     )
       return false;
     if (typeof models !== 'object' || models === null || Array.isArray(models)) return false;
-    const entries = Object.entries(models as Record<string, unknown>);
+    const entries = Object.values(models as Record<string, unknown>);
     return (
       entries.length > 0 &&
-      entries.every(([model, value]) => {
+      entries.every((value) => {
         if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-        return exactKeys(value, ['name']) && (value as { name?: unknown }).name === model;
+        return (
+          exactKeys(value, [
+            'name',
+            'limit',
+            'cost',
+            'modalities',
+            'attachment',
+            'reasoning',
+            'temperature',
+            'tool_call',
+          ]) &&
+          typeof (value as { name?: unknown }).name === 'string' &&
+          validModelMetadata(value)
+        );
       })
     );
   } catch {

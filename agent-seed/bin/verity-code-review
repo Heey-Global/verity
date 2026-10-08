@@ -700,10 +700,14 @@ NODE
       STATUS=0
       case "$BACKEND" in
       codex)
+        # Keep filesystem access read-only while using the container network.
+        # Nested network isolation cannot configure loopback under gVisor.
         # Omitting --model delegates to Codex's prioritized account catalog
         # (`codex/default`), which tracks the best available Codex model.
         timeout "$CALL_TIMEOUT" codex exec --color never \
-          -c sandbox_mode='"read-only"' \
+          -c permissions.verity_review.extends='":read-only"' \
+          -c permissions.verity_review.network.enabled=true \
+          -c default_permissions='"verity_review"' \
           -c approval_policy='"never"' \
           -c shell_environment_policy.inherit='"none"' \
           -o "$CHUNK_OUT" - <"$REVIEW_IN" >"$CHUNK_LOG" 2>&1 || STATUS=$?
@@ -815,7 +819,9 @@ NODE
       case "$BACKEND" in
         codex)
           timeout "$CALL_TIMEOUT" codex exec --color never \
-            -c sandbox_mode='"read-only"' \
+            -c permissions.verity_review.extends='":read-only"' \
+          -c permissions.verity_review.network.enabled=true \
+          -c default_permissions='"verity_review"' \
             -c approval_policy='"never"' \
             -c shell_environment_policy.inherit='"none"' \
             -o "$SYNTHESIS_OUT" - <"$SYNTHESIS_IN" >"$SYNTHESIS_LOG" 2>&1 || STATUS=$?

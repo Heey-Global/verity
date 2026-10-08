@@ -45,15 +45,17 @@ function fixture(failPatch = false) {
   `,
   );
   chmodSync(join(root, 'bin/npm'), 0o755);
+  writeFileSync(join(root, 'apps/mobile/package.json'), JSON.stringify(app));
   const trace = join(root, 'trace');
   return {
     root,
-    run(eas: string, verify = false) {
+    run(eas: string, verify = false, profile = 'development') {
       return spawnSync(process.execPath, [entry, ...(verify ? ['--verify'] : [])], {
         cwd: join(root, 'apps/mobile'),
         env: {
           ...process.env,
           EAS_BUILD: eas,
+          EAS_BUILD_PROFILE: profile,
           PATH: `${join(root, 'bin')}:${process.env.PATH}`,
           TRACE: trace,
         },
@@ -76,6 +78,36 @@ describe('EAS archive preparation', () => {
       cwd: f.root,
     });
   });
+
+  it('excludes development pods only from the isolated TestFlight manifest', () => {
+    const f = fixture();
+    const path = join(f.root, 'apps/mobile/package.json');
+    const app = JSON.parse(readFileSync(path, 'utf8'));
+    app.expo = { autolinking: { ios: { exclude: ['existing-module'] } } };
+    writeFileSync(path, JSON.stringify(app));
+    expect(f.run('true', false, 'testflight').status).toBe(0);
+    const prepared = JSON.parse(readFileSync(path, 'utf8'));
+    expect(prepared.expo.autolinking.ios.exclude).toEqual([
+      'existing-module',
+      'expo-dev-client',
+      'expo-dev-menu',
+      'expo-dev-launcher',
+    ]);
+    expect(prepared.dependencies).toEqual(app.dependencies);
+    expect(f.run('true', false, 'testflight').status).toBe(0);
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(prepared);
+  });
+
+  it.each(['development', 'preview', 'simulator'])(
+    'preserves the manifest for the %s profile',
+    (profile) => {
+      const f = fixture();
+      const path = join(f.root, 'apps/mobile/package.json');
+      const original = readFileSync(path, 'utf8');
+      expect(f.run('true', false, profile).status).toBe(0);
+      expect(readFileSync(path, 'utf8')).toBe(original);
+    },
+  );
 
   it('runs the shipped workspace lifecycle during an isolated npm ci', () => {
     const f = fixture();
@@ -156,9 +188,9 @@ describe('EAS archive preparation', () => {
     expect(() => f.trace()).toThrow();
   });
 
-  it('keeps the cache bounded, strict and confined to compiler objects', () => {
-    const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8'));
-    const steps = workflow.jobs['publish-mobile-native'].steps as {
+  it('keeps the cache bounded and enables Clang module reuse within toolchain and policy', () => {
+    const workflow = parse(readFileSync('.github/workflows/mobile-native-build.yml', 'utf8'));
+    const steps = workflow.jobs.build.steps as {
       id?: string;
       name?: string;
       run: string;
@@ -168,7 +200,9 @@ describe('EAS archive preparation', () => {
     const setup = steps.find((s: { id?: string }) => s.id === 'compiler-cache');
     const cache = steps.find((s: { name?: string }) => s.name === 'Restore native compiler cache');
     expect(cache!.with.path).toBe('${{ runner.temp }}/verity-mobile-ccache');
-    expect(cache!.with['restore-keys']).toBeUndefined();
+    expect(cache!.with['restore-keys']).toContain('steps.compiler-cache.outputs.toolchain');
+    expect(cache!.with['restore-keys']).toContain('apps/mobile/build/ccache.conf');
+    expect(cache!.with['restore-keys']).not.toContain('package-lock.json');
     expect(cache!.with.key).toContain('steps.compiler-cache.outputs.toolchain');
     expect(cache!.with.key).toContain('package-lock.json');
     expect(cache!.with.key).toContain('patch-mobile-native-deps.mjs');
@@ -186,7 +220,10 @@ describe('EAS archive preparation', () => {
       .join('\n');
     expect(config).toContain('max_size = 512MiB');
     expect(config).toContain('compiler_check = content');
-    expect(config).not.toMatch(/sloppiness\s*=/);
+    // Without module support a successful release can save an empty cache.
+    expect(config).toMatch(/^sloppiness = modules,ivfsoverlay$/m);
+    expect(config).toContain('direct_mode = true');
+    expect(config).toContain('depend_mode = true');
     const stats = steps.find(
       (s: { name?: string }) => s.name === 'Report native compiler cache statistics',
     );

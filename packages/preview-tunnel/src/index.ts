@@ -33,6 +33,7 @@ import {
   type WsAcceptMeta,
   type WsOpenMeta,
 } from './framing.js';
+import type { PreviewPinBudget, PinBudgetResult } from './pin-budget.js';
 import { StreamRegistry } from './streams.js';
 import { expiredPage, loginPage, PREVIEW_PAGE_CSP, previewErrorPage } from './preview-page.js';
 
@@ -43,6 +44,7 @@ const LOGO_FILE = new URL('../assets/verity-mark.png', import.meta.url);
 let logoBytes: Buffer | undefined;
 const CONNECTOR_PATH = '/__verity/connector';
 const COOKIE_NAME = '__Host-verity-preview';
+const SESSION_LIFETIME_SECONDS = 8 * 60 * 60;
 const MAX_LOGIN_IDENTITIES = 1024;
 const CONNECTOR_HEARTBEAT_MS = 15_000;
 
@@ -58,10 +60,15 @@ export function validWebhookPath(value: string): boolean {
 export interface PreviewEdgeOptions {
   webhookPath?: string;
   shareId: string;
+  /** Open access is only enabled by the self-hosted local preview manager. */
+  accessMode?: 'pin' | 'local-open';
+  /** Required in hosted production; the service persists attempts across edge restarts. */
+  pinBudget?: PreviewPinBudget;
   pinHash: string;
   connectorTokenHash: string;
   sessionSecretHash: string;
   publicOrigin: string;
+  requestBudget?: { acquire(): boolean; release(): void };
   maxBodyBytes?: number;
   requestTimeoutMs?: number;
   maxConcurrentRequests?: number;
@@ -78,6 +85,7 @@ export interface PreviewEdgeOptions {
 }
 
 export interface PreviewConnectorOptions {
+  accessMode?: 'pin' | 'local-open';
   edgeUrl: string;
   connectorToken: string;
   targetOrigin: string;
@@ -196,13 +204,15 @@ export function generatePreviewSecret(bytes = 24): string {
 }
 
 export function hashPreviewPin(pin: string, salt = randomBytes(16).toString('hex')): string {
-  if (!/^\d{6,12}$/.test(pin)) throw new Error('preview PIN must contain 6 to 12 digits');
+  if (!/^\d{6}$/.test(pin)) throw new Error('preview PIN must contain exactly 6 digits');
   return `scrypt:${salt}:${scryptSync(pin, salt, 32).toString('hex')}`;
 }
 
 export class PreviewEdge {
-  private readonly options: Required<Omit<PreviewEdgeOptions, 'webhookPath'>> &
-    Pick<PreviewEdgeOptions, 'webhookPath'>;
+  private readonly options: Required<
+    Omit<PreviewEdgeOptions, 'pinBudget' | 'requestBudget' | 'webhookPath'>
+  > &
+    Pick<PreviewEdgeOptions, 'pinBudget' | 'requestBudget' | 'webhookPath'>;
   private readonly server: Server;
   private readonly websocketServer: WebSocketServer;
   private readonly clientSockets: WebSocketServer;
@@ -220,7 +230,10 @@ export class PreviewEdge {
   private expiryTimer: NodeJS.Timeout | undefined;
 
   constructor(options: PreviewEdgeOptions) {
-    if (options.webhookPath !== undefined && !validWebhookPath(options.webhookPath))
+    if (
+      options.webhookPath !== undefined &&
+      (!validWebhookPath(options.webhookPath) || options.accessMode === 'local-open')
+    )
       throw new Error('unsupported webhook path');
     validatePinHash(options.pinHash);
     validateHash(options.connectorTokenHash, 'connectorTokenHash');
@@ -237,6 +250,7 @@ export class PreviewEdge {
     validatePositiveIntegerOption(options.maxConcurrentStreams, 'maxConcurrentStreams');
     const origin = new URL(options.publicOrigin);
     if (
+      options.accessMode !== 'local-open' &&
       origin.protocol !== 'https:' &&
       origin.hostname !== '127.0.0.1' &&
       origin.hostname !== 'localhost'
@@ -244,6 +258,7 @@ export class PreviewEdge {
       throw new Error('publicOrigin must use https');
     }
     this.options = {
+      accessMode: 'pin',
       ...options,
       publicOrigin: origin.origin,
       maxBodyBytes: options.maxBodyBytes ?? 10 * 1024 * 1024,
@@ -278,81 +293,130 @@ export class PreviewEdge {
       });
     });
     this.server.on('upgrade', (request, socket, head) => {
-      if (this.expired()) {
-        socket.write('HTTP/1.1 410 Gone\r\nConnection: close\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-      let url: URL;
-      try {
-        url = new URL(request.url ?? '/', this.options.publicOrigin);
-      } catch {
-        socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-      if (url.pathname === CONNECTOR_PATH) {
-        if (!this.connectorAuthorized(request)) {
-          socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
-          socket.destroy();
-          return;
-        }
-        this.websocketServer.handleUpgrade(request, socket, head, (client) =>
-          this.attachConnector(client),
-        );
-        return;
-      }
-      if (this.options.webhookPath) {
-        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-      // An application socket. A handshake cannot be answered with the login
-      // redirect an ordinary request gets, so an unauthenticated one is refused
-      // outright and the page that opened it sees a failed connection.
-      if (!this.sessionAuthorized(request)) {
+      // A peer reset during asynchronous PIN verification must not crash the edge.
+      socket.once('error', () => socket.destroy());
+      void this.handleUpgrade(request, socket, head).catch(() => {
+        if (!socket.destroyed)
+          socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n', () =>
+            socket.destroy(),
+          );
+      });
+    });
+    if (options.expiresAt !== undefined && !this.expired()) this.scheduleExpiry();
+  }
+
+  private async handleUpgrade(
+    request: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+  ): Promise<void> {
+    if (this.expired()) {
+      socket.write('HTTP/1.1 410 Gone\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    let url: URL;
+    try {
+      url = new URL(request.url ?? '/', this.options.publicOrigin);
+    } catch {
+      socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    if (url.pathname === CONNECTOR_PATH) {
+      if (!this.connectorAuthorized(request)) {
         socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
         socket.destroy();
         return;
       }
-      const connector = this.connector;
-      if (!connector || connector.readyState !== WebSocket.OPEN) {
-        socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-      // A WebSocket is long-lived by definition, so unlike an http exchange it
-      // never passes through the request pool at all.
-      if (this.activeStreams >= this.options.maxConcurrentStreams) {
-        socket.write(
-          'HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\n\r\n',
-        );
-        socket.destroy();
-        return;
-      }
-      const headers = websocketRequestHeaders(request.headers);
-      if (!validHeaders(headers, FORBIDDEN_REQUEST_HEADERS)) {
-        socket.write('HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-      // An offer that is not a list of distinct tokens can never be completed:
-      // `ws` refuses it when this handshake is finally answered. Saying so now
-      // costs nothing, where letting it through spends a dial on the target for
-      // a socket that is already doomed.
-      if (!validSubprotocolOffer(request.headers['sec-websocket-protocol'])) {
-        socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
-        socket.destroy();
-        return;
-      }
-      this.openClientSocket(
-        { request, socket, head },
-        connector,
-        url.pathname + url.search,
-        headers,
+      this.websocketServer.handleUpgrade(request, socket, head, (client) =>
+        this.attachConnector(client),
       );
-    });
-    if (options.expiresAt !== undefined && !this.expired()) this.scheduleExpiry();
+      return;
+    }
+    if (this.options.webhookPath) {
+      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n', () => socket.destroy());
+      return;
+    }
+    if (
+      this.options.accessMode !== 'local-open' &&
+      !previewBrowserOriginAllowed(request, this.options.publicOrigin)
+    ) {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    const pin = url.searchParams.get('pin');
+    // Preview credentials belong to the edge, never to the application target.
+    if (url.searchParams.has('pin')) {
+      // Preserve application query bytes: reserialization can invalidate signed URLs.
+      const query = url.search
+        .slice(1)
+        .split('&')
+        .filter((parameter) => !new URLSearchParams(parameter).has('pin'))
+        .join('&');
+      url.search = query ? `?${query}` : '';
+    }
+    if (!this.options.webhookPath && !this.sessionAuthorized(request)) {
+      if (pin === null) {
+        socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n', () =>
+          socket.destroy(),
+        );
+        return;
+      }
+      const valid = await this.authorizePin(
+        request,
+        () => Promise.resolve(pin),
+        (status, _message, retryAfter) => {
+          const reason =
+            {
+              400: 'Bad Request',
+              401: 'Unauthorized',
+              403: 'Forbidden',
+              410: 'Gone',
+              429: 'Too Many Requests',
+              503: 'Service Unavailable',
+            }[status] ?? 'Error';
+          socket.end(
+            `HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\n${retryAfter ? `Retry-After: ${retryAfter}\r\n` : ''}\r\n`,
+            () => socket.destroy(),
+          );
+        },
+      );
+      if (!valid || socket.destroyed) return;
+    }
+    const connector = this.connector;
+    if (!connector || connector.readyState !== WebSocket.OPEN) {
+      socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    // A WebSocket is long-lived by definition, so unlike an http exchange it
+    // never passes through the request pool at all.
+    if (this.activeStreams >= this.options.maxConcurrentStreams) {
+      socket.write(
+        'HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\n\r\n',
+      );
+      socket.destroy();
+      return;
+    }
+    const headers = websocketRequestHeaders(request.headers);
+    localRequestCookies(headers, request, this.options.accessMode);
+    if (!validHeaders(headers, FORBIDDEN_REQUEST_HEADERS)) {
+      socket.write('HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    // An offer that is not a list of distinct tokens can never be completed:
+    // `ws` refuses it when this handshake is finally answered. Saying so now
+    // costs nothing, where letting it through spends a dial on the target for
+    // a socket that is already doomed.
+    if (!validSubprotocolOffer(request.headers['sec-websocket-protocol'])) {
+      socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    this.openClientSocket({ request, socket, head }, connector, url.pathname + url.search, headers);
   }
 
   private scheduleExpiry(): void {
@@ -631,6 +695,9 @@ export class PreviewEdge {
       connector,
       encodedPayloadLimit(this.options.maxBodyBytes),
     );
+    // Receiver errors (including payload limits) must not escape as process errors.
+    // Termination drives the close handler, which releases and resets the stream.
+    client.on('error', () => client.terminate());
     client.on('message', (data: WebSocket.RawData, binary: boolean) => {
       const payload = rawDataBuffer(data);
       const seq = this.streams.nextOutboundSeq(streamId);
@@ -674,6 +741,7 @@ export class PreviewEdge {
   private async handleHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
     let counted = false;
     let streaming = false;
+    let budgetAcquired = false;
     try {
       const url = new URL(request.url ?? '/', this.options.publicOrigin);
       if (this.options.webhookPath) {
@@ -688,16 +756,17 @@ export class PreviewEdge {
           return;
         }
         if (
-          !(await this.handleLogin(
+          !(await this.authorizePin(
             request,
-            response,
-            { pin: url.searchParams.get('pin') ?? '', next: '/' },
-            true,
+            () => Promise.resolve(url.searchParams.get('pin') ?? ''),
+            (status, message, retryAfter) =>
+              sendPreviewError(response, status, message, retryAfter),
           ))
         )
           return;
         url.searchParams.delete('pin');
       }
+
       if (!this.options.webhookPath && url.pathname === LOGO_PATH) {
         if (request.method !== 'GET' && request.method !== 'HEAD') {
           response.writeHead(405, { allow: 'GET, HEAD' }).end();
@@ -717,7 +786,32 @@ export class PreviewEdge {
         sendPreviewExpired(response);
         return;
       }
-      if (!this.options.webhookPath && url.pathname === LOGIN_PATH) {
+      if (
+        !this.options.webhookPath &&
+        this.options.accessMode !== 'local-open' &&
+        !['GET', 'HEAD', 'OPTIONS'].includes(request.method ?? 'GET') &&
+        !previewBrowserOriginAllowed(request, this.options.publicOrigin)
+      ) {
+        response.writeHead(403, {
+          'content-type': 'text/plain; charset=utf-8',
+          'cache-control': 'no-store',
+        });
+        response.end('Forbidden preview origin.');
+        return;
+      }
+      if (this.options.accessMode === 'local-open' && url.pathname === '/__verity/health') {
+        response.writeHead(200, {
+          'content-type': 'application/json',
+          'cache-control': 'no-store',
+        });
+        response.end(JSON.stringify({ shareId: this.options.shareId }));
+        return;
+      }
+      if (
+        !this.options.webhookPath &&
+        this.options.accessMode !== 'local-open' &&
+        url.pathname === LOGIN_PATH
+      ) {
         await this.handleLogin(request, response);
         return;
       }
@@ -750,6 +844,7 @@ export class PreviewEdge {
         return;
       }
       const headers = filteredHeaders(request.headers);
+      localRequestCookies(headers, request, this.options.accessMode);
       if (!validHeaders(headers, FORBIDDEN_REQUEST_HEADERS)) {
         response.writeHead(431, { 'content-type': 'text/plain; charset=utf-8' });
         response.end('Preview request headers are too large or invalid.');
@@ -768,6 +863,17 @@ export class PreviewEdge {
       if (this.activeRequests >= this.options.maxConcurrentRequests) {
         sendPreviewError(response, 503, 'The preview is busy. Try again shortly.', '1');
         return;
+      }
+      if (
+        this.options.requestBudget &&
+        (request.headers['transfer-encoding'] !== undefined ||
+          Number(request.headers['content-length'] ?? 0) > 0)
+      ) {
+        budgetAcquired = this.options.requestBudget.acquire();
+        if (!budgetAcquired) {
+          sendPreviewError(response, 503, 'Local previews are busy. Try again shortly.', '1');
+          return;
+        }
       }
       this.activeRequests += 1;
       counted = true;
@@ -832,7 +938,10 @@ export class PreviewEdge {
           head: (meta) => {
             const { status, headers: responseHeaders } = meta as HttpResponseMeta;
             headArrived = true;
-            response.writeHead(status, sanitizeResponseHeaders(responseHeaders));
+            response.writeHead(
+              status,
+              sanitizeResponseHeaders(responseHeaders, this.options.accessMode),
+            );
             response.flushHeaders();
           },
           data: (payload) => {
@@ -898,6 +1007,7 @@ export class PreviewEdge {
         if (error instanceof RequestBodyError) request.destroy();
       });
     } finally {
+      if (budgetAcquired) this.options.requestBudget?.release();
       if (counted) this.activeRequests -= 1;
       if (streaming) this.activeStreams -= 1;
     }
@@ -911,8 +1021,7 @@ export class PreviewEdge {
     request: IncomingMessage,
     response: ServerResponse,
     linkCode?: { pin: string; next: string },
-    webhook = false,
-  ): Promise<boolean> {
+  ): Promise<void> {
     const url = new URL(request.url ?? LOGIN_PATH, this.options.publicOrigin);
     if (request.method === 'GET' && !linkCode && !url.searchParams.has('pin')) {
       response.writeHead(200, {
@@ -922,26 +1031,71 @@ export class PreviewEdge {
         'x-frame-options': 'DENY',
       });
       response.end(loginPage(url.searchParams.get('next') ?? '/'));
-      return false;
+      return;
     }
     if (request.method !== 'POST' && request.method !== 'GET') {
       response.writeHead(405, { allow: 'GET, POST' });
       response.end();
-      return false;
+      return;
     }
+    let returnPath = '/';
+    const valid = await this.authorizePin(
+      request,
+      async () => {
+        const form = linkCode
+          ? new URLSearchParams(linkCode)
+          : request.method === 'GET'
+            ? url.searchParams
+            : new URLSearchParams((await readBody(request, 8 * 1024, 5_000)).toString('utf8'));
+        const next = safeNext(form.get('next'), this.options.publicOrigin);
+        const cleanNext = new URL(next, this.options.publicOrigin);
+        if (request.method === 'GET') cleanNext.searchParams.delete('pin');
+        returnPath = cleanNext.pathname + cleanNext.search + cleanNext.hash;
+        return form.get('pin') ?? '';
+      },
+      (status, message, retryAfter) => {
+        if (status === 401) {
+          response.writeHead(401, {
+            'content-type': 'text/html; charset=utf-8',
+            'cache-control': 'no-store',
+            'content-security-policy': PREVIEW_PAGE_CSP,
+            'x-frame-options': 'DENY',
+          });
+          response.end(loginPage(returnPath, message));
+        } else if (status === 410) sendPreviewExpired(response);
+        else sendPreviewError(response, status, message, retryAfter);
+      },
+    );
+    if (!valid) return;
+    response.writeHead(303, {
+      location: returnPath,
+      'set-cookie': `${COOKIE_NAME}=${this.sessionValue(Date.now() + SESSION_LIFETIME_SECONDS * 1000)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_LIFETIME_SECONDS}`,
+      'cache-control': 'no-store',
+    });
+    response.end();
+  }
+
+  private async authorizePin(
+    request: IncomingMessage,
+    readPin: () => Promise<string>,
+    reject: (status: number, message: string, retryAfter?: string) => void,
+  ): Promise<boolean> {
+    const rejectBudget = (result: PinBudgetResult): void => {
+      if (result.state === 'cooldown')
+        reject(429, 'Too many code attempts. Try again later.', String(result.retryAfterSeconds));
+      else if (result.state === 'locked')
+        reject(403, 'Code entry is locked. Ask the person who shared this preview for a new link.');
+      else reject(503, 'Code verification is unavailable. Try again later.');
+    };
     if (this.loginVerifications >= 2) {
-      sendPreviewError(response, 429, 'Too many code attempts. Try again shortly.', '1');
+      reject(429, 'Too many code attempts. Try again shortly.', '1');
       return false;
     }
     this.loginVerifications += 1;
     try {
       const client = this.loginClientIdentity(request);
       if (!client) {
-        response.writeHead(400, {
-          'content-type': 'text/plain; charset=utf-8',
-          'cache-control': 'no-store',
-        });
-        response.end('A valid trusted forwarding chain is required.');
+        reject(400, 'A valid trusted forwarding chain is required.');
         return false;
       }
       const now = Date.now();
@@ -950,51 +1104,52 @@ export class PreviewEdge {
         if (attempts.length === 0) this.loginFailures.delete(identity);
       }
       if (!this.loginFailures.has(client) && this.loginFailures.size >= MAX_LOGIN_IDENTITIES) {
-        sendPreviewError(response, 429, 'Code entry is busy. Try again in a minute.', '60');
+        reject(429, 'Code entry is busy. Try again in a minute.', '60');
         return false;
       }
       const failures = this.loginFailures.get(client) ?? [];
       if (failures.length >= 10) {
-        sendPreviewError(response, 429, 'Too many code attempts. Try again in a minute.', '60');
+        reject(429, 'Too many code attempts. Try again in a minute.', '60');
         return false;
       }
       failures.push(now);
       this.loginFailures.set(client, failures);
-      const form = linkCode
-        ? new URLSearchParams(linkCode)
-        : request.method === 'GET'
-          ? url.searchParams
-          : new URLSearchParams((await readBody(request, 8 * 1024, 5_000)).toString('utf8'));
-      const next = safeNext(form.get('next'), this.options.publicOrigin);
-      const cleanNext = new URL(next, this.options.publicOrigin);
-      if (request.method === 'GET') cleanNext.searchParams.delete('pin');
-      const returnPath = cleanNext.pathname + cleanNext.search + cleanNext.hash;
+      const pin = await readPin();
       if (this.expired()) {
-        sendPreviewExpired(response);
+        reject(410, 'This link has expired.');
         return false;
       }
-      if (!(await verifyPreviewPin(form.get('pin') ?? '', this.options.pinHash))) {
-        response.writeHead(401, {
-          'content-type': 'text/html; charset=utf-8',
-          'cache-control': 'no-store',
-          'content-security-policy': PREVIEW_PAGE_CSP,
-          'x-frame-options': 'DENY',
-        });
-        response.end(loginPage(returnPath, 'Invalid code. Please try again.'));
+      let attemptId: string | undefined;
+      if (this.options.pinBudget) {
+        const begin = await this.options.pinBudget
+          .begin()
+          .catch(() => ({ state: 'unavailable' as const }));
+        if (begin.state !== 'allowed' || !('attemptId' in begin) || !begin.attemptId) {
+          rejectBudget(begin.state === 'allowed' ? { state: 'unavailable' } : begin);
+          return false;
+        }
+        attemptId = begin.attemptId;
+      }
+      const valid = await verifyPreviewPin(pin, this.options.pinHash);
+      if (this.options.pinBudget && attemptId) {
+        // A correct code cannot grant access until its reservation is durably finished.
+        const finish = await this.options.pinBudget
+          .finish(attemptId, valid)
+          .catch(() => ({ state: 'unavailable' as const }));
+        if (finish.state !== 'allowed') {
+          rejectBudget(finish);
+          return false;
+        }
+      }
+      if (!valid) {
+        reject(401, 'Invalid code. Please try again.');
         return false;
       }
       if (this.expired()) {
-        sendPreviewExpired(response);
+        reject(410, 'This link has expired.');
         return false;
       }
       this.loginFailures.delete(client);
-      if (webhook) return true;
-      response.writeHead(303, {
-        location: returnPath,
-        'set-cookie': `${COOKIE_NAME}=${this.sessionValue()}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=28800`,
-        'cache-control': 'no-store',
-      });
-      response.end();
       return true;
     } finally {
       this.loginVerifications -= 1;
@@ -1029,14 +1184,25 @@ export class PreviewEdge {
   }
 
   private sessionAuthorized(request: IncomingMessage): boolean {
+    if (this.options.accessMode === 'local-open') return true;
     const value = parseCookies(request.headers.cookie)[COOKIE_NAME];
-    return value !== undefined && safeHashEquals(value, this.sessionValue());
+    if (value === undefined) return false;
+    // Legacy cookies carry no verifiable expiry and require a fresh PIN login.
+    const match = /^v1\.([1-9]\d{0,15})\.([A-Za-z0-9_-]{43})$/.exec(value);
+    if (match === null) return false;
+    const expiresAt = Number(match[1]);
+    return (
+      Number.isSafeInteger(expiresAt) &&
+      Date.now() < expiresAt &&
+      safeHashEquals(value, this.sessionValue(expiresAt))
+    );
   }
 
-  private sessionValue(): string {
-    return createHmac('sha256', this.options.sessionSecretHash)
-      .update(`preview-session:${this.options.shareId}`)
+  private sessionValue(expiresAt: number): string {
+    const signature = createHmac('sha256', this.options.sessionSecretHash)
+      .update(`preview-session:v1:${this.options.shareId}:${expiresAt}`)
       .digest('base64url');
+    return `v1.${expiresAt}.${signature}`;
   }
 }
 
@@ -1056,7 +1222,11 @@ export class PreviewConnector {
     validatePositiveIntegerOption(options.maxConcurrentStreams, 'maxConcurrentStreams');
     const edge = new URL(options.edgeUrl);
     if (!['ws:', 'wss:'].includes(edge.protocol)) throw new Error('edgeUrl must use ws or wss');
-    if (edge.protocol !== 'wss:' && !isLoopbackHostname(edge.hostname)) {
+    if (
+      options.accessMode !== 'local-open' &&
+      edge.protocol !== 'wss:' &&
+      !isLoopbackHostname(edge.hostname)
+    ) {
       throw new Error('edgeUrl must use wss outside loopback development');
     }
     const target = new URL(options.targetOrigin);
@@ -1073,6 +1243,7 @@ export class PreviewConnector {
       throw new Error('targetOrigin must not contain credentials, path, query, or fragment');
     }
     this.options = {
+      accessMode: 'pin',
       ...options,
       edgeUrl: edge.toString(),
       targetOrigin: target.origin,
@@ -1307,7 +1478,9 @@ export class PreviewConnector {
       return this.faultStream(socket, streamId, 'protocol_error');
     }
     target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:';
-    const { protocols, headers } = websocketDialHeaders(meta.headers);
+    const { protocols, headers } = websocketDialHeaders(
+      targetRequestHeaders(meta.headers, this.options.accessMode),
+    );
     let upstream: WebSocket;
     try {
       upstream = new WebSocket(target, protocols, {
@@ -1446,7 +1619,7 @@ export class PreviewConnector {
       }, this.options.requestTimeoutMs);
       const init: RequestInit = {
         method: context.meta.method,
-        headers: context.meta.headers,
+        headers: targetRequestHeaders(context.meta.headers, this.options.accessMode),
         redirect: 'manual',
         signal: AbortSignal.any([expired.signal, context.cancelled.signal, disconnected.signal]),
       };
@@ -1468,7 +1641,7 @@ export class PreviewConnector {
         channel: 'http',
         meta: {
           status: upstream.status,
-          headers: filteredResponseHeaders(upstream.headers, target),
+          headers: filteredResponseHeaders(upstream.headers, target, this.options.accessMode),
         },
       });
       await this.relayBody(socket, streamId, context, upstream);
@@ -1769,6 +1942,16 @@ function isLoopbackHostname(hostname: string): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
 }
 
+/** SameSite cookies do not isolate sibling previews. Check the public origin,
+ * never the proxy's Host header. Native tools may omit browser headers; opaque
+ * origins and browser requests from another site or sibling must fail closed. */
+function previewBrowserOriginAllowed(request: IncomingMessage, publicOrigin: string): boolean {
+  const origin = request.headers.origin;
+  if (origin !== undefined) return origin === publicOrigin;
+  const site = request.headers['sec-fetch-site'];
+  return site === undefined || site === 'same-origin' || site === 'none';
+}
+
 function filteredHeaders(headers: IncomingMessage['headers']): Record<string, string> {
   const result: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
@@ -1786,7 +1969,11 @@ function filteredHeaders(headers: IncomingMessage['headers']): Record<string, st
   return result;
 }
 
-function filteredResponseHeaders(headers: Headers, requestUrl: URL): Record<string, string> {
+function filteredResponseHeaders(
+  headers: Headers,
+  requestUrl: URL,
+  mode: 'pin' | 'local-open' = 'pin',
+): Record<string, string> {
   const result: Record<string, string> = {};
   headers.forEach((value, name) => {
     if (
@@ -1797,6 +1984,12 @@ function filteredResponseHeaders(headers: Headers, requestUrl: URL): Record<stri
     )
       result[name] = value;
   });
+  for (const name of Object.keys(result))
+    if (name.startsWith('x-verity-local-set-cookie-')) delete result[name];
+  if (mode === 'local-open')
+    headers.getSetCookie().forEach((cookie, index) => {
+      result[`x-verity-local-set-cookie-${index}`] = cookie;
+    });
   const location = result.location;
   if (location) {
     try {
@@ -1813,15 +2006,27 @@ function filteredResponseHeaders(headers: Headers, requestUrl: URL): Record<stri
   return result;
 }
 
-function sanitizeResponseHeaders(headers: Record<string, string>): Record<string, string> {
+function sanitizeResponseHeaders(
+  headers: Record<string, string>,
+  mode: 'pin' | 'local-open' = 'pin',
+): Record<string, string | string[]> {
   const result: Record<string, string> = {};
   for (const [rawName, value] of Object.entries(headers)) {
     const name = rawName.toLowerCase();
     if (!HOP_BY_HOP.has(name) && name !== 'set-cookie' && name !== 'content-length')
       result[name] = value;
   }
-  result['cache-control'] ??= 'no-store';
-  return result;
+  const cookies: string[] = [];
+  for (const name of Object.keys(result)) {
+    if (name.startsWith('x-verity-local-set-cookie-')) {
+      if (mode === 'local-open') cookies.push(result[name]!);
+      delete result[name];
+    }
+  }
+  const output: Record<string, string | string[]> = result;
+  if (cookies.length) output['set-cookie'] = cookies;
+  output['cache-control'] ??= 'no-store';
+  return output;
 }
 
 function parseCookies(value: string | undefined): Record<string, string> {
@@ -1866,7 +2071,7 @@ function validatePinHash(value: string): void {
 
 async function verifyPreviewPin(pin: string, encoded: string): Promise<boolean> {
   const [, salt, expected] = encoded.split(':');
-  if (!salt || !expected || !/^\d{6,12}$/.test(pin)) return false;
+  if (!salt || !expected || !/^\d{6}$/.test(pin)) return false;
   const derived = await new Promise<Buffer>((resolve, reject) => {
     scrypt(pin, salt, 32, (error, value) => {
       if (error) reject(error);
@@ -1903,4 +2108,42 @@ function sendPreviewPage(
     ...(retryAfter ? { 'retry-after': retryAfter } : {}),
   });
   response.end(page);
+}
+
+function localRequestCookies(
+  headers: Record<string, string>,
+  request: IncomingMessage,
+  mode: 'pin' | 'local-open',
+): void {
+  for (const name of Object.keys(headers))
+    if (name.startsWith('x-verity-local-request-cookie-')) delete headers[name];
+  if (mode === 'local-open' && request.headers.cookie) {
+    const value = request.headers.cookie;
+    for (let offset = 0; offset < value.length; offset += 4096)
+      headers[`x-verity-local-request-cookie-${offset / 4096}`] = value.slice(
+        offset,
+        offset + 4096,
+      );
+  }
+}
+
+function targetRequestHeaders(
+  headers: Record<string, string>,
+  mode: 'pin' | 'local-open',
+): Record<string, string> {
+  const result = { ...headers };
+  const chunks: Array<[number, string]> = [];
+  for (const name of Object.keys(result)) {
+    if (name.startsWith('x-verity-local-request-cookie-')) {
+      const index = Number(name.slice('x-verity-local-request-cookie-'.length));
+      if (Number.isSafeInteger(index) && index >= 0) chunks.push([index, result[name]!]);
+      delete result[name];
+    }
+  }
+  if (mode === 'local-open' && chunks.length)
+    result.cookie = chunks
+      .sort((a, b) => a[0] - b[0])
+      .map((chunk) => chunk[1])
+      .join('');
+  return result;
 }

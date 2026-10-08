@@ -4,11 +4,20 @@ export const RELEASE_CHANNEL_SCHEMA_VERSION = 1 as const;
 export const OFFICIAL_SERVER_IMAGE = 'ghcr.io/heey-global/verity/verity-server';
 export const OFFICIAL_AGENT_SEED_IMAGE = 'ghcr.io/heey-global/verity/verity-agent-seed';
 
+export type ReleaseChannelName = 'stable' | 'staging';
+
+export function releaseChannelFromEnv(env: NodeJS.ProcessEnv): ReleaseChannelName {
+  const channel = env.VERITY_UPDATE_CHANNEL ?? 'stable';
+  if (channel !== 'stable' && channel !== 'staging')
+    throw new Error('VERITY_UPDATE_CHANNEL must be stable or staging');
+  return channel;
+}
+
 export type ReleaseArchitecture = 'amd64' | 'arm64';
 
 export interface ReleaseChannelMetadata {
   readonly schemaVersion: typeof RELEASE_CHANNEL_SCHEMA_VERSION;
-  readonly channel: 'stable';
+  readonly channel: ReleaseChannelName;
   readonly version: string;
   readonly revision: string;
   readonly architecture: ReleaseArchitecture;
@@ -78,6 +87,7 @@ export interface ReleaseChannelResolver {
 }
 
 interface ReleaseChannelResolverOptions {
+  readonly channel?: ReleaseChannelName;
   readonly managed: boolean;
   readonly current: ServerCompat;
   readonly architecture: ReleaseArchitecture;
@@ -196,7 +206,7 @@ export function parseReleaseChannelMetadata(metadata: unknown): ReleaseChannelMe
       'generation',
     ]) ||
     metadata.schemaVersion !== RELEASE_CHANNEL_SCHEMA_VERSION ||
-    metadata.channel !== 'stable' ||
+    (metadata.channel !== 'stable' && metadata.channel !== 'staging') ||
     parseVersion(metadata.version) === null ||
     typeof metadata.revision !== 'string' ||
     !/^[a-f0-9]{40}$/.test(metadata.revision) ||
@@ -214,7 +224,7 @@ export function parseReleaseChannelMetadata(metadata: unknown): ReleaseChannelMe
   if (compatibility === null || compatibility.serverVersion !== metadata.version) return null;
   return {
     schemaVersion: 1,
-    channel: 'stable',
+    channel: metadata.channel,
     version: metadata.version,
     revision: metadata.revision,
     architecture: metadata.architecture,
@@ -258,6 +268,8 @@ export function createReleaseChannelResolver(
         (async (): Promise<ServerUpdateAvailability> => {
           const channel = parseSignedReleaseChannel(await options.load(controller.signal));
           if (channel === null) throw new Error('release channel metadata is invalid');
+          if (channel.metadata.channel !== (options.channel ?? 'stable'))
+            throw new Error('release channel does not match the selected update channel');
           if (!(await options.verify(channel))) {
             throw new Error('release channel signature is invalid');
           }

@@ -34,7 +34,8 @@ import {
 type NativePatch = {
   package: string;
   file: string;
-  fixedFrom: string;
+  fixedFrom: string | null;
+  supportedVersion?: string;
   reference: string;
   why: string;
   requires: string[];
@@ -348,7 +349,12 @@ describe('mobile native dependency patches', () => {
     // Every patch gets a fixture: the entry point runs them all, and one missing
     // dependency would fail the run for a reason this test is not about.
     const targets = patches.map((patch) =>
-      installCopy(root, patch, '0.0.0', `${patch.requires.join('\n')}\n${patch.before}\n`),
+      installCopy(
+        root,
+        patch,
+        patch.supportedVersion ?? '0.0.0',
+        `${patch.requires.join('\n')}\n${patch.before}\n`,
+      ),
     );
     mkdirSync(join(root, 'scripts'));
     const script = join(root, 'scripts', 'patch-mobile-native-deps.mjs');
@@ -402,7 +408,9 @@ describe('mobile native dependency patches', () => {
       ).toBeGreaterThan(0);
       for (const version of versions) {
         expect(
-          isFixedUpstream(version, patch.fixedFrom),
+          patch.fixedFrom === null
+            ? version !== patch.supportedVersion
+            : isFixedUpstream(version, patch.fixedFrom),
           `${patch.package}@${version} carries the upstream fix from ${patch.fixedFrom} — ` +
             'delete its entry in NATIVE_PATCHES, and the patch step with it if it was the last',
         ).toBe(false);
@@ -448,7 +456,12 @@ describe('mobile native dependency patches', () => {
   it('exits zero and reports every patch it applied', () => {
     const root = makeRoot();
     for (const patch of patches) {
-      installCopy(root, patch, '0.0.0', `${patch.requires.join('\n')}\n${patch.before}\n`);
+      installCopy(
+        root,
+        patch,
+        patch.supportedVersion ?? '0.0.0',
+        `${patch.requires.join('\n')}\n${patch.before}\n`,
+      );
     }
     const lines: string[] = [];
     const errors: string[] = [];
@@ -463,7 +476,12 @@ describe('mobile native dependency patches', () => {
   it('reports a later patch even when an earlier one fails', () => {
     const root = makeRoot();
     const other = { ...reanimated, package: 'another-native-dep' };
-    installCopy(root, other, '0.0.0', `${other.requires.join('\n')}\n${other.before}\n`);
+    installCopy(
+      root,
+      other,
+      other.supportedVersion ?? '0.0.0',
+      `${other.requires.join('\n')}\n${other.before}\n`,
+    );
 
     const lines: string[] = [];
     const errors: string[] = [];
@@ -507,7 +525,7 @@ describe('mobile native dependency patches', () => {
     // session sandbox); CI's `test` job installs only `packages`, and the
     // `mobile-app` job covers it there by running `patch:native` for real.
     const { packageRoot, version } = installed!;
-    if (isFixedUpstream(version, reanimated.fixedFrom)) {
+    if (isFixedUpstream(version, reanimated.fixedFrom!)) {
       // Upgrading past the fix is the retirement path, not drift: upstream owns
       // that source again and may rewrite it freely — including moving or renaming
       // the file, so it must not be read here. Assert the retirement instead.
@@ -526,7 +544,7 @@ describe('mobile native dependency patches', () => {
       // Same drift anchor as above, for the auth-session presentation fix: what
       // prebuild copies into the Xcode project is the tree that has to match.
       const { packageRoot, version } = installedWebBrowser!;
-      if (isFixedUpstream(version, webBrowser.fixedFrom)) {
+      if (isFixedUpstream(version, webBrowser.fixedFrom!)) {
         // Going green here does not let the 58 bump slip through unreviewed:
         // `fixedFrom` names the next major, not a fix release, and the lockfile
         // test above ("fails once a patched dependency is upgraded past the

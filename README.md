@@ -20,10 +20,11 @@ supported.
 
 ![Verity app](docs/website/site/assets/hero-product-verity-v5.png)
 
-> [!WARNING]
-> Verity is under active development and is not yet recommended for
-> third-party production use. Backup and restore automation and some release
-> security controls are still being completed. Review the
+> [!NOTE]
+> **Join the Verity beta.** Try the self-hosted setup and help us improve it
+> with your feedback. For a TestFlight invitation to the app, email
+> [hello@verity.build](mailto:hello@verity.build).
+> Verity is still under active development; review the
 > [known limitations](SECURITY.md#known-limitations) and the
 > [open-source readiness tracker](docs/open-source-readiness.md) before deploying.
 
@@ -61,7 +62,49 @@ Workflow and deployment:
 You need an x86-64 Linux host with Docker 25 or newer, the Docker Compose v2
 plugin, and root or `sudo` access. ARM64, macOS, and Windows hosts are not
 currently supported. The official installer provisions the Server, Runner, and
-PostgreSQL, then prints a QR code for pairing the mobile app:
+PostgreSQL, then prints a QR code for pairing the mobile app.
+
+For a host running one active project sandbox, plan for **16 GiB of RAM and
+4 CPU cores**. This is a sizing recommendation, not a tested minimum. Each
+sandbox defaults to a 6 GiB memory limit and a CPU quota of 4 cores; these are
+upper limits, not reserved resources. Leave room for the Server, PostgreSQL,
+and the host. Smaller hosts need lower [resource limits](deploy/README.md#resource-guardrails);
+multiple active sandboxes need additional capacity.
+
+The mobile app connects on **port 8082** over TLS and pins the server certificate.
+After pairing, authenticated API routes require a bearer token specific to the
+paired device; only explicitly defined pre-authentication routes are exempt.
+See [SECURITY.md](SECURITY.md) for the security model and known limitations.
+Docker publishes this port on all host interfaces by default, and Docker's port
+forwarding can bypass ufw rules. Restrict access to trusted devices or networks
+and verify reachability from outside the host; see the
+[deployment hardening guide](deploy/README.md#hardening-an-internet-reachable-host).
+
+For the reference Docker deployment, allow these **TCP ports** from the devices
+that need access:
+
+| Default host ports | Purpose                                    | Access                                                              |
+| ------------------ | ------------------------------------------ | ------------------------------------------------------------------- |
+| `8082`             | Verity API and mobile app connection (TLS) | Trusted devices or networks                                         |
+| `8100–8119`        | Local HTTP and WebSocket previews          | Trusted LAN or VPN clients only; previews have no access protection |
+
+The API host port is configurable through `VERITY_API_HOST_PORT`; the local
+preview range through `VERITY_LOCAL_PREVIEW_PORT_RANGE`. The deployment publishes
+the range once, and each local share uses an available port. Services keep their own listening ports inside the sandbox; devices access them
+through the allocated local preview port. No separate sandbox ports need
+publishing or firewall rules.
+Public sharing through Uplink needs no inbound port forwarding for this range;
+do not expose local previews to the internet. See the
+[ports and environment reference](deploy/README.md#ports--environment-reference)
+for configuration details.
+
+The bootstrap temporarily downloads a version-pinned cosign binary, checks its
+embedded SHA-256 checksum, and verifies the Server image's release signature
+before using its installation code. You do not need to install cosign yourself.
+Download or verification failures stop installation; network access to GitHub,
+the image registry, and Sigstore trust services is required.
+
+Install with:
 
 ```sh
 curl -fsSL https://verity.build/install.sh | bash
@@ -76,6 +119,16 @@ curl -fsSL https://verity.build/install.sh | bash -s -- --preflight
 
 See the [deployment guide](deploy/README.md) for manual installation, advanced
 configuration, upgrades, and recovery.
+
+> [!WARNING]
+> **Do not expose the Verity server to the public internet.** Do not open or
+> forward port `8082` or the preview ports `8100–8119` on your router or cloud
+> firewall. Connect from your local network or through a VPN such as WireGuard
+> or Tailscale. The local previews have no access protection, and a Server
+> compromise currently amounts to a host compromise. If the host is reachable
+> from the internet anyway, for example a cloud VM with a public address, follow
+> the [hardening guide](deploy/README.md#hardening-an-internet-reachable-host)
+> and verify from an outside network that the ports are blocked.
 
 The mobile app source is included in this repository. Official App Store builds
 and hosted connectivity are distributed separately and are not required by the

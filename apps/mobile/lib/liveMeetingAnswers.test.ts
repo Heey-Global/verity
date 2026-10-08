@@ -3,6 +3,7 @@ import {
   compactMeetingAnswer,
   meetingAnswerCards,
   meetingAnswerSource,
+  meetingAnswerTruncated,
   meetingRequestFromPrompt,
   sameMeetingRequest,
   unacknowledgedMeetingAnswers,
@@ -69,8 +70,11 @@ test('keeps an in-progress spoken request in the meeting and does not show subag
 
 test('keeps a short, readable answer in the compact card', () => {
   expect(compactMeetingAnswer('## Finding\n\n[Roadmap](https://example.com): Tuesday.')).toBe(
-    'Finding Roadmap: Tuesday.',
+    'Finding\n[Roadmap](https://example.com): Tuesday.',
   );
+  // Whole bullets survive; a long answer ends after the last bullet that fits.
+  const bullets = ['- **Paris** has about 2.1 million residents.', `- ${'x'.repeat(340)}`];
+  expect(compactMeetingAnswer(bullets.join('\n'))).toBe(`${bullets[0]} …`);
   expect(meetingAnswerSource('[Roadmap](https://example.com/plan): Tuesday.')).toBe('example.com');
 });
 
@@ -129,4 +133,57 @@ test('reads the same request reference from the session prompt', () => {
       'meeting-1',
     ),
   ).toEqual({ request: 'Is Friday correct?', kind: 'request', requestId: 'second' });
+});
+
+// Before queued meeting turns, a second question was steered into the running reply and
+// the parser ignored it, so the first card showed the answer to the second question.
+test('never gives a steered meeting request the answer meant for another', () => {
+  const prompt = (question: string, steered?: boolean) => ({
+    t: 'prompt',
+    text: `Research this point raised during live meeting meeting-1:\n\n${question}`,
+    ...(steered ? { steered: true } : {}),
+  });
+  const events = [
+    { seq: 1, event: prompt('How tall is the Eiffel Tower?') },
+    { seq: 2, event: { t: 'tool_call', id: 'search-1', name: 'WebSearch', input: {} } },
+    { seq: 3, event: prompt('How many people live in Paris?', true) },
+    {
+      seq: 4,
+      event: {
+        t: 'text',
+        delta: '- The tower is 330 metres tall. Paris has about 2.1 million residents.',
+      },
+    },
+    { seq: 5, event: { t: 'result' } },
+    { seq: 6, event: prompt('Who built it?') },
+    { seq: 7, event: { t: 'text', delta: '- Gustave Eiffel’s company.' } },
+    { seq: 8, event: { t: 'prompt', text: 'Unrelated chat message', steered: true } },
+    { seq: 9, event: { t: 'result' } },
+  ] as SessionHistoryPage['events'];
+  expect(meetingAnswerCards(events, 'meeting-1')).toEqual([
+    expect.objectContaining({
+      request: 'How tall is the Eiffel Tower?',
+      status: 'failed',
+      combined: true,
+      answer: '',
+    }),
+    expect.objectContaining({
+      request: 'How many people live in Paris?',
+      status: 'failed',
+      combined: true,
+      answer: '',
+    }),
+    expect.objectContaining({ request: 'Who built it?', status: 'ready' }),
+  ]);
+});
+
+// Blank lines between bullets are dropped from the compact card; that alone must not
+// offer a "Show full answer" that expands to the same content.
+test('reports truncation only when the compact answer leaves content out', () => {
+  expect(meetingAnswerTruncated('- First point\n\n- Second point\n')).toBe(false);
+  expect(
+    meetingAnswerTruncated(
+      Array.from({ length: 12 }, (_, i) => `- Point ${i} ${'x'.repeat(40)}`).join('\n'),
+    ),
+  ).toBe(true);
 });

@@ -41,3 +41,8 @@ if expected == "success" {
     fatalError("expected \(expected), got \(actual); \(native); phase=\(delegate.phase)")
   }
 }
+
+// The delegate-only smoke cannot catch cross-task cancellation or lost pooling.
+if expected == "success" {
+  try verifyPinnedHTTPPool(origin: url, pin: CommandLine.arguments[2])
+}

@@ -28,7 +28,7 @@ export interface UseModels {
  * Ordering + default resolution are the picker UI's job (via the pure `orderModels` /
  * `defaultModel` helpers); this hook just surfaces the raw server response.
  */
-export function useModels(client: VerityClient): UseModels {
+export function useModels(client: VerityClient, enabled = true): UseModels {
   const [models, setModels] = useState<string[]>([]);
   const [modelOrder, setModelOrder] = useState<string[]>([]);
   const [moreModels, setMoreModels] = useState<string[]>([]);
@@ -68,8 +68,8 @@ export function useModels(client: VerityClient): UseModels {
   }, [client]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (enabled) void load();
+  }, [load, enabled]);
 
   const refresh = useCallback(() => {
     void load();

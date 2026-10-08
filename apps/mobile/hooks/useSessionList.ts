@@ -1,13 +1,18 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
 import {
   type VerityClient,
   SessionListModel,
   type SessionListState,
   subscribePullRequestStatusMutations,
+  subscribeSessionAutomationMutations,
   subscribeSessionStatusMutations,
   subscribeSettledPermissions,
 } from '@verity/mobile';
 import { AppState } from 'react-native';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getVerityBaseUrl } from '../lib/client';
+import { useLiveHints } from '../lib/liveConnection';
 
 export interface UseSessionList extends SessionListState {
   /** Force an immediate reload (e.g. pull-to-refresh / retry button). `silent`
@@ -16,6 +21,10 @@ export interface UseSessionList extends SessionListState {
   refresh: (opts?: { silent?: boolean }) => Promise<void>;
   /** Set a session's display name (or clear it with `null`). Optimistic. */
   rename: (sessionId: string, name: string | null) => void;
+  /** Mark or unmark a session as a favorite (synced across devices). Optimistic. */
+  setFavorite: (sessionId: string, favorite: boolean) => void;
+  /** Save a project-local order, with serialized optimistic updates. */
+  reorder: (projectId: string | null, ids: string[]) => Promise<void>;
   /** Permanently delete a session (removes its history + worktree). Optimistic.
    * Named `remove` rather than `delete` so consumers can destructure it (`delete`
    * is a reserved word and would be a syntax error in a destructuring binding). */
@@ -34,7 +43,7 @@ export function useSessionList(client: VerityClient): UseSessionList {
   // (its `state` getter returns a new literal + a new array), so React never bails
   // out of a re-render on a same-reference no-op.
   const model = useMemo(
-    () => new SessionListModel({ client, onChange: (s) => setState(s) }),
+    () => new SessionListModel({ client, pollIntervalMs: 0, onChange: (s) => setState(s) }),
     [client],
   );
 
@@ -45,24 +54,51 @@ export function useSessionList(client: VerityClient): UseSessionList {
 
   useEffect(() => {
     setState({ ...model.state, loading: true });
-    if (AppState.currentState === 'active') model.start();
-    const appState = AppState.addEventListener('change', (nextState) => {
-      // Native timers may be suspended or dropped while the app is backgrounded.
-      // Recreate the interval and refresh immediately whenever it becomes active.
-      if (nextState === 'active') model.start();
-      else model.stop();
-    });
-    return () => {
-      appState.remove();
-      model.stop();
-    };
   }, [model]);
+
+  // The list refetches when the server says a session changed; its own poll is
+  // only the safety net. Hints for a model that is not running are ignored.
+  const onHints = useCallback(
+    (hints: Parameters<typeof model.applyHints>[0]) => {
+      model.applyHints(hints);
+    },
+    [model],
+  );
+  useLiveHints(getVerityBaseUrl(), onHints);
+  useEffect(
+    () =>
+      subscribeLiveRefresh(
+        client,
+        () => model.applyHints([]),
+        (path) => path.split('?')[0] === '/sessions' || path === '/provider-limits',
+      ),
+    [client, model],
+  );
+
+  // Focus only gates background requests; React state would redraw the entire
+  // overview and embedded transcript during each navigation transition.
+  const focused = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      focused.current = true;
+      if (AppState.currentState === 'active') model.start();
+      const appState = AppState.addEventListener('change', (nextState) => {
+        if (nextState === 'active') model.start();
+        else model.stop();
+      });
+      return () => {
+        focused.current = false;
+        appState.remove();
+        model.stop();
+      };
+    }, [model]),
+  );
 
   useEffect(
     () =>
       subscribeSettledPermissions((sessionId, toolUseId) => {
         model.settlePermission(sessionId, toolUseId);
-        void model.refresh({ silent: true });
+        if (focused.current) void model.refresh({ silent: true });
       }),
     [model],
   );
@@ -77,9 +113,20 @@ export function useSessionList(client: VerityClient): UseSessionList {
 
   useEffect(
     () =>
+      subscribeSessionAutomationMutations((sessionId, automation) => {
+        model.applySessionAutomation(
+          sessionId,
+          automation === null ? undefined : { status: automation.status },
+        );
+      }),
+    [model],
+  );
+
+  useEffect(
+    () =>
       subscribePullRequestStatusMutations(({ sessionId, pr }) => {
         if (pr !== undefined) model.applyPullRequestStatus(sessionId, pr);
-        void model.refresh({ silent: true });
+        if (focused.current) void model.refresh({ silent: true });
       }),
     [model],
   );
@@ -98,6 +145,13 @@ export function useSessionList(client: VerityClient): UseSessionList {
     [model],
   );
 
+  const setFavorite = useCallback(
+    (sessionId: string, favorite: boolean) => {
+      void model.setFavorite(sessionId, favorite);
+    },
+    [model],
+  );
+
   const remove = useCallback(
     (sessionId: string, opts: { force?: boolean } = {}) => {
       return model.delete(sessionId, opts);
@@ -105,5 +159,9 @@ export function useSessionList(client: VerityClient): UseSessionList {
     [model],
   );
 
-  return { ...state, refresh, rename, remove };
+  const reorder = useCallback(
+    (projectId: string | null, ids: string[]) => model.reorder(projectId, ids),
+    [model],
+  );
+  return { ...state, refresh, rename, setFavorite, remove, reorder };
 }

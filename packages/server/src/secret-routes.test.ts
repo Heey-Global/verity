@@ -254,7 +254,7 @@ describe('GET /sessions?envelope=1 attention (sealed)', () => {
     const app1 = buildWithCipher(first);
     await app1.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
     const unlocked = await app1.inject({ method: 'GET', url: '/sessions?envelope=1' });
-    expect(unlocked.json()).toEqual({ sessions: [] }); // no `attention` key at all
+    expect(unlocked.json()).toEqual({ sessions: [], sessionReordering: true }); // no `attention` key at all
     await app1.close();
 
     // "Restart": a brand-new sealed cipher over the same database.
@@ -278,7 +278,7 @@ describe('GET /sessions?envelope=1 attention (sealed)', () => {
     const app = buildWithCipher(createSealableSecretCipher());
     try {
       const res = await app.inject({ method: 'GET', url: '/sessions?envelope=1' });
-      expect(res.json()).toEqual({ sessions: [] });
+      expect(res.json()).toEqual({ sessions: [], sessionReordering: true });
     } finally {
       await app.close();
     }

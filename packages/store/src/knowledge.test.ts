@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { sql } from 'kysely';
+import { Migrator } from 'kysely/migration';
+import { migrationProvider } from './migrations.js';
 import { createTestDb, truncateAll, type TestDb } from './testing.js';
 import {
   KNOWLEDGE_DOCUMENT_MAX_BYTES,
@@ -50,7 +52,7 @@ async function setup() {
   return { k, parent, child, secret, doc, hidden };
 }
 describe('managed knowledge', () => {
-  it('queues ordinary documents created in project Sources', async () => {
+  it('retains ordinary documents created in project Sources', async () => {
     await ctx.store.upsertProject({
       id: 'p',
       owner: 'test',
@@ -69,9 +71,10 @@ describe('managed knowledge', () => {
       title: 'decision',
       bodyMarkdown: 'Use the blue design.',
     });
-    expect(await ctx.store.knowledge.listWikiMaintenance('p')).toEqual([
-      expect.objectContaining({ projectId: 'p', sourceDocumentId: source.id }),
-    ]);
+    expect(await ctx.store.knowledge.getDocument(source.id)).toMatchObject({
+      folderId: nested.id,
+      bodyMarkdown: 'Use the blue design.',
+    });
   });
   it('filters discovery before returning metadata and refuses direct ids and historical revisions', async () => {
     const { k, parent, child, secret, doc, hidden } = await setup();
@@ -150,13 +153,12 @@ describe('managed knowledge', () => {
       code: 'invalid',
     });
   });
-  it('downgrades stop writes but retain contexts; read revocation permanently fences old sessions', async () => {
+  it('checks current grants on each operation without permanently fencing sessions', async () => {
     const { k, parent, doc } = await setup();
     await k.setGrants('p', [{ folderId: parent.id, mode: 'read_write' }]);
     await k.runAgent(actor, 'read', { documentId: doc.id });
     expect(await k.hasSessionKnowledgeExposure('s')).toBe(true);
     await k.setGrants('p', [{ folderId: parent.id, mode: 'read' }]);
-    expect(await k.isSessionInvalidated('s')).toBe(false);
     await expect(
       k.runAgent(actor, 'edit', {
         documentId: doc.id,
@@ -166,12 +168,12 @@ describe('managed knowledge', () => {
       }),
     ).rejects.toMatchObject({ code: 'forbidden' });
     await k.setGrants('p', []);
-    expect(await k.listPendingInvalidatedSessions()).toEqual(['s']);
-    await k.markInvalidatedSessionStopped('s');
-    expect(await k.listPendingInvalidatedSessions()).toEqual([]);
-    await k.setGrants('p', [{ folderId: parent.id, mode: 'read_write' }]);
     await expect(k.runAgent(actor, 'read', { documentId: doc.id })).rejects.toMatchObject({
       code: 'forbidden',
+    });
+    await k.setGrants('p', [{ folderId: parent.id, mode: 'read_write' }]);
+    await expect(k.runAgent(actor, 'read', { documentId: doc.id })).resolves.toMatchObject({
+      id: doc.id,
     });
     expect(await k.hasSessionKnowledgeExposure('s')).toBe(true);
   });
@@ -182,7 +184,6 @@ describe('managed knowledge', () => {
       { folderId: child.id, mode: 'read_write' },
     ]);
     await k.updateFolder(child.id, { parentId: secret.id });
-    expect(await k.isSessionInvalidated('s')).toBe(false);
     await expect(k.runAgent(actor, 'read', { documentId: doc.id })).resolves.toMatchObject({
       id: doc.id,
     });
@@ -196,7 +197,9 @@ describe('managed knowledge', () => {
       }),
     ).rejects.toMatchObject({ code: 'forbidden' });
     await k.moveDocument(doc.id, secret.id);
-    expect(await k.isSessionInvalidated('s')).toBe(true);
+    await expect(k.runAgent(actor, 'read', { documentId: doc.id })).rejects.toMatchObject({
+      code: 'forbidden',
+    });
   });
   it('rejects folder cycles, duplicate names, path traversal and oversized documents atomically', async () => {
     const { k, parent, child } = await setup();
@@ -228,12 +231,30 @@ describe('managed knowledge', () => {
     expect(await k.exportDocuments(target.id)).toEqual(files);
     await expect(k.importDocuments(target.id, files)).rejects.toMatchObject({ code: 'conflict' });
   });
-  it('deletion invalidates existing contexts and cascades revisions while retaining audit metadata', async () => {
-    const { k, parent, doc } = await setup();
-    await k.setGrants('p', [{ folderId: parent.id, mode: 'read' }]);
+  it('deletion cascades revisions and retains audit metadata without blocking other knowledge', async () => {
+    const { k, parent, secret, hidden, doc } = await setup();
+    await k.setGrants('p', [
+      { folderId: parent.id, mode: 'read' },
+      { folderId: secret.id, mode: 'read' },
+    ]);
+    await ctx.store.setSessionAutomation({
+      sessionId: actor.sessionId,
+      name: 'Knowledge review',
+      schedule: { kind: 'daily', hour: 9, minute: 0 },
+      prompt: 'Review the knowledge base.',
+    });
     await k.runAgent(actor, 'read', { documentId: doc.id });
     await k.deleteFolder(parent.id);
-    expect(await k.isSessionInvalidated('s')).toBe(true);
+    // Deleting one source must not silently detach scheduled work or fence unrelated reads.
+    expect(await ctx.store.getSessionAutomation(actor.sessionId)).toMatchObject({
+      status: 'enabled',
+    });
+    await expect(k.runAgent(actor, 'read', { documentId: hidden.id })).resolves.toMatchObject({
+      id: hidden.id,
+    });
+    await expect(k.runAgent(actor, 'read', { documentId: doc.id })).rejects.toMatchObject({
+      code: 'forbidden',
+    });
     expect(
       await ctx.db
         .selectFrom('knowledge_document_revisions')
@@ -273,7 +294,9 @@ describe('managed knowledge', () => {
     expect((await k.getDocument(doc.id)).folderId).toBe(child.id);
     const next = await k.previewFolderMove(child.id, secret.id);
     await k.updateFolder(child.id, { parentId: secret.id, expectedPolicyToken: next.policyToken });
-    expect(await k.isSessionInvalidated('s')).toBe(true);
+    await expect(k.runAgent(actor, 'read', { documentId: doc.id })).rejects.toMatchObject({
+      code: 'forbidden',
+    });
   });
   it('historical reads identify and audit the requested revision rather than the latest content', async () => {
     const { k, parent, doc } = await setup();
@@ -309,14 +332,50 @@ describe('managed knowledge', () => {
         .execute(),
     ).toEqual([{ outcome: 'deny' }]);
   });
-  it('deleting one document fences existing sessions even while the containing folder remains accessible', async () => {
+  it('deleting one document returns an error and keeps the session able to read other documents', async () => {
     const { k, parent, child, doc } = await setup();
     await k.setGrants('p', [{ folderId: parent.id, mode: 'read' }]);
     await k.runAgent(actor, 'read', { documentId: doc.id });
     await k.deleteDocument(doc.id);
     expect(await k.listFolders()).toEqual(expect.arrayContaining([child]));
-    expect(await k.isSessionInvalidated(actor.sessionId)).toBe(true);
+    await expect(k.runAgent(actor, 'read', { documentId: doc.id })).rejects.toMatchObject({
+      code: 'forbidden',
+    });
+    const remaining = await k.createDocument({
+      folderId: child.id,
+      title: 'remaining.md',
+      bodyMarkdown: 'Available',
+    });
+    await expect(k.runAgent(actor, 'read', { documentId: remaining.id })).resolves.toMatchObject({
+      id: remaining.id,
+    });
     expect(await k.hasSessionKnowledgeExposure(actor.sessionId)).toBe(true);
+  });
+  it('drops existing invalidation markers on upgrade without deleting sessions', async () => {
+    const migrator = new Migrator({ db: ctx.db, provider: migrationProvider });
+    try {
+      expect((await migrator.migrateTo('0125_session_event_stats')).error).toBeUndefined();
+      await sql`insert into knowledge_invalidated_sessions (session_id) values ('s')`.execute(
+        ctx.db,
+      );
+      expect((await migrator.migrateToLatest()).error).toBeUndefined();
+      expect(await ctx.store.getSession('s')).toBeDefined();
+      const result = await sql<{ present: boolean }>`select exists(
+        select 1 from information_schema.tables
+        where table_schema = 'public' and table_name = 'knowledge_invalidated_sessions'
+      ) as present`.execute(ctx.db);
+      expect(result.rows[0]?.present).toBe(false);
+    } finally {
+      expect((await migrator.migrateToLatest()).error).toBeUndefined();
+    }
+  });
+  it('removes the retired session invalidation table from the migrated schema', async () => {
+    // Leaving this table behind preserves stale session-wide fences in backups.
+    const result = await sql<{ present: boolean }>`select exists(
+      select 1 from information_schema.tables
+      where table_schema = 'public' and table_name = 'knowledge_invalidated_sessions'
+    ) as present`.execute(ctx.db);
+    expect(result.rows[0]?.present).toBe(false);
   });
   it('rolls back the entire import when new folders would exceed the installation limit', async () => {
     const k = ctx.store.knowledge;

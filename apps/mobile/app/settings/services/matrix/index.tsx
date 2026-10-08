@@ -1,297 +1,257 @@
-import {
-  type IntegrationAccount,
-  type IntegrationSource,
-  type ProjectRecord,
-  type VerityClient,
-} from '@verity/mobile';
-import { router, useFocusEffect } from 'expo-router';
+import { VerityApiError, type IntegrationAccount, type VerityClient } from '@verity/mobile';
+import { useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, Text, View } from 'react-native';
-import { useUnistyles } from 'react-native-unistyles';
-import { Icon } from '../../../../components/Icon';
+import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import {
+  SecretPasteField,
+  SettingsField,
   SettingsGroup,
-  SettingsListPanel,
   SettingsMessage,
-  SettingsNavRow,
   SettingsPanel,
   SettingsScaffold,
 } from '../../../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
+import { StatusPill } from '../../../../components/StatusPill';
 import { createVerityClient } from '../../../../lib/client';
 
-export default function MatrixRoomsScreen() {
+export default function MatrixScreen() {
   const client = useMemo(() => createVerityClient(), []);
   if (!client) {
     return (
       <SettingsMessage
         title="Not connected"
-        subtitle="Connect to your Verity server to manage Matrix rooms."
+        subtitle="Connect to your Verity server to configure Matrix."
         screenTitle="Matrix"
       />
     );
   }
-  return <MatrixRoomsView client={client} />;
+  return <MatrixView client={client} />;
 }
 
-function MatrixRoomsView({ client }: { client: VerityClient }) {
-  const { theme } = useUnistyles();
-  const [sources, setSources] = useState<IntegrationSource[]>([]);
-  const [account, setAccount] = useState<IntegrationAccount | null>(null);
+type SavedAccount = { endpoint: string; username: string; passwordConfigured: boolean };
+
+/**
+ * The Matrix account form has two shapes, because the server has two rules.
+ *
+ * Before the first save every field is required. After it, the homeserver and
+ * account ID are fixed — the server refuses to change them because the worker's
+ * device store and room bindings belong to that identity — and only the password
+ * may be replaced. Showing the fixed values as editable inputs invited edits the
+ * server would reject, so the configured shape shows them as plain text and
+ * offers nothing but a password box.
+ */
+function MatrixView({ client }: { client: VerityClient }) {
+  const [connection, setConnection] = useState<IntegrationAccount | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [saved, setSaved] = useState<SavedAccount | null>(null);
+  const [endpoint, setEndpoint] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [binding, setBinding] = useState<{ sourceId: string; projectName: string } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedRoom, setSelectedRoom] = useState<IntegrationSource | null>(null);
-  const [projects, setProjects] = useState<ProjectRecord[] | null>(null);
-  const [projectError, setProjectError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | undefined>(undefined);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
+  const loadStatus = useCallback(async () => {
     try {
       const integrations = await client.listIntegrations();
-      setSources(integrations.sources);
-      setAccount(integrations.accounts.find((item) => item.provider === 'matrix') ?? null);
-      setError(null);
+      setConnection(integrations.accounts.find((account) => account.provider === 'matrix') ?? null);
+      setStatusError(null);
     } catch {
-      setError(
-        'Could not load integrations. Check that your Verity server is updated, then retry.',
+      setStatusError('Could not load the Matrix connection status. Retry to refresh it.');
+    }
+  }, [client]);
+
+  const reload = useCallback(async () => {
+    void loadStatus();
+    try {
+      const config = await client.getMatrixConfig();
+      setSaved(
+        config
+          ? {
+              endpoint: config.endpoint,
+              username: config.username,
+              passwordConfigured: config.passwordConfigured,
+            }
+          : null,
+      );
+      setLoadError(null);
+    } catch (cause) {
+      setLoadError(
+        cause instanceof VerityApiError && cause.status === 404
+          ? 'Matrix settings are unavailable on this Verity server. Update the server and retry.'
+          : 'Could not load Matrix settings. Check the server connection and retry.',
       );
     } finally {
       setLoading(false);
     }
-  }, [client]);
+  }, [client, loadStatus]);
 
   useFocusEffect(
     useCallback(() => {
       void reload();
-      void client.listProjects().then(
-        (items) => setProjects(items),
-        () => setProjectError('Could not load projects. Tap a room to retry.'),
-      );
-    }, [client, reload]),
+    }, [reload]),
   );
 
-  const chooseRoom = async (source: IntegrationSource) => {
-    setSelectedRoom(source);
-    setProjectError(null);
-    try {
-      setProjects(await client.listProjects());
-    } catch {
-      setProjectError('Could not load projects. Tap the room to retry.');
-    }
-  };
+  const configured = saved !== null;
+  // What a save would send: the fixed identity once configured, the typed one before.
+  const account = saved
+    ? { endpoint: saved.endpoint, username: saved.username }
+    : { endpoint: endpoint.trim(), username: username.trim() };
+  const passwordConfigured = saved?.passwordConfigured ?? false;
+  const dirty = configured
+    ? password !== ''
+    : endpoint.trim() !== '' || username.trim() !== '' || password !== '';
+  const complete = account.endpoint !== '' && account.username !== '' && password !== '';
+  const canSave = complete && !busy;
 
-  const bind = async (source: IntegrationSource, targetProjectId: string) => {
-    const project = projects?.find((item) => item.id === targetProjectId);
-    setBinding({
-      sourceId: source.sourceId,
-      projectName: project ? projectName(project) : 'project',
-    });
+  const save = async () => {
     setBusy(true);
     try {
-      await client.bindIntegrationSource(source.accountId, source.sourceId, targetProjectId);
-      setSelectedRoom(null);
+      await client.saveMatrixConfig({ ...account, password });
+      setPassword('');
+      setSaveError(null);
+      setSavedAt(Date.now());
       await reload();
-    } catch {
-      setProjectError('Could not connect this room. Choose a project to retry.');
-    } finally {
-      setBinding(null);
-      setBusy(false);
-    }
-  };
-
-  const disconnect = async (source: IntegrationSource) => {
-    setBusy(true);
-    try {
-      await client.disconnectIntegrationSource(source.accountId, source.sourceId);
-      await reload();
-    } catch {
-      setError('Could not update this room.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const togglePause = async (source: IntegrationSource) => {
-    setBusy(true);
-    try {
-      await client.pauseIntegrationSource(
-        source.accountId,
-        source.sourceId,
-        source.status === 'paused' ? false : true,
+    } catch (cause) {
+      setSaveError(
+        cause instanceof VerityApiError
+          ? cause.status === 404
+            ? 'Matrix settings are unavailable on this Verity server. Update the server and retry.'
+            : cause.status === 409
+              ? cause.message
+              : cause.status === 400
+                ? 'Check the Matrix URL and account ID.'
+                : `Could not save the Matrix account (server error ${cause.status}).`
+          : 'Could not reach the Verity server to save the Matrix account.',
       );
-      await reload();
-    } catch {
-      setError('Could not update this room.');
     } finally {
       setBusy(false);
     }
   };
-
-  const pending = sources.filter((item) => item.status === 'pending');
-  const connected = sources.filter((item) => item.projectId);
 
   return (
     <SettingsScaffold title="Matrix" detail onRetry={() => void reload()}>
-      <SettingsGroup title="Account" description="One Matrix account serves all projects.">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="user"
-            title="Matrix account"
-            subtitle="Homeserver, account ID, and password"
-            status={
-              account
-                ? {
-                    intent: account.status === 'online' ? 'ready' : 'transient',
-                    label: account.status,
-                  }
-                : undefined
-            }
-            onPress={() => router.push('/settings/services/matrix/account')}
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
-      {error ? (
+      {connection ? (
+        <SettingsGroup title="Connection">
+          <SettingsPanel>
+            <StatusPill
+              intent={
+                connection.status === 'online'
+                  ? 'ready'
+                  : connection.status === 'error'
+                    ? 'needsSetup'
+                    : 'transient'
+              }
+              label={connection.status}
+            />
+            {connection.lastError ? (
+              <Text style={styles.fieldError} selectable>
+                {connection.lastError}
+              </Text>
+            ) : null}
+          </SettingsPanel>
+        </SettingsGroup>
+      ) : null}
+      {statusError ? (
         <SettingsPanel>
-          <Text style={styles.reproHint}>{error}</Text>
+          <Text style={styles.reproHint}>{statusError}</Text>
         </SettingsPanel>
       ) : null}
-      {loading ? <ActivityIndicator /> : null}
-      {!loading && !error ? (
-        <>
-          <SettingsGroup
-            title="Invitations"
-            description="Choose a room, then select the project that should receive its new messages."
-          >
-            {pending.length === 0 ? (
-              <SettingsPanel>
-                <Text style={styles.reproSubtitle}>No pending rooms.</Text>
-              </SettingsPanel>
+      <SettingsGroup
+        title="Account"
+        description={
+          configured
+            ? 'The homeserver and account ID are fixed once saved. Only the password can be replaced.'
+            : 'One Matrix account serves all projects.'
+        }
+      >
+        {loading ? (
+          <ActivityIndicator />
+        ) : loadError ? null : (
+          <SettingsPanel>
+            {saved ? (
+              <>
+                <View style={styles.pathContent}>
+                  <Text style={styles.pathLabel}>Homeserver URL</Text>
+                  <Text style={styles.reproSubtitle} selectable>
+                    {saved.endpoint}
+                  </Text>
+                </View>
+                <View style={styles.pathContent}>
+                  <Text style={styles.pathLabel}>Account ID</Text>
+                  <Text style={styles.reproSubtitle} selectable>
+                    {saved.username}
+                  </Text>
+                </View>
+              </>
             ) : (
-              <SettingsListPanel>
-                {pending.map((item) => (
-                  <View key={`${item.accountId}:${item.sourceId}`}>
-                    <SettingsNavRow
-                      icon="link"
-                      title={item.displayName}
-                      subtitle={item.inviter ? `Invited by ${item.inviter}` : item.sourceId}
-                      onPress={() => {
-                        if (!busy) void chooseRoom(item);
-                      }}
-                    />
-                    {selectedRoom?.sourceId === item.sourceId ? (
-                      <SettingsPanel>
-                        <Text style={styles.disclosureTitle}>Choose a project</Text>
-                        {binding?.sourceId === item.sourceId ? (
-                          <View style={styles.actionRow}>
-                            <ActivityIndicator />
-                            <Text style={styles.reproHint}>
-                              Connecting to {binding.projectName}…
-                            </Text>
-                          </View>
-                        ) : null}
-                        {projectError ? <Text style={styles.reproHint}>{projectError}</Text> : null}
-                        {projects === null && !projectError ? <ActivityIndicator /> : null}
-                        {projects?.filter((project) => !project.archived).length === 0 ? (
-                          <Text style={styles.reproSubtitle}>No projects available.</Text>
-                        ) : null}
-                        {!binding &&
-                          projects
-                            ?.filter((project) => !project.archived)
-                            .map((project) => (
-                              <SettingsNavRow
-                                key={project.id}
-                                icon="folder"
-                                title={projectName(project)}
-                                onPress={() => {
-                                  if (!busy) void bind(item, project.id);
-                                }}
-                              />
-                            ))}
-                      </SettingsPanel>
-                    ) : null}
-                  </View>
-                ))}
-              </SettingsListPanel>
+              <>
+                <SettingsField
+                  label="Homeserver URL"
+                  value={endpoint}
+                  onChangeText={setEndpoint}
+                  onBlur={() => {}}
+                  placeholder="https://matrix.example.com"
+                  accessibilityLabel="Matrix homeserver URL"
+                  keyboardType="url"
+                />
+                <SettingsField
+                  label="Account ID"
+                  value={username}
+                  onChangeText={setUsername}
+                  onBlur={() => {}}
+                  placeholder="@verity:example.com"
+                  accessibilityLabel="Matrix account ID"
+                />
+              </>
             )}
-          </SettingsGroup>
-          <SettingsGroup title="Connected rooms" description="Each room belongs to one project.">
-            {connected.length === 0 ? (
-              <SettingsPanel>
-                <Text style={styles.reproSubtitle}>No connected rooms.</Text>
-              </SettingsPanel>
-            ) : (
-              connected.map((item) => (
-                <SettingsListPanel key={`${item.accountId}:${item.sourceId}`}>
-                  <View style={styles.navRow}>
-                    <View style={styles.navRowIcon}>
-                      <Icon name="link" size={18} color={theme.colors.primary} />
-                    </View>
-                    <View style={styles.navRowBody}>
-                      <Text style={styles.navRowTitle}>{item.displayName}</Text>
-                      <Text style={styles.navRowSubtitle}>
-                        {projectLabel(projects, item.projectId, projectError !== null)} ·{' '}
-                        {item.status}
-                      </Text>
-                    </View>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`${item.status === 'paused' ? 'Resume' : 'Pause'} ${item.displayName}`}
-                      disabled={busy}
-                      hitSlop={8}
-                      style={{ padding: 12 }}
-                      onPress={() => void togglePause(item)}
-                    >
-                      <Icon
-                        name={item.status === 'paused' ? 'play' : 'pause'}
-                        size={18}
-                        color={theme.colors.textFaint}
-                      />
-                    </Pressable>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Disconnect ${item.displayName}`}
-                      disabled={busy}
-                      hitSlop={8}
-                      style={{ padding: 12 }}
-                      onPress={() =>
-                        Alert.alert(
-                          'Disconnect room?',
-                          'Existing Knowledge stays in the project. Invite the Matrix account again to reconnect.',
-                          [
-                            { text: 'Cancel', style: 'cancel' },
-                            {
-                              text: 'Disconnect',
-                              style: 'destructive',
-                              onPress: () => void disconnect(item),
-                            },
-                          ],
-                        )
-                      }
-                    >
-                      <Icon name="trash-2" size={18} color={theme.colors.textFaint} />
-                    </Pressable>
-                  </View>
-                </SettingsListPanel>
-              ))
-            )}
-          </SettingsGroup>
-        </>
+            <SecretPasteField
+              label="Password"
+              placeholder={passwordConfigured ? 'Enter a new password to replace it' : 'Password'}
+              value={password}
+              onChangeText={setPassword}
+              configured={passwordConfigured}
+              editable={!busy}
+              onBlur={() => {}}
+              accessibilityLabel="Matrix password"
+              masked
+            />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled: !canSave }}
+              disabled={!canSave}
+              onPress={() => void save()}
+              style={[styles.primaryButton, !canSave ? styles.buttonDisabled : null]}
+            >
+              <Text style={styles.primaryButtonLabel}>
+                {busy ? 'Saving…' : configured ? 'Update password' : 'Save Matrix account'}
+              </Text>
+            </Pressable>
+            {saveError ? <Text style={styles.fieldError}>{saveError}</Text> : null}
+            <Text style={styles.settingsSaveState} accessibilityLiveRegion="polite">
+              {busy
+                ? 'Saving changes…'
+                : dirty
+                  ? 'Unsaved changes'
+                  : savedAt !== undefined
+                    ? `Saved at ${new Date(savedAt).toLocaleTimeString()}.`
+                    : ''}
+            </Text>
+            <Text style={styles.reproHint}>
+              {configured
+                ? "The password is stored encrypted on the server. To use a different homeserver or account, reset the connector's device store and room bindings first."
+                : "The password is stored encrypted on the server. Assign invited rooms in each project's settings."}
+            </Text>
+          </SettingsPanel>
+        )}
+      </SettingsGroup>
+      {loadError ? (
+        <SettingsPanel>
+          <Text style={styles.reproHint}>{loadError}</Text>
+        </SettingsPanel>
       ) : null}
     </SettingsScaffold>
   );
-}
-
-function projectName(project: ProjectRecord): string {
-  return project.kind === 'local' ? project.repo : `${project.owner}/${project.repo}`;
-}
-
-function projectLabel(
-  projects: ProjectRecord[] | null,
-  id: string | null,
-  failed: boolean,
-): string {
-  if (!projects) return failed ? 'Project unavailable' : 'Loading project…';
-  const project = projects.find((item) => item.id === id);
-  return project ? projectName(project) : 'Project unavailable';
 }

@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-
 import { VerityApiError, type VerityClient } from '@verity/mobile';
 import { Modal, ScrollView, View } from 'react-native';
 import { SessionSettingsDialog } from './SessionSettingsDialog';
+import { isLinkableSession } from '../lib/sessionLinks';
 
 jest.mock('expo-crypto', () => ({ randomUUID: jest.fn(() => `operation-${Math.random()}`) }));
 jest.mock('./Icon', () => ({ Icon: () => null }));
@@ -86,6 +87,33 @@ it('links a chosen session without changing the name or project', async () => {
   expect(client.moveSession).not.toHaveBeenCalled();
 });
 
+it('finds and links another session in the current project while excluding itself', async () => {
+  const view = setup(jest.fn());
+  const client = view.props.client as jest.Mocked<VerityClient>;
+  const candidates = [
+    { sessionId: 's', name: 'Product images', projectId: 'a', projectName: 'Source project' },
+    { sessionId: 'peer', name: 'Backend work', projectId: 'a', projectName: 'Source project' },
+    { sessionId: 'docs', name: 'Docs refresh', projectId: 'b', projectName: 'Target project' },
+  ];
+  const linkableSessions = candidates
+    .filter((candidate) =>
+      isLinkableSession(candidate, 's', [
+        { id: 'a', state: 'active', kind: 'local' },
+        { id: 'b', state: 'active', kind: 'local' },
+      ]),
+    )
+    .map((candidate) => ({ ...candidate, id: candidate.sessionId }));
+  view.rerender(<SessionSettingsDialog {...view.props} linkableSessions={linkableSessions} />);
+  await act(async () => undefined);
+  fireEvent.press(screen.getByRole('button', { name: 'Link a session' }));
+  expect(screen.queryByRole('button', { name: 'Link Product images' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Link Docs refresh' })).toBeTruthy();
+  fireEvent.changeText(screen.getByLabelText('Search sessions'), 'Source project');
+  expect(screen.queryByRole('button', { name: 'Link Docs refresh' })).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: 'Link Backend work' }));
+  await waitFor(() => expect(client.linkSessions).toHaveBeenCalledWith('s', 'peer'));
+});
+
 it('finds a session by search and keeps the link view open to link more', async () => {
   const view = setup(jest.fn());
   const client = view.props.client as jest.Mocked<VerityClient>;
@@ -163,7 +191,7 @@ it('contains the dialog on tablets and keeps project options collapsed until req
   // Without a width cap the modal covers the entire split-view screen.
   expect(screen.getByTestId('session-settings-card')).toHaveStyle({ maxWidth: 440, width: '100%' });
   expect(screen.queryByText('Other project')).toBeNull();
-  expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
   selectTarget();
   expect(screen.queryByText('Other project')).toBeNull();
   expect(screen.getByRole('button', { name: 'Project' })).toHaveAccessibilityValue({
@@ -356,4 +384,16 @@ it('locks an open project picker while moving and retains the destination on ret
   move();
   await screen.findByText(/Moved to Target project/);
   expect(request.mock.calls[1]).toEqual(request.mock.calls[0]);
+});
+
+it('enables Save only while the trimmed name or project has changed', () => {
+  setup(jest.fn());
+  // A bright no-op Save makes unchanged settings look like an unsaved edit.
+  expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+  fireEvent.changeText(screen.getByLabelText('Session name'), 'New name');
+  expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+  fireEvent.changeText(screen.getByLabelText('Session name'), ' Product images ');
+  expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+  selectTarget();
+  expect(screen.getByRole('button', { name: 'Save and move' })).toBeEnabled();
 });

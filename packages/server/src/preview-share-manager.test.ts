@@ -1,9 +1,19 @@
+import { DockerError } from './docker.js';
+import {
+  STANDARD_MOUNTS,
+  standardMountBind,
+  standardDataMountPaths,
+  publicSshBinds,
+  GATEWAY_MOUNTS,
+} from './sandbox-standard-mounts.js';
+import { knowledgeSandboxBinds } from './knowledge-folder.js';
 import type { EventStore } from '@verity/store';
-import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, symlink, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import type { ContainerInspect, DockerClient } from './docker.js';
+import { sandboxAgentSeedHostPath } from './self-update/agent-seed-stamp.js';
 import {
   PreviewShareConflictError,
   PreviewShareInputError,
@@ -14,6 +24,8 @@ import {
 } from './preview-share-manager.js';
 import {
   codexGatewayConfig,
+  openCodeSettingsConfig,
+  materializeOpenCodeSettings,
   projectNetworkName,
   RUNNER_BROKER_CAPABILITIES,
 } from './provisioner.js';
@@ -30,6 +42,8 @@ function fixture(
   options: {
     inspectArtifact?: PreviewShareManagerOptions['inspectArtifact'];
     listArtifactDirectory?: PreviewShareManagerOptions['listArtifactDirectory'];
+    agentSeedHostPath?: string | undefined;
+    onShareEnded?: PreviewShareManagerOptions['onShareEnded'];
   } = {},
 ) {
   const record = {
@@ -121,9 +135,13 @@ function fixture(
     wait: vi.fn(async () => undefined),
     log,
     ...(options.inspectArtifact === undefined ? {} : { inspectArtifact: options.inspectArtifact }),
+    ...(options.onShareEnded === undefined ? {} : { onShareEnded: options.onShareEnded }),
     ...(options.listArtifactDirectory === undefined
       ? {}
       : { listArtifactDirectory: options.listArtifactDirectory }),
+    ...(options.agentSeedHostPath === undefined
+      ? {}
+      : { agentSeedHostPath: options.agentSeedHostPath }),
   });
   return {
     manager,
@@ -141,9 +159,9 @@ function fixture(
 describe('public preview duration and PIN policy', () => {
   it.each([
     ['1 hour', 3600, '123456'],
-    ['24 hours', 86400, '123456789012'],
-    ['7 days', 604800, '123456789012'],
-    ['30 days', 2592000, '123456789012'],
+    ['24 hours', 86400, '123456'],
+    ['7 days', 604800, '123456'],
+    ['30 days', 2592000, '123456'],
   ])('creates a %s share', async (_label, ttlSeconds, pin) => {
     const { manager, edge } = fixture();
     await manager.create({ devServerId: 'dev-1', pin, ttlSeconds });
@@ -161,11 +179,11 @@ describe('public preview duration and PIN policy', () => {
     expect(edge.create).not.toHaveBeenCalled();
   });
 
-  it('requires a 12-digit PIN for links lasting at least a day', async () => {
+  it.each(['12345', '1234567', '123456789012', 'abcdef'])('rejects PIN %s', async (pin) => {
     const { manager, edge } = fixture();
     await expect(
-      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 86400 }),
-    ).rejects.toThrow('PIN must contain 12 digits');
+      manager.create({ devServerId: 'dev-1', pin, ttlSeconds: 2592000 }),
+    ).rejects.toThrow('PIN must contain exactly 6 digits');
     expect(edge.create).not.toHaveBeenCalled();
   });
 });
@@ -196,7 +214,6 @@ describe('PreviewShareManager', () => {
       worktree: '/data/repo/sessions/s1',
       model: 'test',
       name: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     store.listPublicPreviewShares.mockResolvedValueOnce([
@@ -226,7 +243,6 @@ describe('PreviewShareManager', () => {
       worktree,
       model: 'test',
       name: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     const options = (
@@ -277,7 +293,6 @@ describe('PreviewShareManager', () => {
       worktree,
       model: 'test',
       name: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     const options = (
@@ -318,7 +333,6 @@ describe('PreviewShareManager', () => {
       worktree: outside,
       model: 'test',
       name: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     const options = (
@@ -724,6 +738,51 @@ describe('PreviewShareManager', () => {
     ).resolves.toMatchObject({ state: 'active' });
   });
 
+  it('accepts the agent seed from the source the provisioner resolves', async () => {
+    // Resolved through the same function server-main hands the provisioner, so a
+    // layout change there (as `.current` was) cannot silently block every share.
+    const agentSeedHostPath = sandboxAgentSeedHostPath({
+      VERITY_AGENT_SEED_ROOT_HOST_PATH: '/srv/verity/seed-root',
+    });
+    expect(agentSeedHostPath).toBe('/srv/verity/seed-root/.current');
+    const { manager, docker, inspect } = fixture({ agentSeedHostPath });
+    docker.inspectContainer.mockResolvedValue({
+      ...inspect,
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'bind',
+          source: agentSeedHostPath,
+          destination: '/opt/agent-seed',
+          readWrite: false,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).resolves.toMatchObject({ state: 'active' });
+  });
+
+  it.each([
+    ['another source', '/srv/verity/secrets/.current', false],
+    ['a writable seed', '/srv/verity/seed-root/.current', true],
+  ])('rejects an agent seed mount from %s', async (_label, source, readWrite) => {
+    const { manager, docker, edge, inspect } = fixture({
+      agentSeedHostPath: '/srv/verity/seed-root/.current',
+    });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    docker.inspectContainer.mockResolvedValueOnce({
+      ...inspect,
+      mountCount: 1,
+      mounts: [{ type: 'bind', source, destination: '/opt/agent-seed', readWrite }],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/unsupported sandbox mount/);
+    expect(edge.create).not.toHaveBeenCalled();
+    warning.mockRestore();
+  });
+
   it('blocks unrecognized mounts even when their paths look harmless', async () => {
     const { manager, docker, edge, inspect } = fixture();
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -824,10 +883,7 @@ describe('PreviewShareManager', () => {
     const { manager, docker, inspect } = fixture({ inspectArtifact });
     docker.inspectContainer.mockResolvedValueOnce({
       ...inspect,
-      env: [
-        'VERITY_GH_TOKEN_URL=http://relay/internal/github/token',
-        'VERITY_GH_BROKER_CAPABILITY_FILE=/run/verity/gh-token-capability',
-      ],
+      env: ['VERITY_GH_BROKER_CAPABILITY_FILE=/run/verity/gh-token-capability'],
       mountCount: 1,
       mounts: [
         {
@@ -844,6 +900,39 @@ describe('PreviewShareManager', () => {
       manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
     ).resolves.toMatchObject({ state: 'active' });
     expect(inspectArtifact).toHaveBeenCalledWith('/data/secrets/git/gh_token_capability.p1', false);
+  });
+
+  it('allows the forge proxy public CA only at its reviewed source and destination', async () => {
+    const inspectArtifact = vi.fn(async () => ({
+      uid: 1000,
+      gid: process.getgid?.() ?? 1000,
+      mode: 0o644,
+      kind: 'file' as const,
+    }));
+    const { manager, docker, inspect } = fixture({ inspectArtifact });
+    docker.inspectContainer.mockResolvedValueOnce({
+      ...inspect,
+      env: [
+        'VERITY_FORGE_MODE=proxy-test',
+        'VERITY_FORGE_PROXY_URL=http://relay:8080',
+        'VERITY_FORGE_PROXY_CA_FILE=/run/verity/forge-proxy/ca.crt',
+      ],
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'volume',
+          name: 'verity-data',
+          source: '/var/lib/docker/volumes/verity-data/_data/secrets/git/forge_proxy_ca.p1.crt',
+          subpath: 'secrets/git/forge_proxy_ca.p1.crt',
+          destination: '/run/verity/forge-proxy/ca.crt',
+          readWrite: false,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).resolves.toMatchObject({ state: 'active' });
+    expect(inspectArtifact).toHaveBeenCalledWith('/data/secrets/git/forge_proxy_ca.p1.crt', false);
   });
 
   it('allows the agent-gateway identity only with its exact paths and permissions', async () => {
@@ -1127,6 +1216,7 @@ describe('PreviewShareManager', () => {
       'share-id',
       ['creating', 'active'],
       'revoking',
+      { revokedAt: new Date('2030-01-01T00:00:00Z') },
     );
     expect(store.transitionPublicPreviewShare).not.toHaveBeenCalledWith(
       'share-id',
@@ -1242,7 +1332,7 @@ describe('PreviewShareManager', () => {
       'share-id',
       ['creating'],
       'revoking',
-      { failure: 'database interrupted' },
+      { failure: 'database interrupted', revokedAt: new Date('2030-01-01T00:00:00Z') },
     );
   });
 
@@ -1375,6 +1465,56 @@ describe('PreviewShareManager', () => {
       ['revoking'],
       'expired',
       expect.objectContaining({ connectorContainerId: null }),
+    );
+  });
+
+  // A managed dev server with Local off stops once its last link ends; without
+  // this notice an expired link would leave it running unnoticed.
+  it('reports an ended managed link on Uplink expiry, revocation, and disabling', async () => {
+    const onShareEnded = vi.fn();
+    const { manager, store, record } = fixture({ onShareEnded });
+    const active = {
+      ...record,
+      state: 'active' as const,
+      connectorContainerId: 'connector-id',
+      managedInstanceId: 'instance-1',
+    };
+    store.getPublicPreviewShare.mockResolvedValueOnce(active);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({ ...active, state: 'revoking' });
+    await manager.finishExpiredByUplink(record.id);
+    expect(onShareEnded).toHaveBeenLastCalledWith({
+      id: record.id,
+      managedInstanceId: 'instance-1',
+    });
+
+    store.getPublicPreviewShare.mockResolvedValueOnce(active);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({ ...active, state: 'revoking' });
+    await manager.stop(record.id);
+    expect(onShareEnded).toHaveBeenCalledTimes(2);
+
+    // Losing the Uplink or Premium ends every link at once.
+    store.listPublicPreviewShares.mockResolvedValueOnce([active]);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({ ...active, state: 'revoking' });
+    await manager.disableAll('lease expired');
+    expect(onShareEnded).toHaveBeenCalledTimes(3);
+  });
+
+  it('preserves revocation intent time when delayed cleanup finishes', async () => {
+    const { manager, store, record } = fixture();
+    const began = new Date('2029-12-01T00:00:00Z');
+    const active = { ...record, state: 'active' as const };
+    store.getPublicPreviewShare.mockResolvedValueOnce(active);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({
+      ...active,
+      state: 'revoking',
+      revokedAt: began,
+    });
+    await manager.stop(record.id);
+    expect(store.transitionPublicPreviewShare).toHaveBeenLastCalledWith(
+      record.id,
+      ['revoking'],
+      expect.any(String),
+      expect.objectContaining({ revokedAt: began }),
     );
   });
 
@@ -1514,7 +1654,6 @@ describe('PreviewShareManager', () => {
       worktree,
       model: 'test',
       name: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     const options = (
@@ -1654,16 +1793,28 @@ describe('sweepOrphanedPreviewShares', () => {
   it('kills the connector and revokes every non-terminal share', async () => {
     const { store, docker, record } = fixture();
     store.listPublicPreviewShares.mockResolvedValueOnce([
-      { ...record, state: 'active', connectorContainerId: 'connector-id' },
+      {
+        ...record,
+        state: 'active',
+        connectorContainerId: 'connector-id',
+        managedInstanceId: 'managed-1',
+      },
       { ...record, id: 'other', state: 'creating', connectorContainerName: 'verity-preview-other' },
       { ...record, id: 'done', state: 'revoked' },
     ]);
+    const onShareEnded = vi.fn();
     const swept = await sweepOrphanedPreviewShares({
       store: store as unknown as EventStore,
       docker: docker as unknown as DockerClient,
       now: () => new Date('2030-01-01T00:00:00Z'),
+      onShareEnded,
     });
     expect(swept).toBe(2);
+    expect(onShareEnded).toHaveBeenCalledTimes(2);
+    expect(onShareEnded).toHaveBeenCalledWith({
+      id: record.id,
+      managedInstanceId: 'managed-1',
+    });
     expect(docker.removeContainer).toHaveBeenNthCalledWith(1, 'connector-id');
     expect(docker.removeContainer).toHaveBeenNthCalledWith(2, 'verity-preview-other');
     expect(store.transitionPublicPreviewShare.mock.calls.map(([id, , to]) => [id, to])).toEqual([
@@ -1674,6 +1825,25 @@ describe('sweepOrphanedPreviewShares', () => {
       connectorContainerId: null,
       revokedAt: new Date('2030-01-01T00:00:00Z'),
     });
+  });
+
+  it('preserves the original revocation time during orphan cleanup', async () => {
+    const { store, docker, record } = fixture();
+    const began = new Date('2029-12-01T00:00:00Z');
+    store.listPublicPreviewShares.mockResolvedValueOnce([
+      { ...record, state: 'revoking', revokedAt: began },
+    ]);
+    await sweepOrphanedPreviewShares({
+      store: store as unknown as EventStore,
+      docker: docker as unknown as DockerClient,
+      now: () => new Date('2030-01-01T00:00:00Z'),
+    });
+    expect(store.transitionPublicPreviewShare).toHaveBeenLastCalledWith(
+      record.id,
+      ['creating', 'active', 'revoking'],
+      'revoked',
+      expect.objectContaining({ revokedAt: began }),
+    );
   });
 
   it('closes out the remaining shares when one connector cannot be removed', async () => {
@@ -1729,7 +1899,6 @@ describe('session port previews', () => {
     worktree: '/data/repo/sessions/s1',
     model: 'test',
     name: null,
-    kind: 'normal' as const,
     lastSeenEventCount: null,
   };
   const listener = (port: number, bind: 'any' | 'loopback', cwd = '/work/sessions/s1/web') => ({
@@ -1773,6 +1942,26 @@ describe('session port previews', () => {
     docker.inspectContainer.mockResolvedValueOnce({ ...inspect, running: false });
 
     await expect(manager.listSessionDevServers('s1')).resolves.toEqual([]);
+    expect(listListeningProcesses).not.toHaveBeenCalled();
+  });
+
+  it('reports no dev servers when an active project container has disappeared', async () => {
+    const { manager, docker, listListeningProcesses } = portFixture([listener(5173, 'any')]);
+    // A stale active project must not turn the session's discovery poll into a 500.
+    docker.inspectContainer.mockRejectedValueOnce(
+      new DockerError({ kind: 'container_not_found', id: project.containerName }),
+    );
+
+    await expect(manager.listSessionDevServers('s1')).resolves.toEqual([]);
+    expect(listListeningProcesses).not.toHaveBeenCalled();
+  });
+
+  it('preserves infrastructure errors during dev server discovery', async () => {
+    const { manager, docker, listListeningProcesses } = portFixture([]);
+    const failure = new DockerError({ kind: 'network', cause: new Error('Docker unavailable') });
+    docker.inspectContainer.mockRejectedValueOnce(failure);
+
+    await expect(manager.listSessionDevServers('s1')).rejects.toBe(failure);
     expect(listListeningProcesses).not.toHaveBeenCalled();
   });
 
@@ -1951,5 +2140,439 @@ describe('session port previews', () => {
     await manager.reconcile();
 
     expect(edge.remove).toHaveBeenCalled();
+  });
+});
+
+describe('shared sandbox mount contract', () => {
+  it.each(['bind', 'volume'] as const)(
+    'accepts provisioned standard mounts as %s mounts',
+    async (type) => {
+      const { manager, store, docker, inspect } = fixture({
+        agentSeedHostPath: '/seed/releases/.current',
+      });
+      store.getProject.mockResolvedValue({ ...project, cloneDir: 'p1' } as typeof project);
+      const paths = standardDataMountPaths('p1', 'p1');
+      const dataBinds = [
+        ...knowledgeSandboxBinds('/data', 'p1'),
+        ...(['workspace', 'gitConfig', 'runner', 'dns'] as const).map((kind) =>
+          standardMountBind(kind, join('/data', paths[kind])),
+        ),
+      ];
+      const hostBinds = [
+        standardMountBind('agentSeed', '/seed/releases/.current'),
+        standardMountBind('disabledTokenScript', '/dev/null'),
+      ];
+      dataBinds.push(
+        ...publicSshBinds('id_ed25519.pub', '/data/secrets/git/id_ed25519.pub', true),
+        ...publicSshBinds('known_hosts', '/data/secrets/git/known_hosts', true),
+        ...publicSshBinds('allowed_signers', '/data/secrets/git/allowed_signers', true),
+      );
+      const mounts = [...dataBinds, ...hostBinds].map((bind, index) => {
+        const [source, destination, access] = bind.split(':');
+        return type === 'volume' && index < dataBinds.length
+          ? {
+              type: 'volume',
+              name: 'verity-data',
+              source: '/var/lib/docker/volumes/verity-data/_data',
+              subpath: source!.slice('/data/'.length),
+              destination,
+              readWrite: access !== 'ro',
+            }
+          : { type: 'bind', source, destination, readWrite: access !== 'ro' };
+      });
+      docker.inspectContainer.mockResolvedValue({ ...inspect, mounts, mountCount: mounts.length });
+      await expect(
+        manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+      ).resolves.toMatchObject({ state: 'active' });
+    },
+  );
+
+  it.each([
+    { name: 'other-volume', subpath: 'secrets/git/allowed_signers', readWrite: false },
+    { name: 'verity-data', subpath: 'secrets/git/private-key', readWrite: false },
+    { name: 'verity-data', subpath: 'secrets/git/allowed_signers', readWrite: true },
+  ])('rejects mismatched public SSH volume metadata: %j', async (metadata) => {
+    const { manager, docker, inspect, edge } = fixture();
+    docker.inspectContainer.mockResolvedValue({
+      ...inspect,
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'volume',
+          source: '/var/lib/docker/volumes/verity-data/_data',
+          destination: '/home/dev/.ssh/allowed_signers',
+          ...metadata,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/unsupported sandbox mount/);
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a writable knowledge mount even when its source is correct', async () => {
+    const { manager, docker, inspect, edge } = fixture();
+    const paths = standardDataMountPaths('p1', 'p1');
+    docker.inspectContainer.mockResolvedValue({
+      ...inspect,
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'bind',
+          source: join('/data', paths.knowledge),
+          destination: STANDARD_MOUNTS.knowledge.target,
+          readWrite: true,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/unsupported sandbox mount/);
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+});
+
+function gatewayPreviewFixture(
+  kind: 'codex' | 'opencode',
+  contents: string,
+  extraFiles: Record<string, string> = {},
+) {
+  const spec = GATEWAY_MOUNTS[kind];
+  const result = fixture({
+    inspectArtifact: async (path) => {
+      if (kind === 'opencode' && path.endsWith(`/${spec.subdir}`))
+        return { uid: 1000, gid: 1000, mode: 0o755, kind: 'directory' };
+      const filename = path.split('/').at(-1)!;
+      return {
+        uid: 1000,
+        gid: 1000,
+        mode: 0o644,
+        kind: 'file',
+        contents: filename === spec.filename ? contents : (extraFiles[filename] ?? ''),
+      };
+    },
+    listArtifactDirectory: async () => [spec.filename, ...Object.keys(extraFiles)],
+  });
+  const subpath = `secrets/${spec.subdir}${kind === 'codex' ? `/${spec.filename}` : ''}`;
+  result.docker.inspectContainer.mockResolvedValue({
+    ...result.inspect,
+    mountCount: 1,
+    mounts: [
+      {
+        type: 'volume',
+        name: 'verity-data',
+        subpath,
+        destination: kind === 'codex' ? `${spec.directory}/${spec.filename}` : spec.directory,
+        readWrite: false,
+      },
+    ],
+  });
+  return result;
+}
+
+interface TestOpenCodeConfig {
+  theme?: string;
+  model?: string;
+  permission?: unknown;
+  provider: {
+    verity: {
+      options: Record<string, string | number>;
+      models: Record<string, Record<string, unknown>>;
+    };
+    other?: { options: { apiKey: string } };
+  };
+}
+
+function generatedOpenCodeConfig(): TestOpenCodeConfig {
+  return JSON.parse(
+    openCodeSettingsConfig({
+      opencodeBaseUrl: 'https://provider.example/v1',
+      opencodeApiKey: 'server-only-test-credential',
+      opencodeModels: 'model-a',
+    } as Parameters<typeof openCodeSettingsConfig>[0])!,
+  ) as TestOpenCodeConfig;
+}
+
+describe('compatible gateway configuration', () => {
+  it('accepts Codex comments, spacing and model preferences', async () => {
+    const contents = `# Gateway configuration\nmodel = "model-a"\nmodel_reasoning_effort = "high"\n${codexGatewayConfig(47821).replaceAll(' = ', '  =  ')}\n# End\n`;
+    const { manager } = gatewayPreviewFixture('codex', contents);
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).resolves.toMatchObject({ state: 'active' });
+  });
+
+  it.each([
+    [
+      'credential header',
+      (value: string) => value.replace('verity-codex-gateway-placeholder-v1', 'actual-secret'),
+    ],
+    ['external endpoint', (value: string) => value.replace('127.0.0.1', 'provider.example')],
+    ['extra auth setting', (value: string) => `${value}\napi_key = "actual-secret"`],
+    [
+      'duplicate endpoint',
+      (value: string) => `${value}\nbase_url = "http://127.0.0.1:47821/codex"`,
+    ],
+    [
+      'wrong TOML section',
+      (value: string) =>
+        value.replace('[model_providers.verity_gateway]\n', '') +
+        '\n[model_providers.verity_gateway]',
+    ],
+  ])('rejects Codex %s', async (_label, change) => {
+    const { manager, edge } = gatewayPreviewFixture('codex', change(codexGatewayConfig(47821)));
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/mounted credentials/);
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+
+  it('accepts OpenCode presentation settings, model metadata and its .gitignore', async () => {
+    const config = generatedOpenCodeConfig();
+    config.theme = 'system';
+    config.model = 'verity/model-a';
+    config.provider.verity.models['model-a'] = {
+      name: 'Friendly model name',
+      limit: { context: 100000, output: 1000 },
+      cost: { input: 0, output: 0 },
+      modalities: { input: ['text', 'image'], output: ['text'] },
+      reasoning: true,
+    };
+    config.provider.verity.options.timeout = 60000;
+    // Key order has no meaning in JSON, but the old equality check rejected it.
+    config.permission = {
+      external_directory: { '/knowledge/**': 'allow' },
+      read: { '/knowledge/**': 'allow' },
+    };
+    const { manager } = gatewayPreviewFixture('opencode', JSON.stringify(config), {
+      '.gitignore': 'node_modules\n*.log\n',
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).resolves.toMatchObject({ state: 'active' });
+  });
+
+  it('accepts the provisioner fallback when no OpenCode provider is configured', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-gateway-config-'));
+    try {
+      const directory = materializeOpenCodeSettings(undefined, root);
+      const contents = await readFile(join(directory, GATEWAY_MOUNTS.opencode.filename), 'utf8');
+      const { manager } = gatewayPreviewFixture('opencode', contents);
+      await expect(
+        manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+      ).resolves.toMatchObject({ state: 'active' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    [
+      'provider key',
+      (config: ReturnType<typeof generatedOpenCodeConfig>) => {
+        config.provider.verity.options.apiKey = 'actual-secret';
+      },
+    ],
+    [
+      'extra provider',
+      (config: ReturnType<typeof generatedOpenCodeConfig>) => {
+        config.provider.other = { options: { apiKey: 'actual-secret' } };
+      },
+    ],
+    [
+      'nested credential',
+      (config: ReturnType<typeof generatedOpenCodeConfig>) => {
+        config.provider.verity.models['model-a']!.cost = { input: 0, apiKey: 'actual-secret' };
+      },
+    ],
+    [
+      'external endpoint',
+      (config: ReturnType<typeof generatedOpenCodeConfig>) => {
+        config.provider.verity.options.baseURL = 'https://provider.example/v1';
+      },
+    ],
+  ])('rejects OpenCode %s with otherwise compatible additions', async (_label, change) => {
+    const config = generatedOpenCodeConfig();
+    config.theme = 'system';
+    change(config);
+    const { manager, edge } = gatewayPreviewFixture('opencode', JSON.stringify(config));
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/mounted credentials/);
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('OpenCode ancillary file validation', () => {
+  it.each([
+    ['credential file', { 'auth.json': '{"apiKey":"actual-secret"}' }],
+    ['credentials in .gitignore', { '.gitignore': 'apiKey = actual-secret' }],
+    ['unrecognized file', { 'credentials.txt': 'actual-secret' }],
+  ])('rejects %s beside a valid generated gateway config', async (_label, extraFiles) => {
+    const { manager, edge } = gatewayPreviewFixture(
+      'opencode',
+      JSON.stringify(generatedOpenCodeConfig()),
+      extraFiles,
+    );
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).rejects.toThrow(/mounted credentials/);
+    expect(edge.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('managed public links', () => {
+  function managedFixture() {
+    const f = fixture();
+    let share: Awaited<ReturnType<EventStore['getPublicPreviewShare']>> = {
+      ...f.record,
+      devServerId: null,
+      sessionId: 's1',
+      managedInstanceId: 'instance-1',
+      state: 'active',
+      connectorContainerId: 'connector-id',
+    };
+    let instance: Awaited<ReturnType<EventStore['managedDevServers']['getInstance']>> = {
+      id: 'instance-1',
+      serverId: 'entry-1',
+      projectId: 'p1',
+      sessionId: 's1',
+      localAccess: true,
+      sandboxPort: 41000,
+      networkPort: 8100,
+      state: 'stopped',
+      desired: 'stopped',
+      detail: null,
+      lastRunCommand: 'node server.mjs',
+      lastRunWorkdir: '.',
+      startedAt: null,
+      accessStartedAt: null,
+      lastRanAt: null,
+    };
+    let running = false;
+    let tag = 'instance-1';
+    const getInstance = vi.fn(async () => instance);
+    const store = {
+      ...f.store,
+      managedDevServers: { getInstance },
+      getSession: vi.fn<EventStore['getSession']>(
+        async () =>
+          ({ sessionId: 's1', projectId: 'p1', worktree: '/wt/s1' }) as Awaited<
+            ReturnType<EventStore['getSession']>
+          >,
+      ),
+      listPublicPreviewShares: vi.fn(async () => (share ? [share] : [])),
+      getPublicPreviewShare: vi.fn(async () => share),
+      transitionPublicPreviewShare: vi.fn<EventStore['transitionPublicPreviewShare']>(
+        async (_id, from, state, patch = {}) => {
+          if (!share || !from.includes(share.state)) return undefined;
+          share = { ...share, ...patch, state };
+          return share;
+        },
+      ),
+    };
+    let connectorEnv: string[] = [];
+    const docker = {
+      ...f.docker,
+      inspectContainer: vi.fn(async (id: string) =>
+        id === 'verity-project'
+          ? { ...f.inspect, labels: { 'verity.container-generation': 'generation-2' } }
+          : { ...f.inspect, env: connectorEnv },
+      ),
+      createContainer: vi.fn<DockerClient['createContainer']>(async (spec) => {
+        connectorEnv = spec.env ?? [];
+        return { id: 'connector-id', warnings: [] };
+      }),
+    };
+    const manager = new PreviewShareManager({
+      store: store as unknown as EventStore,
+      docker: docker as unknown as DockerClient,
+      edge: f.edge,
+      resolveConnectorImage: f.resolveConnectorImage,
+      isDevServerRunning: async () => false,
+      listListeningProcesses: async () =>
+        running
+          ? [
+              {
+                port: instance!.sandboxPort,
+                bind: 'any',
+                instanceId: tag,
+                pid: 42,
+                cwd: '/wt/s1',
+                command: 'node server.mjs',
+              },
+            ]
+          : [],
+      now: () => new Date('2030-01-01T00:00:00Z'),
+    });
+    return {
+      manager,
+      docker,
+      edge: f.edge,
+      store,
+      share: () => share!,
+      run: (port = 41001, marker = 'instance-1') => {
+        instance = { ...instance!, sandboxPort: port, state: 'running', desired: 'running' };
+        running = true;
+        tag = marker;
+      },
+      remove: () => {
+        instance = undefined;
+      },
+    };
+  }
+
+  // A port-based link used to be revoked here, silently changing both its URL and PIN.
+  it('keeps the link offline and retargets the same link after restart and sandbox recreation', async () => {
+    const f = managedFixture();
+    const original = f.share();
+    await f.manager.reconcile();
+    expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        env: expect.arrayContaining(['VERITY_PREVIEW_OFFLINE=1']),
+        network: 'verity-net',
+      }),
+    );
+    expect(f.share()).toMatchObject({
+      state: 'active',
+      publicOrigin: original.publicOrigin,
+      pin: original.pin,
+    });
+    const count = f.docker.createContainer.mock.calls.length;
+    await f.manager.reconcile();
+    expect(f.docker.createContainer).toHaveBeenCalledTimes(count);
+    f.run();
+    await f.manager.reconcile();
+    expect(f.share()).toMatchObject({
+      targetPort: 41001,
+      containerGeneration: 'generation-2',
+      publicOrigin: original.publicOrigin,
+      pin: original.pin,
+    });
+    expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        env: expect.arrayContaining(['VERITY_PREVIEW_TARGET_ORIGIN=http://verity-project:41001']),
+      }),
+    );
+    expect(f.edge.create).not.toHaveBeenCalled();
+    expect(f.edge.remove).not.toHaveBeenCalled();
+  });
+
+  it('keeps a foreign listener offline instead of exposing it on the retained link', async () => {
+    const f = managedFixture();
+    f.run(41000, 'foreign');
+    await f.manager.reconcile();
+    expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+      expect.objectContaining({ env: expect.arrayContaining(['VERITY_PREVIEW_OFFLINE=1']) }),
+    );
+  });
+
+  it('revokes the link when its instance has been deleted', async () => {
+    const f = managedFixture();
+    f.remove();
+    await f.manager.reconcile();
+    expect(f.edge.remove).toHaveBeenCalledWith('share-id');
+    expect(f.share().state).toBe('revoked');
   });
 });

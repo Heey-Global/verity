@@ -15,8 +15,10 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../Icon';
 import { StatusPill } from '../StatusPill';
+import { Toggle } from '../Toggle';
 import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
 import { useVeritySettings } from '../../lib/settingsStore';
+import { ApplyPendingBanner } from './ApplyPendingBanner';
 import { settingsStyles as styles } from './settingsStyles';
 
 /**
@@ -57,6 +59,9 @@ export function SettingsScaffold({
     <View style={styles.flex}>
       <Stack.Screen options={{ title }} />
       {error !== undefined ? <SettingsBanner message={error} onRetry={onRetry} /> : null}
+      {/* Only on screens backed by the Verity settings store — that store is
+          where a container-affecting save is recorded. */}
+      {state === undefined ? <ApplyPendingBanner /> : null}
       {saving > 0 ? (
         <View style={styles.autoSaveBanner} accessibilityLiveRegion="polite">
           <ActivityIndicator size="small" color={theme.colors.setup.text} />
@@ -153,6 +158,7 @@ export function SettingsNavRow({
   status,
   onPress,
   accessibilityLabel,
+  disabled = false,
 }: {
   icon: IconName;
   title: string;
@@ -161,12 +167,19 @@ export function SettingsNavRow({
   status?: { intent: 'ready' | 'needsSetup' | 'optional' | 'transient'; label: string };
   onPress: () => void;
   accessibilityLabel?: string;
+  disabled?: boolean;
 }) {
   const { theme } = useUnistyles();
   return (
     <Pressable
-      style={({ pressed }) => [styles.navRow, pressed ? styles.pressed : null]}
+      style={({ pressed }) => [
+        styles.navRow,
+        disabled ? styles.buttonDisabled : null,
+        pressed ? styles.pressed : null,
+      ]}
       onPress={onPress}
+      disabled={disabled}
+      accessibilityState={{ disabled }}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? title}
     >
@@ -260,9 +273,7 @@ export function SettingsToggleRow({
       accessibilityLabel={label}
     >
       <Text style={styles.toggleLabel}>{label}</Text>
-      <View style={[styles.toggleTrack, value ? styles.toggleTrackOn : null]}>
-        <View style={[styles.toggleKnob, value ? styles.toggleKnobOn : null]} />
-      </View>
+      <Toggle value={value} />
     </Pressable>
   );
 }

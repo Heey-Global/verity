@@ -1,6 +1,12 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import { describe, expect, it } from 'vitest';
-import { AcpEventAdapter, AcpTextStream, finalAcpTextEvents } from './acp-adapter.js';
+import { isAgentEvent } from '@verity/events';
+import {
+  AcpEventAdapter,
+  AcpTextStream,
+  finalAcpTextEvents,
+  PLAN_TOOL_NAME,
+} from './acp-adapter.js';
 
 describe('AcpEventAdapter', () => {
   it('maps text and nested thinking attribution', () => {
@@ -36,17 +42,97 @@ describe('AcpEventAdapter', () => {
         sessionUpdate: 'plan_update',
         plan: { type: 'items', planId: 'plan-1', entries: [] },
       },
+      {
+        sessionUpdate: 'plan_update',
+        plan: { type: 'markdown', planId: 'plan-2', content: '# Plan' },
+      },
       { sessionUpdate: 'plan_removed', planId: 'plan-1' },
       { sessionUpdate: 'available_commands_update', availableCommands: [] },
       { sessionUpdate: 'current_mode_update', currentModeId: 'default' },
       { sessionUpdate: 'config_option_update', configOptions: [] },
       { sessionUpdate: 'session_info_update', title: 'Smoke test' },
+      { sessionUpdate: 'subagent_update', sessionId: 'child-1' },
+      { sessionUpdate: 'session_message', messageId: 'message-1', content: [] },
+      {
+        sessionUpdate: 'session_message_chunk',
+        messageId: 'message-1',
+        content: { type: 'text', text: 'child message' },
+      },
       { sessionUpdate: 'notice', severity: 'info', title: 'Ready' },
       { sessionUpdate: 'usage_update', used: 1, size: 100 },
       { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'echo' } },
     ];
 
     expect(updates.flatMap((update) => adapter.consume(update))).toEqual([]);
+  });
+
+  // Plans ride on a tool call, not a new event kind: an app build that predates the
+  // checklist fails a whole history page on an unknown `t`. A schema-valid event of
+  // a new kind would pass every server test while breaking those clients.
+  it('carries each changed ACP plan snapshot as a settled TodoWrite call', () => {
+    const adapter = new AcpEventAdapter();
+    const entries = [
+      { content: 'Find the cause', priority: 'high', status: 'completed' },
+      { content: 'Fix it', priority: 'medium', status: 'in_progress' },
+    ] as const;
+    const events = adapter.consume({
+      sessionUpdate: 'plan',
+      entries: [...entries],
+      _meta: { claudeCode: { parentToolUseId: 'task-1' } },
+    });
+
+    expect(events.map((event) => event.t)).toEqual(['tool_call_start', 'tool_call', 'tool_result']);
+    for (const event of events) expect(event).toMatchObject({ parentToolId: 'task-1' });
+    const call = events[1];
+    expect(call).toEqual({
+      t: 'tool_call',
+      id: expect.stringMatching(/^plan-/),
+      name: PLAN_TOOL_NAME,
+      input: { todos: entries },
+      parentToolId: 'task-1',
+    });
+    for (const event of events)
+      expect(event).toMatchObject({ id: call?.t === 'tool_call' && call.id });
+    for (const event of events) expect(isAgentEvent(event)).toBe(true);
+
+    // An unchanged resend is not another row; the next real change is.
+    expect(
+      adapter.consume({
+        sessionUpdate: 'plan',
+        entries: [...entries],
+        _meta: { claudeCode: { parentToolUseId: 'task-1' } },
+      }),
+    ).toEqual([]);
+    const next = adapter.consume({
+      sessionUpdate: 'plan_update',
+      plan: {
+        type: 'items',
+        planId: 'plan-1',
+        entries: [{ content: 'Fix it', priority: 'medium', status: 'completed' }],
+      },
+    });
+    expect(next[1]).toMatchObject({
+      t: 'tool_call',
+      input: { todos: [{ content: 'Fix it', priority: 'medium', status: 'completed' }] },
+    });
+    expect(next[1]).not.toMatchObject({ id: call?.t === 'tool_call' && call.id });
+  });
+
+  // One fingerprint for every agent would swallow a sub-agent plan that happens to
+  // match the main agent's, and a plan re-sent after its removal.
+  it('dedupes plan snapshots per agent and forgets them on removal', () => {
+    const adapter = new AcpEventAdapter();
+    const main: SessionUpdate = {
+      sessionUpdate: 'plan',
+      entries: [{ content: 'Check', priority: 'medium', status: 'pending' }],
+    };
+    const child: SessionUpdate = { ...main, _meta: { claudeCode: { parentToolUseId: 'task-1' } } };
+
+    expect(adapter.consume(main)).toHaveLength(3);
+    expect(adapter.consume(child)).toHaveLength(3);
+    expect(adapter.consume(child)).toEqual([]);
+    expect(adapter.consume({ sessionUpdate: 'plan_removed', planId: 'plan-1' })).toEqual([]);
+    expect(adapter.consume(main)).toHaveLength(3);
   });
 
   it('maps vendor-neutral Claude lifecycle metadata without rendering carrier updates', () => {
@@ -509,6 +595,17 @@ describe('AcpEventAdapter', () => {
     ]);
   });
 
+  it('recovers an unclosed quick-action list only when the stream finishes', () => {
+    const stream = new AcpTextStream();
+    expect(stream.push('Choose.\n<quick-actions>\n• First')).toEqual([
+      { t: 'text', delta: 'Choose.' },
+    ]);
+    expect(stream.push('\n• Second')).toEqual([]);
+    expect(stream.flush()).toEqual([
+      { t: 'choices', options: [{ label: 'First' }, { label: 'Second' }] },
+    ]);
+  });
+
   it('streams prose while hiding a choices opener split across ACP chunks', () => {
     const stream = new AcpTextStream();
     expect(stream.push('Working now.\n\n```verity:cho')).toEqual([
@@ -518,18 +615,17 @@ describe('AcpEventAdapter', () => {
     expect(stream.flush()).toEqual([{ t: 'choices', options: [{ label: 'Continue' }] }]);
   });
 
-  it('hides and lifts an agent-loop contract split across ACP chunks', () => {
+  it('hides and lifts an automation contract split across ACP chunks', () => {
     const stream = new AcpTextStream();
     const proposal = {
-      loopId: '11111111-1111-4111-8111-111111111111',
       name: 'Daily check',
-      script: 'npm test',
       schedule: { kind: 'daily', hour: 9, minute: 0 },
+      prompt: 'Run the test suite and report failures.',
     };
-    expect(stream.push('Configured.\n```verity:agent-')).toEqual([
+    expect(stream.push('Configured.\n```verity:autom')).toEqual([
       { t: 'text', delta: 'Configured.' },
     ]);
-    expect(stream.push(`loop\n${JSON.stringify(proposal)}\n\`\`\``)).toEqual([]);
-    expect(stream.flush()).toEqual([{ t: 'agent_loop_proposal', proposal }]);
+    expect(stream.push(`ation\n${JSON.stringify(proposal)}\n\`\`\``)).toEqual([]);
+    expect(stream.flush()).toEqual([{ t: 'automation_proposal', proposal }]);
   });
 });

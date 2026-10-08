@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { setGlobalProxyFromEnv } from 'node:http';
+
 // Report published GitHub releases that never got their container images.
 //
 // THE CONDITION. release-please tags and publishes the GitHub release the moment
@@ -558,7 +560,18 @@ function numericEnv(name, fallback) {
 }
 
 async function main() {
-  const token = process.env.GITHUB_TOKEN;
+  let token = process.env.GITHUB_TOKEN;
+  if (process.env.VERITY_FORGE_MODE === 'proxy-test') {
+    const { execFileSync } = await import('node:child_process');
+    const { readFileSync } = await import('node:fs');
+    const { getCACertificates, setDefaultCACertificates } = await import('node:tls');
+    token = execFileSync('verity-gh-token', { encoding: 'utf8' }).trim();
+    const ca = process.env.VERITY_FORGE_PROXY_CA_FILE;
+    if (!ca || !process.env.VERITY_FORGE_PROXY_URL)
+      throw new Error('Forge proxy configuration is incomplete');
+    setDefaultCACertificates([...getCACertificates(), readFileSync(ca, 'utf8')]);
+    setGlobalProxyFromEnv({ HTTPS_PROXY: process.env.VERITY_FORGE_PROXY_URL, NO_PROXY: '' });
+  }
   const repository = process.env.GITHUB_REPOSITORY;
   if (token === undefined || token === '' || repository === undefined || repository === '') {
     console.error('GITHUB_TOKEN and GITHUB_REPOSITORY are required');

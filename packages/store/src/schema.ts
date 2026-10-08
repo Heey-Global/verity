@@ -14,6 +14,14 @@ import type { ColumnType, Generated } from 'kysely';
  * `resetsAt` epoch seconds) are well within that range.
  */
 
+interface SessionEventStatsTable {
+  session_id: string;
+  event_count: ColumnType<string, string | number, string | number>;
+  last_event_seq: ColumnType<string, string | number, string | number>;
+  last_activity_at: ColumnType<Date | null, string | null, string | null>;
+  revision: ColumnType<string, string | number, string | number>;
+}
+
 export interface SessionsTable {
   /** The Claude Code session id — also the `--resume` handle. */
   session_id: string;
@@ -34,18 +42,25 @@ export interface SessionsTable {
    */
   project_id: ColumnType<string | null, string | null | undefined, string | null>;
   /**
-   * Session discriminator (ADR 0008): `'normal'` for an ordinary agent run,
-   * `'agent_loop'` for a session that is the durable runtime of an Agent Loop.
-   * notNull default `'normal'`, so pre-existing sessions read back as normal.
-   */
-  kind: ColumnType<string, string | undefined, string>;
-  /**
    * Operator's "last seen" mark for the overview unread dot (#387): the session's
    * `eventCount` at the last open. NULL = never opened → not unread. Global (no
    * per-device scoping), so the mark syncs across every device hitting this server.
    * Advanced monotonically by {@link EventStore.setSessionSeen}.
    */
   last_seen_event_count: ColumnType<number | null, number | null | undefined, number | null>;
+  /**
+   * Planning mode (see {@link SessionPlanning}). NULL = the session never planned.
+   * While `active`, every turn runs without permission to change files.
+   */
+  planning: ColumnType<
+    'active' | 'implemented' | 'discarded' | null,
+    'active' | 'implemented' | 'discarded' | null | undefined,
+    'active' | 'implemented' | 'discarded' | null
+  >;
+  planning_revision: ColumnType<number, number | undefined, number>;
+  planning_plan: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Operator-marked favorite; highlighted in the session list. */
+  favorite: ColumnType<boolean, boolean | undefined, boolean>;
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
@@ -96,7 +111,28 @@ interface SessionSlideDecksTable {
 }
 
 /** Explicit Gmail access grant for one session. */
+interface ProjectGoogleConnectionsTable {
+  project_id: string;
+  service: 'gmail' | 'calendar' | 'contacts';
+  account_email: string;
+  enabled_at: ColumnType<Date, string | undefined, never>;
+}
+
 interface SessionGmailConnectionsTable {
+  session_id: string;
+  account_email: string;
+  enabled_at: ColumnType<Date, string | undefined, never>;
+}
+
+/** Explicit Calendar access grant for one session. */
+interface SessionCalendarConnectionsTable {
+  session_id: string;
+  account_email: string;
+  enabled_at: ColumnType<Date, string | undefined, never>;
+}
+
+/** Explicit Contacts access grant for one session. */
+interface SessionContactsConnectionsTable {
   session_id: string;
   account_email: string;
   enabled_at: ColumnType<Date, string | undefined, never>;
@@ -172,6 +208,13 @@ interface MatrixConnectorConfigTable {
 }
 
 interface IntegrationSourcesTable {
+  import_diagnostics_reported_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  import_diagnostics_truncated: ColumnType<boolean, boolean | undefined, boolean>;
+  import_diagnostics: ColumnType<
+    import('./integrations.js').IntegrationImportDiagnostic[],
+    string | undefined,
+    string
+  >;
   account_id: string;
   source_id: string;
   display_name: string;
@@ -344,6 +387,7 @@ export interface ProjectSettingsTable {
   /** Google Drive folder exposed as this project's shared read/write workspace. */
   google_drive_folder_id: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_folder_name: ColumnType<string | null, string | null | undefined, string | null>;
+  google_drive_access_mode: Generated<'read-only' | 'read-write'>;
   created_at: ColumnType<Date, string | undefined, never>;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
@@ -384,8 +428,6 @@ interface BrokeredHttpConsumptionsTable {
  * the Verity API/UI instead of scattered container-local git config. */
 export interface VeritySettingsTable {
   id: string;
-  /** System-wide model used for automatic Wiki maintenance. */
-  knowledge_model: ColumnType<string | null, string | null | undefined, string | null>;
   /** Shows internal Verity Control project/workspace surfaces when enabled. */
   advanced_mode_enabled: ColumnType<boolean, boolean | undefined, boolean>;
   git_user_name: ColumnType<string | null, string | null | undefined, string | null>;
@@ -445,6 +487,10 @@ export interface VeritySettingsTable {
   google_drive_refresh_token: ColumnType<string | null, string | null | undefined, string | null>;
   /** Whether the shared Google grant has been expanded with Gmail scopes. */
   gmail_authorized: ColumnType<boolean, boolean | undefined, boolean>;
+  /** Whether the shared Google grant has been expanded with Calendar scopes. */
+  calendar_authorized: ColumnType<boolean, boolean | undefined, boolean>;
+  contacts_authorized: ColumnType<boolean, boolean | undefined, boolean>;
+  google_granted_scopes: ColumnType<string[], string | undefined, string>;
   /** Paid Uplink credential. Encrypted at rest; never sourced from an environment
    * variable or materialized to a host file. The installation id is public and
    * is assigned by the Uplink during the first successful handshake. */
@@ -492,6 +538,7 @@ export interface SecretKeyMetaTable {
  * {@link SecretKeyMetaTable}. `id` is an opaque public handle for revocation.
  */
 export interface AuthTokenTable {
+  expires_at: ColumnType<Date | null, string | null | undefined, string | null | undefined>;
   id: string;
   user_id: ColumnType<string, string | undefined, never>;
   token_hash: string;
@@ -618,6 +665,8 @@ export interface QueuedTurnOpts {
   attachments?: Attachment[];
   displayPrompt?: string;
   peer?: { sessionId: string; projectId: string; label: string; message: string };
+  /** The local user the queued turn runs for; stamped on its `prompt` event. */
+  initiatedBy?: { userId: string };
 }
 
 /**
@@ -878,83 +927,127 @@ interface SecretJobFramesTable {
 }
 
 /**
- * Recurring automation ("der Loop", ADR 0008). One row per configured Agent
- * Loop: a project-scoped `{ script, schedule }` bound to one durable agent
- * session. Project-scoped, `onDelete cascade` — dropping a project removes its
- * loops. No column holds a credential, so nothing here is encrypted; loop config
- * reads work while the secret store is sealed.
+ * A recurring prompt bound to one session (ADR 0008). The operator confirms an
+ * agent's proposal in the session; from then on the scheduler sends `prompt` to
+ * that session's agent on `schedule`, or, when `script` is set, runs the script
+ * in the project container first and wakes the agent only on its signal.
  *
- * A loop is created as `status:'draft'` (no schedule/script yet); only an
- * `'enabled'` loop fires. `schedule_config` is stored as jsonb (structured, not a
- * raw cron string) — see {@link ScheduleConfig}.
+ * At most one per session (`session_id` is unique) and `onDelete cascade` with
+ * the session, so deleting the session removes its automation. No column holds a
+ * credential.
  */
-export interface AgentLoopsTable {
+export interface SessionAutomationsTable {
   id: string;
-  project_id: string;
+  session_id: string;
   name: string;
-  /** `'draft' | 'enabled' | 'paused'` — only `enabled` loops fire (ADR 0008 §7). */
-  status: ColumnType<string, string | undefined, string>;
-  /** `'interval' | 'daily' | 'weekly'` — the discriminant for `schedule_config`.
-   *  NULL on a draft that has no schedule yet. */
-  schedule_kind: ColumnType<string | null, string | null | undefined, string | null>;
-  /** Structured schedule params for `schedule_kind` (never a raw cron string).
-   *  Read as a parsed object; written as a `JSON.stringify`'d string (jsonb).
-   *  NULL on a draft with no schedule yet. */
-  schedule_config: ColumnType<ScheduleConfig | null, string | null, string | null>;
-  /** The loop's script; owns the condition + spawn signal. NULL on a draft. */
+  /** `'enabled' | 'paused'` — only `enabled` fires. */
+  status: string;
+  /** Structured schedule (never a raw cron string). Read parsed; written as JSON text. */
+  schedule: ColumnType<ScheduleConfig, string, string>;
+  prompt: string;
   script: ColumnType<string | null, string | null | undefined, string | null>;
-  /** Fallback turn prompt when the script signals without supplying one. */
-  reaction_prompt: ColumnType<string | null, string | null | undefined, string | null>;
-  /** Model for the dispatched turn; NULL → project/server default. */
-  reaction_model: ColumnType<string | null, string | null | undefined, string | null>;
-  /** The loop's durable session; FK `sessions.session_id` `onDelete set null`. */
-  session_id: ColumnType<string | null, string | null | undefined, string | null>;
-  /** Fingerprint of the script last proven by a green test run (draft-until-tested). */
-  tested_script_fingerprint: ColumnType<string | null, string | null | undefined, string | null>;
-  /** Consecutive error runs — the circuit-breaker counter (deferred logic). */
+  model: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Consecutive error runs; five pause the automation. */
   consecutive_error_count: ColumnType<number, number | undefined, number>;
-  /** Denormalized last-run time for the list UI. NULL until first run. */
   last_run_at: ColumnType<Date | null, string | null | undefined, string | null>;
-  /** Denormalized last result: `'ok' | 'acted' | 'error' | 'skipped'`. */
+  /** `'ok' | 'acted' | 'error' | 'skipped'`. */
   last_outcome: ColumnType<string | null, string | null | undefined, string | null>;
-  /** The scheduler's due-time index: when this loop next fires. NULL = draft or
-   *  paused. The DB is the source of truth; the timer is stateless. */
+  last_detail: ColumnType<string | null, string | null | undefined, string | null>;
+  /** The scheduler's due-time index. NULL while paused. */
   next_run_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  /** The local user who confirmed it; its turns run for and notify that user. */
+  sponsor_user_id: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, string | undefined, never>;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
-/** Structured Agent Loop schedule (ADR 0008 §3). A discriminated union stored as
- *  jsonb so the mobile UI never handles raw cron. All times are server-local. */
+/** A dev server the agent set up for a project (concept 2.6). `name_key` is the
+ *  name normalized to upper-case letters, digits and underscores; it is unique per
+ *  project because it also names the sibling URL variable. No column holds a credential. */
+export interface ManagedDevServersTable {
+  id: string;
+  project_id: ColumnType<string, string, never>;
+  name: string;
+  name_key: string;
+  command: string;
+  workdir: ColumnType<string, string | undefined, string>;
+  /** Command template and subdirectory the operator approved for local publishing. */
+  approved_command: ColumnType<string | null, string | null | undefined, string | null>;
+  approved_workdir: ColumnType<string | null, string | null | undefined, string | null>;
+  created_at: ColumnType<Date, string | undefined, never>;
+  updated_at: ColumnType<Date, string | undefined, string | undefined>;
+}
+
+/** A durable task owned by one user (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md).
+ *  `project_id` null is the General bucket; `session_id` is the session the task
+ *  is assigned to, which is what the conductor injects into that session's turns.
+ *  `title`, `detail` and `result` hold cipher envelopes, never plaintext. */
+export interface TasksTable {
+  id: string;
+  owner_user_id: ColumnType<string, string, never>;
+  project_id: ColumnType<string | null, string | null | undefined, string | null>;
+  session_id: ColumnType<string | null, string | null | undefined, string | null>;
+  source_session_id: ColumnType<string | null, string | null | undefined, never>;
+  origin: ColumnType<TaskOrigin, TaskOrigin, TaskOrigin>;
+  title: string;
+  detail: ColumnType<string | null, string | null | undefined, string | null>;
+  attachments: ColumnType<TaskAttachment[], string | undefined, string>;
+  status: ColumnType<TaskStatus, TaskStatus | undefined, TaskStatus>;
+  result: ColumnType<string | null, string | null | undefined, string | null>;
+  sort: ColumnType<number, number | undefined, number>;
+  revision: ColumnType<number, number | undefined, number>;
+  created_at: ColumnType<Date, string | undefined, never>;
+  updated_at: ColumnType<Date, string | undefined, string | undefined>;
+  completed_at: ColumnType<Date | null, string | null | undefined, string | null>;
+}
+
+export type TaskOrigin = 'user' | 'agent';
+export type TaskStatus = 'open' | 'in_progress' | 'done' | 'dropped';
+/** Reference into the content-addressed `attachments` table. */
+export interface TaskAttachment {
+  hash: string;
+  filename: string;
+  mimeType: string;
+}
+
+/** One managed dev server bound to one session's worktree. */
+export interface ManagedDevServerInstancesTable {
+  id: string;
+  server_id: ColumnType<string, string, never>;
+  project_id: ColumnType<string, string, never>;
+  session_id: ColumnType<string, string, never>;
+  /** Internal to the sandbox; never shown to the operator. */
+  sandbox_port: number;
+  /** Reserved port from the local preview range; the only port anyone sees. */
+  network_port: ColumnType<number | null, number | null | undefined, number | null>;
+  /** `'running' | 'stopped'`: what the operator or agent asked for. */
+  desired: ColumnType<string, string | undefined, string>;
+  /** `'stopped' | 'starting' | 'running' | 'crashed'`: what the supervisor observed. */
+  state: ColumnType<string, string | undefined, string>;
+  detail: ColumnType<string | null, string | null | undefined, string | null>;
+  last_run_command: ColumnType<string | null, string | null | undefined, string | null>;
+  last_run_workdir: ColumnType<string | null, string | null | undefined, string | null>;
+  started_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  last_ran_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  /** Explicit access lifecycle start; automatic process recovery preserves it. */
+  access_started_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  /** The operator's Local switch: publish on the network while it runs. */
+  local_access: ColumnType<boolean, boolean | undefined, boolean>;
+  created_at: ColumnType<Date, string | undefined, never>;
+  updated_at: ColumnType<Date, string | undefined, string | undefined>;
+}
+
+/** Structured automation schedule. Zone-less legacy schedules remain server-local. */
 export type ScheduleConfig =
   | { kind: 'interval'; everyMinutes: number }
-  | { kind: 'daily'; hour: number; minute: number }
-  | { kind: 'weekly'; weekday: number; hour: number; minute: number };
-
-/**
- * Append-only run history for an Agent Loop (ADR 0008). One row per scheduler
- * pass that touched the loop. `onDelete cascade` with the loop.
- */
-export interface AgentLoopRunsTable {
-  id: string;
-  /** Monotonic insert order — the reliable newest-first tiebreak (`started_at`
-   *  can tie to the millisecond when a pass fires several runs; the random UUID
-   *  `id` does not reflect insertion order). */
-  seq: Generated<number>;
-  loop_id: string;
-  started_at: ColumnType<Date, string | undefined, never>;
-  finished_at: ColumnType<Date | null, string | null | undefined, string | null>;
-  /** `'ok' | 'acted' | 'error' | 'skipped'`. */
-  outcome: string;
-  /** The script's exit code, if it ran. */
-  exit_code: ColumnType<number | null, number | null | undefined, number | null>;
-  /** Short human summary (stdout tail, error message). */
-  detail: ColumnType<string | null, string | null | undefined, string | null>;
-  /** The session this run used, if any. */
-  session_id: ColumnType<string | null, string | null | undefined, string | null>;
-  /** True for the creation-time validation run (ADR 0008 §7A). */
-  is_test: ColumnType<boolean, boolean | undefined, boolean>;
-}
+  | { kind: 'daily'; hour: number; minute: number; timeZone?: string | undefined }
+  | {
+      kind: 'weekly';
+      weekday: number;
+      hour: number;
+      minute: number;
+      timeZone?: string | undefined;
+    };
 
 /** One-or-more dev servers per project (multi-dev-server data model, slice 1).
  *  The table is the source of truth; the legacy `project_settings.dev_server_*`
@@ -995,10 +1088,17 @@ export interface DevServerDetectionStateTable {
   reviewed_at: ColumnType<Date | null, string | null | undefined, string | null>;
 }
 
+export interface PublicPreviewPinLocksTable {
+  share_id: string;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
 /** One temporary public link to a generation-bound project dev server. Secret
  * material is encrypted by EventStore before it reaches the three *_secret
  * columns. */
 export interface PublicPreviewSharesTable {
+  managed_instance_id: ColumnType<string | null, string | null | undefined, string | null>;
+  pin_locked: ColumnType<boolean, boolean | undefined, boolean>;
   id: string;
   project_id: string;
   dev_server_id: string | null;
@@ -1189,11 +1289,6 @@ interface KnowledgeAuditTable {
   outcome: 'allow' | 'deny' | 'conflict';
   created_at: Generated<Date>;
 }
-interface KnowledgeInvalidatedSessionsTable {
-  session_id: string;
-  stopped_at: Generated<Date | null>;
-  created_at: Generated<Date>;
-}
 interface KnowledgeSpacesTable {
   project_id: string;
   root_folder_id: string;
@@ -1201,19 +1296,6 @@ interface KnowledgeSpacesTable {
   wiki_folder_id: string;
   overview_document_id: Generated<string | null>;
   overview_revision_id: Generated<string | null>;
-  legacy_memory: Generated<string | null>;
-  reconcile_due_at: Generated<Date | null>;
-}
-interface KnowledgeWikiJobsTable {
-  id: string;
-  project_id: string;
-  session_id: string;
-  kind: 'ingest' | 'check' | 'reconcile';
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  source_revisions: string;
-  model: Generated<string | null>;
-  error: Generated<string | null>;
-  created_at: Generated<Date>;
 }
 interface KnowledgeProvenanceTable {
   revision_id: string;
@@ -1231,11 +1313,6 @@ interface KnowledgeSourceRevisionsTable {
   locators: ColumnType<{ label: string; text: string }[], string, string>;
   previews: ColumnType<{ label: string; mediaType: string; base64: string }[], string, string>;
 }
-interface KnowledgeMaintenanceQueueTable {
-  project_id: string;
-  source_document_id: string;
-  due_at: Date;
-}
 interface SessionMovesTable {
   backend_ids_json: string;
   preview_restart_json: ColumnType<string | null, string | null | undefined, string | null>;
@@ -1252,7 +1329,20 @@ interface SessionMovesTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+interface SessionOverviewOrderTable {
+  group_key: string;
+  project_id: string | null;
+  ids: string[];
+}
+
+interface AttendeeStateTable {
+  id: string;
+  state_secret: string;
+}
+
 export interface Database {
+  attendee_state: AttendeeStateTable;
+  session_overview_order: SessionOverviewOrderTable;
   live_meetings: LiveMeetingsTable;
   live_meeting_notes: LiveMeetingNotesTable;
   live_meeting_insights: LiveMeetingInsightsTable;
@@ -1267,26 +1357,27 @@ export interface Database {
   integration_sources: IntegrationSourcesTable;
   integration_events: IntegrationEventsTable;
   project_knowledge_spaces: KnowledgeSpacesTable;
-  knowledge_wiki_jobs: KnowledgeWikiJobsTable;
   knowledge_provenance: KnowledgeProvenanceTable;
   knowledge_source_revisions: KnowledgeSourceRevisionsTable;
-  knowledge_maintenance_queue: KnowledgeMaintenanceQueueTable;
   knowledge_folders: KnowledgeFoldersTable;
   knowledge_documents: KnowledgeDocumentsTable;
   knowledge_document_revisions: KnowledgeRevisionsTable;
   project_knowledge_grants: KnowledgeGrantsTable;
   knowledge_access_events: KnowledgeAuditTable;
-  knowledge_invalidated_sessions: KnowledgeInvalidatedSessionsTable;
   http_mcp_connections: HttpMcpConnectionsTable;
   project_mcp_bindings: ProjectMcpBindingsTable;
   control_plane_generation: ControlPlaneGenerationTable;
   sessions: SessionsTable;
   session_slide_decks: SessionSlideDecksTable;
+  project_google_connections: ProjectGoogleConnectionsTable;
   session_gmail_connections: SessionGmailConnectionsTable;
+  session_calendar_connections: SessionCalendarConnectionsTable;
+  session_contacts_connections: SessionContactsConnectionsTable;
   recent_google_slide_decks: RecentGoogleSlideDecksTable;
   google_slide_image_cleanup: GoogleSlideImageCleanupTable;
   google_slide_invocations: GoogleSlideInvocationsTable;
   events: EventsTable;
+  session_event_stats: SessionEventStatsTable;
   messages: MessagesTable;
   message_projection_state: MessageProjectionStateTable;
   transcript_lines: TranscriptLinesTable;
@@ -1322,12 +1413,15 @@ export interface Database {
   secret_provider_permissions: SecretProviderPermissionsTable;
   brokered_grant_approvals: BrokeredGrantApprovalsTable;
   brokered_http_consumptions: BrokeredHttpConsumptionsTable;
-  agent_loops: AgentLoopsTable;
-  agent_loop_runs: AgentLoopRunsTable;
+  session_automations: SessionAutomationsTable;
+  managed_dev_servers: ManagedDevServersTable;
+  managed_dev_server_instances: ManagedDevServerInstancesTable;
+  tasks: TasksTable;
   runner_frames: RunnerFramesTable;
   dev_servers: DevServersTable;
   dev_server_detection_state: DevServerDetectionStateTable;
   public_preview_shares: PublicPreviewSharesTable;
+  public_preview_pin_locks: PublicPreviewPinLocksTable;
   uplink_pending_share_removals: UplinkPendingShareRemovalsTable;
   claude_egress_ca: ClaudeEgressCaTable;
   claude_egress_client_certs: ClaudeEgressClientCertTable;

@@ -496,3 +496,108 @@ it('checks one spoken request per session at a time', async () => {
     await checked.close();
   }
 });
+
+it('files finished uploads before acknowledging them and includes late notes', async () => {
+  const onFinished = vi.fn(async () => undefined);
+  const filing = Fastify();
+  registerLiveMeetingRoutes(filing, ctx.store, { onFinished });
+  await filing.ready();
+  try {
+    await filing.inject({ method: 'PUT', url, payload: meeting });
+    await filing.inject({
+      method: 'PUT',
+      url: `${url}/notes/note-1`,
+      payload: { atSeconds: 1, text: 'During', revision: 1 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    // A running meeting is not filed, however many notes it collects.
+    expect(onFinished).not.toHaveBeenCalled();
+
+    await filing.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, state: 'ended', endedAt: 200, revision: 2 },
+    });
+    // The device sends the final note after the ended meeting: the note updates the filed document.
+    await filing.inject({
+      method: 'PUT',
+      url: `${url}/notes/note-2`,
+      payload: { atSeconds: 3, text: 'Last word', revision: 1 },
+    });
+    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(2));
+    expect(onFinished).toHaveBeenCalledWith('session-1', 'meeting-1');
+
+    // A rename after the end files the meeting again so the document follows it.
+    await filing.inject({
+      method: 'PUT',
+      url,
+      payload: {
+        ...meeting,
+        state: 'ended',
+        endedAt: 200,
+        speakerNames: { '0': 'Anna' },
+        revision: 3,
+      },
+    });
+    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(3));
+    // A stale upload that the store rejects does not file anything.
+    await filing.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, state: 'ended', endedAt: 200, revision: 2 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(onFinished).toHaveBeenCalledTimes(3);
+  } finally {
+    await filing.close();
+  }
+});
+
+it('files late notes after a restart and retries filing failures', async () => {
+  await app.inject({ method: 'PUT', url, payload: { ...meeting, state: 'ended', endedAt: 200 } });
+  const onFinished = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('temporary failure'))
+    .mockResolvedValue(undefined);
+  const restarted = Fastify();
+  registerLiveMeetingRoutes(restarted, ctx.store, { onFinished });
+  try {
+    await restarted.inject({
+      method: 'PUT',
+      url: `${url}/notes/first-late`,
+      payload: { atSeconds: 4, text: 'Late note', revision: 1 },
+    });
+    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(2));
+    expect(onFinished).toHaveBeenLastCalledWith('session-1', 'meeting-1');
+    await restarted.inject({
+      method: 'PUT',
+      url: `${url}/notes/late`,
+      payload: { atSeconds: 5, text: 'After restart', revision: 1 },
+    });
+    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(3));
+  } finally {
+    await restarted.close();
+  }
+});
+
+it('files server-owned online meetings through the same finished-meeting hook', async () => {
+  const online = Fastify();
+  const onFinished = vi.fn().mockResolvedValue(undefined);
+  const controller = registerLiveMeetingRoutes(online, ctx.store, { onFinished });
+  try {
+    const record = {
+      ...meeting,
+      id: 'meeting-1',
+      sessionId: 'session-1',
+      engine: 'attendee',
+      state: 'active' as const,
+      ownerTokenHash: createHash('sha256').update(ownerToken).digest('hex'),
+    };
+    await controller.ingest(record);
+    expect(onFinished).not.toHaveBeenCalled();
+    await controller.ingest({ ...record, state: 'ended', endedAt: 200, revision: 2 });
+    expect(onFinished).toHaveBeenCalledWith('session-1', 'meeting-1');
+  } finally {
+    await online.close();
+  }
+});

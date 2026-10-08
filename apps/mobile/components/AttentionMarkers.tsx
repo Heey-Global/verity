@@ -2,6 +2,8 @@
 // glyph (the "PR" anchor), colored by verdict, so a row's PR reads as one thing:
 //   • CI running  → green git-merge, PULSING, no badge (on track, checks in flight)
 //   • merge-ready → green git-merge + green ✓ badge (checks passed, ready)
+//   • merge checking → green git-merge + green ✓ badge, PULSING (checks passed,
+//     GitHub still computing mergeability)
 //   • merge blocked → raspberry git-merge + raspberry ✕ badge
 //   • CI failed   → raspberry git-merge + raspberry ✕ badge
 // (Unread is NOT here — it's the left dot in the row, see UnreadDot.) The marker sits
@@ -49,35 +51,57 @@ function PrMarker({
   );
 }
 
-export function AttentionMarkers({ flags, size = 15 }: { flags: AttentionFlag[]; size?: number }) {
+// One entry per kind the marker draws. Drawing and `drawsAttentionMarker` both read
+// this table, so a kind can't be drawn without the row knowing, or vice versa.
+type MarkerSpec = { tone: 'done' | 'danger'; pulsing: boolean; badge?: 'check' | 'x' };
+const MARKERS: Partial<Record<AttentionFlag['kind'], MarkerSpec>> = {
+  ci_running: { tone: 'done', pulsing: true },
+  merge_ready: { tone: 'done', pulsing: false, badge: 'check' },
+  merge_checking: { tone: 'done', pulsing: true, badge: 'check' },
+  ci_failed: { tone: 'danger', pulsing: false, badge: 'x' },
+  merge_blocked: { tone: 'danger', pulsing: false, badge: 'x' },
+  merge_conflict: { tone: 'danger', pulsing: false, badge: 'x' },
+};
+
+/** Whether {@link AttentionMarkers} draws anything for these flags, so a caller can
+ *  leave out the separator it would otherwise put in front of an empty slot. */
+export function drawsAttentionMarker(flags: readonly AttentionFlag[]): boolean {
+  const flag = flags[0];
+  return flag !== undefined && MARKERS[flag.kind] !== undefined;
+}
+
+export function AttentionMarkers({
+  flags,
+  size = 15,
+  inline = false,
+}: {
+  flags: AttentionFlag[];
+  size?: number;
+  /** Sit in running text (the session row's second line) instead of the fixed
+   *  34px column slot; only the badge's overhang is reserved. */
+  inline?: boolean;
+}) {
   const { theme } = useUnistyles();
   // Show only the SINGLE highest-priority marker (flags are priority-ordered:
-  // merge_conflict > ci_failed > merge_blocked > merge_ready > ci_running > unread). One icon per row keeps the
+  // merge_conflict > ci_failed > merge_blocked > merge_ready > merge_checking > ci_running > unread). One icon per row keeps the
   // trailing column clean and aligned under the project ⋯ — two side-by-side icons
   // read as clutter.
   const flag = flags[0];
-  if (!flag) return null;
+  const spec = flag ? MARKERS[flag.kind] : undefined;
+  if (!flag || !spec) return null;
+  const color = theme.colors.tone[spec.tone];
   return (
-    <View style={styles.slot} accessibilityRole="image" accessibilityLabel={flag.label}>
-      {flag.kind === 'ci_running' ? (
-        <PrMarker size={size} color={theme.colors.tone.done} pulsing />
-      ) : flag.kind === 'merge_ready' ? (
-        <PrMarker
-          size={size}
-          color={theme.colors.tone.done}
-          pulsing={false}
-          badge={{ icon: 'check', color: theme.colors.tone.done }}
-        />
-      ) : flag.kind === 'ci_failed' ||
-        flag.kind === 'merge_blocked' ||
-        flag.kind === 'merge_conflict' ? (
-        <PrMarker
-          size={size}
-          color={theme.colors.tone.danger}
-          pulsing={false}
-          badge={{ icon: 'x', color: theme.colors.tone.danger }}
-        />
-      ) : null}
+    <View
+      style={inline ? styles.inline : styles.slot}
+      accessibilityRole="image"
+      accessibilityLabel={flag.label}
+    >
+      <PrMarker
+        size={size}
+        color={color}
+        pulsing={spec.pulsing}
+        {...(spec.badge ? { badge: { icon: spec.badge, color } } : {})}
+      />
     </View>
   );
 }
@@ -88,6 +112,11 @@ const styles = StyleSheet.create(() => ({
     // the icon centers in the same column — a session marker sits under the project ⋯.
     width: 34,
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inline: {
+    // The badge overhangs the glyph's top-right corner by 5px.
+    paddingRight: 5,
     justifyContent: 'center',
   },
   badge: {

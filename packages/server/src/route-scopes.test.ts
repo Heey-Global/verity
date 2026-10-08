@@ -171,8 +171,8 @@ describe('route scope declarations', () => {
       'GET /sessions',
       'GET /projects',
       'GET /sessions/:id',
-      'GET /projects/:projectId/agent-loops',
-      'GET /projects/:projectId/dev-servers',
+      'GET /sessions/:id/automation',
+      'GET /sessions/:sessionId/local-shares',
     ]) {
       expect(
         NON_OPERATOR_ROUTES.has(anchor),
@@ -379,6 +379,7 @@ describe('missingLockoutKeys', () => {
 describe('declaredNonOperatorKeys', () => {
   it('grants an undeclared route no key, leaving it to the operator gate', () => {
     expect(declaredNonOperatorKeys({ method: 'GET', url: '/sessions/:id' })).toEqual([]);
+    expect(declaredNonOperatorKeys({ method: 'PATCH', url: '/sessions/order' })).toEqual([]);
     expect(declaredNonOperatorKeys({ method: 'POST', url: '/projects' })).toEqual([]);
   });
 

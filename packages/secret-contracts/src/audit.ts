@@ -96,6 +96,7 @@ export type GatewayChannel = z.infer<typeof gatewayChannelSchema>;
 export const gatewayToolNameSchema = z.enum([
   'verity_http_request',
   'verity_secret_run',
+  'verity_diagnostics',
   'verity_list_sessions',
   'verity_session_handoff',
   'verity_send_session_message',
@@ -103,11 +104,17 @@ export const gatewayToolNameSchema = z.enum([
   'verity_session_progress',
   'verity_recent_session_messages',
   'verity_publish_session_progress',
+  'verity_start_planning',
+  'verity_present_plan',
+  'verity_end_planning',
+  'verity_tasks',
   'verity_google_slides',
   'verity_google_docs',
   'verity_knowledge',
   'verity_google_sheets',
   'verity_gmail',
+  'verity_google_calendar',
+  'verity_google_contacts',
   'verity_google_drive',
 ]);
 export type GatewayToolName = z.infer<typeof gatewayToolNameSchema>;

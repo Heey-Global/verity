@@ -1,8 +1,16 @@
-import { mkdtemp } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { parse as parseYaml } from 'yaml';
+import { mkdtemp, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { readManagedDeployment } from './managed-deployment.js';
+import {
+  readManagedDeployment,
+  MANAGED_DEPLOYMENT_SPEC_FILE,
+  MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE,
+} from './managed-deployment.js';
+import { sealDeploymentSpec } from './deployment-spec.js';
+import { managedServerContainerSpec } from './managed-server-owner.js';
 import { runManagedBootstrap, type ManagedBootstrapEnvironment } from './managed-bootstrap.js';
 
 const digest = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
@@ -30,6 +38,109 @@ const environment = async (): Promise<ManagedBootstrapEnvironment> => ({
 });
 
 describe('runManagedBootstrap', () => {
+  it('delivers the read-only Compose diagnostic bind to the managed Server', async () => {
+    const compose = parseYaml(readFileSync('deploy/docker-compose.yml', 'utf8'), {
+      merge: true,
+    }) as {
+      services: Record<string, { volumes?: unknown[]; environment: Record<string, string> }>;
+    };
+    const composeMount = compose.services.verity!.volumes!.find(
+      (mount): mount is string =>
+        typeof mount === 'string' && mount.includes(':/run/verity-host-diagnostics:'),
+    )!;
+    const env = await environment();
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    if (!state.managed) throw new Error(state.reason);
+    const desired = await managedServerContainerSpec(state.spec, env, async () => '');
+    const resolvedMount = composeMount.replace(/\$\{[^:}]+:-([^}]+)\}/gu, '$1');
+    expect(desired.binds).toContain(resolvedMount);
+    expect(compose.services['managed-bootstrap']!.environment.VERITY_HOST_DIAGNOSTIC_DIR).toBe(
+      composeMount.split('}')[0] + '}',
+    );
+    expect(
+      state.spec.environment.some((entry) => entry.name === 'VERITY_HOST_DIAGNOSTIC_DIR'),
+    ).toBe(false);
+  });
+
+  it('migrates a legacy sealed deployment on an installer rerun without inventing other authority', async () => {
+    const env = { ...(await environment()), VERITY_RUNNER_SUPERVISOR: '1' };
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const current = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    if (!current.managed) throw new Error(current.reason);
+    const { checksum, resources, ...legacyBody } = current.spec;
+    expect(checksum).toBeDefined();
+    expect(resources).toBeDefined();
+    const legacy = sealDeploymentSpec({
+      ...legacyBody,
+      mounts: legacyBody.mounts.filter((mount) => mount.target !== '/run/verity-host-diagnostics'),
+    });
+    await writeFile(
+      join(env.VERITY_MANAGED_ROOT!, MANAGED_DEPLOYMENT_SPEC_FILE),
+      JSON.stringify(legacy),
+    );
+    expect((await readManagedDeployment(env.VERITY_MANAGED_ROOT!)).managed).toBe(true);
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const migrated = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    if (!migrated.managed) throw new Error(migrated.reason);
+    expect(migrated.spec.mounts).toHaveLength(legacy.mounts.length + 1);
+    const backupPath = join(env.VERITY_MANAGED_ROOT!, MANAGED_HOST_DIAGNOSTIC_BACKUP_FILE);
+    expect(JSON.parse(await readFile(backupPath, 'utf8'))).toEqual(legacy);
+    expect(migrated.spec.mounts).toEqual(expect.arrayContaining([...legacy.mounts]));
+    expect(migrated.spec.environment).toEqual(legacy.environment);
+    expect(migrated.spec.image).toBe(legacy.image);
+    expect(migrated.spec.user).toEqual(legacy.user);
+    expect(migrated.spec.security).toEqual(legacy.security);
+    expect(migrated.spec).not.toHaveProperty('resources');
+    const desired = await managedServerContainerSpec(migrated.spec, env, async () => '');
+    expect(desired.binds).toContain(
+      '/var/lib/verity/host-diagnostics:/run/verity-host-diagnostics:ro',
+    );
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    expect(await readManagedDeployment(env.VERITY_MANAGED_ROOT!)).toEqual(migrated);
+    expect(JSON.parse(await readFile(backupPath, 'utf8'))).toEqual(legacy);
+    await expect(
+      runManagedBootstrap(
+        { ...env, VERITY_HOST_DIAGNOSTIC_DIR: '/another/host-diagnostics' },
+        'x64',
+        env.VERITY_MANAGED_ROOT,
+      ),
+    ).rejects.toThrow('sealed authority');
+    expect(await readManagedDeployment(env.VERITY_MANAGED_ROOT!)).toEqual(migrated);
+  });
+
+  it('forwards explicit Staging OAuth overrides without pinning the baked image default', async () => {
+    const compose = parseYaml(
+      readFileSync(
+        process.env.VERITY_TEST_COMPOSE_FILE ??
+          new URL('../../../../deploy/docker-compose.yml', import.meta.url),
+        'utf8',
+      ),
+      { merge: true },
+    ) as { services: Record<string, { environment: Record<string, string> }> };
+    // A host .env value otherwise disappears before the bootstrap ever sees it.
+    expect(compose.services['verity-updater']!.environment.STAGING_GOOGLE_AUTH_ID).toBe(
+      '${STAGING_GOOGLE_AUTH_ID:-}',
+    );
+    const env = {
+      ...(await environment()),
+      STAGING_GOOGLE_AUTH_ID: 'override',
+      GOOGLE_STAGING_CLIENT_ID_DEFAULT: 'baked',
+    };
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    expect(state.managed).toBe(true);
+    if (!state.managed) throw new Error('bootstrap did not establish managed authority');
+    expect(state.spec.environment).toContainEqual({
+      name: 'STAGING_GOOGLE_AUTH_ID',
+      source: { kind: 'env', name: 'STAGING_GOOGLE_AUTH_ID' },
+    });
+    // Pinning an empty baked default would disable Staging OAuth after later image updates.
+    expect(
+      state.spec.environment.some((entry) => entry.name === 'GOOGLE_STAGING_CLIENT_ID_DEFAULT'),
+    ).toBe(false);
+  });
+
   it('writes the allowlisted deployment authority for an official digest', async () => {
     const env = await environment();
     await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
@@ -129,6 +240,22 @@ describe('runManagedBootstrap', () => {
     expect(names).not.toContain('VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE');
     // The forwarding itself still works — this is an exclusion, not a regression.
     expect(names).toContain('VERITY_DATA_VOLUME');
+  });
+
+  it('keeps the legacy PID opt-in as an Updater input rather than a sealed Server source', async () => {
+    const env = {
+      ...(await environment()),
+      VERITY_SANDBOX_PIDS_LIMIT: '512',
+      VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY: '1',
+    };
+    await runManagedBootstrap(env, 'x64', env.VERITY_MANAGED_ROOT);
+    const state = await readManagedDeployment(env.VERITY_MANAGED_ROOT!);
+    if (!state.managed) throw new Error(state.reason);
+    expect(state.spec.environment.map((entry) => entry.name)).not.toContain(
+      'VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY',
+    );
+    const desired = await managedServerContainerSpec(state.spec, env, async () => '');
+    expect(desired.env).toContain('VERITY_SANDBOX_PIDS_LIMIT=512');
   });
 
   it('rejects an image that differs from the sealed deployment authority', async () => {

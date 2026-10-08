@@ -14,6 +14,25 @@ if (process.env.EAS_BUILD === 'true') {
       throw new Error('EAS preparation did not run in this build directory');
     }
   } else {
+    if (['testflight', 'staging', 'production'].includes(process.env.EAS_BUILD_PROFILE ?? '')) {
+      // Change only EAS's unpacked manifest before prebuild discovers native pods.
+      const manifest = new URL('../apps/mobile/package.json', import.meta.url);
+      /** @type {unknown} */
+      const parsed = JSON.parse(readFileSync(manifest, 'utf8'));
+      const app = /** @type {{ expo?: { autolinking?: { ios?: { exclude?: string[] } } } }} */ (
+        parsed
+      );
+      const ios = (((app.expo ??= {}).autolinking ??= {}).ios ??= {});
+      ios.exclude = [
+        ...new Set([
+          ...(ios.exclude ?? []),
+          'expo-dev-client',
+          'expo-dev-menu',
+          'expo-dev-launcher',
+        ]),
+      ];
+      writeFileSync(manifest, `${JSON.stringify(app, null, 2)}\n`);
+    }
     execFileSync(process.execPath, ['scripts/patch-mobile-native-deps.mjs'], {
       cwd: root,
       stdio: 'inherit',

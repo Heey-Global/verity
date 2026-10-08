@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
-  agentLoopConfigFingerprint,
   VerityApiError,
   VerityClient,
   projectRecordSchema,
+  sessionSummarySchema,
+  sessionDetailSchema,
   type TurnRequest,
 } from './api.js';
 
@@ -15,6 +16,47 @@ const ZERO_USAGE = {
   cacheCreationTokens: 0,
   turns: 0,
 };
+
+it('normalizes the additive agent-text counter version without breaking legacy readers', () => {
+  const wire = {
+    sessionId: 's1',
+    worktree: '/wt/s1',
+    model: 'm',
+    name: null,
+    status: 'idle',
+    usage: ZERO_USAGE,
+    eventCount: 2,
+    agentTextCounterVersion: 'agent-text-v2',
+    lastSeenEventCount: 1,
+  };
+  // Installed clients restrict the older field to a literal; a replacement value
+  // there would reject the entire session list rather than just the read marker.
+  const legacy = z.object({ eventCountVersion: z.literal('dev-servers-excluded-v1').optional() });
+  expect(() => legacy.parse(wire)).not.toThrow();
+  expect(sessionSummarySchema.parse(wire).eventCountVersion).toBe('agent-text-v2');
+  expect(sessionDetailSchema.parse(wire).eventCountVersion).toBe('agent-text-v2');
+});
+
+it.each([undefined, 'dev-servers-excluded-v1', 'agent-text-v2'])(
+  'accepts summaries with counter version %s',
+  (eventCountVersion) => {
+    const parsed = sessionSummarySchema.parse({
+      sessionId: 's1',
+      worktree: '/wt/s1',
+      model: 'm',
+      name: null,
+      status: 'awaiting_input',
+      usage: ZERO_USAGE,
+      resumable: true,
+      eventCount: 2,
+      lastSeenEventCount: 1,
+      eventCountVersion,
+      backgroundWorking: true,
+    });
+    expect(parsed.eventCountVersion).toBe(eventCountVersion);
+    expect(parsed.backgroundWorking).toBe(true);
+  },
+);
 
 interface Call {
   url: string;
@@ -237,11 +279,15 @@ describe('VerityClient Matrix integrations', () => {
       json({ ok: true }),
     );
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-    expect(await client.listIntegrations()).toEqual({ accounts: [account], sources: [source] });
-    expect(await client.listProjectIntegrations(projectId)).toEqual([source]);
+    const parsedSource = { ...source, importDiagnostics: [], importDiagnosticsTruncated: false };
+    expect(await client.listIntegrations()).toEqual({
+      accounts: [account],
+      sources: [parsedSource],
+    });
+    expect(await client.listProjectIntegrations(projectId)).toEqual([parsedSource]);
     expect(
       await client.bindIntegrationSource(source.accountId, source.sourceId, projectId),
-    ).toEqual(source);
+    ).toEqual(parsedSource);
     await client.pauseIntegrationSource(source.accountId, source.sourceId, true);
     await client.disconnectIntegrationSource(source.accountId, source.sourceId);
     expect(calls.map((call) => [call.url, call.init?.method])).toEqual([
@@ -379,6 +425,92 @@ describe('VerityClient Gmail session access', () => {
   });
 });
 
+describe('VerityClient Calendar session access', () => {
+  it('connects the account and toggles access for one encoded session', async () => {
+    const connection = {
+      enabled: true,
+      accountEmail: 'person@example.com',
+      clientId: 'google-client-id',
+      connected: true,
+    };
+    const { fetch, calls } = fakeFetchSequence(
+      json({ ...connection, enabled: false, connected: false }),
+      json({ connected: true, accountEmail: 'person@example.com' }),
+      json(connection),
+      json({}),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    await expect(client.getSessionCalendarConnection('session/1')).resolves.toMatchObject({
+      enabled: false,
+      connected: false,
+    });
+    await client.connectCalendar({
+      code: 'code',
+      codeVerifier: 'verifier',
+      redirectUri: 'verity:/',
+    });
+    await expect(client.enableSessionCalendar('session/1')).resolves.toEqual(connection);
+    await client.disableSessionCalendar('session/1');
+
+    expect(calls.map(({ url }) => url)).toEqual([
+      'http://host/sessions/session%2F1/calendar',
+      'http://host/calendar/connect',
+      'http://host/sessions/session%2F1/calendar',
+      'http://host/sessions/session%2F1/calendar',
+    ]);
+    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'POST', 'PUT', 'DELETE']);
+    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
+      code: 'code',
+      codeVerifier: 'verifier',
+      redirectUri: 'verity:/',
+    });
+  });
+});
+
+describe('VerityClient Contacts session access', () => {
+  it('connects the account and toggles access for one encoded session', async () => {
+    const connection = {
+      enabled: true,
+      accountEmail: 'person@example.com',
+      clientId: 'google-client-id',
+      connected: true,
+    };
+    const { fetch, calls } = fakeFetchSequence(
+      json({ ...connection, enabled: false, connected: false }),
+      json({ connected: true, accountEmail: 'person@example.com' }),
+      json(connection),
+      json({}),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    await expect(client.getSessionContactsConnection('session/1')).resolves.toMatchObject({
+      enabled: false,
+      connected: false,
+    });
+    await client.connectContacts({
+      code: 'code',
+      codeVerifier: 'verifier',
+      redirectUri: 'verity:/',
+    });
+    await expect(client.enableSessionContacts('session/1')).resolves.toEqual(connection);
+    await client.disableSessionContacts('session/1');
+
+    expect(calls.map(({ url }) => url)).toEqual([
+      'http://host/sessions/session%2F1/contacts',
+      'http://host/contacts/connect',
+      'http://host/sessions/session%2F1/contacts',
+      'http://host/sessions/session%2F1/contacts',
+    ]);
+    expect(calls.map(({ init }) => init?.method)).toEqual(['GET', 'POST', 'PUT', 'DELETE']);
+    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
+      code: 'code',
+      codeVerifier: 'verifier',
+      redirectUri: 'verity:/',
+    });
+  });
+});
+
 describe('VerityClient health capabilities', () => {
   it('surfaces pushEnabled and remains compatible with older servers', async () => {
     const current = new VerityClient({
@@ -466,13 +598,13 @@ describe('VerityClient auth (bearer token)', () => {
     expect(authHeader(calls[1])).toBe('Bearer second');
   });
 
-  it('mints a stream ticket over authenticated HTTP', async () => {
+  it('mints a live ticket over authenticated HTTP', async () => {
     const expiresAt = '2026-08-30T18:00:00.000Z';
     const ticket = 'A'.repeat(43);
     const { fetch, calls } = fakeFetch(json({ ticket, expiresAt }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch, getToken: () => 'device' });
-    await expect(client.createStreamTicket('session/1')).resolves.toEqual({ ticket, expiresAt });
-    expect(calls[0]?.url).toBe('http://host/sessions/session%2F1/stream-ticket');
+    await expect(client.createLiveTicket()).resolves.toEqual({ ticket, expiresAt });
+    expect(calls[0]?.url).toBe('http://host/live/ticket');
     expect(calls[0]?.init?.method).toBe('POST');
     expect(authHeader(calls[0])).toBe('Bearer device');
   });
@@ -722,7 +854,11 @@ describe('VerityClient.listSessionOverview', () => {
   it('reads a healthy envelope (no attention key) as no signals', async () => {
     const { fetch } = fakeFetch(json({ sessions: [summary] }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-    expect(await client.listSessionOverview()).toEqual({ sessions: [summary], attention: [] });
+    expect(await client.listSessionOverview()).toEqual({
+      sessions: [summary],
+      attention: [],
+      sessionReordering: false,
+    });
   });
 
   // A server that predates the envelope ignores the query parameter and answers
@@ -731,7 +867,11 @@ describe('VerityClient.listSessionOverview', () => {
   it('accepts the bare array an older server still returns', async () => {
     const { fetch } = fakeFetch(json([summary]));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-    expect(await client.listSessionOverview()).toEqual({ sessions: [summary], attention: [] });
+    expect(await client.listSessionOverview()).toEqual({
+      sessions: [summary],
+      attention: [],
+      sessionReordering: false,
+    });
   });
 
   // Symmetrically: a server NEWER than this app may add a code it never heard of.
@@ -912,6 +1052,38 @@ describe('VerityClient meeting transcripts', () => {
   });
 });
 
+describe('live read observations', () => {
+  it('records eligible reads, replays them to a later subscriber and detaches', async () => {
+    const { fetch } = fakeFetchSequence(json([]), json([]));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.listProjects();
+    const observed = vi.fn();
+    const detach = client.observeReads(observed);
+    expect(observed).toHaveBeenCalledWith({ path: '/projects' });
+    detach();
+    await client.listProjects();
+    expect(observed).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains a resource subscription after an initial read fails', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('offline'));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await expect(client.listProjects()).rejects.toThrow('offline');
+    const observed = vi.fn();
+    client.observeReads(observed);
+    expect(observed).toHaveBeenCalledWith({ path: '/projects' });
+  });
+
+  it('watches a meeting feed independently of its incremental read cursor', async () => {
+    const { fetch } = fakeFetch(json({ cursor: 1, meetings: [], notes: [] }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    const observed = vi.fn();
+    client.observeReads(observed);
+    await client.getLiveMeetingChanges('s', 123);
+    expect(observed).toHaveBeenCalledWith({ path: '/sessions/s/live-meetings' });
+  });
+});
+
 describe('VerityClient.listProjects (#174)', () => {
   const project = {
     id: 'p1',
@@ -1024,41 +1196,6 @@ describe('VerityClient.listProjects (#174)', () => {
     );
   });
 
-  it('starts, reads, stops, tails, and checks one dev server by stable id', async () => {
-    const running = { projectId: 'p1', url: 'http://localhost:3000', running: true, pid: '101' };
-    const stopped = { ...running, running: false, pid: null };
-    const logs = { projectId: 'p1', logs: 'web ready\n' };
-    const health = {
-      projectId: 'p1',
-      url: 'http://localhost:3000',
-      reachable: true,
-      status: 200,
-      checkedAt: '2026-07-14T00:00:00.000Z',
-      error: null,
-    };
-    const { fetch, calls } = fakeFetchSequence(
-      json({ runtime: running }),
-      json({ runtime: running }),
-      json({ runtime: stopped }),
-      json({ logs }),
-      json({ health }),
-    );
-    const client = new VerityClient({ baseUrl: 'http://host', fetch });
-
-    expect(await client.startDevServer('web/one')).toEqual(running);
-    expect(await client.getDevServerStatus('web/one')).toEqual(running);
-    expect(await client.stopDevServer('web/one')).toEqual(stopped);
-    expect(await client.getDevServerLogs('web/one')).toEqual(logs);
-    expect(await client.getDevServerHealth('web/one')).toEqual(health);
-    expect(calls.map((call) => [call.init?.method, call.url])).toEqual([
-      ['POST', 'http://host/dev-servers/web%2Fone/runtime'],
-      ['GET', 'http://host/dev-servers/web%2Fone/runtime'],
-      ['POST', 'http://host/dev-servers/web%2Fone/runtime/stop'],
-      ['GET', 'http://host/dev-servers/web%2Fone/runtime/logs'],
-      ['GET', 'http://host/dev-servers/web%2Fone/runtime/health'],
-    ]);
-  });
-
   it('creates a project', async () => {
     const { fetch, calls } = fakeFetch(json({ project }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -1128,18 +1265,18 @@ describe('VerityClient.listProjects (#174)', () => {
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ confirmWarnings: true }));
   });
 
-  it('refreshes a project token through concierge without exposing the token value', async () => {
+  it('refreshes a project token through Verity Control without exposing the token value', async () => {
     const refreshed = { projectId: 'p/1', refreshedAt: '2026-06-30T12:00:00.000Z' };
     const { fetch, calls } = fakeFetch(json(refreshed));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
 
     expect(await client.refreshProjectToken('p/1')).toEqual(refreshed);
-    expect(calls[0]?.url).toBe('http://host/concierge/projects/p%2F1/refresh-token');
+    expect(calls[0]?.url).toBe('http://host/verity-control/projects/p%2F1/refresh-token');
     expect(calls[0]?.init?.method).toBe('POST');
     expect(JSON.stringify(refreshed)).not.toContain('ghs_');
   });
 
-  it('recreates a project container through concierge', async () => {
+  it('recreates a project container through Verity Control', async () => {
     const { fetch, calls } = fakeFetch(
       json({ project: { ...project, state: 'container_starting' } }),
     );
@@ -1149,7 +1286,7 @@ describe('VerityClient.listProjects (#174)', () => {
       id: 'p1',
       state: 'container_starting',
     });
-    expect(calls[0]?.url).toBe('http://host/concierge/projects/p%2F1/recreate-container');
+    expect(calls[0]?.url).toBe('http://host/verity-control/projects/p%2F1/recreate-container');
     expect(calls[0]?.init?.method).toBe('POST');
   });
 
@@ -1332,6 +1469,44 @@ describe('VerityClient.fetchOnboardingStatus (#320)', () => {
     expect(calls[0]?.url).toBe('http://host/onboarding/status');
     expect(calls[0]?.init?.method).toBe('GET');
   });
+
+  it('recognizes an older server with an OpenCode-only setup', async () => {
+    const { fetch } = fakeFetch(
+      json({
+        ...complete,
+        githubAppConfigured: false,
+        signingKeyConfigured: false,
+        complete: false,
+        nextStep: 'github',
+      }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    vi.spyOn(client, 'getVeritySettings').mockResolvedValue({
+      opencodeApiKeyConfigured: true,
+      opencodeBaseUrl: 'https://models.example.test',
+      opencodeModels: '["test-model"]',
+    } as NonNullable<Awaited<ReturnType<VerityClient['getVeritySettings']>>>);
+    expect((await client.fetchOnboardingStatus()).opencodeConfigured).toBe(true);
+  });
+
+  it.each([
+    { catalog: 'one,two', disabled: 'one\ntwo', ready: false },
+    { catalog: 'one,two', disabled: 'one', ready: true },
+    { catalog: ' , \n ', disabled: null, ready: false },
+  ])(
+    'checks enabled OpenCode models on an older server ($ready)',
+    async ({ catalog, disabled, ready }) => {
+      const { fetch } = fakeFetch(json({ ...complete, complete: false, nextStep: 'github' }));
+      const client = new VerityClient({ baseUrl: 'http://host', fetch });
+      vi.spyOn(client, 'getVeritySettings').mockResolvedValue({
+        opencodeApiKeyConfigured: true,
+        opencodeBaseUrl: 'https://models.example.test',
+        opencodeModels: catalog,
+        opencodeDisabledModels: disabled,
+      } as NonNullable<Awaited<ReturnType<VerityClient['getVeritySettings']>>>);
+      expect((await client.fetchOnboardingStatus()).opencodeConfigured).toBe(ready);
+    },
+  );
 
   it('parses an incomplete status with a nextStep', async () => {
     const incomplete = {
@@ -1790,13 +1965,15 @@ describe('VerityClient.createSession', () => {
   });
 });
 
-describe('VerityClient.openConciergeSession', () => {
-  it('POSTs to the Concierge session route and returns the session id', async () => {
-    const { fetch, calls } = fakeFetch(json({ sessionId: 'concierge-1' }, 201));
+describe('VerityClient.openVerityControlSession', () => {
+  it('POSTs to the Verity Control session route and returns the session id', async () => {
+    const { fetch, calls } = fakeFetch(json({ sessionId: 'verity-control-1' }, 201));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
 
-    await expect(client.openConciergeSession()).resolves.toEqual({ sessionId: 'concierge-1' });
-    expect(calls[0]?.url).toBe('http://host/concierge/session');
+    await expect(client.openVerityControlSession()).resolves.toEqual({
+      sessionId: 'verity-control-1',
+    });
+    expect(calls[0]?.url).toBe('http://host/verity-control/session');
     expect(calls[0]?.init?.method).toBe('POST');
     expect(calls[0]?.init?.body).toBeUndefined();
   });
@@ -1842,18 +2019,51 @@ describe('VerityClient.renameSession', () => {
   });
 });
 
+describe('VerityClient.setSessionFavorite', () => {
+  it('PATCHes only the favorite flag and returns the echoed value', async () => {
+    const { fetch, calls } = fakeFetch(json({ sessionId: 's1', favorite: true }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    const res = await client.setSessionFavorite('s1', true);
+
+    expect(res).toEqual({ sessionId: 's1', favorite: true });
+    expect(calls[0]?.url).toBe('http://host/sessions/s1');
+    expect(calls[0]?.init?.method).toBe('PATCH');
+    // A stray `name` key would rename (or clear the name of) the session.
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ favorite: true }));
+  });
+
+  it('maps a 404 to a VerityApiError', async () => {
+    const { fetch } = fakeFetch(json({ error: 'session s9 not found' }, 404));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await expect(client.setSessionFavorite('s9', false)).rejects.toMatchObject({
+      name: 'VerityApiError',
+      status: 404,
+    });
+  });
+});
+
 describe('VerityClient.setSessionSeen (#387)', () => {
   it('PATCHes the seen event count and returns the resolved mark', async () => {
     const { fetch, calls } = fakeFetch(json({ sessionId: 's1', lastSeenEventCount: 7 }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
 
-    const res = await client.setSessionSeen('s1', 7);
+    const res = await client.setSessionSeen('s1', 7, 'agent-text-v2');
 
     expect(res).toEqual({ sessionId: 's1', lastSeenEventCount: 7 });
     expect(calls[0]?.url).toBe('http://host/sessions/s1/seen');
     expect(calls[0]?.init?.method).toBe('PATCH');
     expect(calls[0]?.init?.headers).toEqual({ 'content-type': 'application/json' });
-    expect(calls[0]?.init?.body).toBe(JSON.stringify({ eventCount: 7 }));
+    expect(calls[0]?.init?.body).toBe(
+      JSON.stringify({ eventCount: 7, counterVersion: 'agent-text-v2' }),
+    );
+  });
+
+  it('does not label a legacy server count with a newer version', async () => {
+    const { fetch, calls } = fakeFetch(json({ sessionId: 's1', lastSeenEventCount: 2 }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.setSessionSeen('s1', 2);
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ eventCount: 2 }));
   });
 
   it('encodes the session id in the path', async () => {
@@ -2154,10 +2364,17 @@ describe('VerityClient.mergeSessionBranch', () => {
 
   it('reads the local merge base off a branch list, and tolerates its absence', async () => {
     const { fetch } = fakeFetch(
-      json({ current: 'feat/notes', switchable: [], localMerge: { base: 'trunk' } }),
+      json({
+        current: 'feat/notes',
+        switchable: [],
+        localMerge: { base: 'trunk', hasChanges: false },
+      }),
     );
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-    expect((await client.getBranches('s1')).localMerge?.base).toBe('trunk');
+    expect((await client.getBranches('s1')).localMerge).toEqual({
+      base: 'trunk',
+      hasChanges: false,
+    });
 
     const older = fakeFetch(json({ current: 'main', switchable: [] }));
     const olderClient = new VerityClient({ baseUrl: 'http://host', fetch: older.fetch });
@@ -2233,6 +2450,37 @@ describe('VerityClient session files', () => {
     expect(calls[1]?.init?.method).toBe('DELETE');
     expect(calls[2]?.init?.method).toBe('DELETE');
     expect(calls[3]?.init).toMatchObject({ method: 'POST' });
+  });
+
+  it('renames a file in place, keeping its folder and root', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ path: 'notes/b.md', root: 'worktree' }),
+      json({ path: 'renamed.md', root: 'shared' }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+
+    await client.renameSessionFile('s1', 'worktree', 'notes/a.md', 'b.md');
+    await client.renameSessionFile('s1', 'shared', 'top.md', 'renamed.md');
+
+    expect(calls.map(({ url }) => url)).toEqual([
+      'http://host/sessions/s1/files/move',
+      'http://host/sessions/s1/files/move',
+    ]);
+    // A rename that dropped the folder would move the file to the root instead.
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      root: 'worktree',
+      path: 'notes/a.md',
+      toRoot: 'worktree',
+      toPath: 'notes',
+      toFileName: 'b.md',
+    });
+    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
+      root: 'shared',
+      path: 'top.md',
+      toRoot: 'shared',
+      toPath: '',
+      toFileName: 'renamed.md',
+    });
   });
 
   it('rejects an older server that returns the worktree for a knowledge root', async () => {
@@ -2739,274 +2987,125 @@ describe('VerityClient agent login flows', () => {
   });
 });
 
-describe('VerityClient Agent Loops', () => {
-  it('fingerprints the complete confirmed config, not only the script', () => {
-    const base = {
-      name: 'Audit',
-      script: 'exit 0',
-      schedule: { kind: 'daily' as const, hour: 3, minute: 0 },
-      reactionPrompt: 'Investigate',
-      reactionModel: null,
-    };
-    expect(agentLoopConfigFingerprint(base)).not.toBe(
-      agentLoopConfigFingerprint({
-        ...base,
-        schedule: { kind: 'daily', hour: 4, minute: 0 },
-      }),
-    );
-    expect(agentLoopConfigFingerprint(base)).not.toBe(
-      agentLoopConfigFingerprint({ ...base, reactionModel: 'codex/default' }),
-    );
-  });
-  const loop = {
-    id: 'loop-1',
-    projectId: 'project one',
-    name: 'Dependency audit',
-    status: 'draft',
-    schedule: { kind: 'interval', everyMinutes: 30 },
-    script: 'exit 0',
-    reactionPrompt: null,
-    reactionModel: null,
-    sessionId: 'session-1',
-    testedScriptFingerprint: null,
+describe('VerityClient session automations', () => {
+  const automation = {
+    id: 'a1',
+    sessionId: 's 1',
+    name: 'Morning review',
+    status: 'enabled',
+    schedule: { kind: 'daily', hour: 9, minute: 0 },
+    prompt: 'Summarize the open pull requests.',
+    script: null,
+    model: null,
     consecutiveErrorCount: 0,
     lastRunAt: null,
     lastOutcome: null,
-    nextRunAt: null,
-    createdAt: '2026-07-13T18:00:00.000Z',
-    updatedAt: '2026-07-13T18:00:00.000Z',
+    lastDetail: null,
+    nextRunAt: '2026-10-05T09:00:00.000Z',
+    createdAt: '2026-10-04T18:00:00.000Z',
+    updatedAt: '2026-10-04T18:00:00.000Z',
   };
 
-  it('uses the Agent Loop CRUD, test, and run-history endpoints', async () => {
-    const enabled = { ...loop, status: 'enabled' };
+  it('reads, saves, pauses, and deletes the automation of one session', async () => {
     const { fetch, calls } = fakeFetchSequence(
-      json({ loops: [loop] }),
-      json({ loop }),
-      json({ loop }),
-      json({ loop: enabled }),
-      json({ loop }),
-      json({
-        result: { outcome: 'ok', exitCode: 0, detail: 'clean', sessionId: 'session-1' },
-        loop,
-      }),
-      json({
-        result: { outcome: 'acted', exitCode: 10, detail: 'acted', sessionId: 'session-1' },
-        run: {
-          id: 'run-1',
-          loopId: 'loop-1',
-          startedAt: '2026-07-13T18:30:00.000Z',
-          finishedAt: '2026-07-13T18:30:01.000Z',
-          outcome: 'acted',
-          exitCode: 10,
-          detail: 'acted',
-          sessionId: 'session-1',
-          isTest: false,
-        },
-        loop: enabled,
-      }),
+      json({ automation: null }),
+      json({ automation }),
+      json({ automation: { ...automation, status: 'paused', nextRunAt: null } }),
       json({ ok: true }),
-      json({ runs: [] }),
     );
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
 
-    expect(await client.listAgentLoops('project one')).toHaveLength(1);
-    expect((await client.getAgentLoop('loop-1')).id).toBe('loop-1');
-    await client.createAgentLoop('project one', { name: 'Dependency audit' });
-    await client.updateAgentLoop('loop-1', { status: 'enabled' });
-    await client.ensureAgentLoopSession('loop-1');
-    expect((await client.testAgentLoop('loop-1')).result.outcome).toBe('ok');
-    expect((await client.runAgentLoop('loop-1')).run.outcome).toBe('acted');
-    await client.deleteAgentLoop('loop-1', { deleteSession: true });
-    expect(await client.listAgentLoopRuns('loop-1')).toEqual([]);
+    expect(await client.getSessionAutomation('s 1')).toBeNull();
+    const request = {
+      name: 'Morning review',
+      schedule: { kind: 'daily' as const, hour: 9, minute: 0 },
+      prompt: 'Summarize the open pull requests.',
+    };
+    expect((await client.saveSessionAutomation('s 1', request)).status).toBe('enabled');
+    expect((await client.setSessionAutomationStatus('s 1', 'paused')).status).toBe('paused');
+    await client.deleteSessionAutomation('s 1');
 
     expect(calls.map((call) => [call.init?.method, call.url])).toEqual([
-      ['GET', 'http://host/projects/project%20one/agent-loops'],
-      ['GET', 'http://host/agent-loops/loop-1'],
-      ['POST', 'http://host/projects/project%20one/agent-loops'],
-      ['PATCH', 'http://host/agent-loops/loop-1'],
-      ['POST', 'http://host/agent-loops/loop-1/session'],
-      ['POST', 'http://host/agent-loops/loop-1/test'],
-      ['POST', 'http://host/agent-loops/loop-1/run'],
-      ['DELETE', 'http://host/agent-loops/loop-1?deleteSession=true'],
-      ['GET', 'http://host/agent-loops/loop-1/runs'],
+      ['GET', 'http://host/sessions/s%201/automation'],
+      ['PUT', 'http://host/sessions/s%201/automation'],
+      ['PATCH', 'http://host/sessions/s%201/automation'],
+      ['DELETE', 'http://host/sessions/s%201/automation'],
     ]);
-    expect(JSON.parse((calls[2]?.init?.body as string) ?? '')).toEqual({
-      name: 'Dependency audit',
+    expect(JSON.parse((calls[1]?.init?.body as string) ?? '')).toEqual({
+      ...request,
+      schedule: { ...request.schedule, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
     });
-    expect(JSON.parse((calls[3]?.init?.body as string) ?? '')).toEqual({ status: 'enabled' });
+    expect(JSON.parse((calls[2]?.init?.body as string) ?? '')).toEqual({ status: 'paused' });
   });
 });
 
-describe('VerityClient Dev Servers', () => {
-  const devServer = {
-    id: 'ds-1',
-    projectId: 'project one',
-    name: 'Web',
-    command: 'npm run dev',
-    url: 'http://localhost:3000',
-    workdir: null,
-    hostPort: '3000',
-    containerPort: null,
-    sortOrder: 0,
-    createdAt: '2026-07-14T00:00:00.000Z',
-    updatedAt: '2026-07-14T00:00:00.000Z',
+it.each([
+  { kind: 'daily' as const, hour: 22, minute: 33, timeZone: 'Europe/Berlin' },
+  { kind: 'weekly' as const, weekday: 1, hour: 9, minute: 0 },
+  { kind: 'interval' as const, everyMinutes: 30 },
+])('saves explicit zones and defaults only calendar schedules: %j', async (schedule) => {
+  const automation = {
+    id: 'a1',
+    sessionId: 's1',
+    name: 'Hello',
+    status: 'enabled',
+    schedule,
+    prompt: 'Say hello',
+    script: null,
+    model: null,
+    consecutiveErrorCount: 0,
+    lastRunAt: null,
+    lastOutcome: null,
+    lastDetail: null,
+    nextRunAt: null,
+    createdAt: '',
+    updatedAt: '',
   };
-
-  it('fetches non-mutating dev-server suggestions', async () => {
-    const suggestion = {
-      key: '.:dev',
-      name: 'Web',
-      command: 'npm run dev',
-      workdir: null,
-      containerPort: '5173',
-      confidence: 'medium',
-      evidence: 'Vite default from package.json script "dev"',
-      status: 'new',
-      alreadyConfigured: false,
-      existingDevServerId: null,
-      existingConfig: null,
-    };
-    const { fetch, calls } = fakeFetch(json({ fingerprint: 'abc', suggestions: [suggestion] }));
-    const client = new VerityClient({ baseUrl: 'http://host', fetch });
-
-    expect(await client.detectDevServers('project one')).toEqual([suggestion]);
-    expect(calls).toEqual([
-      expect.objectContaining({
-        url: 'http://host/projects/project%20one/dev-server-suggestions',
-        init: expect.objectContaining({ method: 'GET' }),
-      }),
-    ]);
+  const { fetch, calls } = fakeFetchSequence(json({ automation }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  const result = await client.saveSessionAutomation('s1', {
+    name: automation.name,
+    prompt: automation.prompt,
+    schedule,
   });
+  expect(result.schedule).toEqual(schedule);
+  expect(JSON.parse(calls[0]?.init?.body as string).schedule).toEqual(
+    schedule.kind === 'interval'
+      ? schedule
+      : {
+          ...schedule,
+          timeZone:
+            'timeZone' in schedule
+              ? schedule.timeZone
+              : Intl.DateTimeFormat().resolvedOptions().timeZone,
+        },
+  );
+});
 
-  it('returns the detection fingerprint with classified suggestions', async () => {
-    const suggestion = {
-      key: '.:dev',
-      name: 'Web',
-      command: 'npm run dev',
-      workdir: null,
-      containerPort: '5173',
-      confidence: 'medium',
-      evidence: 'Vite default',
-      status: 'changed',
-      alreadyConfigured: true,
-      existingDevServerId: 'ds-1',
-      existingConfig: {
-        name: 'Web',
-        command: 'npm run dev:old',
-        workdir: null,
-        containerPort: '5173',
-      },
-    } as const;
-    const { fetch } = fakeFetch(
-      json({
-        fingerprint: 'fingerprint-1',
-        detectedAt: '2026-07-15T12:00:00.000Z',
-        reviewedFingerprint: 'fingerprint-0',
-        reviewedAt: '2026-07-15T11:00:00.000Z',
-        suggestions: [suggestion],
-      }),
-    );
-    const client = new VerityClient({ baseUrl: 'http://host', fetch });
-
-    await expect(client.getDevServerDetection('project one')).resolves.toEqual({
-      fingerprint: 'fingerprint-1',
-      detectedAt: '2026-07-15T12:00:00.000Z',
-      reviewedFingerprint: 'fingerprint-0',
-      reviewedAt: '2026-07-15T11:00:00.000Z',
-      suggestions: [suggestion],
-    });
-  });
-
-  it('marks an exact detection fingerprint as reviewed', async () => {
-    const detection = {
-      fingerprint: 'fingerprint-1',
-      detectedAt: '2026-07-15T12:00:00.000Z',
-      reviewedFingerprint: 'fingerprint-1',
-      reviewedAt: '2026-07-15T12:01:00.000Z',
-    };
-    const { fetch, calls } = fakeFetch(json({ detection }));
-    const client = new VerityClient({ baseUrl: 'http://host', fetch });
-
-    await expect(client.reviewDevServerDetection('project one', 'fingerprint-1')).resolves.toEqual(
-      detection,
-    );
-    expect(calls[0]).toMatchObject({
-      url: 'http://host/projects/project%20one/dev-server-suggestions/reviewed',
-      init: expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ fingerprint: 'fingerprint-1' }),
-      }),
-    });
-  });
-
-  it('uses the dev-server CRUD endpoints', async () => {
-    const { fetch, calls } = fakeFetchSequence(
-      json({ devServers: [devServer] }),
-      json({ devServer }),
-      json({ devServer }),
-      json({ devServer: { ...devServer, command: 'pnpm dev' } }),
-      json({ deleted: true }),
-    );
-    const client = new VerityClient({ baseUrl: 'http://host', fetch });
-
-    expect(await client.listDevServers('project one')).toHaveLength(1);
-    expect((await client.getDevServer('ds-1')).id).toBe('ds-1');
-    await client.createDevServer('project one', { name: 'Web', command: 'npm run dev' });
-    expect((await client.updateDevServer('ds-1', { command: 'pnpm dev' })).command).toBe(
-      'pnpm dev',
-    );
-    await client.deleteDevServer('ds-1');
-
-    expect(calls.map((call) => [call.init?.method, call.url])).toEqual([
-      ['GET', 'http://host/projects/project%20one/dev-servers'],
-      ['GET', 'http://host/dev-servers/ds-1'],
-      ['POST', 'http://host/projects/project%20one/dev-servers'],
-      ['PATCH', 'http://host/dev-servers/ds-1'],
-      ['DELETE', 'http://host/dev-servers/ds-1'],
-    ]);
-    expect(JSON.parse((calls[2]?.init?.body as string) ?? '')).toEqual({
-      name: 'Web',
-      command: 'npm run dev',
-    });
-    expect(JSON.parse((calls[3]?.init?.body as string) ?? '')).toEqual({ command: 'pnpm dev' });
-  });
-
-  it('creates, lists, and stops public preview shares', async () => {
+describe('VerityClient preview shares', () => {
+  it('retains PIN lock status from Core and accepts older Core responses', async () => {
     const share = {
-      id: 'share/one',
-      projectId: 'project one',
-      devServerId: 'ds/one',
-      targetKind: 'dev-server',
-      staticPath: null,
+      id: 'locked-share',
+      projectId: 'p1',
+      devServerId: null,
+      targetKind: 'static-folder',
+      staticPath: '.',
       state: 'active',
       publicOrigin: 'https://share.preview.example',
-      pin: '482913',
-      expiresAt: '2026-01-01T02:00:00.000Z',
-      createdAt: '2026-01-01T00:00:00.000Z',
+      pin: '123456',
+      expiresAt: '2030-01-01T00:00:00Z',
+      createdAt: '2026-01-01T00:00:00Z',
       failure: null,
     };
-    const { fetch, calls } = fakeFetchSequence(
+    const { fetch } = fakeFetchSequence(
+      json({ shares: [{ ...share, pinLocked: true }] }),
       json({ shares: [share] }),
-      json({ share }),
-      json({ stopped: true }),
     );
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-
-    await expect(client.listPublicPreviewShares('project one')).resolves.toEqual([share]);
-    await expect(
-      client.createPublicPreviewShare('ds/one', { pin: '123456', ttlSeconds: 3600 }),
-    ).resolves.toEqual(share);
-    await client.stopPublicPreviewShare('share/one');
-
-    expect(calls.map((call) => [call.init?.method, call.url])).toEqual([
-      ['GET', 'http://host/projects/project%20one/public-shares'],
-      ['POST', 'http://host/dev-servers/ds%2Fone/public-shares'],
-      ['DELETE', 'http://host/public-shares/share%2Fone'],
+    await expect(client.listPublicPreviewShares('p1')).resolves.toEqual([
+      { ...share, pinLocked: true },
     ]);
-    expect(JSON.parse((calls[1]?.init?.body as string) ?? '')).toEqual({
-      pin: '123456',
-      ttlSeconds: 3600,
-    });
+    await expect(client.listPublicPreviewShares('p1')).resolves.toEqual([share]);
   });
 
   it('browses a session worktree before creating a static public preview', async () => {
@@ -3395,4 +3494,408 @@ it('labels Attendee JSON writes so the server parses configuration and meeting c
   }
   expect(jsonBody(calls[1])).toBeNull();
   expect(jsonBody(calls[2])).toMatchObject({ meetingUrl: 'https://meet.google.com/abc-defg-hij' });
+});
+
+describe('Uplink diagnostics schema', () => {
+  it('keeps the status fields when a Core stream record is out of shape', async () => {
+    const { uplinkDiagnosticsSchema } = await import('./api.js');
+    // Core's stream records evolve separately; a drifted one must not take the
+    // control, sharing and remote-control status down with it.
+    const parsed = uplinkDiagnosticsSchema.parse({
+      control: 'connected',
+      sharing: 'ready',
+      remoteControl: 'ready',
+      remoteStreams: [{ sessionId: 'session_one', streamId: 'abcdef01', state: 'open' }],
+    });
+    expect(parsed).toEqual({ control: 'connected', sharing: 'ready', remoteControl: 'ready' });
+  });
+});
+
+describe('connection catalog and project Google access contracts', () => {
+  it('loads account scopes and project usage without dropping account metadata', async () => {
+    const account = {
+      connected: true,
+      accountEmail: 'me@example.test',
+      scopes: ['scope'],
+      projects: [{ id: 'project/one', name: 'One' }],
+    };
+    const usage = {
+      github: 1,
+      claude: 0,
+      codex: 0,
+      opencode: 0,
+      google: 1,
+      matrix: 0,
+      doppler: 0,
+      mcp: 0,
+    };
+    const { fetch, calls } = fakeFetchSequence(json(account), json(usage));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getGoogleConnection()).toEqual(account);
+    expect(await client.getConnectionUsage()).toEqual(usage);
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      '/google/connection',
+      '/connections/usage',
+    ]);
+  });
+  it.each(['gmail', 'calendar', 'contacts'] as const)(
+    'scopes %s grants to the selected project and preserves legacy access counts',
+    async (service) => {
+      const connection = {
+        enabled: false,
+        connected: true,
+        accountEmail: 'me@example.test',
+        clientId: 'client',
+      };
+      const { fetch, calls } = fakeFetchSequence(
+        json({ ...connection, legacySessionCount: 2 }),
+        json({ ...connection, enabled: true }),
+        new Response(null, { status: 204 }),
+      );
+      const client = new VerityClient({ baseUrl: 'http://host', fetch });
+      expect(await client.getProjectGoogleConnection('project/one', service)).toEqual({
+        ...connection,
+        legacySessionCount: 2,
+      });
+      expect(await client.enableProjectGoogleConnection('project/one', service)).toEqual({
+        ...connection,
+        enabled: true,
+      });
+      await client.disableProjectGoogleConnection('project/one', service);
+      expect(calls.map((call) => [new URL(call.url).pathname, call.init?.method])).toEqual(
+        ['GET', 'PUT', 'DELETE'].map((method) => [
+          `/projects/project%2Fone/google/${service}`,
+          method,
+        ]),
+      );
+    },
+  );
+  it('rejects invalid access counts rather than displaying unsafe account state', async () => {
+    const { fetch } = fakeFetch(
+      json({
+        enabled: false,
+        connected: true,
+        accountEmail: null,
+        clientId: null,
+        legacySessionCount: -1,
+      }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await expect(client.getProjectGoogleConnection('one', 'gmail')).rejects.toThrow();
+  });
+});
+
+describe('text-file saving', () => {
+  it('sends conditional edits and create-only requests to the content route', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ path: 'notes/a.md', content: 'edited', size: 6, version: 'saved', editable: true }),
+      json({ path: 'notes/new.md', content: '', size: 0, version: 'created', editable: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    const saved = await client.saveSessionFileContent(
+      's/1',
+      'knowledge',
+      'notes/a.md',
+      'edited',
+      'original',
+    );
+    expect(saved).toMatchObject({ content: 'edited', version: 'saved', editable: true });
+    await client.saveSessionFileContent('s/1', 'knowledge', 'notes/new.md', '', null);
+    expect(calls[0]?.url).toBe('http://host/sessions/s%2F1/files/content');
+    expect(calls[0]?.init?.method).toBe('PUT');
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      root: 'knowledge',
+      path: 'notes/a.md',
+      content: 'edited',
+      expectedVersion: 'original',
+    });
+    expect(JSON.parse(calls[1]?.init?.body as string)).toMatchObject({ expectedVersion: null });
+  });
+  it('lists and reads file versions with encoded paths and version identifiers', async () => {
+    const versions = [
+      { id: 'save-abc/snapshot', createdAt: '2026-10-03T10:00:00Z', kind: 'snapshot' },
+    ];
+    const { fetch, calls } = fakeFetchSequence(json({ versions }), json({ content: 'older text' }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listSessionFileVersions('s1', 'shared', 'notes/a b.md')).toEqual(versions);
+    expect(
+      await client.readSessionFileVersion('s1', 'shared', 'notes/a b.md', versions[0]!.id),
+    ).toBe('older text');
+    expect(calls.map(({ url }) => url)).toEqual([
+      'http://host/sessions/s1/files/history?root=shared&path=notes%2Fa%20b.md',
+      'http://host/sessions/s1/files/history?root=shared&path=notes%2Fa%20b.md&version=save-abc%2Fsnapshot',
+    ]);
+    expect(calls.every(({ init }) => init?.method === 'GET')).toBe(true);
+  });
+  it('preserves the committed-save warning for the editor', async () => {
+    const payload = {
+      path: 'note.md',
+      content: 'saved',
+      size: 5,
+      version: 'saved-version',
+      editable: true,
+      warning: 'Knowledge refresh failed',
+    };
+    const { fetch } = fakeFetch(json(payload));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(
+      await client.saveSessionFileContent('s1', 'knowledge', 'note.md', 'saved', null),
+    ).toEqual(payload);
+  });
+});
+
+it('links new Drive folders read-only and preserves explicit read/write choice', async () => {
+  const { fetch, calls } = fakeFetchSequence(
+    json({ folder: { id: 'root', name: 'Root' } }),
+    json({ folder: { id: 'root', name: 'Root' } }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.connectProjectGoogleDriveFolder('p/1', 'root');
+  await client.connectProjectGoogleDriveFolder('p/1', 'root', 'read-write');
+  expect(jsonBody(calls[0])).toEqual({ fileId: 'root', accessMode: 'read-only' });
+  expect(jsonBody(calls[1])).toEqual({ fileId: 'root', accessMode: 'read-write' });
+});
+
+describe('local preview shares', () => {
+  it('uses the direct server hostname for local links while API calls use Uplink', async () => {
+    const share = {
+      id: 'share/one',
+      url: 'http://localhost:8100/',
+      projectId: 'project-one',
+      sessionId: 'session/one',
+      targetPort: 5173,
+      staticPath: null,
+      expiresAt: '2026-10-04T12:00:00Z',
+    };
+    const transport = fakeFetchSequence(
+      Response.json({ publicSharing: 'premium-required' }),
+      Response.json({ share }),
+      Response.json({ shares: [share, { ...share, url: 'http://192.168.1.20:8101/' }] }),
+      new Response(null, { status: 204 }),
+    );
+    const client = new VerityClient({
+      baseUrl: 'https://remote.example',
+      localPreviewBaseUrl: 'http://192.168.1.10:8082',
+      fetch: transport.fetch,
+    });
+    expect(await client.getPreviewCapabilities()).toEqual({ publicSharing: 'premium-required' });
+    const created = await client.createSessionLocalPreviewShare('session/one', {
+      targetPort: 5173,
+    });
+    expect(created.url).toBe('http://192.168.1.10:8100/');
+    expect(created.expiresAt).toEqual(new Date(share.expiresAt));
+    expect(
+      (await client.listSessionLocalPreviewShares('session/one')).map((item) => item.url),
+    ).toEqual([created.url, 'http://192.168.1.20:8101/']);
+    await client.stopLocalPreviewShare(share.id);
+    expect(transport.calls.map(({ url, init }) => [url, init?.method])).toEqual([
+      ['https://remote.example/preview-capabilities', 'GET'],
+      ['https://remote.example/sessions/session%2Fone/local-shares', 'POST'],
+      ['https://remote.example/sessions/session%2Fone/local-shares', 'GET'],
+      ['https://remote.example/local-shares/share%2Fone', 'DELETE'],
+    ]);
+    const body = transport.calls[1]?.init?.body;
+    expect(typeof body).toBe('string');
+    expect(JSON.parse(typeof body === 'string' ? body : '')).toEqual({ targetPort: 5173 });
+  });
+});
+
+describe('managed dev server client', () => {
+  const server = {
+    id: 'entry-1',
+    name: 'Web',
+    command: 'npm run dev',
+    workdir: '.',
+    approved: true,
+    instance: {
+      id: 'instance-1',
+      localShareId: 'local-share-1',
+      sessionId: 's1',
+      state: 'running',
+      desired: 'running',
+      detail: null,
+      url: 'http://localhost:8100/',
+      sandboxPort: 41000,
+      awaitingApproval: false,
+      restartToApply: false,
+      startedAt: null,
+    },
+    elsewhere: [],
+  };
+
+  // Browser probing uses the local share id, independently minted from the instance.
+  it('preserves the local share identity while resolving its network host', async () => {
+    const { fetch } = fakeFetch(json({ servers: [server] }));
+    const client = new VerityClient({ baseUrl: 'http://verity.local:3000', fetch });
+    const entries = await client.listManagedDevServers('s1');
+    expect(entries?.[0]?.instance).toMatchObject({
+      id: 'instance-1',
+      localShareId: 'local-share-1',
+      url: 'http://verity.local:8100/',
+    });
+  });
+
+  it('falls back for an older Core but preserves an actual missing-session error', async () => {
+    const { fetch } = fakeFetchSequence(
+      json({ error: 'Not Found' }, 404),
+      json({ error: 'session not found' }, 404),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listManagedDevServers('s1')).toBeNull();
+    await expect(client.listManagedDevServers('missing')).rejects.toMatchObject({
+      status: 404,
+      message: 'session not found',
+    });
+  });
+});
+
+describe('managed dev server actions', () => {
+  it.each(['start', 'stop', 'restart'] as const)(
+    'sends %s to the selected entry',
+    async (action) => {
+      const server = {
+        id: 'entry/1',
+        name: 'Web',
+        command: 'npm run dev',
+        workdir: '.',
+        approved: true,
+        instance: null,
+        elsewhere: [],
+      };
+      const { fetch, calls } = fakeFetch(json({ server }));
+      const client = new VerityClient({ baseUrl: 'http://host', fetch });
+      expect(await client.controlManagedDevServer('s/1', server.id, action)).toEqual(server);
+      expect(calls[0]?.url).toBe(
+        `http://host/sessions/s%2F1/managed-dev-servers/entry%2F1/${action}`,
+      );
+      expect(calls[0]?.init?.method).toBe('POST');
+    },
+  );
+
+  // Starting from Shared online must tell Core to leave Local off.
+  it('sends the Local switch with a start and on its own route', async () => {
+    const server = {
+      id: 'entry/1',
+      name: 'Web',
+      command: 'npm run dev',
+      workdir: '.',
+      approved: true,
+      instance: null,
+      elsewhere: [],
+    };
+    const { fetch, calls } = fakeFetchSequence(json({ server }), json({ server }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.controlManagedDevServer('s/1', server.id, 'start', { local: false });
+    expect(jsonBody(calls[0])).toEqual({ local: false });
+    await client.setManagedDevServerLocal('s/1', server.id, true);
+    expect(calls[1]?.url).toBe('http://host/sessions/s%2F1/managed-dev-servers/entry%2F1/local');
+    expect(jsonBody(calls[1])).toEqual({ on: true });
+  });
+
+  it('approves the displayed command, reads logs, stops another instance, and deletes the entry', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ servers: [] }),
+      json({ logs: 'ready\n' }),
+      json({ servers: [] }),
+      new Response(null, { status: 204 }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    const seen = { command: 'npm run dev', workdir: 'web' };
+    expect(await client.approveManagedDevServer('s/1', 'entry/1', seen)).toEqual([]);
+    expect(jsonBody(calls[0])).toEqual(seen);
+    expect(await client.managedDevServerLogs('s/1', 'entry/1')).toBe('ready\n');
+    expect(await client.stopManagedDevServerInstance('s/1', 'instance/2')).toEqual([]);
+    await client.deleteManagedDevServer('s/1', 'entry/1');
+    expect(calls.map(({ url, init }) => [url, init?.method])).toEqual([
+      ['http://host/sessions/s%2F1/managed-dev-servers/entry%2F1/approve', 'POST'],
+      ['http://host/sessions/s%2F1/managed-dev-servers/entry%2F1/logs', 'GET'],
+      ['http://host/sessions/s%2F1/managed-dev-server-instances/instance%2F2/stop', 'POST'],
+      ['http://host/sessions/s%2F1/managed-dev-servers/entry%2F1', 'DELETE'],
+    ]);
+  });
+});
+
+describe('VerityClient tasks', () => {
+  const task = {
+    id: '11111111-1111-4111-8111-111111111111',
+    projectId: null,
+    sessionId: null,
+    sourceSessionId: null,
+    origin: 'user',
+    title: 'Captured',
+    detail: null,
+    attachments: [],
+    status: 'open',
+    result: null,
+    sort: 0,
+    revision: 1,
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+    completedAt: null,
+  };
+  it('uses the same client id and retains uploads on capture retries', async () => {
+    const { fetch, calls } = fakeFetchSequence(json({ task }), json({ task }));
+    const client = new VerityClient({ baseUrl: 'https://example.test', fetch });
+    const body = {
+      title: task.title,
+      projectId: null,
+      uploads: [
+        { kind: 'file' as const, fileName: 'context.txt', mediaType: 'text/plain', data: 'aGk=' },
+      ],
+    };
+    await client.saveTask(task.id, body);
+    await client.saveTask(task.id, body);
+    expect(calls.map((call) => call.url)).toEqual([
+      `https://example.test/tasks/${task.id}`,
+      `https://example.test/tasks/${task.id}`,
+    ]);
+    expect(jsonBody(calls[0])).toEqual(body);
+    expect(jsonBody(calls[1])).toEqual(body);
+  });
+  it('validates responses and sends optimistic edit revisions', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ task }),
+      json({ tasks: [{ ...task, title: 4 }] }),
+    );
+    const client = new VerityClient({ baseUrl: 'https://example.test', fetch });
+    await client.updateTask(task.id, { title: 'Edited', expectedRevision: 1 });
+    expect(jsonBody(calls[0])).toEqual({ title: 'Edited', expectedRevision: 1 });
+    await expect(client.listTasks()).rejects.toThrow();
+  });
+});
+
+describe('session reorder API', () => {
+  it('reads the advertised capability and ranked summaries', async () => {
+    const wire = {
+      sessionId: 's1',
+      worktree: '/wt/s1',
+      model: 'm',
+      name: null,
+      status: 'idle',
+      usage: ZERO_USAGE,
+      sortOrder: 2,
+      backgroundWorking: true,
+      agentTextCounterVersion: 'agent-text-v2',
+    };
+    const { fetch } = fakeFetch(json({ sessions: [wire], sessionReordering: true }));
+    const overview = await new VerityClient({
+      baseUrl: 'http://host',
+      fetch,
+    }).listSessionOverview();
+    expect(overview.sessionReordering).toBe(true);
+    // Counter normalization must not strip the independently persisted order.
+    expect(overview.sessions[0]).toMatchObject({
+      sortOrder: wire.sortOrder,
+      backgroundWorking: wire.backgroundWorking,
+      eventCountVersion: wire.agentTextCounterVersion,
+    });
+  });
+  it('persists a project-bound order and reads canonical IDs', async () => {
+    const { fetch, calls } = fakeFetch(json({ ids: ['b', 'a'] }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.reorderSessions('p', ['b', 'a'])).toEqual(['b', 'a']);
+    expect(calls[0]?.url).toBe('http://host/sessions/order');
+    expect(calls[0]?.init?.method).toBe('PATCH');
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ projectId: 'p', ids: ['b', 'a'] }));
+  });
 });

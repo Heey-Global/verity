@@ -51,7 +51,7 @@ export function createMcpGatewayToolExecutor(options: {
         request: unknown;
       }) => Promise<unknown>)
     | undefined;
-  googleDrive?:
+  googleCalendar?:
     | ((input: {
         projectId: string;
         sessionId: string;
@@ -60,10 +60,38 @@ export function createMcpGatewayToolExecutor(options: {
         request: unknown;
       }) => Promise<unknown>)
     | undefined;
+  googleContacts?:
+    | ((input: {
+        projectId: string;
+        sessionId: string;
+        turnId: string;
+        invocationId: string;
+        request: unknown;
+      }) => Promise<unknown>)
+    | undefined;
+  googleDrive?:
+    | ((input: {
+        projectId: string;
+        sessionId: string;
+        turnId: string;
+        invocationId: string;
+        request: unknown;
+        approvedByCard?: boolean;
+      }) => Promise<unknown>)
+    | undefined;
 }): McpGatewayDeps['invokeTool'] {
   const runTrustedCli = options.runTrustedCli ?? runSupervisorTrustedCli;
   const runnerRoot = options.runnerRoot;
-  return async ({ projectId, sessionId, turnId, callId, invocationId, toolName, request }) => {
+  return async ({
+    projectId,
+    sessionId,
+    turnId,
+    callId,
+    invocationId,
+    toolName,
+    request,
+    approvedByCard,
+  }) => {
     if (toolName === 'verity_secret_run') {
       if (runnerRoot === undefined) throw new Error('trusted CLI execution is unavailable');
       return await options.trustedCliTool(
@@ -93,25 +121,45 @@ export function createMcpGatewayToolExecutor(options: {
       if (options.googleSheets === undefined) throw new Error('Google Sheets is unavailable');
       return options.googleSheets({ projectId, sessionId, turnId, invocationId, request });
     }
+    if (toolName === 'verity_google_contacts') {
+      if (options.googleContacts === undefined) throw new Error('Google Contacts is unavailable');
+      return options.googleContacts({ projectId, sessionId, turnId, invocationId, request });
+    }
+    if (toolName === 'verity_google_calendar') {
+      if (options.googleCalendar === undefined) throw new Error('Google Calendar is unavailable');
+      return options.googleCalendar({ projectId, sessionId, turnId, invocationId, request });
+    }
     if (toolName === 'verity_gmail') {
       if (options.gmail === undefined) throw new Error('Gmail is unavailable');
       return options.gmail({ projectId, sessionId, turnId, invocationId, request });
     }
     if (toolName === 'verity_google_drive') {
       if (options.googleDrive === undefined) throw new Error('Google Drive is unavailable');
-      return options.googleDrive({ projectId, sessionId, turnId, invocationId, request });
+      return options.googleDrive({
+        projectId,
+        sessionId,
+        turnId,
+        invocationId,
+        request,
+        ...(approvedByCard === undefined ? {} : { approvedByCard }),
+      });
     }
     if (toolName === 'verity_knowledge') {
       throw new Error('knowledge tools are unavailable');
     }
     if (
+      toolName === 'verity_diagnostics' ||
       toolName === 'verity_list_sessions' ||
       toolName === 'verity_session_handoff' ||
       toolName === 'verity_session_progress' ||
       toolName === 'verity_recent_session_messages' ||
       toolName === 'verity_publish_session_progress' ||
       toolName === 'verity_send_session_message' ||
-      toolName === 'verity_list_linked_sessions'
+      toolName === 'verity_list_linked_sessions' ||
+      toolName === 'verity_start_planning' ||
+      toolName === 'verity_present_plan' ||
+      toolName === 'verity_end_planning' ||
+      toolName === 'verity_tasks'
     ) {
       // Not served from here. Both need the conductor and the route's session projection,
       // neither of which exists in the composition that builds this executor, so `buildServer`

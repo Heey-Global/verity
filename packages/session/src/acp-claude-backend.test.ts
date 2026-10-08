@@ -1,6 +1,7 @@
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AcpClaudeBackend } from './acp-claude-backend.js';
+import { PLANNING_PERMISSION_MODE } from './runner.js';
 import { GATEWAY_UNAVAILABLE_DIRECTIVE } from './acp-backend.js';
 import type { SpawnedProcess, Spawner } from './backend-contract.js';
 
@@ -19,7 +20,7 @@ beforeEach(async () => {
 
 function acpSpawner(
   behavior: {
-    promptError?: boolean;
+    promptError?: boolean | string;
     loadSession?: boolean;
     /** Answer `initialize` with the agent's HTTP MCP capability set the way the
      *  real adapter reports it: an explicit boolean either way, never absent. */
@@ -48,6 +49,8 @@ function acpSpawner(
      *  of the turn runs in. The adapter announces the switch it made as a
      *  `current_mode_update` before settling the prompt. */
     planPermission?: boolean;
+    /** The tool the ordinary permission request's tool call names (default `Bash`). */
+    permissionToolName?: string;
     /** Answer `session/new` with the mode catalogue the real adapter reports,
      *  so the turn loop has a posture to pin the session to. */
     modes?: { currentModeId: string; availableModes: string[] };
@@ -423,7 +426,7 @@ function acpSpawner(
                   kind: 'execute',
                   title: 'rm -rf /tmp/should-not-run',
                   rawInput: { command: 'rm -rf /tmp/should-not-run' },
-                  _meta: { claudeCode: { toolName: 'Bash' } },
+                  _meta: { claudeCode: { toolName: behavior.permissionToolName ?? 'Bash' } },
                 },
               },
             });
@@ -582,8 +585,18 @@ function acpSpawner(
                 },
               },
             });
-            if (behavior.promptError === true) {
-              push({ jsonrpc: '2.0', id, error: { code: -32603, message: 'agent crashed' } });
+            if (behavior.promptError) {
+              push({
+                jsonrpc: '2.0',
+                id,
+                error: {
+                  code: -32603,
+                  message:
+                    typeof behavior.promptError === 'string'
+                      ? behavior.promptError
+                      : 'agent crashed',
+                },
+              });
             } else {
               push({
                 jsonrpc: '2.0',
@@ -1245,6 +1258,27 @@ describe('AcpClaudeBackend', () => {
     ]);
   });
 
+  it.each([
+    "You've hit your session limit · resets 7:30pm (UTC)",
+    "Internal error: You've reached your Fable limit. Switch to another model to continue.",
+  ])('settles a Claude usage limit without a crashed status or replay: %s', async (message) => {
+    const fake = acpSpawner({ promptError: message });
+    const result = await new AcpClaudeBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-session-limit',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Do it',
+      spawner: fake.spawner,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.failedBeforeExecution).toBeUndefined();
+    const events = await ctx.store.getEvents('verity-session-limit');
+    expect(events).toContainEqual({ t: 'status', state: 'completed' });
+    expect(events).not.toContainEqual({ t: 'status', state: 'crashed' });
+    expect(events).toContainEqual({ t: 'error', kind: 'usage_limit', message });
+  });
+
   it('names a permission request by its tool, not by ACP’s command-line title', async () => {
     const fake = acpSpawner({ permission: true });
     const seen: string[] = [];
@@ -1499,6 +1533,92 @@ describe('AcpClaudeBackend', () => {
     // Pulling that back to `auto` would turn a plan Verity declined to approve
     // into a turn that runs unattended.
     expect(fake.setModes).toEqual(['auto']);
+  });
+
+  it('refuses every request of a planning turn without raising a card', async () => {
+    // In Verity's planning mode the operator accepts a plan through Verity, the same
+    // way for every agent. A card here would let one tap carry out an unaccepted plan.
+    const fake = acpSpawner({ planPermission: true, modes: CLAUDE_MODES });
+    const asked: string[] = [];
+    await new AcpClaudeBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-session-planning',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Plan it',
+      permissionMode: PLANNING_PERMISSION_MODE,
+      planning: true,
+      spawner: fake.spawner,
+      permissionControl: true,
+      onPermissionRequest: (request, respond) => {
+        asked.push(request.toolName);
+        respond({ behavior: 'allow' });
+      },
+    });
+    expect(asked).toEqual([]);
+    expect(fake.writes).toContainEqual(
+      expect.objectContaining({
+        id: 'permission-1',
+        result: { outcome: { outcome: 'selected', optionId: 'plan' } },
+      }),
+    );
+    expect(fake.setModes).toEqual(['plan']);
+  });
+
+  /** Answer one permission request for `toolName` inside a planning turn. */
+  async function planningAnswer(
+    toolName: string,
+    storeSessionId: string,
+    planning = true,
+  ): Promise<unknown> {
+    const fake = acpSpawner({
+      permission: true,
+      permissionToolName: toolName,
+      modes: CLAUDE_MODES,
+    });
+    await new AcpClaudeBackend().run({
+      store: ctx.store,
+      storeSessionId,
+      worktree: `/work/${storeSessionId}`,
+      cwd: '/work/project',
+      prompt: 'Plan it',
+      permissionMode: planning ? PLANNING_PERMISSION_MODE : 'default',
+      planning,
+      spawner: fake.spawner,
+      permissionControl: true,
+      onPermissionRequest: (_request, respond) => respond({ behavior: 'deny', message: 'no' }),
+    });
+    return fake.writes.find((message) => message['id'] === 'permission-1')?.['result'];
+  }
+
+  it("lets a planning turn call Verity's own planning tools", async () => {
+    // A read-only posture may gate any MCP call behind a request. Refusing the
+    // planning tools there would leave the agent no way to present its plan; the
+    // gateway still decides them, and ending planning raises its own card.
+    expect(
+      await planningAnswer('mcp__verity__verity_present_plan', 'verity-session-plan-tool'),
+    ).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } });
+  });
+
+  it('does not ask again for planning tools when planning starts during the turn', async () => {
+    // The turn snapshot stays non-planning after start_planning updates the session.
+    // An extra runner card here blocks presentation before the gateway can handle it.
+    for (const tool of ['verity_start_planning', 'verity_present_plan', 'verity_end_planning']) {
+      for (const name of [tool, `mcp__verity__${tool}`, `verity_${tool}`]) {
+        expect(await planningAnswer(name, `mid-turn-${name}`, false)).toEqual({
+          outcome: { outcome: 'selected', optionId: 'allow' },
+        });
+      }
+    }
+    expect(await planningAnswer('Bash', 'mid-turn-bash', false)).toEqual({
+      outcome: { outcome: 'selected', optionId: 'reject' },
+    });
+  });
+
+  it('refuses any other tool in a planning turn', async () => {
+    expect(await planningAnswer('Bash', 'verity-session-plan-bash')).toEqual({
+      outcome: { outcome: 'selected', optionId: 'reject' },
+    });
   });
 
   it('keeps the posture an approved plan chose instead of pulling the turn back into planning', async () => {

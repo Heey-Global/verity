@@ -91,11 +91,6 @@ export async function ensureProjectKnowledgeSpace(
       { id: wiki, parent_id: root, name: 'Wiki', role: 'wiki', project_id: projectId },
     ])
     .execute();
-  const settings = await tx
-    .selectFrom('project_settings')
-    .select('memory')
-    .where('project_id', '=', projectId)
-    .executeTakeFirst();
   await tx
     .insertInto('project_knowledge_spaces')
     .values({
@@ -103,7 +98,6 @@ export async function ensureProjectKnowledgeSpace(
       root_folder_id: root,
       sources_folder_id: sources,
       wiki_folder_id: wiki,
-      legacy_memory: settings?.memory ?? null,
     })
     .execute();
 }

@@ -11,8 +11,7 @@ type PairedRoutePolicy =
 
 /** Routes become available to members only after their resource and required
  * permission are declared here. Everything else remains administrator-only,
- * including collections, cross-project actions, and stream-ticket issuance.
- * The WebSocket handshake consumes that ticket, not a paired-device bearer. */
+ * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
     routeScopeKey('POST', '/sessions/:id/live-meetings/online'),
@@ -58,7 +57,21 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   ],
 ]);
 
-const activeUserRoutes = new Set([routeScopeKey('GET', '/projects')]);
+const activeUserRoutes = new Set([
+  // Any active user may open the live connection; every session it subscribes
+  // to is authorized individually, like `GET /sessions/:id`. The WebSocket
+  // handshake consumes the ticket, not a paired-device bearer.
+  routeScopeKey('POST', '/live/ticket'),
+  routeScopeKey('GET', '/projects'),
+  routeScopeKey('GET', '/auth/session'),
+  routeScopeKey('POST', '/auth/logout'),
+  // Tasks are owner-scoped inside the handler (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md §7.2).
+  routeScopeKey('GET', '/tasks'),
+  routeScopeKey('GET', '/tasks/:id/attachments/:hash'),
+  routeScopeKey('PUT', '/tasks/:id'),
+  routeScopeKey('PATCH', '/tasks/:id'),
+  routeScopeKey('DELETE', '/tasks/:id'),
+]);
 
 function pairedRoutePolicy(method: string, routeUrl: string): PairedRoutePolicy {
   const key = routeScopeKey(method, routeUrl);

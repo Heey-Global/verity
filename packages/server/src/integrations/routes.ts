@@ -2,7 +2,11 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import type { IntegrationEvent, IntegrationStore } from '@verity/store';
+import {
+  integrationImportCodes,
+  type IntegrationEvent,
+  type IntegrationStore,
+} from '@verity/store';
 import { z } from 'zod';
 import { affectedChatDay, projectChatDay } from './knowledge-projection.js';
 import { ensureProjectKnowledge, KNOWLEDGE_DOCUMENTS_DIR } from '../knowledge-folder.js';
@@ -24,6 +28,17 @@ const identifier = z
   .max(255)
   .refine((value) => hasNoControls(value) && !/\s/u.test(value));
 const displayName = z.string().min(1).max(160).refine(hasNoControls);
+export const importDiagnosticSchema = z
+  .object({
+    sourceId: identifier,
+    eventId: identifier,
+    occurredAt: z.iso.datetime({ offset: true }),
+    lastAttemptAt: z.iso.datetime({ offset: true }),
+    attempts: z.number().int().min(1).max(2147483647),
+    httpStatus: z.number().int().min(100).max(599).nullable(),
+    code: z.enum(integrationImportCodes),
+  })
+  .strict();
 const account = z
   .object({
     id: identifier,
@@ -31,6 +46,8 @@ const account = z
     displayName,
     status: z.enum(['online', 'offline', 'error']),
     lastError: z.string().max(500).nullable().optional(),
+    importDiagnostics: z.array(importDiagnosticSchema).max(20).optional(),
+    importFailureCount: z.number().int().min(0).max(2147483647).optional(),
   })
   .strict();
 const source = z
@@ -111,7 +128,9 @@ export function registerIntegrationRoutes(
   void app.register((instance, _options, done) => {
     instance.setErrorHandler((error, _request, reply) => {
       if (error instanceof z.ZodError)
-        return reply.code(400).send({ error: 'Invalid integration request' });
+        return reply
+          .code(400)
+          .send({ error: 'Invalid integration request', code: 'invalid_request' });
       throw error;
     });
 
@@ -192,7 +211,9 @@ export function registerIntegrationRoutes(
           ? await deps.connectorToken()
           : deps.connectorToken;
       if (!authorized(request, token)) {
-        return reply.code(401).send({ error: 'Unauthorized connector' });
+        return reply
+          .code(401)
+          .send({ error: 'Unauthorized connector', code: 'unauthorized_connector' });
       }
     };
     instance.get('/internal/integrations/matrix/config', { preHandler: workerOnly }, async () => ({
@@ -204,7 +225,9 @@ export function registerIntegrationRoutes(
       async (request) => {
         const { accountId } = z.object({ accountId: identifier }).strict().parse(request.query);
         return {
-          sources: (await store.listSources()).filter((item) => item.accountId === accountId),
+          sources: (await store.listSources(undefined, true)).filter(
+            (item) => item.accountId === accountId,
+          ),
         };
       },
     );
@@ -213,7 +236,10 @@ export function registerIntegrationRoutes(
       { preHandler: workerOnly },
       async (request) => {
         const input = account.parse(request.body);
-        await store.upsertAccount({ ...input, provider: 'matrix' });
+        const { importDiagnostics, importFailureCount, ...accountInput } = input;
+        await store.upsertAccount({ ...accountInput, provider: 'matrix' });
+        if (importDiagnostics !== undefined)
+          await store.replaceImportDiagnostics(input.id, importDiagnostics, importFailureCount);
         return { ok: true };
       },
     );
@@ -221,7 +247,18 @@ export function registerIntegrationRoutes(
       '/internal/integrations/matrix/source',
       { preHandler: workerOnly },
       async (request) => {
-        await store.discoverSource(source.parse(request.body));
+        const input = source.parse(request.body);
+        await store.discoverSource(input);
+        await store.rediscoverSource(input.accountId, input.sourceId);
+        return { ok: true };
+      },
+    );
+    instance.post(
+      '/internal/integrations/matrix/source/left',
+      { preHandler: workerOnly },
+      async (request) => {
+        const input = source.pick({ accountId: true, sourceId: true }).strict().parse(request.body);
+        await store.markSourceLeft(input.accountId, input.sourceId);
         return { ok: true };
       },
     );
@@ -230,29 +267,59 @@ export function registerIntegrationRoutes(
       { preHandler: workerOnly, bodyLimit: 32_768 },
       async (request, reply) => {
         const parsed = event.parse(request.body);
-        if (!deps.dataRoot) return reply.code(503).send({ error: 'Knowledge storage unavailable' });
+        if (!deps.dataRoot)
+          return reply.code(503).send({
+            error: 'Knowledge storage unavailable',
+            code: 'knowledge_storage_unavailable',
+          });
         const input: IntegrationEvent = { ...parsed, occurredAt: new Date(parsed.occurredAt) };
-        const target = input.targetEventId
+        let target = input.targetEventId
           ? await store.getEvent(input.accountId, input.sourceId, input.targetEventId)
           : null;
-        // Changes to unknown or non-message events are not useful Knowledge data.
-        if (input.kind !== 'message' && target?.kind !== 'message') {
-          return reply.code(422).send({ error: 'Target message not found' });
+        // Reject orphan edits, but persist redactions so late targets cannot resurrect deleted content.
+        if (input.kind === 'edit' && target?.kind !== 'message') {
+          // Older workers may not report retry sidecars; access logs alone hide the failed event.
+          request.log.warn(
+            {
+              code: 'target_message_not_found',
+              accountId: input.accountId,
+              sourceId: input.sourceId,
+              eventId: input.eventId,
+              targetEventId: input.targetEventId,
+              kind: input.kind,
+              targetState: target === null ? 'missing' : 'non_message',
+            },
+            'Matrix event import rejected',
+          );
+          return reply
+            .code(422)
+            .send({ error: 'Target message not found', code: 'target_message_not_found' });
         }
         let result: { projectId: string; inserted: boolean };
         try {
           result = await store.ingestEvent(input);
         } catch (error) {
-          return reply
-            .code(409)
-            .send({ error: error instanceof Error ? error.message : 'Room unavailable' });
+          return reply.code(409).send({
+            error: 'Room unavailable',
+            code:
+              error instanceof Error && error.message === 'Event predates activation'
+                ? 'event_predates_activation'
+                : 'source_unavailable',
+          });
+        }
+        // A target may be imported while the redaction waits for the source transaction lock.
+        if (input.kind === 'redaction' && input.targetEventId) {
+          target = await store.getEvent(input.accountId, input.sourceId, input.targetEventId);
         }
         const day = affectedChatDay(input, target);
         if (day) {
-          const binding = (await store.listSources(result.projectId)).find(
+          const binding = (await store.listSources(result.projectId, true)).find(
             (item) => item.accountId === input.accountId && item.sourceId === input.sourceId,
           );
-          if (!binding?.activatedAt) return reply.code(409).send({ error: 'Room binding changed' });
+          if (!binding?.activatedAt)
+            return reply
+              .code(409)
+              .send({ error: 'Room binding changed', code: 'source_binding_changed' });
           await projectChatDay(store, deps.dataRoot, {
             accountId: input.accountId,
             sourceId: input.sourceId,
@@ -297,14 +364,26 @@ export function registerIntegrationRoutes(
       { preHandler: workerOnly, bodyLimit: 70_000_000 },
       async (request, reply) => {
         const payload = attachment.parse(request.body);
-        if (!deps.dataRoot) return reply.code(503).send({ error: 'Knowledge storage unavailable' });
+        if (!deps.dataRoot)
+          return reply.code(503).send({
+            error: 'Knowledge storage unavailable',
+            code: 'knowledge_storage_unavailable',
+          });
         if (payload.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(payload.data)) {
-          return reply.code(400).send({ error: 'Invalid attachment encoding' });
+          return reply
+            .code(400)
+            .send({ error: 'Invalid attachment encoding', code: 'invalid_attachment_encoding' });
         }
         const bytes = Buffer.from(payload.data, 'base64');
-        if (bytes.length === 0) return reply.code(400).send({ error: 'Empty Matrix attachment' });
+        if (bytes.length === 0)
+          return reply
+            .code(400)
+            .send({ error: 'Empty Matrix attachment', code: 'empty_attachment' });
         if (bytes.length > MAX_MATRIX_ATTACHMENT_BYTES) {
-          return reply.code(413).send({ error: 'Matrix attachment exceeds 50 MiB limit' });
+          return reply.code(413).send({
+            error: 'Matrix attachment exceeds 50 MiB limit',
+            code: 'attachment_too_large',
+          });
         }
         const input: IntegrationEvent = {
           ...payload.event,
@@ -314,7 +393,9 @@ export function registerIntegrationRoutes(
           (item) => item.accountId === input.accountId && item.sourceId === input.sourceId,
         );
         if (!binding?.projectId || !binding.activatedAt) {
-          return reply.code(409).send({ error: 'Room binding changed' });
+          return reply
+            .code(409)
+            .send({ error: 'Room binding changed', code: 'source_binding_changed' });
         }
         const relative = attachmentPath(input, binding.activatedAt, payload.fileName);
         input.body = `Attachment: ${relative}`;
@@ -322,12 +403,18 @@ export function registerIntegrationRoutes(
         try {
           result = await store.ingestEvent(input);
         } catch (error) {
-          return reply
-            .code(409)
-            .send({ error: error instanceof Error ? error.message : 'Room unavailable' });
+          return reply.code(409).send({
+            error: 'Room unavailable',
+            code:
+              error instanceof Error && error.message === 'Event predates activation'
+                ? 'event_predates_activation'
+                : 'source_unavailable',
+          });
         }
         if (result.projectId !== binding.projectId) {
-          return reply.code(409).send({ error: 'Room binding changed' });
+          return reply
+            .code(409)
+            .send({ error: 'Room binding changed', code: 'source_binding_changed' });
         }
         const root = await ensureProjectKnowledge(deps.dataRoot, result.projectId);
         const release = await acquireKnowledgeMutationLock(root);

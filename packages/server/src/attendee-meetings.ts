@@ -223,7 +223,7 @@ export class AttendeeMeetings {
           ownerTokenHash: createHash('sha256').update(randomUUID()).digest('hex'),
           revision: 0,
         },
-        pin: String(randomInt(100_000_000, 1_000_000_000)),
+        pin: String(randomInt(100_000, 1_000_000)),
         credentials,
         identities: {},
         phase: 'preparing',

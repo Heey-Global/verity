@@ -36,6 +36,10 @@ final class PinnedTLSSmokeApp: UIResponder, UIApplicationDelegate {
           failures.append("expected \(expected) for \(url), got \(actual)")
         }
       }
+      if let url = URL(string: origin) {
+        do { try verifyPinnedHTTPPool(origin: url, pin: pin) }
+        catch { failures.append("pooled HTTP smoke failed: \(error)") }
+      } else { failures.append("invalid pooled HTTP origin") }
       Self.finish(failures.isEmpty ? "success" : failures.joined(separator: "\n"), at: resultPath)
     }
     return true
@@ -86,5 +90,21 @@ final class PinnedTLSSmokeApp: UIResponder, UIApplicationDelegate {
       exit(EXIT_FAILURE)
     }
     exit(result == "success" ? EXIT_SUCCESS : EXIT_FAILURE)
+  }
+}
+
+// Current iOS SDKs refuse to launch even a test-only app without scene
+// adoption; the harness then waits out its deadline for a result file that
+// was never going to appear.
+final class PinnedTLSSmokeSceneDelegate: UIResponder, UIWindowSceneDelegate {
+  var window: UIWindow?
+
+  func scene(_ scene: UIScene, willConnectTo session: UISceneSession,
+    options connectionOptions: UIScene.ConnectionOptions) {
+    guard let windowScene = scene as? UIWindowScene else { return }
+    let window = UIWindow(windowScene: windowScene)
+    window.rootViewController = UIViewController()
+    self.window = window
+    window.makeKeyAndVisible()
   }
 }

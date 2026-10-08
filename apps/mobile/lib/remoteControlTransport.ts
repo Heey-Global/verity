@@ -38,6 +38,28 @@ type ProxyMode = 'socks' | 'connect';
 // paths through the system proxy code. Whichever answered is kept for the rest
 // of the process.
 let proxyMode: ProxyMode = 'socks';
+// The native stall watchdog (RemoteAppTunnel.stallDeadlineSeconds) must have
+// ended a dead attachment before the probe gives up on it, or the probe's
+// failure reads as an ordinary timeout and backs off instead of attaching
+// again. The transport test pins this ordering against the Swift constant.
+const PROBE_TIMEOUT_MS = 12_000;
+// The watchdog arms on the stream's first sent bytes, the probe timer on the
+// request, so the margin between them shrinks by whatever the loopback
+// handshake took; after a probe timeout the native stop is given this long
+// to land before the failure is classified.
+const STALL_STOP_GRACE_MS = 3_000;
+// One replacement per window: an attachment that passes its probe and then
+// stalls on every read must not be re-admitted every ten seconds. Module
+// state like `active`; the transport tests start from a fresh module each.
+const STALL_REPLACEMENT_WINDOW_MS = 60_000;
+let lastStallReplacement: { key: string; at: number } | null = null;
+
+function stallReplacementAllowed(key: string): boolean {
+  return (
+    lastStallReplacement?.key !== key ||
+    Date.now() - lastStallReplacement.at >= STALL_REPLACEMENT_WINDOW_MS
+  );
+}
 // Native keeps its own copy; a JavaScript reload must not leave the two apart.
 let proxyModeSynced = false;
 
@@ -179,6 +201,39 @@ export function remoteControlFailureForUrl(url: string): string | null {
     : `${lastFailure.stage} (${lastFailure.detail})`;
 }
 
+// Null when the native module threw: nothing can be recovered through it,
+// and a stop reason read from it would not be this attachment's.
+async function isTunnelStopped(): Promise<boolean | null> {
+  try {
+    return !(await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive());
+  } catch {
+    return null;
+  }
+}
+
+// Bounded as a whole, each native call included: this runs inside the
+// serialized tunnel operation, and a native call that hangs would otherwise
+// hold every queued read and route selection behind it.
+async function tunnelStoppedWithin(graceMs: number): Promise<boolean> {
+  const deadline = Date.now() + graceMs;
+  for (;;) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stopped = await Promise.race([
+      isTunnelStopped(),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), remaining);
+      }),
+    ]).finally(() => {
+      if (timer !== undefined) clearTimeout(timer);
+    });
+    if (stopped === null) return false;
+    if (stopped === true) return true;
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(250, remaining)));
+  }
+}
+
 // The native tunnel's own account of why it ended. Without it every drop reads
 // as the same "native transport error", which is how an idle timeout went
 // unnoticed for several releases. Clipped and flattened: it lands in an error
@@ -198,14 +253,18 @@ async function tunnelStopReason(): Promise<string | null> {
 // One token per recent stream, fixed fields only: bytes each way, milliseconds
 // to Core's first bytes and to the end, which side ended it, the proxy dialect,
 // the TLS record types seen each way and Core's first handshake message.
+// The `k` key and the `fo`/`fi` frame counts are absent from native builds
+// that predate Core's stream records; a summary without them must still parse.
 const STREAM_TRACE =
-  String.raw`s\d{1,2}=up\d{1,9}\.dn\d{1,9}\.t(?:none|\d{1,7})\.d\d{1,8}` +
+  String.raw`s\d{1,2}=(?:k[0-9A-Fa-f]{8}\.)?up\d{1,9}\.dn\d{1,9}(?:\.fo\d{1,7}\.fi\d{1,7})?\.t(?:none|\d{1,7})\.d\d{1,8}` +
   String.raw`\.(?:open|local|remote|reset|stopped)\.p(?:socks|connect)` +
-  String.raw`\.o(?:none|\d{1,3}(?:-\d{1,3}){0,5})\.i(?:none|\d{1,3}(?:-\d{1,3}){0,5})\.h(?:none|hrr|\d{1,3})`;
+  String.raw`\.o(?:none|\d{1,3}(?:-\d{1,3}){0,7})\.i(?:none|\d{1,3}(?:-\d{1,3}){0,7})\.h(?:none|hrr|\d{1,3})`;
 const TUNNEL_SUMMARY = new RegExp(
   String.raw`^(local=\d+, opened=\d+, received=\d+, last=[a-z_.]+` +
     String.raw`(?:, sentBytes=\d+, receivedBytes=\d+, deliveredBytes=\d+, localResets=\d+, remoteResets=\d+, ` +
-    String.raw`lastReset=(?:none|(?:local|remote)_reset_(?:protocol_error|concurrency_limit|upstream_error|timeout)))?)` +
+    String.raw`lastReset=(?:none|(?:local|remote)_reset_(?:protocol_error|concurrency_limit|upstream_error|timeout))` +
+    // Attachment age and heartbeat liveness; absent from older native builds.
+    String.raw`(?:, age=(?:none|\d{1,8}), pings=\d{1,6}/\d{1,6}, pongAge=(?:none|\d{1,8}))?)?)` +
     String.raw`(?:, streams=([^\n]*))?$`,
   'u',
 );
@@ -279,7 +338,7 @@ async function probeCore(
   coreUrl: string,
   tlsPin: string,
   port: number,
-  timeoutMs = 12_000,
+  timeoutMs = PROBE_TIMEOUT_MS,
 ): Promise<void> {
   const transport = requireNativeModule<NativePinnedTransport>('VerityPinnedTransport');
   const requestId = `remote-probe-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -309,12 +368,15 @@ async function probeCore(
           diagnosticTimeout = setTimeout(() => resolve(undefined), 250);
         }),
       ]);
-      const knownPhase =
-        typeof phase === 'string' &&
-        ['NO_AUTH_CHALLENGE', 'AUTH_CHALLENGE_RECEIVED', 'PIN_AND_CHAIN_TRUST_ACCEPTED'].includes(
-          phase,
-        );
-      throw new Error(`Remote Core probe timed out${knownPhase ? ` [TLS:${phase}]` : ''}.`);
+      const safePhase =
+        typeof phase === 'string'
+          ? /^(NO_AUTH_CHALLENGE|AUTH_CHALLENGE_RECEIVED|PIN_AND_CHAIN_TRUST_ACCEPTED)(?:;(tx\d{1,2},proxy[01],connect[01],tls[01],response[01]))?$/u.exec(
+              phase,
+            )
+          : null;
+      throw new Error(
+        `Remote Core probe timed out${safePhase ? ` [TLS:${safePhase[1]}${safePhase[2] ? `; ${safePhase[2]}` : ''}]` : ''}.`,
+      );
     } finally {
       if (diagnosticTimeout !== undefined) clearTimeout(diagnosticTimeout);
     }
@@ -415,22 +477,58 @@ export async function testRemoteControlForUrl(
   return selected;
 }
 
-/** A failed read may recover on the other loopback proxy without replacing its tunnel. */
-export async function recoverRemoteControlRead(url: string, port: number): Promise<boolean> {
+/**
+ * A read failed on the tunnel. Returns the port to retry it on: the same
+ * port when the attachment still answers Core, a fresh attachment's port
+ * when the native stall watchdog has ended it, zero when nothing can be
+ * recovered. A dead attachment is replaced here rather than after the
+ * 15 s back-off, since a fresh one has answered every time so far.
+ */
+export async function recoverRemoteControlRead(url: string, port: number): Promise<number> {
   const selected = operation.then(async () => {
     const target = new URL(url).origin;
     const key = keyFor(target);
-    if (key === null || active?.key !== key || active.port !== port) return false;
+    if (key === null || active?.key !== key) return 0;
+    // Every read in flight fails at the same moment when the watchdog ends an
+    // attachment; the first one here replaces it, the rest retry on the
+    // replacement instead of each reporting a failure. The same holds for any
+    // superseded attachment: whatever is active now was probed when it opened.
     const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
-    if (pin === undefined) return false;
+    if (pin === undefined) return 0;
     try {
-      if (!(await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive())) {
-        return false;
+      const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+      if (active.port !== port) return (await native.isActive()) ? active.port : 0;
+      if (!(await native.isActive())) {
+        const reason = await tunnelStopReason();
+        console.warn(`Remote Control tunnel ended: ${reason ?? 'no reason reported'}`);
+        // `active` is only the key and port; the admission was finished when
+        // the attachment opened, and the native tunnel has stopped itself.
+        active = null;
+        // Only a stall is replaced here, for this read, and only once per
+        // window. Any other end is left to the next request's route
+        // selection, which clears `active` the same way when it finds the
+        // tunnel stopped.
+        if (reason?.startsWith('stall') !== true || keyFor(target) !== key) return 0;
+        if (!stallReplacementAllowed(key)) {
+          lastFailure = { key, stage: 'probe', detail: 'stall: replaced once already this minute' };
+          retryAfter = Date.now() + 15_000;
+          return 0;
+        }
+        lastStallReplacement = { key, at: Date.now() };
+        // Deliberately not route selection: the read is already on Uplink and
+        // the direct route was found wanting when it was sent; the window
+        // above bounds the re-admissions. `open` records the replacement as
+        // the active attachment, so the reads queued behind this one find it.
+        const replacement = await open(target, key, { retryStall: false });
+        // Logged so a watchdog that fires on a merely slow link can be told
+        // from one that caught a dead attachment, and its deadline tuned.
+        console.info('Remote Control stall replacement', { replaced: replacement > 0 });
+        return replacement;
       }
       await probeCoreThroughEitherProxy(target, pin, port);
-      return active?.key === key && active.port === port;
+      return active?.key === key && active.port === port ? port : 0;
     } catch {
-      return false;
+      return 0;
     }
   });
   operation = selected.then(
@@ -567,7 +665,11 @@ async function probeDirect(
   return { reachable, verdict };
 }
 
-async function open(coreUrl: string, key: string): Promise<number> {
+async function open(
+  coreUrl: string,
+  key: string,
+  options: { retryStall: boolean } = { retryStall: true },
+): Promise<number> {
   const profile = getServerProfile();
   const descriptor = profile?.remoteControl;
   const tlsPin = profile?.endpoints.find((entry) => entry.url === coreUrl)?.tlsPin;
@@ -618,12 +720,33 @@ async function open(coreUrl: string, key: string): Promise<number> {
     };
     console.warn(`Remote Control ${stage} failed: ${detail ?? 'unclassified failure'}`);
     admission?.cancel();
+    // The watchdog's stop tears the loopback sockets down, so the probe in
+    // flight ends with a transport error when the stop lands first and with a
+    // timeout when the probe gives up first; only the latter is worth waiting
+    // on, since any reply bytes disarm the watchdog. At this stage the native
+    // module holds this attachment (its start succeeded), so once it reports
+    // stopped the reason is this attachment's own; while it is live the
+    // reason may still be the previous attachment's and is not read.
+    const stalled =
+      stage === 'probe' &&
+      ((await isTunnelStopped()) === true ||
+        (error instanceof Error &&
+          error.message.startsWith('Remote Core probe timed out') &&
+          (await tunnelStoppedWithin(STALL_STOP_GRACE_MS)))) &&
+      (await tunnelStopReason())?.startsWith('stall') === true;
     if (tunnelStarted) {
       try {
         await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').stop();
       } catch {
         // A failed probe still falls back to the direct pinned connection.
       }
+    }
+    // An attachment that went dead under its first probe is replaced once at
+    // once; a fresh one has answered every time so far. Anything else backs off.
+    if (stalled && options.retryStall && keyFor(coreUrl) === key && stallReplacementAllowed(key)) {
+      lastStallReplacement = { key, at: Date.now() };
+      console.warn('Remote Control attachment stalled during its probe; attaching again');
+      return open(coreUrl, key, { retryStall: false });
     }
     retryAfter = Date.now() + 15_000;
     return 0;
@@ -635,7 +758,7 @@ function safeRemoteFailure(error: unknown): string | null {
   if (!(error instanceof Error)) return null;
   const message = error.message;
   if (
-    /^Remote Core probe timed out \[TLS:(NO_AUTH_CHALLENGE|AUTH_CHALLENGE_RECEIVED|PIN_AND_CHAIN_TRUST_ACCEPTED)\]\.$/u.test(
+    /^Remote Core probe timed out \[TLS:(NO_AUTH_CHALLENGE|AUTH_CHALLENGE_RECEIVED|PIN_AND_CHAIN_TRUST_ACCEPTED)(?:; tx\d{1,2},proxy[01],connect[01],tls[01],response[01])?\]\.$/u.test(
       message,
     )
   )

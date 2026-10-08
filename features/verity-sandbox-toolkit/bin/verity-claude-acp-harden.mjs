@@ -94,8 +94,9 @@ const PROBES = [
 /** The `export function` line is the wrapper seam: the original body becomes an
  *  inner function and the exported name gains the try/catch. */
 const SIGNATURE_ANCHOR =
-  'export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd) {\n' +
-  '    const name = toolUse.name;';
+  'export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd) {';
+const RENDERER_SIGNATURE_ANCHOR =
+  'export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd, supportsDiffPatch = false) {';
 
 const SIGNATURE_REPLACEMENT = `/* ${MARKER}: a tool-call title is display-only, so building one must never
  * be able to end the session. An unguarded throw here leaves the SDK query
@@ -112,13 +113,13 @@ const SIGNATURE_REPLACEMENT = `/* ${MARKER}: a tool-call title is display-only, 
  * later, outside this try. Both are normalised here. \`kind\` is a literal in
  * every branch and \`content\` is structurally checked by the client, so neither
  * is rewritten. */
-export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd) {
+export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd, supportsDiffPatch = false) {
     const fallbackTitle = typeof toolUse?.name === "string" && toolUse.name.length > 0
         ? toolUse.name
         : "Tool";
     let info;
     try {
-        info = toolInfoFromToolUseUnguarded(toolUse, supportsTerminalOutput, cwd);
+        info = toolInfoFromToolUseUnguarded(toolUse, supportsTerminalOutput, cwd, supportsDiffPatch);
     }
     catch {
         return { title: fallbackTitle, kind: "other", content: [] };
@@ -136,8 +137,7 @@ export function toolInfoFromToolUse(toolUse, supportsTerminalOutput = false, cwd
     }
     return info;
 }
-function toolInfoFromToolUseUnguarded(toolUse, supportsTerminalOutput = false, cwd) {
-    const name = toolUse.name;`;
+function toolInfoFromToolUseUnguarded(toolUse, supportsTerminalOutput = false, cwd, supportsDiffPatch = false) {`;
 
 /** Optional, cosmetic-but-worth-it: keep a WebSearch title informative instead
  *  of falling into the backstop. Skipped without failing if upstream reshapes
@@ -233,7 +233,10 @@ note(
     : 'this copy renders every known wrong-typed input safely; installing the backstop anyway.',
 );
 
-if (!source.includes(SIGNATURE_ANCHOR)) {
+const signature = [SIGNATURE_ANCHOR, RENDERER_SIGNATURE_ANCHOR].find((anchor) =>
+  source.includes(anchor),
+);
+if (!signature) {
   // Deliberately fatal even when the probes came back clean. The probes only
   // know the fields that were broken yesterday; the backstop is what covers the
   // ones nobody has hit yet, so losing the seam means losing the protection —
@@ -248,7 +251,7 @@ if (!source.includes(SIGNATURE_ANCHOR)) {
   );
 }
 
-let hardened = source.replace(SIGNATURE_ANCHOR, SIGNATURE_REPLACEMENT);
+let hardened = source.replace(signature, SIGNATURE_REPLACEMENT);
 
 for (const guard of WEBSEARCH_GUARDS) {
   if (hardened.includes(guard.from)) {

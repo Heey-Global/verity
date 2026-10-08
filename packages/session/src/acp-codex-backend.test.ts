@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AcpCodexBackend } from './acp-codex-backend.js';
+import { AcpCodexBackend, codexToolName } from './acp-codex-backend.js';
+import { PLANNING_PERMISSION_MODE } from './runner.js';
 import { GATEWAY_UNAVAILABLE_DIRECTIVE } from './acp-backend.js';
 import type { SpawnedProcess, Spawner } from './backend-contract.js';
 
@@ -73,6 +74,8 @@ function largePng(): Buffer {
 function acpSpawner(
   behavior: {
     loadSession?: boolean;
+    startupFailure?: string;
+    promptFailure?: string;
     /** Refuse `session/load` the way the adapter refuses a rollout it cannot
      *  restore: JSON-RPC -32002 naming the requested id. */
     loadNotFound?: boolean;
@@ -81,6 +84,8 @@ function acpSpawner(
     withoutModelOption?: boolean;
     /** The mode `session/new` reports the session already opened in. */
     modeId?: string;
+    noPlanningMode?: boolean;
+    refusePlanningMode?: boolean;
     /** Answer `session/set_config_option` with the full option set, but with the
      *  model still on the one the session opened with. */
     echoStaleModel?: boolean;
@@ -134,7 +139,7 @@ function acpSpawner(
     modes: {
       currentModeId: behavior.modeId ?? 'agent',
       availableModes: [
-        { id: 'read-only', name: 'Read Only' },
+        ...(behavior.noPlanningMode ? [] : [{ id: 'read-only', name: 'Read Only' }]),
         { id: 'agent', name: 'Agent' },
         { id: 'agent-full-access', name: 'Full Access' },
       ],
@@ -148,7 +153,7 @@ function acpSpawner(
       stdout,
       pid: 321,
       exited: Promise.resolve(0),
-      stderr: () => '',
+      stderr: () => behavior.startupFailure ?? behavior.promptFailure ?? '',
       kill,
       closeStdin: close,
       writeStdin(data) {
@@ -158,6 +163,10 @@ function acpSpawner(
           const id = message['id'];
           const method = message['method'];
           if (method === 'initialize') {
+            if (behavior.startupFailure !== undefined) {
+              close();
+              return true;
+            }
             push({
               jsonrpc: '2.0',
               id,
@@ -185,6 +194,8 @@ function acpSpawner(
             });
           } else if (method === 'session/load') {
             push({ jsonrpc: '2.0', id, result: sessionResult('codex-session-existing') });
+          } else if (method === 'session/set_mode' && behavior.refusePlanningMode) {
+            push({ jsonrpc: '2.0', id, error: { code: -32602, message: 'mode refused' } });
           } else if (method === 'session/set_mode' || method === 'session/set_config_option') {
             // Echoing nothing is the adapter shape Codex actually has today, and it
             // keeps the plain ack's meaning in `applySelectOption`. `echoStaleModel`
@@ -213,6 +224,10 @@ function acpSpawner(
             behavior.cancel.operator?.abort();
             push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
           } else if (method === 'session/prompt') {
+            if (behavior.promptFailure !== undefined) {
+              close();
+              return true;
+            }
             if (behavior.generatedImage) {
               push(
                 {
@@ -369,6 +384,110 @@ describe('AcpCodexBackend', () => {
       await rm(outside, { recursive: true, force: true });
     }
   }, 60_000);
+  it('recovers a backfill initialization failure without replaying a prompt', async () => {
+    const failed = acpSpawner({
+      startupFailure: 'timed out waiting for state db backfill after 30s (status: running)',
+    });
+    const recovered = acpSpawner();
+    let attempts = 0;
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Do it',
+      spawner: (...args) => {
+        if (++attempts !== 1) return recovered.spawner(...args);
+        return {
+          ...failed.spawner(...args),
+          exited: new Promise<number>((resolve) => setTimeout(() => resolve(1), 50)),
+        };
+      },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(attempts).toBe(2);
+    expect(failed.writes.map((row) => row['method'])).toEqual(['initialize']);
+    expect(recovered.writes.filter((row) => row['method'] === 'session/prompt')).toHaveLength(1);
+    expect(failed.kill).toHaveBeenCalled();
+  }, 10_000);
+
+  it.each(['cancel', 'timeout'] as const)(
+    'stops waiting for stalled teardown on %s',
+    async (reason) => {
+      const controller = new AbortController();
+      const failed = acpSpawner({
+        startupFailure: 'timed out waiting for state db backfill after 30s (status: running)',
+      });
+      const spawn = vi.fn<Spawner>((...args) => ({
+        ...failed.spawner(...args),
+        exited: new Promise<number>(() => {}),
+      }));
+      const timer = reason === 'cancel' ? setTimeout(() => controller.abort(), 50) : undefined;
+      try {
+        const result = await new AcpCodexBackend().run({
+          store: ctx.store,
+          worktree: '/work/project',
+          cwd: '/work/project',
+          prompt: 'Do it',
+          spawner: spawn,
+          signal: controller.signal,
+          ...(reason === 'timeout' ? { timeoutMs: 50 } : {}),
+        });
+        expect(result.exitCode).toBe(reason === 'cancel' ? 143 : 1);
+        expect(spawn).toHaveBeenCalledTimes(1);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    },
+  );
+
+  it('does not replay a prompt when a later failure contains the backfill message', async () => {
+    const failed = acpSpawner({
+      promptFailure: 'timed out waiting for state db backfill after 30s (status: running)',
+    });
+    const spawn = vi.fn(failed.spawner);
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Do it',
+      spawner: spawn,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(failed.writes.filter((row) => row['method'] === 'session/prompt')).toHaveLength(1);
+  });
+
+  it.each(['cancel', 'timeout', 'unrelated'] as const)(
+    'does not retry startup after %s',
+    async (reason) => {
+      const controller = new AbortController();
+      const failed = acpSpawner({
+        startupFailure:
+          reason === 'unrelated'
+            ? 'failed to initialize sqlite state runtime'
+            : 'timed out waiting for state db backfill after 30s (status: running)',
+      });
+      const spawn = vi.fn(failed.spawner);
+      const timer = reason === 'cancel' ? setTimeout(() => controller.abort(), 50) : undefined;
+      try {
+        const result = await new AcpCodexBackend().run({
+          store: ctx.store,
+          worktree: '/work/project',
+          cwd: '/work/project',
+          prompt: 'Do it',
+          spawner: spawn,
+          signal: controller.signal,
+          ...(reason === 'timeout' ? { timeoutMs: 50 } : {}),
+        });
+        expect(result.exitCode).toBe(reason === 'cancel' ? 143 : 1);
+        expect(spawn).toHaveBeenCalledTimes(1);
+        expect(failed.writes.map((row) => row['method'])).toEqual(['initialize']);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    },
+  );
+
   it('runs a Codex turn through ACP, carrying the system directives in the prompt', async () => {
     const fake = acpSpawner();
     let steer: ((message: { text: string }) => boolean) | undefined;
@@ -552,6 +671,70 @@ describe('AcpCodexBackend', () => {
     expect(write(fake.writes, 'session/set_mode')).toMatchObject({
       params: { modeId: 'agent-full-access' },
     });
+  });
+
+  it('runs a planning turn in the read-only sandbox', async () => {
+    // Planning must not change files. Full access would leave that to the model's
+    // good behaviour; the read-only sandbox makes Codex itself refuse the write.
+    const fake = acpSpawner();
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-codex-planning',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Plan it',
+      permissionMode: PLANNING_PERMISSION_MODE,
+      planning: true,
+      spawner: fake.spawner,
+    });
+    expect(write(fake.writes, 'session/set_mode')).toMatchObject({
+      params: { modeId: 'read-only' },
+    });
+  });
+
+  it.each([{ noPlanningMode: true }, { refusePlanningMode: true }])(
+    'fails closed when planning posture cannot be applied: %j',
+    async (behavior) => {
+      const fake = acpSpawner(behavior);
+      const result = await new AcpCodexBackend().run({
+        store: ctx.store,
+        storeSessionId: 'codex-planning-unavailable',
+        worktree: '/work/project',
+        cwd: '/work/project',
+        prompt: 'Plan it',
+        planning: true,
+        permissionMode: PLANNING_PERMISSION_MODE,
+        spawner: fake.spawner,
+      });
+      expect(result.exitCode).toBe(1);
+      expect(write(fake.writes, 'session/prompt')).toBeUndefined();
+    },
+  );
+
+  it('keeps full access for a plan posture requested outside planning mode', async () => {
+    // Only Verity's planning mode has a way back out of the read-only sandbox.
+    const fake = acpSpawner();
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-codex-plan-posture',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Plan it',
+      permissionMode: PLANNING_PERMISSION_MODE,
+      spawner: fake.spawner,
+    });
+    expect(write(fake.writes, 'session/set_mode')).toMatchObject({
+      params: { modeId: 'agent-full-access' },
+    });
+  });
+
+  it('names an MCP call by its server and tool instead of by its execute kind', () => {
+    // Otherwise a plan Codex presents through Verity reads as a Bash command and
+    // never becomes a plan card.
+    expect(
+      codexToolName({ toolCallId: 'c1', kind: 'execute', title: 'mcp.verity.verity_present_plan' }),
+    ).toBe('mcp__verity__verity_present_plan');
+    expect(codexToolName({ toolCallId: 'c2', kind: 'execute', title: 'npm test' })).toBe('Bash');
   });
 
   it('asserts the posture after model selection, not on the mode session/new reported', async () => {

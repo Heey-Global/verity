@@ -1,7 +1,7 @@
 // One shared copy of the Verity settings behind every Settings screen.
 //
 // The surface is a stack of sibling routes (index, GitHub, services, MCP,
-// maintenance), and expo-router mounts and unmounts each of them independently.
+// server update), and expo-router mounts and unmounts each of them independently.
 // If every screen kept its own fetch, its own save state and its own idea of
 // what is configured, the index's setup checklist would go stale the moment the
 // operator fixed something one screen deeper — and "Saving…" would vanish when
@@ -25,6 +25,11 @@ import {
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useSyncExternalStore } from 'react';
 
+export type ApplyRun =
+  | { phase: 'idle' }
+  | { phase: 'running'; total: number; done: number }
+  | { phase: 'done'; total: number; failed: string[] };
+
 export type VeritySettingsState = {
   /** The server's last word, or `null` before the first successful fetch. */
   settings: VeritySettings | null;
@@ -42,6 +47,10 @@ export type VeritySettingsState = {
   savedAt: string | undefined;
   /** A saved change has not reached already-running project containers yet. */
   applyPending: boolean;
+  /** The reprovision that applies it. Shared rather than per banner: every
+   *  settings screen mounts one and the screens behind stay mounted, so a run
+   *  started on one must disable the button on all of them. */
+  applyRun: ApplyRun;
   /** Last load/save failure, shown as a banner. Cleared by the next attempt. */
   error: string | undefined;
 };
@@ -54,6 +63,7 @@ const INITIAL: VeritySettingsState = {
   saving: 0,
   savedAt: undefined,
   applyPending: false,
+  applyRun: { phase: 'idle' },
   error: undefined,
 };
 
@@ -222,7 +232,7 @@ export function saveVeritySettings(
         publish({
           settings: next,
           savedAt: next.updatedAt,
-          applyPending: state.applyPending || requiresContainerApply(patch),
+          ...pendingApply(requiresContainerApply(patch)),
           error: failedPatches[0]?.error,
         });
         return 'saved';
@@ -276,13 +286,54 @@ export function patchVeritySettingsLocally(
   loadGeneration += 1;
   publish({
     settings: change(state.settings),
-    applyPending: state.applyPending || requiresApply,
+    ...pendingApply(requiresApply),
   });
 }
 
-/** Note that running containers now match the saved settings. */
-export function clearApplyPending(): void {
-  publish({ applyPending: false });
+// Bumped by every change running containers have not received yet, so a
+// reprovision can tell whether it covered the latest one.
+let applyGeneration = 0;
+
+function pendingApply(
+  requiresApply: boolean,
+): Partial<Pick<VeritySettingsState, 'applyPending' | 'applyRun'>> {
+  if (!requiresApply) return {};
+  applyGeneration += 1;
+  // A finished run's outcome describes settings that are no longer the latest;
+  // the banner goes back to asking for an apply.
+  return {
+    applyPending: true,
+    applyRun: state.applyRun.phase === 'running' ? state.applyRun : { phase: 'idle' },
+  };
+}
+
+/** The current apply generation, taken when a reprovision starts. */
+export function applyPendingGeneration(): number {
+  return applyGeneration;
+}
+
+/**
+ * Note that running containers now match the saved settings — unless a change
+ * landed after `generation` was taken, which the containers recreated before it
+ * did not receive.
+ */
+export function clearApplyPending(generation: number): void {
+  if (generation === applyGeneration) publish({ applyPending: false });
+}
+
+/** The server a reprovision belongs to; pass it back to {@link setApplyRun}. */
+export function applyRunScope(): number {
+  return storeGeneration;
+}
+
+/**
+ * Record the progress of the apply-settings reprovision. A run started against
+ * a server the app has since left keeps reporting as it finishes; its `scope`
+ * no longer matches, so none of that lands on the new server's banner.
+ */
+export function setApplyRun(applyRun: ApplyRun, scope = storeGeneration): void {
+  if (scope !== storeGeneration) return;
+  publish({ applyRun });
 }
 
 /** Show a settings-wide error (e.g. a sealed store discovered by a sub-panel). */
@@ -296,6 +347,8 @@ export function resetVeritySettingsStore(): void {
   loadGeneration += 1;
   secretStatusGeneration += 1;
   storeGeneration += 1;
+  // A run still finishing for the previous server must not clear this one's prompt.
+  applyGeneration += 1;
   settingsFailed = false;
   secretStatusFailed = false;
   failedPatches = [];

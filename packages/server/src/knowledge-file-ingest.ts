@@ -7,7 +7,7 @@ import { KNOWLEDGE_SOURCE_MAX_BYTES } from '@verity/store';
 
 import { EXTRACTED_TEXT_DIR } from './knowledge-folder.js';
 import { processKnowledgeSource } from './knowledge-source-processing.js';
-import { normalizeSessionRelativePath, sessionFilePath } from './session-files.js';
+import { isProbablyText, normalizeSessionRelativePath, sessionFilePath } from './session-files.js';
 
 const extractionQueues = new Map<string, Promise<void>>();
 
@@ -137,7 +137,23 @@ async function extractKnowledgeFileUnlocked(root: string, relativePath: string):
   };
   const previous = await readFile(meta, 'utf8').catch(() => '');
   if (previous === JSON.stringify(identity)) return;
-  const result = await processKnowledgeSource(basename(source.rel), bytes);
+  const textual =
+    /\.(md|markdown|txt|json|ya?ml|toml|csv)$/i.test(source.rel) && isProbablyText(bytes);
+  const text = textual ? bytes.toString('utf8') : '';
+  const result = textual
+    ? {
+        filename: basename(source.rel),
+        bytes,
+        mediaType: 'text/plain',
+        processingState: 'ready' as const,
+        processingNote: 'Text extracted from the original file.',
+        locators: Array.from({ length: Math.ceil(text.length / 100_000) }, (_, index) => ({
+          label: `Text ${index + 1}`,
+          text: text.slice(index * 100_000, (index + 1) * 100_000),
+        })),
+        previews: [],
+      }
+    : await processKnowledgeSource(basename(source.rel), bytes);
   const nonce = randomUUID();
   const outputTmp = `${output}.${nonce}.tmp`;
   const metaTmp = `${meta}.${nonce}.tmp`;

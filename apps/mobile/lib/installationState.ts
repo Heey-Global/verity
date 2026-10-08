@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { clearLegacyAuthState, clearStoredAuthState } from './authToken';
@@ -13,6 +14,7 @@ const SERVER_URL_KEY = 'verity.serverUrl';
  * iOS retains Keychain entries across uninstall/reinstall, while AsyncStorage is
  * removed. Existing installations migrate by carrying their persisted URL forward. */
 export async function prepareInstallationState(): Promise<void> {
+  if (Platform.OS === 'web') return;
   if ((await AsyncStorage.getItem(INSTALLATION_MARKER_KEY)) !== null) return;
 
   const existingServerUrl = await AsyncStorage.getItem(SERVER_URL_KEY);

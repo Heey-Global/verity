@@ -190,3 +190,19 @@ describe('Google Sheets session tool', () => {
     expect(sheets.clear).not.toHaveBeenCalled();
   });
 });
+
+it('keeps native spreadsheet reads but refuses edits in a read-only Drive project', async () => {
+  const { tool, sheets } = setup({
+    getProjectSettings: vi
+      .fn()
+      .mockResolvedValue({ googleDriveFolderId: 'root', googleDriveAccessMode: 'read-only' }),
+  });
+  await tool.invoke({ ...input, request: { action: 'read_range', range: 'Sheet1!A1:A2' } });
+  await expect(
+    tool.invoke({
+      ...input,
+      request: { action: 'write_range', range: 'Sheet1!A1:A2', values: [['new']] },
+    }),
+  ).rejects.toThrow('read-only');
+  expect(sheets.write).not.toHaveBeenCalled();
+});
