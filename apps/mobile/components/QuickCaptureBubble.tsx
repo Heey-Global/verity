@@ -12,6 +12,7 @@ import {
   Alert,
   Animated,
   AppState,
+  Easing,
   Keyboard,
   PanResponder,
   Platform,
@@ -86,10 +87,18 @@ export function QuickCaptureBubble() {
   const [keyboard, setKeyboard] = useState(Keyboard.isVisible());
   const [meeting, setMeeting] = useState(false);
   const [remoteMeeting, setRemoteMeeting] = useState(false);
-  const [hidden, setHidden] = useState(false);
   const [dragging, setDragging] = useState(false);
   /** From grab until the release spring lands: the whole bubble is on screen. */
-  const [loose, setLoose] = useState(false);
+  /** 0 = glyph centred (in the hand), 1 = glyph on the visible half (docked).
+   *  Animated so the glyph glides instead of jumping when the bubble lands. */
+  const glyph = useRef(new Animated.Value(1)).current;
+  const setLoose = (value: boolean) =>
+    Animated.timing(glyph, {
+      toValue: value ? 0 : 1,
+      duration: value ? 120 : 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
   const [capture, setCapture] = useState(false);
   const [intro, setIntro] = useState(false);
   const [panel, setPanel] = useState(false);
@@ -152,11 +161,6 @@ export function QuickCaptureBubble() {
           }),
         onPanResponderRelease: (_, g) => {
           setDragging(false);
-          if (origin.current.y + g.dy > height - 110) {
-            setLoose(false);
-            setHidden(true);
-            return;
-          }
           // A throw keeps its momentum: the spring starts at the finger's
           // velocity, so a hard fling overshoots the edge and bounces back,
           // while a gentle release just glides home.
@@ -183,8 +187,8 @@ export function QuickCaptureBubble() {
             friction: Math.max(5.5, 8.5 - Math.abs(g.vx) * 2),
             useNativeDriver: false,
           }).start(({ finished }) => {
-            setLoose(false);
             if (!finished) return;
+            setLoose(false);
             // Arrival: a short squash against the edge, like a ball landing.
             squash.setValue(Math.max(0.88, 1 - Math.abs(g.vx) * 0.08));
             Animated.spring(squash, {
@@ -319,7 +323,6 @@ export function QuickCaptureBubble() {
   const visible =
     preferences.enabled &&
     taskAccountScope() !== null &&
-    !hidden &&
     !keyboard &&
     !meeting &&
     !remoteMeeting &&
@@ -380,19 +383,32 @@ export function QuickCaptureBubble() {
                 width: BUBBLE,
                 height: BUBBLE,
                 borderRadius: BUBBLE / 2,
-                backgroundColor: theme.colors.surfaceAlt,
+                // A primary tint reads as a control without shouting like a
+                // filled button; full strength only while it is in the hand.
+                backgroundColor: dragging ? 'rgba(42,176,255,0.26)' : 'rgba(42,176,255,0.16)',
                 borderWidth: 1,
-                borderColor: theme.colors.border,
-                opacity: dragging ? 1 : 0.55,
+                borderColor: dragging ? theme.colors.primary : 'rgba(42,176,255,0.55)',
                 justifyContent: 'center',
                 alignItems: 'center',
-                // Docked, the glyph sits on the visible half; in the hand the
-                // whole bubble is on screen, so the glyph centres again.
-                paddingLeft: loose || preferences.side === 'right' ? 0 : BUBBLE / 2 - 4,
-                paddingRight: !loose && preferences.side === 'right' ? BUBBLE / 2 - 4 : 0,
               }}
             >
-              <Icon name="mic" size={19} color={theme.colors.textMuted} />
+              <Animated.View
+                style={{
+                  transform: [
+                    {
+                      translateX: glyph.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [
+                          0,
+                          (preferences.side === 'right' ? -1 : 1) * (BUBBLE / 4 - 2),
+                        ],
+                      }),
+                    },
+                  ],
+                }}
+              >
+                <Icon name="mic" size={20} color={theme.colors.primary} />
+              </Animated.View>
             </View>
           </Pressable>
           {count > 0 ? (
@@ -426,21 +442,6 @@ export function QuickCaptureBubble() {
             </Pressable>
           ) : null}
         </Animated.View>
-      ) : null}
-      {dragging ? (
-        <View
-          pointerEvents="none"
-          style={{
-            position: 'absolute',
-            bottom: 30,
-            alignSelf: 'center',
-            padding: 20,
-            borderRadius: 24,
-            backgroundColor: theme.colors.surface,
-          }}
-        >
-          <Text style={{ color: theme.colors.text }}>✕ Hide</Text>
-        </View>
       ) : null}
       {intro ? (
         <QuickCaptureIntro

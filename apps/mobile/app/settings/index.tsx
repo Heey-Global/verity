@@ -1,5 +1,4 @@
-import { enableTaskScreenshotSuggestions } from '../../lib/taskScreenshot';
-import { useTaskPreferences, saveTaskPreferences } from '../../lib/taskPreferences';
+import { useTaskPreferences } from '../../lib/taskPreferences';
 // Settings, top level: what is left to set up, where everything lives, and the
 // two app-wide switches. Everything with a form of its own is one tap deeper.
 //
@@ -176,6 +175,17 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             subtitle="Verity Uplink"
             onPress={() => router.push('/settings/remote-access')}
           />
+        </SettingsListPanel>
+      </SettingsGroup>
+      <SettingsGroup title="Features">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="check-square"
+            title="Tasks"
+            subtitle="Capture bubble, screenshot suggestions"
+            value={taskPreferences.enabled ? 'On' : 'Off'}
+            onPress={() => router.push('/settings/tasks')}
+          />
           <SettingsNavRow
             icon="mic"
             title="Meeting transcription"
@@ -236,43 +246,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             accessibilityLabel="Change server address"
           />
         </SettingsListPanel>
-      </SettingsGroup>
-
-      <SettingsGroup title="Tasks">
-        <SettingsPanel>
-          <SettingsToggleRow
-            label="Show capture bubble"
-            value={taskPreferences.enabled}
-            onValueChange={(value) => {
-              void saveTaskPreferences({ enabled: value }).catch((error) =>
-                Alert.alert(
-                  'Could not save preference',
-                  error instanceof Error ? error.message : 'Try again',
-                ),
-              );
-            }}
-          />
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => {
-              void enableTaskScreenshotSuggestions()
-                .then(() =>
-                  Alert.alert(
-                    'Screenshot suggestions enabled',
-                    'Quick capture can offer screenshots taken in the last two minutes.',
-                  ),
-                )
-                .catch((error) =>
-                  Alert.alert(
-                    'Screenshot suggestions unavailable',
-                    error instanceof Error ? error.message : 'Install the latest app build',
-                  ),
-                );
-            }}
-          >
-            <Text style={styles.disclosureTitle}>Allow screenshot suggestions</Text>
-          </Pressable>
-        </SettingsPanel>
       </SettingsGroup>
 
       <SettingsGroup title="Advanced">

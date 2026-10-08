@@ -121,4 +121,3 @@ export function bubbleRestingPlace(input: {
 }
 
 export const TASK_SILENCE_MS = 1500;
-export const TASK_SAVE_DELAY_MS = 3000;
