@@ -128,6 +128,19 @@ describe('bounded review base recovery', () => {
     expect(git(repo, 'rev-parse', '--is-shallow-repository')).toBe('false');
     expect(git(repo, 'rev-parse', 'HEAD')).toBe(head);
   });
+  it('recovers through another ancestor when the first tracking branch was deleted', () => {
+    const { repo, base } = fixture();
+    git(
+      repo,
+      'update-ref',
+      'refs/remotes/origin/deleted',
+      git(repo, 'rev-parse', 'origin/feature'),
+    );
+    const result = resolve(repo);
+    expect(result.status).toBe(0);
+    expect(result.stdout.toString().split('\n')[0]).toBe(base);
+    expect(result.stderr.toString().match(/attempt/g)).toHaveLength(2);
+  });
   it('does not guess a remote for a local or unavailable base', () => {
     const { repo } = fixture();
     const result = resolve(repo, 'refs/heads/missing');
