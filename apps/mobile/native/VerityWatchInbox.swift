@@ -121,6 +121,18 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
       if entry.state == .stored {
         if expired { remove(entry.id) }
       } else if (entry.attempts ?? 0) >= Self.maxAttempts {
+        // A process termination can leave the final attempt in .received;
+        // without a terminal reply the watch keeps waiting and redelivering.
+        if entry.state == .received {
+          finish(
+            entry.id,
+            .failure(NSError(
+              domain: "VerityWatchInbox", code: 1,
+              userInfo: [NSLocalizedDescriptionKey: "Transcription interrupted"]
+            )),
+            elapsed: 0
+          )
+        }
         if expired {
           remove(entry.id)
           log("\(entry.id.prefix(8)) removed after \(Self.maxAttempts) failed attempts")

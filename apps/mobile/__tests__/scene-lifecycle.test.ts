@@ -99,6 +99,24 @@ describe('iOS scene lifecycle', () => {
     expect(launch).toContain(`${inbox}.shared.activate()`);
   });
 
+  // A killed final attempt otherwise leaves the watch waiting until retention expires.
+  it('finishes an interrupted exhausted watch transcription before retention cleanup', () => {
+    const native = readFileSync(resolve(__dirname, '../native/VerityWatchInbox.swift'), 'utf8');
+    const exhausted = native.slice(
+      native.indexOf('} else if (entry.attempts ?? 0) >= Self.maxAttempts {'),
+      native.indexOf('} else if entry.lastAttemptAt'),
+    );
+    expect(exhausted).toMatch(/if entry.state == \.received \{\s*finish\(/);
+    expect(exhausted).toContain('.failure(NSError(');
+    expect(exhausted.indexOf('finish(')).toBeLessThan(exhausted.indexOf('if expired'));
+    const finish = native.slice(native.indexOf('private func finish('));
+    expect(finish).toMatch(/case \.failure\(let error\):\s*entry.state = \.failed/);
+    expect(finish).toContain('try? save(entry)');
+    expect(finish).toMatch(
+      /if entry.state == \.transcribed \|\| \(entry.attempts \?\? 0\) >= Self.maxAttempts \{\s*self.reply\(reply\)/,
+    );
+  });
+
   it('is idempotent and rejects template drift rather than retaining legacy startup', async () => {
     const { swift } = await generate();
     expect((await generate(swift)).swift).toBe(swift);
