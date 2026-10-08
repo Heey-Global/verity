@@ -21,7 +21,12 @@ jest.mock('../lib/taskScreenshot', () => ({
   enableTaskScreenshotSuggestions: jest.fn(async () => undefined),
 }));
 jest.mock('../lib/taskPreferences', () => ({
-  useTaskPreferences: () => ({ loaded: true, screenshots: true, screenshotPromptDismissed: false }),
+  useTaskPreferences: () => ({
+    loaded: true,
+    screenshots: true,
+    screenshotPromptDismissed: false,
+    projectId: 'remembered',
+  }),
   saveTaskPreferences: jest.fn(async () => undefined),
 }));
 const toggle = jest.fn();
@@ -82,18 +87,35 @@ it('never saves on its own; Save stores the text after dictation ends', async ()
   expect(props.onSaved).toHaveBeenCalledWith('saved-id', expect.any(String));
 });
 it('a project chip selects the target without saving', async () => {
-  const ui = render(<QuickCaptureCard {...props} />);
+  const captureProps = {
+    ...props,
+    projects: [
+      {
+        id: 'other',
+        owner: 'local',
+        repo: 'other',
+        kind: 'local' as const,
+        containerName: 'other',
+        imageRef: null,
+        state: 'active' as const,
+        provisionError: null,
+        createdAt: '',
+        updatedAt: '',
+      },
+    ],
+  };
+  const ui = render(<QuickCaptureCard {...captureProps} />);
   fireEvent.changeText(ui.getByLabelText('Task text'), 'Edited thought');
   // Chips are there while recording too, so the layout never jumps.
-  fireEvent.press(ui.getByText('General'));
+  fireEvent.press(ui.getByText('other'));
   expect(captureTask).not.toHaveBeenCalled();
   jest
     .mocked(useVoiceInput)
     .mockReturnValue({ ...voice, state: 'idle' } as unknown as ReturnType<typeof useVoiceInput>);
-  ui.rerender(<QuickCaptureCard {...props} />);
+  ui.rerender(<QuickCaptureCard {...captureProps} />);
   await act(async () => fireEvent.press(ui.getByText('Save')));
   expect(captureTask).toHaveBeenCalledWith(
-    expect.objectContaining({ title: 'Edited thought', projectId: null }),
+    expect.objectContaining({ title: 'Edited thought', projectId: 'other' }),
   );
 });
 it('discards without saving', () => {
@@ -122,6 +144,14 @@ it('renders a converted screenshot preview instead of a library URI', async () =
   expect(previewTaskScreenshot).toHaveBeenCalledWith(screenshot);
   expect(ui.getByText('Screenshot from just now')).toBeTruthy();
   expect(ui.UNSAFE_getAllByType(Image)[0].props.source.uri).toBe('data:image/jpeg;base64,preview');
+});
+
+it('starts dictation once when task capture opens and preserves it on rerender', () => {
+  const ui = render(<QuickCaptureCard {...props} />);
+  expect(toggle).toHaveBeenCalledTimes(1);
+  ui.rerender(<QuickCaptureCard {...props} />);
+  expect(toggle).toHaveBeenCalledTimes(1);
+  expect(captureTask).not.toHaveBeenCalled();
 });
 
 it('saves typed text when speech recognition is unavailable', async () => {
@@ -153,4 +183,44 @@ it('does not save an unfinished transcript after a recognition error', async () 
   expect(captureTask).not.toHaveBeenCalled();
   await act(async () => fireEvent.press(ui.getByText('Save')));
   expect(captureTask).toHaveBeenCalledTimes(1);
+});
+
+it('requires a project outside a session and never offers General', async () => {
+  jest
+    .mocked(useVoiceInput)
+    .mockReturnValue({ ...voice, state: 'idle' } as unknown as ReturnType<typeof useVoiceInput>);
+  const ui = render(<QuickCaptureCard {...props} context={{ projectId: null, sessionId: null }} />);
+  fireEvent.changeText(ui.getByLabelText('Task text'), 'Unassigned capture');
+  expect(ui.queryByText('General')).toBeNull();
+  await act(async () => fireEvent.press(ui.getByText('Save')));
+  expect(captureTask).not.toHaveBeenCalled();
+});
+
+it('restores the remembered project when capturing outside a session', async () => {
+  jest
+    .mocked(useVoiceInput)
+    .mockReturnValue({ ...voice, state: 'idle' } as unknown as ReturnType<typeof useVoiceInput>);
+  const ui = render(
+    <QuickCaptureCard
+      {...props}
+      context={{ projectId: null, sessionId: null }}
+      projects={[
+        {
+          id: 'remembered',
+          owner: 'local',
+          repo: 'Remembered',
+          kind: 'local',
+          containerName: 'remembered',
+          imageRef: null,
+          state: 'active',
+          provisionError: null,
+          createdAt: '',
+          updatedAt: '',
+        },
+      ]}
+    />,
+  );
+  fireEvent.changeText(ui.getByLabelText('Task text'), 'Restored project capture');
+  await act(async () => fireEvent.press(ui.getByText('Save')));
+  expect(captureTask).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'remembered' }));
 });

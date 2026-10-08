@@ -20,6 +20,9 @@
     "metro-transform-worker": "0.84.5",
     "xcode@3.0.1": {
       "uuid": "14.0.2"
+    },
+    "expo-router": {
+      "query-string": "$query-string"
     }
   },
   "scripts": {
@@ -69,6 +72,7 @@
     "uuid": "14.0.2",
     "vitest": "5.0.3",
     "xcode": "3.0.1",
-    "zod": "4.6.5"
+    "zod": "4.6.5",
+    "query-string": "file:vendor/expo-router-query-string"
   }
 }

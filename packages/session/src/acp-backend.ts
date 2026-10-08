@@ -26,6 +26,7 @@ import {
   toolName,
   type AcpEventAdapterOptions,
 } from './acp-adapter.js';
+import { redactProcessStderr } from '@verity/store';
 import { SessionWriter } from './ingest.js';
 import { assertSafeArgs, nodeSpawner } from './runner.js';
 
@@ -596,6 +597,8 @@ export async function runAcpTurn(
   let loadRefused = false;
   let diagnosticPhase: 'spawn' | 'initialize' | 'session_load' | 'session_new' | 'prompt' = 'spawn';
   const isInitializing = (): boolean => diagnosticPhase === 'initialize';
+  let promptDispatched = false;
+  const isPrompting = (): boolean => promptDispatched;
   const topLevelText = new AcpTextStream();
   let updateTail: Promise<void> = Promise.resolve();
   let updateError: unknown;
@@ -1047,6 +1050,7 @@ export async function runAcpTurn(
           // new prompt is the first point after which an agent_message_chunk can
           // belong to this turn rather than ACP's replay of canonical history.
           loadingSession = false;
+          promptDispatched = true;
           const prompt = await agent.request(acp.methods.agent.session.prompt, {
             sessionId: session.sessionId,
             prompt: promptBlocks(turnOpts, profile),
@@ -1195,6 +1199,7 @@ export async function runAcpTurn(
       aborted,
     };
   } catch (error) {
+    const turnActive = isPrompting() && !closedOut;
     acceptingSteering = false;
     const message = error instanceof Error ? error.message : String(error);
     await drainUpdates().catch(() => undefined);
@@ -1203,7 +1208,33 @@ export async function runAcpTurn(
     // when the ACP process disconnects before returning PromptResponse.
     await writeAll(writer, adapter.flush()).catch(() => undefined);
     await writeAll(writer, topLevelText.flush()).catch(() => undefined);
+    // EOF can precede the process close event; wait briefly for drained stderr and
+    // exit metadata, without stalling a failure on a wedged remote channel.
+    let exitTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      child.exited.then(
+        () => true,
+        () => false,
+      ),
+      new Promise<boolean>((resolve) => {
+        exitTimer = setTimeout(() => resolve(false), 250);
+      }),
+    ]);
+    if (exitTimer !== undefined) clearTimeout(exitTimer);
+    const exitDetails = child.exitDetails?.();
     const stderr = `${child.stderr()}\n${message}`;
+    const processFailure =
+      !aborted &&
+      exitDetails !== undefined &&
+      (exitDetails.code !== 0 || exitDetails.signal !== null || turnActive)
+        ? {
+            exitCode: exitDetails.code,
+            signal: exitDetails.signal,
+            turnActive,
+            stderrTail: redactProcessStderr(child.stderr(), opts.env ?? process.env).slice(-65_536),
+            ...(opts.model === undefined ? {} : { model: opts.model.slice(0, 200) }),
+          }
+        : {};
     // The ACP analogue of Codex's `thread.started` gate. `session/prompt` is
     // dispatched only after `session/new` or `session/load` has ANSWERED, and
     // that answer is the only thing that assigns `boundSessionId` — so an
@@ -1252,6 +1283,7 @@ export async function runAcpTurn(
         phase: diagnosticPhase,
         backend: profile.telemetryBackend,
         ...(error instanceof acp.RequestError ? { code: error.code } : {}),
+        ...processFailure,
       } as const;
       if (writer.currentSessionId !== undefined) {
         await writer.write(diagnostic).catch(() => undefined);

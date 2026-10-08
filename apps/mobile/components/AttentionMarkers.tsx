@@ -1,44 +1,35 @@
 // The session-list attention markers (#387). The PR states share the git-merge
 // glyph (the "PR" anchor), colored by verdict, so a row's PR reads as one thing:
-//   • CI running  → green git-merge, PULSING, no badge (on track, checks in flight)
-//   • merge-ready → green git-merge + green ✓ badge (checks passed, ready)
-//   • merge checking → green git-merge + green ✓ badge, PULSING (checks passed,
-//     GitHub still computing mergeability)
+//   • CI running  → grey git-merge, no badge (checks in flight)
+//   • merge checking → grey git-merge + grey ✓ badge (checks passed, GitHub still
+//     computing mergeability)
+//   • merge-ready → green git-merge + green ✓ badge (GitHub confirmed it can merge)
 //   • merge blocked → raspberry git-merge + raspberry ✕ badge
 //   • CI failed   → raspberry git-merge + raspberry ✕ badge
+// Green is reserved for "the merge button is live": a still-settling PR in green read
+// as mergeable while its button was off. Nothing here animates — the waiting states
+// show their spinner on the PR bar's merge button instead.
 // (Unread is NOT here — it's the left dot in the row, see UnreadDot.) The marker sits
 // in a fixed 34px slot that matches the project header's action buttons, so a session's
-// icon lines up directly under the project's ⋯ / + column. Pulses come from the SHARED
-// clock, so a running icon breathes in lock-step with the working dot on the left.
+// icon lines up directly under the project's ⋯ / + column.
 // Shared by the overview and project-detail rows so the two can't drift.
 import type { AttentionFlag } from '@verity/mobile';
-import { Animated, View } from 'react-native';
+import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { useSyncedPulse } from '../lib/pulse';
 import { Icon, type IconName } from './Icon';
 
 function PrMarker({
   size,
   color,
-  pulsing,
   badge,
 }: {
   size: number;
   color: string;
-  pulsing: boolean;
   badge?: { icon: IconName; color: string };
 }) {
-  const pulse = useSyncedPulse();
-  // Pulse via SCALE, not opacity: a fading opacity makes a running (pulsing) icon read
-  // as a DIFFERENT (dimmer) green than a static merge-ready one, even though both are
-  // `tone.done`. Scaling keeps the color at full strength, so every git-merge glyph is
-  // the exact same green — the running one just gently breathes in size.
-  const scale = pulse.interpolate({ inputRange: [0.35, 1], outputRange: [0.82, 1] });
   return (
     <View style={{ width: size, height: size }}>
-      <Animated.View style={pulsing ? { transform: [{ scale }] } : undefined}>
-        <Icon name="git-merge" size={size} color={color} />
-      </Animated.View>
+      <Icon name="git-merge" size={size} color={color} />
       {badge ? (
         // No background disc — the check/✕ sits directly on the row so it's the exact
         // same green as the git-merge glyph (a surface disc made it read as a different
@@ -54,18 +45,17 @@ function PrMarker({
 // One entry per kind the marker draws. Drawing and `drawsAttentionMarker` both read
 // this table, so a kind can't be drawn without the row knowing, or vice versa.
 type MarkerSpec = {
-  tone: 'done' | 'danger' | 'attention';
-  pulsing: boolean;
+  tone: 'idle' | 'done' | 'danger' | 'attention';
   badge?: 'check' | 'x';
 };
 const MARKERS: Partial<Record<AttentionFlag['kind'], MarkerSpec>> = {
-  pr_unknown: { tone: 'attention', pulsing: false },
-  ci_running: { tone: 'done', pulsing: true },
-  merge_ready: { tone: 'done', pulsing: false, badge: 'check' },
-  merge_checking: { tone: 'done', pulsing: true, badge: 'check' },
-  ci_failed: { tone: 'danger', pulsing: false, badge: 'x' },
-  merge_blocked: { tone: 'danger', pulsing: false, badge: 'x' },
-  merge_conflict: { tone: 'danger', pulsing: false, badge: 'x' },
+  pr_unknown: { tone: 'attention' },
+  ci_running: { tone: 'idle' },
+  merge_ready: { tone: 'done', badge: 'check' },
+  merge_checking: { tone: 'idle', badge: 'check' },
+  ci_failed: { tone: 'danger', badge: 'x' },
+  merge_blocked: { tone: 'danger', badge: 'x' },
+  merge_conflict: { tone: 'danger', badge: 'x' },
 };
 
 /** Whether {@link AttentionMarkers} draws anything for these flags, so a caller can
@@ -104,7 +94,6 @@ export function AttentionMarkers({
       <PrMarker
         size={size}
         color={color}
-        pulsing={spec.pulsing}
         {...(spec.badge ? { badge: { icon: spec.badge, color } } : {})}
       />
     </View>

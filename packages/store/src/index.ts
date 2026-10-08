@@ -197,3 +197,5 @@ export type {
 export * from './knowledge.js';
 
 export * from './knowledge-sources.js';
+
+export { redactSecrets, redactProcessStderr } from './redact.js';

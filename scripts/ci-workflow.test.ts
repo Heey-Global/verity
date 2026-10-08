@@ -5583,3 +5583,16 @@ describe('changed-area detector', () => {
     }
   }, 120_000);
 });
+
+it('verifies the immutable OTA artifact source before installing mobile dependencies', () => {
+  const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+    jobs: { 'mobile-app': WorkflowJob };
+  };
+  const steps = workflow.jobs['mobile-app'].steps;
+  const source = steps.findIndex((step) => step.run?.includes('git checkout --detach "$source"'));
+  expect(source).toBeGreaterThan(-1);
+  expect(source).toBeLessThan(steps.findIndex((step) => step.run === 'npm ci'));
+  expect(steps[source].if).toContain('automation/promote-mobile-ota-');
+  expect(steps[source].run).toContain('ota-promotion.json');
+  expect(steps[source].run).toContain('git merge-base --is-ancestor');
+});

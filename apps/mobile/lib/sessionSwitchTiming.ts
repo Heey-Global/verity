@@ -14,3 +14,11 @@ export function rowPress(sessionId: string): void {
     : (existing ?? beginSessionSwitch(sessionId));
   markSessionSwitch(trace, 'js-press-handler');
 }
+
+/** Records first render entry only; an interrupted render may never commit. */
+export function markFirstSessionRender(sessionId: string, phase: string): void {
+  const trace = sessionSwitchTiming(sessionId);
+  if (trace && !trace.phases.some((entry) => entry.phase === phase)) {
+    markSessionSwitch(trace, phase);
+  }
+}

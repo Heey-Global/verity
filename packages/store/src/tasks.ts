@@ -12,7 +12,7 @@ export const OPEN_TASK_STATUSES: readonly TaskStatus[] = ['open', 'in_progress']
 export interface TaskRecord {
   id: string;
   ownerUserId: string;
-  /** `null` is the General bucket. */
+  /** `null` preserves legacy tasks or tasks whose project was deleted until reassignment. */
   projectId: string | null;
   /** The session the task is assigned to; what that session's agent sees. */
   sessionId: string | null;
@@ -62,7 +62,7 @@ export interface TaskPatch {
 
 export interface TaskListFilter {
   ownerUserId: string;
-  /** `undefined` = any project; `null` = General only. */
+  /** `undefined` = any project; `null` = tasks awaiting project reassignment only. */
   projectId?: string | null | undefined;
   sessionId?: string | undefined;
   statuses?: readonly TaskStatus[] | undefined;

@@ -45,6 +45,8 @@ export interface SpawnedProcess {
    * crashed agent is never reported as a clean `0`.
    */
   exited: Promise<number>;
+  /** Native process termination details, available after exit. */
+  exitDetails?: () => { code: number | null; signal: NodeJS.Signals | null } | undefined;
   /** The retained tail of stderr (diagnostics). */
   stderr: () => string;
   kill: (signal?: NodeJS.Signals) => void;

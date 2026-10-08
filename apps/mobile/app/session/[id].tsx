@@ -1,3 +1,4 @@
+import { markFirstSessionRender } from '../../lib/sessionSwitchTiming';
 import { beginSessionSwitch, type SwitchTiming } from '@verity/mobile';
 import { markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { PinnedPlan } from '../../components/PinnedPlan';
@@ -60,12 +61,11 @@ import {
   gmailSendSummary,
   calendarChangeSummary,
   githubRefUrl,
-  isPullRequestCheckingMergeability,
-  isPullRequestConflicted,
   isSessionImageFilePath,
   groupRows,
   reconcileTranscriptRows,
   withPlanningSnapshot,
+  pullRequestMergeButton,
   pullRequestStatusText,
   markdownSectionTitle,
   modelRateLimited,
@@ -109,6 +109,7 @@ import {
   toolCallView,
   planHeadline,
   type PlanView,
+  type PullRequestBlockReason,
   trustedCliUnlockCandidate,
   type AgentEventTone,
   type FrozenTranscriptTail,
@@ -652,6 +653,7 @@ export function SessionChat({
   initialTargetSearchQuery?: string;
   retrySecret?: string;
 }) {
+  markFirstSessionRender(sessionId, 'session-screen-render-entry');
   const switchTiming = useMemo(() => sessionSwitchTiming(sessionId), [sessionId]);
   useEffect(() => {
     markSessionSwitch(switchTiming, 'session-screen-react-commit');
@@ -4483,6 +4485,7 @@ export function SessionChat({
           key={visiblePullRequest.number}
           pullRequest={visiblePullRequest}
           onMerge={onMergePullRequest}
+          onRefresh={branchesRefresh}
           onDismiss={visiblePullRequest.phase === 'open' ? undefined : dismissPullRequest}
         />
       ) : null}
@@ -8931,10 +8934,12 @@ function QueuedMessages({
 function PullRequestBar({
   pullRequest,
   onMerge,
+  onRefresh,
   onDismiss,
 }: {
   pullRequest: NonNullable<UseBranches['pullRequest']>;
   onMerge: UseBranches['mergePullRequest'];
+  onRefresh: () => void;
   onDismiss?: () => void;
 }) {
   const { theme } = useUnistyles();
@@ -8960,73 +8965,44 @@ function PullRequestBar({
     pullRequest.mergeState ?? 'no-state',
   ].join(':');
   const pending = pullRequest.pipeline === 'running' || pullRequest.pipeline === 'pending';
-  const failed = pullRequest.pipeline === 'failure';
-  // A conflicting PR gets no merge ref from GitHub, so its `pull_request` workflows
-  // never start and the pipeline reads `unknown` with zero checks — which used to
-  // render as the dead-end "status unavailable". `mergeable_state: 'dirty'` is the
-  // authoritative signal, independent of the pipeline, so name the conflict instead.
-  const conflicted = isPullRequestConflicted(pullRequest);
-  const unavailable = pullRequest.pipeline === 'unknown' && !conflicted;
-  // Green checks but GitHub hasn't finished its merge test yet: the button stays off,
-  // and the (still green) dot pulses so the wait reads as progress, not a dead button.
-  const checkingMergeability = isPullRequestCheckingMergeability(pullRequest);
-  // Only a CONFIRMED conflict (mergeable === false) blocks. `null` means GitHub is
-  // still computing mergeability just after a push — treat that as "checks green,
-  // resolving", not blocked, so a just-fixed PR doesn't flash red before it settles.
-  const mergeabilityBlocked =
-    conflicted ||
-    (pullRequest.phase === 'open' &&
-      pullRequest.pipeline === 'success' &&
-      pullRequest.mergeable === false);
   const mergeRejected = !pending && mergeRejectedFor === pullRequestStateKey && error !== undefined;
-  const mergeBlocked = failed || mergeabilityBlocked || mergeRejected;
   const visibleError = mergeRejected ? error : undefined;
   const merged = pullRequest.phase === 'merged';
   const checksText = pullRequestStatusText(pullRequest);
-  const statusColor = mergeBlocked
-    ? theme.colors.tone.danger
-    : pending || checks.total === 0
-      ? theme.colors.tone.attention
-      : theme.colors.tone.done;
-  const canMerge =
-    pullRequest.phase === 'open' &&
-    pullRequest.mergeable === true &&
-    !conflicted &&
-    !pending &&
-    !merging &&
-    !mergeRejected;
-  const mergeButtonEnabled = canMerge;
-  // A conflicted PR has zero checks but is NOT "waiting" for anything — nothing will
-  // run until the conflict is resolved, so it must not pulse like a starting pipeline.
-  const active =
-    !failed &&
-    !unavailable &&
-    !conflicted &&
-    (pending ||
-      (pullRequest.phase === 'open' && checks.total === 0) ||
-      checkingMergeability ||
-      merging);
-  const pulse = useRef(new Animated.Value(1)).current;
-
-  useEffect(() => {
-    if (!active) {
-      pulse.stopAnimation();
-      pulse.setValue(1);
-      return;
-    }
-
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, { toValue: 0.68, duration: 850, useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 1, duration: 850, useNativeDriver: true }),
-      ]),
-    );
-    loop.start();
-    return () => {
-      loop.stop();
-      pulse.setValue(1);
-    };
-  }, [active, pulse]);
+  // One verdict drives the dot and the button, so they cannot disagree. A conflicting
+  // PR reads `unknown` with zero checks (GitHub builds no merge ref for it), and
+  // `mergeable: null` right after a push means "still computing", not blocked — both
+  // are resolved inside `pullRequestMergeButton`.
+  const button = pullRequestMergeButton(pullRequest, { merging, mergeRejected });
+  const mergeButtonEnabled = button.kind === 'merge';
+  // Static on purpose: the waiting states show their spinner on the button, and a
+  // second animation beside it only competed with it.
+  const statusColor =
+    button.kind === 'blocked' || (button.kind === 'closed' && pullRequest.pipeline === 'failure')
+      ? theme.colors.tone.danger
+      : button.kind === 'waiting'
+        ? theme.colors.tone.idle
+        : button.kind === 'refresh'
+          ? theme.colors.tone.attention
+          : theme.colors.tone.done;
+  const conflictTarget = pullRequest.baseRef ?? 'the base branch';
+  const prNumber = String(pullRequest.number);
+  const blockedLabels: Record<PullRequestBlockReason, string> = {
+    rejected: `Merge blocked because GitHub rejected pull request ${prNumber}`,
+    conflict: `Merge blocked because pull request ${prNumber} conflicts with ${conflictTarget}`,
+    ci_failed: `Merge blocked because CI failed for pull request ${prNumber}`,
+    blocked: `Merge blocked for pull request ${prNumber}`,
+  };
+  const buttonLabel =
+    button.kind === 'blocked'
+      ? blockedLabels[button.reason]
+      : button.kind === 'refresh'
+        ? `Refresh status of pull request ${prNumber}`
+        : button.kind === 'waiting'
+          ? `Merge unavailable for pull request ${prNumber}: ${checksText}`
+          : button.kind === 'closed'
+            ? `Pull request ${prNumber} is ${pullRequest.phase}`
+            : `Merge pull request ${prNumber}`;
 
   useEffect(() => {
     return () => {
@@ -9070,13 +9046,7 @@ function PullRequestBar({
           accessibilityRole="link"
           accessibilityLabel={`Open pull request ${String(pullRequest.number)} on GitHub`}
         >
-          <Animated.View
-            style={[
-              styles.prStatusDot,
-              { backgroundColor: statusColor },
-              active ? { opacity: pulse, transform: [{ scale: pulse }] } : null,
-            ]}
-          />
+          <View style={[styles.prStatusDot, { backgroundColor: statusColor }]} />
           <View style={styles.prMain}>
             <Text style={styles.prTitle} numberOfLines={1}>
               PR #{pullRequest.number} · {pullRequest.title}
@@ -9107,38 +9077,37 @@ function PullRequestBar({
           <Pressable
             style={({ pressed }) => [
               styles.prMergeButton,
-              // "Merge" reads as green for the go action. Hard blockers, including a
-              // rejected merge attempt, turn the disabled button danger instead of leaving
-              // a green action next to a red error.
-              { backgroundColor: mergeBlocked ? theme.colors.tone.danger : theme.colors.tone.done },
-              !mergeButtonEnabled && !mergeBlocked ? styles.prMergeButtonDisabled : null,
-              pressed && mergeButtonEnabled ? styles.prMergeButtonPressed : null,
+              button.kind === 'merge' || button.kind === 'merging'
+                ? { backgroundColor: theme.colors.tone.done }
+                : button.kind === 'blocked'
+                  ? { backgroundColor: theme.colors.tone.danger }
+                  : button.kind === 'waiting'
+                    ? styles.prMergeButtonWaiting
+                    : styles.prMergeButtonOutline,
+              pressed && (mergeButtonEnabled || button.kind === 'refresh')
+                ? styles.prMergeButtonPressed
+                : null,
             ]}
-            onPress={merge}
-            disabled={!mergeButtonEnabled}
+            onPress={button.kind === 'refresh' ? onRefresh : merge}
+            disabled={!mergeButtonEnabled && button.kind !== 'refresh'}
             accessibilityRole="button"
             accessibilityState={{
-              disabled: !mergeButtonEnabled,
-              busy: merging || checkingMergeability,
+              disabled: !mergeButtonEnabled && button.kind !== 'refresh',
+              busy: button.kind === 'merging' || button.kind === 'waiting',
             }}
-            accessibilityLabel={
-              mergeRejected
-                ? `Merge blocked because GitHub rejected pull request ${String(pullRequest.number)}`
-                : conflicted
-                  ? `Merge blocked because pull request ${String(pullRequest.number)} conflicts with ${pullRequest.baseRef ?? 'the base branch'}`
-                  : failed
-                    ? `Merge blocked because CI failed for pull request ${String(pullRequest.number)}`
-                    : mergeabilityBlocked
-                      ? `Merge blocked for pull request ${String(pullRequest.number)}`
-                      : checkingMergeability
-                        ? `Merge unavailable while GitHub checks whether pull request ${String(pullRequest.number)} can merge`
-                        : `Merge pull request ${String(pullRequest.number)}`
-            }
+            accessibilityLabel={buttonLabel}
           >
-            {merging ? (
+            {button.kind === 'merging' ? (
               <ActivityIndicator color={theme.colors.onPrimary} />
-            ) : (
-              <Text style={styles.prMergeText}>{mergeBlocked ? 'Blocked' : 'Merge'}</Text>
+            ) : button.kind === 'waiting' ? (
+              <View style={styles.prMergeWaiting}>
+                <ActivityIndicator size="small" color={theme.colors.textMuted} />
+                <Text style={styles.prMergeWaitingText}>{button.label}</Text>
+              </View>
+            ) : button.kind === 'closed' ? null : (
+              <Text style={button.kind === 'refresh' ? styles.prRefreshText : styles.prMergeText}>
+                {button.label}
+              </Text>
             )}
           </Pressable>
         )}
@@ -10690,8 +10659,9 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: '600',
   },
   prMergeButton: {
-    width: 78,
+    minWidth: 78,
     height: 36,
+    paddingHorizontal: theme.spacing.sm,
     marginRight: theme.spacing.sm,
     alignItems: 'center',
     justifyContent: 'center',
@@ -10707,8 +10677,33 @@ const styles = StyleSheet.create((theme) => ({
   prMergeButtonPressed: {
     opacity: 0.8,
   },
+  prMergeButtonWaiting: {
+    backgroundColor: theme.colors.surfaceAlt,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.border,
+  },
+  prMergeButtonOutline: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: theme.colors.textMuted,
+  },
   prMergeText: {
     color: theme.colors.onPrimary,
+    fontSize: theme.text.sm,
+    fontWeight: '700',
+  },
+  prMergeWaiting: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+  },
+  prMergeWaitingText: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.sm,
+    fontWeight: '700',
+  },
+  prRefreshText: {
+    color: theme.colors.text,
     fontSize: theme.text.sm,
     fontWeight: '700',
   },

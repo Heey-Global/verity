@@ -229,6 +229,8 @@ function mergedVersion(runtime) {
     version,
     commit,
     pr: pr.number,
+    deferred:
+      pr.labels?.some((label) => label.name === 'autorelease: deferred-mobile-ota') ?? false,
     complete: pr.labels?.some((label) => label.name === 'autorelease: tagged-mobile-ota') ?? false,
   };
 }
@@ -257,7 +259,10 @@ function detect() {
     if (run('git', ['rev-list', '-n', '1', `mobile-v${version}`]) !== merged.commit)
       throw new Error('Published OTA tag differs from its merged release source');
   }
-  if (release && (merged.complete || !release.prerelease)) {
+  // New merges must keep planning Staging while delivery's dispatch resumes
+  // the latest completed release whose Production proposal was deferred.
+  const resume = merged.deferred && process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';
+  if (release && ((merged.complete && !resume) || !release.prerelease)) {
     if (!merged.complete) complete(String(merged.pr));
     appendFileSync(output, 'mode=plan\n');
   } else {
@@ -268,10 +273,18 @@ function detect() {
   }
 }
 
-/** @param {string} number */
-function complete(number) {
+/** @param {string} number @param {boolean} deferred */
+function complete(number, deferred = false) {
   if (!/^[1-9]\d*$/u.test(number)) throw new Error('Invalid OTA release PR number');
   run('gh', ['label', 'create', 'autorelease: tagged-mobile-ota', '--color', '0E8A16', '--force']);
+  run('gh', [
+    'label',
+    'create',
+    'autorelease: deferred-mobile-ota',
+    '--color',
+    '0E8A16',
+    '--force',
+  ]);
   run('gh', [
     'pr',
     'edit',
@@ -280,12 +293,15 @@ function complete(number) {
     'autorelease: pending-mobile-ota',
     '--add-label',
     'autorelease: tagged-mobile-ota',
+    deferred ? '--add-label' : '--remove-label',
+    'autorelease: deferred-mobile-ota',
   ]);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv[2] === 'plan') await plan(process.argv[3] ?? '');
   else if (process.argv[2] === 'detect') detect();
-  else if (process.argv[2] === 'complete') complete(process.argv[3] ?? '');
+  else if (process.argv[2] === 'complete')
+    complete(process.argv[3] ?? '', process.argv[4] === 'true');
   else throw new Error('Usage: mobile-ota-proposal.mjs plan <runtime> | detect | complete <pr>');
 }

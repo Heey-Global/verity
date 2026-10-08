@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   fixedCandidate,
   planCandidate,
+  proposalBaseForSource,
   releaseNotes,
   singleGroup,
   stageArtifact,
@@ -184,8 +185,8 @@ describe('OTA release state', () => {
 
 // Execute the real orchestration against persistent fake external services. The
 // state survives failed child processes, just as accepted EAS/GitHub writes do.
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync, execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -198,12 +199,14 @@ interface ServiceState {
   loseRelease?: boolean;
   released: string;
   releaseReads: number;
+  deliverAfterReads?: number;
   changeBaseline?: boolean;
   racedHead?: boolean;
   draft?: boolean;
   reviews?: { id: number; state: string; commit_id: string }[];
   loseDismiss?: boolean;
   rollingHead?: string;
+  proposalBase?: string;
   sourceManifestMissing?: boolean;
   loseMetadata?: boolean;
   noPullHistory?: boolean;
@@ -211,6 +214,8 @@ interface ServiceState {
   modelMetadataCommit?: boolean;
   invalidMetadata?: boolean;
   approvedOnMain?: string;
+  approveAfterReads?: number;
+  moveProposalBase?: boolean;
   deliveredWork?: string;
   largeReleasePayload?: boolean;
   stagedVersion?: string;
@@ -233,6 +238,7 @@ function serviceFixture(changes: Partial<ServiceState> = {}) {
     ...changes,
   };
   writeFileSync(statePath, JSON.stringify(initial));
+  writeFileSync(join(cwd, 'output'), '');
   const mock = `#!${process.execPath}
 const fs = require('node:fs');
 const path = require('node:path');
@@ -248,13 +254,13 @@ const sha = candidate.commit;
 // main carries the last manifest that was merged: the delivered promotion,
 // or an approved one whose release has not published yet.
 const onMain = () => {
-  const version = s.approvedOnMain ?? s.released.replace('mobile-v','');
+  const version = (s.approveAfterReads && s.releaseReads>=s.approveAfterReads?'1.33.3':s.approvedOnMain) ?? s.released.replace('mobile-v','');
   const parts = version.split('.');
   const previous = parts[0]+'.'+parts[1]+'.'+(Number(parts[2])-1);
   return {...candidate, version, tag:'mobile-v'+version, branch:'staging-mobile-v'+version+'-'+sha, baseline:'mobile-v'+previous};
 };
 if(tool === 'git') {
-  if(args[0] === 'rev-parse') out(sha);
+  if(args[0] === 'rev-parse') {if(args[1]==='origin/main'){s.baseReads=(s.baseReads??0)+1;out(s.moveProposalBase && s.baseReads>1?'e'.repeat(40):(s.proposalBase??sha));}out(sha);}
   if(args[0] === 'merge-base' || args[0] === 'fetch') out('');
   if(args[0] === 'log') out(args.includes('--format=%s') ? (s.deliveredWork ?? 'fix(mobile): Show models (#451)') : sha);
   if(args[0] === 'ls-remote') {
@@ -280,6 +286,7 @@ if(tool === 'gh') {
     const endpoint=args.find(a=>a.startsWith('repos/'));
     if(endpoint?.includes('/releases?')) {
       s.releaseReads++;
+      if(s.deliverAfterReads && s.releaseReads >= s.deliverAfterReads) s.released=candidate.tag;
       const tag=s.changeBaseline && s.releaseReads>1 ? 'mobile-v1.33.9' : s.released;
       const releases=[{tag_name:'mobile-v1.33.0',draft:false,prerelease:false},{tag_name:tag,draft:false,prerelease:false},...(s.draft?[{tag_name:candidate.tag,draft:true,prerelease:false}]:[]),...(s.stagedVersion?[{tag_name:s.stagedVersion,draft:false,prerelease:true}]:[])];
       if (s.largeReleasePayload) releases.push(...Array.from({length:100}, (_, index) => ({tag_name:'mobile-v1.32.'+index,draft:false,prerelease:false,body:'x'.repeat(20000)})));
@@ -300,7 +307,7 @@ if(tool === 'gh') {
   if(args[0] === 'pr' && args[1] === 'list') out(!s.noPullHistory && args.includes('--head') && (s.racedHead || s.rollingHead)?[{number:51,headRefOid:s.racedHead?'c'.repeat(40):s.rollingHead,author:{login:'app/github-actions'}}]:[]);
   if(args[0] === 'pr' && args[1] === 'create') {if(s.losePullCreation){s.losePullCreation=false;fail();}s.noPullHistory=false;out('https://github.com/example/repo/pull/51');}
   if(args[0] === 'pr' || args[0] === 'workflow') out('');
-  if(args[0] === 'release' && args[1] === 'create') {s.draft=true;out('');}
+  if(args[0] === 'release' && args[1] === 'create') {if(args.includes('--prerelease')){s.stagedVersion=args[2];}else s.draft=true;out('');}
   if(args[0] === 'release' && args[1] === 'edit') {
     if(s.loseRelease){s.loseRelease=false;fail();}
     if(!args.includes('--prerelease=true'))s.released=candidate.tag;s.draft=false;out('');
@@ -322,10 +329,14 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
     chmodSync(join(bin, name), 0o755);
   }
   return {
-    run: (command: 'stage' | 'promote', overrides: Record<string, string> = {}) =>
+    run: (
+      command: 'stage' | 'promote',
+      overrides: Record<string, string> = {},
+      version = artifact().version,
+    ) =>
       spawnSync(
         process.execPath,
-        [resolve('scripts/mobile-ota-release.ts'), command, '1.33.0', artifact().version],
+        [resolve('scripts/mobile-ota-release.ts'), command, '1.33.0', version],
         {
           cwd,
           encoding: 'utf8',
@@ -338,11 +349,13 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
             GITHUB_REPOSITORY: 'example/repo',
             RUNNER_TEMP: cwd,
             GITHUB_STEP_SUMMARY: join(cwd, 'summary'),
+            GITHUB_OUTPUT: join(cwd, 'output'),
             STAGING_GOOGLE_AUTH_ID: '123-staging.apps.googleusercontent.com',
             ...overrides,
           },
         },
       ),
+    output: () => readFileSync(join(cwd, 'output'), 'utf8'),
     state: () => JSON.parse(readFileSync(statePath, 'utf8')) as ServiceState,
     update: (changes: Partial<ServiceState>) =>
       writeFileSync(
@@ -359,7 +372,7 @@ describe('OTA CLI interrupted external operations', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(service.state().stagingOAuth).toBe('123-staging.apps.googleusercontent.com');
   });
-  it('publishes a prerelease while retaining the production baseline and immutable group', () => {
+  it('reconciles a prerelease while retaining the production baseline and immutable group', () => {
     const service = serviceFixture({ stagedVersion: 'mobile-v1.33.3' });
     const result = service.run('stage');
     expect(result.status, result.stderr).toBe(0);
@@ -369,7 +382,7 @@ describe('OTA CLI interrupted external operations', () => {
         (call) =>
           call.startsWith('gh release edit mobile-v1.33.3') && call.includes('--prerelease=true'),
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(service.state().released).toBe('mobile-v1.33.2');
     expect(calls.some((call) => call.includes('channel:edit staging'))).toBe(true);
     expect(calls.some((call) => call.includes('channel:edit production'))).toBe(false);
@@ -551,6 +564,14 @@ describe('OTA CLI interrupted external operations', () => {
     expect(first.status).not.toBe(0);
     expect(service.state().rollingHead).toBe(sha);
     expect(service.state().calls.some((call) => call.includes('graphql'))).toBe(true);
+    // Simulate a reset performed before proposal-base reservations existed.
+    service.update({
+      tags: Object.fromEntries(
+        Object.entries(service.state().tags).filter(
+          ([tag]) => !tag.startsWith('ota-proposal-base/'),
+        ),
+      ),
+    });
     const retry = service.run('stage');
     expect(retry.stderr).toBe('');
     expect(retry.status).toBe(0);
@@ -625,9 +646,89 @@ describe('OTA CLI interrupted external operations', () => {
   it('does not stage a version an approved promotion already owns', () => {
     const service = serviceFixture({ approvedOnMain: '1.33.3' });
     const result = service.run('stage');
-    expect(result.stderr).toContain('undelivered');
+    expect(result.stderr).toContain('owns this version');
     expect(service.state().calls.some((call) => call.includes('--force-with-lease'))).toBe(false);
     expect(service.state().calls.some((call) => call.startsWith('gh pr'))).toBe(false);
+  });
+
+  it('defers when approval merges immediately before the rolling branch reset', () => {
+    const service = serviceFixture({ approveAfterReads: 7 });
+    const result = service.run('stage', {}, '1.33.4');
+    expect(result.status, result.stderr).toBe(0);
+    expect(service.output()).toContain('deferred=true');
+    expect(service.state().calls.some((call) => call.includes('--force-with-lease'))).toBe(false);
+  });
+
+  it('requests durable recovery when main moves while the proposal is being written', () => {
+    const service = serviceFixture({ moveProposalBase: true });
+    const result = service.run('stage');
+    expect(result.status, result.stderr).toBe(0);
+    expect(service.output()).toContain('deferred=true');
+    expect(
+      service.state().calls.some((call) => call.startsWith('gh workflow run mobile-ota.yml')),
+    ).toBe(true);
+  });
+
+  it('creates Staging atomically and never edits a release that Production could deliver', () => {
+    const service = serviceFixture();
+    const result = service.run('stage');
+    expect(result.status, result.stderr).toBe(0);
+    const calls = service.state().calls;
+    expect(
+      calls.some(
+        (call) =>
+          call.startsWith('gh release create') &&
+          call.includes('--prerelease') &&
+          !call.includes('--draft'),
+      ),
+    ).toBe(true);
+    expect(calls.some((call) => call.startsWith('gh release edit'))).toBe(false);
+    expect(service.state().stagedVersion).toBe('mobile-v1.33.3');
+  });
+
+  it('refuses to race a legacy draft publication with Production', () => {
+    const service = serviceFixture({ draft: true });
+    const result = service.run('stage');
+    expect(result.stderr).toContain('requires reconciliation');
+    expect(service.state().calls.some((call) => call.startsWith('gh release edit'))).toBe(false);
+  });
+
+  it('does not demote Production when delivery completes during a Staging retry', () => {
+    const service = serviceFixture({ deliverAfterReads: 3 });
+    const result = service.run('stage');
+    expect(result.status, result.stderr).toBe(0);
+    const calls = service.state().calls;
+    expect(calls.some((call) => call.includes('channel:edit staging'))).toBe(true);
+    expect(calls.some((call) => call.startsWith('gh release edit'))).toBe(false);
+    expect(calls.some((call) => call.startsWith('gh pr'))).toBe(false);
+  });
+
+  it('publishes a later Staging version while preserving an undelivered approval', () => {
+    const proposalBase = 'e'.repeat(40);
+    const service = serviceFixture({ approvedOnMain: '1.33.3', proposalBase });
+    const result = service.run('stage', {}, '1.33.4');
+    expect(result.status).toBe(0);
+    const calls = service.state().calls;
+    expect(calls.some((call) => call.includes('channel:edit staging'))).toBe(true);
+    expect(calls.some((call) => call.startsWith('gh release create mobile-v1.33.4'))).toBe(true);
+    expect(calls.some((call) => call.includes('--force-with-lease'))).toBe(false);
+    expect(calls.some((call) => call.startsWith('gh pr'))).toBe(false);
+    expect(calls.some((call) => call.includes('channel:edit production'))).toBe(false);
+    service.update({ released: 'mobile-v1.33.3', stagedVersion: 'mobile-v1.33.4' });
+    const resumed = service.run('stage', {}, '1.33.4');
+    expect(resumed.status, resumed.stderr).toBe(0);
+    const recovered = service.state().calls;
+    expect(
+      recovered.filter((call) => call.includes('eas-cli@21.0.1 update --branch')),
+    ).toHaveLength(2);
+    expect(recovered.some((call) => call.includes('--force-with-lease'))).toBe(true);
+    expect(recovered.some((call) => call.startsWith('gh pr create'))).toBe(true);
+    expect(
+      recovered.some((call) =>
+        call.includes(`${proposalBase}:refs/heads/automation/promote-mobile-ota-`),
+      ),
+    ).toBe(true);
+    expect(recovered.some((call) => call.includes(`expected=${proposalBase}`))).toBe(true);
   });
 
   // Nothing pushes to main after a promotion, so a candidate stranded by this
@@ -668,4 +769,39 @@ describe('OTA CLI interrupted external operations', () => {
     expect(service.run('promote').status).toBe(0);
     expect(service.state().calls.some((call) => call.startsWith('gh workflow run'))).toBe(false);
   });
+});
+
+it('recovers a proposal on delivered main without conflicts or reverting newer application code', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'verity-ota-ancestry-'));
+  const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  try {
+    git('init', '-b', 'main');
+    git('config', 'user.name', 'Test');
+    git('config', 'user.email', 'test@example.com');
+    writeFileSync(join(cwd, 'app.txt'), 'candidate code');
+    writeFileSync(join(cwd, 'manifest.json'), 'old approval');
+    git('add', '.');
+    git('commit', '-m', 'candidate');
+    const source = git('rev-parse', 'HEAD');
+    writeFileSync(join(cwd, 'manifest.json'), 'delivered approval');
+    writeFileSync(join(cwd, 'app.txt'), 'newer main code');
+    git('add', '.');
+    git('commit', '-m', 'deliver production and advance main');
+    const main = git('rev-parse', 'HEAD');
+    git('remote', 'add', 'origin', cwd);
+    const base = proposalBaseForSource(source, git);
+    expect(base).toBe(main);
+    git('checkout', '-b', 'proposal', base);
+    writeFileSync(join(cwd, 'manifest.json'), 'immutable candidate approval');
+    git('add', '.');
+    git('commit', '-m', 'proposal metadata');
+    expect(git('merge-base', 'main', 'proposal')).toBe(main);
+    expect(git('diff', '--name-only', 'main', 'proposal')).toBe('manifest.json');
+    expect(readFileSync(join(cwd, 'app.txt'), 'utf8')).toBe('newer main code');
+    git('checkout', 'main');
+    git('merge', '--no-edit', 'proposal');
+    expect(readFileSync(join(cwd, 'manifest.json'), 'utf8')).toBe('immutable candidate approval');
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
