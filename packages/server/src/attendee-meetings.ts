@@ -395,7 +395,7 @@ export class AttendeeMeetings {
     }
   }
   private async reconcileOne(state: OnlineMeeting, discard = false) {
-    const event = await this.options.store.getAttendeeState<z.infer<typeof webhookSchema>>(
+    let event = await this.options.store.getAttendeeState<z.infer<typeof webhookSchema>>(
       `event:${state.botId ?? ''}`,
     );
     if (!state.botId && !state.botCreateAttempted) {
@@ -417,9 +417,6 @@ export class AttendeeMeetings {
       return;
     }
     if (!state.botId) {
-      if (state.binding && new Date(state.binding.expiresAt).getTime() > Date.now()) {
-        await this.connect(state);
-      }
       // A webhook can arrive before create returns; recover the provider ID from its signed metadata.
       const rows = await this.options.store.listAttendeeState<z.infer<typeof webhookSchema>>();
       const found = rows.find(
@@ -427,8 +424,16 @@ export class AttendeeMeetings {
           row.id.startsWith('event:') &&
           row.state.bot_metadata?.verityMeetingId === state.meeting.id,
       );
-      if (found) state.botId = found.state.bot_id;
-      else return;
+      if (found) {
+        state.botId = found.state.bot_id;
+        event = found.state;
+        await this.save(state);
+      } else {
+        if (state.binding && new Date(state.binding.expiresAt).getTime() > Date.now()) {
+          await this.connect(state);
+        }
+        return;
+      }
     }
     const client = this.client(state.credentials.apiKey);
     const bot = z

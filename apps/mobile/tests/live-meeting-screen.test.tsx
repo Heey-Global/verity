@@ -1302,3 +1302,53 @@ it('allows cancellation of an interrupted online bot start', async () => {
   fireEvent.press(await screen.findByText('End meeting'));
   await waitFor(() => expect(stopOnlineMeeting).toHaveBeenCalledWith('session-1', remote.id));
 });
+
+it('renames an online speaker using synchronized names without replacing other edits', async () => {
+  const prompt = jest.spyOn(Alert, 'prompt').mockImplementation(() => undefined);
+  const meeting: MeetingRecord = {
+    id: 'online-names',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'attendee',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: 'Hello',
+    error: null,
+    speakerNames: { '0': 'Alice', '1': 'Bob' },
+    speakerTurns: [{ speaker: 0, start: 0, end: 1 }],
+    timedWords: [{ text: 'Hello', start: 0, end: 0.5 }],
+  };
+  const editOnlineMeetingSpeakers = jest.fn().mockResolvedValue({ accepted: true });
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
+  jest
+    .mocked(createVerityClient)
+    .mockReturnValue({ editOnlineMeetingSpeakers } as unknown as NonNullable<
+      ReturnType<typeof createVerityClient>
+    >);
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  let publish!: (meeting: MeetingRecord | null) => void;
+  jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+    publish = listener;
+    return jest.fn();
+  });
+  render(<MeetingScreen />);
+  await screen.findByText('Hello');
+  act(() =>
+    publish({
+      ...meeting,
+      speakerNames: { '0': 'Alice', '1': 'Remote Bob' },
+      speakerCorrections: [{ start: 0, end: 0.5, speaker: 1 }],
+      speakerMerges: { '2': 1 },
+    }),
+  );
+  fireEvent.press(screen.getByLabelText('Rename Alice'));
+  const reply = prompt.mock.calls.at(-1)?.[2];
+  if (typeof reply === 'function') act(() => reply('Anna'));
+  await waitFor(() =>
+    expect(editOnlineMeetingSpeakers).toHaveBeenCalledWith('session-1', meeting.id, {
+      speakerNames: { '0': 'Anna', '1': 'Remote Bob' },
+    }),
+  );
+  prompt.mockRestore();
+});

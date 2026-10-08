@@ -642,3 +642,64 @@ it('coalesces polling ticks while a provider snapshot is pending', async () => {
     await service.close();
   }
 });
+
+it('recovers a saved bot ID and requests leave before a failing Edge reconnect', async () => {
+  const { PreviewConnector } = await import('@verity/preview-tunnel');
+  const connect = vi
+    .spyOn(PreviewConnector.prototype, 'connect')
+    .mockRejectedValue(new Error('Edge offline'));
+  const rows = new Map<string, unknown>([
+    [
+      'meeting:recover',
+      {
+        meeting: {
+          id: 'recover',
+          sessionId: 'session',
+          transcript: '',
+          state: 'interrupted',
+          revision: 0,
+        },
+        phase: 'interrupted',
+        stopRequested: true,
+        botCreateAttempted: true,
+        identities: {},
+        credentials: { apiKey: 'fixture' },
+        binding: {
+          edgeUrl: 'wss://meeting.example.test/__verity/connector',
+          connectorToken: 'fixture',
+          expiresAt: new Date(Date.now() + 60000).toISOString(),
+        },
+      },
+    ],
+    ['event:bot', { bot_id: 'bot', bot_metadata: { verityMeetingId: 'recover' } }],
+  ]);
+  const store = {
+    getSession: async () => ({ id: 'session' }),
+    getAttendeeState: async (id: string) => rows.get(id),
+    putAttendeeState: async (id: string, state: unknown) => {
+      rows.set(id, structuredClone(state));
+    },
+    deleteAttendeeState: async (id: string) => {
+      rows.delete(id);
+    },
+    listAttendeeState: async () => [...rows].map(([id, state]) => ({ id, state })),
+  } as unknown as EventStore;
+  const request = vi.fn(async () => ({ state: 'joined_recording' }));
+  const service = new AttendeeMeetings({
+    store,
+    ingest: vi.fn(),
+    client: () =>
+      ({
+        request,
+        transcript: async () => [],
+      }) as unknown as import('./attendee-client.js').AttendeeClient,
+  });
+  await service.open();
+  try {
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith('bots/bot/leave', 'POST'));
+    expect(rows.get('meeting:recover')).toMatchObject({ botId: 'bot', stopRequested: true });
+  } finally {
+    await service.close();
+    connect.mockRestore();
+  }
+});

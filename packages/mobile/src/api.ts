@@ -1877,9 +1877,9 @@ export class VerityClient {
     sessionId: string,
     meetingId: string,
     edits: {
-      speakerNames: Record<string, string>;
-      speakerCorrections: Array<{ start: number; end: number; speaker: number | null }>;
-      speakerMerges: Record<string, number>;
+      speakerNames?: Record<string, string>;
+      speakerCorrections?: Array<{ start: number; end: number; speaker: number | null }>;
+      speakerMerges?: Record<string, number>;
     },
   ): Promise<void> {
     await this.request(

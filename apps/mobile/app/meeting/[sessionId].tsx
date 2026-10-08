@@ -152,7 +152,7 @@ export default function MeetingScreen() {
     merges: Record<string, number>;
   } | null>(null);
   const speakerEditWrite = useRef<Promise<void>>(Promise.resolve());
-  if (speakerEditDraft.current?.meetingId !== meeting?.id)
+  if (speakerEditDraft.current?.meetingId !== meeting?.id || meeting?.engine === 'attendee')
     speakerEditDraft.current = meeting
       ? {
           meetingId: meeting.id,
@@ -517,9 +517,9 @@ export default function MeetingScreen() {
             const client = createVerityClient();
             if (!client) throw new Error('Connect to the server.');
             await client.editOnlineMeetingSpeakers(meeting.sessionId, next.meetingId, {
-              speakerNames: next.names,
-              speakerCorrections: next.corrections,
-              speakerMerges: next.merges,
+              ...(change.names !== undefined ? { speakerNames: next.names } : {}),
+              ...(change.corrections !== undefined ? { speakerCorrections: next.corrections } : {}),
+              ...(change.merges !== undefined ? { speakerMerges: next.merges } : {}),
             });
           } else
             await updateSpeakerEdits(next.meetingId, next.names, next.corrections, next.merges);
