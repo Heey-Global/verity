@@ -57,19 +57,27 @@ it('never saves on its own; Save stores the text after dictation ends', async ()
   act(() => {
     jest.mocked(useVoiceInput).mock.calls.at(-1)![1]('Captured outcome');
   });
-  // While recording there is no Save, only Stop.
-  expect(ui.queryByText('Save')).toBeNull();
-  expect(ui.getByLabelText('Stop recording')).toBeTruthy();
+  expect(ui.getByText('Save')).toBeTruthy();
+  expect(ui.queryByLabelText('Stop recording')).toBeNull();
+  expect(jest.mocked(useVoiceInput).mock.calls.at(-1)).toHaveLength(2);
+  act(() => jest.advanceTimersByTime(60_000));
+  expect(captureTask).not.toHaveBeenCalled();
+  fireEvent.press(ui.getByText('Save'));
+  expect(toggle).toHaveBeenCalledTimes(2);
+  expect(captureTask).not.toHaveBeenCalled();
+  act(() => {
+    jest.mocked(useVoiceInput).mock.calls.at(-1)![1]('Final captured outcome');
+  });
   jest
     .mocked(useVoiceInput)
     .mockReturnValue({ ...voice, state: 'idle' } as unknown as ReturnType<typeof useVoiceInput>);
-  ui.rerender(<QuickCaptureCard {...props} />);
-  // The card waits for the operator, however long it stays open.
-  act(() => jest.advanceTimersByTime(60_000));
-  expect(captureTask).not.toHaveBeenCalled();
-  await act(async () => fireEvent.press(ui.getByText('Save')));
+  await act(async () => ui.rerender(<QuickCaptureCard {...props} />));
   expect(captureTask).toHaveBeenCalledWith(
-    expect.objectContaining({ title: 'Captured outcome', projectId: 'p', sourceSessionId: 's' }),
+    expect.objectContaining({
+      title: 'Final captured outcome',
+      projectId: 'p',
+      sourceSessionId: 's',
+    }),
   );
   expect(props.onSaved).toHaveBeenCalledWith('saved-id', expect.any(String));
 });
@@ -114,4 +122,35 @@ it('renders a converted screenshot preview instead of a library URI', async () =
   expect(previewTaskScreenshot).toHaveBeenCalledWith(screenshot);
   expect(ui.getByText('Screenshot from just now')).toBeTruthy();
   expect(ui.UNSAFE_getAllByType(Image)[0].props.source.uri).toBe('data:image/jpeg;base64,preview');
+});
+
+it('saves typed text when speech recognition is unavailable', async () => {
+  jest.mocked(useVoiceInput).mockReturnValue({
+    ...voice,
+    state: 'idle',
+    error: 'Permission denied',
+  } as unknown as ReturnType<typeof useVoiceInput>);
+  const ui = render(<QuickCaptureCard {...props} />);
+  fireEvent.changeText(ui.getByLabelText('Task text'), 'Typed task');
+  await act(async () => fireEvent.press(ui.getByText('Save')));
+  expect(captureTask).toHaveBeenCalledWith(expect.objectContaining({ title: 'Typed task' }));
+});
+it('does not save an unfinished transcript after a recognition error', async () => {
+  const ui = render(<QuickCaptureCard {...props} />);
+  fireEvent.changeText(ui.getByLabelText('Task text'), 'Partial task');
+  const saveButton = ui.getByText('Save');
+  act(() => {
+    fireEvent.press(saveButton);
+    fireEvent.press(saveButton);
+  });
+  expect(toggle).toHaveBeenCalledTimes(2);
+  jest.mocked(useVoiceInput).mockReturnValue({
+    ...voice,
+    state: 'idle',
+    error: 'Recognition failed',
+  } as unknown as ReturnType<typeof useVoiceInput>);
+  await act(async () => ui.rerender(<QuickCaptureCard {...props} />));
+  expect(captureTask).not.toHaveBeenCalled();
+  await act(async () => fireEvent.press(ui.getByText('Save')));
+  expect(captureTask).toHaveBeenCalledTimes(1);
 });

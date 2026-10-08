@@ -1,5 +1,4 @@
 import {
-  TASK_SILENCE_MS,
   projectDisplayName,
   type AttachmentUpload,
   type ProjectRecord,
@@ -76,9 +75,10 @@ export function QuickCaptureCard({
   const [projectId, setProjectId] = useState(context.projectId);
   const [other, setOther] = useState(false);
   const [saving, setSaving] = useState(false);
-  const voice = useVoiceInput(text, setText, undefined, { silenceMs: TASK_SILENCE_MS });
+  const voice = useVoiceInput(text, setText);
   const started = useRef(false);
   const savingRef = useRef(false);
+  const pendingSave = useRef<{ target: string | null; recording: boolean } | null>(null);
   useEffect(() => {
     if (!started.current) {
       started.current = true;
@@ -93,27 +93,53 @@ export function QuickCaptureCard({
     }
     savingRef.current = true;
     setSaving(true);
-    try {
-      const task = await captureTask({
-        title: text.trim(),
-        projectId: target,
-        sourceSessionId: context.sessionId,
-        uploads,
-      });
-      onSaved(
-        task.id,
-        projects.find((p) => p.id === target)
-          ? projectDisplayName(projects.find((p) => p.id === target)!)
-          : 'General',
-      );
-      onClose();
-    } catch (error) {
-      Alert.alert('Could not save task', error instanceof Error ? error.message : 'Try again');
-    } finally {
+    pendingSave.current = { target, recording: voice.state === 'recording' };
+    if (voice.state === 'recording') voice.toggle();
+    else voice.abort();
+  };
+  useEffect(() => {
+    if (voice.state !== 'idle' || !pendingSave.current) return;
+    const { target, recording: wasRecording } = pendingSave.current;
+    pendingSave.current = null;
+    if ((wasRecording && voice.error) || !text.trim()) {
       savingRef.current = false;
       setSaving(false);
+      return;
     }
-  };
+    // Wait for native end so the final transcript is included in the saved task.
+    void (async () => {
+      try {
+        const task = await captureTask({
+          title: text.trim(),
+          projectId: target,
+          sourceSessionId: context.sessionId,
+          uploads,
+        });
+        onSaved(
+          task.id,
+          projects.find((p) => p.id === target)
+            ? projectDisplayName(projects.find((p) => p.id === target)!)
+            : 'General',
+        );
+        onClose();
+      } catch (error) {
+        Alert.alert('Could not save task', error instanceof Error ? error.message : 'Try again');
+      } finally {
+        savingRef.current = false;
+        setSaving(false);
+      }
+    })();
+  }, [
+    saving,
+    voice.state,
+    voice.error,
+    text,
+    context.sessionId,
+    uploads,
+    projects,
+    onSaved,
+    onClose,
+  ]);
   const dismiss = () => {
     if (!savingRef.current) {
       voice.abort();
@@ -139,9 +165,6 @@ export function QuickCaptureCard({
     }
   };
   const recording = voice.state === 'recording';
-  // Chips and Save only once dictation has fully settled, so a late final
-  // result is never cut off by an early save.
-  const settled = voice.state === 'idle';
   // The picked project always shows as a selected chip, also when it came from Other….
   const chips = [
     ...new Set([projectId, context.projectId, null, ...projects.slice(0, 3).map((p) => p.id)]),
@@ -210,6 +233,7 @@ export function QuickCaptureCard({
             accessibilityLabel="Task text"
             value={text}
             multiline
+            editable={!saving}
             maxLength={2000}
             placeholder={recording ? 'Listening…' : 'What needs doing?'}
             placeholderTextColor={theme.colors.textFaint}
@@ -356,42 +380,24 @@ export function QuickCaptureCard({
           <View style={styles.footer}>
             <AttachButton onPick={pick} />
             <Text style={[styles.hint, styles.footerHint]} numberOfLines={1}>
-              {settled ? '' : 'Stops when you pause'}
+              {saving ? 'Finishing…' : recording ? 'Save ends recording' : ''}
             </Text>
-            {settled ? (
-              <Pressable
-                accessibilityRole="button"
-                disabled={!text.trim() || saving}
-                onPress={() => {
-                  void save();
-                }}
-                style={({ pressed }) => [
-                  styles.save,
-                  !text.trim() ? styles.saveDisabled : null,
-                  pressed ? styles.pressed : null,
-                ]}
-              >
-                {saving ? (
-                  <ActivityIndicator color={theme.colors.onPrimary} />
-                ) : (
-                  <Text style={styles.saveLabel}>Save</Text>
-                )}
-              </Pressable>
-            ) : (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Stop recording"
-                disabled={!recording}
-                onPress={voice.toggle}
-                style={({ pressed }) => [
-                  styles.stop,
-                  !recording ? styles.saveDisabled : null,
-                  pressed ? styles.pressed : null,
-                ]}
-              >
-                <View style={styles.stopSquare} />
-              </Pressable>
-            )}
+            <Pressable
+              accessibilityRole="button"
+              disabled={!text.trim() || saving}
+              onPress={() => void save()}
+              style={({ pressed }) => [
+                styles.save,
+                !text.trim() || saving ? styles.saveDisabled : null,
+                pressed ? styles.pressed : null,
+              ]}
+            >
+              {saving ? (
+                <ActivityIndicator color={theme.colors.onPrimary} />
+              ) : (
+                <Text style={styles.saveLabel}>Save</Text>
+              )}
+            </Pressable>
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -575,17 +581,6 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
   },
   toolGroup: { flexDirection: 'row', gap: theme.spacing.sm },
-  stop: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stopSquare: { width: 14, height: 14, borderRadius: 3, backgroundColor: theme.colors.tone.danger },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
   chip: {
     flexDirection: 'row',
