@@ -50,7 +50,19 @@ const renderTotals = new WeakMap<
     }
   >
 >();
+const completedLists = new WeakSet<SwitchTiming>();
 const noop = () => undefined;
+
+/** Completion must survive a full phase buffer, which can drop the visible marker. */
+export function markInitialListLoad(trace: SwitchTiming | undefined): void {
+  if (!trace || completedLists.has(trace)) return;
+  completedLists.add(trace);
+  markSessionSwitch(trace, 'flash-list-on-load');
+}
+
+function listCompleted(trace: SwitchTiming): boolean {
+  return completedLists.has(trace) || trace.phases.some((p) => p.phase === 'flash-list-on-load');
+}
 
 /** Synchronous work only: excludes descendant rendering, effects, layout and paint.
  * Totals stop at the initial list load and include interrupted render attempts.
@@ -60,17 +72,13 @@ export function beginRenderWork(
   sessionId = lastTouchedSessionId,
 ): () => void {
   const trace = sessionId ? sessionSwitchTiming(sessionId) : undefined;
-  if (!trace || trace.phases.some((p) => p.phase === 'flash-list-on-load')) return noop;
+  if (!trace || listCompleted(trace)) return noop;
   const started = performance.now();
   let finished = false;
   return () => {
     if (finished) return;
     finished = true;
-    if (
-      sessionSwitchTiming(trace.sessionId) !== trace ||
-      trace.phases.some((p) => p.phase === 'flash-list-on-load')
-    )
-      return;
+    if (sessionSwitchTiming(trace.sessionId) !== trace || listCompleted(trace)) return;
     const duration = performance.now() - started;
     if (!Number.isFinite(duration) || duration < 0) return;
     let totals = renderTotals.get(trace);

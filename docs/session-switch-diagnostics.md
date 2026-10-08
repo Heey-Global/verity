@@ -94,7 +94,8 @@ transcript row reconciliation and list-item element construction. Each pair take
 two phase entries regardless of render count. `value` holds the cumulative duration
 in milliseconds or invocation count; `elapsedMs` is the first recorded sample's
 completion time, not the aggregate duration. Collection stops at the first
-`flash-list-on-load` or the existing 30-second trace limit.
+`flash-list-on-load` or the existing 30-second trace limit. List completion is
+tracked independently, so a full phase buffer cannot prolong collection.
 
 Component-body intervals end before their return expression and exclude rendering
 of descendants, native layout and paint. List-item construction measures creation

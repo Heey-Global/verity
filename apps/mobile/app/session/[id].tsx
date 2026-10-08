@@ -1,4 +1,8 @@
-import { beginRenderWork, markFirstSessionRender } from '../../lib/sessionSwitchTiming';
+import {
+  beginRenderWork,
+  markFirstSessionRender,
+  markInitialListLoad,
+} from '../../lib/sessionSwitchTiming';
 import { beginSessionSwitch, type SwitchTiming } from '@verity/mobile';
 import { markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { PinnedPlan } from '../../components/PinnedPlan';
@@ -4291,7 +4295,7 @@ export function SessionChat({
                 >
                   <FlashList
                     onLoad={() => {
-                      markSessionSwitch(switchTiming, 'flash-list-on-load');
+                      markInitialListLoad(switchTiming);
                       setLoadedListSessionId(sessionId);
                     }}
                     ref={listRef}

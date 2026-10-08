@@ -4,7 +4,12 @@ import {
   markSessionSwitch,
   sessionSwitchTiming,
 } from '@verity/mobile';
-import { beginRenderWork, rowPress, type RenderWorkStage } from './sessionSwitchTiming';
+import {
+  beginRenderWork,
+  markInitialListLoad,
+  rowPress,
+  type RenderWorkStage,
+} from './sessionSwitchTiming';
 
 let clock = 0;
 beforeEach(() => {
@@ -97,4 +102,19 @@ it('ignores expired and permission traces', () => {
   const permission = beginSessionSwitch('a', 'permission');
   beginRenderWork('chat-body', 'a')();
   expect(permission.phases).toHaveLength(0);
+});
+
+it('stops existing aggregates when list completion cannot fit in the phase buffer', () => {
+  rowPress('a');
+  const trace = sessionSwitchTiming('a')!;
+  beginRenderWork('chat-body', 'a')();
+  const finish = beginRenderWork('chat-body', 'a');
+  while (trace.recorded < 64) markSessionSwitch(trace, 'existing');
+  const before = JSON.stringify(trace.phases);
+  markInitialListLoad(trace);
+  expect(trace.phases.some((p) => p.phase === 'flash-list-on-load')).toBe(false);
+  clock += 100;
+  finish();
+  beginRenderWork('chat-body', 'a')();
+  expect(JSON.stringify(trace.phases)).toBe(before);
 });
