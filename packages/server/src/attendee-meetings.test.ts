@@ -533,3 +533,61 @@ it('stops deleted sessions without ingesting and erases their terminal state', a
   expect(remove).toHaveBeenCalledWith('share');
   expect(rows.size).toBe(0);
 });
+
+it('sends leave while research classification is still pending', async () => {
+  const rows = new Map<string, unknown>([
+    [
+      'meeting:slow',
+      {
+        meeting: { id: 'slow', sessionId: 'session', transcript: '', state: 'active', revision: 0 },
+        botId: 'bot',
+        phase: 'running',
+        credentials: { apiKey: 'fixture' },
+        identities: {},
+        listenForVerity: true,
+      },
+    ],
+  ]);
+  const store = {
+    getSession: async () => ({ id: 'session' }),
+    getAttendeeState: async (id: string) => rows.get(id),
+    putAttendeeState: async (id: string, state: unknown) => {
+      rows.set(id, structuredClone(state));
+    },
+    listAttendeeState: async () => [...rows].map(([id, state]) => ({ id, state })),
+  } as unknown as EventStore;
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const spoken = vi.fn(() => blocked);
+  const request = vi.fn(async () => ({ state: 'joined_recording' }));
+  const service = new AttendeeMeetings({
+    store,
+    spoken,
+    ingest: vi.fn(),
+    client: () =>
+      ({
+        request,
+        transcript: async () => [
+          {
+            speaker_uuid: 'alice',
+            timestamp_ms: 0,
+            duration_ms: 500,
+            transcription: { transcript: 'Verity, check this' },
+          },
+        ],
+      }) as unknown as import('./attendee-client.js').AttendeeClient,
+  });
+  await service.open();
+  try {
+    await vi.waitFor(() => expect(spoken).toHaveBeenCalledOnce());
+    const stop = service.stop('session', 'slow');
+    // A model response may take much longer than the user's End command.
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith('bots/bot/leave', 'POST'));
+    await stop;
+  } finally {
+    release();
+    await service.close();
+  }
+});

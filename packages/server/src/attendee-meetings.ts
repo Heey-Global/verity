@@ -49,6 +49,7 @@ export class AttendeeMeetings {
   private timer: NodeJS.Timeout | undefined;
   private tail: Promise<unknown> = Promise.resolve();
   private closed = false;
+  private readonly researchJobs = new Map<string, Promise<void>>();
   private readonly connectors = new Map<string, PreviewConnector>();
   constructor(
     private readonly options: {
@@ -163,6 +164,7 @@ export class AttendeeMeetings {
     this.closed = true;
     clearInterval(this.timer);
     await this.tail;
+    await Promise.all(this.researchJobs.values());
     for (const connector of this.connectors.values()) connector.close();
     this.connectors.clear();
     const receiver = this.receiver;
@@ -345,21 +347,36 @@ export class AttendeeMeetings {
         if (deleted && state.phase === 'ended') {
           await this.options.store.deleteAttendeeState(`meeting:${state.meeting.id}`);
           if (state.botId) await this.options.store.deleteAttendeeState(`event:${state.botId}`);
-        } else if (!deleted) await this.processPendingRequests(state);
+        } else if (!deleted) this.schedulePendingRequests(state);
       } catch {
         state.error = 'Meeting connection interrupted; retrying recovery.';
         await this.save(state);
       }
     }
   }
+  private schedulePendingRequests(state: OnlineMeeting) {
+    if (this.closed || !this.options.spoken || this.researchJobs.has(state.meeting.id)) return;
+    const job = this.processPendingRequests(state)
+      .catch(() => undefined)
+      .finally(() => this.researchJobs.delete(state.meeting.id));
+    this.researchJobs.set(state.meeting.id, job);
+  }
   private async processPendingRequests(state: OnlineMeeting) {
     if (!this.options.spoken) return;
     for (const [identity, text] of Object.entries(state.pendingRequests ?? {})) {
+      if (this.closed) return;
       await this.options.spoken(state.meeting, text, `meeting-${state.meeting.id}-${identity}`);
-      state.processedRequests ??= {};
-      state.processedRequests[identity] = true;
-      delete state.pendingRequests?.[identity];
-      await this.save(state);
+      // Classification must not hold the lifecycle queue or overwrite a newer stop/snapshot.
+      await this.serial(async () => {
+        const latest = await this.options.store.getAttendeeState<OnlineMeeting>(
+          `meeting:${state.meeting.id}`,
+        );
+        if (!latest || !(await this.options.store.getSession(latest.meeting.sessionId))) return;
+        latest.processedRequests ??= {};
+        latest.processedRequests[identity] = true;
+        delete latest.pendingRequests?.[identity];
+        await this.save(latest);
+      });
     }
   }
   private async reconcileOne(state: OnlineMeeting, discard = false) {
