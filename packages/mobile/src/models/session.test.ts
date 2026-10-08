@@ -2850,7 +2850,7 @@ it('loads activity on demand without a recurring timer in live mode', async () =
 
 it('passes only the captured Allow timing context and marks model completion', async () => {
   const client = stubClient();
-  client.decidePermission = vi
+  const decidePermission = vi
     .fn()
     .mockResolvedValue({ sessionId: 'timed-allow', toolUseId: 'private-use', decided: true });
   client.decidePermission = decidePermission;
