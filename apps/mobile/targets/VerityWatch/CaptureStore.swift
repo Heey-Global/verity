@@ -1,14 +1,16 @@
 import AVFoundation
 import Foundation
 import WatchConnectivity
+import WatchKit
 
 /// One voice capture on the watch. The audio stays on disk until the iPhone has
 /// sent back its transcript, so a capture survives an unreachable phone, a
 /// relaunch, a watch restart or an iPhone that could not store the file, and is
-/// offered again from `resend()`.
+/// offered again from `resend()`. A capture is only sent once it has a
+/// project; until then it waits on the watch as "Choose project".
 struct Capture: Codable, Identifiable, Equatable {
   enum State: String, Codable {
-    /// Recorded; waiting for WatchConnectivity to deliver the file.
+    /// Recorded; waiting for a project, then for WatchConnectivity to deliver the file.
     case queued
     /// Transferred; the transcript has not come back yet.
     case delivered
@@ -24,6 +26,43 @@ struct Capture: Codable, Identifiable, Equatable {
   /// The iPhone refused the file. Kept apart from `state` because the refusal
   /// can arrive before WatchConnectivity reports the transfer as finished.
   var rejected: Bool?
+  /// Picked on the watch. `scope` is the account the project list came from,
+  /// so the iPhone never files the task under a different account.
+  var projectId: String?
+  var projectName: String?
+  var scope: String?
+}
+
+/// A project the picker offers, as the iPhone sent it.
+struct WatchProject: Codable, Identifiable, Equatable, Sendable {
+  let id: String
+  let name: String
+}
+
+/// The iPhone's latest project list (`VerityWatchInbox.setProjects`), stored so
+/// the picker works while the phone is away.
+struct ProjectList: Codable, Equatable, Sendable {
+  var scope: String?
+  var projects: [WatchProject] = []
+  /// Most recently used on the iPhone's quick capture.
+  var phoneLastProjectId: String?
+  /// Most recently picked on the watch; wins over the iPhone's choice.
+  var watchLastProjectId: String?
+
+  /// Parses an application context; nil for anything that is not a project list.
+  init?(context: [String: Any]) {
+    guard context["v"] as? Int == WatchProtocol.version, context["kind"] as? String == "projects",
+      let projects = context["projects"] as? [[String: String]]
+    else { return nil }
+    scope = context["scope"] as? String
+    self.projects = projects.compactMap { project in
+      guard let id = project["id"], let name = project["name"] else { return nil }
+      return WatchProject(id: id, name: name)
+    }
+    phoneLastProjectId = context["lastProjectId"] as? String
+  }
+
+  init() {}
 }
 
 /// Wire format shared with `VerityWatchInbox` on the iPhone. Bump `version` on
@@ -42,6 +81,11 @@ final class CaptureStore: NSObject, ObservableObject {
   @Published private(set) var elapsed: TimeInterval = 0
   @Published private(set) var phoneReachable = false
   @Published var error: String?
+  @Published private(set) var projectList = ProjectList()
+  /// The capture the project picker is open for.
+  @Published var choosing: String?
+  /// Brief feedback after a project was picked.
+  @Published private(set) var confirmation: String?
 
   private var recorder: AVAudioRecorder?
   private var meter: Timer?
@@ -51,17 +95,25 @@ final class CaptureStore: NSObject, ObservableObject {
   private var quietSince: Date?
   private let directory: URL
   private let indexURL: URL
+  private let projectsURL: URL
+  private var confirmationReset: Task<Void, Never>?
 
   private override init() {
     let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     directory = documents.appendingPathComponent("captures", isDirectory: true)
     indexURL = directory.appendingPathComponent("index.json")
+    projectsURL = documents.appendingPathComponent("projects.json")
     super.init()
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     if let data = try? Data(contentsOf: indexURL),
       let saved = try? JSONDecoder().decode([Capture].self, from: data)
     {
       captures = saved
+    }
+    if let data = try? Data(contentsOf: projectsURL),
+      let saved = try? JSONDecoder().decode(ProjectList.self, from: data)
+    {
+      projectList = saved
     }
     recoverInterruptedRecordings()
   }
@@ -89,6 +141,66 @@ final class CaptureStore: NSObject, ObservableObject {
     guard WCSession.isSupported() else { return }
     WCSession.default.delegate = self
     WCSession.default.activate()
+  }
+
+  // MARK: Projects
+
+  /// The picker's order: the last project picked here, else on the iPhone, then
+  /// the iPhone's order (most recently captured into first).
+  var orderedProjects: [WatchProject] {
+    let projects = projectList.projects
+    let last = [projectList.watchLastProjectId, projectList.phoneLastProjectId]
+      .compactMap { $0 }
+      .first { id in projects.contains { $0.id == id } }
+    guard let last, let index = projects.firstIndex(where: { $0.id == last }) else {
+      return projects
+    }
+    var ordered = projects
+    ordered.insert(ordered.remove(at: index), at: 0)
+    return ordered
+  }
+
+  /// Files the capture under `project` and hands it to the iPhone.
+  func assign(_ id: String, to project: WatchProject) {
+    guard captures.contains(where: { $0.id == id && $0.projectId == nil }) else {
+      choosing = nil
+      return
+    }
+    update(id) {
+      $0.projectId = project.id
+      $0.projectName = project.name
+      $0.scope = projectList.scope
+    }
+    projectList.watchLastProjectId = project.id
+    saveProjects()
+    choosing = nil
+    if let assigned = captures.first(where: { $0.id == id }) { send(assigned) }
+    WKInterfaceDevice.current().play(.success)
+    confirm(phoneReachable ? "Saved to \(project.name)" : "Waiting for iPhone")
+  }
+
+  private func confirm(_ message: String) {
+    confirmation = message
+    confirmationReset?.cancel()
+    confirmationReset = Task {
+      try? await Task.sleep(for: .seconds(2.5))
+      guard !Task.isCancelled else { return }
+      confirmation = nil
+    }
+  }
+
+  private func receive(_ list: ProjectList) {
+    var next = list
+    // A pick on the watch only means something within the same account.
+    if list.scope == projectList.scope { next.watchLastProjectId = projectList.watchLastProjectId }
+    guard next != projectList else { return }
+    projectList = next
+    saveProjects()
+  }
+
+  private func saveProjects() {
+    guard let data = try? JSONEncoder().encode(projectList) else { return }
+    try? data.write(to: projectsURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
   }
 
   // MARK: Recording
@@ -153,7 +265,8 @@ final class CaptureStore: NSObject, ObservableObject {
       durationMs: Int(Date().timeIntervalSince(current.start) * 1000), state: .queued)
     captures.insert(capture, at: 0)
     persist()
-    send(capture)
+    // Sent once a project is picked; until then it waits as "Choose project".
+    choosing = capture.id
   }
 
   /// Meter tick: drives the level bars and stops after ~1.5 s of silence once
@@ -184,17 +297,19 @@ final class CaptureStore: NSObject, ObservableObject {
   private func send(_ capture: Capture) {
     let session = WCSession.default
     guard session.activationState == .activated else { return }
+    guard let projectId = capture.projectId else { return }
     let url = audioURL(capture.id)
     guard FileManager.default.fileExists(atPath: url.path) else { return }
-    session.transferFile(
-      url,
-      metadata: [
-        "v": WatchProtocol.version,
-        "kind": "capture",
-        "id": capture.id,
-        "createdAt": ISO8601DateFormatter().string(from: capture.createdAt),
-        "durationMs": capture.durationMs,
-      ])
+    var metadata: [String: Any] = [
+      "v": WatchProtocol.version,
+      "kind": "capture",
+      "id": capture.id,
+      "createdAt": ISO8601DateFormatter().string(from: capture.createdAt),
+      "durationMs": capture.durationMs,
+      "projectId": projectId,
+    ]
+    if let scope = capture.scope { metadata["scope"] = scope }
+    session.transferFile(url, metadata: metadata)
   }
 
   /// Re-offer every queued capture that the system is not already transferring.
@@ -207,7 +322,8 @@ final class CaptureStore: NSObject, ObservableObject {
     // iPhone (reinstall, cleared inbox); the iPhone ignores a copy it already has.
     let stale = Date().addingTimeInterval(-10 * 60)
     for capture in captures
-    where (capture.state == .queued || (capture.state == .delivered && capture.createdAt < stale))
+    where capture.projectId != nil
+      && (capture.state == .queued || (capture.state == .delivered && capture.createdAt < stale))
       && !inFlight.contains(capture.id)
     {
       update(capture.id) { $0.rejected = nil }
@@ -250,10 +366,19 @@ extension CaptureStore: WCSessionDelegate {
     error: Error?
   ) {
     let reachable = session.isReachable
+    let list = ProjectList(context: session.receivedApplicationContext)
     Task { @MainActor in
       self.phoneReachable = reachable
+      if let list { self.receive(list) }
       if activationState == .activated { self.resend() }
     }
+  }
+
+  nonisolated func session(
+    _ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]
+  ) {
+    guard let list = ProjectList(context: applicationContext) else { return }
+    Task { @MainActor in self.receive(list) }
   }
 
   nonisolated func sessionReachabilityDidChange(_ session: WCSession) {

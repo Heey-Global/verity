@@ -20,6 +20,11 @@ class VerityWatchBridge: Module {
     AsyncFunction("acknowledge") { (id: String) in
       VerityWatchInbox.shared.acknowledge(id)
     }
+    AsyncFunction("setProjects") {
+      (scope: String?, projects: [[String: String]], lastProjectId: String?) in
+      VerityWatchInbox.shared.setProjects(
+        scope: scope, projects: projects, lastProjectId: lastProjectId)
+    }
     AsyncFunction("log") { () -> [String] in
       VerityWatchInbox.shared.logLines()
     }

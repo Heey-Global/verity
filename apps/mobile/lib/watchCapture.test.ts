@@ -1,4 +1,10 @@
-import { createWatchInboxDrainer, type WatchCapture } from './watchCapture';
+import {
+  createWatchInboxDrainer,
+  WATCH_PROJECT_LIMIT,
+  watchCaptureProject,
+  watchProjectList,
+  type WatchCapture,
+} from './watchCapture';
 
 jest.mock('./tasksStore', () => ({ captureTask: jest.fn() }));
 
@@ -74,5 +80,81 @@ describe('watch inbox drain', () => {
     await drain();
     expect(save.mock.calls.map(([c]) => c.id)).toEqual(['a', 'b']);
     expect(box.entries).toHaveLength(0);
+  });
+});
+
+describe('watch project list', () => {
+  const project = (id: string) => ({ id, repo: `repo-${id}` });
+  const capturedAt = (projectId: string, createdAt: string) => ({
+    projectId,
+    origin: 'user' as const,
+    createdAt,
+  });
+
+  it('puts the last quick-capture project first, then the most recently captured into', () => {
+    const list = watchProjectList(
+      [project('a'), project('b'), project('c')],
+      [capturedAt('b', '2026-10-08T09:00:00Z'), capturedAt('c', '2026-10-08T10:00:00Z')],
+      'a',
+    );
+    expect(list).toEqual([
+      { id: 'a', name: 'repo-a' },
+      { id: 'c', name: 'repo-c' },
+      { id: 'b', name: 'repo-b' },
+    ]);
+  });
+
+  // The silent failure: a remembered project from another account or a deleted
+  // one must not push itself into the list.
+  it('ignores a last project that is not in the list', () => {
+    const list = watchProjectList([project('a'), project('b')], [], 'gone');
+    expect(list.map((entry) => entry.id)).toEqual(['a', 'b']);
+  });
+
+  it('keeps the last project even when it falls beyond the cut', () => {
+    const projects = Array.from({ length: WATCH_PROJECT_LIMIT + 3 }, (_, i) => project(`p${i}`));
+    const last = projects[projects.length - 1].id;
+    const list = watchProjectList(projects, [], last);
+    expect(list).toHaveLength(WATCH_PROJECT_LIMIT);
+    expect(list[0].id).toBe(last);
+  });
+});
+
+describe('watch capture project', () => {
+  const known = { scope: 'account-1', ids: new Set(['p1']) };
+  const picked = (overrides: Partial<WatchCapture>): WatchCapture => ({
+    ...capture('a'),
+    projectId: 'p1',
+    scope: 'account-1',
+    ...overrides,
+  });
+
+  it('saves to the project picked on the watch', () => {
+    expect(watchCaptureProject(picked({}), known)).toBe('p1');
+  });
+
+  // Each of these would otherwise file the note under a project the user did
+  // not pick, or under another account's project.
+  it.each([
+    ['no project was picked', picked({ projectId: undefined })],
+    ['it was picked under another account', picked({ scope: 'account-2' })],
+    ['the project is unknown here', picked({ projectId: 'p2' })],
+  ])('holds the capture when %s', (_, held) => {
+    expect(() => watchCaptureProject(held, known)).toThrow();
+  });
+
+  it('holds every capture until the projects are loaded', () => {
+    expect(() => watchCaptureProject(picked({}), null)).toThrow();
+  });
+
+  it('keeps a held capture in the inbox and saves the next one', async () => {
+    const box = inbox([picked({ id: 'a', scope: 'account-2' }), picked({ id: 'b' })]);
+    const saved: string[] = [];
+    const save = jest.fn(async (c: WatchCapture) => {
+      saved.push(`${c.id}:${watchCaptureProject(c, known)}`);
+    });
+    await expect(createWatchInboxDrainer(box, save)()).rejects.toThrow('another account');
+    expect(saved).toEqual(['b:p1']);
+    expect(box.entries.map((entry) => entry.id)).toEqual(['a']);
   });
 });

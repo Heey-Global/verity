@@ -1,3 +1,4 @@
+import { projectsByRecentCapture, type ProjectRecord, type Task } from '@verity/mobile';
 import { requireOptionalNativeModule } from 'expo-modules-core';
 import { AppState, Platform } from 'react-native';
 import { captureTask } from './tasksStore';
@@ -8,7 +9,19 @@ export interface WatchCapture {
   text: string;
   createdAt: string;
   durationMs: number;
+  /** Picked on the watch; `scope` is the account its project list came from. */
+  projectId?: string;
+  scope?: string;
 }
+
+/** A project the watch picker offers. */
+export interface WatchProject {
+  id: string;
+  name: string;
+}
+
+/** The watch picker lists this many; a longer list is scrolling, not choosing. */
+export const WATCH_PROJECT_LIMIT = 12;
 
 export interface WatchStatus {
   supported: boolean;
@@ -16,6 +29,8 @@ export interface WatchStatus {
   paired?: boolean;
   watchAppInstalled?: boolean;
   reachable?: boolean;
+  /** Transcribed captures not yet saved as tasks. */
+  waiting?: number;
 }
 
 interface NativeWatchBridge {
@@ -23,6 +38,11 @@ interface NativeWatchBridge {
   acknowledge(id: string): Promise<void>;
   log(): Promise<string[]>;
   status(): Promise<WatchStatus>;
+  setProjects(
+    scope: string | null,
+    projects: WatchProject[],
+    lastProjectId: string | null,
+  ): Promise<void>;
   addListener(event: 'onWatchInbox', listener: () => void): { remove(): void };
 }
 
@@ -73,15 +93,69 @@ export function createWatchInboxDrainer(inbox: Inbox, save: Save): () => Promise
   };
 }
 
+/** The picker's list: the project last used for quick capture first, then the
+ *  rest by most recent capture, cut to what fits a watch screen. */
+export function watchProjectList(
+  projects: readonly Pick<ProjectRecord, 'id' | 'repo'>[],
+  tasks: readonly Pick<Task, 'projectId' | 'origin' | 'createdAt'>[],
+  lastProjectId: string | null,
+): WatchProject[] {
+  const recent = projectsByRecentCapture(projects, tasks);
+  const last = recent.findIndex((project) => project.id === lastProjectId);
+  if (last > 0) recent.unshift(...recent.splice(last, 1));
+  return recent
+    .slice(0, WATCH_PROJECT_LIMIT)
+    .map((project) => ({ id: project.id, name: project.repo }));
+}
+
+/** The account and projects the iPhone currently knows; null until loaded. */
+export interface KnownProjects {
+  scope: string;
+  ids: ReadonlySet<string>;
+}
+
+/** The project a capture is saved to. Throws, keeping the capture in the inbox,
+ *  when it was picked under another account or its project is not (yet) known:
+ *  a task filed under a guessed project is worse than one that waits. */
+export function watchCaptureProject(capture: WatchCapture, known: KnownProjects | null): string {
+  if (!capture.projectId) throw new Error('Choose a project on the watch');
+  if (!known || capture.scope !== known.scope) {
+    throw new Error('Captured while another account was signed in');
+  }
+  if (!known.ids.has(capture.projectId)) throw new Error('The project is not available');
+  return capture.projectId;
+}
+
+let known: KnownProjects | null = null;
+
 const drain = native
   ? createWatchInboxDrainer(native, (capture) =>
-      // The watch has no project picker yet: captures land unassigned.
       captureTask(
-        { title: capture.text, projectId: null },
+        { title: capture.text, projectId: watchCaptureProject(capture, known) },
         { id: capture.id, createdAt: capture.createdAt || undefined },
       ),
     )
   : null;
+
+/** Sends the watch its project list and lets captures held for a project the
+ *  iPhone had not loaded yet through. Signed out, the watch gets no projects. */
+export function syncWatchProjects(
+  scope: string | null,
+  projects: readonly Pick<ProjectRecord, 'id' | 'repo'>[],
+  tasks: readonly Pick<Task, 'projectId' | 'origin' | 'createdAt'>[],
+  lastProjectId: string | null,
+): void {
+  if (!native || !drain) return;
+  const list = scope ? watchProjectList(projects, tasks, lastProjectId) : [];
+  void native.setProjects(scope, list, scope ? lastProjectId : null).catch(() => undefined);
+  const ids = new Set(projects.map((project) => project.id));
+  const changed =
+    known?.scope !== scope ||
+    known.ids.size !== ids.size ||
+    [...ids].some((id) => !known?.ids.has(id));
+  known = scope ? { scope, ids } : null;
+  if (changed && known) void drain().catch(() => undefined);
+}
 
 /** Drains on start, whenever the inbox changes while JS runs, and on foreground. */
 export function startWatchInbox(): () => void {

@@ -24,6 +24,10 @@ private struct WatchInboxEntry: Codable {
   /// Transcription attempts so far; optional so entries from older builds decode.
   var attempts: Int?
   var lastAttemptAt: Date?
+  /// The project picked on the watch and the account its project list came
+  /// from; JavaScript only saves the task when both still match.
+  var projectId: String?
+  var scope: String?
 }
 
 /// Receives Apple Watch captures natively. iOS can wake or launch Verity in the
@@ -46,6 +50,9 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   /// Set while JavaScript observes the bridge; called after an entry changes.
   /// Only touched on `queue`.
   private var onChange: (() -> Void)?
+  /// The latest project list from JavaScript, kept so it can be sent once the
+  /// session activates or the watch app gets installed. Only touched on `queue`.
+  private var projectContext: [String: Any]?
 
   private let queue = DispatchQueue(label: "build.verity.watch-inbox")
   private let directory: URL
@@ -68,6 +75,41 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
 
   func observe(_ handler: (() -> Void)?) {
     queue.async { self.onChange = handler }
+  }
+
+  /// Hands the watch the projects its picker offers. The application context
+  /// keeps only the latest value and reaches the watch at its next launch, so a
+  /// list sent while the watch is away is replaced, not queued.
+  func setProjects(scope: String?, projects: [[String: String]], lastProjectId: String?) {
+    var context: [String: Any] = [
+      "v": Self.protocolVersion, "kind": "projects",
+      "projects": projects.compactMap { project -> [String: String]? in
+        guard let id = project["id"], let name = project["name"] else { return nil }
+        return ["id": id, "name": name]
+      },
+    ]
+    // Property lists have no null: an absent key stands for "none".
+    if let scope { context["scope"] = scope }
+    if let lastProjectId { context["lastProjectId"] = lastProjectId }
+    queue.async {
+      self.projectContext = context
+      self.pushProjects()
+    }
+  }
+
+  /// On `queue`.
+  private func pushProjects() {
+    guard let context = projectContext, WCSession.isSupported() else { return }
+    let session = WCSession.default
+    guard session.activationState == .activated, session.isPaired, session.isWatchAppInstalled
+    else { return }
+    if NSDictionary(dictionary: session.applicationContext).isEqual(to: context) { return }
+    do {
+      try session.updateApplicationContext(context)
+      log("sent \((context["projects"] as? [Any])?.count ?? 0) projects to the watch")
+    } catch {
+      log("project list not sent: \(error.localizedDescription)")
+    }
   }
 
   /// On `queue`: transcribe what a previous run left unfinished. Entries that
@@ -96,10 +138,13 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     queue.async { self.retry() }
     return queue.sync {
       entries().filter { $0.state == .transcribed }.map { entry in
-        [
+        var capture: [String: Any] = [
           "id": entry.id, "text": entry.text ?? "", "createdAt": entry.createdAt,
           "durationMs": entry.durationMs,
         ]
+        if let projectId = entry.projectId { capture["projectId"] = projectId }
+        if let scope = entry.scope { capture["scope"] = scope }
+        return capture
       }
     }
   }
@@ -121,8 +166,12 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   func status() -> [String: Any] {
     guard WCSession.isSupported() else { return ["supported": false] }
     let session = WCSession.default
+    // Transcribed but not yet saved as a task: a growing number means captures
+    // are held back (signed out, another account, a project that is gone).
+    let waiting = queue.sync { entries().filter { $0.state == .transcribed }.count }
     return [
       "supported": true,
+      "waiting": waiting,
       "activated": session.activationState == .activated,
       "paired": session.isPaired,
       "watchAppInstalled": session.isWatchAppInstalled,
@@ -138,10 +187,16 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   ) {
     queue.async {
       self.log("session \(activationState == .activated ? "activated" : "inactive")\(error.map { ": \($0.localizedDescription)" } ?? "")")
+      self.pushProjects()
     }
   }
 
   func sessionDidBecomeInactive(_ session: WCSession) {}
+
+  func sessionWatchStateDidChange(_ session: WCSession) {
+    // The watch app was just installed, or another watch paired.
+    queue.async { self.pushProjects() }
+  }
 
   func sessionDidDeactivate(_ session: WCSession) {
     // Switching to another paired watch: reactivate for the new one.
@@ -180,7 +235,8 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
         let entry = WatchInboxEntry(
           id: id, createdAt: metadata["createdAt"] as? String ?? "",
           durationMs: metadata["durationMs"] as? Int ?? 0, receivedAt: Date(),
-          receivedInBackground: background, state: .received)
+          receivedInBackground: background, state: .received,
+          projectId: metadata["projectId"] as? String, scope: metadata["scope"] as? String)
         try save(entry)
         log("\(id.prefix(8)) received \(entry.durationMs) ms audio, app \(background ? "background" : "foreground")")
         transcribe(id)

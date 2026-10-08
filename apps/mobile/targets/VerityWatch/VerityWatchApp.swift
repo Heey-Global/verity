@@ -22,6 +22,8 @@ struct CaptureView: View {
   var body: some View {
     if store.recording {
       RecordingView()
+    } else if let id = store.choosing {
+      ProjectPicker(captureId: id)
     } else {
       List {
         Section {
@@ -31,13 +33,23 @@ struct CaptureView: View {
               .frame(maxWidth: .infinity, minHeight: 44)
           }
           .listItemTint(recordRed)
+          if let confirmation = store.confirmation {
+            Label(confirmation, systemImage: "checkmark.circle.fill")
+              .font(.footnote)
+          }
           if let error = store.error {
             Text(error).font(.footnote).foregroundStyle(.secondary)
           }
         }
         if !store.captures.isEmpty {
           Section("Recent") {
-            ForEach(store.captures) { CaptureRow(capture: $0) }
+            ForEach(store.captures) { capture in
+              if capture.projectId == nil {
+                Button { store.choosing = capture.id } label: { CaptureRow(capture: capture) }
+              } else {
+                CaptureRow(capture: capture)
+              }
+            }
           }
         }
       }
@@ -62,6 +74,31 @@ private struct RecordingView: View {
       .buttonStyle(.plain)
       .accessibilityLabel("Stop recording")
     }
+  }
+}
+
+/// Shown after a recording stops: one tap files it under a project. "Later"
+/// keeps the recording on the watch as "Choose project".
+private struct ProjectPicker: View {
+  @EnvironmentObject private var store: CaptureStore
+  let captureId: String
+
+  var body: some View {
+    List {
+      if store.orderedProjects.isEmpty {
+        Text("Open Verity on iPhone to load projects")
+          .font(.footnote).foregroundStyle(.secondary)
+      } else {
+        Section("Save to") {
+          ForEach(store.orderedProjects) { project in
+            Button(project.name) { store.assign(captureId, to: project) }
+          }
+        }
+      }
+      Button("Later", role: .cancel) { store.choosing = nil }
+        .foregroundStyle(.secondary)
+    }
+    .navigationTitle("Project")
   }
 }
 
@@ -91,6 +128,8 @@ private struct CaptureRow: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 2) {
       switch capture.state {
+      case .queued where capture.projectId == nil:
+        Label("Choose project", systemImage: "folder").foregroundStyle(recordRed)
       case .queued:
         Label("Waiting for iPhone", systemImage: "iphone.slash").foregroundStyle(.secondary)
       case .delivered:
@@ -101,7 +140,11 @@ private struct CaptureRow: View {
         Label(capture.text ?? "Transcription failed", systemImage: "exclamationmark.triangle")
           .foregroundStyle(recordRed)
       }
-      Text(capture.createdAt, style: .time).font(.footnote).foregroundStyle(.secondary)
+      HStack(spacing: 4) {
+        Text(capture.createdAt, style: .time)
+        if let name = capture.projectName { Text("· \(name)").lineLimit(1) }
+      }
+      .font(.footnote).foregroundStyle(.secondary)
     }
     .font(.footnote)
   }

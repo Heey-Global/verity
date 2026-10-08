@@ -143,6 +143,20 @@ export default function TasksSettingsScreen() {
               }
               accessibilityLabel={`Watch app, ${watchLabel(watch)}`}
             />
+            {watch.waiting ? (
+              <SettingsNavRow
+                icon="inbox"
+                title="Waiting captures"
+                subtitle="Transcribed, not saved yet: sign in to the account and keep the project they were recorded for"
+                value={String(watch.waiting)}
+                onPress={() =>
+                  void watchStatus()
+                    .then(setWatch)
+                    .catch(() => undefined)
+                }
+                accessibilityLabel={`${String(watch.waiting)} watch captures waiting`}
+              />
+            ) : null}
             <SettingsNavRow
               icon="share"
               title="Share watch log"
