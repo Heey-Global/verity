@@ -21,6 +21,9 @@ struct Capture: Codable, Identifiable, Equatable {
   let durationMs: Int
   var state: State
   var text: String?
+  /// The iPhone refused the file. Kept apart from `state` because the refusal
+  /// can arrive before WatchConnectivity reports the transfer as finished.
+  var rejected: Bool?
 }
 
 /// Wire format shared with `VerityWatchInbox` on the iPhone. Bump `version` on
@@ -176,6 +179,7 @@ final class CaptureStore: NSObject, ObservableObject {
     let inFlight = Set(
       WCSession.default.outstandingFileTransfers.compactMap { $0.file.metadata?["id"] as? String })
     for capture in captures where capture.state == .queued && !inFlight.contains(capture.id) {
+      update(capture.id) { $0.rejected = nil }
       send(capture)
     }
   }
@@ -236,7 +240,7 @@ extension CaptureStore: WCSessionDelegate {
         // Leave it queued; the next activation or launch offers it again.
         return
       }
-      self.update(id) { if $0.state == .queued { $0.state = .delivered } }
+      self.update(id) { if $0.state == .queued && $0.rejected != true { $0.state = .delivered } }
     }
   }
 
@@ -256,6 +260,7 @@ extension CaptureStore: WCSessionDelegate {
           // The iPhone could not store the file: queue it for the next launch.
           // Resending at once would loop while the iPhone's condition lasts.
           capture.state = .queued
+          capture.rejected = true
         case "failed":
           capture.state = .failed
           capture.text = text

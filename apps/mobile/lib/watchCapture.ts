@@ -37,21 +37,29 @@ type Save = (capture: WatchCapture) => Promise<unknown>;
 /**
  * Moves transcribed watch captures into the task queue, releasing each one from
  * the native inbox only after the queue has persisted it. A capture that cannot
- * be saved (signed out, another account) stays in the inbox for the next drain.
- * Calls during a drain fold into one more pass, so an entry that lands mid-drain
- * is not left waiting for the next app activation.
+ * be saved (signed out) stays in the inbox for the next drain without holding
+ * back the ones after it. Captures go to the account signed in when the drain
+ * runs. Calls during a drain fold into one more pass, so an entry that lands
+ * mid-drain is not left waiting for the next app activation.
  */
 export function createWatchInboxDrainer(inbox: Inbox, save: Save): () => Promise<void> {
   let running: Promise<void> | null = null;
   let again = false;
   const pass = async () => {
+    let failure: unknown = null;
     do {
       again = false;
       for (const capture of await inbox.pending()) {
-        await save(capture);
+        try {
+          await save(capture);
+        } catch (error) {
+          failure ??= error;
+          continue;
+        }
         await inbox.acknowledge(capture.id);
       }
     } while (again);
+    if (failure) throw failure;
   };
   return () => {
     if (running) {

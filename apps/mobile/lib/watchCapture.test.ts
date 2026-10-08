@@ -52,6 +52,15 @@ describe('watch inbox drain', () => {
     expect(box.entries).toHaveLength(1);
   });
 
+  it('saves later captures when an earlier one keeps failing', async () => {
+    const box = inbox([capture('a'), capture('b')]);
+    const save = jest.fn(async (c: WatchCapture) => {
+      if (c.id === 'a') throw new Error('rejected');
+    });
+    await expect(createWatchInboxDrainer(box, save)()).rejects.toThrow('rejected');
+    expect(box.entries.map((entry) => entry.id)).toEqual(['a']);
+  });
+
   it('runs another pass for a capture that lands mid-drain', async () => {
     const box = inbox([capture('a')]);
     let drain: () => Promise<void> = async () => undefined;
