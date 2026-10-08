@@ -1,3 +1,4 @@
+import { PinnedPlan } from '../../components/PinnedPlan';
 import { shouldSendWebKey } from '../../lib/composerWebKey';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { openTasksPanel } from '../../lib/taskPanelEvents';
@@ -45,6 +46,8 @@ import {
   planProposal,
   planProposalRevision,
   planProposalDisplay,
+  planProposalHeadline,
+  planProposalContent,
   planningToolName,
   END_PLANNING_TOOL,
   START_PLANNING_TOOL,
@@ -3377,17 +3380,19 @@ export function SessionChat({
     }
     return null;
   }, [session.messages]);
-  // Only a plan of the current round counts: one an earlier round already decided
-  // must not be offered for implementation again.
-  const hasPresentedPlan = useMemo(() => {
+  const planUpdated = useMemo(() => {
+    let count = 0;
     for (let i = session.messages.length - 1; i >= 0; i -= 1) {
-      const m = session.messages[i];
-      if (m?.kind !== 'tool-call') continue;
-      if (planProposal(m.tool) !== null) return true;
-      if (m.tool.state === 'completed' && planningToolName(m.tool.name) === START_PLANNING_TOOL)
-        return false;
+      const message = session.messages[i];
+      if (message?.kind !== 'tool-call') continue;
+      if (
+        message.tool.state === 'completed' &&
+        planningToolName(message.tool.name) === START_PLANNING_TOOL
+      )
+        break;
+      if (planProposal(message.tool) !== null) count += 1;
     }
-    return false;
+    return count > 1;
   }, [session.messages]);
   const implementPlan = useCallback(
     (revision?: number) => {
@@ -3396,32 +3401,16 @@ export function SessionChat({
     },
     [decidePlanning, scrollToLatest],
   );
-  // "End" always asks: ending planning gives the agent its file access back, and
-  // with a plan on the table the operator also has to say what becomes of it.
-  const endPlanning = useCallback(() => {
-    if (planningPlan == null) {
-      Alert.alert(
-        'End planning mode?',
-        'The agent can change files again from your next message.',
-        [
-          { text: 'Keep planning', style: 'cancel' },
-          { text: 'End', onPress: () => decidePlanning('discard') },
-        ],
-      );
-      return;
-    }
-    Alert.alert(
-      'End planning mode?',
-      hasPresentedPlan
-        ? 'What should happen to the latest plan? It stays in the chat either way.'
-        : `What should happen to this plan?\n\n${planningPlan}`,
-      [
-        { text: 'Implement plan', onPress: () => implementPlan(planningRevision) },
-        { text: 'Discard plan', style: 'destructive', onPress: () => decidePlanning('discard') },
-        { text: 'Keep planning', style: 'cancel' },
-      ],
-    );
-  }, [decidePlanning, hasPresentedPlan, implementPlan, planningRevision, planningPlan]);
+  const dismissPlan = useCallback(() => {
+    Alert.alert('Dismiss this plan?', 'The plan stays in the chat. Nothing is implemented.', [
+      { text: 'Keep', style: 'cancel' },
+      {
+        text: 'Dismiss',
+        style: 'destructive',
+        onPress: () => decidePlanning('discard', planningRevision),
+      },
+    ]);
+  }, [decidePlanning, planningRevision]);
   const actions = useMemo<SessionActions>(
     () => ({
       sendTurn: sendQuickReply,
@@ -4455,10 +4444,20 @@ export function SessionChat({
           onSave={onSaveToProject}
         />
       ) : null}
-      {planning === 'active' ? (
-        <PlanningBar deciding={decidingPlanning} error={planningError} onEnd={endPlanning} />
+      {planning === 'active' && planningPlan != null ? (
+        <PinnedPlan
+          markdown={planningPlan}
+          updated={planUpdated}
+          deciding={decidingPlanning}
+          disabled={dead || planningRevision === undefined}
+          error={planningError}
+          onDismiss={dismissPlan}
+          onImplement={() => implementPlan(planningRevision)}
+        />
       ) : null}
       <InputBar
+        hasPlan={planning === 'active' && planningPlan != null}
+        planning={planning === 'active'}
         inputRef={inputRef}
         value={draft}
         sendNonce={sendNonce}
@@ -7203,6 +7202,18 @@ function ToolCard({ message }: { message: ToolCallMessage }) {
   const skillBody = message.tool.skillBody;
   const running = message.tool.name === 'Skill' && message.tool.state === 'running';
   const expandable = Boolean(view.subtitle) || Boolean(view.preview) || Boolean(skillBody);
+  if (
+    planningToolName(message.tool.name) === START_PLANNING_TOOL &&
+    message.tool.state === 'completed'
+  )
+    return (
+      <View style={styles.eventRow}>
+        <Icon name="map" size={14} color={theme.colors.textMuted} />
+        <Text style={styles.eventDetail}>
+          Planning started · nothing changes until you approve a plan
+        </Text>
+      </View>
+    );
   return (
     <Pressable
       style={styles.toolCard}
@@ -7480,35 +7491,37 @@ function PlanProposalCard({
 }) {
   const { theme } = useUnistyles();
   const actions = useContext(SessionActionsContext);
-  const [expanded, setExpanded] = useState(latest);
+  const [expanded, setExpanded] = useState(false);
   const planning = actions?.planning;
-  const { markdown, revision } = planProposalDisplay(
+  const { markdown } = planProposalDisplay(
     { markdown: presentedMarkdown, revision: presentedRevision },
     latest,
     actions,
   );
   const decidable = latest && planning === 'active' && actions?.planningPlan !== null;
-  const enabled =
-    decidable &&
-    revision !== undefined &&
-    actions !== null &&
-    !actions.dead &&
-    !actions.decidingPlanning;
+  if (decidable) return null;
+  const title = planProposalHeadline(markdown);
+  const stepCount = planProposalContent(markdown).steps.length;
   const status = !latest
     ? 'Earlier version'
     : planning === 'implemented'
       ? 'Implemented'
       : planning === 'discarded'
-        ? 'Discarded'
+        ? 'Dismissed'
         : null;
   return (
-    <View style={styles.toolCard}>
+    <View
+      style={[
+        styles.planHistory,
+        latest && planning === 'implemented' ? styles.planHistoryDone : null,
+      ]}
+    >
       <Pressable
         style={styles.toolHeader}
         onPress={() => setExpanded((e) => !e)}
         accessibilityRole="button"
         accessibilityState={{ expanded }}
-        accessibilityLabel={status === null ? 'Plan' : `Plan, ${status}`}
+        accessibilityLabel={status === null ? title : `${title}, ${status}`}
       >
         <View
           style={[
@@ -7522,9 +7535,11 @@ function PlanProposalCard({
             },
           ]}
         />
-        <Text style={styles.toolHeadline} numberOfLines={1}>
-          {status === null ? 'Plan' : `Plan · ${status}`}
+        <Text style={styles.permissionTitle} numberOfLines={1}>
+          Plan
         </Text>
+        {status !== null ? <Text style={styles.planHistoryStatus}>{status}</Text> : null}
+        <Text style={styles.planCount}>{stepCount} steps</Text>
         <Icon
           name={expanded ? 'chevron-down' : 'chevron-right'}
           size={16}
@@ -7541,72 +7556,6 @@ function PlanProposalCard({
           />
         </View>
       ) : null}
-      {decidable ? (
-        <View style={styles.choicesChips}>
-          <Pressable
-            onPress={() => enabled && actions?.implementPlan(revision)}
-            disabled={!enabled}
-            accessibilityRole="button"
-            accessibilityState={{ disabled: !enabled }}
-            accessibilityLabel="Implement plan"
-            style={({ pressed }) => [
-              styles.chip,
-              styles.chipRecommended,
-              enabled ? null : styles.chipDisabled,
-              pressed && enabled ? styles.chipPressed : null,
-            ]}
-          >
-            <Text style={styles.chipStar}>★</Text>
-            <Text style={[styles.chipLabel, styles.chipLabelRecommended]}>Implement plan</Text>
-          </Pressable>
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-/** Shown above the composer while the session is in planning mode. */
-function PlanningBar({
-  deciding,
-  error,
-  onEnd,
-}: {
-  deciding: boolean;
-  error: string | undefined;
-  onEnd: () => void;
-}) {
-  return (
-    <View style={styles.prBarWrap}>
-      <View style={styles.prBar}>
-        <View style={styles.prLocalMain}>
-          <Text style={styles.prTitle} numberOfLines={1}>
-            Planning mode
-          </Text>
-          <Text style={styles.prSub} numberOfLines={1}>
-            The agent makes no file changes.
-          </Text>
-          {error !== undefined ? (
-            <Text style={styles.prError} numberOfLines={2}>
-              {error}
-            </Text>
-          ) : null}
-        </View>
-        <Pressable
-          onPress={onEnd}
-          disabled={deciding}
-          accessibilityRole="button"
-          accessibilityState={{ disabled: deciding, busy: deciding }}
-          accessibilityLabel="End planning mode"
-          style={({ pressed }) => [
-            styles.chip,
-            styles.planningBarEnd,
-            deciding ? styles.chipDisabled : null,
-            pressed && !deciding ? styles.chipPressed : null,
-          ]}
-        >
-          <Text style={styles.chipLabel}>End</Text>
-        </Pressable>
-      </View>
     </View>
   );
 }
@@ -8400,7 +8349,11 @@ function PermissionPrompt({
         : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
       calendarSummary?.title ?? null,
       gmailSummary === null ? null : `Send email to ${gmailSummary.to.join(', ')}?`,
-      isEndPlanning ? 'Implement the plan?' : null,
+      isEndPlanning
+        ? grantInput?.action === 'discard'
+          ? 'Leave planning and change files?'
+          : 'Implement the plan?'
+        : null,
       isPresentPlan ? 'Show the proposed plan?' : null,
     ].find((title) => title !== null) ??
     // Spelled out like every other string on the card. Tool names are server-controlled today,
@@ -8450,13 +8403,7 @@ function PermissionPrompt({
           </Text>
         </View>
       ) : null}
-      {isEndPlanning ? (
-        <View style={styles.permissionHttpSummary}>
-          <Text style={styles.permissionHttpMeta}>
-            Planning mode ends and the agent may change files again to implement the latest plan.
-          </Text>
-        </View>
-      ) : knowledgeSummary !== null ? (
+      {knowledgeSummary !== null ? (
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionSubtitle} selectable>
             Source: {spellOutBidiControls(knowledgeSummary.source)}
@@ -9167,6 +9114,8 @@ function LocalMergeBar({
 }
 
 function InputBar({
+  hasPlan,
+  planning,
   inputRef,
   value,
   sendNonce,
@@ -9203,6 +9152,8 @@ function InputBar({
   onFocus,
   onBlur,
 }: {
+  hasPlan: boolean;
+  planning: boolean;
   /** Ref to the text field so a "Custom answer" chip can focus it (issue #97). */
   inputRef: RefObject<TextInput | null>;
   value: string;
@@ -9354,7 +9305,11 @@ function InputBar({
                 ? 'This session can’t be resumed'
                 : voiceState === 'recording'
                   ? 'Listening…'
-                  : 'Message this agent…'
+                  : hasPlan
+                    ? 'Reply to change the plan…'
+                    : planning
+                      ? 'Answer, or add what matters to you…'
+                      : 'Message this agent…'
             }
             placeholderTextColor={theme.colors.textFaint}
             editable={!dead}
@@ -10585,9 +10540,7 @@ const styles = StyleSheet.create((theme) => ({
   /** The local merge bar has no status dot and nothing to open, so it carries the
    *  padding `prOpenTarget` gives the PR row itself — without it the branch name sits
    *  flush against the bar's border on one side and the Merge button on the other. */
-  planningBarEnd: {
-    marginRight: theme.spacing.sm,
-  },
+
   prLocalMain: {
     flex: 1,
     minWidth: 0,
@@ -11360,6 +11313,23 @@ const styles = StyleSheet.create((theme) => ({
   },
   // The live per-tool permission prompt (#149): a bordered card just above the input,
   // attention-toned so it reads as "the agent is paused, waiting on your decision".
+  planHistory: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceAlt,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    gap: theme.spacing.sm,
+  },
+  planHistoryDone: { borderColor: theme.colors.tone.done },
+  planCount: { color: theme.colors.textMuted, fontSize: theme.text.xs },
+  planHistoryStatus: {
+    color: theme.colors.textFaint,
+    fontSize: theme.text.xs,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
   permissionPrompt: {
     marginHorizontal: theme.spacing.md,
     marginBottom: theme.spacing.sm,

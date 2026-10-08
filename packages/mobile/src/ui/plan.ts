@@ -1,4 +1,4 @@
-import { PRESENT_PLAN_TOOL, planningToolName } from '@verity/events';
+import { PRESENT_PLAN_TOOL, planningToolName, parsePlanningProposal } from '@verity/events';
 
 import type { ToolCall } from '../happy/message.js';
 
@@ -120,4 +120,30 @@ export function planProposalDisplay(
     return { markdown: current.planningPlan, revision: current.planningRevision };
   }
   return { markdown: presented.markdown, revision: presented.revision };
+}
+
+/** The count uses the same parser as the card and implementation tasks. */
+export function planProposalHeadline(markdown: string): string {
+  const steps = parsePlanningProposal(markdown).steps.length;
+  if (steps === 0) return 'Plan';
+  return `Plan · ${String(steps)} ${steps === 1 ? 'step' : 'steps'}`;
+}
+
+/** The pinned card and server-created tasks share the proposal's structure. */
+export const planProposalContent = parsePlanningProposal;
+
+/** Fall back to the original proposal when structured fields would hide content.
+ * Approval must cover the same text that the implementation turn receives. */
+export function planProposalFullyRepresented(markdown: string): boolean {
+  const normalize = (text: string): string =>
+    text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '' && !/^#{1,6}\s+(?:Goal|Steps)\s*$/i.test(line))
+      .map((line) => line.replace(/^#\s+/, '').replace(/^\d{1,3}[.)]\s+/, ''))
+      .join('\n');
+  const content = planProposalContent(markdown);
+  return (
+    normalize(markdown) === normalize([content.title, content.goal, ...content.steps].join('\n'))
+  );
 }
