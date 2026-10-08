@@ -4500,7 +4500,11 @@ export class VerityClient {
     decision: PermissionDecision,
     timingContext?: { trace: SwitchTiming | undefined },
   ): Promise<PermissionDecided> {
-    const timing = timingContext?.trace;
+    const timing = timingContext
+      ? timingContext.trace
+      : decision.behavior === 'allow'
+        ? sessionSwitchTiming(id, 'permission')
+        : undefined;
     markSessionSwitch(timing, 'allow-request-start');
     const res = await this.request(
       `/sessions/${encodeURIComponent(id)}/permissions/${encodeURIComponent(toolUseId)}`,

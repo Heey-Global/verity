@@ -3978,22 +3978,25 @@ describe('session reorder API', () => {
   });
 });
 
-it('measures Allow request and response without recording the permission payload', async () => {
-  const trace = beginSessionSwitch('secret-session', 'permission');
-  const { fetch } = fakeFetch(
-    json({ sessionId: 'secret-session', toolUseId: 'private-tool-use', decided: true }),
-  );
-  const client = new VerityClient({ baseUrl: 'http://host', fetch });
-  await client.decidePermission(
-    'secret-session',
-    'private-tool-use',
-    { behavior: 'allow' },
-    { trace },
-  );
-  expect(trace.phases.map((p) => p.phase)).toEqual([
-    'allow-request-start',
-    'allow-fetch-return',
-    'allow-response-processed',
-  ]);
-  expect(JSON.stringify(trace.phases)).not.toContain('private-tool-use');
-});
+it.each([true, false])(
+  'measures Allow request with explicit context=%s without payload content',
+  async (explicit) => {
+    const trace = beginSessionSwitch('secret-session', 'permission');
+    const { fetch } = fakeFetch(
+      json({ sessionId: 'secret-session', toolUseId: 'private-tool-use', decided: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.decidePermission(
+      'secret-session',
+      'private-tool-use',
+      { behavior: 'allow' },
+      ...(explicit ? ([{ trace }] as const) : []),
+    );
+    expect(trace.phases.map((p) => p.phase)).toEqual([
+      'allow-request-start',
+      'allow-fetch-return',
+      'allow-response-processed',
+    ]);
+    expect(JSON.stringify(trace.phases)).not.toContain('private-tool-use');
+  },
+);
