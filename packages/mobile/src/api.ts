@@ -143,6 +143,7 @@ export const sessionSummarySchema = z.object({
    * any older server, both of which read as "nothing to report". */
   attention: z.array(attentionSignalSchema).optional(),
   /** The session's recurring automation, if it has one. */
+  sortOrder: z.number().int().nonnegative().nullable().optional(),
   automation: z.object({ status: z.enum(['enabled', 'paused']) }).optional(),
 });
 export type SessionSummary = z.infer<typeof sessionSummarySchema>;
@@ -156,15 +157,22 @@ export type SessionSummary = z.infer<typeof sessionSummarySchema>;
  * signals, which is also what a healthy newer server reports.
  */
 export const sessionListEnvelopeSchema = z.union([
-  z
-    .array(sessionSummarySchema)
-    .transform((sessions) => ({ sessions, attention: [] as AttentionSignal[] })),
+  z.array(sessionSummarySchema).transform((sessions) => ({
+    sessions,
+    attention: [] as AttentionSignal[],
+    sessionReordering: false,
+  })),
   z
     .object({
       sessions: z.array(sessionSummarySchema),
       attention: z.array(attentionSignalSchema).optional(),
+      sessionReordering: z.boolean().optional(),
     })
-    .transform(({ sessions, attention }) => ({ sessions, attention: attention ?? [] })),
+    .transform(({ sessions, attention, sessionReordering }) => ({
+      sessions,
+      attention: attention ?? [],
+      sessionReordering: sessionReordering === true,
+    })),
 ]);
 export type SessionListEnvelope = z.infer<typeof sessionListEnvelopeSchema>;
 
@@ -2365,6 +2373,15 @@ export class VerityClient {
   async listSessions(): Promise<SessionSummary[]> {
     const res = await this.request('/sessions', { method: 'GET' });
     return z.array(sessionSummarySchema).parse(await res.json());
+  }
+
+  async reorderSessions(projectId: string | null, ids: string[]): Promise<string[]> {
+    const res = await this.request('/sessions/order', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId, ids }),
+    });
+    return z.object({ ids: z.array(z.string()) }).parse(await res.json()).ids;
   }
 
   async listSessionLinks(id: string): Promise<

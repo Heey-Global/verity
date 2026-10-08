@@ -23,6 +23,8 @@ export interface UseSessionList extends SessionListState {
   rename: (sessionId: string, name: string | null) => void;
   /** Mark or unmark a session as a favorite (synced across devices). Optimistic. */
   setFavorite: (sessionId: string, favorite: boolean) => void;
+  /** Save a project-local order, with serialized optimistic updates. */
+  reorder: (projectId: string | null, ids: string[]) => Promise<void>;
   /** Permanently delete a session (removes its history + worktree). Optimistic.
    * Named `remove` rather than `delete` so consumers can destructure it (`delete`
    * is a reserved word and would be a syntax error in a destructuring binding). */
@@ -157,5 +159,9 @@ export function useSessionList(client: VerityClient): UseSessionList {
     [model],
   );
 
-  return { ...state, refresh, rename, setFavorite, remove };
+  const reorder = useCallback(
+    (projectId: string | null, ids: string[]) => model.reorder(projectId, ids),
+    [model],
+  );
+  return { ...state, refresh, rename, setFavorite, remove, reorder };
 }

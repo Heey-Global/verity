@@ -17,6 +17,7 @@ import { fileVersion, FileWriteError, writeSessionText } from './session-file-wr
 import { renameWorktreeFile } from './rename-worktree-file.js';
 import { turnCore } from './session-request-core.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
+import { registerSessionOrderRoute } from './session-order-route.js';
 import { registerSessionListRoute } from './session-list-route.js';
 import { registerVerityControlSessionRoute } from './verity-control-session-route.js';
 import { registerSessionMergeRoutes } from './session-merge-routes.js';
@@ -2802,6 +2803,8 @@ interface SessionPrSummary {
 }
 
 export interface SessionSummary extends SessionRecord {
+  /** Position within a manually ordered overview group; null means automatic. */
+  sortOrder?: number | null;
   status: SessionStatus;
   /** Permission ids currently awaiting a decision. Carried on the list so the
    * overview can retire its "Needs input" badge optimistically after answering. */
@@ -2859,6 +2862,7 @@ export interface SessionSummary extends SessionRecord {
  * response instead of a channel of its own.
  */
 export interface SessionListEnvelope {
+  sessionReordering?: true;
   sessions: SessionSummary[];
   attention?: AttentionSignal[];
 }
@@ -5116,6 +5120,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return attentionSignals({ secretStatus, updater, codexUsage: usage, now: Date.now() });
   };
 
+  registerSessionOrderRoute(app, { store: deps.eventStore });
   registerSessionListRoute(app, {
     store: deps.eventStore,
     prunePrSummaryCache,

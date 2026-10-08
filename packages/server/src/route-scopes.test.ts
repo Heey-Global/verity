@@ -379,6 +379,7 @@ describe('missingLockoutKeys', () => {
 describe('declaredNonOperatorKeys', () => {
   it('grants an undeclared route no key, leaving it to the operator gate', () => {
     expect(declaredNonOperatorKeys({ method: 'GET', url: '/sessions/:id' })).toEqual([]);
+    expect(declaredNonOperatorKeys({ method: 'PATCH', url: '/sessions/order' })).toEqual([]);
     expect(declaredNonOperatorKeys({ method: 'POST', url: '/projects' })).toEqual([]);
   });
 

@@ -2892,7 +2892,8 @@ describe('GET /sessions?envelope=1', () => {
 
     expect(enveloped.statusCode).toBe(200);
     expect(enveloped.json().sessions).toEqual(plain.json());
-    expect(Object.keys(enveloped.json())).toEqual(['sessions']);
+    expect(Object.keys(enveloped.json())).toEqual(['sessions', 'sessionReordering']);
+    expect(enveloped.json().sessionReordering).toBe(true);
   });
 
   it('names an Updater that is not answering its control socket', async () => {
@@ -3072,7 +3073,7 @@ describe('GET /sessions?envelope=1', () => {
         url: '/sessions?envelope=1',
         headers: { authorization: `Bearer ${updates.token}` },
       });
-      expect(Object.keys(res.json())).toEqual(['sessions']);
+      expect(Object.keys(res.json())).toEqual(['sessions', 'sessionReordering']);
     } finally {
       await server.close();
     }
@@ -15367,6 +15368,52 @@ describe('GET /projects/:id release resolution', () => {
       expect(refreshLatestRelease).toHaveBeenCalledTimes(1);
     } finally {
       await withRelease.close();
+    }
+  });
+});
+
+describe('PATCH /sessions/order', () => {
+  it('requires a device bearer and exposes manual positions through the overview', async () => {
+    await ctx.store.createSession({ sessionId: 'order-a', worktree: '/wt/order-a', model: 'm' });
+    await ctx.store.createSession({ sessionId: 'order-b', worktree: '/wt/order-b', model: 'm' });
+    const history = (await ctx.store.listSessions()).map((session) => session.sessionId);
+    const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+    const { token } = await registry.mint('order-device');
+    const gated = buildServer({
+      eventStore: ctx.store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+    });
+    try {
+      const request = {
+        method: 'PATCH' as const,
+        url: '/sessions/order',
+        payload: { projectId: null, ids: ['order-b', 'order-a'] },
+      };
+      expect((await gated.inject(request)).statusCode).toBe(401);
+      const result = await gated.inject({
+        ...request,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(result.statusCode).toBe(200);
+      expect(result.json()).toEqual({ ids: ['order-b', 'order-a'] });
+      const overview = await gated.inject({
+        url: '/sessions?envelope=1',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const body = overview.json<{
+        sessionReordering: boolean;
+        sessions: { sessionId: string; sortOrder: number }[];
+      }>();
+      expect(body.sessionReordering).toBe(true);
+      expect(body.sessions.map((session) => [session.sessionId, session.sortOrder])).toEqual([
+        ['order-a', 1],
+        ['order-b', 0],
+      ]);
+      expect((await ctx.store.listSessions()).map((session) => session.sessionId)).toEqual(history);
+    } finally {
+      await gated.close();
     }
   });
 });
