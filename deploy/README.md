@@ -822,14 +822,13 @@ kernel does. Started by the root stack pass next to the spawn broker, it polls
 the cgroup's usage every 500 ms and, once usage reaches the ceiling minus a
 reserve, freezes and then SIGKILLs the agent-owned process tree that holds the
 most memory. A tree is ranked by the memory of all its processes, because a
-worker pool respawns a single killed worker. Under a Claude session the guard
+worker pool respawns a single killed worker. Under a Claude or Codex session the guard
 narrows from the agent CLI to the command it ran — the tool shell with `npm
 test`, the test runner and its workers — and, when several commands run at once,
 to the largest of them. The CLI itself goes only when its own memory is most of
 its tree and that tree holds at least the reserve, so an ordinary idle CLI is
-never killed for cache pressure. Adapters that run commands themselves (Codex,
-OpenCode) have no CLI layer: what they start is a command like any other. The
-ACP adapter the broker started is never a candidate; one orphaned to init by a
+never killed for cache pressure. For adapters that run commands directly,
+what they start is a command like any other. The ACP adapter the broker started is never a candidate; one orphaned to init by a
 broker restart counts as a detached tree. A process tree detached under init (a
 backgrounded dev server or database) is a candidate of its own. If usage is
 still above the threshold once the cooldown after a kill has passed, the guard

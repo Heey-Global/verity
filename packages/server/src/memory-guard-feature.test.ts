@@ -291,8 +291,26 @@ describe('victim selection', () => {
     });
   });
 
+  it('narrows the Codex runtime below its ACP adapter to the largest command', () => {
+    const files: Record<string, string> = {
+      '/proc/1/status': status('docker-init', 0, 1000, 2 * MIB),
+      '/proc/470/status': status('node', 1, 0, 150 * MIB),
+      '/proc/8000/status': status('node', 470, 1000, 300 * MIB),
+      '/proc/8001/status': status('codex', 8000, 1000, 200 * MIB),
+      '/proc/8002/status': status('bash', 8001, 1000, 5 * MIB),
+      '/proc/8003/status': status('node', 8002, 1000, 900 * MIB),
+      '/proc/8004/status': status('node', 8001, 1000, 800 * MIB),
+    };
+    expect(
+      chooseVictim(listProcesses(guestReader(files), listPids(files)), {
+        agentUid: 1000,
+        minimumSessionRssBytes: 1.2 * GIB,
+      }),
+    ).toMatchObject({ pid: 8002, tier: 'command', treeRssBytes: 905 * MIB });
+  });
+
   it('treats what an adapter runs directly as a command, however it is shaped', () => {
-    // codex-acp has no CLI process between it and the tool shell. Read as a CLI,
+    // A tool shell directly below an adapter is a command. Read as a CLI,
     // a large command would be spared until it held a whole reserve, and the
     // guard would kill the smaller detached tree, or nothing, instead.
     const files: Record<string, string> = {

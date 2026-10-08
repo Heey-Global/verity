@@ -69,7 +69,7 @@ export const MINIMUM_VICTIM_RSS_BYTES = 64 * 1024 ** 2;
  * not a boundary: a command calling itself `claude` gains only the CLI's higher
  * threshold, not immunity, and a CLI renamed away loses only its narrowing.
  */
-const AGENT_CLI_NAMES = new Set(['claude']);
+const AGENT_CLI_NAMES = new Set(['claude', 'codex']);
 const DEFAULT_AGENT_UID = 1000;
 const DEFAULT_CONTROL_DIR = '/run/verity-runner-broker';
 const PID_FILE_NAME = 'memory-guard.pid';
@@ -224,7 +224,7 @@ export function listProcesses(readFile = readFsFile, listPids = listProcDir) {
  * where the memory is and its tree holds at least `minimumSessionRssBytes` (the
  * guard passes its reserve): an ordinary CLI is no runaway, and killing it for
  * cache pressure would cost a session for nothing. Any other child of an anchor
- * is a command an adapter ran directly (Codex, OpenCode) and is a candidate
+ * is a command an adapter ran directly and is a candidate
  * with its whole tree, like any command.
  *
  * Trees below `MINIMUM_VICTIM_RSS_BYTES` are not worth killing. Ties go to the
