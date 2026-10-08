@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
@@ -46,4 +47,18 @@ test('failed persistence does not claim success and allows a retry', async () =>
   expect(screen.queryByText('Saved on this device.')).toBeNull();
   fireEvent.press(screen.getByText('Save'));
   await screen.findByText('Saved on this device.');
+});
+
+test('does not offer correction controls on Android', () => {
+  const platform = jest.replaceProperty(Platform, 'OS', 'android');
+  try {
+    const screen = render(<VoiceInputSettings />);
+    expect(screen.queryByLabelText('Voice vocabulary')).toBeNull();
+    expect(screen.queryByLabelText('Correct finalized dictation')).toBeNull();
+    expect(
+      screen.getByText('Local vocabulary correction is available for iOS voice input.'),
+    ).toBeTruthy();
+  } finally {
+    platform.restore();
+  }
 });

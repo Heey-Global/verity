@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 
 import { SettingsScaffold } from '../../components/settings/SettingsChrome';
 import {
@@ -16,6 +16,7 @@ export default function VoiceInputSettings() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   useEffect(() => {
+    if (Platform.OS !== 'ios') return;
     let mounted = true;
     void loadVoiceVocabulary()
       .then((value) => {
@@ -50,6 +51,15 @@ export default function VoiceInputSettings() {
       setSaving(false);
     }
   };
+  if (Platform.OS !== 'ios') {
+    return (
+      <SettingsScaffold title="Voice input" detail state={{ error: undefined, saving: false }}>
+        <Text style={styles.text}>
+          Local vocabulary correction is available for iOS voice input.
+        </Text>
+      </SettingsScaffold>
+    );
+  }
   return (
     <SettingsScaffold title="Voice input" detail state={{ error: undefined, saving }}>
       <View style={styles.content}>
