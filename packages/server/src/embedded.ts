@@ -226,7 +226,11 @@ import { defaultSshKeygenSpawner } from './signing-key.js';
 import { requestArrivedInternally } from './internal-listener.js';
 import { containerNameFor } from './canonical.js';
 import { containerPathFor, DockerExecBackend, dockerHostFor } from './project-backend.js';
-import { createSleepingSessionGit, createSandboxGit } from './sandbox-git.js';
+import {
+  createSleepingSessionGit,
+  createSandboxGit,
+  withSleepingSessionGit,
+} from './sandbox-git.js';
 import { projectSettingsEnv, type ProjectEnvironmentSettings } from './project-settings-env.js';
 import { createNodeRestrictedHttpJsonTransport } from './restricted-http-json-connector.js';
 import { createBrokeredHttpConsumptionStore } from './brokered-http-consumption.js';
@@ -2194,6 +2198,49 @@ export async function buildEmbeddedServer(
           baseBranch: 'main',
           ...(config.dockerBaseUrl && config.hostCloneRoot
             ? {
+                withGit: async (worktree, operation) => {
+                  const docker = projectDocker;
+                  if (!docker) throw new Error('Project Docker runtime is unavailable');
+                  const session = (await eventStore.listSessions()).find(
+                    (s) => s.worktree === worktree,
+                  );
+                  if (!session) throw new Error('Git requires persistent session context');
+                  const project = await eventStore.getProject(
+                    session.projectId ?? CONTROL_PLANE_PROJECT_ID,
+                  );
+                  if (!project) throw new Error('Project is unavailable');
+                  const containerName =
+                    project.kind === 'control_plane' && config.controlPlaneRunner === true
+                      ? MANAGED_CONTROL_PLANE_RUNNER_NAME
+                      : project.containerName;
+                  const hostRoot = projectClonePath(config.hostCloneRoot!, project);
+                  if (!(await docker.inspectContainer(containerName)).running) {
+                    if (config.dataVolume && !dataVolumeRoot)
+                      throw new Error('Data volume root is unavailable');
+                    return withSleepingSessionGit(
+                      {
+                        docker,
+                        templateContainer: containerName,
+                        projectId: project.id,
+                        hostRoot,
+                        dockerBaseUrl: config.dockerBaseUrl,
+                        ...(config.dataVolume
+                          ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot! } }
+                          : {}),
+                      },
+                      operation,
+                    );
+                  }
+                  return operation(
+                    createSandboxGit({
+                      containerName,
+                      hostRoot,
+                      dockerBaseUrl: config.dockerBaseUrl,
+                      inspect: () => docker.inspectContainer(containerName),
+                      timeoutMs: 10_000,
+                    }),
+                  );
+                },
                 git: async (args: readonly string[]) => {
                   // Repository helpers must run with the same privileges as the agent.
                   const index = args.indexOf('-C');

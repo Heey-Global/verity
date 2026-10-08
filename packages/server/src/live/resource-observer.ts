@@ -20,6 +20,7 @@ export class ResourceObserver {
   private readonly timer: ReturnType<typeof setInterval>;
   private closed = false;
   private sweeping = false;
+  private activeReads = 0;
   constructor() {
     this.timer = setInterval(() => void this.sweep(), 500);
     this.timer.unref();
@@ -69,13 +70,22 @@ export class ResourceObserver {
     void this.sweep();
   }
 
-  private async sweep(): Promise<void> {
+  private sweep(): void {
     if (this.sweeping || this.closed) return;
     this.sweeping = true;
     try {
-      for (const entry of this.entries.values()) {
-        if (this.closed) break;
-        if (entry.next <= Date.now()) await this.sample(entry);
+      for (const [key, entry] of [...this.entries]) {
+        if (this.closed || this.activeReads >= 2) break;
+        if (entry.running || entry.next > Date.now()) continue;
+        // Rotate dispatched entries so repeated invalidations cannot starve
+        // other resources while one slow backend read occupies a slot.
+        this.entries.delete(key);
+        this.entries.set(key, entry);
+        this.activeReads += 1;
+        void this.sample(entry).finally(() => {
+          this.activeReads -= 1;
+          this.sweep();
+        });
       }
     } finally {
       this.sweeping = false;

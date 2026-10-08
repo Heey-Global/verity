@@ -4,6 +4,7 @@ import {
   containerGitArgs,
   createSandboxGit,
   createSleepingSessionGit,
+  withSleepingSessionGit,
   SandboxUnavailableError,
   type SandboxExec,
 } from './sandbox-git.js';
@@ -22,6 +23,102 @@ function fakeExec(result: { stdout?: string; stderr?: string } | Error): {
   };
   return { exec, calls };
 }
+
+function queryDocker() {
+  return {
+    inspectContainer: vi.fn(async (name: string) => ({
+      id: name,
+      running: name !== 'parent',
+      imageId: 'sha256:pinned',
+      runtime: 'runsc-project',
+      memoryBytes: 6 * 1024 ** 3,
+    })),
+    createContainer: vi.fn(async (spec: import('./docker.js').ContainerSpec) => ({
+      id: spec.name,
+      warnings: [],
+    })),
+    startContainer: vi.fn(async () => undefined),
+    removeContainer: vi.fn(async () => undefined),
+  };
+}
+
+it('uses one protected query container for an entire metadata operation and bounds commands', async () => {
+  const docker = queryDocker();
+  const exec = vi.fn<SandboxExec>(async () => ({ stdout: 'main', stderr: '' }));
+  const options = {
+    docker,
+    templateContainer: 'parent',
+    projectId: 'p',
+    hostRoot: '/data/p',
+    exec,
+  };
+  expect(
+    await withSleepingSessionGit(options, async (git) =>
+      Promise.all([
+        git(['-C', '/data/p', 'show-ref']),
+        git(['-C', '/data/p', 'rev-parse', 'HEAD']),
+      ]),
+    ),
+  ).toEqual(['main', 'main']);
+  expect(docker.createContainer).toHaveBeenCalledOnce();
+  expect(docker.startContainer).toHaveBeenCalledOnce();
+  expect(docker.removeContainer).toHaveBeenCalledOnce();
+  expect(docker.createContainer).toHaveBeenCalledWith(
+    expect.objectContaining({
+      runtime: 'runsc-project',
+      memoryBytes: 6 * 1024 ** 3,
+      network: 'none',
+      readOnlyRootfs: true,
+      binds: ['/data/p:/work:ro'],
+      capDrop: ['ALL'],
+      securityOpt: ['no-new-privileges:true'],
+    }),
+  );
+  for (const call of exec.mock.calls) {
+    expect(call[1]).toContain('--no-optional-locks');
+    expect(call[2]).toMatchObject({ timeout: 10_000 });
+  }
+  await Promise.all([
+    withSleepingSessionGit(options, async () => 'a'),
+    withSleepingSessionGit(options, async () => 'b'),
+  ]);
+  expect(new Set(docker.createContainer.mock.calls.map(([spec]) => spec.name)).size).toBe(3);
+});
+
+it('drains sibling commands before removing a failed query sandbox', async () => {
+  const docker = queryDocker();
+  const failure = new Error('Git failed');
+  let release!: (value: { stdout: string; stderr: string }) => void;
+  const exec: SandboxExec = async (_command, args) => {
+    if (args.includes('fail')) throw failure;
+    return new Promise((done) => {
+      release = done;
+    });
+  };
+  const result = withSleepingSessionGit(
+    { docker, templateContainer: 'parent', projectId: 'p', hostRoot: '/data/p', exec },
+    async (git) => Promise.all([git(['fail']), git(['slow'])]),
+  );
+  const caught = result.catch((error: unknown) => error);
+  await new Promise((done) => setImmediate(done));
+  // Early rejection must not destroy the sandbox under another running command.
+  expect(docker.removeContainer).not.toHaveBeenCalled();
+  release({ stdout: '', stderr: '' });
+  expect(await caught).toBe(failure);
+  expect(docker.removeContainer).toHaveBeenCalledOnce();
+});
+
+it('removes a query sandbox when starting it fails', async () => {
+  const docker = queryDocker();
+  docker.startContainer.mockRejectedValueOnce(new Error('start failed'));
+  await expect(
+    withSleepingSessionGit(
+      { docker, templateContainer: 'parent', projectId: 'p', hostRoot: '/data/p' },
+      async () => '',
+    ),
+  ).rejects.toThrow('start failed');
+  expect(docker.removeContainer).toHaveBeenCalledOnce();
+});
 
 /** An `execFile` rejection: a non-zero exit with the process's own streams attached. */
 function exitedNonZero(stderr: string): Error {

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ResourceObserver } from './live/resource-observer.js';
 import {
   chmodSync,
   existsSync,
@@ -2740,6 +2741,7 @@ describe('POST /sessions/:id/debug/scroll', () => {
   });
 
   it('accepts mobile scroll diagnostics for a known session', async () => {
+    const invalidate = vi.spyOn(ResourceObserver.prototype, 'invalidate');
     await ctx.store.createSession({
       sessionId: 's1',
       worktree: '/wt/s1',
@@ -2758,6 +2760,11 @@ describe('POST /sessions/:id/debug/scroll', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
+    // Telemetry must not trigger Git metadata reads or sandbox listener scans.
+    expect(invalidate).not.toHaveBeenCalled();
+    await app.inject({ method: 'PATCH', url: '/sessions/s1', payload: { name: 'Renamed' } });
+    expect(invalidate).toHaveBeenCalledWith('/sessions/s1');
+    invalidate.mockRestore();
   });
 
   it('rejects non-scalar scroll diagnostic data', async () => {
@@ -8686,6 +8693,124 @@ describe('GET /sessions/:id/branches', () => {
     expect(res.json()).toMatchObject({ currentPr: 119, pullRequest });
     expect(branchPrStatus).toHaveBeenCalledWith('feat/122-x', worktree);
     await withPrStatus.close();
+  });
+
+  it('shares batched metadata between devices and the session overview', async () => {
+    await createExistingSession('s1');
+    const metadata = vi.fn(async () => ({
+      current: 'feat/batched',
+      switchable: ['main'],
+      previewableRaw: ['remote'],
+    }));
+    const cachedApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: { ...branchSvc, metadata } as unknown as NonNullable<ServerDeps['branches']>,
+    });
+    try {
+      const responses = await Promise.all(
+        Array.from({ length: 3 }, () => cachedApp.inject('/sessions/s1/branches')),
+      );
+      for (const response of responses)
+        expect(response.json()).toMatchObject({
+          current: 'feat/batched',
+          switchable: ['main'],
+          previewable: ['remote'],
+        });
+      const overview = await cachedApp.inject('/sessions');
+      expect(overview.json()[0]).toMatchObject({ branch: 'feat/batched' });
+      expect(metadata).toHaveBeenCalledOnce();
+      expect(branchSvc.current).not.toHaveBeenCalled();
+      expect(branchSvc.switchable).not.toHaveBeenCalled();
+      expect(branchSvc.previewable).not.toHaveBeenCalled();
+    } finally {
+      await cachedApp.close();
+    }
+  });
+
+  it('handles failed metadata joined by a stale branch refresh', async () => {
+    await createExistingSession('s1');
+    let rejectRead: (error: Error) => void = () => {};
+    const metadata = vi.fn(
+      () =>
+        new Promise<never>((_resolve, reject) => {
+          rejectRead = reject;
+        }),
+    );
+    const cachedApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: { ...branchSvc, metadata } as unknown as NonNullable<ServerDeps['branches']>,
+      branchCacheTtlMs: 1,
+    });
+    try {
+      branchSvc.current.mockResolvedValue('feat/cached');
+      await cachedApp.inject('/sessions/s1/activity');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const pending = cachedApp.inject('/sessions/s1/branches');
+      await vi.waitFor(() => expect(metadata).toHaveBeenCalledOnce());
+      expect((await cachedApp.inject('/sessions/s1/activity')).json()).toMatchObject({
+        branch: 'feat/cached',
+      });
+      // A timeout must not escape the detached stale-cache refresh as an unhandled rejection.
+      rejectRead(new Error('metadata timeout'));
+      expect((await pending).statusCode).toBe(200);
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      rejectRead(new Error('cleanup'));
+      await cachedApp.close();
+    }
+  });
+
+  it('disowns batched metadata that finishes after a branch switch', async () => {
+    await createExistingSession('s1');
+    let release: (value: {
+      current: string;
+      switchable: string[];
+      previewableRaw: string[];
+    }) => void = () => {};
+    const fresh: Parameters<typeof release>[0] = {
+      current: 'feat/new',
+      switchable: [],
+      previewableRaw: [],
+    };
+    const metadata = vi
+      .fn(async () => fresh)
+      .mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            release = done;
+          }),
+      );
+    const cachedApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: { ...branchSvc, metadata } as unknown as NonNullable<ServerDeps['branches']>,
+    });
+    try {
+      const oldRead = cachedApp.inject('/sessions/s1/branches');
+      await vi.waitFor(() => expect(metadata).toHaveBeenCalledOnce());
+      branchSvc.switch.mockResolvedValue('feat/new');
+      const switched = await cachedApp.inject({
+        method: 'POST',
+        url: '/sessions/s1/branch',
+        payload: { branch: 'feat/new' },
+      });
+      expect(switched.statusCode).toBe(200);
+      expect((await cachedApp.inject('/sessions/s1/branches')).json()).toMatchObject({
+        current: 'feat/new',
+      });
+      release({ current: 'feat/old', switchable: [], previewableRaw: [] });
+      await oldRead;
+      expect((await cachedApp.inject('/sessions')).json()[0]).toMatchObject({ branch: 'feat/new' });
+      expect(metadata).toHaveBeenCalledTimes(2);
+    } finally {
+      release(fresh);
+      await cachedApp.close();
+    }
   });
 
   it('shares PR status and branch enumeration between devices, overview and background polls', async () => {

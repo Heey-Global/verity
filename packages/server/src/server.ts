@@ -3428,6 +3428,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   app.addHook('onResponse', (request, reply, done) => {
     if (
       reply.statusCode < 400 &&
+      request.routeOptions.url !== '/sessions/:id/debug/scroll' &&
       (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) ||
         request.url.startsWith('/github/app/manifest/callback') ||
         request.url.startsWith('/github/app/manifest/installed'))
@@ -4422,6 +4423,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   /** Read git for this worktree, or join the read already running for it, and
    *  write the answer back unless it was disowned meanwhile. */
   const readBranch = (branches: GitBranchService, worktree: string): Promise<string> => {
+    const metadata = branchMetadataInFlight.get(worktree);
+    if (branches.metadata && metadata && !metadata.disowned) {
+      return metadata.read.then((value) => value.current);
+    }
     const running = branchInFlight.get(worktree);
     // An invalidation disowns the pre-switch read immediately, but the promise
     // can remain unsettled for arbitrarily long. A poll arriving in that window
@@ -4458,10 +4463,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const cached = branchCache.get(worktree);
     // A cold read is awaited so the first poll after opening a session shows a
     // branch at all; a stale one is answered from memory while git runs behind
-    // it. The rejection is handled inside {@link readBranch}, and the caller of a
-    // cold read gets it — whoever asked first is who should hear that git failed.
+    // it. Background refresh failures are absorbed here; a cold read still
+    // propagates failure to the caller awaiting it.
     if (cached === undefined) return readBranch(branches, worktree);
-    if (Date.now() - cached.at >= branchTtlMs) void readBranch(branches, worktree);
+    if (Date.now() - cached.at >= branchTtlMs) {
+      void readBranch(branches, worktree).catch(() => {});
+    }
     return cached.branch;
   };
   // Repeated PR-strip polls need current status, not a full branch enumeration
@@ -4477,18 +4484,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     if (cached !== undefined && Date.now() - cached.at < branchTtlMs) {
       return Promise.resolve(cached.value);
     }
+    if (branches.metadata) disownBranchRefresh(worktree);
     const token = {
       disowned: false,
-      read: Promise.all([
-        readBranch(branches, worktree),
-        branches.switchable(worktree),
-        branches.previewable(worktree),
-      ]).then(([current, switchable, previewableRaw]) => ({ current, switchable, previewableRaw })),
+      read: branches.metadata
+        ? branches.metadata(worktree)
+        : Promise.all([
+            readBranch(branches, worktree),
+            branches.switchable(worktree),
+            branches.previewable(worktree),
+          ]).then(([current, switchable, previewableRaw]) => ({
+            current,
+            switchable,
+            previewableRaw,
+          })),
     };
     branchMetadataInFlight.set(worktree, token);
     void token.read
       .then((value) => {
-        if (!token.disowned) branchMetadata.set(worktree, { value, at: Date.now() });
+        if (!token.disowned) {
+          branchMetadata.set(worktree, { value, at: Date.now() });
+          if (branches.metadata)
+            branchCache.set(worktree, { branch: value.current, at: Date.now() });
+        }
       })
       .catch(() => undefined)
       .finally(() => {

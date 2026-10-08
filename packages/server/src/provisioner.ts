@@ -2212,6 +2212,14 @@ export class ProvisionerImpl implements Provisioner {
   private readonly inFlightProvisions = new Map<string, Promise<ProjectRecord>>();
   private readonly retiringSandboxes = new Set<string>();
   private readonly sandboxReplacementGenerations = new Map<string, number>();
+  private readonly supervisorReconciliations = new Map<
+    string,
+    {
+      containerName: string;
+      generation: number | undefined;
+      promise: Promise<unknown>;
+    }
+  >();
   /** Per-project tail promises serialize managed-checkout fetch/reset operations.
    *  Unlike provisioning single-flight, every queued synchronization must run:
    *  a later request may correspond to a newer merge that was not visible when
@@ -2465,33 +2473,56 @@ export class ProvisionerImpl implements Provisioner {
           if (!hasRunnerRuntime && !connectorEnabled) return undefined;
           if (this.retiringSandboxes.has(project.id)) return undefined;
           const replacementGeneration = this.sandboxReplacementGenerations.get(project.id);
+          const pending = this.supervisorReconciliations.get(project.id);
+          if (
+            pending?.containerName === project.containerName &&
+            pending.generation === replacementGeneration
+          ) {
+            return pending.promise;
+          }
           // A replacement stops and removes the old sandbox while the row still
           // reads `active` (it only moves to `container_starting` once the new
           // container phase begins), and starts the stack itself in the new one.
           // An exec landing in that window hits a sandbox that is going away and
           // fails with a runtime error that says nothing about the Runner.
-          try {
-            await this.containerCommand({
-              containerName: project.containerName,
-              dockerHost,
-              user: hasRunnerRuntime
-                ? `0:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`
-                : `${String(this.opts.runnerRuntimeUid ?? RUNNER_RUNTIME_UID)}:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`,
-              workdir: hasRunnerRuntime ? RUNNER_RUNTIME_TARGET : '/',
-              command: hasRunnerRuntime
-                ? 'verity-runner-stack-start'
-                : 'verity-egress-connector-start --standalone',
-              timeoutMs: 12_000,
-            });
-            return undefined;
-          } catch (error) {
-            // The same race from the other side: the replacement began while
-            // this exec was already in flight.
-            if (this.sandboxReplacementGenerations.get(project.id) !== replacementGeneration) {
-              return undefined;
-            }
-            return error;
-          }
+          const entry = {
+            containerName: project.containerName,
+            generation: replacementGeneration,
+            promise: Promise.resolve()
+              .then(async () => {
+                try {
+                  await this.containerCommand({
+                    containerName: project.containerName,
+                    dockerHost,
+                    user: hasRunnerRuntime
+                      ? `0:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`
+                      : `${String(this.opts.runnerRuntimeUid ?? RUNNER_RUNTIME_UID)}:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`,
+                    workdir: hasRunnerRuntime ? RUNNER_RUNTIME_TARGET : '/',
+                    command: hasRunnerRuntime
+                      ? 'verity-runner-stack-start'
+                      : 'verity-egress-connector-start --standalone',
+                    timeoutMs: 12_000,
+                  });
+                  return undefined;
+                } catch (error) {
+                  // The same race from the other side: the replacement began while
+                  // this exec was already in flight.
+                  if (
+                    this.sandboxReplacementGenerations.get(project.id) !== replacementGeneration
+                  ) {
+                    return undefined;
+                  }
+                  return error;
+                }
+              })
+              .finally(() => {
+                if (this.supervisorReconciliations.get(project.id) === entry) {
+                  this.supervisorReconciliations.delete(project.id);
+                }
+              }),
+          };
+          this.supervisorReconciliations.set(project.id, entry);
+          return entry.promise;
         }),
     );
     const failures = outcomes.filter((outcome) => outcome !== undefined);
