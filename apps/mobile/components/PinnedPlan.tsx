@@ -1,4 +1,4 @@
-import { planProposalContent } from '@verity/mobile';
+import { planProposalContent, planProposalFullyRepresented } from '@verity/mobile';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -31,22 +31,30 @@ export function PinnedPlan({
         <Text style={styles.count}>{content.steps.length} steps</Text>
       </View>
       <ScrollView style={styles.content}>
-        <Text style={styles.title}>{content.title}</Text>
-        <Text style={styles.goal}>{content.goal}</Text>
-        {content.steps.map((step, index) => {
-          const match = /^\*\*(.+?)\*\*\s*(?:[—–-]\s*)?([\s\S]*)$/.exec(step);
-          return (
-            <View key={`${index}:${step}`} style={styles.step}>
-              <View style={styles.number}>
-                <Text style={styles.numberText}>{index + 1}</Text>
-              </View>
-              <View style={styles.stepText}>
-                <Text style={styles.stepTitle}>{match?.[1] ?? step}</Text>
-                {match?.[2] ? <Text style={styles.description}>{match[2]}</Text> : null}
-              </View>
-            </View>
-          );
-        })}
+        {planProposalFullyRepresented(markdown) ? (
+          <>
+            <Text style={styles.title}>{content.title}</Text>
+            <Text style={styles.goal}>{content.goal}</Text>
+            {content.steps.map((step, index) => {
+              const match = /^\*\*(.+?)\*\*\s*(?:[—–-]\s*)?([\s\S]*)$/.exec(step);
+              return (
+                <View key={`${index}:${step}`} style={styles.step}>
+                  <View style={styles.number}>
+                    <Text style={styles.numberText}>{index + 1}</Text>
+                  </View>
+                  <View style={styles.stepText}>
+                    <Text style={styles.stepTitle}>{match?.[1] ?? step}</Text>
+                    {match?.[2] ? <Text style={styles.description}>{match[2]}</Text> : null}
+                  </View>
+                </View>
+              );
+            })}
+          </>
+        ) : (
+          <Text style={styles.goal} selectable>
+            {markdown}
+          </Text>
+        )}
       </ScrollView>
       {error !== undefined ? <Text style={styles.error}>{error}</Text> : null}
       <View style={styles.actions}>

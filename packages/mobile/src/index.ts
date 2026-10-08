@@ -107,6 +107,7 @@ export {
   planProposalDisplay,
   planProposalHeadline,
   planProposalContent,
+  planProposalFullyRepresented,
   planView,
   type PlanEntry,
   type PlanEntryStatus,

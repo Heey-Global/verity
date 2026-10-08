@@ -377,6 +377,13 @@ it('implements a submitted plan on the user instruction without another approval
     worktree: '/tmp/verity-planning-s1',
     model: 'claude-opus-5',
   });
+  const prompt = await harness.store.appendEvent('s1', {
+    t: 'prompt',
+    text: 'Passt, leg los',
+    initiatedBy: { userId: 'u1' },
+  });
+  await harness.store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+  await harness.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
   const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
   await withListener(harness, async (socketPath) => {
     let id = 0;
@@ -399,6 +406,24 @@ it('implements a submitted plan on the user instruction without another approval
     // Starting and presenting only restrict the agent or show text: no card.
     expect(harness.approvals).toEqual([]);
 
+    await harness.store.appendEvent('s1', {
+      t: 'tool_call',
+      id: 'plan1',
+      name: 'verity_present_plan',
+      input: { plan: '1. Do it' },
+    });
+    await harness.store.appendEvent('s1', {
+      t: 'tool_result',
+      id: 'plan1',
+      isError: false,
+      output: { planningRevision: (await harness.store.getSession('s1'))?.planningRevision },
+    });
+    await harness.store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'Passt, leg los',
+      steered: true,
+      initiatedBy: { userId: 'u1' },
+    });
     const implemented = await call('verity_end_planning', {});
     expect(implemented.isError, JSON.stringify(implemented)).toBeUndefined();
   });
@@ -527,38 +552,42 @@ it.each([
   },
 );
 
-it('does not end planning when the operator declines the card', async () => {
-  const harness = build({ planningTools: true, allow: false });
-  await harness.store.createProject({
-    id: 'p1',
-    kind: 'local',
-    owner: '__local__',
-    repo: 'alpha',
-    cloneDir: '__local__-alpha',
-    containerName: 'verity-alpha',
-    state: 'active',
-  });
-  await harness.store.createSession({
-    sessionId: 's1',
-    projectId: 'p1',
-    worktree: '/tmp/verity-planning-s1',
-    model: 'claude-opus-5',
-  });
-  await harness.store.setSessionPlanning('s1', 'active');
-  await harness.store.presentSessionPlan('s1', '1. Approved plan');
-  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
-  await withListener(harness, async (socketPath) => {
-    const response = await postUnix(socketPath, `Bearer ${token}`, {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'tools/call',
-      params: { name: 'verity_end_planning', arguments: { action: 'discard' } },
+it.each(['discard', 'implement'] as const)(
+  'does not end planning without trusted consent when the user declines %s',
+  async (action) => {
+    const harness = build({ planningTools: true, allow: false });
+    await harness.store.createProject({
+      id: 'p1',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'alpha',
+      cloneDir: '__local__-alpha',
+      containerName: 'verity-alpha',
+      state: 'active',
     });
-    expect(response.status).toBe(200);
-  });
-  expect((await harness.store.getSession('s1'))?.planning).toBe('active');
-  expect(harness.dispatches).toEqual([]);
-});
+    await harness.store.createSession({
+      sessionId: 's1',
+      projectId: 'p1',
+      worktree: '/tmp/verity-planning-s1',
+      model: 'claude-opus-5',
+    });
+    await harness.store.setSessionPlanning('s1', 'active');
+    await harness.store.presentSessionPlan('s1', '1. Approved plan');
+    const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+    await withListener(harness, async (socketPath) => {
+      const response = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'verity_end_planning', arguments: { action } },
+      });
+      expect(response.status).toBe(200);
+    });
+    expect((await harness.store.getSession('s1'))?.planning).toBe('active');
+    expect(harness.approvals).toHaveLength(1);
+    expect(harness.dispatches).toEqual([]);
+  },
+);
 
 it('does not open an extra approval even when another card would have revised the plan', async () => {
   const harness = build({ planningTools: true, revisePlanOnApproval: true });
@@ -579,6 +608,34 @@ it('does not open an extra approval even when another card would have revised th
   });
   await harness.store.startSessionPlanning('s1');
   await harness.store.presentSessionPlan('s1', 'Original plan');
+  await harness.store.appendEvent('s1', {
+    t: 'tool_call',
+    id: 'plan1',
+    name: 'verity_present_plan',
+    input: { plan: 'Original plan' },
+  });
+  await harness.store.appendEvent('s1', {
+    t: 'tool_result',
+    id: 'plan1',
+    isError: false,
+    output: {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            planningRevision: (await harness.store.getSession('s1'))?.planningRevision,
+          }),
+        },
+      ],
+    },
+  });
+  const prompt = await harness.store.appendEvent('s1', {
+    t: 'prompt',
+    text: 'So umsetzen',
+    initiatedBy: { userId: 'u1' },
+  });
+  await harness.store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+  await harness.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
   const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
   await withListener(harness, async (socketPath) => {
     const response = await postUnix(socketPath, `Bearer ${token}`, {

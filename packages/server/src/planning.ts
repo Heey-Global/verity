@@ -2,11 +2,83 @@
 // change files (the conductor maps it onto each agent's own read-only posture).
 // The agent starts planning and presents plans through gateway tools; leaving it
 // is the user's decision — a tap in the app or an instruction in the chat.
-import { IMPLEMENT_PLAN_DISPLAY, IMPLEMENT_PLAN_PROMPT } from '@verity/events';
+import {
+  IMPLEMENT_PLAN_DISPLAY,
+  IMPLEMENT_PLAN_PROMPT,
+  PRESENT_PLAN_TOOL,
+  planningToolName,
+} from '@verity/events';
 import type { DispatchTurnOptions, TurnOptions } from '@verity/session';
 import type { EventStore, SessionPlanning } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+
+/** Only a direct, complete instruction can substitute for the implementation card.
+ * Quoted instructions, explanations and agent-supplied arguments are not consent. */
+export function isPlanImplementationInstruction(text: string): boolean {
+  return /^(?:(?:passt|okay|ok|ja|yes)[,.!]?\s+)?(?:leg los|los geht[’']?s|so umsetzen|plan umsetzen|setz(?:e)? (?:den )?plan um|implement(?: the)? plan|go ahead|start implementing)[.!]?$/iu.test(
+    text.trim(),
+  );
+}
+
+export async function hasTrustedPlanInstruction(
+  store: Pick<
+    EventStore,
+    'listRunningTurns' | 'getEventsAfter' | 'getEventsBeforeSeq' | 'getSession'
+  >,
+  sessionId: string,
+  turnId: string,
+): Promise<boolean> {
+  const running = (await store.listRunningTurns()).find((turn) => turn.sessionId === sessionId);
+  if (running?.turnId !== turnId) return false;
+  const events = await store.getEventsAfter(sessionId, running.promptSeq - 1);
+  const prompts = events.filter(({ event }) => event.t === 'prompt');
+  const latest = prompts.at(-1);
+  if (latest?.event.t !== 'prompt' || latest.event.peer || !latest.event.initiatedBy) return false;
+  // A successor prompt belongs to a different turn even before its marker is rebound.
+  if (latest.seq !== running.promptSeq && !latest.event.steered) return false;
+  if (!isPlanImplementationInstruction(latest.event.text)) return false;
+  const session = await store.getSession(sessionId);
+  if (session?.planning !== 'active' || session.planningRevision === undefined) return false;
+  const { events: preceding } = await store.getEventsBeforeSeq(sessionId, 200, latest.seq);
+  const calls = new Set(
+    preceding.flatMap(({ event }) =>
+      event.t === 'tool_call' && planningToolName(event.name) === PRESENT_PLAN_TOOL
+        ? [event.id]
+        : [],
+    ),
+  );
+  // Consent covers the revision the user could see when sending their message.
+  // Missing or old backend results require the normal confirmation instead.
+  return preceding.some(
+    ({ event }) =>
+      event.t === 'tool_result' &&
+      !event.isError &&
+      calls.has(event.id) &&
+      presentedRevision(event.output) === session?.planningRevision,
+  );
+}
+
+function presentedRevision(value: unknown): number | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const object = value as Record<string, unknown>;
+  if (typeof object.planningRevision === 'number') return object.planningRevision;
+  if (object.structuredContent !== undefined) return presentedRevision(object.structuredContent);
+  const content = object.content ?? (Array.isArray(value) ? value : undefined);
+  if (Array.isArray(content))
+    for (const item of content) {
+      if (typeof item !== 'object' || item === null) continue;
+      const text = (item as Record<string, unknown>).text;
+      if (typeof text !== 'string') continue;
+      try {
+        const revision = presentedRevision(JSON.parse(text));
+        if (revision !== undefined) return revision;
+      } catch {
+        /* Not a structured gateway response. */
+      }
+    }
+  return undefined;
+}
 
 export interface PlanningDeps {
   eventStore: Pick<

@@ -334,7 +334,11 @@ import {
 import { parseOwnerRepo } from './canonical.js';
 import { startAutomationScheduler } from './automation-scheduler.js';
 import { registerAutomationRoutes } from './automation-routes.js';
-import { createSessionPlanning, registerPlanningRoutes } from './planning.js';
+import {
+  createSessionPlanning,
+  hasTrustedPlanInstruction,
+  registerPlanningRoutes,
+} from './planning.js';
 import type { ListenerDiscovery } from './listener-discovery.js';
 import { registerLocalPreviewRoutes } from './local-preview-routes.js';
 import {
@@ -6035,6 +6039,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
       hasStandingAuthorization: async ({
+        turnId,
         projectId,
         sessionId,
         toolName,
@@ -6052,7 +6057,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         if (
           toolName === START_PLANNING_TOOL ||
           toolName === PRESENT_PLAN_TOOL ||
-          (toolName === END_PLANNING_TOOL && (request as { action?: string }).action !== 'discard')
+          (toolName === END_PLANNING_TOOL &&
+            (request as { action?: string }).action !== 'discard' &&
+            (await hasTrustedPlanInstruction(deps.eventStore, sessionId, turnId)))
         ) {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;

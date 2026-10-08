@@ -3,6 +3,7 @@ import type { ToolCall } from '../happy/message.js';
 import {
   planHeadline,
   planProposalContent,
+  planProposalFullyRepresented,
   planProposal,
   planProposalRevision,
   planProposalDisplay,
@@ -185,4 +186,18 @@ it('counts only the numbered steps when the goal also contains a numbered list',
     '## Goal\n1. Describe the outcome.\n## Steps\n1. Make the change.\n2. Verify it.';
   expect(planProposalContent(markdown).steps).toEqual(['Make the change.', 'Verify it.']);
   expect(planProposalHeadline(markdown)).toBe('Plan · 2 steps');
+});
+
+describe('planProposalFullyRepresented', () => {
+  it('only uses the structured display when it preserves the whole proposal', () => {
+    const plan = '# Gestures\n## Goal\nFix dragging.\n## Steps\n1. **Fix** — separate gestures.';
+    expect(planProposalFullyRepresented(plan)).toBe(true);
+    for (const extra of [
+      '\n## Risks\nDo not change navigation.',
+      '\n## Constraints\nKeep compatibility.',
+    ]) {
+      expect(planProposalFullyRepresented(plan + extra)).toBe(false);
+    }
+    expect(planProposalFullyRepresented('## Steps\n- Fix dragging.')).toBe(false);
+  });
 });

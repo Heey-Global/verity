@@ -52,3 +52,10 @@ it('replaces the proposal with its revision and blocks double decisions while sa
   fireEvent.press(screen.getByLabelText('Implement plan'));
   expect(props.onImplement).not.toHaveBeenCalled();
 });
+
+it('keeps the complete approved text visible when a proposal contains other sections', () => {
+  const fullPlan = `${markdown}\n\n## Risks\nPreserve navigation and do not change the public API.`;
+  render(<PinnedPlan {...props} markdown={fullPlan} />);
+  expect(screen.getByText(fullPlan)).toBeOnTheScreen();
+  expect(screen.getAllByRole('button')).toHaveLength(2);
+});
