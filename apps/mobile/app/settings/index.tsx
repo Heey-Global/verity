@@ -12,8 +12,8 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import * as Application from 'expo-application';
-import { router, type Href } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { router, useFocusEffect, type Href } from 'expo-router';
+import { useCallback, useMemo, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 
 import {
@@ -78,18 +78,22 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
   const updateVersion = useServerUpdateBadge(true);
   const [connectedCount, setConnectedCount] = useState<number | undefined>(undefined);
-  useEffect(() => {
-    let active = true;
-    // Only the row's subtitle depends on it, so a failure leaves the row bare
-    // rather than raising a banner over the whole screen.
-    client
-      .listPairedDevices()
-      .then((devices) => active && setConnectedCount(devices.length))
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [client]);
+  // Re-read on focus: this screen stays mounted under /devices, where the
+  // count changes.
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      // Only the row's subtitle depends on it, so a failure leaves the row bare
+      // rather than raising a banner over the whole screen.
+      client
+        .listPairedDevices()
+        .then((devices) => active && setConnectedCount(devices.length))
+        .catch(() => undefined);
+      return () => {
+        active = false;
+      };
+    }, [client]),
+  );
 
   const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
   const exportDiagnostics = async () => {

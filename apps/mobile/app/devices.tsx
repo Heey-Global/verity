@@ -43,7 +43,7 @@ import { setVeritySettingsError } from '../lib/settingsStore';
 /** Pick the row glyph from the label the device reported when it paired. */
 function iconForDevice(label: string | null): IconName {
   if (label === null) return 'smartphone';
-  if (/browser|safari|chrome|firefox|edge/iu.test(label)) return 'globe';
+  if (/browser|safari|chrome|firefox|\bedge\b/iu.test(label)) return 'globe';
   if (/ipad|tablet/iu.test(label)) return 'tablet';
   if (/mac|desktop|laptop/iu.test(label)) return 'monitor';
   return 'smartphone';
@@ -342,7 +342,11 @@ function DevicesView({ client }: { client: VerityClient }) {
                   value={pairingInvitation.webAddress}
                   action="Open"
                   icon="external-link"
-                  onPress={() => void Linking.openURL(pairingInvitation.webAddress)}
+                  onPress={() =>
+                    void Linking.openURL(pairingInvitation.webAddress).catch(() =>
+                      setVeritySettingsError('Could not open the web address.'),
+                    )
+                  }
                   accessibilityLabel="Open web address"
                 />
               )}
@@ -367,7 +371,9 @@ function DevicesView({ client }: { client: VerityClient }) {
                 <Pressable
                   onPress={createInvitation}
                   disabled={working}
+                  style={working ? styles.buttonDisabled : null}
                   accessibilityRole="button"
+                  accessibilityState={{ disabled: working }}
                   accessibilityLabel="Create a new pairing link"
                 >
                   <Text style={styles.linkText}>{working ? 'Creating…' : 'New link'}</Text>
