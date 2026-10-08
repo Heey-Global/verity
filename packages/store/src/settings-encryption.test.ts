@@ -392,3 +392,11 @@ it('encrypts Attendee configuration and durable meeting credentials', async () =
   await store.deleteAttendeeState('config');
   expect(await store.getAttendeeState('config')).toBeUndefined();
 });
+
+it('removes Attendee configuration and recovery credentials during a test reset', async () => {
+  await store.putAttendeeState('config', { apiKey: 'fixture' });
+  await store.putAttendeeState('meeting:reset', { credentials: { apiKey: 'fixture' } });
+  await truncateAll(raw.db);
+  expect(await store.getAttendeeState('config')).toBeUndefined();
+  expect(await store.listAttendeeState()).toEqual([]);
+});

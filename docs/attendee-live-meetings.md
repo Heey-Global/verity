@@ -9,7 +9,8 @@ an agent turn automatically.
 
 Configure the Attendee API key and base64 project webhook secret in Settings →
 Connected services. Both configuration and persisted meeting credentials use the
-server's encrypted secret storage. Removing configuration prevents new meetings;
+server's encrypted secret storage. Attendee settings require a configured,
+unlocked secret cipher; un-keyed deployments cannot save credentials in plaintext. Removing configuration prevents new meetings;
 existing bots retain their credentials until final reconciliation.
 
 Online meetings require premium Uplink / Online Sharing and negotiated
