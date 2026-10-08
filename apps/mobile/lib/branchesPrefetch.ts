@@ -69,9 +69,9 @@ export function seedSessionBranches(client: VerityClient, session: SessionSummar
   cache.pending.delete(session.sessionId);
   cache.versions.delete(session.sessionId);
   rememberBranches(client, session.sessionId, {
-    current: session.branch ?? cached?.current ?? '',
     switchable: [],
     ...cached,
+    current: session.branch ?? cached?.current ?? '',
     currentPr: pullRequest?.number ?? null,
     pullRequest,
   });

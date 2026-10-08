@@ -73,6 +73,22 @@ describe('branches prefetch', () => {
     expect(takePrefetchedBranches(client, 's')).toBeUndefined();
   });
 
+  it('uses the overview branch after an external switch without discarding other metadata', () => {
+    const client = {} as VerityClient;
+    rememberBranches(client, 's', { ...branches, owner: 'example', repo: 'repo' });
+    seedSessionBranches(client, {
+      sessionId: 's',
+      branch: 'fix/new-branch',
+      pullRequest: null,
+    } as SessionSummary);
+    expect(cachedBranches(client, 's')).toMatchObject({
+      current: 'fix/new-branch',
+      owner: 'example',
+      repo: 'repo',
+      currentPr: null,
+    });
+  });
+
   it('starts once and hands the opening request to the session screen', async () => {
     const getBranches = jest.fn().mockResolvedValue(branches);
     const client = { getBranches } as unknown as VerityClient;
