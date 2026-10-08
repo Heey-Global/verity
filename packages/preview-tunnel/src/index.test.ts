@@ -13,6 +13,7 @@ import {
   hashPreviewSecret,
   reconnectDelayMs,
   supervisePreviewConnector,
+  validWebhookPath,
 } from './index.js';
 import { expiredPage, loginPage, unavailablePage } from './preview-page.js';
 
@@ -1803,6 +1804,7 @@ async function bridge(
   shareId: string,
   targetPort: number,
   options: Partial<{
+    webhookPath: '/webhooks/attendee';
     expiresAt: string;
     maxConcurrentStreams: number;
     requestTimeoutMs: number;
@@ -1839,7 +1841,11 @@ async function bridge(
   });
   await connector.connect();
   cleanups.push(() => connector.close());
-  return { edgePort, cookie: await login(edgePort, '123456'), connector };
+  return {
+    edgePort,
+    cookie: options.webhookPath ? '' : await login(edgePort, '123456'),
+    connector,
+  };
 }
 
 async function login(edgePort: number, pin: string): Promise<string> {
@@ -2042,3 +2048,80 @@ function openSlowLogin(port: number): Promise<ReturnType<typeof connect>> {
     });
   });
 }
+
+describe('meeting webhook confinement', () => {
+  it('admits only signed-source POST transport without redirects and strips the PIN', async () => {
+    let received = '';
+    let receivedUrl = '';
+    let signature = '';
+    const target = createServer((request, response) => {
+      receivedUrl = request.url ?? '';
+      signature = String(request.headers['x-webhook-signature']);
+      request.on('data', (data: Buffer) => {
+        received += data.toString();
+      });
+      request.on('end', () => {
+        response.writeHead(202).end();
+      });
+    });
+    const port = await listen(target);
+    cleanups.push(() => closeServer(target));
+    const { edgePort } = await bridge('webhook', port, { webhookPath: '/webhooks/attendee' });
+    const origin = `http://127.0.0.1:${edgePort}`;
+    const probe = await fetch(`${origin}/webhooks/attendee`, {
+      method: 'POST',
+      redirect: 'manual',
+    });
+    expect(probe.status).toBe(401);
+    expect(probe.headers.get('x-verity-webhook-mode')).toBe('webhook-v1');
+    expect(received).toBe('');
+    const body = '{ "text": "Grüße", "order": [2,1] }';
+    const result = await fetch(`${origin}/webhooks/attendee?pin=123456&meeting=abc`, {
+      method: 'POST',
+      body,
+      redirect: 'manual',
+      headers: { 'x-webhook-signature': 'unchanged' },
+    });
+    expect(result.status).toBe(202);
+    expect(result.headers.get('set-cookie')).toBeNull();
+    expect(received).toBe(body);
+    expect(receivedUrl).toBe('/webhooks/attendee?meeting=abc');
+    expect(signature).toBe('unchanged');
+    for (const path of ['/', '/__verity/login', '/__verity/logo.png', '/webhooks/attendee/']) {
+      expect(
+        (await fetch(`${origin}${path}?pin=123456`, { method: 'POST', redirect: 'manual' })).status,
+      ).toBe(404);
+    }
+    expect(
+      (await fetch(`${origin}/webhooks/attendee?pin=123456`, { redirect: 'manual' })).status,
+    ).toBe(404);
+    expect(
+      (
+        await fetch(`${origin}/webhooks/attendee?pin=000000`, {
+          method: 'POST',
+          redirect: 'manual',
+        })
+      ).status,
+    ).toBe(401);
+  });
+});
+
+it('rejects noncanonical and reserved webhook paths', () => {
+  expect(validWebhookPath('/providers/example-hook')).toBe(true);
+  for (const path of [
+    '/',
+    '/a/',
+    '/a//b',
+    '/a/../b',
+    '/a%2fb',
+    '/a?x=1',
+    '/a#x',
+    '/__verity',
+    '/__verity/connector',
+    '/a*',
+    '/a\\b',
+  ]) {
+    expect(validWebhookPath(path)).toBe(false);
+  }
+  expect(validWebhookPath('/' + 'a'.repeat(1024))).toBe(false);
+});

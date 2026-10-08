@@ -207,8 +207,8 @@ describe('UplinkControlClient', () => {
     await flush();
     defaultFixture.socket.open();
     const defaultHello = JSON.parse(defaultFixture.socket.sent[0]!) as Record<string, unknown>;
-    expect(defaultHello).not.toHaveProperty('capabilities');
-    expect(defaultHello).not.toHaveProperty('channels');
+    expect(defaultHello.capabilities).toEqual(['webhook-v1']);
+    expect(defaultHello.channels).toEqual(['http', 'ws']);
     await defaultFixture.client.stop();
 
     const probe = setup({ offerRemoteControl: true });
@@ -216,7 +216,7 @@ describe('UplinkControlClient', () => {
     await flush();
     probe.socket.open();
     const hello = JSON.parse(probe.socket.sent[0]!) as Record<string, unknown>;
-    expect(hello.capabilities).toEqual(['remote-control-v1']);
+    expect(hello.capabilities).toEqual(['remote-control-v1', 'webhook-v1']);
     expect(hello.channels).toEqual(['http', 'ws', 'remote']);
     await probe.client.stop();
   });

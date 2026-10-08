@@ -36,7 +36,8 @@
     "sharp": "0.35.5",
     "sigstore": "5.0.0",
     "ws": "8.22.0",
-    "zod": "4.6.5"
+    "zod": "4.6.5",
+    "@verity/preview-tunnel": "*"
   },
   "devDependencies": {
     "@types/qrcode": "1.5.6",

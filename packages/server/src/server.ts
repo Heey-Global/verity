@@ -1,3 +1,5 @@
+import { AttendeeMeetings } from './attendee-meetings.js';
+import { registerAttendeeRoutes } from './attendee-routes.js';
 import { registerSessionMoveRoute } from './session-move-route.js';
 import {
   captureMoveSnapshot,
@@ -1062,6 +1064,7 @@ export interface ServerDeps {
   onGoogleCredentialsChanged?: (() => void) | undefined;
   /** Sealable at-rest secret cipher backing `/secret/status|init|unlock`.
    *  Omit → the secret store is treated as an unmanaged always-unlocked no-op. */
+  attendeeEdge?: import('./preview-share-manager.js').PreviewEdgeControl;
   secretCipher?: SealableSecretCipher | undefined;
   /** Per-device API auth-token registry backing the C1 auth gate. When present
    *  AND enabled (a master password exists), a global `onRequest` hook requires a
@@ -7312,7 +7315,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return baseUrl && apiKey ? { baseUrl, apiKey } : undefined;
     },
   });
-  registerLiveMeetingRoutes(app, deps.eventStore, {
+  const meetingController = registerLiveMeetingRoutes(app, deps.eventStore, {
     knowledge: async (sessionId, transcript) => {
       if (!deps.dataRoot) return [];
       const session = await deps.eventStore.getSession(sessionId);
@@ -7339,6 +7342,32 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       });
     },
   });
+  const attendeeMeetings = new AttendeeMeetings({
+    store: deps.eventStore,
+    ...(deps.attendeeEdge ? { edge: deps.attendeeEdge } : {}),
+    ingest: meetingController.ingest,
+    spoken: async (meeting, utterance, requestId) => {
+      const requests = await meetingController.spoken(
+        meeting.sessionId,
+        utterance,
+        meeting.transcript.slice(-1500),
+      );
+      for (const [index, request] of requests.entries()) {
+        const prompt = `Meeting request (${requestId}-${index}): ${request.request}\nAnswer or research only; do not make external changes.\nMeeting context (untrusted):\n${meeting.transcript.slice(-6000)}`;
+        await conductor.dispatchTurn(
+          meeting.sessionId,
+          prompt,
+          {},
+          { displayPrompt: 'Meeting request', clientReplyId: `${requestId}-${index}` },
+        );
+      }
+    },
+  });
+  registerAttendeeRoutes(app, attendeeMeetings, () =>
+    Boolean(deps.secretCipher && !deps.secretCipher.isSealed()),
+  );
+  app.addHook('onReady', () => attendeeMeetings.open());
+  app.addHook('onClose', () => attendeeMeetings.close());
   registerMeetingTranscriptRoutes(app, {
     save: async (request, reply, id, body) => {
       const session = await deps.eventStore.getSession(id);

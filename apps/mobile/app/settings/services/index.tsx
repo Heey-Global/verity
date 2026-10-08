@@ -11,7 +11,7 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { AgentLoginPanel } from '../../../components/AgentLoginPanel';
@@ -294,6 +294,8 @@ function ServicesSettingsView({
         </SettingsGroup>
       ) : null}
 
+      <AttendeeSettings client={client} writable={writable} />
+
       {/* Not gated on the secret store: the server encrypts the Matrix password
           on its own, so the account stays editable while the store is sealed. */}
       <SettingsGroup title="Knowledge sources" description="Chats imported into project knowledge.">
@@ -419,4 +421,104 @@ function useMatrixAccount(client: VerityClient): IntegrationAccount | null {
     }, [client]),
   );
   return account;
+}
+
+function AttendeeSettings({ client, writable }: { client: VerityClient; writable: boolean }) {
+  const [configured, setConfigured] = useState(false);
+  const [apiKey, setApiKey] = useState('');
+  const [webhookSecret, setWebhookSecret] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    void client
+      .getAttendeeSettings?.()
+      .then((value) => setConfigured(value.configured))
+      .catch(() => undefined);
+  }, [client]);
+  const run = async (action: 'save' | 'test' | 'remove') => {
+    setBusy(true);
+    setMessage('');
+    try {
+      if (action === 'test') {
+        await client.testAttendee();
+        setMessage('Connection verified.');
+      } else {
+        await client.saveAttendeeSettings(
+          action === 'remove'
+            ? null
+            : { apiKey: apiKey.trim(), webhookSecret: webhookSecret.trim() },
+        );
+        setConfigured(action !== 'remove');
+        setApiKey('');
+        setWebhookSecret('');
+        setMessage(
+          action === 'remove'
+            ? 'Attendee disconnected. Active meetings continue until ended.'
+            : 'Attendee saved.',
+        );
+      }
+    } catch (error) {
+      setMessage(String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <SettingsGroup
+      title="Attendee"
+      description="Online meeting bots and live transcripts. Requires premium Uplink / Online Sharing."
+    >
+      <SettingsPanel>
+        <SecretPasteField
+          label="API key"
+          onBlur={() => undefined}
+          value={apiKey}
+          onChangeText={setApiKey}
+          configured={configured}
+          editable={writable && !busy}
+          masked
+          placeholder="Paste the Attendee API key…"
+        />
+        <SecretPasteField
+          label="Webhook secret"
+          onBlur={() => undefined}
+          value={webhookSecret}
+          onChangeText={setWebhookSecret}
+          configured={configured}
+          editable={writable && !busy}
+          masked
+          placeholder="From Attendee Settings → Webhooks…"
+        />
+        {!writable ? (
+          <Text style={styles.reproHint}>Unlock the secret store to configure Attendee.</Text>
+        ) : null}
+        <Pressable
+          accessibilityRole="button"
+          disabled={!writable || busy || !apiKey.trim() || !webhookSecret.trim()}
+          onPress={() => void run('save')}
+        >
+          <Text style={styles.reproHint}>Save Attendee</Text>
+        </Pressable>
+        {configured ? (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              disabled={!writable || busy}
+              onPress={() => void run('test')}
+            >
+              <Text style={styles.reproHint}>Test connection</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              disabled={!writable || busy}
+              onPress={() => void run('remove')}
+            >
+              <Text style={styles.reproHint}>Remove connection</Text>
+            </Pressable>
+          </>
+        ) : null}
+        {message ? <Text style={styles.reproHint}>{message}</Text> : null}
+      </SettingsPanel>
+    </SettingsGroup>
+  );
 }

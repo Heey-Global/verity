@@ -136,6 +136,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private heartbeat: NodeJS.Timeout | undefined;
   private leaseTimer: NodeJS.Timeout | undefined;
   private renewalTimer: NodeJS.Timeout | undefined;
+  private webhookNegotiated = false;
   private features = new Set<string>();
   private remoteNegotiated = false;
   private lastRemoteDescriptorState: string | undefined;
@@ -281,6 +282,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
   }
 
   async create(input: PreviewEdgeCreate): Promise<PreviewEdgeBinding> {
+    if (input.webhook && !this.webhookNegotiated)
+      throw new Error('Uplink webhook-v1 is unavailable');
     if (!this.isAvailable()) {
       this.options.log?.warn(
         { targetHost: new URL(this.options.url).host, control: this.diagnostics().control },
@@ -289,6 +292,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       throw new Error('public preview sharing is not enabled by the Uplink');
     }
     const response = await this.request('share.create', {
+      ...(input.webhook ? { webhook: input.webhook } : {}),
       duration: input.durationSeconds,
       pinHash: input.pinHash,
     });
@@ -418,8 +422,11 @@ export class UplinkControlClient implements PreviewEdgeControl {
             : {}),
           serverVersion: this.options.serverVersion,
           ...(this.options.offerRemoteControl === true
-            ? { capabilities: [REMOTE_CAPABILITY], channels: ['http', 'ws', REMOTE_CHANNEL] }
-            : {}),
+            ? {
+                capabilities: [REMOTE_CAPABILITY, 'webhook-v1'],
+                channels: ['http', 'ws', REMOTE_CHANNEL],
+              }
+            : { capabilities: ['webhook-v1'], channels: ['http', 'ws'] }),
         }),
       );
     });
@@ -586,6 +593,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
         // client behind the slot it just consumed until the lease expires.
         await this.awaitRequiredCleanup();
         this.applyLease(frame);
+        this.webhookNegotiated = negotiation.capabilities.has('webhook-v1');
         this.remoteNegotiated =
           this.options.offerRemoteControl === true &&
           negotiation.capabilities.has(REMOTE_CAPABILITY) &&
@@ -840,6 +848,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private clearAuthority(reason: string, notify = true): void {
     this.features.clear();
     this.remoteNegotiated = false;
+    this.webhookNegotiated = false;
     this.remoteInstallation = undefined;
     this.clearRemoteSessions(reason);
     this.welcomed = false;

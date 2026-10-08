@@ -1,3 +1,4 @@
+import { sql } from 'kysely';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createSecretCipher } from './crypto.js';
@@ -370,4 +371,24 @@ describe('EventStore — secret encryption at rest (ADR 0002 D3)', () => {
       gitSshPrivateKey: 'legacy-plaintext-key',
     });
   });
+});
+
+it('encrypts Attendee configuration and durable meeting credentials', async () => {
+  const config = { apiKey: 'attendee-api-fixture', webhookSecret: 'attendee-webhook-fixture' };
+  await store.putAttendeeState('config', config);
+  await store.putAttendeeState('meeting:fixture', { credentials: config });
+  const rows = await sql<{ state_secret: string }>`select state_secret from attendee_state`.execute(
+    raw.db,
+  );
+  expect(rows.rows).toHaveLength(2);
+  for (const row of rows.rows) {
+    expect(row.state_secret).not.toContain(config.apiKey);
+    expect(row.state_secret).not.toContain(config.webhookSecret);
+  }
+  expect(await store.getAttendeeState('config')).toEqual(config);
+  expect(await store.listAttendeeState()).toEqual([
+    { id: 'meeting:fixture', state: { credentials: config } },
+  ]);
+  await store.deleteAttendeeState('config');
+  expect(await store.getAttendeeState('config')).toBeUndefined();
 });

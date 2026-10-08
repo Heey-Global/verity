@@ -112,6 +112,27 @@ export default function MeetingScreen() {
     null,
   );
   const [engines, setEngines] = useState<STTEngine[]>([]);
+  const [meetingSource, setMeetingSource] = useState<'presence' | 'online'>('presence');
+  const [meetingUrl, setMeetingUrl] = useState('');
+  const [attendeeConfigured, setAttendeeConfigured] = useState(false);
+  useEffect(() => {
+    let current = true;
+    const refreshConfig = () => {
+      const client = createVerityClient();
+      void client
+        ?.getAttendeeSettings?.()
+        .then((value) => {
+          if (current) setAttendeeConfigured(value.configured);
+        })
+        .catch(() => undefined);
+    };
+    refreshConfig();
+    const timer = meetingSource === 'online' ? setInterval(refreshConfig, 5000) : undefined;
+    return () => {
+      current = false;
+      if (timer) clearInterval(timer);
+    };
+  }, [meetingSource]);
   const [selectedEngine, setSelectedEngine] = useState<STTEngineId>('fluid-nemotron');
   const [expectedParticipants, setExpectedParticipants] = useState<number | null>(null);
   const [showNewMeeting, setShowNewMeeting] = useState(false);
@@ -471,7 +492,11 @@ export default function MeetingScreen() {
       merges: Record<string, number>;
     }>,
   ) => {
-    if (!meeting?.ownerToken || speakerEditDraft.current?.meetingId !== meeting.id) return;
+    if (
+      !(meeting?.ownerToken || meeting?.engine === 'attendee') ||
+      speakerEditDraft.current?.meetingId !== meeting.id
+    )
+      return;
     const next = { ...speakerEditDraft.current, ...change };
     speakerEditDraft.current = next;
     setMeeting((current) =>
@@ -487,7 +512,18 @@ export default function MeetingScreen() {
     try {
       const write = speakerEditWrite.current
         .catch(() => undefined)
-        .then(() => updateSpeakerEdits(next.meetingId, next.names, next.corrections, next.merges));
+        .then(async () => {
+          if (meeting.engine === 'attendee') {
+            const client = createVerityClient();
+            if (!client) throw new Error('Connect to the server.');
+            await client.editOnlineMeetingSpeakers(meeting.sessionId, next.meetingId, {
+              speakerNames: next.names,
+              speakerCorrections: next.corrections,
+              speakerMerges: next.merges,
+            });
+          } else
+            await updateSpeakerEdits(next.meetingId, next.names, next.corrections, next.merges);
+        });
       speakerEditWrite.current = write;
       await write;
       setSyncError(true);
@@ -497,7 +533,7 @@ export default function MeetingScreen() {
   };
 
   const renameSpeaker = (speaker: number) => {
-    if (!meeting?.ownerToken) return;
+    if (!(meeting?.ownerToken || meeting?.engine === 'attendee')) return;
     Alert.prompt(
       'Name this speaker',
       'The name applies throughout this meeting.',
@@ -518,7 +554,7 @@ export default function MeetingScreen() {
   };
 
   const correctSpeaker = (line: SpeakerLine, available: number[]) => {
-    if (!meeting?.ownerToken) return;
+    if (!(meeting?.ownerToken || meeting?.engine === 'attendee')) return;
     const buttons = [
       ...available.map((speaker) => ({
         text: speakerLabel(speaker),
@@ -548,7 +584,7 @@ export default function MeetingScreen() {
   };
 
   const mergeSpeaker = (source: number, available: number[]) => {
-    if (!meeting?.ownerToken) return;
+    if (!(meeting?.ownerToken || meeting?.engine === 'attendee')) return;
     const targets = available.filter((speaker) => speaker !== source);
     if (!targets.length) return;
     Alert.alert('Merge duplicate speaker', `Treat ${speakerLabel(source)} as:`, [
@@ -625,6 +661,16 @@ export default function MeetingScreen() {
     setBusy(true);
     setError(null);
     try {
+      if (meetingSource === 'online') {
+        const client = createVerityClient();
+        if (!client) throw new Error('Connect to the server.');
+        const result = await client.startOnlineMeeting(sessionId, meetingUrl.trim());
+        await syncMeetingSession(sessionId);
+        setSelectedId(result.meetingId);
+        setShowNewMeeting(false);
+        await refresh();
+        return;
+      }
       const next = await startMeeting(sessionId, selectedEngine, expectedParticipants);
       setSyncError(true);
       setSelectedId(null);
@@ -649,8 +695,12 @@ export default function MeetingScreen() {
           throw new Error('This meeting belongs to another server.');
         const client = createVerityClient();
         if (!client) throw new Error('Connect to the server to stop this recording.');
-        await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
-        setPendingCommand('stop');
+        if (meeting.engine === 'attendee')
+          await client.stopOnlineMeeting(meeting.sessionId, meeting.id);
+        else {
+          await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
+          setPendingCommand('stop');
+        }
       } else {
         await endMeeting();
         setSyncError(true);
@@ -891,7 +941,7 @@ export default function MeetingScreen() {
                     accessibilityRole="button"
                     accessibilityLabel={`Rename ${speakerLabel(speaker)}`}
                     accessibilityHint="Long press to merge this speaker with another"
-                    disabled={!meeting.ownerToken}
+                    disabled={!(meeting.ownerToken || meeting.engine === 'attendee')}
                     onPress={() => renameSpeaker(speaker)}
                     onLongPress={() => mergeSpeaker(speaker, speakers)}
                     style={[
@@ -920,10 +970,11 @@ export default function MeetingScreen() {
                   : 'No speaker labels yet.'}
               </Text>
             )}
-            {meeting.ownerToken && speakers.length > 0 ? (
+            {(meeting.ownerToken || meeting.engine === 'attendee') && speakers.length > 0 ? (
               <Text style={styles.muted}>Tap to name · Hold to merge</Text>
             ) : null}
-            {meeting.ownerToken && Object.keys(meeting.speakerMerges ?? {}).length ? (
+            {(meeting.ownerToken || meeting.engine === 'attendee') &&
+            Object.keys(meeting.speakerMerges ?? {}).length ? (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Restore merged speaker"
@@ -979,7 +1030,7 @@ export default function MeetingScreen() {
                     <Pressable
                       accessibilityRole="button"
                       accessibilityLabel={`Correct speaker for ${item.text}`}
-                      disabled={!meeting.ownerToken}
+                      disabled={!(meeting.ownerToken || meeting.engine === 'attendee')}
                       onPress={() => correctSpeaker(item, speakerChoices)}
                     >
                       <Text style={styles.transcriptText}>
@@ -1197,6 +1248,7 @@ export default function MeetingScreen() {
               <Pressable
                 disabled={
                   busy ||
+                  meeting.engine === 'attendee' ||
                   !!pendingCommand ||
                   (meeting.captureStatus !== 'paused' && meeting.captureStatus !== 'listening')
                 }
@@ -1251,6 +1303,53 @@ export default function MeetingScreen() {
       ) : null}
       {!live && (!meeting || showNewMeeting) ? (
         <View>
+          <Text style={styles.section}>Meeting source</Text>
+          {(['presence', 'online'] as const).map((source) => (
+            <Pressable
+              key={source}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: meetingSource === source }}
+              onPress={() => setMeetingSource(source)}
+              style={styles.engineChoice}
+            >
+              <Text style={{ color: meetingSource === source ? ACCENT : TEXT }}>
+                {meetingSource === source ? '● ' : '○ '}
+                {source === 'presence' ? 'In person' : 'Online meeting'}
+              </Text>
+            </Pressable>
+          ))}
+          {meetingSource === 'online' ? (
+            <>
+              <TextInput
+                value={meetingUrl}
+                onChangeText={setMeetingUrl}
+                placeholder="Meeting link"
+                placeholderTextColor={MUTED}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+                accessibilityLabel="Online meeting link"
+                style={styles.engineChoice}
+              />
+              <Text style={styles.muted}>
+                {attendeeConfigured
+                  ? 'Attendee joins and transcribes while the app is closed. Requires premium Uplink / Online Sharing.'
+                  : 'Set up online meetings: configure Attendee and enable premium Uplink / Online Sharing.'}
+              </Text>
+              {!attendeeConfigured ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => router.push('/settings/services')}
+                >
+                  <Text style={styles.link}>Set up Attendee</Text>
+                </Pressable>
+              ) : null}
+            </>
+          ) : null}
+        </View>
+      ) : null}
+      {!live && (!meeting || showNewMeeting) && meetingSource === 'presence' ? (
+        <View>
           <Text style={styles.section}>Engine for next meeting</Text>
           {engines.map((engine) => (
             <Pressable
@@ -1274,7 +1373,13 @@ export default function MeetingScreen() {
         </View>
       ) : null}
       {!live && (!meeting || showNewMeeting) ? (
-        <Pressable disabled={busy} onPress={start} style={[styles.button, styles.startButton]}>
+        <Pressable
+          disabled={
+            busy || (meetingSource === 'online' && (!attendeeConfigured || !meetingUrl.trim()))
+          }
+          onPress={start}
+          style={[styles.button, styles.startButton]}
+        >
           {busy ? (
             <ActivityIndicator color={TEXT} />
           ) : (

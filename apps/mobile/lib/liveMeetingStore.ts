@@ -8,7 +8,7 @@ export interface MeetingRecord {
   id: string;
   sessionId: string;
   serverId?: string | null;
-  engine: STTEngineId;
+  engine: STTEngineId | 'attendee';
   startedAt: number;
   endedAt: number | null;
   state: 'active' | 'interrupted' | 'ended';
@@ -282,7 +282,7 @@ export async function listMeetings(sessionId: string): Promise<MeetingRecord[]> 
     id: string;
     session_id: string;
     server_id: string | null;
-    engine: STTEngineId;
+    engine: STTEngineId | 'attendee';
     started_at: number;
     ended_at: number | null;
     state: MeetingRecord['state'];
@@ -407,7 +407,7 @@ export async function pendingMeetings(
   ).getAllAsync<{
     id: string;
     session_id: string;
-    engine: STTEngineId;
+    engine: STTEngineId | 'attendee';
     started_at: number;
     ended_at: number | null;
     state: MeetingRecord['state'];

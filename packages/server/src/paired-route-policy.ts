@@ -14,6 +14,18 @@ type PairedRoutePolicy =
  * including collections, cross-project actions, and stream-ticket issuance.
  * The WebSocket handshake consumes that ticket, not a paired-device bearer. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
+  [
+    routeScopeKey('POST', '/sessions/:id/live-meetings/online'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/live-meetings/:meetingId/online/stop'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('PATCH', '/sessions/:id/live-meetings/:meetingId/online/speakers'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
   [routeScopeKey('GET', '/projects/:id'), { kind: 'project', parameter: 'id', permission: 'read' }],
   [routeScopeKey('GET', '/sessions/:id'), { kind: 'session', parameter: 'id', permission: 'read' }],
   [

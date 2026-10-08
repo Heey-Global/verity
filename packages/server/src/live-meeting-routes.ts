@@ -141,7 +141,14 @@ export function registerLiveMeetingRoutes(
     delayMs?: number;
     minIntervalMs?: number;
   } = {},
-): void {
+): {
+  ingest: (meeting: import('@verity/store').LiveMeetingSyncRecord) => Promise<void>;
+  spoken: (
+    sessionId: string,
+    utterance: string,
+    context: string,
+  ) => Promise<Array<{ kind: 'research' | 'opinion'; request: string }>>;
+} {
   const queued = new Map<
     string,
     {
@@ -465,4 +472,35 @@ export function registerLiveMeetingRoutes(
     }
     return { accepted: true };
   });
+  return {
+    ingest: async (meeting) => {
+      if (!(await store.liveMeetings.putMeeting(meeting)))
+        throw new Error('Meeting owner mismatch');
+      scheduleAnalysis(
+        meeting.sessionId,
+        meeting.id,
+        meeting.revision,
+        meeting.transcript,
+        meeting.state !== 'active',
+      );
+    },
+    spoken: async (sessionId, utterance, context) => {
+      if (!opts.query) return [];
+      const raw = await opts.query(
+        sessionId,
+        addressedPrompt(utterance, context),
+        AbortSignal.timeout(30_000),
+      );
+      if (!raw) return [];
+      return addressedResult
+        .parse(JSON.parse(raw))
+        .requests.filter(
+          (item) =>
+            item.request.length >= 3 &&
+            utterance.includes(item.request) &&
+            isReadOnlyRequest(item.request),
+        )
+        .slice(0, 3);
+    },
+  };
 }

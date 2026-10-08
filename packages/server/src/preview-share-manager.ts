@@ -44,6 +44,7 @@ const PREVIEW_TTL_SECONDS = [60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60, 30 * 24 * 
 const LONG_PREVIEW_TTL_SECONDS = 24 * 60 * 60;
 
 export interface PreviewEdgeCreate {
+  webhook?: { path: string };
   pinHash: string;
   durationSeconds: number;
 }

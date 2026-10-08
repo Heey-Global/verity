@@ -3378,6 +3378,16 @@ const migrations: Record<string, Migration> = {
       await sql`alter table live_meetings drop column speaker_names_json`.execute(db);
     },
   },
+  '0122_attendee_meetings': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`create table attendee_state (id text primary key, state_secret text not null)`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`drop table attendee_state`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

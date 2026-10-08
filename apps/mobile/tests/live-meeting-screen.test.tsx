@@ -1262,3 +1262,17 @@ it('stamps notes with the time of day rather than the meeting timer', async () =
   expect(await screen.findByTestId('meeting-note')).toHaveTextContent(`${expected} Budget`);
   expect(expected).not.toBe('01:30');
 });
+
+it('explains online setup and opens services when Attendee is not configured', async () => {
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByText(/Online meeting/));
+  expect(
+    screen.getByText(
+      'Set up online meetings: configure Attendee and enable premium Uplink / Online Sharing.',
+    ),
+  ).toBeTruthy();
+  fireEvent.press(screen.getByText('Set up Attendee'));
+  expect(router.push).toHaveBeenCalledWith('/settings/services');
+  fireEvent.press(screen.getByText('Start meeting'));
+  expect(startMeeting).not.toHaveBeenCalled();
+});

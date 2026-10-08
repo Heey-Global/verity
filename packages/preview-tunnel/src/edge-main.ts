@@ -1,9 +1,13 @@
-import { PreviewEdge } from './index.js';
+import { validWebhookPath, PreviewEdge } from './index.js';
 
 const maxBodyBytes = optionalPositiveInteger('VERITY_PREVIEW_MAX_BODY_BYTES');
 const requestTimeoutMs = optionalPositiveInteger('VERITY_PREVIEW_REQUEST_TIMEOUT_MS');
 const trustedProxyHops = optionalPositiveInteger('VERITY_PREVIEW_TRUSTED_PROXY_HOPS');
+const webhookPath = process.env.VERITY_PREVIEW_WEBHOOK_PATH;
+if (webhookPath !== undefined && !validWebhookPath(webhookPath))
+  throw new Error('unsupported VERITY_PREVIEW_WEBHOOK_PATH');
 const edge = new PreviewEdge({
+  ...(webhookPath === undefined ? {} : { webhookPath }),
   shareId: required('VERITY_PREVIEW_SHARE_ID'),
   pinHash: required('VERITY_PREVIEW_PIN_HASH'),
   connectorTokenHash: required('VERITY_PREVIEW_CONNECTOR_TOKEN_HASH'),

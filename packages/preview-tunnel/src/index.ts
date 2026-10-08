@@ -46,7 +46,17 @@ const COOKIE_NAME = '__Host-verity-preview';
 const MAX_LOGIN_IDENTITIES = 1024;
 const CONNECTOR_HEARTBEAT_MS = 15_000;
 
+export function validWebhookPath(value: string): boolean {
+  return (
+    value !== '/__verity' &&
+    !value.startsWith('/__verity/') &&
+    value.length <= 1024 &&
+    /^\/(?:[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*)$/.test(value)
+  );
+}
+
 export interface PreviewEdgeOptions {
+  webhookPath?: string;
   shareId: string;
   pinHash: string;
   connectorTokenHash: string;
@@ -191,7 +201,8 @@ export function hashPreviewPin(pin: string, salt = randomBytes(16).toString('hex
 }
 
 export class PreviewEdge {
-  private readonly options: Required<PreviewEdgeOptions>;
+  private readonly options: Required<Omit<PreviewEdgeOptions, 'webhookPath'>> &
+    Pick<PreviewEdgeOptions, 'webhookPath'>;
   private readonly server: Server;
   private readonly websocketServer: WebSocketServer;
   private readonly clientSockets: WebSocketServer;
@@ -209,6 +220,8 @@ export class PreviewEdge {
   private expiryTimer: NodeJS.Timeout | undefined;
 
   constructor(options: PreviewEdgeOptions) {
+    if (options.webhookPath !== undefined && !validWebhookPath(options.webhookPath))
+      throw new Error('unsupported webhook path');
     validatePinHash(options.pinHash);
     validateHash(options.connectorTokenHash, 'connectorTokenHash');
     validateHash(options.sessionSecretHash, 'sessionSecretHash');
@@ -287,6 +300,11 @@ export class PreviewEdge {
         this.websocketServer.handleUpgrade(request, socket, head, (client) =>
           this.attachConnector(client),
         );
+        return;
+      }
+      if (this.options.webhookPath) {
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+        socket.destroy();
         return;
       }
       // An application socket. A handshake cannot be answered with the login
@@ -658,7 +676,29 @@ export class PreviewEdge {
     let streaming = false;
     try {
       const url = new URL(request.url ?? '/', this.options.publicOrigin);
-      if (url.pathname === LOGO_PATH) {
+      if (this.options.webhookPath) {
+        if (url.pathname !== this.options.webhookPath || request.method !== 'POST') {
+          response.writeHead(404, { 'cache-control': 'no-store' }).end();
+          return;
+        }
+        if (!url.searchParams.has('pin')) {
+          response
+            .writeHead(401, { 'X-Verity-Webhook-Mode': 'webhook-v1', 'cache-control': 'no-store' })
+            .end();
+          return;
+        }
+        if (
+          !(await this.handleLogin(
+            request,
+            response,
+            { pin: url.searchParams.get('pin') ?? '', next: '/' },
+            true,
+          ))
+        )
+          return;
+        url.searchParams.delete('pin');
+      }
+      if (!this.options.webhookPath && url.pathname === LOGO_PATH) {
         if (request.method !== 'GET' && request.method !== 'HEAD') {
           response.writeHead(405, { allow: 'GET, HEAD' }).end();
           return;
@@ -677,11 +717,12 @@ export class PreviewEdge {
         sendPreviewExpired(response);
         return;
       }
-      if (url.pathname === LOGIN_PATH) {
+      if (!this.options.webhookPath && url.pathname === LOGIN_PATH) {
         await this.handleLogin(request, response);
         return;
       }
       if (
+        !this.options.webhookPath &&
         request.method === 'GET' &&
         url.searchParams.has('pin') &&
         !this.sessionAuthorized(request)
@@ -691,7 +732,7 @@ export class PreviewEdge {
         await this.handleLogin(request, response, { pin, next: url.pathname + url.search });
         return;
       }
-      if (!this.sessionAuthorized(request)) {
+      if (!this.options.webhookPath && !this.sessionAuthorized(request)) {
         response.writeHead(303, {
           location: `${LOGIN_PATH}?next=${encodeURIComponent(url.pathname + url.search)}`,
           'cache-control': 'no-store',
@@ -870,7 +911,8 @@ export class PreviewEdge {
     request: IncomingMessage,
     response: ServerResponse,
     linkCode?: { pin: string; next: string },
-  ): Promise<void> {
+    webhook = false,
+  ): Promise<boolean> {
     const url = new URL(request.url ?? LOGIN_PATH, this.options.publicOrigin);
     if (request.method === 'GET' && !linkCode && !url.searchParams.has('pin')) {
       response.writeHead(200, {
@@ -880,16 +922,16 @@ export class PreviewEdge {
         'x-frame-options': 'DENY',
       });
       response.end(loginPage(url.searchParams.get('next') ?? '/'));
-      return;
+      return false;
     }
     if (request.method !== 'POST' && request.method !== 'GET') {
       response.writeHead(405, { allow: 'GET, POST' });
       response.end();
-      return;
+      return false;
     }
     if (this.loginVerifications >= 2) {
       sendPreviewError(response, 429, 'Too many code attempts. Try again shortly.', '1');
-      return;
+      return false;
     }
     this.loginVerifications += 1;
     try {
@@ -900,7 +942,7 @@ export class PreviewEdge {
           'cache-control': 'no-store',
         });
         response.end('A valid trusted forwarding chain is required.');
-        return;
+        return false;
       }
       const now = Date.now();
       for (const [identity, attempts] of this.loginFailures) {
@@ -909,12 +951,12 @@ export class PreviewEdge {
       }
       if (!this.loginFailures.has(client) && this.loginFailures.size >= MAX_LOGIN_IDENTITIES) {
         sendPreviewError(response, 429, 'Code entry is busy. Try again in a minute.', '60');
-        return;
+        return false;
       }
       const failures = this.loginFailures.get(client) ?? [];
       if (failures.length >= 10) {
         sendPreviewError(response, 429, 'Too many code attempts. Try again in a minute.', '60');
-        return;
+        return false;
       }
       failures.push(now);
       this.loginFailures.set(client, failures);
@@ -929,7 +971,7 @@ export class PreviewEdge {
       const returnPath = cleanNext.pathname + cleanNext.search + cleanNext.hash;
       if (this.expired()) {
         sendPreviewExpired(response);
-        return;
+        return false;
       }
       if (!(await verifyPreviewPin(form.get('pin') ?? '', this.options.pinHash))) {
         response.writeHead(401, {
@@ -939,19 +981,21 @@ export class PreviewEdge {
           'x-frame-options': 'DENY',
         });
         response.end(loginPage(returnPath, 'Invalid code. Please try again.'));
-        return;
+        return false;
       }
       if (this.expired()) {
         sendPreviewExpired(response);
-        return;
+        return false;
       }
       this.loginFailures.delete(client);
+      if (webhook) return true;
       response.writeHead(303, {
         location: returnPath,
         'set-cookie': `${COOKIE_NAME}=${this.sessionValue()}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=28800`,
         'cache-control': 'no-store',
       });
       response.end();
+      return true;
     } finally {
       this.loginVerifications -= 1;
     }
