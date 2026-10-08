@@ -679,7 +679,7 @@ function orderedSessions(sessions: SessionSummary[]): SessionSummary[] {
   }
   for (const session of sessions) manual.get(session.projectId ?? null)?.push(session);
   for (const group of manual.values())
-    group.sort((a, b) => (a.sortOrder ?? -1) - (b.sortOrder ?? -1));
+    group.sort((a, b) => (a.sortOrder ?? Infinity) - (b.sortOrder ?? Infinity));
   const offsets = new Map<string | null, number>();
   return queued.map((session) => {
     const key = session.projectId ?? null;

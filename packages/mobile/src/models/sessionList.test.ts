@@ -1409,7 +1409,7 @@ describe('session ordering', () => {
     return { model: new SessionListModel({ client }), overview, reorderSessions };
   }
 
-  it('keeps manual groups stable while new sessions precede ranked sessions', async () => {
+  it('keeps manual groups stable and appends new sessions', async () => {
     const { model } = setup([
       { ...session('a', 'crashed'), projectId: 'p', sortOrder: 1 },
       { ...session('new', 'idle'), projectId: 'p' },
@@ -1417,7 +1417,7 @@ describe('session ordering', () => {
     ]);
     await model.refresh();
     expect(model.state.sessionReordering).toBe(true);
-    expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['new', 'b', 'a']);
+    expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['b', 'a', 'new']);
   });
 
   it('serializes drags and rolls the latest failure back to the preceding confirmed order', async () => {
@@ -1474,7 +1474,7 @@ describe('session ordering', () => {
     resolve(['b']);
     await saving;
     expect(model.state.sessions.filter((s) => s.projectId === 'p').map((s) => s.sessionId)).toEqual(
-      ['new', 'b'],
+      ['b', 'new'],
     );
     expect(model.state.sessions.find((s) => s.sessionId === 'a')?.projectId).toBe('other');
   });

@@ -43,14 +43,23 @@ it('persists manual overview positions without changing chronological history', 
   );
   expect((await ctx.store.listSessions()).map((s) => s.sessionId)).toEqual(history);
 });
-it('prepends concurrent additions and ignores deleted IDs without losing manual mode', async () => {
+it('appends concurrent additions and ignores deleted IDs without losing manual mode', async () => {
   await session('a');
   await ctx.store.reorderSessions(null, ['a']);
   await session('b');
-  expect(await ctx.store.reorderSessions(null, ['a'])).toEqual(['b', 'a']);
+  await session('c');
+  expect(await order()).toEqual(
+    new Map([
+      ['a', 0],
+      ['b', 1],
+      ['c', 2],
+    ]),
+  );
+  expect(await ctx.store.reorderSessions(null, ['a'])).toEqual(['a', 'b', 'c']);
   await ctx.store.deleteSession('a');
-  expect(await ctx.store.reorderSessions(null, ['a', 'b'])).toEqual(['b']);
+  expect(await ctx.store.reorderSessions(null, ['a', 'b'])).toEqual(['b', 'c']);
   await ctx.store.deleteSession('b');
+  await ctx.store.deleteSession('c');
   await ctx.store.reorderSessions(null, []);
   await session('c');
   expect(await order()).toEqual(new Map([['c', 0]]));
