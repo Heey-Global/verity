@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   fixedCandidate,
   planCandidate,
+  proposalBaseForSource,
   releaseNotes,
   singleGroup,
   stageArtifact,
@@ -184,8 +185,8 @@ describe('OTA release state', () => {
 
 // Execute the real orchestration against persistent fake external services. The
 // state survives failed child processes, just as accepted EAS/GitHub writes do.
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync, execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -205,6 +206,7 @@ interface ServiceState {
   reviews?: { id: number; state: string; commit_id: string }[];
   loseDismiss?: boolean;
   rollingHead?: string;
+  proposalBase?: string;
   sourceManifestMissing?: boolean;
   loseMetadata?: boolean;
   noPullHistory?: boolean;
@@ -255,7 +257,7 @@ const onMain = () => {
   return {...candidate, version, tag:'mobile-v'+version, branch:'staging-mobile-v'+version+'-'+sha, baseline:'mobile-v'+previous};
 };
 if(tool === 'git') {
-  if(args[0] === 'rev-parse') out(sha);
+  if(args[0] === 'rev-parse') out(args[1]==='origin/main'?(s.proposalBase??sha):sha);
   if(args[0] === 'merge-base' || args[0] === 'fetch') out('');
   if(args[0] === 'log') out(args.includes('--format=%s') ? (s.deliveredWork ?? 'fix(mobile): Show models (#451)') : sha);
   if(args[0] === 'ls-remote') {
@@ -365,7 +367,7 @@ describe('OTA CLI interrupted external operations', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(service.state().stagingOAuth).toBe('123-staging.apps.googleusercontent.com');
   });
-  it('publishes a prerelease while retaining the production baseline and immutable group', () => {
+  it('reconciles a prerelease while retaining the production baseline and immutable group', () => {
     const service = serviceFixture({ stagedVersion: 'mobile-v1.33.3' });
     const result = service.run('stage');
     expect(result.status, result.stderr).toBe(0);
@@ -375,7 +377,7 @@ describe('OTA CLI interrupted external operations', () => {
         (call) =>
           call.startsWith('gh release edit mobile-v1.33.3') && call.includes('--prerelease=true'),
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(service.state().released).toBe('mobile-v1.33.2');
     expect(calls.some((call) => call.includes('channel:edit staging'))).toBe(true);
     expect(calls.some((call) => call.includes('channel:edit production'))).toBe(false);
@@ -647,7 +649,8 @@ describe('OTA CLI interrupted external operations', () => {
   });
 
   it('publishes a later Staging version while preserving an undelivered approval', () => {
-    const service = serviceFixture({ approvedOnMain: '1.33.3' });
+    const proposalBase = 'e'.repeat(40);
+    const service = serviceFixture({ approvedOnMain: '1.33.3', proposalBase });
     const result = service.run('stage', {}, '1.33.4');
     expect(result.status).toBe(0);
     const calls = service.state().calls;
@@ -665,6 +668,12 @@ describe('OTA CLI interrupted external operations', () => {
     ).toHaveLength(2);
     expect(recovered.some((call) => call.includes('--force-with-lease'))).toBe(true);
     expect(recovered.some((call) => call.startsWith('gh pr create'))).toBe(true);
+    expect(
+      recovered.some((call) =>
+        call.includes(`${proposalBase}:refs/heads/automation/promote-mobile-ota-`),
+      ),
+    ).toBe(true);
+    expect(recovered.some((call) => call.includes(`expected=${proposalBase}`))).toBe(true);
   });
 
   // Nothing pushes to main after a promotion, so a candidate stranded by this
@@ -705,4 +714,39 @@ describe('OTA CLI interrupted external operations', () => {
     expect(service.run('promote').status).toBe(0);
     expect(service.state().calls.some((call) => call.startsWith('gh workflow run'))).toBe(false);
   });
+});
+
+it('recovers a proposal on delivered main without conflicts or reverting newer application code', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'verity-ota-ancestry-'));
+  const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  try {
+    git('init', '-b', 'main');
+    git('config', 'user.name', 'Test');
+    git('config', 'user.email', 'test@example.com');
+    writeFileSync(join(cwd, 'app.txt'), 'candidate code');
+    writeFileSync(join(cwd, 'manifest.json'), 'old approval');
+    git('add', '.');
+    git('commit', '-m', 'candidate');
+    const source = git('rev-parse', 'HEAD');
+    writeFileSync(join(cwd, 'manifest.json'), 'delivered approval');
+    writeFileSync(join(cwd, 'app.txt'), 'newer main code');
+    git('add', '.');
+    git('commit', '-m', 'deliver production and advance main');
+    const main = git('rev-parse', 'HEAD');
+    git('remote', 'add', 'origin', cwd);
+    const base = proposalBaseForSource(source, git);
+    expect(base).toBe(main);
+    git('checkout', '-b', 'proposal', base);
+    writeFileSync(join(cwd, 'manifest.json'), 'immutable candidate approval');
+    git('add', '.');
+    git('commit', '-m', 'proposal metadata');
+    expect(git('merge-base', 'main', 'proposal')).toBe(main);
+    expect(git('diff', '--name-only', 'main', 'proposal')).toBe('manifest.json');
+    expect(readFileSync(join(cwd, 'app.txt'), 'utf8')).toBe('newer main code');
+    git('checkout', 'main');
+    git('merge', '--no-edit', 'proposal');
+    expect(readFileSync(join(cwd, 'manifest.json'), 'utf8')).toBe('immutable candidate approval');
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
