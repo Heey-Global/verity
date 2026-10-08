@@ -8729,6 +8729,41 @@ describe('GET /sessions/:id/branches', () => {
     }
   });
 
+  it('handles failed metadata joined by a stale branch refresh', async () => {
+    await createExistingSession('s1');
+    let rejectRead: (error: Error) => void = () => {};
+    const metadata = vi.fn(
+      () =>
+        new Promise<never>((_resolve, reject) => {
+          rejectRead = reject;
+        }),
+    );
+    const cachedApp = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: { ...branchSvc, metadata } as unknown as NonNullable<ServerDeps['branches']>,
+      branchCacheTtlMs: 1,
+    });
+    try {
+      branchSvc.current.mockResolvedValue('feat/cached');
+      await cachedApp.inject('/sessions/s1/activity');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const pending = cachedApp.inject('/sessions/s1/branches');
+      await vi.waitFor(() => expect(metadata).toHaveBeenCalledOnce());
+      expect((await cachedApp.inject('/sessions/s1/activity')).json()).toMatchObject({
+        branch: 'feat/cached',
+      });
+      // A timeout must not escape the detached stale-cache refresh as an unhandled rejection.
+      rejectRead(new Error('metadata timeout'));
+      expect((await pending).statusCode).toBe(200);
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      rejectRead(new Error('cleanup'));
+      await cachedApp.close();
+    }
+  });
+
   it('disowns batched metadata that finishes after a branch switch', async () => {
     await createExistingSession('s1');
     let release: (value: {

@@ -4457,10 +4457,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const cached = branchCache.get(worktree);
     // A cold read is awaited so the first poll after opening a session shows a
     // branch at all; a stale one is answered from memory while git runs behind
-    // it. The rejection is handled inside {@link readBranch}, and the caller of a
-    // cold read gets it — whoever asked first is who should hear that git failed.
+    // it. Background refresh failures are absorbed here; a cold read still
+    // propagates failure to the caller awaiting it.
     if (cached === undefined) return readBranch(branches, worktree);
-    if (Date.now() - cached.at >= branchTtlMs) void readBranch(branches, worktree);
+    if (Date.now() - cached.at >= branchTtlMs) {
+      void readBranch(branches, worktree).catch(() => {});
+    }
     return cached.branch;
   };
   // Repeated PR-strip polls need current status, not a full branch enumeration
