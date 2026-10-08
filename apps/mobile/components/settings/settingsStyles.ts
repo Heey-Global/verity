@@ -653,6 +653,22 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     fontSize: theme.text.md,
     fontWeight: '600',
   },
+  deviceNameSizer: {
+    flexShrink: 1,
+    minWidth: 40,
+  },
+  deviceNameGhost: {
+    opacity: 0,
+    // Room for the caret at the end of the name.
+    paddingRight: 2,
+  },
+  deviceNameField: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+  },
   deviceNameRow: {
     flexDirection: 'row',
     alignItems: 'center',

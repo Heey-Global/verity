@@ -497,28 +497,41 @@ function DeviceRow({
       </View>
       <View style={styles.navRowBody}>
         <View style={styles.deviceNameRow}>
-          <TextInput
-            style={styles.deviceNameInput}
-            value={draft}
-            onChangeText={setDraft}
-            onFocus={() => setFocused(true)}
-            // A draft that trims to nothing, or to the name already stored, commits
-            // nothing — so put the field back rather than leave a blank or a
-            // padded copy standing in as the row's apparent name.
-            onBlur={() => {
-              setFocused(false);
-              const next = draft.trim();
-              submitted.current = onRename(draft) === 'noop' ? null : next;
-              if (next === '' || next === stored) setDraft(stored);
-            }}
-            placeholder="Verity device"
-            placeholderTextColor={theme.colors.textFaint}
-            autoCapitalize="words"
-            autoCorrect={false}
-            returnKeyType="done"
-            maxLength={100}
-            accessibilityLabel={`Rename ${stored === '' ? 'paired device' : stored}`}
-          />
+          {/* A text field keeps its own width, which left the badge floating
+              away from the name. An invisible copy of the name sizes the box
+              and the field fills it, so the badge sits right after the text. */}
+          <View style={styles.deviceNameSizer}>
+            <Text
+              style={[styles.deviceNameInput, styles.deviceNameGhost]}
+              numberOfLines={1}
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+            >
+              {draft === '' ? 'Verity device' : draft}
+            </Text>
+            <TextInput
+              style={[styles.deviceNameInput, styles.deviceNameField]}
+              value={draft}
+              onChangeText={setDraft}
+              onFocus={() => setFocused(true)}
+              // A draft that trims to nothing, or to the name already stored, commits
+              // nothing — so put the field back rather than leave a blank or a
+              // padded copy standing in as the row's apparent name.
+              onBlur={() => {
+                setFocused(false);
+                const next = draft.trim();
+                submitted.current = onRename(draft) === 'noop' ? null : next;
+                if (next === '' || next === stored) setDraft(stored);
+              }}
+              placeholder="Verity device"
+              placeholderTextColor={theme.colors.textFaint}
+              autoCapitalize="words"
+              autoCorrect={false}
+              returnKeyType="done"
+              maxLength={100}
+              accessibilityLabel={`Rename ${stored === '' ? 'paired device' : stored}`}
+            />
+          </View>
           {device.isCurrent ? <StatusPill quiet intent="ready" label="This device" /> : null}
         </View>
         <Text style={styles.navRowSubtitle}>
