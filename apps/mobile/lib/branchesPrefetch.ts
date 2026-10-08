@@ -1,4 +1,4 @@
-import type { BranchList, VerityClient } from '@verity/mobile';
+import type { BranchList, SessionSummary, VerityClient } from '@verity/mobile';
 
 type PendingBranches = { promise: Promise<BranchList>; settledAt?: number };
 type BranchesCache = {
@@ -55,6 +55,26 @@ export function cachedBranches(client: VerityClient, sessionId: string): BranchL
 
 export function rememberBranches(client: VerityClient, sessionId: string, value: BranchList): void {
   remember(cacheFor(client), sessionId, value);
+}
+
+/** Carry the overview's known PR into the opening frame without another HTTP read. */
+export function seedSessionBranches(client: VerityClient, session: SessionSummary): void {
+  const cached = cachedBranches(client, session.sessionId);
+  const known = session.pullRequest === undefined ? cached?.pullRequest : session.pullRequest;
+  if (known === undefined) return;
+  // A confirmed action can update the compact projection before the next full read.
+  const pullRequest = session.pr === null || known === null ? null : { ...known, ...session.pr };
+  // A speculative read predating this snapshot must not overwrite it on entry.
+  const cache = cacheFor(client);
+  cache.pending.delete(session.sessionId);
+  cache.versions.delete(session.sessionId);
+  rememberBranches(client, session.sessionId, {
+    current: session.branch ?? cached?.current ?? '',
+    switchable: [],
+    ...cached,
+    currentPr: pullRequest?.number ?? null,
+    pullRequest,
+  });
 }
 
 /** Capture identity before awaiting the network; authentication may rotate meanwhile. */

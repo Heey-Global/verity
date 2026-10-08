@@ -49,6 +49,8 @@ function unavailable(status: PullRequestStatus | null): PullRequestStatus | null
 export function createSessionPrCache(options: {
   load(session: SessionRecord): Promise<PullRequestStatus | null>;
   now?: (() => number) | undefined;
+  /** Publish accepted changes from foreground and background discovery alike. */
+  onChange?: (session: SessionRecord, status: PullRequestStatus | null) => void;
 }) {
   const now = options.now ?? Date.now;
   const entries = new Map<string, Entry>();
@@ -127,6 +129,8 @@ export function createSessionPrCache(options: {
           quietReads: status === null ? Math.min(5, (previous?.quietReads ?? 0) + 1) : 0,
           failures,
         });
+        if (previous === undefined || JSON.stringify(previous.status) !== JSON.stringify(status))
+          options.onChange?.(session, status);
       }
       if (pending.get(key) === token) pending.delete(key);
       resolve(token.disowned ? null : status);
@@ -147,5 +151,7 @@ export function createSessionPrCache(options: {
       if (!live.has(key)) invalidate(key);
     }
   };
-  return { get, isDue, invalidate, prune };
+  const peek = (worktree: string): PullRequestStatus | null | undefined =>
+    entries.get(worktree)?.status;
+  return { get, peek, isDue, invalidate, prune };
 }

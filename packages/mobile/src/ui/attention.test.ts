@@ -186,13 +186,15 @@ describe('sessionAttention', () => {
     expect(attentionCount(sessions)).toBe(1);
   });
 
-  it('emits no flag for a non-dirty merge state', () => {
+  it('does not report a conflict for a non-dirty merge state', () => {
     // `behind`/`blocked`/`unstable` are ordinary states the pipeline + mergeable
     // tri-state already describe; only `dirty` means an actual conflict.
     for (const mergeState of ['behind', 'blocked', 'unstable', 'draft', 'clean'] as const) {
       expect(
-        sessionAttention({ status: 'idle', pr: openPr({ pipeline: 'unknown', mergeState }) }),
-      ).toEqual([]);
+        sessionAttention({ status: 'idle', pr: openPr({ pipeline: 'unknown', mergeState }) }).map(
+          (flag) => flag.kind,
+        ),
+      ).toEqual(['pr_unknown']);
     }
   });
 
@@ -227,8 +229,10 @@ describe('sessionAttention', () => {
     }
   });
 
-  it('emits no PR flag for an unknown pipeline or a non-open PR', () => {
-    expect(sessionAttention({ status: 'idle', pr: openPr({ pipeline: 'unknown' }) })).toEqual([]);
+  it('keeps an unknown open PR visible without claiming CI or merge readiness', () => {
+    expect(sessionAttention({ status: 'idle', pr: openPr({ pipeline: 'unknown' }) })).toEqual([
+      { kind: 'pr_unknown', tone: 'attention', label: 'PR status unavailable', blocking: false },
+    ]);
     const merged = openPr({ phase: 'merged', mergeable: false, pipeline: 'success' });
     expect(sessionAttention({ status: 'idle', pr: merged })).toEqual([]);
   });
@@ -351,6 +355,7 @@ describe('sandbox_disconnected (server-reported)', () => {
       'merge_ready',
       'merge_checking',
       'ci_running',
+      'pr_unknown',
       'unread',
     ];
     const everyKind: AttentionInput[] = [
@@ -363,6 +368,7 @@ describe('sandbox_disconnected (server-reported)', () => {
       { status: 'idle', pr: openPr({ pipeline: 'success', mergeable: false }) },
       { status: 'idle', pr: openPr({ pipeline: 'success', mergeable: null }) },
       { status: 'idle', pr: openPr({ pipeline: 'running' }) },
+      { status: 'idle', pr: openPr({ pipeline: 'unknown' }) },
       { status: 'idle', unread: true },
     ];
     for (const input of everyKind)

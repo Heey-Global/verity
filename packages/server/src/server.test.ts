@@ -9202,6 +9202,45 @@ describe('GET /sessions/:id/branches', () => {
     await withPrStatus.close();
   });
 
+  it('shares the opened PR status with the overview before its next summary refresh', async () => {
+    await createExistingSession('s1');
+    branchSvc.current.mockResolvedValue('fix/status');
+    branchSvc.switchable.mockResolvedValue([]);
+    branchSvc.previewable.mockResolvedValue([]);
+    const status = {
+      number: 119,
+      title: 'Known PR',
+      url: 'https://github.com/example/repo/pull/119',
+      phase: 'open' as const,
+      pipeline: 'running' as const,
+      checks: { completed: 1, total: 2, successful: 1, failed: 0, pending: 1 },
+      mergeable: null,
+    };
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: async () => status,
+    });
+    try {
+      const branches = await server.inject({ method: 'GET', url: '/sessions/s1/branches' });
+      expect(branches.statusCode).toBe(200);
+      const overview = await server.inject({ method: 'GET', url: '/sessions?envelope=1' });
+      expect(overview.statusCode).toBe(200);
+      expect(
+        overview
+          .json<{ sessions: { sessionId: string }[] }>()
+          .sessions.find((s) => s.sessionId === 's1'),
+      ).toMatchObject({
+        pr: { phase: status.phase, pipeline: status.pipeline },
+        pullRequest: status,
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   it('degrades currentPr to null when the PR lookup throws (never fails the list)', async () => {
     await createExistingSession('s1');
     branchSvc.current.mockResolvedValue('feat/122-x');
@@ -10725,6 +10764,72 @@ describe('GET /live (WebSocket)', () => {
       });
     } finally {
       conn.ws.close();
+    }
+  });
+
+  it('announces newly discovered PR status to overview and branch watchers together', async () => {
+    await createExistingSession('s1');
+    branchSvc.current.mockResolvedValue('fix/status');
+    branchSvc.switchable.mockResolvedValue([]);
+    let now = 0;
+    let status = {
+      number: 119,
+      title: 'Known PR',
+      url: 'https://github.com/example/repo/pull/119',
+      phase: 'open' as const,
+      pipeline: 'running' as 'running' | 'success',
+      mergeable: false,
+      checks: { completed: 0, total: 1, successful: 0, failed: 0, pending: 1 },
+    };
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: async () => status,
+      pullRequestCacheNow: () => now,
+    });
+    await server.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    await server.listen({ host: '127.0.0.1', port: 0 });
+    const address = server.server.address();
+    if (address === null || typeof address === 'string') throw new Error('Missing test listener');
+    const conn = await connect(address.port, '/live');
+    try {
+      expect(await conn.next()).toMatchObject({ k: 'ready' });
+      const paths = ['/sessions?envelope=1', '/sessions/s1/branches'];
+      for (const path of paths) {
+        conn.ws.send(JSON.stringify({ k: 'watch', resource: { path } }));
+        expect(await conn.next()).toEqual({ k: 'invalidate', path });
+      }
+      const invalidations: string[] = [];
+      conn.ws.addEventListener('message', (event) => {
+        const frame = JSON.parse(String(event.data)) as Frame;
+        if (frame.k === 'invalidate' && typeof frame.path === 'string')
+          invalidations.push(frame.path);
+      });
+      status = {
+        ...status,
+        pipeline: 'success',
+        mergeable: true,
+        checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },
+      };
+      now += 15_000;
+      await server.inject({ method: 'GET', url: '/sessions/s1/branches' });
+      // The overview's 30-second observation must not be needed to announce a PR
+      // that another reader has already discovered.
+      await vi.waitFor(() => expect(new Set(invalidations)).toEqual(new Set(paths)), {
+        timeout: 5_000,
+      });
+      const overview = await server.inject({ method: 'GET', url: '/sessions?envelope=1' });
+      expect(
+        overview
+          .json<{ sessions: { sessionId: string; pullRequest?: unknown }[] }>()
+          .sessions.find((session) => session.sessionId === 's1')?.pullRequest,
+      ).toEqual(status);
+    } finally {
+      conn.ws.close();
+      await conn.closed;
+      await server.close();
     }
   });
 

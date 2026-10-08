@@ -21,6 +21,7 @@ export type AttentionKind =
   | 'merge_blocked'
   | 'merge_ready'
   | 'merge_checking'
+  | 'pr_unknown'
   | 'ci_running'
   | 'unread';
 
@@ -47,6 +48,7 @@ const FLAGS: Record<AttentionKind, Omit<AttentionFlag, 'kind'>> = {
   merge_blocked: { tone: 'danger', label: 'Merge blocked', blocking: true },
   merge_ready: { tone: 'done', label: 'Ready to merge', blocking: false },
   merge_checking: { tone: 'done', label: 'Checking mergeability', blocking: false },
+  pr_unknown: { tone: 'attention', label: 'PR status unavailable', blocking: false },
   ci_running: { tone: 'attention', label: 'CI running', blocking: false },
   unread: { tone: 'active', label: 'New messages', blocking: false },
 };
@@ -66,6 +68,7 @@ const ORDER: readonly AttentionKind[] = [
   'merge_blocked',
   'merge_ready',
   'merge_checking',
+  'pr_unknown',
   'ci_running',
   'unread',
 ];
@@ -110,6 +113,7 @@ export function sessionAttention(input: AttentionInput): AttentionFlag[] {
     // checks for a PR it can't merge-ref. So flag it before the pipeline branches
     // below, which would otherwise leave such a session with no marker at all.
     if (pr.mergeState === 'dirty') kinds.add('merge_conflict');
+    if (pr.pipeline === 'unknown' && !kinds.has('merge_conflict')) kinds.add('pr_unknown');
     if (pr.pipeline === 'failure') kinds.add('ci_failed');
     else if (pr.pipeline === 'pending' || pr.pipeline === 'running') kinds.add('ci_running');
     else if (pr.pipeline === 'success') {

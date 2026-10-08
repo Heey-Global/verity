@@ -1,7 +1,8 @@
-import type { BranchList, VerityClient } from '@verity/mobile';
+import type { BranchList, SessionSummary, VerityClient } from '@verity/mobile';
 
 import {
   cachedBranches,
+  seedSessionBranches,
   invalidateBranches,
   prefetchBranches,
   registerBranchesClientScope,
@@ -18,6 +19,60 @@ const branches: BranchList = {
 };
 
 describe('branches prefetch', () => {
+  it('preserves cached branch metadata for older summaries and clears a confirmed absent PR', () => {
+    const client = {} as VerityClient;
+    rememberBranches(client, 's', { ...branches, owner: 'example', repo: 'repo' });
+    seedSessionBranches(client, { sessionId: 's' } as SessionSummary);
+    expect(cachedBranches(client, 's')?.currentPr).toBe(42);
+    seedSessionBranches(client, { sessionId: 's', pullRequest: null } as SessionSummary);
+    expect(cachedBranches(client, 's')).toMatchObject({
+      current: branches.current,
+      owner: 'example',
+      repo: 'repo',
+      currentPr: null,
+      pullRequest: null,
+    });
+  });
+
+  it('does not reopen a cached PR after a confirmed terminal action in the overview', () => {
+    const client = {} as VerityClient;
+    rememberBranches(client, 's', {
+      ...branches,
+      pullRequest: {
+        number: 42,
+        title: 'Known',
+        url: 'https://github.com/example/repo/pull/42',
+        phase: 'open',
+        pipeline: 'running',
+        mergeable: null,
+        checks: { completed: 0, total: 1, successful: 0, failed: 0, pending: 1 },
+      },
+    });
+    seedSessionBranches(client, {
+      sessionId: 's',
+      pr: { phase: 'merged', pipeline: 'success', mergeable: false },
+    } as SessionSummary);
+    expect(cachedBranches(client, 's')?.pullRequest?.phase).toBe('merged');
+  });
+
+  it('disowns a speculative read that predates the overview snapshot', async () => {
+    let resolve!: (value: BranchList) => void;
+    const client = {
+      getBranches: jest.fn(
+        () =>
+          new Promise<BranchList>((done) => {
+            resolve = done;
+          }),
+      ),
+    } as unknown as VerityClient;
+    prefetchBranches(client, 's');
+    seedSessionBranches(client, { sessionId: 's', pullRequest: null } as SessionSummary);
+    resolve(branches);
+    await Promise.resolve();
+    expect(cachedBranches(client, 's')?.currentPr).toBeNull();
+    expect(takePrefetchedBranches(client, 's')).toBeUndefined();
+  });
+
   it('starts once and hands the opening request to the session screen', async () => {
     const getBranches = jest.fn().mockResolvedValue(branches);
     const client = { getBranches } as unknown as VerityClient;

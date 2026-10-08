@@ -2850,6 +2850,8 @@ export interface SessionSummary extends SessionRecord {
   /** Compact PR status for the current branch (#387). `null` = looked up, no open
    * PR; ABSENT = GitHub not configured (no `branchPrStatus`) or not yet resolved. */
   pr?: SessionPrSummary | null;
+  /** Cached full status lets an opened session paint its PR bar before revalidation. */
+  pullRequest?: PullRequestStatus | null;
   /** The worktree's current branch, from the branch-label cache, so the overview
    * can show the session's issue (`<type>/<issue>-<slug>`). ABSENT while the label
    * is cold, the worktree is gone, or branch switching is not configured. */
@@ -4580,6 +4582,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const sessionPrCache = createSessionPrCache({
     load: sessionPrStatus,
     now: deps.pullRequestCacheNow,
+    onChange: (session, status) => {
+      prSummaryCache.set(session.worktree, { pr: compactPr(status), at: Date.now() });
+      // Cache completion is not an HTTP mutation; without this the overview waits
+      // for a later observation even though the opened session already knows the PR.
+      resources.invalidate(`/sessions/${encodeURIComponent(session.sessionId)}/branches`);
+    },
   });
   // App-driven status refreshes cannot discover failures while every client is
   // closed. Keep repair discovery independent of push registration and presence.
@@ -4639,6 +4647,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         if (prRepairStopped || session === undefined) return;
         invalidateBranchCache(session.worktree);
         invalidatePrSummaryAction(session);
+        resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
       })
       .catch((err) => app.log.warn({ err, sessionId }, 'PR cache invalidation failed'));
   });
@@ -5002,6 +5011,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   ): Promise<SessionSummary> => {
     const events = await projectionEventsFor(session.sessionId, facts);
     const pr = prSummaryFor(session);
+    const pullRequest = pr === undefined ? undefined : sessionPrCache.peek(session.worktree);
     const resumable = await worktreeExists(session.worktree);
     const branch = listBranchFor(session, resumable);
     // Not from `events`: the quota state in force can be older than any tail, so
@@ -5062,6 +5072,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // literal `undefined` isn't assignable to `pr?: … | null`, and absent reads as
       // "no marker" on the client anyway.
       ...(pr !== undefined ? { pr } : {}),
+      ...(pullRequest !== undefined ? { pullRequest } : {}),
       // Absent when healthy, so a healthy session's summary is byte-identical to
       // what it was before this existed.
       ...(attention.length > 0 ? { attention } : {}),
