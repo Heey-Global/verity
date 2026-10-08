@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.28.1](https://github.com/Heey-Global/verity/compare/v4.28.0...v4.28.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **broker:** support compressed fetch and public Git reads ([#1350](https://github.com/Heey-Global/verity/issues/1350)) ([3d9b62b](https://github.com/Heey-Global/verity/commit/3d9b62b943a2ab3d7476fe64ee87ba9eeab29a6d))
+
 ## [4.28.0](https://github.com/Heey-Global/verity/compare/v4.27.0...v4.28.0) (2026-10-08)
 
 
