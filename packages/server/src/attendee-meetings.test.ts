@@ -214,6 +214,7 @@ it('reconnects callbacks after restarting an ambiguous provider submission', asy
   };
   const rows = new Map<string, unknown>([['meeting:pending', state]]);
   const store = {
+    getSession: async () => ({ id: 'session' }),
     getAttendeeState: async (id: string) => rows.get(id),
     putAttendeeState: async (id: string, value: unknown) => {
       rows.set(id, value);
@@ -323,6 +324,7 @@ it('keeps an addressed utterance pending when classification or dispatch fails',
     ],
   ]);
   const store = {
+    getSession: async () => ({ id: 'session' }),
     getAttendeeState: async (id: string) => rows.get(id),
     putAttendeeState: async (id: string, state: unknown) => {
       rows.set(id, structuredClone(state));
@@ -382,6 +384,7 @@ it('finds corrected, late and simultaneous addressed utterances without replayin
     ],
   ]);
   const store = {
+    getSession: async () => ({ id: 'session' }),
     getAttendeeState: async (id: string) => rows.get(id),
     putAttendeeState: async (id: string, state: unknown) => {
       rows.set(id, structuredClone(state));
@@ -399,7 +402,7 @@ it('finds corrected, late and simultaneous addressed utterances without replayin
   ];
   const spoken = vi.fn().mockResolvedValue(undefined);
   const ingest = vi.fn();
-  const run = async (rename?: string) => {
+  const run = async (rename?: string, clear = false) => {
     ingest.mockClear();
     const service = new AttendeeMeetings({
       store,
@@ -414,7 +417,10 @@ it('finds corrected, late and simultaneous addressed utterances without replayin
     await service.open();
     try {
       await vi.waitFor(() => expect(ingest).toHaveBeenCalled());
-      if (rename) await service.edit('session', 'corrections', { speakerNames: { '0': rename } });
+      if (rename || clear)
+        await service.edit('session', 'corrections', {
+          speakerNames: rename ? { '0': rename } : {},
+        });
     } finally {
       await service.close();
     }
@@ -451,5 +457,78 @@ it('finds corrected, late and simultaneous addressed utterances without replayin
   await run('My Alice');
   await run();
   expect(ingest.mock.calls.at(-1)?.[0].speakerNames['0']).toBe('My Alice');
+  await run(undefined, true);
+  await run();
+  expect(ingest.mock.calls.at(-1)?.[0].speakerNames['0']).toBe('Corrected Alice');
   expect(spoken).toHaveBeenCalledTimes(3);
+});
+
+it('stops deleted sessions without ingesting and erases their terminal state', async () => {
+  const rows = new Map<string, unknown>([
+    [
+      'meeting:deleted',
+      {
+        meeting: {
+          id: 'deleted',
+          sessionId: 'gone',
+          transcript: 'private text',
+          state: 'active',
+          revision: 0,
+        },
+        botId: 'bot',
+        phase: 'running',
+        credentials: { apiKey: 'fixture' },
+        identities: {},
+        binding: { shareId: 'share' },
+        pendingRequests: { request: 'Verity, research this' },
+      },
+    ],
+  ]);
+  const store = {
+    getSession: async () => undefined,
+    getAttendeeState: async (id: string) => rows.get(id),
+    putAttendeeState: async (id: string, state: unknown) => {
+      rows.set(id, structuredClone(state));
+    },
+    deleteAttendeeState: async (id: string) => {
+      rows.delete(id);
+    },
+    listAttendeeState: async () => [...rows].map(([id, state]) => ({ id, state })),
+  } as unknown as EventStore;
+  let terminal = false;
+  const request = vi.fn(async (_path: string, method?: string) => {
+    if (method === 'POST') return {};
+    return { state: terminal ? 'ended' : 'joined_recording' };
+  });
+  const ingest = vi.fn().mockRejectedValue(new Error('session no longer exists'));
+  const spoken = vi.fn();
+  const remove = vi.fn();
+  const run = async () => {
+    const service = new AttendeeMeetings({
+      store,
+      ingest,
+      spoken,
+      edge: { remove } as unknown as NonNullable<
+        ConstructorParameters<typeof AttendeeMeetings>[0]['edge']
+      >,
+      client: () => ({ request }) as unknown as import('./attendee-client.js').AttendeeClient,
+    });
+    await service.open();
+    try {
+      await vi.waitFor(() =>
+        terminal
+          ? expect(rows.has('meeting:deleted')).toBe(false)
+          : expect(request).toHaveBeenCalledWith('bots/bot/leave', 'POST'),
+      );
+    } finally {
+      await service.close();
+    }
+  };
+  await run();
+  expect(ingest).not.toHaveBeenCalled();
+  expect(spoken).not.toHaveBeenCalled();
+  terminal = true;
+  await run();
+  expect(remove).toHaveBeenCalledWith('share');
+  expect(rows.size).toBe(0);
 });

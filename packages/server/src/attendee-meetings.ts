@@ -300,6 +300,9 @@ export class AttendeeMeetings {
         throw new Error('Online meeting not found.');
       if (edits.speakerNames) {
         state.speakerNameOverrides ??= {};
+        for (const speaker of Object.keys(state.speakerNameOverrides)) {
+          if (!(speaker in edits.speakerNames)) delete state.speakerNameOverrides[speaker];
+        }
         for (const [speaker, name] of Object.entries(edits.speakerNames)) {
           if (name !== state.meeting.speakerNames?.[speaker]) {
             state.speakerNameOverrides[speaker] = name;
@@ -329,8 +332,20 @@ export class AttendeeMeetings {
     if (this.closed) return;
     for (const { state } of await this.records()) {
       try {
-        if (state.phase !== 'ended') await this.reconcileOne(state);
-        await this.processPendingRequests(state);
+        const deleted = !(await this.options.store.getSession(state.meeting.sessionId));
+        if (deleted) {
+          state.stopRequested = true;
+          state.pendingRequests = {};
+          state.meeting.transcript = '';
+          state.meeting.timedWords = [];
+          state.meeting.speakerTurns = [];
+          await this.save(state);
+        }
+        if (state.phase !== 'ended') await this.reconcileOne(state, deleted);
+        if (deleted && state.phase === 'ended') {
+          await this.options.store.deleteAttendeeState(`meeting:${state.meeting.id}`);
+          if (state.botId) await this.options.store.deleteAttendeeState(`event:${state.botId}`);
+        } else if (!deleted) await this.processPendingRequests(state);
       } catch {
         state.error = 'Meeting connection interrupted; retrying recovery.';
         await this.save(state);
@@ -347,7 +362,7 @@ export class AttendeeMeetings {
       await this.save(state);
     }
   }
-  private async reconcileOne(state: OnlineMeeting) {
+  private async reconcileOne(state: OnlineMeeting, discard = false) {
     const event = await this.options.store.getAttendeeState<z.infer<typeof webhookSchema>>(
       `event:${state.botId ?? ''}`,
     );
@@ -365,7 +380,8 @@ export class AttendeeMeetings {
       state.credentials = { apiKey: '', webhookSecret: '' };
       state.pin = '';
       delete state.binding;
-      await this.publish(state);
+      if (discard) await this.save(state);
+      else await this.publish(state);
       return;
     }
     if (!state.botId) {
@@ -395,41 +411,47 @@ export class AttendeeMeetings {
       await client.request(`bots/${encodeURIComponent(state.botId)}/leave`, 'POST');
     }
     const final = terminal.has(bot.state);
-    const snapshot = await client.transcript(state.botId);
-    if (state.timeOriginMs === undefined && snapshot.length) {
-      state.timeOriginMs = snapshot.reduce(
-        (earliest, item) => Math.min(earliest, item.timestamp_ms),
-        Infinity,
+    const snapshot = discard ? [] : await client.transcript(state.botId);
+    if (!discard) {
+      if (state.timeOriginMs === undefined && snapshot.length) {
+        state.timeOriginMs = snapshot.reduce(
+          (earliest, item) => Math.min(earliest, item.timestamp_ms),
+          Infinity,
+        );
+        await this.save(state);
+      }
+      const normalized = normalizeAttendeeTranscript(
+        snapshot,
+        state.identities,
+        state.timeOriginMs,
       );
-      await this.save(state);
-    }
-    const normalized = normalizeAttendeeTranscript(snapshot, state.identities, state.timeOriginMs);
-    const previous = JSON.stringify(state.meeting);
-    const speakerNames = { ...normalized.speakerNames, ...state.speakerNameOverrides };
-    Object.assign(state.meeting, normalized, { speakerNames });
-    state.meeting.captureStatus = bot.state === 'joined_recording' ? 'listening' : 'preparing';
-    state.meeting.state = final ? 'ended' : 'active';
-    state.phase = final ? 'stopping' : state.stopRequested ? 'stopping' : 'running';
-    if (final) state.meeting.endedAt ??= Date.now();
-    if (previous !== JSON.stringify(state.meeting)) await this.publish(state);
-    else await this.options.ingest(state.meeting);
-    if (state.listenForVerity && this.options.spoken) {
-      state.pendingRequests ??= {};
-      state.processedRequests ??= {};
-      const current = new Set<string>();
-      for (const utterance of snapshot) {
-        const text = utterance.transcription.transcript;
-        if (!/\bverity\b/iu.test(text)) continue;
-        const identity = createHash('sha256')
-          .update(JSON.stringify([utterance.speaker_uuid, utterance.timestamp_ms, text]))
-          .digest('hex');
-        current.add(identity);
-        if (!state.processedRequests[identity]) state.pendingRequests[identity] = text;
+      const previous = JSON.stringify(state.meeting);
+      const speakerNames = { ...normalized.speakerNames, ...state.speakerNameOverrides };
+      Object.assign(state.meeting, normalized, { speakerNames });
+      state.meeting.captureStatus = bot.state === 'joined_recording' ? 'listening' : 'preparing';
+      state.meeting.state = final ? 'ended' : 'active';
+      state.phase = final ? 'stopping' : state.stopRequested ? 'stopping' : 'running';
+      if (final) state.meeting.endedAt ??= Date.now();
+      if (previous !== JSON.stringify(state.meeting)) await this.publish(state);
+      else await this.options.ingest(state.meeting);
+      if (state.listenForVerity && this.options.spoken) {
+        state.pendingRequests ??= {};
+        state.processedRequests ??= {};
+        const current = new Set<string>();
+        for (const utterance of snapshot) {
+          const text = utterance.transcription.transcript;
+          if (!/\bverity\b/iu.test(text)) continue;
+          const identity = createHash('sha256')
+            .update(JSON.stringify([utterance.speaker_uuid, utterance.timestamp_ms, text]))
+            .digest('hex');
+          current.add(identity);
+          if (!state.processedRequests[identity]) state.pendingRequests[identity] = text;
+        }
+        for (const identity of Object.keys(state.pendingRequests)) {
+          if (!current.has(identity)) delete state.pendingRequests[identity];
+        }
+        await this.save(state);
       }
-      for (const identity of Object.keys(state.pendingRequests)) {
-        if (!current.has(identity)) delete state.pendingRequests[identity];
-      }
-      await this.save(state);
     }
     if (final) {
       if (state.binding) await this.options.edge?.remove(state.binding.shareId);
