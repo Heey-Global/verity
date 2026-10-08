@@ -49,7 +49,7 @@ export function safeSessionProgressErrorKind(value: string): string {
   return /^[a-z0-9][a-z0-9_-]{0,63}$/u.test(value) ? value : 'unknown';
 }
 
-/** Build a scalar-only cross-session view, even if a stored event gains fields later. */
+/** Explicitly project supported diagnostic fields, including redacted process failures. */
 export function recentSessionDiagnostics(events: readonly SequencedEvent[], limit: number) {
   return events
     .filter(({ event }) => event.t === 'diagnostic')
@@ -64,6 +64,13 @@ export function recentSessionDiagnostics(events: readonly SequencedEvent[], limi
         phase: event.phase,
         ...(event.backend === undefined ? {} : { backend: event.backend }),
         ...(event.code === undefined ? {} : { code: event.code }),
+        ...(event.model === undefined ? {} : { model: event.model }),
+        ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),
+        ...(event.signal === undefined ? {} : { signal: event.signal }),
+        ...(event.turnActive === undefined ? {} : { turnActive: event.turnActive }),
+        ...(event.stderrTail === undefined
+          ? {}
+          : { stderrTail: redactSensitiveText(event.stderrTail).slice(-65_536) }),
       };
     });
 }

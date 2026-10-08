@@ -33,7 +33,7 @@ export const diagnosticsRequestSchema = z
   );
 
 export const DIAGNOSTICS_TOOL_DESCRIPTION =
-  'Read a bounded Control-only diagnostic snapshot of server version, runtime readiness and Uplink state, plus local resources, scoped container lifecycle, memory/health, recent Docker events, classified infrastructure errors and exported historical host kernel/runtime evidence. Optional runtime {since,until} uses ISO timestamps with offsets, defaults to the last hour and accepts at most 24 hours. Source availability, coverage, stale timestamps and truncation are explicit; never infer OOM from exit code 137 or current RAM alone. Select projectId for safe Matrix import failure codes, event IDs and retry state, with optional matrixEvent {accountId,sourceId,eventId} for a content-free persisted event receipt; optionally select one project session by sessionId for structured technical failures. Returns no secrets, environment values or message contents. Unknown data is explicit; status codes alone do not prove a cause. Use on demand, never poll. Changes belong in a project-session handoff; verify the affected state after remediation.';
+  'Read a bounded Control-only diagnostic snapshot of server version, runtime readiness and Uplink state, plus local resources, scoped container lifecycle, memory/health, recent Docker events, classified infrastructure errors and exported historical host kernel/runtime evidence. Optional runtime {since,until} uses ISO timestamps with offsets, defaults to the last hour and accepts at most 24 hours. Source availability, coverage, stale timestamps and truncation are explicit; never infer OOM from exit code 137 or current RAM alone. Select projectId for safe Matrix import failure codes, event IDs and retry state, with optional matrixEvent {accountId,sourceId,eventId} for a content-free persisted event receipt; optionally select one project session by sessionId for structured technical failures. Process failures may include a bounded credential-redacted stderr tail. Returns no secrets, environment values or chat message contents. Unknown data is explicit; status codes alone do not prove a cause. Use on demand, never poll. Changes belong in a project-session handoff; verify the affected state after remediation.';
 
 export const controlDiagnosticRecordSchema = z.object({
   seq: z.number().int(),
@@ -42,6 +42,12 @@ export const controlDiagnosticRecordSchema = z.object({
   outcome: z.enum(['completed', 'failed', 'cancelled']),
   phase: z.enum(['spawn', 'initialize', 'session_load', 'session_new', 'prompt', 'tool_call']),
   code: z.number().int().optional(),
+  backend: z.string().max(40).optional(),
+  model: z.string().max(200).optional(),
+  exitCode: z.number().int().nullable().optional(),
+  signal: z.string().max(40).nullable().optional(),
+  turnActive: z.boolean().optional(),
+  stderrTail: z.string().max(65_536).optional(),
 });
 const progressSchema = z.object({
   sessionId: z.string(),

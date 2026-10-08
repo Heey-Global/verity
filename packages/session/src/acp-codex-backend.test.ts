@@ -76,6 +76,10 @@ function acpSpawner(
     loadSession?: boolean;
     startupFailure?: string;
     promptFailure?: string;
+    processExit?: { code: number | null; signal: NodeJS.Signals | null };
+    exitDelayMs?: number;
+    exitDetailsBeforeClose?: boolean;
+    setupFailure?: boolean;
     /** Refuse `session/load` the way the adapter refuses a rollout it cannot
      *  restore: JSON-RPC -32002 naming the requested id. */
     loadNotFound?: boolean;
@@ -91,7 +95,7 @@ function acpSpawner(
     echoStaleModel?: boolean;
     /** Advertise HTTP MCP support in the adapter's initialize response. */
     httpMcp?: boolean;
-    cancel?: { operator?: AbortController };
+    cancel?: { operator?: AbortController; disconnect?: boolean };
     generatedImage?: string;
     fragmentImageFrame?: boolean;
   } = {},
@@ -103,6 +107,8 @@ function acpSpawner(
   const queue: string[] = [];
   const waiters: Array<(value: IteratorResult<string>) => void> = [];
   let closed = false;
+  let exitReady = false;
+  let resolveExit: ((code: number) => void) | undefined;
   const enqueue = (value: string): void => {
     const waiter = waiters.shift();
     if (waiter === undefined) queue.push(value);
@@ -118,6 +124,11 @@ function acpSpawner(
   const close = (): void => {
     if (closed) return;
     closed = true;
+    if (behavior.exitDelayMs !== undefined)
+      setTimeout(() => {
+        exitReady = true;
+        resolveExit?.(behavior.processExit?.code ?? 1);
+      }, behavior.exitDelayMs);
     for (const waiter of waiters.splice(0)) waiter({ value: undefined, done: true });
   };
   const kill = vi.fn(close);
@@ -152,8 +163,20 @@ function acpSpawner(
     return {
       stdout,
       pid: 321,
-      exited: Promise.resolve(0),
-      stderr: () => behavior.startupFailure ?? behavior.promptFailure ?? '',
+      exited:
+        behavior.exitDelayMs === undefined
+          ? Promise.resolve(behavior.processExit?.code ?? 0)
+          : new Promise<number>((resolve) => {
+              resolveExit = resolve;
+            }),
+      exitDetails: () =>
+        closed &&
+        (behavior.exitDetailsBeforeClose || behavior.exitDelayMs === undefined || exitReady)
+          ? behavior.processExit
+          : undefined,
+      stderr: () =>
+        (behavior.startupFailure ?? behavior.promptFailure ?? '') +
+        (exitReady ? '\nlate stderr' : ''),
       kill,
       closeStdin: close,
       writeStdin(data) {
@@ -197,6 +220,10 @@ function acpSpawner(
           } else if (method === 'session/set_mode' && behavior.refusePlanningMode) {
             push({ jsonrpc: '2.0', id, error: { code: -32602, message: 'mode refused' } });
           } else if (method === 'session/set_mode' || method === 'session/set_config_option') {
+            if (behavior.setupFailure) {
+              close();
+              return true;
+            }
             // Echoing nothing is the adapter shape Codex actually has today, and it
             // keeps the plain ack's meaning in `applySelectOption`. `echoStaleModel`
             // is the other half of that contract — an adapter that answers with the
@@ -222,7 +249,8 @@ function acpSpawner(
               },
             });
             behavior.cancel.operator?.abort();
-            push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
+            if (behavior.cancel.disconnect) close();
+            else push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
           } else if (method === 'session/prompt') {
             if (behavior.promptFailure !== undefined) {
               close();
@@ -314,6 +342,190 @@ function write(
 }
 
 describe('AcpCodexBackend', () => {
+  it.each([
+    { code: 1, signal: null },
+    { code: null, signal: 'SIGKILL' as const },
+    { code: 0, signal: null },
+  ])(
+    'persists redacted process details for an unexpected active-turn exit: %j',
+    async (processExit) => {
+      const append = vi.spyOn(ctx.store, 'appendEvent');
+      const secret = 'ghp_' + 'a'.repeat(24);
+      const opaque = 'opaque-runtime-credential';
+      const fake = acpSpawner({
+        promptFailure: `fatal: ${secret} ${opaque}\nCUSTOM_VALUE=private-setting\nlast failure`,
+        processExit,
+      });
+      const result = await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        model: 'codex/gpt-6.1-sol',
+        env: { CUSTOM_SECRET: opaque },
+        spawner: fake.spawner,
+      });
+      const events = await ctx.store.getEvents('codex-session-1');
+      const diagnostic = events.findLast((event) => event.t === 'diagnostic');
+      expect(diagnostic).toMatchObject({
+        t: 'diagnostic',
+        outcome: 'failed',
+        exitCode: processExit.code,
+        signal: processExit.signal,
+        turnActive: true,
+        model: 'codex/gpt-6.1-sol',
+      });
+      expect(JSON.stringify(diagnostic)).not.toContain(secret);
+      expect(JSON.stringify(diagnostic)).not.toContain(opaque);
+      expect(JSON.stringify(diagnostic)).not.toContain('private-setting');
+      expect(diagnostic).toHaveProperty('stderrTail', expect.stringContaining('last failure'));
+      expect(result.exitCode).toBe(1);
+      const persisted = append.mock.calls.findLast(([, event]) => event.t === 'diagnostic')?.[1];
+      expect(JSON.stringify(persisted)).not.toContain(secret);
+      expect(JSON.stringify(persisted)).not.toContain(opaque);
+      expect(JSON.stringify(persisted)).not.toContain('private-setting');
+      append.mockRestore();
+    },
+  );
+
+  it.each([false, true])(
+    'omits process failure details for an intentional stop (disconnect=%s)',
+    async (disconnect) => {
+      const operator = new AbortController();
+      const fake = acpSpawner({
+        cancel: { operator, disconnect },
+        processExit: { code: null, signal: 'SIGTERM' },
+      });
+      await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        signal: operator.signal,
+        spawner: fake.spawner,
+      });
+      const events = await ctx.store.getEvents('codex-session-1');
+      expect(
+        events.filter((event) => event.t === 'diagnostic' && event.outcome === 'failed'),
+      ).toEqual([]);
+      expect(events.some((event) => event.t === 'diagnostic' && event.exitCode !== undefined)).toBe(
+        false,
+      );
+    },
+  );
+
+  it('captures delayed exit details and stderr after transport EOF', async () => {
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({
+        promptFailure: 'fatal error',
+        processExit: { code: 1, signal: null },
+        exitDelayMs: 30,
+      }).spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: true,
+      stderrTail: expect.stringContaining('late stderr'),
+    });
+  });
+
+  it('records native process termination even when stdio close exceeds the drain wait', async () => {
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({
+        promptFailure: 'fatal error',
+        processExit: { code: 1, signal: null },
+        exitDelayMs: 350,
+        exitDetailsBeforeClose: true,
+      }).spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: true,
+    });
+  });
+
+  it('records a startup process failure with no active prompt', async () => {
+    await ctx.store.createSession({
+      sessionId: 'startup',
+      worktree: '/work',
+      model: 'codex/default',
+    });
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      storeSessionId: 'startup',
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({
+        startupFailure: 'fatal startup',
+        processExit: { code: 1, signal: null },
+      }).spawner,
+    });
+    const events = await ctx.store.getEvents('startup');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: false,
+      phase: 'initialize',
+    });
+  });
+
+  it('keeps the prompt inactive when the process exits during session configuration', async () => {
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({ setupFailure: true, processExit: { code: 1, signal: null } }).spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: false,
+    });
+  });
+
+  it('preserves raw pre-execution rejection evidence for recovery classification', async () => {
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({ startupFailure: 'API key: invalid api key' }).spawner,
+    });
+    expect(result.failedBeforeExecution).toBe(true);
+  });
+
+  it('does not record a process failure for a clean completed turn', async () => {
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({ processExit: { code: 0, signal: null } }).spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events.some((event) => event.t === 'diagnostic' && event.outcome === 'failed')).toBe(
+      false,
+    );
+    expect(events.some((event) => event.t === 'diagnostic' && event.exitCode !== undefined)).toBe(
+      false,
+    );
+  });
+
   it('externalizes an image generation notification larger than the ACP frame limit', async () => {
     const worktree = await mkdtemp(join(tmpdir(), 'verity-acp-image-'));
     const png = largePng();
