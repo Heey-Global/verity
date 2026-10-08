@@ -175,7 +175,16 @@ export function createBrokeredForgeProxy(options: {
           const body = options.adapter.streams({ hostname, method: inner.method ?? '', path })
             ? inner
             : await bufferedBody(inner);
-          if (inner.headers['content-encoding']) {
+          // Git compresses larger upload-pack requests; forward them without inflating in the broker.
+          if (
+            inner.headers['content-encoding'] &&
+            !(
+              hostname === 'github.com' &&
+              inner.method === 'POST' &&
+              /^\/[^/]+\/[^/]+\/git-upload-pack$/.test(path) &&
+              inner.headers['content-encoding'] === 'gzip'
+            )
+          ) {
             fail(response, 403);
             return;
           }
@@ -197,7 +206,7 @@ export function createBrokeredForgeProxy(options: {
             return;
           }
           const headers: Record<string, string> = {
-            authorization: auth.authorization,
+            ...(auth.authorization ? { authorization: auth.authorization } : {}),
             'user-agent': 'verity-forge-broker',
             'accept-encoding': 'identity',
           };
@@ -236,7 +245,10 @@ export function createBrokeredForgeProxy(options: {
           await relayBrokeredHttpResponse(
             upstream,
             response,
-            [...auth.credentials, { value: auth.authorization, alias: 'FORGE_AUTH' }],
+            [
+              ...auth.credentials,
+              ...(auth.authorization ? [{ value: auth.authorization, alias: 'FORGE_AUTH' }] : []),
+            ],
             abort.signal,
           );
         })()

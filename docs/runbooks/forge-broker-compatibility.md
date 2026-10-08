@@ -97,3 +97,16 @@ mapped public/private image reads through the audit and real ORAS client.
 Do not promote production or retag production images as a smoke test. Record live
 acceptance separately from local fixtures. Legacy token removal is a separate
 step after acceptance.
+
+## Git fetch and public dependency repositories
+
+The broker forwards gzip-compressed `git-upload-pack` requests as binary streams,
+without decompressing them. Compression remains rejected for API requests and
+Git writes.
+
+Git reads outside the project's bound repository use anonymous upstream access.
+This supports public dependency repositories such as pre-commit hooks. The broker
+never mints or forwards project credentials for those reads; GitHub rejects private
+repositories. Foreign writes and foreign API access remain rejected. Redirects
+are not followed for Git requests. Project/container capability and `git-read`
+authorization are still required.

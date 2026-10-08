@@ -1,3 +1,4 @@
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { createGhcrForgeAdapter } from './brokered-forge-ghcr.js';
 import { parse, Kind } from 'graphql';
 import { execFile, spawn, spawnSync } from 'node:child_process';
@@ -187,9 +188,10 @@ async function call(
   path: string,
   auth = `Bearer verity-broker-${cap}`,
   host = 'api.github.com',
-  body?: string,
+  body?: string | Buffer,
   connection?: string,
   method?: string,
+  encoding?: string,
 ): Promise<{ status: number; body: string; length?: string }> {
   return await new Promise((done, reject) => {
     const outer = request({ hostname: '127.0.0.1', port, method: 'CONNECT', path: `${host}:443` });
@@ -210,6 +212,7 @@ async function call(
           headers: {
             host,
             authorization: auth,
+            ...(encoding ? { 'content-encoding': encoding } : {}),
             ...(connection === undefined ? {} : { connection }),
             ...(body === undefined
               ? {}
@@ -261,6 +264,114 @@ function cliEnv(port: number): NodeJS.ProcessEnv {
 }
 
 describe('brokered forge TLS boundary', () => {
+  it('streams gzip upload-pack requests unchanged', async () => {
+    const bytes = gzipSync(Buffer.from('large Git negotiation fixture'.repeat(100)));
+    const h = await harness(async (req, res) => {
+      expect(req.headers['content-encoding']).toBe('gzip');
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk as Uint8Array));
+      expect(gunzipSync(Buffer.concat(chunks))).toEqual(gunzipSync(bytes));
+      res.end('pack-response');
+    });
+    expect(
+      await call(
+        h.port,
+        '/acme/app.git/git-upload-pack',
+        undefined,
+        'github.com',
+        bytes,
+        undefined,
+        'POST',
+        'gzip',
+      ),
+    ).toEqual({ status: 200, body: 'pack-response' });
+    expect(h.received[0]?.body).toEqual(bytes);
+    expect(h.received[0]?.auth).toMatch(/^Basic /);
+    expect(
+      (
+        await call(
+          h.port,
+          '/repos/acme/app/issues',
+          undefined,
+          'api.github.com',
+          bytes,
+          undefined,
+          'POST',
+          'gzip',
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await call(
+          h.port,
+          '/acme/app.git/git-receive-pack',
+          undefined,
+          'github.com',
+          bytes,
+          undefined,
+          'POST',
+          'gzip',
+        )
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await call(
+          h.port,
+          '/acme/app.git/git-upload-pack',
+          undefined,
+          'github.com',
+          bytes,
+          undefined,
+          'POST',
+          'br',
+        )
+      ).status,
+    ).toBe(403);
+  });
+
+  it('never sends credentials to foreign Git repositories or retries private reads with a token', async () => {
+    const h = await harness((req, res) => {
+      expect(req.headers.authorization).toBeUndefined();
+      if (req.url?.includes('/private.git/')) res.writeHead(401);
+      res.end('anonymous-response');
+    });
+    for (const repo of ['pre-commit-hooks', 'private']) {
+      const result = await call(
+        h.port,
+        `/pre-commit/${repo}.git/info/refs?service=git-upload-pack`,
+        undefined,
+        'github.com',
+      );
+      expect(result.status).toBe(repo === 'private' ? 401 : 200);
+    }
+    expect(
+      (
+        await call(
+          h.port,
+          '/pre-commit/pre-commit-hooks.git/git-upload-pack',
+          undefined,
+          'github.com',
+          'negotiation',
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await call(
+          h.port,
+          '/pre-commit/pre-commit-hooks.git/git-receive-pack',
+          undefined,
+          'github.com',
+          'push',
+        )
+      ).status,
+    ).toBe(403);
+    expect(h.mint).not.toHaveBeenCalled();
+    expect(h.received.every((entry) => entry.auth === undefined)).toBe(true);
+  });
+
   it('injects credentials only upstream and preserves binary bodies larger than the JSON broker limit', async () => {
     const binary = randomBytes(2 * 1024 * 1024);
     const h = await harness((_req, res) => {
