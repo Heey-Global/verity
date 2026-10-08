@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.29.0](https://github.com/Heey-Global/verity/compare/v4.28.1...v4.29.0) (2026-10-08)
+
+
+### Features
+
+* **models:** replace Haiku 4.5 with Haiku 5.5 ([#1363](https://github.com/Heey-Global/verity/issues/1363)) ([ee15eab](https://github.com/Heey-Global/verity/commit/ee15eabd94e5ad6b3aa24e2dabf333ce02864583))
+
+
+### Bug Fixes
+
+* **release:** sign and verify mobile staging release evidence ([#1362](https://github.com/Heey-Global/verity/issues/1362)) ([91ceff9](https://github.com/Heey-Global/verity/commit/91ceff9777dceee7c049d1db6c93fe9fd1eaa8b9))
+* **sessions:** append new sessions after manual ordering ([#1368](https://github.com/Heey-Global/verity/issues/1368)) ([a68e149](https://github.com/Heey-Global/verity/commit/a68e1497c42618efeff7013dc1045853827b397a))
+
 ## [4.28.1](https://github.com/Heey-Global/verity/compare/v4.28.0...v4.28.1) (2026-10-08)
 
 
