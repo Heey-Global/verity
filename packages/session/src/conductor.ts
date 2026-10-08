@@ -906,6 +906,7 @@ export interface StartOptions {
  */
 export class Conductor {
   private readonly inFlight = new Set<string>();
+  private readonly dispatchTails = new Map<string, Promise<void>>();
   private readonly failedSteeringPersistence = new Set<string>();
   private readonly pendingUserDispatches = new Map<string, number>();
   private readonly runningPlanning = new Map<string, boolean>();
@@ -3107,6 +3108,20 @@ export class Conductor {
     dispatchOpts: DispatchTurnOptions = {},
   ): Promise<{ queued: boolean; accepted?: boolean }> {
     const run = async () => {
+      // Do not wait behind steering already delivered but not yet persisted.
+      if (
+        dispatchOpts.planningConsent !== undefined &&
+        ((this.pendingUserDispatches.get(sessionId) ?? 0) > 0 ||
+          this.failedSteeringPersistence.has(sessionId))
+      ) {
+        return { queued: false, accepted: false };
+      }
+      const previous = this.dispatchTails.get(sessionId);
+      let release!: () => void;
+      const tail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      this.dispatchTails.set(sessionId, tail);
       const userDispatch = dispatchOpts.planningRevision === undefined;
       if (userDispatch)
         this.pendingUserDispatches.set(
@@ -3114,8 +3129,13 @@ export class Conductor {
           (this.pendingUserDispatches.get(sessionId) ?? 0) + 1,
         );
       try {
+        // Acceptance and delivery of steering share an order, so a cancellation
+        // cannot reach the backend while an older approval commits.
+        await previous;
         return await this.dispatchTurnInner(sessionId, prompt, opts, dispatchOpts);
       } finally {
+        release();
+        if (this.dispatchTails.get(sessionId) === tail) this.dispatchTails.delete(sessionId);
         if (userDispatch) {
           const count = (this.pendingUserDispatches.get(sessionId) ?? 1) - 1;
           if (count === 0) this.pendingUserDispatches.delete(sessionId);

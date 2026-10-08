@@ -6695,6 +6695,67 @@ describe('Conductor mid-turn steering (#101)', () => {
       await waitFor(() => !conductor.isBusy('s1'));
     }
   });
+
+  it('orders steering delivery after a chat acceptance already committing', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', '1. First');
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'Implement plan');
+    await waitFor(fake.ready);
+    const running = (await ctx.store.listRunningTurns())[0]!;
+    let unblock!: () => void;
+    let accepting = false;
+    const barrier = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    const enqueue = ctx.store.enqueuePlanImplementation.bind(ctx.store);
+    const spy = vi
+      .spyOn(ctx.store, 'enqueuePlanImplementation')
+      .mockImplementation(async (...args) => {
+        accepting = true;
+        await barrier;
+        // Delivery of newer steering here would make the durable old approval stale.
+        expect(fake.steered).toEqual([]);
+        return enqueue(...args);
+      });
+    const implementation = conductor.dispatchTurn(
+      's1',
+      'Implement',
+      {},
+      {
+        planningRevision: revision!,
+        queueBehindActiveTurn: true,
+        planningConsent: {
+          turnId: running.turnId!,
+          promptSeq: running.promptSeq,
+          runningPromptSeq: running.promptSeq,
+        },
+      },
+    );
+    await waitFor(() => accepting);
+    const cancellation = conductor.dispatchTurn('s1', 'Wait, do not implement');
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(fake.steered).toEqual([]);
+      unblock();
+      expect(await implementation).toEqual({ queued: true });
+      // Acceptance linearizes first; the later prompt gets its own normal turn.
+      expect(await cancellation).toEqual({ queued: true });
+      expect(fake.steered).toEqual([]);
+    } finally {
+      unblock();
+      await Promise.allSettled([implementation, cancellation]);
+      spy.mockRestore();
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+  });
   it('keeps the live planning turn restricted after a planning decision', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.setSessionPlanning('s1', 'active');
