@@ -65,13 +65,11 @@ it('keeps retry available when a created issue session has an unsent initial tur
 });
 
 it('offers Retry and New Session for an unsent turn targeting another branch', async () => {
-  jest
-    .mocked(createVerityClient)
-    .mockReturnValue({
-      listSessions: jest.fn(async () => [
-        { sessionId: 'previous', projectId: 'p', branch: 'feat/999-unrelated', resumable: true },
-      ]),
-    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  jest.mocked(createVerityClient).mockReturnValue({
+    listSessions: jest.fn(async () => [
+      { sessionId: 'previous', projectId: 'p', branch: 'feat/999-unrelated', resumable: true },
+    ]),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   jest.mocked(taskIssueRetry).mockResolvedValue({ targetSessionId: 'previous' });
   jest.mocked(dispatchTaskIssue).mockResolvedValue('previous');
   const ui = render(
