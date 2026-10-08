@@ -464,6 +464,10 @@ describe('createMemoryGuard', () => {
       if (pid === 6000 && signal === 'SIGSTOP') {
         files['/proc/6103/status'] = status('node', 6100, 1000, 100 * MIB);
       }
+      // A late worker can fork before the next pass stops it.
+      if (pid === 6103 && signal === 'SIGSTOP') {
+        files['/proc/6104/status'] = status('node', 6103, 1000, 100 * MIB);
+      }
     });
     const guard = createMemoryGuard({
       readFile: guestReader(files),
@@ -476,6 +480,8 @@ describe('createMemoryGuard', () => {
     guard.tick();
     expect(kill).toHaveBeenCalledWith(6103, 'SIGSTOP');
     expect(kill).toHaveBeenCalledWith(6103, 'SIGKILL');
+    expect(kill).toHaveBeenCalledWith(6104, 'SIGSTOP');
+    expect(kill).toHaveBeenCalledWith(6104, 'SIGKILL');
   });
 
   it('kills every process it stopped, even one whose status became unreadable', () => {

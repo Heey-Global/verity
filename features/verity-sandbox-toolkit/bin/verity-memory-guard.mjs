@@ -407,14 +407,14 @@ export function createMemoryGuard(options) {
       [...processes].reverse().map((process) => [process.pid, process.startTime]);
     const targets = new Map(topDown([...descendants, victim]));
     const stopped = send(targets, 'SIGSTOP', stillTarget);
-    const late =
-      stopped.has(victim.pid) && stillTarget(victim.pid, victim.startTime)
-        ? topDown(descendantsOf(victim.pid, listProcesses(readFile, listPids))).filter(
-            ([pid]) => !targets.has(pid),
-          )
-        : [];
-    for (const pid of send(late, 'SIGSTOP', stillTarget)) stopped.add(pid);
-    for (const [pid, startTime] of late) targets.set(pid, startTime);
+    while (stopped.has(victim.pid) && stillTarget(victim.pid, victim.startTime)) {
+      const late = topDown(descendantsOf(victim.pid, listProcesses(readFile, listPids))).filter(
+        ([pid]) => !targets.has(pid),
+      );
+      if (late.length === 0) break;
+      for (const pid of send(late, 'SIGSTOP', stillTarget)) stopped.add(pid);
+      for (const [pid, startTime] of late) targets.set(pid, startTime);
+    }
     // A process this pass stopped is killed on the start-time fence alone: left
     // stopped because its status became unreadable, it would hang its session.
     return send(targets, 'SIGKILL', (pid, startTime) =>
