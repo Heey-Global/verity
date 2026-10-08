@@ -252,6 +252,26 @@ describe('bounded review base recovery', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('changed.ts');
   });
+  it('loads its adjacent helper when invoked relatively from a subdirectory', () => {
+    const { repo } = fixture();
+    const tooling = join(repo, 'tooling');
+    const subdir = join(repo, 'subdir');
+    mkdirSync(tooling);
+    mkdirSync(subdir);
+    writeFileSync(join(tooling, 'verity-code-review'), readFileSync(cli), { mode: 0o755 });
+    writeFileSync(
+      join(tooling, 'verity-review-base.sh'),
+      `echo fixture-helper >&2\n${readFileSync(helper, 'utf8')}`,
+    );
+    const result = spawnSync('../tooling/verity-code-review', ['status'], {
+      cwd: subdir,
+      env,
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('fixture-helper');
+    expect(result.stdout).toContain('changed.ts');
+  });
   it.each(['config', 'multiple refs'])('keeps full checks for %s', (mode) => {
     const { repo } = fixture();
     if (mode === 'config') {

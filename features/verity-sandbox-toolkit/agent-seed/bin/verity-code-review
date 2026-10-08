@@ -125,13 +125,13 @@ if [ -z "$REPO_ROOT" ]; then
   echo "verity-code-review: not in a git repository" >&2
   exit 1
 fi
+REVIEW_BASE_HELPER="$(cd -- "${0%/*}" && pwd)/verity-review-base.sh"
 cd "$REPO_ROOT"
 BASE="${2:-origin/main}"
 MARKER="${VERITY_CODE_REVIEW_MARKER:-$REPO_ROOT/.agents/.last-code-review-sha}"
 BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
 HEAD_SHA=$(git rev-parse HEAD)
 
-REVIEW_BASE_HELPER="${0%/*}/verity-review-base.sh"
 [ -f "$REVIEW_BASE_HELPER" ] || REVIEW_BASE_HELPER=/opt/agent-seed/bin/verity-review-base.sh
 if [ ! -f "$REVIEW_BASE_HELPER" ]; then
   echo "review-base: helper missing; rebuild the container to restore the review tooling" >&2
