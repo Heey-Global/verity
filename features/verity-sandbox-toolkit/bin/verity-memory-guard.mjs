@@ -186,30 +186,28 @@ export function listProcesses(readFile = readFsFile, listPids = listProcDir) {
 }
 
 /**
- * The agent-owned process tree to kill, ranked by the RSS of the whole tree.
+ * The agent-owned process tree to kill: where the memory is, at the narrowest
+ * scope that still holds most of it.
  *
  * Only the agent uid qualifies: root and the Runner identity are the
  * container's infrastructure (init, spawn broker, supervisor, workers, egress
  * connector, this guard), and killing any of them would end sessions without
- * freeing the memory a build holds. Within the agent's processes the unit is a
- * whole command, not a single process, for two reasons. A test runner's worker
- * pool respawns a worker killed on its own, so killing the largest worker frees
- * nothing for long and repeats every cooldown; and the session that ran the
- * command should see that command fail with exit 137, not lose its agent.
+ * freeing the memory a build holds. Among the agent's processes the unit is a
+ * tree, not a single process: a test runner's worker pool respawns a worker
+ * killed on its own, so the largest single process is the wrong target.
  *
- * The tree shapes this distinguishes, from the agent processes' parents:
- *
- * - An agent process whose parent is infrastructure other than init is a
- *   session anchor — the ACP adapter the spawn broker started. It is never a
- *   unit of its own.
- * - Its children are the agent CLI. Killing one ends the session's agent, so a
- *   CLI tree is chosen only when no command tree qualifies: losing one session
- *   is still better than losing the container.
- * - Their children are the commands the agent ran (the tool shell, and under it
- *   `npm test`, vitest and its workers): the preferred units.
- * - An agent process under init — or with no visible parent — was detached from
- *   any session (a dev database, a backgrounded server) and is a unit with its
- *   whole tree.
+ * An agent process whose parent is infrastructure other than init is a session
+ * anchor — the ACP adapter the spawn broker started — and is never killed. The
+ * candidate trees are rooted at an anchor's children and at agent processes
+ * detached under init (a backgrounded dev server or database); the largest by
+ * summed RSS wins. When that tree is an anchor's child and one of its own
+ * children holds more than half of it, the guard takes that child instead.
+ * Under a Claude session the anchor's child is the agent CLI and the children
+ * are the commands it ran, so a runaway `npm test` is killed while the CLI
+ * survives to report exit 137; the CLI itself goes only when it is where the
+ * memory is. Adapters that run commands as their own children (Codex) need no
+ * special case: the command is then the anchor's child, and the step down
+ * narrows it to the part of its tree that is large.
  *
  * Trees below `MINIMUM_VICTIM_RSS_BYTES` are not worth killing. Ties go to the
  * higher pid, the younger tree.
@@ -219,44 +217,49 @@ export function chooseVictim(processes, { agentUid, protectedPids = new Set() })
   const isAgent = (process) =>
     process !== undefined && process.uid === agentUid && process.pid !== 1;
   const isAnchor = (process) => {
+    if (!isAgent(process)) return false;
     const parent = byPid.get(process.ppid);
-    return !isAgent(parent) && parent !== undefined && parent.pid !== 1;
+    return parent !== undefined && parent.pid !== 1 && !isAgent(parent);
   };
-  const tierOf = (process) => {
-    if (!isAgent(process)) return undefined;
-    const parent = byPid.get(process.ppid);
-    if (!isAgent(parent)) return isAnchor(process) ? undefined : 'detached';
-    if (isAnchor(parent)) return 'agent-cli';
-    const grandparent = byPid.get(parent.ppid);
-    return isAgent(grandparent) && isAnchor(grandparent) ? 'command' : undefined;
+  const treeOf = (process) => {
+    const tree = [process, ...descendantsOf(process.pid, processes)];
+    if (tree.some((member) => protectedPids.has(member.pid))) return undefined;
+    return tree.reduce((sum, member) => sum + member.rssBytes, 0);
   };
+  const larger = (a, b) =>
+    b === undefined ||
+    a.treeRssBytes > b.treeRssBytes ||
+    (a.treeRssBytes === b.treeRssBytes && a.pid > b.pid);
+
   let best;
   for (const candidate of processes) {
-    const tier = tierOf(candidate);
-    if (tier === undefined || protectedPids.has(candidate.pid)) continue;
-    const tree = [candidate, ...descendantsOf(candidate.pid, processes)];
-    if (tree.some((process) => protectedPids.has(process.pid))) continue;
-    const treeRssBytes = tree.reduce((sum, process) => sum + process.rssBytes, 0);
-    if (treeRssBytes < MINIMUM_VICTIM_RSS_BYTES) continue;
-    const rank = tier === 'agent-cli' ? 0 : 1;
-    if (
-      best === undefined ||
-      rank > best.rank ||
-      (rank === best.rank &&
-        (treeRssBytes > best.victim.treeRssBytes ||
-          (treeRssBytes === best.victim.treeRssBytes && candidate.pid > best.victim.pid)))
-    ) {
-      best = { rank, victim: { ...candidate, tier, treeRssBytes } };
-    }
+    if (!isAgent(candidate) || isAnchor(candidate)) continue;
+    const parent = byPid.get(candidate.ppid);
+    const tier = isAnchor(parent) ? 'session' : isAgent(parent) ? undefined : 'detached';
+    if (tier === undefined) continue;
+    const treeRssBytes = treeOf(candidate);
+    if (treeRssBytes === undefined || treeRssBytes < MINIMUM_VICTIM_RSS_BYTES) continue;
+    const scored = { ...candidate, tier, treeRssBytes };
+    if (larger(scored, best)) best = scored;
   }
-  return best?.victim;
+  if (best?.tier !== 'session') return best;
+
+  let largestChild;
+  for (const child of processes) {
+    if (child.ppid !== best.pid || !isAgent(child)) continue;
+    const treeRssBytes = treeOf(child);
+    if (treeRssBytes === undefined) continue;
+    const scored = { ...child, tier: 'command', treeRssBytes };
+    if (larger(scored, largestChild)) largestChild = scored;
+  }
+  return largestChild !== undefined &&
+    largestChild.treeRssBytes * 2 > best.treeRssBytes &&
+    largestChild.treeRssBytes >= MINIMUM_VICTIM_RSS_BYTES
+    ? largestChild
+    : best;
 }
 
-/**
- * Descendants of `pid`, deepest first, so a worker pool dies before the parent
- * that would otherwise respawn it, and so a SIGKILLed parent leaves no orphan
- * still holding the memory the kill was meant to free.
- */
+/** Descendants of `pid`, deepest first. */
 export function descendantsOf(pid, processes) {
   const children = new Map();
   for (const process of processes) {
@@ -316,24 +319,67 @@ export function createMemoryGuard(options) {
   let reserveLogged = false;
   let lastOutcome;
 
-  const signalTree = (victim, descendants) => {
-    let signalled = 0;
-    for (const target of [...descendants, victim]) {
-      // The snapshot is a few milliseconds old and this runs as root: a pid that
-      // exited and was reused by infrastructure in between must not be signalled.
-      const current = tryRead(readFile, `/proc/${target.pid}/status`);
-      const uid = Number.parseInt((parseStatus(current ?? '').Uid ?? '').split(/\s+/)[0] ?? '', 10);
-      if (uid !== agentUid) continue;
+  /**
+   * A pid the guard may signal: still the agent's, and still the process the
+   * snapshot saw. The guard runs as root, and a pid that exited and was reused
+   * in between — by infrastructure or by another session — must not be hit.
+   */
+  const stillTarget = (pid, startTime) => {
+    const uid = Number.parseInt(
+      (parseStatus(tryRead(readFile, `/proc/${pid}/status`) ?? '').Uid ?? '').split(/\s+/)[0] ?? '',
+      10,
+    );
+    return uid === agentUid && statStartTime(readFile, pid) === startTime;
+  };
+
+  const send = (targets, signal) => {
+    let delivered = 0;
+    for (const [pid, startTime] of targets) {
+      if (!stillTarget(pid, startTime)) continue;
       try {
-        kill(target.pid, 'SIGKILL');
-        signalled += 1;
+        kill(pid, signal);
+        delivered += 1;
       } catch {
-        // Already gone, or reused by a pid the guard may not signal: either way
-        // the memory it held is not the guard's problem any more.
+        // Already gone: the memory it held is not the guard's problem any more.
       }
     }
-    return signalled;
+    return delivered;
   };
+
+  /**
+   * Freeze the tree top-down, then kill it. Killing workers while their parent
+   * still runs gives a pool the moment it needs to respawn them, and a child
+   * forked after the snapshot would survive as a new detached tree. Stopped
+   * parents fork nothing, so a second walk after the freeze catches every child
+   * that appeared in between.
+   */
+  const signalTree = (victim, descendants) => {
+    const targets = new Map(
+      [victim, ...descendants.toReversed()].map((process) => [
+        process.pid,
+        statStartTime(readFile, process.pid),
+      ]),
+    );
+    send(targets, 'SIGSTOP');
+    const late = descendantsOf(victim.pid, listProcesses(readFile, listPids))
+      .toReversed()
+      .filter((process) => !targets.has(process.pid))
+      .map((process) => [process.pid, statStartTime(readFile, process.pid)]);
+    send(late, 'SIGSTOP');
+    for (const [pid, startTime] of late) targets.set(pid, startTime);
+    return send(targets, 'SIGKILL');
+  };
+
+  /**
+   * After a kill, the next poll above the threshold checks that the kill freed
+   * memory. If usage did not fall by at least half of what the victim held, what
+   * keeps the cgroup full is not process memory the guard can reach — page
+   * cache, tmpfs files, the Sentry itself — and killing on would take one
+   * session after another without helping. The guard then stands down until
+   * usage falls below the threshold again.
+   */
+  let lastKill;
+  let suspended = false;
 
   /** One poll. Returns what happened, for `--once` and for the tests. */
   const tick = () => {
@@ -352,31 +398,52 @@ export function createMemoryGuard(options) {
         dryRun,
       });
     }
+    const result = (outcome, extra = {}) => ({ outcome, ...ceiling, thresholdBytes, ...extra });
     if (ceiling.usageBytes < thresholdBytes) {
       lastOutcome = 'below-threshold';
-      return { outcome: 'below-threshold', ...ceiling, thresholdBytes };
+      lastKill = undefined;
+      suspended = false;
+      return result('below-threshold');
     }
-    if (now() < cooldownUntil) return { outcome: 'cooldown', ...ceiling, thresholdBytes };
+    if (now() < cooldownUntil) return result('cooldown');
+    if (suspended) return result('suspended');
+    if (
+      lastKill !== undefined &&
+      lastKill.usageBytes - ceiling.usageBytes < lastKill.treeRssBytes / 2
+    ) {
+      suspended = true;
+      log({
+        event: 'suspended',
+        reason: 'the last kill freed too little; what fills the cgroup is not process memory',
+        usageBytes: ceiling.usageBytes,
+        usageAtKillBytes: lastKill.usageBytes,
+        victimTreeRssBytes: lastKill.treeRssBytes,
+        limitBytes: ceiling.limitBytes,
+        thresholdBytes,
+      });
+      return result('suspended');
+    }
     const processes = listProcesses(readFile, listPids);
     const victim = chooseVictim(processes, { agentUid, protectedPids });
     if (victim === undefined) {
       cooldownUntil = now() + KILL_COOLDOWN_MS;
       // Logged once per episode: the log sits on tmpfs charged to this cgroup.
-      if (lastOutcome === 'no-candidate')
-        return { outcome: 'no-candidate', ...ceiling, thresholdBytes };
+      if (lastOutcome !== 'no-candidate') {
+        log({
+          event: 'no-candidate',
+          usageBytes: ceiling.usageBytes,
+          limitBytes: ceiling.limitBytes,
+          thresholdBytes,
+        });
+      }
       lastOutcome = 'no-candidate';
-      log({
-        event: 'no-candidate',
-        usageBytes: ceiling.usageBytes,
-        limitBytes: ceiling.limitBytes,
-        thresholdBytes,
-      });
-      return { outcome: 'no-candidate', ...ceiling, thresholdBytes };
+      return result('no-candidate');
     }
     const descendants = descendantsOf(victim.pid, processes);
     const signalled = dryRun ? 0 : signalTree(victim, descendants);
     cooldownUntil = now() + KILL_COOLDOWN_MS;
     lastOutcome = 'kill';
+    if (!dryRun) lastKill = { usageBytes: ceiling.usageBytes, treeRssBytes: victim.treeRssBytes };
     log({
       event: dryRun ? 'would-kill' : 'kill',
       usageBytes: ceiling.usageBytes,
@@ -392,7 +459,7 @@ export function createMemoryGuard(options) {
       descendants: descendants.map((process) => process.pid),
       signalled,
     });
-    return { outcome: dryRun ? 'would-kill' : 'kill', ...ceiling, thresholdBytes, victim };
+    return result(dryRun ? 'would-kill' : 'kill', { victim });
   };
 
   return { tick };
@@ -462,7 +529,7 @@ function main() {
   const agentUid = Number.parseInt(process.env.VERITY_AGENT_UID ?? '', 10);
   const guard = createMemoryGuard({
     agentUid: Number.isSafeInteger(agentUid) && agentUid > 0 ? agentUid : DEFAULT_AGENT_UID,
-    protectedPids: [process.pid, process.ppid],
+    protectedPids: [process.pid],
     env: process.env,
     log: writeLog,
     dryRun,

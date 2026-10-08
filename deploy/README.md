@@ -820,12 +820,17 @@ toolkit runs a memory guard (`verity-memory-guard`) that stands in for the
 missing guest OOM killer, the way earlyoom or kubelet eviction act before the
 kernel does. Started by the root stack pass next to the spawn broker, it polls
 the cgroup's usage every 500 ms and, once usage reaches the ceiling minus a
-reserve, SIGKILLs the largest command an agent ran together with everything it
-started — the tool shell with `npm test`, the test runner and its workers, ranked
-by the memory of the whole tree. Killing a single worker would not help, since a
-worker pool respawns it. A process tree detached under init (a backgrounded dev
-server or database) counts as a command of its own. An agent CLI is chosen only
-when no command is large enough, because killing it ends that session's agent.
+reserve, freezes and then SIGKILLs the agent-owned process tree that holds the
+most memory. A tree is ranked by the memory of all its processes, because a
+worker pool respawns a single killed worker. Under a session the guard narrows
+to the command the agent ran — the tool shell with `npm test`, the test runner
+and its workers — whenever that command holds most of the memory, so the agent
+CLI goes only when it is itself the consumer, and the ACP adapter never does. A
+process tree detached under init (a backgrounded dev server or database) is a
+candidate of its own. If a kill does not lower usage by at least half of what
+the victim held, the guard assumes the memory is page cache or tmpfs that no
+kill frees, logs `suspended`, and kills nothing more until usage drops below the
+threshold again.
 The reserve is a fifth of the ceiling and never less than 1 GiB, because the
 guest cannot see the Sentry's own memory or the page cache the host charges to
 the cgroup; at the 6 GiB default the guard acts at about 4.8 GiB. On the cgroup

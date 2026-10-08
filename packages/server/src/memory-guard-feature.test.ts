@@ -164,7 +164,7 @@ describe('victim selection', () => {
       p.pid === 519 ? { ...p, rssBytes: 4 * GIB } : p,
     );
     expect(chooseVictim(inflated, { agentUid: 1000 })?.pid).toBe(6000);
-    // A tree holding a protected pid (the guard itself, its parent) is skipped;
+    // A tree holding a protected pid (the guard itself) is skipped;
     // the next unit is the process detached under init.
     expect(
       chooseVictim(processes, { agentUid: 1000, protectedPids: new Set([6102]) }),
@@ -185,24 +185,41 @@ describe('victim selection', () => {
     });
   });
 
-  it('spares the agent CLI and its adapter while any command qualifies', () => {
-    // A large CLI is still not the unit: killing it ends the session's agent
-    // instead of failing one command with exit 137.
+  it('kills the agent CLI only when it, not a command, holds the memory, and never the adapter', () => {
     const files = sandbox();
+    // A 3 GiB CLI over a 2.3 GiB command: the command is less than half of the
+    // CLI's tree, so killing it would leave the bulk. The CLI goes, and its whole
+    // tree with it — one session lost rather than the container.
     files['/proc/5867/status'] = status('claude', 5574, 1000, 3 * GIB);
-    files['/proc/5574/status'] = status('node', 470, 1000, 3 * GIB);
-    const processes = listProcesses(reader(files), listPids(files));
-    expect(chooseVictim(processes, { agentUid: 1000 })?.pid).toBe(6000);
-    // With every command too small to matter, the CLI is the last resort — one
-    // session lost rather than the container. The adapter never is.
-    const idle = processes.filter((p) => ![6000, 6100, 6101, 6102, 7000].includes(p.pid));
-    expect(chooseVictim(idle, { agentUid: 1000 })).toMatchObject({ pid: 5867, tier: 'agent-cli' });
     expect(
-      chooseVictim(
-        idle.filter((p) => p.pid !== 5867),
-        { agentUid: 1000 },
-      ),
-    ).toBeUndefined();
+      chooseVictim(listProcesses(reader(files), listPids(files)), { agentUid: 1000 }),
+    ).toMatchObject({ pid: 5867, tier: 'session' });
+    // The adapter the broker started is the session's anchor: never a candidate,
+    // however large. Its child, the CLI, still is.
+    files['/proc/5867/status'] = status('claude', 5574, 1000, 500 * MIB);
+    files['/proc/5574/status'] = status('node', 470, 1000, 5 * GIB);
+    expect(
+      chooseVictim(listProcesses(reader(files), listPids(files)), { agentUid: 1000 })?.pid,
+    ).toBe(6000);
+  });
+
+  it('finds the command under an adapter that runs commands as its own children', () => {
+    // codex-acp has no separate CLI process: the tool shell is the anchor's child.
+    // A topology-specific rule would call that shell "the CLI" and pick the 600 MiB
+    // detached tree instead, every cooldown, while the real culprit kept growing.
+    const files: Record<string, string> = {
+      '/proc/1/status': status('docker-init', 0, 1000, 2 * MIB),
+      '/proc/470/status': status('node', 1, 0, 150 * MIB),
+      '/proc/8000/status': status('codex-acp', 470, 1000, 300 * MIB),
+      '/proc/8001/status': status('bash', 8000, 1000, 5 * MIB),
+      '/proc/8002/status': status('node', 8001, 1000, 400 * MIB),
+      '/proc/8003/status': status('node', 8002, 1000, 900 * MIB),
+      '/proc/8004/status': status('node', 8002, 1000, 1000 * MIB),
+      '/proc/7000/status': status('node', 1, 1000, 600 * MIB),
+    };
+    expect(
+      chooseVictim(listProcesses(reader(files), listPids(files)), { agentUid: 1000 }),
+    ).toMatchObject({ pid: 8002, tier: 'command', treeRssBytes: 2300 * MIB });
   });
 
   it('declines when nothing agent-owned is large enough to matter', () => {
@@ -213,10 +230,8 @@ describe('victim selection', () => {
     expect(chooseVictim(small, { agentUid: 1000 })).toBeUndefined();
   });
 
-  it('walks descendants deepest first so a worker pool cannot outlive its parent', () => {
+  it('walks descendants deepest first', () => {
     const processes = listProcesses(reader(sandbox()), listPids(sandbox()));
-    // vitest (6100) → workers 6101, 6102. Killing the parent first would leave the
-    // workers as orphans still holding the memory the kill was meant to free.
     expect(descendantsOf(5867, processes).map((p) => p.pid)).toEqual([6101, 6102, 6100, 6000]);
     expect(descendantsOf(6102, processes)).toEqual([]);
   });
@@ -256,19 +271,18 @@ describe('createMemoryGuard', () => {
     expect(log.mock.calls.map(([record]) => record.event)).toEqual(['armed']);
   });
 
-  it('SIGKILLs the chosen command tree, deepest first, once usage reaches the threshold', () => {
+  it('freezes the chosen tree top-down, then SIGKILLs it, once usage reaches the threshold', () => {
     const { guard, kill, log } = guardAt(5.5 * GIB);
     const result = guard.tick();
     expect(result.outcome).toBe('kill');
     expect(result.victim?.pid).toBe(6000);
-    // Workers before vitest before the shell: a parent killed first would leave
-    // orphans still holding the memory, or respawn what was just killed.
-    expect(kill.mock.calls).toEqual([
-      [6101, 'SIGKILL'],
-      [6102, 'SIGKILL'],
-      [6100, 'SIGKILL'],
-      [6000, 'SIGKILL'],
-    ]);
+    // Stopped parents fork nothing, so no worker is respawned between the kills
+    // and no late child escapes as a new detached tree.
+    expect(kill.mock.calls).toEqual(
+      ['SIGSTOP', 'SIGKILL'].flatMap((signal) =>
+        [6000, 6100, 6102, 6101].map((pid) => [pid, signal]),
+      ),
+    );
     const record = log.mock.calls.map(([r]) => r).find((r) => r.event === 'kill');
     // What the operator needs to attribute the kill: which session, which command,
     // and that the guard — not the kernel — is what the exit 137 came from.
@@ -283,13 +297,39 @@ describe('createMemoryGuard', () => {
     });
   });
 
-  it('survives targets that are gone and never signals a pid reused by infrastructure', () => {
+  it('also stops and kills a child forked after the snapshot', () => {
     const files = { ...sandbox(), ...cgroup(5.5 * GIB) };
-    const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>((pid) => {
-      if (pid === 6101) {
+    const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>((pid, signal) => {
+      // vitest respawns a worker in the moment before it is stopped.
+      if (pid === 6000 && signal === 'SIGSTOP') {
+        files['/proc/6103/status'] = status('node', 6100, 1000, 100 * MIB);
+      }
+    });
+    const guard = createMemoryGuard({
+      readFile: reader(files),
+      listPids: listPids(files),
+      readLink: () => '/',
+      kill,
+      agentUid: 1000,
+      now: () => 0,
+    });
+    guard.tick();
+    expect(kill).toHaveBeenCalledWith(6103, 'SIGSTOP');
+    expect(kill).toHaveBeenCalledWith(6103, 'SIGKILL');
+  });
+
+  it('never signals a pid reused by infrastructure or by another session', () => {
+    const files = { ...sandbox(), ...cgroup(5.5 * GIB) };
+    const stat = (startTime: number): string =>
+      `0 (node) S 1 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 ${startTime} 0 0`;
+    files['/proc/6101/stat'] = stat(100);
+    const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>((pid, signal) => {
+      if (pid === 6000 && signal === 'SIGSTOP') {
         // Between the snapshot and the next signal, vitest exits and its pid is
-        // reused by a root process. The guard runs as root and could kill it.
+        // reused by a root process; worker 6101 exits and its pid goes to another
+        // session's agent process — same uid, different start time.
         files['/proc/6100/status'] = status('node', 470, 0, 470 * MIB);
+        files['/proc/6101/stat'] = stat(200);
       }
       if (pid === 6102) throw new Error('ESRCH');
     });
@@ -302,19 +342,51 @@ describe('createMemoryGuard', () => {
       now: () => 0,
     });
     expect(guard.tick().outcome).toBe('kill');
-    expect(kill.mock.calls.map(([pid]) => pid)).toEqual([6101, 6102, 6000]);
+    const signalled = new Set(kill.mock.calls.map(([pid]) => pid));
+    expect(signalled.has(6100)).toBe(false);
+    expect(signalled.has(6101)).toBe(false);
+    expect(kill).toHaveBeenCalledWith(6000, 'SIGKILL');
   });
 
-  it('waits out a cooldown after a kill so freed pages can leave the cgroup before the next one', () => {
+  it('waits out a cooldown, and kills again only after an effective kill', () => {
     let clock = 0;
-    const { guard, kill } = guardAt(5.5 * GIB, { now: () => clock });
+    const files = { ...sandbox(), ...cgroup(5.5 * GIB) };
+    const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>();
+    const guard = createMemoryGuard({
+      readFile: reader(files),
+      listPids: listPids(files),
+      readLink: () => '/',
+      kill,
+      agentUid: 1000,
+      now: () => clock,
+    });
+    const kills = () => kill.mock.calls.filter(([, signal]) => signal === 'SIGKILL').length;
     expect(guard.tick().outcome).toBe('kill');
     clock = KILL_COOLDOWN_MS - 1;
     expect(guard.tick().outcome).toBe('cooldown');
-    expect(kill).toHaveBeenCalledTimes(4);
+    expect(kills()).toBe(4);
+    // The kill freed its tree; later the project grows back over the threshold.
+    Object.assign(files, cgroup(3.5 * GIB));
     clock = KILL_COOLDOWN_MS;
+    expect(guard.tick().outcome).toBe('below-threshold');
+    Object.assign(files, cgroup(5.5 * GIB));
     expect(guard.tick().outcome).toBe('kill');
-    expect(kill).toHaveBeenCalledTimes(8);
+    expect(kills()).toBe(8);
+  });
+
+  it('stands down when a kill freed nothing, instead of taking one session after another', () => {
+    // On cgroup v1 the usage counts page cache and tmpfs files, which no kill
+    // frees. Left alone the guard would kill a command every cooldown and then
+    // the agent CLIs: the project-wide outage it exists to prevent, by its own hand.
+    let clock = 0;
+    const { guard, kill, log } = guardAt(5.5 * GIB, { now: () => clock });
+    expect(guard.tick().outcome).toBe('kill');
+    clock = KILL_COOLDOWN_MS;
+    expect(guard.tick().outcome).toBe('suspended');
+    clock = 100 * KILL_COOLDOWN_MS;
+    expect(guard.tick().outcome).toBe('suspended');
+    expect(kill.mock.calls.filter(([, signal]) => signal === 'SIGKILL')).toHaveLength(4);
+    expect(log.mock.calls.map(([r]) => r.event)).toEqual(['armed', 'kill', 'suspended']);
   });
 
   it('only reports in dry-run mode', () => {

@@ -25,8 +25,8 @@ export interface GuardedProcess {
 
 /** A process chosen as the root of the tree to kill. */
 export interface MemoryGuardVictim extends GuardedProcess {
-  /** `command`: a command an agent ran; `detached`: a tree under init; `agent-cli`: last resort. */
-  tier: 'command' | 'detached' | 'agent-cli';
+  /** `session`: a child of a session's ACP adapter; `command`: a child of that; `detached`: a tree under init. */
+  tier: 'session' | 'command' | 'detached';
   /** RSS summed over the process and all its descendants. */
   treeRssBytes: number;
 }
@@ -51,7 +51,14 @@ export interface MemoryGuardOptions {
 }
 
 export interface MemoryGuardTick {
-  outcome: 'no-ceiling' | 'below-threshold' | 'cooldown' | 'no-candidate' | 'would-kill' | 'kill';
+  outcome:
+    | 'no-ceiling'
+    | 'below-threshold'
+    | 'cooldown'
+    | 'suspended'
+    | 'no-candidate'
+    | 'would-kill'
+    | 'kill';
   limitBytes?: number;
   usageBytes?: number;
   source?: MemoryCeiling['source'];
