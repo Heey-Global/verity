@@ -12,7 +12,7 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import * as Application from 'expo-application';
-import { router, type Href } from 'expo-router';
+import { router, useFocusEffect, type Href } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 
@@ -77,6 +77,23 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   const [checkingForUpdate, setCheckingForUpdate] = useState(false);
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
   const updateVersion = useServerUpdateBadge(true);
+  const [connectedCount, setConnectedCount] = useState<number | undefined>(undefined);
+  // Re-read on focus: this screen stays mounted under /devices, where the
+  // count changes.
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      // Only the row's subtitle depends on it, so a failure leaves the row bare
+      // rather than raising a banner over the whole screen.
+      client
+        .listPairedDevices()
+        .then((devices) => active && setConnectedCount(devices.length))
+        .catch(() => undefined);
+      return () => {
+        active = false;
+      };
+    }, [client]),
+  );
 
   const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
   const exportDiagnostics = async () => {
@@ -160,6 +177,17 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           />
         </SettingsListPanel>
       </SettingsGroup>
+      <SettingsGroup title="Access">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="monitor"
+            title="Devices & Web Browsers"
+            subtitle={connectedCount !== undefined ? `${connectedCount} connected` : undefined}
+            onPress={() => router.push('/devices')}
+            accessibilityLabel="Manage devices and web browsers"
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
       <SettingsGroup title="Server">
         <SettingsListPanel>
           <SettingsNavRow
@@ -190,16 +218,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             icon="mic"
             title="Meeting transcription"
             onPress={() => router.push('/settings/transcription')}
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
-      <SettingsGroup title="Security">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="smartphone"
-            title="Paired devices"
-            onPress={() => router.push('/devices')}
-            accessibilityLabel="Manage paired devices"
           />
         </SettingsListPanel>
       </SettingsGroup>
