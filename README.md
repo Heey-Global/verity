@@ -6,133 +6,98 @@
 [![Signed releases](https://img.shields.io/badge/releases-cosign%20signed-0b7285)](SECURITY.md#verifying-a-release)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-**Run a fleet of coding agents on your own server—and steer it from your
-phone.**
+**Run coding agents on your own server and steer them from your phone, tablet,
+or browser.**
 
-Use Verity on iPhone, iPad, or Mac through the iPad app to start multiple
-agents, see which sessions need attention, follow tool activity, answer
-permission requests, and keep work moving away from your desk.
-
-Agents work in isolated project sandboxes and parallel Git worktrees, session
-history stays on your server, and the runtime is not tied to a single AI
-provider: Claude Code, Codex, and open-source models through OpenCode are all
-supported.
+Give an agent a task from wherever you are, let it work in its own copy of your
+project, and answer its questions when it needs you. Verity runs Claude Code,
+Codex, or open-source models through OpenCode with your own subscription, keeps
+your history on your server, and lets several agents work on one project at
+once without getting in each other's way.
 
 ![Verity app](docs/website/site/assets/hero-product-verity-v5.png)
 
 > [!NOTE]
-> **Join the Verity beta.** Try the self-hosted setup and help us improve it
-> with your feedback. For a TestFlight invitation to the app, email
-> [hello@verity.build](mailto:hello@verity.build).
-> Verity is still under active development; review the
-> [known limitations](SECURITY.md#known-limitations) and the
-> [open-source readiness tracker](docs/open-source-readiness.md) before deploying.
+> **Verity is in beta.** Setup and features may still change. Email
+> [hello@verity.build](mailto:hello@verity.build) for a TestFlight invitation
+> to the iPhone and iPad app; the browser app needs no invitation. Please read
+> the [known limitations](SECURITY.md#known-limitations) before you rely on it.
 
-## What Verity is not
+## What you need
 
-- **Not an editor.** Verity does not replace your IDE. There is no completion
-  and no inline edit loop.
-- **Not a prototype builder.** Agents work on your existing repositories and
-  your existing Git workflow, not on generated starter applications.
-- **Not a hosted service.** A local installation does not require a paid
-  service from us.
-
-## What Verity provides
-
-Fleet:
-
-- Persistent coding-agent sessions across your projects
-- Concurrent agents with an isolated branch and worktree for every session
-- An attention queue, live tool activity, and permission prompts
-- Voice input, file attachments, and access to project files
-
-Isolation and credentials:
-
-- Per-project container isolation on your own Docker host
-- Brokered Claude and Codex credentials kept outside project sandboxes
-
-Workflow and deployment:
-
-- Support for Claude Code, Codex, and compatible OpenCode providers
-- Visibility into agent branches, pull requests, and CI status
-- A self-contained deployment with PostgreSQL included
+- **A Linux machine that stays on**, with Docker 25 or newer and the Docker
+  Compose plugin, on x86-64 or ARM64. A Mac or Windows laptop alone is not
+  enough; a small cloud server works well. Plan for 16 GB of memory and 4 CPU
+  cores for one active project.
+- **One AI subscription:** Claude, ChatGPT (for Codex), or an
+  OpenAI-compatible API key for OpenCode.
+- **A browser, or an iPhone or iPad** with the TestFlight invitation.
 
 ## Install
 
-You need an x86-64 Linux host with Docker 25 or newer, the Docker Compose v2
-plugin, and root or `sudo` access. ARM64, macOS, and Windows hosts are not
-currently supported. The official installer provisions the Server, Runner, and
-PostgreSQL, then prints a QR code for pairing the mobile app.
-
-For a host running one active project sandbox, plan for **16 GiB of RAM and
-4 CPU cores**. This is a sizing recommendation, not a tested minimum. Each
-sandbox defaults to a 6 GiB memory limit and a CPU quota of 4 cores; these are
-upper limits, not reserved resources. Leave room for the Server, PostgreSQL,
-and the host. Smaller hosts need lower [resource limits](deploy/README.md#resource-guardrails);
-multiple active sandboxes need additional capacity.
-
-The mobile app connects on **port 8082** over TLS and pins the server certificate.
-After pairing, authenticated API routes require a bearer token specific to the
-paired device; only explicitly defined pre-authentication routes are exempt.
-See [SECURITY.md](SECURITY.md) for the security model and known limitations.
-Docker publishes this port on all host interfaces by default, and Docker's port
-forwarding can bypass ufw rules. Restrict access to trusted devices or networks
-and verify reachability from outside the host; see the
-[deployment hardening guide](deploy/README.md#hardening-an-internet-reachable-host).
-
-For the reference Docker deployment, allow these **TCP ports** from the devices
-that need access:
-
-| Default host ports | Purpose                                    | Access                                                              |
-| ------------------ | ------------------------------------------ | ------------------------------------------------------------------- |
-| `8082`             | Verity API and mobile app connection (TLS) | Trusted devices or networks                                         |
-| `8100–8119`        | Local HTTP and WebSocket previews          | Trusted LAN or VPN clients only; previews have no access protection |
-
-The API host port is configurable through `VERITY_API_HOST_PORT`; the local
-preview range through `VERITY_LOCAL_PREVIEW_PORT_RANGE`. The deployment publishes
-the range once, and each local share uses an available port. Services keep their own listening ports inside the sandbox; devices access them
-through the allocated local preview port. No separate sandbox ports need
-publishing or firewall rules.
-Public sharing through Uplink needs no inbound port forwarding for this range;
-do not expose local previews to the internet. See the
-[ports and environment reference](deploy/README.md#ports--environment-reference)
-for configuration details.
-
-The bootstrap temporarily downloads a version-pinned cosign binary, checks its
-embedded SHA-256 checksum, and verifies the Server image's release signature
-before using its installation code. You do not need to install cosign yourself.
-Download or verification failures stop installation; network access to GitHub,
-the image registry, and Sigstore trust services is required.
-
-Install with:
+On the Linux machine, run:
 
 ```sh
 curl -fsSL https://verity.build/install.sh | bash
 ```
 
-Before making changes, you can inspect the
-[installer](https://verity.build/install.sh) or run its host checks only:
+The installer checks the machine, downloads the signed Verity release, starts
+it with Docker, and prints a QR code and pairing link for your first device. It
+takes a few minutes, needs root or `sudo`, and needs network access to GitHub,
+the image registry, and the Sigstore signature service. To only run the checks first, add `--preflight`:
 
 ```sh
 curl -fsSL https://verity.build/install.sh | bash -s -- --preflight
 ```
 
-See the [deployment guide](deploy/README.md) for manual installation, advanced
-configuration, upgrades, and recovery.
+Then follow the **[getting started guide](docs/getting-started.md)**. It walks
+you through renting a server if you need one, connecting your browser or
+phone, signing in to your AI provider, and running your first session.
 
 > [!WARNING]
-> **Do not expose the Verity server to the public internet.** Do not open or
-> forward port `8082` or the preview ports `8100–8119` on your router or cloud
-> firewall. Connect from your local network or through a VPN such as WireGuard
-> or Tailscale. The local previews have no access protection, and a Server
-> compromise currently amounts to a host compromise. If the host is reachable
-> from the internet anyway, for example a cloud VM with a public address, follow
-> the [hardening guide](deploy/README.md#hardening-an-internet-reachable-host)
-> and verify from an outside network that the ports are blocked.
+> **Keep the Verity server off the public internet.** Do not open ports `8082`
+> or `8100–8119` on your router or cloud firewall; the preview ports serve
+> project previews without any access protection. Connect from your local
+> network or through a VPN such as Tailscale or WireGuard; the getting started
+> guide shows how. A firewall on the host itself, such as ufw, does not block
+> these ports, because Docker publishes them before its rules apply. In the
+> current beta a compromise of the Server amounts to a compromise of the host.
+> For a cloud server with a public address, also follow the
+> [hardening guide](deploy/README.md#hardening-an-internet-reachable-host).
 
-The mobile app source is included in this repository. Official App Store builds
-and hosted connectivity are distributed separately and are not required by the
-self-hosted core.
+## What Verity does
+
+- Runs persistent agent sessions across your projects, each in its own branch
+  and working copy, so several can work on one project at the same time.
+- Shows which session needs your attention, what tools an agent is using, and
+  asks you before an agent does anything that needs permission.
+- Takes voice input and file attachments, and gives you access to project
+  files from the app.
+- Runs every project in an isolated container on your server, and keeps your
+  Claude and Codex credentials outside those containers.
+- Shows the pull-request and CI status of agent branches when GitHub is
+  connected.
+- Ships as one self-contained installation with PostgreSQL included.
+
+## What Verity is not
+
+- **Not an editor.** It does not replace your IDE; there is no completion and
+  no inline edit loop.
+- **Not a prototype builder.** Agents work on your repositories and your Git
+  workflow, not on generated starter applications.
+- **Not a hosted service.** It runs on your machine, and a local installation
+  needs no paid service from us.
+
+## Documentation
+
+- [Getting started](docs/getting-started.md): from an empty server to the
+  first session.
+- [Documentation overview](docs/README.md): guides for using, running, and
+  developing Verity.
+- [Deployment guide](deploy/README.md): updates, resource limits, hardening,
+  and the configuration reference.
+- [Security policy](SECURITY.md): security model, release verification, and
+  known limitations.
 
 ## Development
 
@@ -159,23 +124,23 @@ The main source areas are:
 
 | Path               | Purpose                                        |
 | ------------------ | ---------------------------------------------- |
-| `apps/mobile`      | Expo and React Native mobile app               |
+| `apps/mobile`      | Expo and React Native app (iOS and browser)    |
 | `packages/server`  | Fastify control-plane API and WebSocket server |
 | `packages/session` | Agent backends and session lifecycle           |
 | `packages/store`   | PostgreSQL persistence and encrypted secrets   |
 | `packages/events`  | Runtime-independent agent event model          |
 | `deploy`           | Self-hosted deployment and operations tooling  |
 
-Start with the [contribution guide](CONTRIBUTING.md) for the full development and
-pull-request workflow. Architectural decisions are recorded in
-[`docs/adr`](docs/adr), with supporting protocols, threat models, and runbooks
-under [`docs`](docs).
+Start with the [contribution guide](CONTRIBUTING.md) for the full development
+and pull-request workflow. Architectural decisions are recorded in
+[`docs/adr`](docs/adr); the [documentation overview](docs/README.md) lists the
+protocols, concepts, and runbooks.
 
 ## Open-source scope
 
 This repository contains the Apache-2.0-licensed, self-hosted Verity core and
-mobile app, including the open Uplink client, connector, transport, and
-protocols. A local installation does not require a paid hosted service.
+app, including the open Uplink client, connector, transport, and protocols. A
+local installation does not require a paid hosted service.
 
 The hosted Uplink service, hosted remote connectivity and sharing, managed
 operations, and official App Store builds are separate and are not included
@@ -187,8 +152,8 @@ assets.
 - Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 - Follow the [Code of Conduct](CODE_OF_CONDUCT.md) in project spaces.
 - Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
-- Use [GitHub Issues](https://github.com/heey-global/verity/issues) for public bug
-  reports and feature proposals.
+- Use [GitHub Issues](https://github.com/heey-global/verity/issues) for public
+  bug reports and feature proposals.
 
 ## License
 
