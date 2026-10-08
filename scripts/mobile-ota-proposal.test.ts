@@ -388,3 +388,18 @@ it('uses only an immutable compatible native draft source for early planning', (
     ),
   ).toBeNull();
 });
+
+// Planning must not reserve an undeliverable OTA on a published native line.
+it('checks native compatibility for published planning baselines too', () => {
+  const source = 'd'.repeat(40);
+  const baseline = 'mobile-v1.61.0';
+  const releases = [{ tag_name: baseline, draft: false, prerelease: true }];
+  const execute = (command: string, args: string[]) =>
+    command === 'node' ? 'Native input changed' : args[0] === 'rev-list' ? source : '';
+  expect(otaPlanningBaseline('1.61.0', baseline, releases, execute)).toBeNull();
+  expect(
+    otaPlanningBaseline('1.61.0', baseline, releases, (command, args) =>
+      command === 'git' && args[0] === 'rev-list' ? source : '',
+    ),
+  ).toBe(source);
+});

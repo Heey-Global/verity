@@ -72,8 +72,8 @@ export function otaPlanningBaseline(runtime, baseline, releases, execute = run) 
   if (draft) {
     if (execute('git', ['show', `${source}:apps/mobile/version.txt`]).trim() !== runtime)
       throw new Error('Native draft source does not match the planned runtime');
-    if (execute('node', ['scripts/mobile-native-compatibility.mjs', source, 'HEAD'])) return null;
   }
+  if (execute('node', ['scripts/mobile-native-compatibility.mjs', source, 'HEAD'])) return null;
   return source;
 }
 
