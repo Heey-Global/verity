@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 
 export const ATTENDEE_WEBHOOK_PATH = '/webhooks/attendee';
-export const attendeeUtteranceSchema = z.object({
+const attendeeUtteranceSchema = z.object({
   speaker_name: z.string().nullable().optional(),
   speaker_uuid: z.string(),
   timestamp_ms: z.number().finite().nonnegative(),
