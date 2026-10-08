@@ -165,6 +165,8 @@ function detectFixture(
     nativeVersion?: string;
     released?: boolean;
     complete?: boolean;
+    deferred?: boolean;
+    event?: string;
     tagCommit?: string;
     reviewedVersion?: string;
     production?: boolean;
@@ -193,6 +195,7 @@ function detectFixture(
       ? [{ name: 'autorelease: tagged-mobile-ota' }]
       : [{ name: 'autorelease: pending-mobile-ota' }],
   };
+  if (options.deferred) pr.labels.push({ name: 'autorelease: deferred-mobile-ota' });
   const gh = `#!${process.execPath}
 const args=process.argv.slice(2);
 const endpoint=args.at(-1);
@@ -225,6 +228,7 @@ process.stdout.write(process.argv[2] === 'log' ? '${commit}' : '${options.tagCom
           PATH: `${join(cwd, 'bin')}:${process.env.PATH}`,
           GITHUB_REPOSITORY: 'example/verity',
           GITHUB_OUTPUT: output,
+          GITHUB_EVENT_NAME: options.event ?? 'push',
         },
       },
     );
@@ -249,6 +253,23 @@ it('retries an incomplete promotion proposal even when its Staging prerelease al
   expect(completed.output).toBe('mode=plan\n');
 });
 
+it('resumes a deferred proposal after Staging completion and delivery dispatch', () => {
+  const deferred = detectFixture({
+    released: true,
+    complete: true,
+    deferred: true,
+    event: 'workflow_dispatch',
+  });
+  expect(deferred.status, deferred.stderr).toBe(0);
+  expect(deferred.output).toContain('mode=stage');
+  const nextMerge = detectFixture({ released: true, complete: true, deferred: true });
+  expect(nextMerge.status, nextMerge.stderr).toBe(0);
+  expect(nextMerge.output).toBe('mode=plan\n');
+  const recovered = detectFixture({ released: true, complete: true });
+  expect(recovered.status, recovered.stderr).toBe(0);
+  expect(recovered.output).toBe('mode=plan\n');
+});
+
 it('recovers a missed completion label after production has already delivered the version', () => {
   const result = detectFixture({ released: true, production: true });
   expect(result.status, result.stderr).toBe(0);
@@ -263,7 +284,7 @@ it('rejects a mismatched public tag or a changed release PR version', () => {
   expect(detectFixture({ forged: true }).status).not.toBe(0);
 });
 
-it('publishes only merged fixed versions under the shared mobile release lock', () => {
+it('publishes only merged fixed versions under an independent staging lock', () => {
   const workflow = parse(readFileSync('.github/workflows/mobile-ota.yml', 'utf8')) as {
     concurrency: { group: string; 'cancel-in-progress': boolean };
     jobs: {
@@ -272,12 +293,18 @@ it('publishes only merged fixed versions under the shared mobile release lock', 
       };
     };
   };
-  expect(workflow.concurrency.group).toBe('release-mobile');
+  const promotion = parse(readFileSync('.github/workflows/mobile-ota-promote.yml', 'utf8'));
+  expect(workflow.concurrency.group).not.toBe(promotion.concurrency.group);
+  expect(workflow.concurrency.group).not.toBe('release-mobile');
   expect(workflow.concurrency['cancel-in-progress']).toBe(false);
   const steps = workflow.jobs.update.steps;
   const stage = steps.find((step) => step.run?.includes('mobile-ota-release.ts stage'));
   expect(stage?.if).toContain("steps.intent.outputs.mode == 'stage'");
   expect(stage?.run).toContain('steps.intent.outputs.version');
+  expect((stage as { id?: string })?.id).toBe('stage');
+  expect(
+    steps.find((step) => step.run?.includes('mobile-ota-proposal.mjs complete'))?.run,
+  ).toContain('steps.stage.outputs.deferred');
   expect(stage?.env?.OTA_SOURCE_SHA).toContain('steps.intent.outputs.commit');
   const refresh = steps.findIndex((step) => step.run?.includes('git fetch origin main'));
   const ownership = steps.findIndex(
