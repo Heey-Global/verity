@@ -1,3 +1,8 @@
+import {
+  markSessionSwitch,
+  sessionSwitchTiming,
+  type SwitchTiming,
+} from './sessionSwitchTiming.js';
 import type { LiveEndedReason } from '@verity/events';
 import type { LiveSessionHandle, LiveSessionTransport } from './live/connection.js';
 import { type AgentEvent, type StreamEventFrame } from './wire.js';
@@ -57,6 +62,7 @@ export class SessionStream {
   // tool_use_ids whose permission prompt the server has already settled. Kept so
   // neither a reducer rebuild nor an older history page can resurrect the card.
   private readonly resolvedPermissions = new Set<string>();
+  private timing: SwitchTiming | undefined;
   private started = false;
   private stopped = false;
   private paused = false;
@@ -67,6 +73,7 @@ export class SessionStream {
   private caughtUp = false;
 
   constructor(private readonly opts: SessionStreamOptions) {
+    this.timing = sessionSwitchTiming(opts.sessionId);
     this.lastSeq = opts.sinceSeq ?? 0;
     this.view = opts.view ?? false;
   }
@@ -255,6 +262,7 @@ export class SessionStream {
     // Every subscription has its own replay watermark. Keeping the previous
     // one would publish replay frames as live updates before this one confirms
     // it has caught up.
+    markSessionSwitch(this.timing, 'replay-subscribe');
     this.caughtUp = false;
     this.setConnectionState('connecting');
     let handle: LiveSessionHandle | null = null;
@@ -268,6 +276,7 @@ export class SessionStream {
         },
         caughtUp: () => {
           if (!current()) return;
+          markSessionSwitch(this.timing, 'replay-caught-up');
           this.caughtUp = true;
           this.setConnectionState('connected');
           this.opts.onUpdate?.(this.reducer.state);

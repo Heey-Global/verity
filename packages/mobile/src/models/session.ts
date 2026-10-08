@@ -1,3 +1,8 @@
+import {
+  markSessionSwitch,
+  sessionSwitchTiming,
+  type SwitchTiming,
+} from '../sessionSwitchTiming.js';
 import type { AgentEvent, Attachment } from '@verity/events';
 import {
   VerityApiError,
@@ -337,7 +342,10 @@ export class SessionModel {
   private _opened = false;
   private _historyAttemptComplete = false;
 
+  private readonly timing: SwitchTiming | undefined;
+
   constructor(private readonly opts: SessionModelOptions) {
+    this.timing = sessionSwitchTiming(opts.sessionId);
     this.stream = new SessionStream({
       sessionId: opts.sessionId,
       transport: opts.transport,
@@ -706,19 +714,25 @@ export class SessionModel {
    * On any failure before a snapshot is seeded, fall back to a full replay.
    */
   private async openStreamFromTail(): Promise<void> {
+    const timing = this.timing;
+    markSessionSwitch(timing, 'history-load-start');
     try {
-      let page = await this.opts.client.getHistory(this.opts.sessionId, { limit: HISTORY_PAGE });
+      let page = await this.opts.client.getHistory(this.opts.sessionId, {
+        limit: HISTORY_PAGE,
+        timing,
+      });
       const pages = [page.events];
       const newest = page.events.at(-1)?.seq;
       let oldest = page.events[0]?.seq;
       while (
         page.hasMore &&
         oldest !== undefined &&
-        !this.historyPageRendersMessages(page.events)
+        !this.historyPageRendersMessages(page.events, timing)
       ) {
         page = await this.opts.client.getHistory(this.opts.sessionId, {
           beforeSeq: oldest,
           limit: HISTORY_PAGE,
+          timing,
         });
         pages.push(page.events);
         oldest = page.events[0]?.seq;
@@ -727,9 +741,12 @@ export class SessionModel {
       if (newest !== undefined) {
         this._hasOlder = page.hasMore;
         this.stream.setSinceSeq(newest);
+        markSessionSwitch(timing, 'history-install-start', pages.length);
         this.stream.seedHistory(pages.reverse().flat());
+        markSessionSwitch(timing, 'history-install-end');
       }
     } catch {
+      markSessionSwitch(timing, 'history-fallback-replay');
       // No complete REST snapshot was installed, so seq 0 remains the safe cursor.
     }
     if (!this._running) return;
@@ -742,7 +759,9 @@ export class SessionModel {
 
   private historyPageRendersMessages(
     events: readonly { seq: number; ts?: number | undefined; event: AgentEvent }[],
+    timing?: SwitchTiming,
   ): boolean {
+    markSessionSwitch(timing, 'history-page-reduce-start');
     const reducer = new SessionReducer();
     for (const e of events) {
       reducer.applyFrame({
@@ -752,6 +771,7 @@ export class SessionModel {
         event: e.event,
       });
     }
+    markSessionSwitch(timing, 'history-page-reduce-end');
     return reducer.state.messages.length > 0;
   }
 
@@ -1025,7 +1045,7 @@ export class SessionModel {
   private async loadDetail(): Promise<void> {
     const seqAtRequest = this.stream.newestSeq;
     try {
-      const detail = await this.opts.client.getSession(this.opts.sessionId);
+      const detail = await this.opts.client.getSession(this.opts.sessionId, { trace: this.timing });
       if (detail.pendingPermissions !== undefined) {
         this.stream.reconcilePendingPermissions(detail.pendingPermissions, seqAtRequest);
       }
@@ -1301,6 +1321,11 @@ export class SessionModel {
 
   async decidePermission(toolUseId: string, decision: PermissionDecision): Promise<void> {
     if (this._decidingPermission !== undefined) return; // a decision is already in flight
+    const allowTiming =
+      decision.behavior === 'allow'
+        ? sessionSwitchTiming(this.opts.sessionId, 'permission')
+        : undefined;
+    markSessionSwitch(allowTiming, 'allow-model-handler');
     this._decidingPermission = toolUseId;
     this._permissionError = undefined;
     this.emit();
@@ -1309,14 +1334,17 @@ export class SessionModel {
         this.opts.sessionId,
         toolUseId,
         decision,
+        ...(allowTiming ? ([{ trace: allowTiming }] as const) : []),
       );
       if (result.scopeSaved === false) {
         this._permissionError =
           'Request allowed, but the reusable permission could not be saved. Future requests will ask again.';
       }
+      markSessionSwitch(allowTiming, 'allow-model-response');
       this.stream.resolvePermission(toolUseId);
       this.opts.onPermissionSettled?.(toolUseId, true);
     } catch (error) {
+      markSessionSwitch(allowTiming, 'allow-model-error');
       // 404 = no pending prompt under that id (already stale): not an error — the
       // prompt is gone server-side, so drop the card here too rather than waiting
       // for a stream event that may never come. Any other failure is surfaced and

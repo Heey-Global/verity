@@ -1,3 +1,5 @@
+import { beginRowTouch, rowPress } from '../lib/sessionSwitchTiming';
+import { cancelSessionSwitch, markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { isLinkableSession } from '../lib/sessionLinks';
 import { subscribeLiveRefresh } from '../lib/liveConnection';
 import { moveProjectIdToIndex } from '../lib/projectReorder';
@@ -1914,6 +1916,10 @@ function SessionRow({
 }) {
   const { theme } = useUnistyles();
   const [hovered, setHovered] = useState(false);
+  useEffect(() => {
+    if (selected)
+      markSessionSwitch(sessionSwitchTiming(session.sessionId), 'selected-row-react-commit');
+  }, [selected, session.sessionId]);
   const badge = sessionBadge(session.status);
   const toneColor = theme.colors.tone[badge.tone];
   const label = sessionLabel(session);
@@ -2080,8 +2086,13 @@ function SessionRow({
         onHoverOut={() => setHovered(false)}
         disabled={interactionsLocked}
         {...moveActions}
+        onTouchStart={(event) => beginRowTouch(session.sessionId, event.nativeEvent.timestamp)}
+        onPressIn={() => markSessionSwitch(sessionSwitchTiming(session.sessionId), 'js-press-in')}
+        onTouchCancel={() => cancelSessionSwitch(session.sessionId)}
         onPress={() => {
           if (interactionsLocked) return;
+          rowPress(session.sessionId);
+          markSessionSwitch(sessionSwitchTiming(session.sessionId), 'selection-dispatch');
           onSelect();
           onOpen?.();
         }}
@@ -2117,8 +2128,15 @@ function SessionRow({
         onHoverOut={() => setHovered(false)}
         disabled={interactionsLocked}
         {...moveActions}
+        onTouchStart={(event) => beginRowTouch(session.sessionId, event.nativeEvent.timestamp)}
+        onPressIn={() => markSessionSwitch(sessionSwitchTiming(session.sessionId), 'js-press-in')}
+        onTouchCancel={() => cancelSessionSwitch(session.sessionId)}
         onPress={() => {
-          if (!interactionsLocked) onOpen?.();
+          if (!interactionsLocked) {
+            rowPress(session.sessionId);
+            markSessionSwitch(sessionSwitchTiming(session.sessionId), 'link-navigation-dispatch');
+            onOpen?.();
+          }
         }}
         onLongPress={reorderable ? undefined : onRename}
         delayLongPress={300}

@@ -1,3 +1,5 @@
+import { beginRowTouch, rowPress } from './sessionSwitchTiming';
+import { markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import * as Updates from 'expo-updates';
 import { Share } from 'react-native';
 import { shareUpdateDiagnostics } from './updateDiagnostics';
@@ -144,4 +146,20 @@ it('compacts Android map contexts without losing errors after a large manifest',
     downloadError: '{message=Asset missing}',
   });
   expect(JSON.stringify(report)).not.toContain('assetasset');
+});
+
+it('exports bounded content-free switch phases with the loaded update identity', async () => {
+  readLogs.mockResolvedValue([]);
+  beginRowTouch('private-session', 1234);
+  rowPress('private-session');
+  markSessionSwitch(sessionSwitchTiming('private-session'), 'transcript-ready-react-commit');
+  await shareUpdateDiagnostics();
+  const report = sharedReport();
+  expect(report.updateId).toBe('embedded-id');
+  expect(report.sessionSwitchTimings.at(-1).phases.map((p: { phase: string }) => p.phase)).toEqual([
+    'js-touch-start',
+    'js-press-handler',
+    'transcript-ready-react-commit',
+  ]);
+  expect(JSON.stringify(report)).not.toContain('private-session');
 });

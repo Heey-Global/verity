@@ -1,3 +1,4 @@
+import { beginSessionSwitch } from '../sessionSwitchTiming.js';
 import type { AgentEvent } from '@verity/events';
 import { describe, expect, it, vi } from 'vitest';
 import { VerityApiError, type VerityClient } from '../api.js';
@@ -1097,7 +1098,7 @@ describe('SessionModel — resumable', () => {
     await vi.waitFor(() => {
       expect(model.state.resumable).toBe(false);
     });
-    expect(getSession).toHaveBeenCalledWith('s1');
+    expect(getSession).toHaveBeenCalledWith('s1', { trace: undefined });
   });
 
   it('stays undefined (sendable) when the detail probe fails', async () => {
@@ -2845,4 +2846,43 @@ it('loads activity on demand without a recurring timer in live mode', async () =
     model.stop();
     interval.mockRestore();
   }
+});
+
+it('passes only the captured Allow timing context and marks model completion', async () => {
+  const client = stubClient();
+  client.decidePermission = vi
+    .fn()
+    .mockResolvedValue({ sessionId: 'timed-allow', toolUseId: 'private-use', decided: true });
+  client.decidePermission = decidePermission;
+  const model = new SessionModel({
+    client,
+    sessionId: 'timed-allow',
+    transport: new FakeTransport(),
+  });
+  const trace = beginSessionSwitch('timed-allow', 'permission');
+  await model.decidePermission('private-use', { behavior: 'allow' });
+  expect(decidePermission).toHaveBeenCalledWith(
+    'timed-allow',
+    'private-use',
+    { behavior: 'allow' },
+    { trace },
+  );
+  expect(trace.phases.map((p) => p.phase)).toEqual(['allow-model-handler', 'allow-model-response']);
+  expect(JSON.stringify(trace.phases)).not.toContain('private-use');
+  model.stop();
+});
+
+it('records an Allow failure without exporting the error text', async () => {
+  const client = stubClient();
+  client.decidePermission = vi.fn().mockRejectedValue(new Error('private-secret-error'));
+  const model = new SessionModel({
+    client,
+    sessionId: 'failed-allow',
+    transport: new FakeTransport(),
+  });
+  const trace = beginSessionSwitch('failed-allow', 'permission');
+  await model.decidePermission('private-use', { behavior: 'allow' });
+  expect(trace.phases.map((p) => p.phase)).toEqual(['allow-model-handler', 'allow-model-error']);
+  expect(JSON.stringify(trace.phases)).not.toContain('private-secret-error');
+  model.stop();
 });

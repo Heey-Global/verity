@@ -1,3 +1,4 @@
+import { beginSessionSwitch } from '@verity/mobile';
 import type { SessionModelState, VerityClient } from '@verity/mobile';
 import { act, renderHook } from '@testing-library/react-native';
 import { AppState, type AppStateStatus } from 'react-native';
@@ -120,6 +121,20 @@ describe('useSession frame publication', () => {
     act(() => emit(model, 'abcd'));
     paint();
     expect(hook.result.current.name).toBe('abcd');
+    hook.unmount();
+  });
+
+  it('records loaded state dispatch once at the scheduled frame', () => {
+    const trace = beginSessionSwitch('s1');
+    const hook = renderHook(() => useSession(client, 's1', 'http://host'));
+    const model = mockModels[0]!;
+    act(() => model.onChange({ ...model.state, loaded: true }));
+    expect(trace.phases).toEqual([]);
+    paint();
+    expect(trace.phases.map((p) => p.phase)).toEqual(['loaded-model-state-react-dispatch']);
+    act(() => model.onChange({ ...model.state, loaded: true }));
+    paint();
+    expect(trace.phases).toHaveLength(1);
     hook.unmount();
   });
 

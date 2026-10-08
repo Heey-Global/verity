@@ -1,3 +1,8 @@
+import {
+  markSessionSwitch,
+  sessionSwitchTiming,
+  type SwitchTiming,
+} from './sessionSwitchTiming.js';
 import { taskSchema, type Task, type TaskCapture, type TaskPatch } from './tasks.js';
 import { liveResourceInterval, type LiveResource, selectedOpenCodeModels } from '@verity/events';
 import {
@@ -3919,9 +3924,25 @@ export class VerityClient {
     return sessionCreatedSchema.parse(await res.json());
   }
 
-  async getSession(id: string): Promise<SessionDetail> {
-    const res = await this.request(`/sessions/${encodeURIComponent(id)}`, { method: 'GET' });
-    return sessionDetailSchema.parse(await res.json());
+  async getSession(
+    id: string,
+    timingContext?: { trace: SwitchTiming | undefined },
+  ): Promise<SessionDetail> {
+    const timing = timingContext ? timingContext.trace : sessionSwitchTiming(id);
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(id)}`,
+      { method: 'GET' },
+      this.fetchImpl,
+      { trace: timing },
+    );
+    markSessionSwitch(timing, 'session-body-read-start');
+    const body = await res.text();
+    markSessionSwitch(timing, 'session-body-read-end');
+    const json: unknown = JSON.parse(body);
+    markSessionSwitch(timing, 'session-json-parse-end');
+    const detail = sessionDetailSchema.parse(json);
+    markSessionSwitch(timing, 'session-schema-end');
+    return detail;
   }
 
   /** A one-use ticket for the app-wide live connection (`WS /live`), carried as
@@ -3946,8 +3967,9 @@ export class VerityClient {
    * from its tail and to load older turns on scroll-up. */
   async getHistory(
     id: string,
-    opts: { beforeSeq?: number; limit?: number } = {},
+    opts: { beforeSeq?: number; limit?: number; timing?: SwitchTiming | undefined } = {},
   ): Promise<SessionHistoryPage> {
+    const timing = Object.hasOwn(opts, 'timing') ? opts.timing : sessionSwitchTiming(id);
     const params = new URLSearchParams();
     if (opts.beforeSeq !== undefined) params.set('beforeSeq', String(opts.beforeSeq));
     if (opts.limit !== undefined) params.set('limit', String(opts.limit));
@@ -3955,8 +3977,17 @@ export class VerityClient {
     const res = await this.request(
       `/sessions/${encodeURIComponent(id)}/events${qs ? `?${qs}` : ''}`,
       { method: 'GET' },
+      this.fetchImpl,
+      { trace: timing },
     );
-    return sessionHistorySchema.parse(await res.json());
+    markSessionSwitch(timing, 'events-body-read-start');
+    const body = await res.text();
+    markSessionSwitch(timing, 'events-body-read-end');
+    const json: unknown = JSON.parse(body);
+    markSessionSwitch(timing, 'events-json-parse-end');
+    const page = sessionHistorySchema.parse(json);
+    markSessionSwitch(timing, 'events-schema-end', page.events.length);
+    return page;
   }
 
   /** Fire-and-forget mobile scroll diagnostics. The app catches/reporting failures;
@@ -4467,7 +4498,10 @@ export class VerityClient {
     id: string,
     toolUseId: string,
     decision: PermissionDecision,
+    timingContext?: { trace: SwitchTiming | undefined },
   ): Promise<PermissionDecided> {
+    const timing = timingContext?.trace;
+    markSessionSwitch(timing, 'allow-request-start');
     const res = await this.request(
       `/sessions/${encodeURIComponent(id)}/permissions/${encodeURIComponent(toolUseId)}`,
       {
@@ -4476,7 +4510,10 @@ export class VerityClient {
         body: JSON.stringify(decision),
       },
     );
-    return permissionDecidedSchema.parse(await res.json());
+    markSessionSwitch(timing, 'allow-fetch-return', res.status);
+    const result = permissionDecidedSchema.parse(await res.json());
+    markSessionSwitch(timing, 'allow-response-processed');
+    return result;
   }
 
   async listTasks(): Promise<Task[]> {
@@ -4518,6 +4555,7 @@ export class VerityClient {
     path: string,
     init: RequestInit,
     fetchImpl: typeof fetch = this.fetchImpl,
+    timingOverride?: { trace: SwitchTiming | undefined },
   ): Promise<Response> {
     // Attach the per-device bearer token (audit C1) when we have one. Callers
     // pass plain-object headers, so a record spread is safe; an explicit
@@ -4555,7 +4593,11 @@ export class VerityClient {
         this.observedReads.delete(this.observedReads.keys().next().value!);
       for (const listener of this.readListeners) listener(resource);
     }
+    const timing = timingOverride?.trace;
+    const timingKind = path.includes('/events') ? 'events' : 'session';
+    markSessionSwitch(timing, `${timingKind}-request-start`);
     const res = await fetchImpl(`${this.baseUrl}${path}`, init);
+    markSessionSwitch(timing, `${timingKind}-fetch-return`, res.status);
     if (!res.ok) {
       // A 401 on a GATED route AFTER we sent a token means that token is
       // expired/revoked → tell the app to drop it and re-authenticate. Only fire
