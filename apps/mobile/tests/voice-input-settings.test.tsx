@@ -2,11 +2,11 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
-jest.mock('../../components/settings/SettingsChrome', () => ({
+jest.mock('../components/settings/SettingsChrome', () => ({
   SettingsScaffold: ({ children }: { children: React.ReactNode }) => children,
 }));
-import VoiceInputSettings from './voice-input';
-import { loadVoiceVocabulary, saveVoiceVocabulary } from '../../lib/voiceVocabulary';
+import VoiceInputSettings from '../app/settings/voice-input';
+import { loadVoiceVocabulary, saveVoiceVocabulary } from '../lib/voiceVocabulary';
 
 beforeEach(async () => {
   jest.restoreAllMocks();

@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export interface VoiceTerm {
+interface VoiceTerm {
   term: string;
   aliases: string[];
 }
@@ -8,9 +8,9 @@ export interface VoiceVocabulary {
   enabled: boolean;
   terms: VoiceTerm[];
 }
-export const MAX_VOICE_TERMS = 100;
-const STORAGE_KEY = 'verity.voiceVocabulary.v1';
-export const DEFAULT_VOICE_TERMS = [
+const MAX_VOICE_TERMS = 100;
+const STORAGE_SLOT = 'verity.voiceVocabulary.v1';
+const DEFAULT_VOICE_TERMS = [
   'Verity',
   'Uplink',
   'GitHub',
@@ -78,7 +78,7 @@ export function validateVoiceVocabulary(value: VoiceVocabulary): VoiceVocabulary
   return { enabled: value.enabled, terms };
 }
 export async function loadVoiceVocabulary(): Promise<VoiceVocabulary> {
-  const raw = await AsyncStorage.getItem(STORAGE_KEY);
+  const raw = await AsyncStorage.getItem(STORAGE_SLOT);
   if (!raw) return defaultVoiceVocabulary();
   try {
     const value = JSON.parse(raw) as VoiceVocabulary;
@@ -90,7 +90,7 @@ export async function loadVoiceVocabulary(): Promise<VoiceVocabulary> {
   }
 }
 export async function saveVoiceVocabulary(value: VoiceVocabulary): Promise<void> {
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(validateVoiceVocabulary(value)));
+  await AsyncStorage.setItem(STORAGE_SLOT, JSON.stringify(validateVoiceVocabulary(value)));
 }
 
 const word = /[\p{L}\p{N}_]/u;
