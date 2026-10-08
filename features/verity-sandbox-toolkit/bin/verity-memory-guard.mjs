@@ -48,9 +48,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { clearInterval, setInterval } from 'node:timers';
 
-export const DEFAULT_POLL_INTERVAL_MS = 500;
+const DEFAULT_POLL_INTERVAL_MS = 500;
 /** Share of the ceiling kept free for memory the guest cannot see. */
-export const DEFAULT_RESERVE_FRACTION = 0.2;
+const DEFAULT_RESERVE_FRACTION = 0.2;
 /** Never reserve less than this: the Sentry alone exceeded 0.8 GiB when it was killed. */
 export const DEFAULT_MINIMUM_RESERVE_BYTES = 1024 ** 3;
 /** Time after a kill during which no second kill is attempted; freed pages take a moment to leave the cgroup. */
@@ -59,9 +59,9 @@ export const KILL_COOLDOWN_MS = 2_000;
 export const REARM_GROWTH_FRACTION = 0.25;
 /** Below this RSS a process is not worth killing: it would not free enough to matter and is likely infrastructure. */
 export const MINIMUM_VICTIM_RSS_BYTES = 64 * 1024 ** 2;
-export const DEFAULT_AGENT_UID = 1000;
-export const DEFAULT_CONTROL_DIR = '/run/verity-runner-broker';
-export const PID_FILE_NAME = 'memory-guard.pid';
+const DEFAULT_AGENT_UID = 1000;
+const DEFAULT_CONTROL_DIR = '/run/verity-runner-broker';
+const PID_FILE_NAME = 'memory-guard.pid';
 /** cgroup v1 spells "no limit" as a near-2^63 sentinel rather than `max`. */
 const UNLIMITED_SENTINEL_BYTES = 2 ** 50;
 const MAX_LOGGED_COMMAND = 200;
