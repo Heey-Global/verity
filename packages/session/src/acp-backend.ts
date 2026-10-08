@@ -1196,6 +1196,7 @@ export async function runAcpTurn(
       aborted,
     };
   } catch (error) {
+    const turnActive = !closedOut;
     acceptingSteering = false;
     const message = error instanceof Error ? error.message : String(error);
     await drainUpdates().catch(() => undefined);
@@ -1218,13 +1219,15 @@ export async function runAcpTurn(
     ]);
     if (exitTimer !== undefined) clearTimeout(exitTimer);
     const exitDetails = processExited ? child.exitDetails?.() : undefined;
-    const stderr = redactProcessStderr(`${child.stderr()}\n${message}`, opts.env ?? process.env);
+    const stderr = `${child.stderr()}\n${message}`;
     const processFailure =
-      !aborted && exitDetails !== undefined
+      !aborted &&
+      exitDetails !== undefined &&
+      (exitDetails.code !== 0 || exitDetails.signal !== null || turnActive)
         ? {
             exitCode: exitDetails.code,
             signal: exitDetails.signal,
-            turnActive: true,
+            turnActive,
             stderrTail: redactProcessStderr(child.stderr(), opts.env ?? process.env).slice(-65_536),
             ...(opts.model === undefined ? {} : { model: opts.model.slice(0, 200) }),
           }

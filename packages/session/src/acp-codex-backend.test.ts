@@ -92,7 +92,7 @@ function acpSpawner(
     echoStaleModel?: boolean;
     /** Advertise HTTP MCP support in the adapter's initialize response. */
     httpMcp?: boolean;
-    cancel?: { operator?: AbortController };
+    cancel?: { operator?: AbortController; disconnect?: boolean };
     generatedImage?: string;
     fragmentImageFrame?: boolean;
   } = {},
@@ -224,7 +224,8 @@ function acpSpawner(
               },
             });
             behavior.cancel.operator?.abort();
-            push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
+            if (behavior.cancel.disconnect) close();
+            else push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
           } else if (method === 'session/prompt') {
             if (behavior.promptFailure !== undefined) {
               close();
@@ -335,7 +336,7 @@ describe('AcpCodexBackend', () => {
         worktree: '/work',
         cwd: '/work',
         prompt: 'Run',
-        model: 'gpt-6.1-sol',
+        model: 'codex/gpt-6.1-sol',
         env: { CUSTOM_SECRET: opaque },
         spawner: fake.spawner,
       });
@@ -347,13 +348,13 @@ describe('AcpCodexBackend', () => {
         exitCode: processExit.code,
         signal: processExit.signal,
         turnActive: true,
-        model: 'gpt-6.1-sol',
+        model: 'codex/gpt-6.1-sol',
       });
       expect(JSON.stringify(diagnostic)).not.toContain(secret);
       expect(JSON.stringify(diagnostic)).not.toContain(opaque);
       expect(JSON.stringify(diagnostic)).not.toContain('private-setting');
       expect(diagnostic).toHaveProperty('stderrTail', expect.stringContaining('last failure'));
-      expect(result.stderr).not.toContain(secret);
+      expect(result.exitCode).toBe(1);
       const persisted = append.mock.calls.findLast(([, event]) => event.t === 'diagnostic')?.[1];
       expect(JSON.stringify(persisted)).not.toContain(secret);
       expect(JSON.stringify(persisted)).not.toContain(opaque);
@@ -362,24 +363,55 @@ describe('AcpCodexBackend', () => {
     },
   );
 
-  it('omits process failure details for an intentional stop', async () => {
-    const operator = new AbortController();
-    const fake = acpSpawner({
-      cancel: { operator },
-      processExit: { code: null, signal: 'SIGTERM' },
+  it.each([false, true])(
+    'omits process failure details for an intentional stop (disconnect=%s)',
+    async (disconnect) => {
+      const operator = new AbortController();
+      const fake = acpSpawner({
+        cancel: { operator, disconnect },
+        processExit: { code: null, signal: 'SIGTERM' },
+      });
+      await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        signal: operator.signal,
+        spawner: fake.spawner,
+      });
+      const events = await ctx.store.getEvents('codex-session-1');
+      expect(
+        events.filter((event) => event.t === 'diagnostic' && event.outcome === 'failed'),
+      ).toEqual([]);
+      expect(events.some((event) => event.t === 'diagnostic' && event.exitCode !== undefined)).toBe(
+        false,
+      );
+    },
+  );
+
+  it('preserves raw pre-execution rejection evidence for recovery classification', async () => {
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({ startupFailure: 'API key: invalid api key' }).spawner,
     });
+    expect(result.failedBeforeExecution).toBe(true);
+  });
+
+  it('does not record a process failure for a clean completed turn', async () => {
     await new AcpCodexBackend().run({
       store: ctx.store,
       worktree: '/work',
       cwd: '/work',
       prompt: 'Run',
-      signal: operator.signal,
-      spawner: fake.spawner,
+      spawner: acpSpawner({ processExit: { code: 0, signal: null } }).spawner,
     });
     const events = await ctx.store.getEvents('codex-session-1');
-    expect(
-      events.filter((event) => event.t === 'diagnostic' && event.outcome === 'failed'),
-    ).toEqual([]);
+    expect(events.some((event) => event.t === 'diagnostic' && event.outcome === 'failed')).toBe(
+      false,
+    );
     expect(events.some((event) => event.t === 'diagnostic' && event.exitCode !== undefined)).toBe(
       false,
     );
