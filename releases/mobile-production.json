@@ -1,10 +1,13 @@
 {
-  "schema": 1,
+  "schema": 2,
   "product": "mobile-native",
-  "version": "1.53.0",
-  "source": "1ef7108c646b38d4691f4ac46765c6633e7a0e6a",
+  "version": "1.60.0",
+  "source": "5dbcfbcd0c282929cbe5b0c5b1f731c6827ed3ca",
   "appId": "6807746931",
-  "buildId": "f22f8678-f782-4b61-ab02-0c56b3476d9b",
-  "buildNumber": "43",
-  "releasePr": 1161
+  "buildNumber": "51",
+  "artifact": {
+    "sha256": "d8eacec03d959f21f0fc70d779cf8f0bb3621f046d9d3e1fdfc99ec228e0fd9d",
+    "id": 11561821968
+  },
+  "releasePr": 1336
 }
