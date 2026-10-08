@@ -13,12 +13,12 @@ import {
   Modal,
   PanResponder,
   Pressable,
-  ScrollView,
   Text,
   TextInput,
   useWindowDimensions,
   View,
 } from 'react-native';
+import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { openTaskAttachment } from '../lib/taskAttachments';
 import type { AttachAnchor } from '../lib/attachMenu';
@@ -465,7 +465,10 @@ export function TasksPanel({
   );
   return (
     <Modal transparent animationType="fade" onRequestClose={onClose}>
-      <View style={[styles.backdrop, wide ? styles.backdropWide : null]}>
+      <KeyboardAvoidingView
+        behavior="padding"
+        style={[styles.backdrop, wide ? styles.backdropWide : null]}
+      >
         <Pressable
           accessibilityLabel="Close Tasks"
           onPress={onClose}
@@ -474,7 +477,7 @@ export function TasksPanel({
         <View
           style={[
             styles.panel,
-            { height: height * 0.7 },
+            { height: height * 0.7, maxHeight: '100%' },
             wide
               ? {
                   width: 380,
@@ -493,7 +496,7 @@ export function TasksPanel({
             {headerButton('Close', 'x', onClose)}
           </View>
           {moving ? (
-            <ScrollView>
+            <KeyboardAwareScrollView bottomOffset={24}>
               <Text style={styles.sectionLabel}>Move to</Text>
               {[
                 { id: null, label: 'General' },
@@ -515,9 +518,9 @@ export function TasksPanel({
               <View style={styles.chips}>
                 {chip('Cancel', () => setMoving(null), { whileBusy: true })}
               </View>
-            </ScrollView>
+            </KeyboardAwareScrollView>
           ) : (
-            <ScrollView>
+            <KeyboardAwareScrollView bottomOffset={24}>
               {groups.map((group) => (
                 <View key={group.key}>
                   <Pressable
@@ -606,7 +609,7 @@ export function TasksPanel({
                     : 'Nothing here yet. Tap the bubble and say what needs doing.'}
                 </Text>
               ) : null}
-            </ScrollView>
+            </KeyboardAwareScrollView>
           )}
           <Pressable
             onPress={() => setShowDone(!showDone)}
@@ -618,7 +621,7 @@ export function TasksPanel({
             </Text>
           </Pressable>
         </View>
-      </View>
+      </KeyboardAvoidingView>
       {menu ? (
         <ActionMenu
           anchor={menu.anchor}
