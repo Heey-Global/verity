@@ -63,6 +63,26 @@ final class CaptureStore: NSObject, ObservableObject {
     {
       captures = saved
     }
+    recoverInterruptedRecordings()
+  }
+
+  /// A recording only enters the index when it stops. If watchOS ended the app
+  /// mid-recording, its audio is still on disk: queue it rather than lose it.
+  private func recoverInterruptedRecordings() {
+    let known = Set(captures.map(\.id))
+    let files =
+      (try? FileManager.default.contentsOfDirectory(
+        at: directory, includingPropertiesForKeys: [.creationDateKey])) ?? []
+    var recovered = false
+    for file in files where file.pathExtension == "m4a" {
+      let id = file.deletingPathExtension().lastPathComponent
+      guard UUID(uuidString: id) != nil, !known.contains(id) else { continue }
+      let created =
+        (try? file.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
+      captures.insert(Capture(id: id, createdAt: created, durationMs: 0, state: .queued), at: 0)
+      recovered = true
+    }
+    if recovered { persist() }
   }
 
   func activate() {
@@ -137,13 +157,18 @@ final class CaptureStore: NSObject, ObservableObject {
   }
 
   /// Meter tick: drives the level bars and stops after ~1.5 s of silence once
-  /// speech was heard, so a short note needs no second tap.
+  /// speech was heard, so a short note needs no second tap. A forgotten
+  /// recording stops after five minutes.
   private func tick() {
     guard let recorder, let current else { return }
     recorder.updateMeters()
     let power = recorder.averagePower(forChannel: 0)  // dBFS, about -160...0
     level = max(0, min(1, (power + 50) / 50))
     elapsed = Date().timeIntervalSince(current.start)
+    if elapsed > 5 * 60 {
+      stop()
+      return
+    }
     if power > -30 {
       heardSpeech = true
       quietSince = nil
