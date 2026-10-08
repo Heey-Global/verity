@@ -309,15 +309,22 @@ describe('independent listener discovery', () => {
       expect(await discovery.listSessionDevServers('a')).toHaveLength(1);
       const child = vi.mocked(spawn).mock.results.at(-1)!.value;
       expect(vi.mocked(spawn).mock.calls.at(-1)![1]).not.toContain('--user');
+      (child as EventEmitter).emit('exit', 1);
       scan.mockRejectedValueOnce(new Error('Docker unavailable'));
       const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 3_000);
       expect(await discovery.listSessionDevServers('a')).toHaveLength(1);
       clock.mockRestore();
+      const recoveredChild = vi.mocked(spawn).mock.results.at(-1)!.value;
+      (recoveredChild as EventEmitter).emit('exit', 1);
       project.containerName = 'replacement';
-      await discovery.reconcile();
-      expect(vi.mocked(child).kill).toHaveBeenCalled();
+      scan.mockRejectedValueOnce(new Error('replacement unavailable'));
+      expect(await discovery.listSessionDevServers('a')).toEqual([]);
+      const replacementChild = vi.mocked(spawn).mock.results.at(-1)!.value;
+      (replacementChild.stdout as PassThrough).emit('data', Buffer.from('changed\n'));
+      await vi.waitFor(() => expect(appendEvent).toHaveBeenCalled());
       project.state = 'sleeping';
       await discovery.reconcile();
+      expect(vi.mocked(replacementChild).kill).toHaveBeenCalled();
       expect(await discovery.listSessionDevServers('a')).toEqual([]);
       expect(appendEvent).toHaveBeenCalledWith('a', {
         t: 'dev_servers_changed',

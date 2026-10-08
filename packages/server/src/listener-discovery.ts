@@ -13,7 +13,10 @@ import { PreviewShareNotFoundError } from './preview-share-manager.js';
 /** One sandbox watcher serves every session, independently of public sharing. */
 export class ListenerDiscovery {
   private readonly watchers = new Map<string, { child: ChildProcess; containerName: string }>();
-  private readonly healthy = new Map<string, ListeningProcess[]>();
+  private readonly healthy = new Map<
+    string,
+    { containerName: string; processes: ListeningProcess[] }
+  >();
   private readonly scanResults = new Map<
     string,
     { containerName: string; at: number; processes: ListeningProcess[] }
@@ -61,7 +64,8 @@ export class ListenerDiscovery {
     try {
       processes = await this.scan(project);
     } catch {
-      processes = this.healthy.get(project.id) ?? [];
+      const healthy = this.healthy.get(project.id);
+      processes = healthy?.containerName === project.containerName ? healthy.processes : [];
     }
     return this.attribute(project, sessionId, processes);
   }
@@ -81,7 +85,7 @@ export class ListenerDiscovery {
         if (this.closed || this.scans.get(project.id) !== entry) {
           throw new Error('Listener scan was superseded');
         }
-        this.healthy.set(project.id, processes);
+        this.healthy.set(project.id, { containerName: project.containerName, processes });
         this.scanResults.set(project.id, {
           containerName: project.containerName,
           at: Date.now(),
@@ -97,10 +101,10 @@ export class ListenerDiscovery {
     return entry.promise;
   }
 
-  private clearScans(projectId: string): void {
+  private clearScans(projectId: string, clearHealthy = true): void {
     this.scans.delete(projectId);
     this.scanResults.delete(projectId);
-    this.healthy.delete(projectId);
+    if (clearHealthy) this.healthy.delete(projectId);
   }
 
   private async attribute(
@@ -193,7 +197,7 @@ export class ListenerDiscovery {
           processes = await this.scan(project, fresh);
         } else {
           processes = [];
-          this.healthy.set(project.id, processes);
+          this.healthy.set(project.id, { containerName: project.containerName, processes });
           this.options.onScan?.(project, processes);
         }
       } catch {
@@ -280,7 +284,7 @@ export class ListenerDiscovery {
     const finish = () => {
       if (this.watchers.get(project.id)?.child === child) {
         this.watchers.delete(project.id);
-        this.clearScans(project.id);
+        this.clearScans(project.id, false);
       }
     };
     child.once('exit', finish);
