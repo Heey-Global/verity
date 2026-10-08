@@ -71,6 +71,7 @@ it.each([true, false])(
       spokenThrough: -1,
     });
     const store = {
+      getSession: async () => ({ id: 'session' }),
       getAttendeeState: async (id: string) => rows.get(id),
       putAttendeeState: async (id: string, state: unknown) => {
         rows.set(id, structuredClone(state));
