@@ -205,7 +205,7 @@ export function wordsFromRuns(
  * timings align with the text, then any text the timings have not reached yet. */
 export function meetingTranscriptRows(
   meeting: MeetingRecord,
-): Array<SpeakerLine | { text: string }> {
+): Array<SpeakerLine | { text: string; pending?: boolean }> {
   if (meeting.timedWords?.length) {
     const aligned = reconcileTimedTranscript(meeting.transcript, meeting.timedWords);
     if (!aligned) return [{ text: meeting.transcript }];

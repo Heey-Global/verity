@@ -11,7 +11,7 @@ const OPENING_SECONDS = 15;
 export const MIN_INTERVAL_MS = 10_000;
 /** "I'm" and "this is" are common in ordinary speech; each check is a model call, so a
  * speaker who never introduces themselves is not asked about for the whole meeting. */
-const MAX_CHECKS = 3;
+export const MAX_CHECKS = 3;
 const MAX_TEXT = 1500;
 
 export interface SpeakerNameHistory {

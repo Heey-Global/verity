@@ -5,8 +5,18 @@ import { isDemoMode, isEnteringDemoMode } from './demoMode';
 import { registerMeetingCaptureStatus } from './meetingCaptureStatus';
 import { meetingRequestId, meetingRequestPrompt, researchPrompt } from './liveMeetingInsights';
 import { VoiceMeetingCommandDetector, type VoiceMeetingCommand } from './liveMeetingVoice';
-import { meetingTranscriptRows, wordsFromRuns, type SpeakerLine } from './liveMeetingSpeakers';
-import { MIN_INTERVAL_MS, nextSpeakerNameCheck, type SpeakerNameHistory } from './liveMeetingNames';
+import {
+  meetingTranscriptRows,
+  resolvedSpeaker,
+  wordsFromRuns,
+  type SpeakerLine,
+} from './liveMeetingSpeakers';
+import {
+  MAX_CHECKS,
+  MIN_INTERVAL_MS,
+  nextSpeakerNameCheck,
+  type SpeakerNameHistory,
+} from './liveMeetingNames';
 import {
   applySTTEvent,
   emptySTTTranscript,
@@ -148,6 +158,7 @@ const rejectedSpeakers = new Set<number>();
 let nameCheckTimer: ReturnType<typeof setTimeout> | null = null;
 let nameCheckRunning = false;
 let nameChecksUnavailable = false;
+let lastNameScanAt = 0;
 
 function resetSpeakerNameChecks() {
   nameHistory.clear();
@@ -155,10 +166,13 @@ function resetSpeakerNameChecks() {
   if (nameCheckTimer) clearTimeout(nameCheckTimer);
   nameCheckTimer = null;
   nameChecksUnavailable = false;
+  lastNameScanAt = 0;
 }
 
 function scheduleSpeakerNameCheck(delayMs = 1500) {
   if (nameCheckTimer || nameCheckRunning || nameChecksUnavailable) return;
+  // Word events arrive every few seconds; one transcript scan per five seconds is enough.
+  delayMs = Math.max(delayMs, lastNameScanAt + 5_000 - Date.now());
   // Settles a burst of word and turn events into one look at the transcript.
   nameCheckTimer = setTimeout(() => {
     nameCheckTimer = null;
@@ -179,6 +193,7 @@ async function runSpeakerNameCheck(): Promise<void> {
     return;
   const client = createVerityClient();
   if (!client) return;
+  lastNameScanAt = Date.now();
   // A named speaker is never checked again: a name typed or confirmed by the operator
   // stays, whatever anyone says later.
   const skip = new Set([
@@ -186,6 +201,20 @@ async function runSpeakerNameCheck(): Promise<void> {
     ...(meeting.speakerNameSuggestions ?? []).map((suggestion) => suggestion.speaker),
     ...rejectedSpeakers,
   ]);
+  // Rebuilding the transcript costs time on the JS thread in a long meeting; skip it
+  // once every speaker heard so far is named, waiting, rejected or out of checks.
+  const resolve = (speaker: number) => resolvedSpeaker(speaker, meeting.speakerMerges ?? {});
+  if (
+    (meeting.speakerTurns ?? []).every((turn) => {
+      const speaker = resolve(turn.speaker);
+      return (
+        speaker === null ||
+        skip.has(speaker) ||
+        (nameHistory.get(speaker)?.checks ?? 0) >= MAX_CHECKS
+      );
+    })
+  )
+    return;
   // Open turns may still be reassigned; a name card must not follow a guess.
   const finalizedThrough = Math.max(0, ...(meeting.speakerTurns ?? []).map((turn) => turn.end));
   const lines = meetingTranscriptRows({
