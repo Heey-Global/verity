@@ -24,6 +24,21 @@ describe('project agent policy', () => {
     );
   });
 
+  it('preserves an allowed Codex fallback when catalog discovery has no models', () => {
+    expect(
+      resolveProjectDefaultModel(
+        { models: [], default: 'codex/default' },
+        { defaultModel: null, allowedAgents: ['codex'] },
+      ),
+    ).toBe('codex/default');
+    expect(
+      resolveProjectDefaultModel(
+        { models: [], default: 'codex/default' },
+        { defaultModel: null, allowedAgents: ['claude'] },
+      ),
+    ).toBeUndefined();
+  });
+
   it('ignores an explicit default the rule excludes and picks the first allowed primary model', () => {
     const settings = {
       defaultModel: 'claude-opus-5-5',

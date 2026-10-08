@@ -11970,6 +11970,7 @@ describe('POST /sessions with project field (#174)', () => {
     async function restrictedProjectServer(
       projectId: string,
       agents: ('claude' | 'codex' | 'opencode')[],
+      listModels: () => Promise<string[]> = () => Promise.resolve(codexModels),
     ) {
       await ctx.store.updateVeritySettings({
         claudeCodeOauthCredentialsJson: '{"claudeAiOauth":{"accessToken":"claude-token"}}',
@@ -11992,11 +11993,41 @@ describe('POST /sessions with project field (#174)', () => {
         projectCloneRoot: '/data/dev',
         projectBackend: fakeProjectBackend,
         projectWorktrees: () => projectWorktrees,
-        listModels: () => Promise.resolve(codexModels),
+        listModels,
         worktrees: { add: vi.fn(async () => '/wt/unused'), remove: vi.fn(async () => {}) },
       });
       return { server, projectWorktrees };
     }
+
+    it.each(['empty', 'unavailable', 'claude-connected'])(
+      'keeps the allowed Codex fallback when its catalog is %s',
+      async (catalog) => {
+        const { server } = await restrictedProjectServer(
+          'p-agents-codex-fallback',
+          ['codex'],
+          async () => {
+            if (catalog === 'unavailable') throw new Error('Catalog unavailable');
+            return [];
+          },
+        );
+        if (catalog !== 'claude-connected') {
+          await ctx.store.updateVeritySettings({ claudeCodeOauthCredentialsJson: null });
+        }
+        try {
+          const res = await server.inject({
+            method: 'POST',
+            url: '/sessions',
+            payload: { project: 'heey-global/verity' },
+          });
+          expect(res.statusCode).toBe(201);
+          expect(
+            (await ctx.store.getSession(res.json<{ sessionId: string }>().sessionId))?.model,
+          ).toBe('codex/default');
+        } finally {
+          await server.close();
+        }
+      },
+    );
 
     it('rejects an explicit model whose agent the project excludes, before any worktree exists', async () => {
       const { server, projectWorktrees } = await restrictedProjectServer('p-agents-explicit', [

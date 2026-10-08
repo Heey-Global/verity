@@ -1,4 +1,4 @@
-import { isCodexModel } from '@verity/session';
+import { CODEX_DEFAULT_MODEL, isCodexModel } from '@verity/session';
 import { PROJECT_AGENTS, type ProjectAgent } from '@verity/store';
 
 export { PROJECT_AGENTS, type ProjectAgent };
@@ -87,7 +87,15 @@ export function resolveProjectDefaultModel(
     isModelAllowedForProject(model, settings) && list.models.includes(model) && usable(model);
   const explicit = settings?.defaultModel ?? null;
   if (explicit !== null && isModelAllowedForProject(explicit, settings)) return explicit;
-  if (list.default !== undefined && allowed(list.default)) return list.default;
+  // The server may advertise Codex's CLI default when authenticated catalog discovery fails.
+  if (
+    list.default !== undefined &&
+    (allowed(list.default) ||
+      (list.default === CODEX_DEFAULT_MODEL &&
+        isModelAllowedForProject(list.default, settings) &&
+        usable(list.default)))
+  )
+    return list.default;
   const more = new Set(list.moreModels ?? []);
   const ordered = orderedModels(list).filter(allowed);
   return ordered.find((model) => !more.has(model)) ?? ordered[0];

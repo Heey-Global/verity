@@ -7490,6 +7490,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       add(id);
     }
+    // Spawn callers can use the authenticated CLI default even when discovery fails.
+    // Keep it eligible when a project's rule excludes the global Claude default.
+    if (options.allowLegacyCodexFallback === true && codexConfigured && codexModels.length === 0) {
+      add(CODEX_DEFAULT_MODEL);
+    }
     const models = sortModelIds(merged);
     const modelOrder = [
       ...models.filter((id) => !id.includes('/')),
