@@ -5,6 +5,7 @@ import {
   VerityClient,
   projectRecordSchema,
   sessionSummarySchema,
+  branchListSchema,
   sessionDetailSchema,
   type TurnRequest,
 } from './api.js';
@@ -16,6 +17,29 @@ const ZERO_USAGE = {
   cacheCreationTokens: 0,
   turns: 0,
 };
+
+it('retains the same full PR snapshot in overview and branch responses', () => {
+  const pullRequest = {
+    number: 42,
+    title: 'Known PR',
+    url: 'https://github.com/example/repo/pull/42',
+    phase: 'open',
+    pipeline: 'running',
+    mergeable: null,
+    checks: { completed: 1, total: 2, successful: 1, failed: 0, pending: 1 },
+  };
+  const summary = sessionSummarySchema.parse({
+    sessionId: 's',
+    worktree: '/wt/s',
+    model: 'm',
+    name: null,
+    status: 'idle',
+    usage: ZERO_USAGE,
+    pullRequest,
+  });
+  const branches = branchListSchema.parse({ current: 'fix/status', switchable: [], pullRequest });
+  expect(summary.pullRequest).toEqual(branches.pullRequest);
+});
 
 it('normalizes the additive agent-text counter version without breaking legacy readers', () => {
   const wire = {

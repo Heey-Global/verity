@@ -105,7 +105,7 @@ import {
   publicPreviewSessionIds,
   type ProjectPreviewLinks,
 } from '../lib/sessionPreviewLinks';
-import { prefetchBranches } from '../lib/branchesPrefetch';
+import { prefetchBranches, seedSessionBranches } from '../lib/branchesPrefetch';
 import { newSessionId, registerPendingSession } from '../lib/pendingSessions';
 import { createProjectCollapseQueue } from '../lib/projectCollapseQueue';
 import { createSessionConfirmingWarnings } from '../lib/startSession';
@@ -493,10 +493,13 @@ function SessionList({ client }: { client: VerityClient }) {
   // at its current event count, clearing its unread dot.
   const onOpenSession = useCallback(
     (session: SessionSummary) => {
+      if (client) {
+        seedSessionBranches(client, session);
+        prefetchBranches(client, session.sessionId);
+      }
       // Let Link navigation or split-pane selection start before updating the list.
       setTimeout(() => {
         markSeen(session.sessionId, session.eventCount, session.eventCountVersion);
-        if (client) prefetchBranches(client, session.sessionId);
       }, 0);
     },
     [client, markSeen],

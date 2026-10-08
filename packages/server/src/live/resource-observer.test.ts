@@ -65,6 +65,24 @@ describe('ResourceObserver', () => {
     expect(other).toHaveBeenCalledTimes(1);
   });
 
+  it('refreshes the overview and affected session after a session mutation', async () => {
+    let body = 'before';
+    const read = async () => ({ statusCode: 200, body });
+    const overview = vi.fn();
+    const branches = vi.fn();
+    const other = vi.fn();
+    observer.watch('alice', { path: '/sessions?overview=1' }, read, overview);
+    observer.watch('alice', { path: '/sessions/s/branches' }, read, branches);
+    observer.watch('alice', { path: '/sessions/other/branches' }, read, other);
+    await vi.advanceTimersByTimeAsync(1000);
+    body = 'after';
+    observer.invalidate('/sessions/s/merge');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(overview).toHaveBeenCalledTimes(2);
+    expect(branches).toHaveBeenCalledTimes(2);
+    expect(other).toHaveBeenCalledTimes(1);
+  });
+
   it('never reports changes in resources the user cannot read', async () => {
     let statusCode = 403;
     let body = 'forbidden';

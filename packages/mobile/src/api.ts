@@ -51,6 +51,31 @@ const mergeStateSchema = z
   .optional()
   .catch(undefined);
 
+const pullRequestSchema = z
+  .object({
+    number: z.number().int().positive(),
+    title: z.string(),
+    url: z.string(),
+    phase: z.enum(['open', 'merged', 'closed']),
+    updatedAt: z.string().optional(),
+    headSha: z.string().optional(),
+    pipeline: z.enum(['pending', 'running', 'success', 'failure', 'unknown']),
+    checks: z.object({
+      completed: z.number().int().nonnegative(),
+      total: z.number().int().nonnegative(),
+      successful: z.number().int().nonnegative(),
+      failed: z.number().int().nonnegative(),
+      pending: z.number().int().nonnegative(),
+    }),
+    // Tri-state; see sessionPrSchema.mergeable. null = unknown, not "blocked".
+    mergeable: z.boolean().nullable().catch(null),
+    // See sessionPrSchema.mergeState — `'dirty'` drives the conflict UI.
+    mergeState: mergeStateSchema,
+    // The PR's base branch, so the conflict line can name it ("conflicts with main").
+    baseRef: z.string().min(1).optional(),
+  })
+  .nullable();
+
 const sessionPrSchema = z.object({
   phase: z.enum(['open', 'merged', 'closed']),
   pipeline: z.enum(['pending', 'running', 'success', 'failure', 'unknown']),
@@ -139,6 +164,8 @@ export const sessionSummarySchema = z
      * looked up, no open PR; ABSENT = older server OR GitHub not configured (no
      * token/remote) — both render as "no PR marker". */
     pr: sessionPrSchema.nullable().optional(),
+    /** Full cached status for immediate PR-bar display; absent on older servers. */
+    pullRequest: pullRequestSchema.optional(),
     /** The worktree's current branch, so the overview can show the session's issue
      * (`<type>/<issue>-<slug>`). ABSENT on an older server, while the server's label
      * is cold, or once the worktree is gone — all read as "no issue". */
@@ -1304,31 +1331,7 @@ export const branchListSchema = z.object({
   // = looked up, no open PR; ABSENT = the server is older OR GitHub isn't configured
   // (no token/remote) — both render as "no PR chip", independent of the issue chip.
   currentPr: z.number().int().positive().nullable().optional(),
-  pullRequest: z
-    .object({
-      number: z.number().int().positive(),
-      title: z.string(),
-      url: z.string(),
-      phase: z.enum(['open', 'merged', 'closed']),
-      updatedAt: z.string().optional(),
-      headSha: z.string().optional(),
-      pipeline: z.enum(['pending', 'running', 'success', 'failure', 'unknown']),
-      checks: z.object({
-        completed: z.number().int().nonnegative(),
-        total: z.number().int().nonnegative(),
-        successful: z.number().int().nonnegative(),
-        failed: z.number().int().nonnegative(),
-        pending: z.number().int().nonnegative(),
-      }),
-      // Tri-state; see sessionPrSchema.mergeable. null = unknown, not "blocked".
-      mergeable: z.boolean().nullable().catch(null),
-      // See sessionPrSchema.mergeState — `'dirty'` drives the conflict UI.
-      mergeState: mergeStateSchema,
-      // The PR's base branch, so the conflict line can name it ("conflicts with main").
-      baseRef: z.string().min(1).optional(),
-    })
-    .nullable()
-    .optional(),
+  pullRequest: pullRequestSchema.optional(),
   // The project repo's GitHub `owner`/`repo` (#161), from the server's `origin`-remote
   // parse — lets the header build tappable Issue/PR chip URLs. Both OPTIONAL: ABSENT =
   // older server OR no GitHub remote, in which case the chips stay non-tappable rather

@@ -53,8 +53,13 @@ function PrMarker({
 
 // One entry per kind the marker draws. Drawing and `drawsAttentionMarker` both read
 // this table, so a kind can't be drawn without the row knowing, or vice versa.
-type MarkerSpec = { tone: 'done' | 'danger'; pulsing: boolean; badge?: 'check' | 'x' };
+type MarkerSpec = {
+  tone: 'done' | 'danger' | 'attention';
+  pulsing: boolean;
+  badge?: 'check' | 'x';
+};
 const MARKERS: Partial<Record<AttentionFlag['kind'], MarkerSpec>> = {
+  pr_unknown: { tone: 'attention', pulsing: false },
   ci_running: { tone: 'done', pulsing: true },
   merge_ready: { tone: 'done', pulsing: false, badge: 'check' },
   merge_checking: { tone: 'done', pulsing: true, badge: 'check' },

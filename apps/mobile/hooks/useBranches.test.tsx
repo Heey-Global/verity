@@ -1,8 +1,8 @@
-import type { BranchList, VerityClient } from '@verity/mobile';
+import type { BranchList, SessionSummary, VerityClient } from '@verity/mobile';
 import { act, renderHook } from '@testing-library/react-native';
 import { AppState, type AppStateStatus } from 'react-native';
 import { useBranches } from './useBranches';
-import { cachedBranches, rememberBranches } from '../lib/branchesPrefetch';
+import { cachedBranches, rememberBranches, seedSessionBranches } from '../lib/branchesPrefetch';
 
 const mockLive = new Set<() => void | Promise<unknown>>();
 jest.mock('../lib/liveConnection', () => ({
@@ -88,6 +88,27 @@ describe('useBranches live updates', () => {
     expect(hook.result.current.loading).toBe(false);
     await act(async () => slow.resolve(branches('closed', 'success')));
     expect(hook.result.current.pullRequest?.phase).toBe('closed');
+  });
+
+  it('paints a PR carried by the overview before a slow opening request resolves', async () => {
+    const slow = deferred<BranchList>();
+    const client = {
+      getBranches: jest.fn().mockReturnValue(slow.promise),
+    } as unknown as VerityClient;
+    const known = branches();
+    seedSessionBranches(client, {
+      sessionId: 's',
+      branch: known.current,
+      pullRequest: known.pullRequest,
+    } as SessionSummary);
+    const hook = renderHook(() => useBranches(client, 's'));
+    expect(hook.result.current.pullRequest).toEqual(known.pullRequest);
+    await act(async () => slow.resolve(branches('merged', 'success')));
+    expect(hook.result.current.pullRequest?.phase).toBe('merged');
+    hook.unmount();
+    const reopened = renderHook(() => useBranches(client, 's'));
+    expect(reopened.result.current.pullRequest?.phase).toBe('merged');
+    reopened.unmount();
   });
 
   it('never carries cached PR state into a different session or client', async () => {
