@@ -131,6 +131,17 @@ describe('iOS scene lifecycle', () => {
     expect(finish.slice(saved)).toMatch(/catch \{[^}]*return\s*\}/);
   });
 
+  // Incremental prebuild must also activate reception in previously generated projects.
+  it('upgrades the previous scene migration with watch inbox activation', async () => {
+    const { swift } = await generate();
+    const previous = swift.replace('    VerityWatchInbox.shared.activate()\n', '');
+    expect(previous).not.toContain('VerityWatchInbox.shared.activate()');
+    expect((await generate(previous)).swift).toBe(swift);
+    await expect(
+      generate(previous.replace('    sceneLaunchOptions = launchOptions', '')),
+    ).rejects.toThrow('watch inbox migration');
+  });
+
   it('is idempotent and rejects template drift rather than retaining legacy startup', async () => {
     const { swift } = await generate();
     expect((await generate(swift)).swift).toBe(swift);

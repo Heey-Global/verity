@@ -77,7 +77,14 @@ class VeritySceneDelegate: UIResponder, UIWindowSceneDelegate {
 `;
 
 function migrateAppDelegate(contents) {
-  if (contents.includes('class VeritySceneDelegate:')) return contents;
+  if (contents.includes('class VeritySceneDelegate:')) {
+    if (contents.includes('VerityWatchInbox.shared.activate()')) return contents;
+    const launch = '    sceneLaunchOptions = launchOptions';
+    if (!contents.includes(launch)) {
+      throw new Error('Scene AppDelegate startup changed; recheck the watch inbox migration');
+    }
+    return contents.replace(launch, `${launch}\n    VerityWatchInbox.shared.activate()`);
+  }
   if (!contents.includes(LEGACY_START) || !contents.includes('  var window: UIWindow?')) {
     throw new Error('Expo AppDelegate startup changed; recheck the scene lifecycle migration');
   }
