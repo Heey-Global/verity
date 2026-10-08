@@ -1144,6 +1144,26 @@ describe('VerityClient.listProjects (#174)', () => {
     expect(await client.listProjects()).toEqual([]);
   });
 
+  it('fetches repository issues with validated connection metadata', async () => {
+    const result = {
+      connected: true,
+      viewerLogin: null,
+      issues: [
+        {
+          number: 42,
+          title: 'Fix layout',
+          url: 'https://github.com/acme/app/issues/42',
+          labels: ['bug'],
+          assignees: ['alice'],
+        },
+      ],
+    };
+    const { fetch, calls } = fakeFetch(json(result));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listProjectGitHubIssues('p/1')).toEqual(result);
+    expect(calls[0]?.url).toBe('http://host/projects/p%2F1/github/issues');
+  });
+
   it('fetches available GitHub repositories separately from created projects', async () => {
     const { fetch, calls } = fakeFetch(json([project]));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });

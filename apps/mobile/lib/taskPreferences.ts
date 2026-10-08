@@ -3,6 +3,8 @@ import { useSyncExternalStore } from 'react';
 const key = 'verity.tasks.preferences';
 let state = {
   enabled: true,
+  /** Last selected task-list view; unavailable Issues falls back to Mine. */
+  tab: 'mine' as 'mine' | 'agent' | 'issues',
   side: 'right' as 'right' | 'left',
   fraction: 0.65,
   /** The first tap explains the bubble before it records. */
@@ -28,6 +30,7 @@ export function useTaskPreferences(): typeof state {
           const value = JSON.parse(data) as typeof state;
           state = {
             enabled: value.enabled !== false,
+            tab: value.tab === 'agent' || value.tab === 'issues' ? value.tab : 'mine',
             side: value.side === 'left' ? 'left' : 'right',
             fraction: Math.max(0.1, Math.min(0.9, value.fraction || 0.65)),
             introSeen: value.introSeen === true,

@@ -468,6 +468,7 @@ export function QuickCaptureBubble() {
         <TasksPanel
           context={context}
           projects={projects}
+          sessions={sessions}
           side={preferences.side}
           y={origin.current.y}
           onClose={() => setPanel(false)}

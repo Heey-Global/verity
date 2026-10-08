@@ -94,10 +94,21 @@ describe('buildControlPlane dependency forwarding', () => {
   });
 
   it('passes the project-fleet dependencies through', () => {
+    const listProjectGitHubIssues = vi.fn(async () => ({
+      connected: true,
+      viewerLogin: null,
+      issues: [],
+    }));
     const listAvailableRepositories = vi.fn(async () => [project]);
     const reconcileProjectState = vi.fn(async () => project);
     const refreshProjectToken = vi.fn(async () => undefined);
-    const got = forward({ listAvailableRepositories, reconcileProjectState, refreshProjectToken });
+    const got = forward({
+      listProjectGitHubIssues,
+      listAvailableRepositories,
+      reconcileProjectState,
+      refreshProjectToken,
+    });
+    expect(got.listProjectGitHubIssues).toBe(listProjectGitHubIssues);
     expect(got.listAvailableRepositories).toBe(listAvailableRepositories);
     expect(got.reconcileProjectState).toBe(reconcileProjectState);
     expect(got.refreshProjectToken).toBe(refreshProjectToken);

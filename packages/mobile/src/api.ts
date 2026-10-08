@@ -10,6 +10,22 @@ import {
 } from '@verity/events';
 import { z } from 'zod';
 
+const projectGitHubIssuesSchema = z.object({
+  connected: z.boolean(),
+  viewerLogin: z.string().nullable(),
+  issues: z.array(
+    z.object({
+      number: z.number().int().positive(),
+      title: z.string(),
+      url: z.string().url(),
+      labels: z.array(z.string()),
+      assignees: z.array(z.string()),
+    }),
+  ),
+});
+export type ProjectGitHubIssues = z.infer<typeof projectGitHubIssuesSchema>;
+export type ProjectGitHubIssue = ProjectGitHubIssues['issues'][number];
+
 export type { Attachment, AttachmentUpload } from '@verity/events';
 
 /**
@@ -2622,6 +2638,13 @@ export class VerityClient {
   }
 
   /** GitHub-App installation repositories available to add as Verity projects. */
+  async listProjectGitHubIssues(projectId: string): Promise<ProjectGitHubIssues> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/github/issues`, {
+      method: 'GET',
+    });
+    return projectGitHubIssuesSchema.parse(await res.json());
+  }
+
   async listAvailableRepositories(): Promise<ProjectRecord[]> {
     try {
       const res = await this.request('/github/repositories', { method: 'GET' });

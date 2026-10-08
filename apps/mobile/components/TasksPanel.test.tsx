@@ -1,6 +1,8 @@
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 import { act, render, fireEvent } from '@testing-library/react-native';
 import { TasksPanel } from './TasksPanel';
+import { saveTaskPreferences } from '../lib/taskPreferences';
+import { createVerityClient } from '../lib/client';
 import { patchTask, useTasks } from '../lib/tasksStore';
 import type { Task } from '@verity/mobile';
 jest.mock('../lib/tasksStore', () => ({
@@ -10,6 +12,31 @@ jest.mock('../lib/tasksStore', () => ({
   removeTask: jest.fn(),
   resolveTaskConflict: jest.fn(),
 }));
+jest.mock('../lib/client', () => ({ createVerityClient: jest.fn(() => null) }));
+jest.mock('../lib/taskPreferences', () => {
+  const React = require('react');
+  let tab = 'mine';
+  const listeners = new Set<() => void>();
+  return {
+    useTaskPreferences: () => ({
+      tab: React.useSyncExternalStore(
+        (listener: () => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        () => tab,
+      ),
+    }),
+    saveTaskPreferences: jest.fn(async (patch: { tab: string }) => {
+      tab = patch.tab;
+      listeners.forEach((listener) => listener());
+    }),
+  };
+});
+beforeEach(() => {
+  jest.mocked(patchTask).mockClear();
+  void saveTaskPreferences({ tab: 'mine' });
+});
 jest.mock('../lib/taskDispatch', () => ({ dispatchTasks: jest.fn() }));
 jest.mock('../lib/taskAttachments', () => ({ openTaskAttachment: jest.fn() }));
 const task: Task = {
@@ -70,7 +97,7 @@ it('shows where an assigned task went instead of offering to assign it again', (
   expect(ui.queryByText(/This Session/)).toBeNull();
   expect(ui.getAllByText('↳ Open session')).toHaveLength(1);
 });
-it('keeps the agent’s steps in a collapsed section without implement buttons', () => {
+it('separates agent steps and includes completed steps in the current session', () => {
   jest.mocked(useTasks).mockReturnValue({
     tasks: [
       {
@@ -105,13 +132,16 @@ it('keeps the agent’s steps in a collapsed section without implement buttons',
   const ui = render(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 's' }} />);
   // Nothing of the agent's shows in the operator's list; the section is shut.
   expect(ui.queryByText('Rate-limit login')).toBeNull();
-  fireEvent.press(ui.getByLabelText('Agent steps · 1/2'));
+  fireEvent.press(ui.getByLabelText('Agent'));
+  expect(ui.getByText('Rotate tokens')).toBeTruthy();
   expect(ui.getByText('Rate-limit login')).toBeTruthy();
   expect(ui.queryByText('Other session step')).toBeNull();
   expect(ui.queryByText(/New Session/)).toBeNull();
   // Step actions live in the shared "…" card, not inline chips.
   expect(ui.queryByText('Move to my tasks')).toBeNull();
-  expect(ui.getAllByA11yHint('Opens step actions')).toHaveLength(1);
+  expect(ui.getAllByA11yHint('Opens step actions')).toHaveLength(2);
+  fireEvent.press(ui.getByLabelText('Session · 1'));
+  expect(ui.getByText('Other session step')).toBeTruthy();
 });
 it('edits the text in place and saves it when the field is left', () => {
   jest.mocked(useTasks).mockReturnValue({ tasks: [task], pending: [], conflicts: [] });
@@ -203,4 +233,53 @@ it('keeps a new draft when an earlier save fails', async () => {
     rejectSave(new Error('Offline'));
   });
   expect(ui.getByDisplayValue('New draft')).toBeTruthy();
+});
+
+it('starts General collapsed when a project is current and removes empty copy', () => {
+  jest.mocked(useTasks).mockReturnValue({
+    tasks: [task, { ...task, id: 'p-task', title: 'Project task', projectId: 'p' }],
+    pending: [],
+    conflicts: [],
+  });
+  const ui = render(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 's' }} />);
+  expect(ui.queryByDisplayValue(task.title)).toBeNull();
+  fireEvent.press(ui.getByLabelText('General · 1'));
+  expect(ui.getByDisplayValue(task.title)).toBeTruthy();
+  expect(ui.queryByText(/Nothing.*here|Nothing captured/)).toBeNull();
+});
+it('remembers Agent across reopening and falls back from unavailable Issues', async () => {
+  jest.mocked(useTasks).mockReturnValue({ tasks: [], pending: [], conflicts: [] });
+  let ui = render(<TasksPanel {...props} />);
+  fireEvent.press(ui.getByLabelText('Agent'));
+  expect(saveTaskPreferences).toHaveBeenCalledWith({ tab: 'agent' });
+  ui.unmount();
+  ui = render(<TasksPanel {...props} />);
+  expect(ui.getByLabelText('Agent').props.accessibilityState.selected).toBe(true);
+  ui.unmount();
+  await saveTaskPreferences({ tab: 'issues' });
+  ui = render(<TasksPanel {...props} />);
+  expect(ui.getByLabelText('Mine').props.accessibilityState.selected).toBe(true);
+  expect(ui.queryByLabelText('GitHub Issues')).toBeNull();
+});
+it('shows GitHub Issues only for a connected project and hides Mine while selected', async () => {
+  jest
+    .mocked(useTasks)
+    .mockReturnValue({ tasks: [{ ...task, projectId: 'p' }], pending: [], conflicts: [] });
+  jest.mocked(createVerityClient).mockReturnValue({
+    listProjectGitHubIssues: jest.fn(async () => ({
+      connected: true,
+      viewerLogin: null,
+      issues: [],
+    })),
+    listSessions: jest.fn(async () => []),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  const ui = render(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 's' }} />);
+  await act(async () => {});
+  fireEvent.press(ui.getByLabelText('GitHub Issues'));
+  expect(ui.queryByDisplayValue(task.title)).toBeNull();
+  expect(ui.getByText('Assigned to me')).toBeTruthy();
+  ui.rerender(<TasksPanel {...props} />);
+  expect(ui.queryByLabelText('GitHub Issues')).toBeNull();
+  expect(ui.getByLabelText('Mine').props.accessibilityState.selected).toBe(true);
+  jest.mocked(createVerityClient).mockReturnValue(null);
 });

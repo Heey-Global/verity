@@ -559,3 +559,5 @@ export {
   type BubbleRest,
 } from './tasks.js';
 export { TaskQueue, type TaskQueueState } from './taskQueue.js';
+
+export { type ProjectGitHubIssues, type ProjectGitHubIssue } from './api.js';

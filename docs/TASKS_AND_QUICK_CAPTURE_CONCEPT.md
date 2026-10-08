@@ -125,20 +125,29 @@ The fast path is tap, speak, carry on. No further tap is required.
 
 - iPhone: a bottom sheet (~70 %). iPad / wide layout (`width >= 900`): a
   floating panel anchored next to the bubble, so the session stays visible.
-- Sections, top to bottom:
-  1. **This session** — tasks assigned to the open session (only in a session).
-     Shows done/total, e.g. `3/8`.
-  2. **Current project** — open tasks of the project not assigned to a session.
-  3. **General**.
-  4. **Other projects**, collapsed, each with its count.
-  Outside any project context only General is expanded.
-- Each row: a **check circle** (tap = done, with Undo in the row), title, age,
-  attachment count, an origin marker (microphone for operator, agent icon for
-  agent-created), and the implement buttons from §4.5.
-- Swipe reveals **Done**, **Move** (to another project or General), and
-  **Delete**. Long-press opens an edit sheet for the text.
+- A segmented control switches between **Mine**, **Agent**, and **Issues**;
+  exactly one list is visible. The last selected view is stored on the device.
+  Issues includes a GitHub icon and appears only for a project with a connected
+  GitHub repository. If unavailable, the panel displays Mine.
+- **Mine** groups personal tasks by project. The current project (or General
+  outside a project) is expanded; General and other projects are collapsed.
+  Empty groups have no placeholder copy. The footer toggles completed tasks.
+- **Agent** groups steps by session, with the current session expanded first.
+  Completed steps remain visible, with done/total counts and a progress bar.
+  Other sessions are collapsed. Steps without a session are not displayed.
+- **Issues** shows open repository issues, excluding pull requests, with number,
+  labels and assignees. All and Bugs filter the list. Assigned to me requires
+  a personal GitHub identity and is disabled for installation-only connections.
+  Initially three rows are shown; Show all expands the filtered list.
+- All three views share the same title size, row spacing, metadata colors and
+  action-button styling, using the app's theme tokens.
+- A personal task's check circle toggles completion with Undo. Tap its title to
+  edit in place; leaving the field saves. The anchored actions menu offers
+  completion, Move and Delete. Agent steps have their own anchored actions menu.
+- Issues offer This Session (in a project session) and New Session. If a
+  resumable session already has the issue's branch, Open session replaces both.
+  Selecting an issue title opens it on GitHub.
 - A microphone button at the top captures from inside the panel.
-- Footer: "Show done (n)".
 
 ![Panel on home](assets/tasks/07-panel-home.png)
 ![Panel on iPad](assets/tasks/08-panel-ipad.png)
