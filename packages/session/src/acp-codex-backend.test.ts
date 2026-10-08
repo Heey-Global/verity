@@ -77,6 +77,7 @@ function acpSpawner(
     startupFailure?: string;
     promptFailure?: string;
     processExit?: { code: number | null; signal: NodeJS.Signals | null };
+    exitDelayMs?: number;
     /** Refuse `session/load` the way the adapter refuses a rollout it cannot
      *  restore: JSON-RPC -32002 naming the requested id. */
     loadNotFound?: boolean;
@@ -104,6 +105,8 @@ function acpSpawner(
   const queue: string[] = [];
   const waiters: Array<(value: IteratorResult<string>) => void> = [];
   let closed = false;
+  let exitReady = false;
+  let resolveExit: ((code: number) => void) | undefined;
   const enqueue = (value: string): void => {
     const waiter = waiters.shift();
     if (waiter === undefined) queue.push(value);
@@ -119,6 +122,11 @@ function acpSpawner(
   const close = (): void => {
     if (closed) return;
     closed = true;
+    if (behavior.exitDelayMs !== undefined)
+      setTimeout(() => {
+        exitReady = true;
+        resolveExit?.(behavior.processExit?.code ?? 1);
+      }, behavior.exitDelayMs);
     for (const waiter of waiters.splice(0)) waiter({ value: undefined, done: true });
   };
   const kill = vi.fn(close);
@@ -153,9 +161,19 @@ function acpSpawner(
     return {
       stdout,
       pid: 321,
-      exited: Promise.resolve(behavior.processExit?.code ?? 0),
-      exitDetails: () => (closed ? behavior.processExit : undefined),
-      stderr: () => behavior.startupFailure ?? behavior.promptFailure ?? '',
+      exited:
+        behavior.exitDelayMs === undefined
+          ? Promise.resolve(behavior.processExit?.code ?? 0)
+          : new Promise<number>((resolve) => {
+              resolveExit = resolve;
+            }),
+      exitDetails: () =>
+        closed && (behavior.exitDelayMs === undefined || exitReady)
+          ? behavior.processExit
+          : undefined,
+      stderr: () =>
+        (behavior.startupFailure ?? behavior.promptFailure ?? '') +
+        (exitReady ? '\nlate stderr' : ''),
       kill,
       closeStdin: close,
       writeStdin(data) {
@@ -388,6 +406,53 @@ describe('AcpCodexBackend', () => {
       );
     },
   );
+
+  it('captures delayed exit details and stderr after transport EOF', async () => {
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({
+        promptFailure: 'fatal error',
+        processExit: { code: 1, signal: null },
+        exitDelayMs: 30,
+      }).spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: true,
+      stderrTail: expect.stringContaining('late stderr'),
+    });
+  });
+
+  it('records a startup process failure with no active prompt', async () => {
+    await ctx.store.createSession({
+      sessionId: 'startup',
+      worktree: '/work',
+      model: 'codex/default',
+    });
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      storeSessionId: 'startup',
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({
+        startupFailure: 'fatal startup',
+        processExit: { code: 1, signal: null },
+      }).spawner,
+    });
+    const events = await ctx.store.getEvents('startup');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: false,
+      phase: 'initialize',
+    });
+  });
 
   it('preserves raw pre-execution rejection evidence for recovery classification', async () => {
     const result = await new AcpCodexBackend().run({

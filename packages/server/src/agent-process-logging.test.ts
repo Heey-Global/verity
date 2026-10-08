@@ -48,7 +48,7 @@ describe('agent process logging', () => {
       'session',
       failure({
         ...exit,
-        stderrTail: 'fatal\nCUSTOM_ENV=private-value\nsk-proj-abcdefghijklmnopqrstuvwxyz',
+        stderrTail: `fatal\nCUSTOM_ENV=private-value\n${['sk-proj-', 'abcdefghijklmnopqrstuvwxyz'].join('')}`,
       }),
     );
     await Promise.resolve();

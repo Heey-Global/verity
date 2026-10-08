@@ -597,6 +597,7 @@ export async function runAcpTurn(
   let loadRefused = false;
   let diagnosticPhase: 'spawn' | 'initialize' | 'session_load' | 'session_new' | 'prompt' = 'spawn';
   const isInitializing = (): boolean => diagnosticPhase === 'initialize';
+  const isPrompting = (): boolean => diagnosticPhase === 'prompt';
   const topLevelText = new AcpTextStream();
   let updateTail: Promise<void> = Promise.resolve();
   let updateError: unknown;
@@ -1196,7 +1197,7 @@ export async function runAcpTurn(
       aborted,
     };
   } catch (error) {
-    const turnActive = !closedOut;
+    const turnActive = isPrompting() && !closedOut;
     acceptingSteering = false;
     const message = error instanceof Error ? error.message : String(error);
     await drainUpdates().catch(() => undefined);

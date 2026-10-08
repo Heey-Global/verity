@@ -77,6 +77,13 @@ describe('redactProcessStderr', () => {
     expect(result).not.toContain('unknown');
     expect(result).toContain('last failure');
   });
+  it('redacts credentials loaded from files, including bare and JSON JWTs', () => {
+    const jwt = ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiJ1c2VyIn0', 'c2lnbmF0dXJl'].join('.');
+    const raw = `failure ${jwt}\n${JSON.stringify({ access_token: jwt })}`;
+    const redacted = redactProcessStderr(raw);
+    expect(redacted).not.toContain(jwt);
+    expect(redacted).toContain('[REDACTED JWT]');
+  });
   it('omits a leading partial credential line from a full capture', () => {
     const raw = 'partial-credential' + 'x'.repeat(65_536) + '\nlast failure';
     expect(redactProcessStderr(raw)).toBe('last failure');
