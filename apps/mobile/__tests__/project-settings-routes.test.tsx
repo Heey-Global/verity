@@ -867,6 +867,30 @@ describe('project settings — agents', () => {
     expect(screen.getByLabelText('OpenCode').props.accessibilityState.checked).toBe(false);
   });
 
+  it('clears a queued default when its agent is subsequently excluded', async () => {
+    const finishers: (() => void)[] = [];
+    const updateProjectSettings = jest.fn().mockImplementation(
+      (_id: string, patch: object) =>
+        new Promise((resolve) => {
+          finishers.push(() => resolve({ ...makeDetail().settings, ...patch }));
+        }),
+    );
+    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    render(<ProjectModelScreen />);
+
+    fireEvent.press(await screen.findByLabelText('OpenCode'));
+    fireEvent.press(screen.getByLabelText('Use model Codex, codex/default'));
+    fireEvent.press(screen.getByLabelText('Codex'));
+    await act(async () => finishers[0]?.());
+    await waitFor(() =>
+      expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', {
+        defaultModel: null,
+        allowedAgents: ['claude'],
+      }),
+    );
+    await act(async () => finishers[1]?.());
+  });
+
   // Turning off the last connected agent would leave the project unable to start
   // any session, so its toggle cannot be switched off.
   it('locks the last connected allowed agent and lists the project models', async () => {

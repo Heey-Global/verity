@@ -54,6 +54,22 @@ type ProjectSettingsChange = {
   allowedAgents?: ProjectAgent[] | null;
 };
 
+function mergeSettingsChanges(
+  previous: ProjectSettingsChange | undefined,
+  patch: ProjectSettingsChange,
+): ProjectSettingsChange {
+  const merged = { ...previous, ...patch };
+  // Sending a default alongside a rule that excludes it rejects the entire save.
+  if (
+    merged.defaultModel != null &&
+    merged.allowedAgents != null &&
+    !merged.allowedAgents.includes(modelAgent(merged.defaultModel))
+  ) {
+    merged.defaultModel = null;
+  }
+  return merged;
+}
+
 function AgentIcon({ agent }: { agent: ProjectAgent }) {
   const { theme } = useUnistyles();
   return agent === 'opencode' ? (
@@ -106,9 +122,9 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
   const queued = useRef<ProjectSettingsChange | undefined>(undefined);
   const save = useCallback(
     (patch: ProjectSettingsChange) => {
-      setPending((shown) => ({ ...shown, ...patch }));
+      setPending((shown) => mergeSettingsChanges(shown, patch));
       if (inFlight.current) {
-        queued.current = { ...queued.current, ...patch };
+        queued.current = mergeSettingsChanges(queued.current, patch);
         return;
       }
       inFlight.current = true;

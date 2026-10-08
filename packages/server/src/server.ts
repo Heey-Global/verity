@@ -384,7 +384,6 @@ import type { ProjectEnvironmentSettings } from './project-settings-env.js';
 import {
   filterModelListForProject,
   isModelAllowedForProject,
-  NoAllowedAgentError,
   ProjectAgentNotAllowedError,
   resolveProjectDefaultModel,
   type ProjectAgent,
@@ -7646,8 +7645,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
   /** The model a project's new work starts with, honouring its agent rule. */
   const projectDefaultModel = async (projectId: string | null): Promise<string | undefined> => {
-    // Same fallback a spawn accepts, so background work is not stricter than sessions.
-    const available = await availableModels({ allowLegacyCodexFallback: true });
+    const available = await availableModels();
     if (projectId === null) return available.default;
     const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
     return resolveProjectDefaultModel(available, settings, isProjectSessionModel);
@@ -7766,13 +7764,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           ? projectModel
           : isModelAllowedForProject(session.model, settings)
             ? session.model
-            : resolveProjectDefaultModel(
-                await availableModels({ allowLegacyCodexFallback: true }),
-                settings,
-                isProjectSessionModel,
-              );
-      // Name the project rule in the log rather than a bare "no result".
-      if (model === undefined) throw new NoAllowedAgentError(settings?.allowedAgents ?? []);
+            : resolveProjectDefaultModel(await availableModels(), settings, isProjectSessionModel);
+      if (model === undefined) return undefined;
       if (model.startsWith('codex/') || model.startsWith('verity/'))
         return directMeetingQuery({ model, prompt, signal });
       return conductor.query({
