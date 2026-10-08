@@ -14,6 +14,7 @@ export interface VerityControlSessionRouteDeps {
   deleteSessionEverywhere: (id: string) => Promise<boolean>;
   advancedModeEnabled: () => Promise<boolean>;
   ensureControlProject: () => Promise<ProjectRecord>;
+  resolveProjectModel?: (projectId: string) => Promise<string | undefined>;
 }
 
 export function registerVerityControlSessionRoute(
@@ -62,13 +63,23 @@ export function registerVerityControlSessionRoute(
     async (_request, reply): Promise<{ sessionId: string } | { error: string }> => {
       if (await deps.advancedModeEnabled()) {
         const project = await deps.ensureControlProject();
+        const model = deps.resolveProjectModel
+          ? await deps.resolveProjectModel(project.id)
+          : deps.defaultModel;
+        if (model === undefined) {
+          reply.code(400);
+          return {
+            error:
+              "No allowed agent is connected for this project. Connect one or change the project's agents.",
+          };
+        }
         const worktree = await deps.worktrees.add(deps.makeBranch('verity-control'));
         const sessionId = randomUUID();
         try {
           await deps.eventStore.createSession({
             sessionId,
             worktree,
-            model: deps.defaultModel,
+            model,
             projectId: project.id,
           });
           reply.code(201);

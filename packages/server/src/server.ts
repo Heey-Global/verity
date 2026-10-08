@@ -7434,6 +7434,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     deleteSessionEverywhere,
     advancedModeEnabled,
     ensureControlProject: ensureVerityControlProject,
+    resolveProjectModel: async (projectId) => {
+      const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
+      if (settings?.allowedAgents == null) return settings?.defaultModel ?? DEFAULT_MODEL;
+      return resolveProjectDefaultModel(
+        await availableModels({ allowLegacyCodexFallback: true }),
+        settings,
+        isProjectSessionModel,
+      );
+    },
   });
 
   // The usable model set for the picker (ADR 0001 / #143): Claude and Codex are
@@ -9026,6 +9035,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ) {
         reply.code(400);
         return { error: PROJECT_MODEL_ERROR };
+      }
+      // Existing sessions keep their model, but a turn override is new work on its chosen agent.
+      if (body.model !== undefined && body.model !== session?.model && session?.projectId != null) {
+        const rejection = await projectAgentRejection(body.model, session.projectId);
+        if (rejection !== undefined) {
+          reply.code(400);
+          return { error: rejection };
+        }
       }
       // SBX-4: reject a turn against a project whose sandbox cannot become active
       // (stopped/failed/restarting) up front — 409 + repair hint — instead of

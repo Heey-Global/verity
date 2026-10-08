@@ -6099,13 +6099,13 @@ describe('PATCH /projects/:id/settings', () => {
 });
 
 describe('project allowed agents', () => {
-  async function project(id: string) {
+  async function project(id: string, state: 'active' | 'absent' = 'absent') {
     await ctx.store.upsertProject({
       id,
       owner: 'heey-global',
       repo: 'verity',
       containerName: 'dev-heey-global-verity',
-      state: 'absent',
+      state,
     });
   }
   const patchSettings = (id: string, payload: Record<string, unknown>) =>
@@ -6199,6 +6199,53 @@ describe('project allowed agents', () => {
       payload: { model: 'claude-opus-5-5' },
     });
     expect(unchanged.statusCode).toBe(200);
+  });
+
+  it('rejects excluded turn overrides while letting the current session model continue', async () => {
+    await project('p-agents-turn', 'active');
+    await patchSettings('p-agents-turn', { allowedAgents: ['codex'] });
+    await ctx.store.createSession({
+      sessionId: 's-agents-turn',
+      worktree: '/wt/s-agents-turn',
+      model: 'claude-opus-5-5',
+      projectId: 'p-agents-turn',
+    });
+    dispatchTurn.mockResolvedValue({ queued: false });
+    const refused = await app.inject({
+      method: 'POST',
+      url: '/sessions/s-agents-turn/turns',
+      payload: { prompt: 'go', model: 'claude-sonnet-5-5' },
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json()).toEqual({ error: 'Claude is not allowed in this project.' });
+    expect(dispatchTurn).not.toHaveBeenCalled();
+    for (const model of ['codex/default', 'claude-opus-5-5', undefined]) {
+      const accepted = await app.inject({
+        method: 'POST',
+        url: '/sessions/s-agents-turn/turns',
+        payload: { prompt: 'go', ...(model === undefined ? {} : { model }) },
+      });
+      expect(accepted.statusCode).toBe(202);
+    }
+    expect(dispatchTurn).toHaveBeenCalledTimes(3);
+  });
+
+  it('resolves dedicated Control sessions against the allowed project agents', async () => {
+    await ctx.store.updateVeritySettings({
+      advancedModeEnabled: true,
+      codexAuthJson: '{"tokens":{"access_token":"codex"}}',
+    });
+    await app.inject({ method: 'GET', url: '/projects' });
+    await patchSettings('verity-control', { allowedAgents: ['codex'] });
+    const res = await app.inject({ method: 'POST', url: '/verity-control/session' });
+    expect(res.statusCode).toBe(201);
+    const session = await ctx.store.getSession(res.json<{ sessionId: string }>().sessionId);
+    expect(session?.model.startsWith('codex/')).toBe(true);
+    await patchSettings('verity-control', { allowedAgents: ['opencode'] });
+    const before = readdirSync(worktreeRoot);
+    const unavailable = await app.inject({ method: 'POST', url: '/verity-control/session' });
+    expect(unavailable.statusCode).toBe(400);
+    expect(readdirSync(worktreeRoot)).toEqual(before);
   });
 });
 
