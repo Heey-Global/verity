@@ -60,6 +60,35 @@ describe('project agent policy', () => {
     ).toBe('claude-opus-5-5');
   });
 
+  it('ignores an explicit default the caller cannot use', () => {
+    expect(
+      resolveProjectDefaultModel(
+        { models: ['deepinfra/model', 'verity/kimi-k2'] },
+        { defaultModel: 'deepinfra/model', allowedAgents: ['opencode'] },
+        (model) => model.startsWith('verity/'),
+      ),
+    ).toBe('verity/kimi-k2');
+  });
+
+  it('omits models the project caller cannot use from every picker list', () => {
+    expect(
+      filterModelListForProject(
+        {
+          models: ['deepinfra/model', 'verity/kimi-k2'],
+          modelOrder: ['deepinfra/model', 'verity/kimi-k2'],
+          moreModels: ['deepinfra/model'],
+        },
+        { defaultModel: null, allowedAgents: ['opencode'] },
+        (model) => model.startsWith('verity/'),
+      ),
+    ).toEqual({
+      models: ['verity/kimi-k2'],
+      modelOrder: ['verity/kimi-k2'],
+      default: 'verity/kimi-k2',
+      allowedAgents: ['opencode'],
+    });
+  });
+
   it('filters every list a client renders, not only the flat one', () => {
     expect(
       filterModelListForProject(

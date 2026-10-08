@@ -7436,12 +7436,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ensureControlProject: ensureVerityControlProject,
     resolveProjectModel: async (projectId) => {
       const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
-      if (settings?.allowedAgents == null) return settings?.defaultModel ?? DEFAULT_MODEL;
-      return resolveProjectDefaultModel(
-        await availableModels({ allowLegacyCodexFallback: true }),
-        settings,
-        isProjectSessionModel,
-      );
+      const model =
+        settings?.allowedAgents == null
+          ? (settings?.defaultModel ?? DEFAULT_MODEL)
+          : resolveProjectDefaultModel(
+              await availableModels({ allowLegacyCodexFallback: true }),
+              settings,
+              isProjectSessionModel,
+            );
+      return (await isConfiguredProjectSessionModel(model)) ? model : undefined;
     },
   });
 

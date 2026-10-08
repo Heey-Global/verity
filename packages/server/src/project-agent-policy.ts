@@ -86,7 +86,8 @@ export function resolveProjectDefaultModel(
   const allowed = (model: string) =>
     isModelAllowedForProject(model, settings) && list.models.includes(model) && usable(model);
   const explicit = settings?.defaultModel ?? null;
-  if (explicit !== null && isModelAllowedForProject(explicit, settings)) return explicit;
+  if (explicit !== null && isModelAllowedForProject(explicit, settings) && usable(explicit))
+    return explicit;
   // The server may advertise Codex's CLI default when authenticated catalog discovery fails.
   if (
     list.default !== undefined &&
@@ -107,7 +108,8 @@ export function filterModelListForProject(
   settings: ProjectAgentSettings | null | undefined,
   usable?: (model: string) => boolean,
 ): PolicyModelList {
-  const keep = (model: string) => isModelAllowedForProject(model, settings);
+  const keep = (model: string) =>
+    isModelAllowedForProject(model, settings) && (usable?.(model) ?? true);
   const fallback = resolveProjectDefaultModel(list, settings, usable);
   const models = list.models.filter(keep);
   const moreModels = list.moreModels?.filter(keep);

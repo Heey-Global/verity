@@ -6247,6 +6247,23 @@ describe('project allowed agents', () => {
     expect(unavailable.statusCode).toBe(400);
     expect(readdirSync(worktreeRoot)).toEqual(before);
   });
+
+  it.each([{ allowedAgents: null }, { allowedAgents: ['opencode'] }])(
+    'refuses an unsupported Control default with agent rule %j',
+    async ({ allowedAgents }) => {
+      await ctx.store.updateVeritySettings({ advancedModeEnabled: true });
+      await app.inject({ method: 'GET', url: '/projects' });
+      const saved = await patchSettings('verity-control', {
+        allowedAgents,
+        defaultModel: 'deepinfra/model',
+      });
+      expect(saved.statusCode).toBe(200);
+      const before = readdirSync(worktreeRoot);
+      const res = await app.inject({ method: 'POST', url: '/verity-control/session' });
+      expect(res.statusCode).toBe(400);
+      expect(readdirSync(worktreeRoot)).toEqual(before);
+    },
+  );
 });
 
 describe('GET /models (#143)', () => {

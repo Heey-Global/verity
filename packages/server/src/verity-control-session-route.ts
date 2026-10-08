@@ -70,7 +70,7 @@ export function registerVerityControlSessionRoute(
           reply.code(400);
           return {
             error:
-              "No allowed agent is connected for this project. Connect one or change the project's agents.",
+              "No allowed model is available for this project. Connect an allowed agent or choose an available default in the project's Agents settings.",
           };
         }
         const worktree = await deps.worktrees.add(deps.makeBranch('verity-control'));
