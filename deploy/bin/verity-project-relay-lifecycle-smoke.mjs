@@ -20,7 +20,7 @@ mkdirSync(brokerSocketRoot, { recursive: true, mode: 0o755 });
 mkdirSync(claudeSocketRoot, { recursive: true, mode: 0o755 });
 
 const app = Fastify();
-app.post('/internal/github/token', async (request) => internalConnectionIdentity(request));
+app.post('/internal/project/memory', async (request) => internalConnectionIdentity(request));
 await app.ready();
 
 const gateway = createServer((socket) => {
@@ -106,7 +106,7 @@ async function probeBroker(containerName, expectedIdentity) {
         host: containerName,
         port: 8080,
         method: 'POST',
-        path: '/internal/github/token',
+        path: '/internal/project/memory',
         timeout: 5_000,
       },
       (response) => {

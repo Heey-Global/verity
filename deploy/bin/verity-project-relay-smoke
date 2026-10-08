@@ -67,15 +67,17 @@ function request(method, path, body = '') {
   });
 }
 void (async () => {
-  const allowed = await request('POST', '/internal/github/token', 'smoke');
+  const allowed = await request('POST', '/internal/project/memory', 'smoke');
   if (allowed.status !== 200) throw new Error(`allowed broker request returned ${allowed.status}`);
   const payload = JSON.parse(allowed.body);
-  if (payload.url !== '/internal/github/token' || payload.body !== 'smoke') {
+  if (payload.url !== '/internal/project/memory' || payload.body !== 'smoke') {
     throw new Error('broker relay changed the allowed request');
   }
+  const retired = await request('POST', '/internal/github/token');
+  if (retired.status !== 404) throw new Error(`retired token route returned ${retired.status}`);
   const wrongPath = await request('POST', '/projects');
   if (wrongPath.status !== 404) throw new Error(`disallowed path returned ${wrongPath.status}`);
-  const wrongMethod = await request('GET', '/internal/github/token');
+  const wrongMethod = await request('GET', '/internal/project/memory');
   if (wrongMethod.status !== 404) throw new Error(`disallowed method returned ${wrongMethod.status}`);
 })().catch(error => {
   console.error(error);

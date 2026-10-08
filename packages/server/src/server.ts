@@ -5276,10 +5276,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       : {}),
     ...(deps.sshSign !== undefined ? { sshSign: deps.sshSign } : {}),
   });
-  registerGitHubTokenRoute(app, {
-    ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
-    ...(deps.ghTokenMint !== undefined ? { mint: deps.ghTokenMint } : {}),
-  });
+  registerGitHubTokenRoute(app);
   registerProjectMemoryRoute(app, {
     append: async (projectId, text) => {
       if (deps.dataRoot !== undefined) {

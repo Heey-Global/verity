@@ -5152,8 +5152,6 @@ export class ProvisionerImpl implements Provisioner {
     const ghTokenBrokerEnv =
       ghTokenCapabilityPath !== undefined
         ? [
-            `VERITY_GH_TOKEN_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/github/token`,
-            `VERITY_GH_TOKEN_DOCKER_CONTAINER=${project.containerName}`,
             `VERITY_GH_BROKER_CAPABILITY_FILE=${GH_BROKER_CAPABILITY_FILE}`,
             // Per-project agent memory broker (ADR 0008). Same internal listener and
             // per-container capability as the gh-token broker; `verity-memory` redeems

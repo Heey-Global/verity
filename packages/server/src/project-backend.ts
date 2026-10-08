@@ -32,7 +32,7 @@ export interface DockerExecBackendOptions {
 }
 
 // `docker exec` inherits the container's env, so the GitHub-token broker vars the
-// provisioner set on the container (VERITY_GH_TOKEN_URL + capability file) flow
+// provisioner set on the container (VERITY_FORGE_PROXY_URL + capability file) flow
 // through to agent exec sessions — no gh-token file is projected here. PATH is
 // re-set so /opt/agent-seed/bin (the gh wrapper + credential helper) wins.
 const AGENT_EXEC_BASE_ENV: Record<string, string> = {
@@ -102,7 +102,6 @@ export class DockerExecBackend implements Backend {
       const passthrough = dockerEnvPassthrough({
         ...AGENT_EXEC_BASE_ENV,
         VERITY_SIGNING_DOCKER_CONTAINER: opts.containerName,
-        VERITY_GH_TOKEN_DOCKER_CONTAINER: opts.containerName,
         ...opts.containerEnv,
         ...(spawnOpts.env?.VERITY_SESSION_ID
           ? { VERITY_SESSION_ID: spawnOpts.env.VERITY_SESSION_ID }

@@ -648,7 +648,7 @@ install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-git-sign" /opt/agent-seed/bin/verity-git-sign
 # GitHub-token broker client + git credential helper (security review). They
 # redeem the container capability for a fresh repo-scoped token on demand; inert
-# without the broker env (VERITY_GH_TOKEN_URL + capability file), so baking them
+# without the broker env (VERITY_FORGE_PROXY_URL + capability file), so baking them
 # here is harmless on non-broker deployments.
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-gh-token" /opt/agent-seed/bin/verity-gh-token
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-gh-cred" /opt/agent-seed/bin/verity-gh-cred
@@ -701,5 +701,5 @@ fi
 
 echo ">> verity-sandbox-toolkit: install complete."
 echo ">>   config dir (runtime): $CLAUDE_CONFIG_DIR_VALUE"
-echo ">>   gh auth (runtime):     token broker (VERITY_GH_TOKEN_URL + capability)"
+echo ">>   gh auth (runtime):     forge proxy (VERITY_FORGE_PROXY_URL + capability)"
 echo ">>   TZ:                    $TZ_VALUE"

@@ -255,7 +255,7 @@ jobs:
           docker run --rm --entrypoint=bash "$SMOKE_IMAGE" -lc '
             set -euo pipefail
             echo "::group::Versions / presence"
-            gh --version | head -1
+            /usr/local/lib/verity/gh-real --version | head -1
             doppler --version
             git --version
             node --version
@@ -347,9 +347,8 @@ jobs:
             test -s /opt/agent-seed/hooks/pre-push
             test -x /opt/agent-seed/bin/gh
             test "$(readlink /usr/local/bin/gh)" = "/opt/agent-seed/bin/gh"
-            # Token-broker model: the gh wrapper redeems the per-container capability
-            # for a fresh repo-scoped token via verity-gh-token — no gh-token FILE is
-            # mounted. Assert the wrapper invokes the broker client and that both the
+            # The gh wrapper requires the forge proxy and a capability placeholder.
+            # Assert the wrapper invokes the capability client and that both the
             # broker client and the credential helper are provisioned on PATH.
             grep -q "verity-gh-token" /usr/local/bin/gh
             test -x /usr/local/lib/verity/gh-real
@@ -368,19 +367,20 @@ jobs:
             # A stub verity-gh-token on PATH stands in for the broker: the wrapper
             # exports its output as GH_TOKEN (only) for the child and clears any stale
             # inherited GH_TOKEN/GITHUB_TOKEN.
-            printf "%s\n" "#!/usr/bin/env bash" "printf \"fresh-token\"" \
+            printf "%s\n" "#!/usr/bin/env bash" "printf \"verity-broker-fixture\"" \
               > "$tmp_gh_test/verity-gh-token"
             chmod 0755 "$tmp_gh_test/verity-gh-token"
-            out="$(PATH="$tmp_gh_test:$PATH" GH_TOKEN=stale GITHUB_TOKEN=stale VERITY_GH_REAL="$tmp_gh_test/gh-real" /usr/local/bin/gh)"
-            printf "%s\n" "$out" | grep -qx "GH_TOKEN=fresh-token"
+            out="$(PATH="$tmp_gh_test:$PATH" VERITY_FORGE_MODE=proxy-test VERITY_FORGE_PROXY_URL=http://proxy.invalid VERITY_FORGE_PROXY_CA_FILE="$tmp_gh_test/ca" GH_TOKEN=stale GITHUB_TOKEN=stale VERITY_GH_REAL="$tmp_gh_test/gh-real" /usr/local/bin/gh)"
+            printf "%s\n" "$out" | grep -qx "GH_TOKEN=verity-broker-fixture"
             printf "%s\n" "$out" | grep -qx "GITHUB_TOKEN=<unset>"
-            # Broker yields nothing (non-zero exit) → no token exported; stale
-            # inherited GH_TOKEN/GITHUB_TOKEN are still cleared.
+            # Missing capability must fail closed before the CLI starts.
             printf "%s\n" "#!/usr/bin/env bash" "exit 1" > "$tmp_gh_test/verity-gh-token"
             chmod 0755 "$tmp_gh_test/verity-gh-token"
-            out="$(PATH="$tmp_gh_test:$PATH" GH_TOKEN=stale GITHUB_TOKEN=stale VERITY_GH_REAL="$tmp_gh_test/gh-real" /usr/local/bin/gh)"
-            printf "%s\n" "$out" | grep -qx "GH_TOKEN=<unset>"
-            printf "%s\n" "$out" | grep -qx "GITHUB_TOKEN=<unset>"
+            if PATH="$tmp_gh_test:$PATH" VERITY_FORGE_MODE=proxy-test VERITY_FORGE_PROXY_URL=http://proxy.invalid VERITY_FORGE_PROXY_CA_FILE="$tmp_gh_test/ca" VERITY_GH_REAL="$tmp_gh_test/gh-real" /usr/local/bin/gh > "$tmp_gh_test/rejected" 2>/dev/null; then
+              echo "gh wrapper accepted a missing capability" >&2
+              exit 1
+            fi
+            test ! -s "$tmp_gh_test/rejected"
             test -x /usr/local/bin/verity-code-review
             test -f /opt/agent-seed/code-review-prompt.md
             # The gate must offer a concrete `run` subcommand. Without it agents
@@ -606,15 +606,15 @@ jobs:
           # A readable capability file + broker URL + GIT_USER_* env also exercise
           # the entrypoint's git runtime reconcile: identity seeded from env, and an
           # HTTPS-push credential helper (verity-gh-cred) wired whenever the broker
-          # URL is set and the capability at VERITY_GH_TOKEN_CAPABILITY_FILE
+          # mode is configured and the capability at VERITY_GH_BROKER_CAPABILITY_FILE
           # (defaults to /run/verity/gh-token-capability) is readable. The helper is
           # only WIRED here — no token is redeemed until an actual push — so a dummy
-          # broker URL + capability suffice to assert the wiring.
+          # proxy mode + capability suffice to assert the wiring.
           echo 'smoke-dummy-capability' > "$SMOKE_GH_CAPABILITY"
           docker run -d --name "$SMOKE_ENTRYPOINT" \
             -e WORKSPACE=/home/dev \
             -e GIT_USER_NAME=ci-smoke -e GIT_USER_EMAIL=ci@verity.test \
-            -e VERITY_GH_TOKEN_URL=http://verity-smoke.invalid/internal/github/token \
+            -e VERITY_FORGE_MODE=proxy-test \
             -v "$SMOKE_GH_CAPABILITY":/run/verity/gh-token-capability:ro \
             "$SMOKE_IMAGE"
 

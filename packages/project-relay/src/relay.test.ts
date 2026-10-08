@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import {
   createServer as createHttpServer,
   request,
@@ -40,6 +41,41 @@ afterEach(async () => {
 });
 
 describe('broker relay', () => {
+  it('runs the deployed broker smoke probe against the current relay routes', async () => {
+    const script = readFileSync('deploy/bin/verity-project-relay-smoke', 'utf8');
+    const source = /broker_probe_source <<'NODE' \|\| true\n([\s\S]*?)\nNODE/.exec(script)?.[1];
+    expect(source).toBeDefined();
+    const socketPath = await fakeBroker(async (incoming) => ({
+      status: 200,
+      body: JSON.stringify({ url: incoming.url, body: await readBody(incoming) }),
+    }));
+    const port = await listenTcp(createBrokerRelayServer({ socketPath }));
+    const probeProcess = { argv: ['127.0.0.1'], exitCode: 0 };
+    const errors: unknown[] = [];
+    // A stale smoke probe can keep unit tests green while both image builds fail.
+    await (runInNewContext(source!.replace('void (async', '(async'), {
+      require: () => ({
+        request: (options: object, callback: (response: IncomingMessage) => void) =>
+          request({ ...options, port }, callback),
+      }),
+      Buffer,
+      process: probeProcess,
+      console: { error: (error: unknown) => errors.push(error) },
+    }) as Promise<void>);
+    expect(errors).toEqual([]);
+    expect(probeProcess.exitCode).toBe(0);
+  });
+
+  it.each([
+    'deploy/bin/verity-project-relay-isolation-smoke',
+    'deploy/bin/verity-project-relay-lifecycle-smoke.mjs',
+  ])('keeps the successful broker probe in %s on an exposed route', (file) => {
+    const source = readFileSync(file, 'utf8');
+    const paths = [...source.matchAll(/path: '(\/internal\/[^']+)'/g)];
+    expect(paths.length).toBeGreaterThan(0);
+    for (const match of paths) expect(BROKER_RELAY_ROUTES.has(`POST ${match[1]}`)).toBe(true);
+  });
+
   it('forwards only an allowlisted request to the fixed Unix socket', async () => {
     const seen: Array<{ method: string; url: string; authorization?: string; body: string }> = [];
     const socketPath = await fakeBroker(async (incoming) => {
@@ -59,7 +95,7 @@ describe('broker relay', () => {
 
     const response = await httpCall(port, {
       method: 'POST',
-      path: '/internal/github/token',
+      path: '/internal/project/memory',
       headers: { authorization: 'Bearer project-cap', 'content-type': 'application/json' },
       body: '{"request":true}',
     });
@@ -68,7 +104,7 @@ describe('broker relay', () => {
     expect(seen).toEqual([
       {
         method: 'POST',
-        url: '/internal/github/token',
+        url: '/internal/project/memory',
         authorization: 'Bearer project-cap',
         body: '{"request":true}',
       },
@@ -299,9 +335,10 @@ describe('broker relay', () => {
     const port = await listenTcp(relay);
 
     for (const candidate of [
-      { method: 'GET', path: '/internal/github/token' },
-      { method: 'POST', path: '/internal/github/token?target=other' },
-      { method: 'POST', path: 'http://example.test/internal/github/token' },
+      { method: 'POST', path: '/internal/github/token' },
+      { method: 'GET', path: '/internal/project/memory' },
+      { method: 'POST', path: '/internal/project/memory?target=other' },
+      { method: 'POST', path: 'http://example.test/internal/project/memory' },
       { method: 'DELETE', path: '/internal/mcp' },
       { method: 'POST', path: '/projects' },
     ]) {
@@ -313,20 +350,20 @@ describe('broker relay', () => {
     expect(
       await rawCall(
         port,
-        'GET /internal/github/token HTTP/1.1\r\nHost: relay\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n',
+        'GET /internal/project/memory HTTP/1.1\r\nHost: relay\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n',
       ),
     ).toContain('405 Method Not Allowed');
     expect(
       await rawCall(
         port,
-        'POST /internal/github/token HTTP/1.1\r\nHost: relay\r\nConnection: authorization\r\nAuthorization: Bearer secret\r\nContent-Length: 0\r\n\r\n',
+        'POST /internal/project/memory HTTP/1.1\r\nHost: relay\r\nConnection: authorization\r\nAuthorization: Bearer secret\r\nContent-Length: 0\r\n\r\n',
       ),
     ).toContain('400 Bad Request');
     expect(
       (
         await httpCall(port, {
           method: 'POST',
-          path: '/internal/github/token',
+          path: '/internal/project/memory',
           headers: { 'x-caller-selected-upstream': 'http://example.test' },
         })
       ).status,
@@ -375,7 +412,7 @@ describe('broker relay', () => {
     });
     const port = await listenTcp(relay);
     const requestText =
-      'POST /internal/github/token HTTP/1.1\r\nHost: relay\r\nContent-Length: 0\r\n\r\n';
+      'POST /internal/project/memory HTTP/1.1\r\nHost: relay\r\nContent-Length: 0\r\n\r\n';
     const responses = rawCall(port, requestText.repeat(6));
 
     await waitFor(() => calls === 2);
@@ -514,7 +551,7 @@ describe('broker relay', () => {
 
     const response = await httpCall(port, {
       method: 'POST',
-      path: '/internal/github/token',
+      path: '/internal/project/memory',
     }).catch(() => undefined);
 
     await closed;

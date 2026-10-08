@@ -883,10 +883,7 @@ describe('PreviewShareManager', () => {
     const { manager, docker, inspect } = fixture({ inspectArtifact });
     docker.inspectContainer.mockResolvedValueOnce({
       ...inspect,
-      env: [
-        'VERITY_GH_TOKEN_URL=http://relay/internal/github/token',
-        'VERITY_GH_BROKER_CAPABILITY_FILE=/run/verity/gh-token-capability',
-      ],
+      env: ['VERITY_GH_BROKER_CAPABILITY_FILE=/run/verity/gh-token-capability'],
       mountCount: 1,
       mounts: [
         {

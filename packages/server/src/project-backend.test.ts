@@ -5,7 +5,6 @@ import { DockerExecBackend, containerPathFor, dockerHostFor } from './project-ba
 const AGENT_SEED_PATH =
   'PATH=/opt/agent-seed/bin:/usr/local/share/nvm/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const SIGNING_DOCKER_CONTAINER = 'VERITY_SIGNING_DOCKER_CONTAINER=dev-heey-global--verity';
-const GH_TOKEN_DOCKER_CONTAINER = 'VERITY_GH_TOKEN_DOCKER_CONTAINER';
 
 function fakeProcess(stdout: string[] = []): SpawnedProcess {
   return {
@@ -104,6 +103,7 @@ describe('DockerExecBackend (#174)', () => {
         worktree: '/data/dev/heey-global-verity/.verity-sessions/agent-x',
         cwd: '/data/dev/heey-global-verity/.verity-sessions/agent-x',
         prompt: 'go',
+        storeSessionId: 'backend-session-fixture',
       })
       .catch(() => undefined);
 
@@ -118,7 +118,7 @@ describe('DockerExecBackend (#174)', () => {
       '-e',
       SIGNING_DOCKER_CONTAINER,
       '-e',
-      GH_TOKEN_DOCKER_CONTAINER,
+      'VERITY_SESSION_ID=backend-session-fixture',
       '-w',
       '/work/.verity-sessions/agent-x',
       'dev-heey-global--verity',
@@ -127,9 +127,7 @@ describe('DockerExecBackend (#174)', () => {
       'claude-agent-acp',
     ]);
     expect(opts.cwd).toBe(process.cwd());
-    expect(opts.env).toMatchObject({
-      VERITY_GH_TOKEN_DOCKER_CONTAINER: 'dev-heey-global--verity',
-    });
+    expect(opts.env).not.toHaveProperty('VERITY_GH_TOKEN_DOCKER_CONTAINER');
   });
 
   it('threads DOCKER_HOST from the configured Docker HTTP base URL', async () => {
@@ -191,8 +189,6 @@ describe('DockerExecBackend (#174)', () => {
         '-e',
         SIGNING_DOCKER_CONTAINER,
         '-e',
-        GH_TOKEN_DOCKER_CONTAINER,
-        '-e',
         'VERITY_DOPPLER_TOKEN_REF=doppler://verity/prod',
         '-e',
         'VERITY_PROJECT_DEV_SERVER_URL',
@@ -202,7 +198,6 @@ describe('DockerExecBackend (#174)', () => {
     );
     expect(args.join(' ')).not.toContain('oauth-secret');
     expect(spawner.mock.calls[0]![2].env).toMatchObject({
-      VERITY_GH_TOKEN_DOCKER_CONTAINER: 'dev-heey-global--verity',
       CLAUDE_CODE_OAUTH_TOKEN: 'oauth-secret',
     });
     expect(args.slice(args.indexOf('-w'), args.indexOf('-w') + 3)).toEqual([

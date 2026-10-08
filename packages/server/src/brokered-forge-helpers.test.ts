@@ -75,6 +75,7 @@ describe.each(roots)('%s forge test mode', (seed) => {
       { VERITY_FORGE_PROXY_CA_FILE: '/nonexistent' },
       { VERITY_FORGE_PROXY_URL: '' },
       { VERITY_FORGE_MODE: 'unknown' },
+      { VERITY_FORGE_MODE: '' },
     ]) {
       await expect(
         exec(join(seed, 'verity-gh-token'), [], {
@@ -89,7 +90,7 @@ describe.each(roots)('%s forge test mode', (seed) => {
     }
     await expect(readFile(invocationLog)).rejects.toMatchObject({ code: 'ENOENT' });
   });
-  it('retains explicit legacy token redemption when the test mode is absent', async () => {
+  it('never contacts the legacy endpoint when proxy mode is absent', async () => {
     const { env } = await fixture(seed);
     let calls = 0;
     const server = createServer((_request, response) => {
@@ -100,18 +101,16 @@ describe.each(roots)('%s forge test mode', (seed) => {
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
     try {
       const port = (server.address() as { port: number }).port;
-      expect(
-        (
-          await exec(join(seed, 'verity-gh-token'), [], {
-            env: {
-              ...env,
-              VERITY_FORGE_MODE: '',
-              VERITY_GH_TOKEN_URL: `http://127.0.0.1:${port}/legacy`,
-            },
-          })
-        ).stdout,
-      ).toBe('legacy-token');
-      expect(calls).toBe(1);
+      await expect(
+        exec(join(seed, 'verity-gh-token'), [], {
+          env: {
+            ...env,
+            VERITY_FORGE_MODE: '',
+            VERITY_GH_TOKEN_URL: `http://127.0.0.1:${port}/legacy`,
+          },
+        }),
+      ).rejects.toThrow();
+      expect(calls).toBe(0);
     } finally {
       await new Promise<void>((done) => server.close(() => done()));
     }

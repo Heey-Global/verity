@@ -5137,7 +5137,7 @@ describe('ProvisionerImpl (#174)', () => {
       expect(methods.indexOf('stopContainer')).toBeLessThan(methods.indexOf('createContainer'));
       expect(methods.indexOf('removeContainer')).toBeLessThan(methods.indexOf('createContainer'));
       const spec = created?.payload as ContainerSpec;
-      expect(spec.env).toContain('VERITY_GH_TOKEN_URL=http://relay:8080/internal/github/token');
+      expect(spec.env?.some((entry) => entry.startsWith('VERITY_GH_TOKEN_URL='))).toBe(false);
       expect(spec.env).toContain('VERITY_CLAUDE_EGRESS_URL=https://relay:8443');
       expect(readFileSync(join(secretRoot, 'git', `gh_token_capability.${id}`), 'utf8')).toBe(
         'github-capability\n',
@@ -5911,9 +5911,11 @@ describe('ProvisionerImpl (#174)', () => {
         const capPath = join(secretRoot, 'git', `gh_token_capability.${id}`);
         expect(spec.binds).toContain(`${capPath}:/run/verity/gh-token-capability:ro`);
         expect(statSync(capPath).mode & 0o777).toBe(0o600);
-        // The endpoint URL is non-secret env; no gh-token file anywhere.
-        expect(spec.env).toContain('VERITY_GH_TOKEN_URL=http://relay:8080/internal/github/token');
-        expect(spec.env).toContain(`VERITY_GH_TOKEN_DOCKER_CONTAINER=${spec.name}`);
+        // Legacy token redemption must not be reachable from the container.
+        expect(spec.env?.some((entry) => entry.startsWith('VERITY_GH_TOKEN_URL='))).toBe(false);
+        expect(
+          spec.env?.some((entry) => entry.startsWith('VERITY_GH_TOKEN_DOCKER_CONTAINER=')),
+        ).toBe(false);
         expect(spec.env).toContain(
           'VERITY_GH_BROKER_CAPABILITY_FILE=/run/verity/gh-token-capability',
         );
