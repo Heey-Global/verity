@@ -170,8 +170,10 @@ Pick one provider to start.
 - **OpenCode:** enter the API base URL and API key of an OpenAI-compatible
   provider, then save.
 
-Your account credential stays on the Core. Agents never see it; their
-requests pass through a broker on the server that adds it.
+For Claude and Codex, your account credential stays on the Core: agents never
+see it, and their requests pass through a broker on the server that adds it.
+An OpenCode API key is not covered by this; it is made available inside the
+project sandbox.
 
 **What you should see:** "Claude connected" or "Codex connected", and the
 button "Open Verity" becomes active. Tap it.

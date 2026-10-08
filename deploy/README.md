@@ -183,8 +183,9 @@ the app step by step. In short:
    sealed; the server logs `secret store is UNINITIALIZED and SEALED` on boot,
    which is expected.
 3. **Connect one AI provider**: a Claude or Codex subscription login, or an
-   OpenAI-compatible endpoint for OpenCode. The credential stays on the Server
-   and is brokered to project sandboxes.
+   OpenAI-compatible endpoint for OpenCode. Claude and Codex credentials stay
+   on the Server and are brokered to project sandboxes; an OpenCode API key is
+   not covered by that boundary.
 4. **Add a project.** An empty project needs nothing else. A GitHub repository
    needs the GitHub connection, which can be added at any time under
    Settings → Connections.
@@ -246,17 +247,20 @@ the password is set.
 A paired installation updates from the Verity app; the host-side `--update`
 path of the installer is fenced off after pairing. The promoted Server comes up
 unlocked, except after a cold start such as a host reboot, which needs one
-unlock in the app. A failed update rolls back to the previous generation on its
-own.
+unlock in the app. An update that cannot complete is designed to roll back to
+the previous generation; the app then reports it as `rolled-back` or `failed`,
+and the cases that need a hand are described in the guide linked below.
 
 Running the installer again on an existing host is safe. Interactively it
 offers to repair the current release without changing data, to update an
 installation that has not paired its first device yet, or to replace it
-completely:
+completely. The public bootstrap and a repository checkout run the same
+installer:
 
 ```sh
-sudo deploy/bin/verity-install              # repair, or print a new pairing link
-sudo deploy/bin/verity-install --reinstall  # delete everything and install fresh
+curl -fsSL https://verity.build/install.sh | bash                  # repair, or print a new pairing link
+curl -fsSL https://verity.build/install.sh | bash -s -- --reinstall # delete everything and install fresh
+sudo deploy/bin/verity-install                                      # the same, from a checkout
 ```
 
 `--reinstall` requires the exact phrase `DELETE VERITY` before removing
