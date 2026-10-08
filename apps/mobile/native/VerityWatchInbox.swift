@@ -119,8 +119,8 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   }
 
   func status() -> [String: Any] {
-    let session = WCSession.default
     guard WCSession.isSupported() else { return ["supported": false] }
+    let session = WCSession.default
     return [
       "supported": true,
       "activated": session.activationState == .activated,

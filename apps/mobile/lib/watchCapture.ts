@@ -52,11 +52,11 @@ export function createWatchInboxDrainer(inbox: Inbox, save: Save): () => Promise
       for (const capture of await inbox.pending()) {
         try {
           await save(capture);
+          await inbox.acknowledge(capture.id);
         } catch (error) {
+          // An unacknowledged capture is offered again; the queue ignores its id.
           failure ??= error;
-          continue;
         }
-        await inbox.acknowledge(capture.id);
       }
     } while (again);
     if (failure) throw failure;
