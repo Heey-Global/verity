@@ -237,6 +237,22 @@ describe('victim selection', () => {
     expect(victim?.pid).toBe(6000);
   });
 
+  it('takes the whole CLI tree when its memory is spread over many small commands', () => {
+    // Twenty 60 MiB commands under one CLI: none is worth killing alone, yet the
+    // session holds most of the memory. Dropping it from the ranking would kill a
+    // smaller tree, or nothing, while it kept growing.
+    const files = sandbox();
+    for (const pid of [6000, 6100, 6101, 6102, 7000]) delete files[`/proc/${pid}/status`];
+    for (let i = 0; i < 20; i += 1) {
+      files[`/proc/${6300 + i}/status`] = status('node', 5867, 1000, 60 * MIB);
+    }
+    const processes = listProcesses(reader(files), listPids(files));
+    expect(chooseVictim(processes, { agentUid: 1000, minimumSessionRssBytes: GIB })).toMatchObject({
+      pid: 5867,
+      tier: 'session',
+    });
+  });
+
   it('takes the largest of several parallel commands rather than their CLI', () => {
     // Two 1.2 GiB builds under a 500 MiB CLI: neither holds half of the CLI's
     // tree, but the CLI is not the consumer either. Killing it would end the

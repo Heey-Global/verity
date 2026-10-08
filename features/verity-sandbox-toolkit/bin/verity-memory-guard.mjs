@@ -276,7 +276,14 @@ export function chooseVictim(
       const scored = { ...child, tier: 'command', treeRssBytes: childRssBytes };
       if (larger(scored, largestChild)) largestChild = scored;
     }
-    return largestChild;
+    if (largestChild !== undefined && largestChild.treeRssBytes >= MINIMUM_VICTIM_RSS_BYTES) {
+      return largestChild;
+    }
+    // Memory spread over many small commands: none is worth killing alone, so
+    // the CLI's whole tree is the unit, under the same bar as the CLI itself.
+    return treeRssBytes >= minimumSessionRssBytes
+      ? { ...cli, tier: 'session', treeRssBytes }
+      : undefined;
   };
 
   let best;
@@ -575,7 +582,8 @@ export function probeMemoryGuard(controlDir, readFile = readFsFile) {
  * stack passes cannot both start a guard that kills on its own cooldown. A file
  * left by a guard that is no longer running is replaced once. That replacement
  * can race with another launcher's; the loser notices on its next poll that the
- * file no longer holds its record and exits (see `main`).
+ * file no longer holds the record it wrote, which this returns, and exits (see
+ * `main`). Returns `undefined` when another guard holds the claim.
  */
 function claimPidFile(controlDir) {
   const path = join(controlDir, PID_FILE_NAME);
@@ -583,10 +591,10 @@ function claimPidFile(controlDir) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       writeFileSync(path, record, { mode: 0o600, flag: 'wx' });
-      return true;
+      return record;
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
-      if (attempt > 0 || probeMemoryGuard(controlDir)) return false;
+      if (attempt > 0 || probeMemoryGuard(controlDir)) return undefined;
       // `wx` creates the file before it writes the record: an empty or partial
       // record is another guard mid-claim, not a stale one, unless it has stayed
       // that way long enough that its writer cannot still be alive.
@@ -597,11 +605,11 @@ function claimPidFile(controlDir) {
       } catch {
         continue; // removed by a competing launcher in between: try to claim it
       }
-      if (!/^\d+ \d+\n$/u.test(existing) && ageMs < 10_000) return false;
+      if (!/^\d+ \d+\n$/u.test(existing) && ageMs < 10_000) return undefined;
       rmSync(path, { force: true });
     }
   }
-  return false;
+  return undefined;
 }
 
 function writeLog(record) {
@@ -629,7 +637,8 @@ function main() {
     writeLog({ event: 'once', ...result, victim: result.victim?.pid });
     process.exit(0);
   }
-  if (!claimPidFile(controlDir)) {
+  const ownRecord = claimPidFile(controlDir);
+  if (ownRecord === undefined) {
     writeLog({ event: 'already-running' });
     process.exit(0);
   }
@@ -652,7 +661,7 @@ function main() {
     process.exit(0);
   }
   const intervalMs = resolvePollIntervalMs(process.env);
-  const ownRecord = tryRead(readFsFile, join(controlDir, PID_FILE_NAME));
+  let lastError;
   const timer = setInterval(() => {
     // Replacing a stale pid file is not atomic across two launchers; the one
     // whose record is no longer in the file steps aside within a poll.
@@ -662,8 +671,12 @@ function main() {
     }
     try {
       guard.tick();
+      lastError = undefined;
     } catch (error) {
-      writeLog({ event: 'error', message: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      // Once per run of identical failures: the log is on tmpfs in this cgroup.
+      if (message !== lastError) writeLog({ event: 'error', message });
+      lastError = message;
     }
   }, intervalMs);
   const stop = () => {
