@@ -39,6 +39,7 @@ import {
   useTasks,
 } from '../lib/tasksStore';
 import { saveTaskPreferences, useTaskPreferences } from '../lib/taskPreferences';
+import { subscribeTaskVoiceShortcut } from '../lib/voiceShortcut';
 import { subscribeTasksPanel } from '../lib/taskPanelEvents';
 import { useLiveHints } from '../lib/liveConnection';
 import { getVerityBaseUrl } from '../lib/client';
@@ -314,6 +315,23 @@ export function QuickCaptureBubble() {
     const timer = setTimeout(() => setSaved(null), 4000);
     return () => clearTimeout(timer);
   }, [saved]);
+  useEffect(
+    () =>
+      subscribeTaskVoiceShortcut(() => {
+        if (
+          taskAccountScope() === null ||
+          meeting ||
+          remoteMeeting ||
+          pathname.startsWith('/onboarding') ||
+          pathname.includes('unlock-device')
+        )
+          return;
+        setPanel(false);
+        setIntro(false);
+        setCapture(true);
+      }),
+    [meeting, remoteMeeting, pathname],
+  );
   const visible =
     preferences.enabled &&
     taskAccountScope() !== null &&
