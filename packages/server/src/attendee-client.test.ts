@@ -41,5 +41,8 @@ describe('Attendee transcript ingestion', () => {
     expect(corrected.speakerTurns[0]?.speaker).toBe(original.speakerTurns[1]?.speaker);
     expect(corrected.timedWords[0]?.text).toBe('corrected');
     expect(corrected.speakerTurns[0]?.start).toBe(original.speakerTurns[1]?.start);
+    const late = normalizeAttendeeTranscript([{ ...first, timestamp_ms: 0 }], identities, 1000);
+    expect(late.speakerTurns[0]?.start).toBe(0);
+    expect(late.timedWords[0]?.start).toBe(0);
   });
 });

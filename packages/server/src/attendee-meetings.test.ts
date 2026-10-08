@@ -391,6 +391,7 @@ it('finds corrected, late and simultaneous addressed utterances without replayin
   let snapshot = [
     {
       speaker_uuid: 'alice',
+      speaker_name: 'Alice',
       timestamp_ms: 1000,
       duration_ms: 500,
       transcription: { transcript: 'ordinary statement' },
@@ -398,7 +399,7 @@ it('finds corrected, late and simultaneous addressed utterances without replayin
   ];
   const spoken = vi.fn().mockResolvedValue(undefined);
   const ingest = vi.fn();
-  const run = async () => {
+  const run = async (rename?: string) => {
     ingest.mockClear();
     const service = new AttendeeMeetings({
       store,
@@ -413,6 +414,7 @@ it('finds corrected, late and simultaneous addressed utterances without replayin
     await service.open();
     try {
       await vi.waitFor(() => expect(ingest).toHaveBeenCalled());
+      if (rename) await service.edit('session', 'corrections', { speakerNames: { '0': rename } });
     } finally {
       await service.close();
     }
@@ -420,9 +422,14 @@ it('finds corrected, late and simultaneous addressed utterances without replayin
   await run();
   expect(spoken).not.toHaveBeenCalled();
   snapshot = [
-    { ...snapshot[0]!, transcription: { transcript: 'Verity, check the corrected claim' } },
     {
       ...snapshot[0]!,
+      speaker_name: 'Corrected Alice',
+      transcription: { transcript: 'Verity, check the corrected claim' },
+    },
+    {
+      ...snapshot[0]!,
+      speaker_name: 'Corrected Alice',
       timestamp_ms: 0,
       transcription: { transcript: 'Verity, check the late claim' },
     },
@@ -433,8 +440,16 @@ it('finds corrected, late and simultaneous addressed utterances without replayin
     },
   ];
   await run();
+  const correctedMeeting = ingest.mock.calls.at(-1)?.[0] as {
+    speakerNames: Record<string, string>;
+    speakerTurns: Array<{ start: number }>;
+  };
+  expect(correctedMeeting.speakerNames['0']).toBe('Corrected Alice');
+  expect(correctedMeeting.speakerTurns.every((turn) => turn.start >= 0)).toBe(true);
   expect(spoken).toHaveBeenCalledTimes(3);
   expect(new Set(spoken.mock.calls.map((call: unknown[]) => call[2])).size).toBe(3);
+  await run('My Alice');
   await run();
+  expect(ingest.mock.calls.at(-1)?.[0].speakerNames['0']).toBe('My Alice');
   expect(spoken).toHaveBeenCalledTimes(3);
 });

@@ -29,6 +29,7 @@ interface OnlineMeeting {
   pendingRequests?: Record<string, string>;
   processedRequests?: Record<string, boolean>;
   timeOriginMs?: number;
+  speakerNameOverrides?: Record<string, string>;
   botCreateAttempted?: boolean;
   error?: string;
 }
@@ -297,6 +298,14 @@ export class AttendeeMeetings {
       const state = await this.options.store.getAttendeeState<OnlineMeeting>(`meeting:${id}`);
       if (!state || state.meeting.sessionId !== sessionId)
         throw new Error('Online meeting not found.');
+      if (edits.speakerNames) {
+        state.speakerNameOverrides ??= {};
+        for (const [speaker, name] of Object.entries(edits.speakerNames)) {
+          if (name !== state.meeting.speakerNames?.[speaker]) {
+            state.speakerNameOverrides[speaker] = name;
+          }
+        }
+      }
       Object.assign(state.meeting, edits);
       await this.publish(state);
       return { accepted: true };
@@ -396,7 +405,7 @@ export class AttendeeMeetings {
     }
     const normalized = normalizeAttendeeTranscript(snapshot, state.identities, state.timeOriginMs);
     const previous = JSON.stringify(state.meeting);
-    const speakerNames = { ...normalized.speakerNames, ...state.meeting.speakerNames };
+    const speakerNames = { ...normalized.speakerNames, ...state.speakerNameOverrides };
     Object.assign(state.meeting, normalized, { speakerNames });
     state.meeting.captureStatus = bot.state === 'joined_recording' ? 'listening' : 'preparing';
     state.meeting.state = final ? 'ended' : 'active';

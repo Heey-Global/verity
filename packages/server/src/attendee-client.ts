@@ -54,7 +54,8 @@ export function normalizeAttendeeTranscript(
     const speaker = (identities[utterance.speaker_uuid] ??=
       Math.max(-1, ...Object.values(identities)) + 1);
     if (utterance.speaker_name) speakerNames[String(speaker)] = utterance.speaker_name;
-    const start = (utterance.timestamp_ms - startMs) / 1000;
+    // Late provider segments must not invalidate saved speaker correction ranges.
+    const start = Math.max(0, (utterance.timestamp_ms - startMs) / 1000);
     const end = start + utterance.duration_ms / 1000;
     if (end > start) speakerTurns.push({ speaker, start, end });
     // Segment timings preserve speaker attribution without inventing word-level timing.
