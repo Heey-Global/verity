@@ -182,6 +182,8 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
         try save(entry)
         log("\(id.prefix(8)) received \(entry.durationMs) ms audio, app \(background ? "background" : "foreground")")
         transcribe(id)
+        // A wake for a new recording is also a chance for earlier failures.
+        retry()
       } catch {
         log("\(id.prefix(8)) could not be stored: \(error.localizedDescription)")
         remove(id)
@@ -285,11 +287,18 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
       }
       return parts.filter { !$0.isEmpty }.joined(separator: " ")
     }
-    let file = try AVAudioFile(forReading: url)
-    if let end = try await analyzer.analyzeSequence(from: file) {
-      try await analyzer.finalizeAndFinish(through: end)
-    } else {
+    do {
+      let file = try AVAudioFile(forReading: url)
+      if let end = try await analyzer.analyzeSequence(from: file) {
+        try await analyzer.finalizeAndFinish(through: end)
+      } else {
+        await analyzer.cancelAndFinishNow()
+      }
+    } catch {
+      // Finish the analyzer so the results stream, and with it `collect`, ends.
       await analyzer.cancelAndFinishNow()
+      collect.cancel()
+      throw error
     }
     return try await collect.value
   }
