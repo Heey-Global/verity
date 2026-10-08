@@ -6630,6 +6630,71 @@ describe('Conductor mid-turn steering (#101)', () => {
       await waitFor(() => !conductor.isBusy('s1'));
     }
   });
+
+  it('keeps chat consent revoked after delivered steering fails persistence', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', '1. First');
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'Implement plan');
+    await waitFor(fake.ready);
+    const running = (await ctx.store.listRunningTurns())[0]!;
+    const consent = {
+      turnId: running.turnId!,
+      promptSeq: running.promptSeq,
+      runningPromptSeq: running.promptSeq,
+    };
+    const append = ctx.store.appendEvent.bind(ctx.store);
+    const spy = vi.spyOn(ctx.store, 'appendEvent').mockImplementation(async (...args) => {
+      if (args[1].t === 'prompt' && args[1].steered) throw new Error('prompt storage unavailable');
+      return append(...args);
+    });
+    try {
+      await conductor.dispatchTurn('s1', 'Wait, do not implement');
+      expect(fake.steered).toHaveLength(1);
+      // Dispatch has finished, so no pending counter protects the old approval.
+      expect(
+        await conductor.dispatchTurn(
+          's1',
+          'Implement',
+          {},
+          {
+            planningRevision: revision!,
+            queueBehindActiveTurn: true,
+            planningConsent: consent,
+          },
+        ),
+      ).toEqual({ queued: false, accepted: false });
+      expect((await ctx.store.getSession('s1'))?.planning).toBe('active');
+      expect(await ctx.store.listQueuedTurns()).toEqual([]);
+      spy.mockRestore();
+      await conductor.dispatchTurn('s1', 'Implement plan', {}, { initiatedBy: { userId: 'u1' } });
+      const latest = (await ctx.store.getEventsAfter('s1', running.promptSeq))
+        .filter(({ event }) => event.t === 'prompt')
+        .at(-1)!;
+      expect(
+        await conductor.dispatchTurn(
+          's1',
+          'Implement',
+          {},
+          {
+            planningRevision: revision!,
+            queueBehindActiveTurn: true,
+            planningConsent: { ...consent, promptSeq: latest.seq },
+          },
+        ),
+      ).toEqual({ queued: true });
+    } finally {
+      spy.mockRestore();
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+  });
   it('keeps the live planning turn restricted after a planning decision', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.setSessionPlanning('s1', 'active');

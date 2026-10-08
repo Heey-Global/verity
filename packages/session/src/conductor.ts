@@ -906,6 +906,7 @@ export interface StartOptions {
  */
 export class Conductor {
   private readonly inFlight = new Set<string>();
+  private readonly failedSteeringPersistence = new Set<string>();
   private readonly pendingUserDispatches = new Map<string, number>();
   private readonly runningPlanning = new Map<string, boolean>();
   /** Stop-watchdog waiters woken by {@link releaseInFlight} — how the cancel path
@@ -3230,7 +3231,8 @@ export class Conductor {
         if (dispatchOpts.planningRevision !== undefined) {
           if (
             dispatchOpts.planningConsent !== undefined &&
-            (this.pendingUserDispatches.get(sessionId) ?? 0) > 0
+            ((this.pendingUserDispatches.get(sessionId) ?? 0) > 0 ||
+              this.failedSteeringPersistence.has(sessionId))
           ) {
             accepted = false;
             return;
@@ -5018,6 +5020,7 @@ export class Conductor {
             ...originFields(origin),
           };
     const { seq, ts } = await this.deps.store.appendEvent(sessionId, event);
+    this.failedSteeringPersistence.delete(sessionId);
     this.deps.bus?.publish(sessionId, { seq, ts, event });
   }
 
@@ -5026,8 +5029,8 @@ export class Conductor {
    * (#101) — store its attachments content-addressed, then append the `prompt`
    * event. Best-effort: a failure routes to {@link ConductorDeps.onTurnError}
    * rather than rejecting, because the message has already been delivered to claude
-   * (the caller returned its 202); a missing prompt event is a transcript blemish,
-   * not a lost turn.
+   * so the caller can still receive its 202. A failure revokes chat consent
+   * until a subsequent prompt is durable; the backend already saw the steering.
    */
   private async persistSteeredPrompt(
     sessionId: string,
@@ -5044,6 +5047,8 @@ export class Conductor {
         origin,
       );
     } catch (error) {
+      // Delivered steering must not leave an earlier durable approval actionable.
+      this.failedSteeringPersistence.add(sessionId);
       this.reportTurnError(sessionId, error);
     }
   }
