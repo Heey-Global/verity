@@ -75,3 +75,14 @@ before React commits the spinner. A cancelled touch has no approval handler;
 rapid subsequent gestures supersede the earlier trace. Allow traces share the
 eight-entry limit with session switches. Reproduce a delayed Allow action and
 export immediately, before restarting the app.
+
+## Initial publication and render entry
+
+The first loaded model snapshot is dispatched immediately; subsequent streaming
+snapshots remain animation-frame batched. `loaded-model-state-publish` precedes
+that immediate dispatch, without promising synchronous React rendering.
+`selection-home-render-entry` and `session-screen-render-entry` record only the
+first render entry for the active gesture. They can include an interrupted render
+that never commits. The interval to the existing React effect markers includes
+rendering, child work, scheduling and effect execution; it is not isolated CPU
+render time or native paint. These markers share the existing collection limits.
