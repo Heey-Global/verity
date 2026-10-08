@@ -1902,7 +1902,7 @@ function SessionRow({
   const label = sessionLabel(session);
   const favorite = session.favorite === true;
   const subtitle = modelDisplayName(session.model);
-  const running = session.status === 'running';
+  const running = session.status === 'running' || session.backgroundWorking === true;
   // "Done"/"Idle" are implicit from the ABSENCE of the working dot, so they get no
   // label — only states worth actively noticing keep a pill (see showsSessionLabel).
   const showLabel = showsSessionLabel(session.status);

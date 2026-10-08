@@ -47,10 +47,10 @@ describe('useUnread', () => {
     const { result } = renderHook(() => useUnread(client, sessions));
     expect(result.current.unread.has('a')).toBe(true);
 
-    act(() => result.current.markSeen('a', 10, 'dev-servers-excluded-v1'));
+    act(() => result.current.markSeen('a', 10, 'agent-text-v2'));
 
     expect(result.current.unread.has('a')).toBe(false); // override cleared it at once
-    expect(setSessionSeen).toHaveBeenCalledWith('a', 10, 'dev-servers-excluded-v1');
+    expect(setSessionSeen).toHaveBeenCalledWith('a', 10, 'agent-text-v2');
     await waitFor(() => expect(setSessionSeen).toHaveBeenCalledTimes(1));
   });
 
@@ -67,7 +67,7 @@ describe('useUnread', () => {
     act(() => result.current.markSeen('a', 10));
     expect(result.current.unread.has('a')).toBe(false);
     rerender({
-      sessions: [{ ...session('a', 2, 1), eventCountVersion: 'dev-servers-excluded-v1' }],
+      sessions: [{ ...session('a', 2, 1), eventCountVersion: 'agent-text-v2' }],
     });
     expect(result.current.unread.has('a')).toBe(true);
   });
@@ -83,6 +83,32 @@ describe('useUnread', () => {
     act(() => result.current.markSeen('a', 8)); // older count → skipped
 
     expect(setSessionSeen).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a new read mark when a pre-migration write with the same count fails late', async () => {
+    let rejectOld!: (error: Error) => void;
+    const oldWrite = new Promise((_, reject) => {
+      rejectOld = reject;
+    });
+    const { client, setSessionSeen } = fakeClient(() => Promise.resolve({}));
+    setSessionSeen.mockReturnValueOnce(oldWrite);
+    const { result, rerender } = renderHook(
+      ({ sessions }: { sessions: SessionSummary[] }) => useUnread(client, sessions),
+      {
+        initialProps: {
+          sessions: [{ ...session('a', 2, 1), eventCountVersion: 'dev-servers-excluded-v1' }],
+        },
+      },
+    );
+    act(() => result.current.markSeen('a', 2, 'dev-servers-excluded-v1'));
+    rerender({ sessions: [{ ...session('a', 2, 1), eventCountVersion: 'agent-text-v2' }] });
+    act(() => result.current.markSeen('a', 2, 'agent-text-v2'));
+    await act(async () => {
+      rejectOld(new Error('counter incompatible'));
+    });
+    expect(result.current.unread.has('a')).toBe(false);
+    act(() => result.current.markSeen('a', 2, 'agent-text-v2'));
+    expect(setSessionSeen).toHaveBeenCalledTimes(2);
   });
 
   it('re-PATCHes once new activity advances the count', async () => {

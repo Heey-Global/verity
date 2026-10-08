@@ -521,6 +521,208 @@ describe('SessionModel — busy seeding', () => {
 });
 
 describe('SessionModel — working reconciliation', () => {
+  it('does not restart pulsing when a permission arrives during an older animation poll', async () => {
+    const { connect, sockets } = recordingConnect();
+    const client = stubClient();
+    let resolve!: (value: { busy: boolean; activityAnimating: boolean; queued: [] }) => void;
+    client.getActivity = vi.fn().mockReturnValue(
+      new Promise((r) => {
+        resolve = r;
+      }),
+    );
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+      sockets[0]?.emitEvent(2, {
+        t: 'permission',
+        id: 'p',
+        tool: 'Bash',
+        input: {},
+        riskClass: 'ask',
+      });
+      resolve({ busy: true, activityAnimating: true, queued: [] });
+      await flush();
+      expect(model.state.working).toBe(true);
+      expect(model.state.activityAnimating).toBe(false);
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('seeds animation from authoritative activity when the history tail omits waiting status', async () => {
+    const { connect } = recordingConnect();
+    const client = stubClient();
+    client.getActivity = vi
+      .fn()
+      .mockResolvedValue({ busy: true, activityAnimating: false, queued: [] });
+    const emitted: boolean[] = [];
+    const model = new SessionModel({
+      client,
+      sessionId: 's1',
+      transport: connect,
+      onChange: (state) => emitted.push(state.activityAnimating),
+    });
+    try {
+      model.start();
+      await flush();
+      expect(model.state.session.status).toBeUndefined();
+      expect(model.state.working).toBe(true);
+      expect(model.state.activityAnimating).toBe(false);
+      emitted.length = 0;
+      client.getActivity = vi
+        .fn()
+        .mockResolvedValue({ busy: true, activityAnimating: true, queued: [] });
+      model.refreshActivity();
+      await flush();
+      expect(model.state.activityAnimating).toBe(true);
+      expect(emitted).toContain(true);
+    } finally {
+      model.stop();
+    }
+  });
+
+  it.each([true, false])(
+    'new lifecycle events win over a stale animation poll (%s)',
+    async (animating) => {
+      const { connect, sockets } = recordingConnect();
+      const client = stubClient();
+      let resolve!: (value: { busy: boolean; activityAnimating: boolean; queued: [] }) => void;
+      client.getActivity = vi.fn().mockReturnValue(
+        new Promise((r) => {
+          resolve = r;
+        }),
+      );
+      const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+      try {
+        model.start();
+        await flush();
+        sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+        sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+        if (animating) sockets[0]?.emitEvent(2, { t: 'status', state: 'completed' });
+        resolve({ busy: animating, activityAnimating: animating, queued: [] });
+        await flush();
+        expect(model.state.activityAnimating).toBe(!animating);
+        expect(model.state.working).toBe(!animating);
+      } finally {
+        model.stop();
+      }
+    },
+  );
+
+  it('stops pulsing while awaiting input, retains Stop, and resumes on an answer', async () => {
+    const { connect, sockets } = recordingConnect();
+    const client = stubClient();
+    client.getActivity = vi.fn().mockResolvedValue({ busy: true, queued: [] });
+    client.decidePermission = vi.fn().mockResolvedValue({});
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+      sockets[0]?.emitEvent(2, { t: 'status', state: 'awaiting_input' });
+      expect(model.state.working).toBe(true);
+      expect(model.state.activityAnimating).toBe(false);
+      sockets[0]?.emitEvent(3, { t: 'prompt', text: 'yes' });
+      expect(model.state.working).toBe(true);
+      expect(model.state.activityAnimating).toBe(true);
+      sockets[0]?.emitEvent(4, {
+        t: 'permission',
+        id: 'p',
+        tool: 'Bash',
+        input: {},
+        riskClass: 'ask',
+      });
+      expect(model.state.activityAnimating).toBe(false);
+      sockets[0]?.emitEvent(5, { t: 'task', id: 'bg', phase: 'started' });
+      expect(model.state.activityAnimating).toBe(true);
+      sockets[0]?.emitEvent(6, { t: 'task', id: 'bg', phase: 'ended', status: 'completed' });
+      expect(model.state.activityAnimating).toBe(false);
+      await model.decidePermission('p', { behavior: 'allow' });
+      expect(model.state.activityAnimating).toBe(true);
+      sockets[0]?.emitEvent(7, { t: 'status', state: 'awaiting_dependency' });
+      expect(model.state.working).toBe(true);
+      expect(model.state.activityAnimating).toBe(false);
+      sockets[0]?.emitEvent(8, { t: 'task', id: 'dependency-bg', phase: 'started' });
+      expect(model.state.activityAnimating).toBe(true);
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('clears polled busy immediately at a streamed terminal boundary', async () => {
+    const { connect, sockets } = recordingConnect();
+    const client = stubClient();
+    client.getActivity = vi.fn().mockResolvedValue({ busy: true, queued: [] });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+      expect(model.state.busy).toBe(true);
+      sockets[0]?.emitEvent(2, { t: 'status', state: 'completed' });
+      expect(model.state.busy).toBe(false);
+      expect(model.state.working).toBe(false);
+    } finally {
+      model.stop();
+    }
+  });
+
+  it.each<AgentEvent>([
+    { t: 'status', state: 'completed' },
+    { t: 'status', state: 'crashed' },
+    { t: 'interrupted' },
+  ])('keeps a streamed turn-end after an older busy poll resolves (%j)', async (terminal) => {
+    const { connect, sockets } = recordingConnect();
+    let resolveActivity!: (value: { busy: boolean; queued: [] }) => void;
+    const client = stubClient();
+    client.getActivity = vi.fn().mockReturnValue(
+      new Promise((resolve) => {
+        resolveActivity = resolve;
+      }),
+    );
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+      expect(model.state.working).toBe(true);
+      sockets[0]?.emitEvent(2, terminal);
+      expect(model.state.working).toBe(false);
+      resolveActivity({ busy: true, queued: [] });
+      await flush();
+      expect(model.state.busy).toBe(false);
+      expect(model.state.working).toBe(false);
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('does not relight a reconciled working indicator on administrative updates', async () => {
+    const { connect, sockets } = recordingConnect();
+    const client = stubClient();
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+      model.refreshActivity();
+      await flush();
+      expect(model.state.working).toBe(false);
+      sockets[0]?.emitEvent(2, { t: 'dev_servers_changed', devServers: [] });
+      expect(model.state.session.running).toBe(true);
+      expect(model.state.working).toBe(false);
+    } finally {
+      model.stop();
+    }
+  });
+
   it('honours the eager reducer running AHEAD of the poll, then drops it once the server confirms settled', async () => {
     vi.useFakeTimers();
     try {
