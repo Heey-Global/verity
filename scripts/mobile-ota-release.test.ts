@@ -347,6 +347,11 @@ save();console.error('Unhandled fake command',tool,args);process.exit(2);
           },
         },
       ),
+    update: (changes: Partial<ServiceState>) =>
+      writeFileSync(
+        statePath,
+        JSON.stringify({ ...JSON.parse(readFileSync(statePath, 'utf8')), ...changes }),
+      ),
     state: () => JSON.parse(readFileSync(statePath, 'utf8')) as ServiceState,
     update: (changes: Partial<ServiceState>) =>
       writeFileSync(
@@ -644,6 +649,15 @@ describe('OTA CLI interrupted external operations', () => {
     expect(calls.some((call) => call.includes('--force-with-lease'))).toBe(false);
     expect(calls.some((call) => call.startsWith('gh pr'))).toBe(false);
     expect(calls.some((call) => call.includes('channel:edit production'))).toBe(false);
+    service.update({ released: 'mobile-v1.33.3', stagedVersion: 'mobile-v1.33.4' });
+    const resumed = service.run('stage', {}, '1.33.4');
+    expect(resumed.status, resumed.stderr).toBe(0);
+    const recovered = service.state().calls;
+    expect(
+      recovered.filter((call) => call.includes('eas-cli@21.0.1 update --branch')),
+    ).toHaveLength(2);
+    expect(recovered.some((call) => call.includes('--force-with-lease'))).toBe(true);
+    expect(recovered.some((call) => call.startsWith('gh pr create'))).toBe(true);
   });
 
   // Nothing pushes to main after a promotion, so a candidate stranded by this

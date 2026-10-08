@@ -505,6 +505,7 @@ function stage(runtime: string, version: string) {
   // Delivery reads the merged approval, while the rolling branch remains its
   // audit evidence. Publish Staging now and refresh the proposal after delivery.
   if (assertBaseline(candidate)) {
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, 'deferred=true\n');
     console.log('Staging published; Production proposal waits for approved delivery');
     return;
   }

@@ -170,6 +170,7 @@ jobs:
         run: node scripts/mobile-ota-proposal.mjs plan "${{ steps.version.outputs.runtime }}"
 
       - name: Stage immutable candidate and update rolling promotion PR
+        id: stage
         if: steps.intent.outputs.mode == 'stage' && steps.version.outputs.blocked != 'true'
         env:
           OTA_SOURCE_SHA: ${{ steps.intent.outputs.commit }}
@@ -183,4 +184,4 @@ jobs:
         if: steps.intent.outputs.mode == 'stage' && steps.version.outputs.blocked != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/mobile-ota-proposal.mjs complete "${{ steps.intent.outputs.pr }}"
+        run: node scripts/mobile-ota-proposal.mjs complete "${{ steps.intent.outputs.pr }}" "${{ steps.stage.outputs.deferred }}"
