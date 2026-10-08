@@ -5622,11 +5622,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               project.id,
             );
             const model = resolveProjectDefaultModel(
-              await availableModels(),
+              await availableModels({ allowLegacyCodexFallback: true }),
               settings,
               isProjectSessionModel,
             );
-            if (model === undefined || !isProjectSessionModel(model)) {
+            if (model === undefined || !(await isConfiguredProjectSessionModel(model))) {
               throw new ControlPlaneSessionToolError('project has no eligible default model');
             }
             const selectedModel = model;
