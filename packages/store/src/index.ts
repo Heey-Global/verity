@@ -64,6 +64,8 @@ export {
   type VeritySettingsPatch,
   type VeritySettingsRecord,
   type ProjectSettingsPatch,
+  type ProjectAgent,
+  PROJECT_AGENTS,
   type ProjectSettingsRecord,
   type HttpMcpConnectionRecord,
   type ProjectMcpBindingRecord,

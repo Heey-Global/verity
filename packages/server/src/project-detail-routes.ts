@@ -1,8 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { PROJECT_MEMORY_MAX_CHARS, SealedError, type ProjectSettingsPatch } from '@verity/store';
+import {
+  PROJECT_AGENTS,
+  PROJECT_MEMORY_MAX_CHARS,
+  SealedError,
+  type ProjectSettingsPatch,
+} from '@verity/store';
 import { isValidBranchName } from './branches.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
+import { ProjectAgentNotAllowedError } from './project-agent-policy.js';
 
 const projectParams = z.object({ id: z.string().min(1) });
 const grantParams = z.object({ id: z.string().min(1), grantId: z.string().min(1) });
@@ -22,6 +28,13 @@ const settingsBody = z
       .nullable()
       .optional(),
     defaultModel: z.string().nullable().optional(),
+    // Null allows every connected agent; a list must keep at least one agent.
+    allowedAgents: z
+      .array(z.enum(PROJECT_AGENTS))
+      .min(1, 'at least one agent must stay allowed')
+      .refine((agents) => new Set(agents).size === agents.length, 'duplicate agent')
+      .nullable()
+      .optional(),
     memory: z
       .string()
       .max(
@@ -119,7 +132,14 @@ export function registerProjectDetailRoutes(
       reply.code(404);
       return { error: `project ${id} not found` };
     }
-    const settings = await deps.updateSettings(id, patch);
+    let settings: unknown;
+    try {
+      settings = await deps.updateSettings(id, patch);
+    } catch (error) {
+      if (!(error instanceof ProjectAgentNotAllowedError)) throw error;
+      reply.code(400);
+      return { error: error.message };
+    }
     if (settings === undefined) {
       reply.code(404);
       return { error: `project ${id} not found` };

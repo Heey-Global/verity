@@ -64,6 +64,7 @@ import {
   markdownSectionTitle,
   modelRateLimited,
   modelDisplayName,
+  excludedAgentsNote,
   orderModels,
   partitionModels,
   publishSessionAutomationMutation,
@@ -810,7 +811,13 @@ export function SessionChat({
   // taps open a picker to switch the session's backend mid-flight (#switch-engine).
   // `currentModel` is the persisted choice (survives a switch + remount); fall back
   // to the reducer's spawn model until the detail loads.
-  const { models, modelOrder, moreModels, refresh: refreshModels } = useModels(client, loaded);
+  const {
+    models,
+    modelOrder,
+    moreModels,
+    allowedAgents,
+    refresh: refreshModels,
+  } = useModels(client, loaded, projectId);
   const [enginePickerOpen, setEnginePickerOpen] = useState(false);
   const effectiveModel = currentModel ?? session.model;
   const [automation, setAutomation] = useState<SessionAutomation | null>(null);
@@ -4066,6 +4073,7 @@ export function SessionChat({
           selected={effectiveModel}
           busy={switchingModel}
           rateLimitNotice={rateNotice}
+          excludedNote={excludedAgentsNote(allowedAgents)}
           onPick={(m) => {
             // No-op if it's already the current engine/model; otherwise switch and
             // close (the chip + subsequent turns reflect it via the persisted choice).
@@ -8138,6 +8146,7 @@ function EngineSwitcherSheet({
   selected,
   busy,
   rateLimitNotice,
+  excludedNote,
   onPick,
   onClose,
 }: {
@@ -8147,6 +8156,8 @@ function EngineSwitcherSheet({
   selected: string | undefined;
   busy: boolean;
   rateLimitNotice: RateLimitNotice | null;
+  /** Why some agents are missing: the project turned them off. */
+  excludedNote?: string | undefined;
   onPick: (model: string) => void;
   onClose: () => void;
 }) {
@@ -8246,6 +8257,9 @@ function EngineSwitcherSheet({
             </Pressable>
           ) : null}
           {moreOpen ? renderGroups(partitionedModels.more) : null}
+          {excludedNote !== undefined ? (
+            <Text style={styles.sheetExcludedNote}>{excludedNote}</Text>
+          ) : null}
         </ScrollView>
       </Animated.View>
     </Modal>
@@ -10434,6 +10448,14 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     color: theme.colors.text,
     fontSize: theme.text.md,
+  },
+  sheetExcludedNote: {
+    color: theme.colors.textFaint,
+    fontSize: theme.text.xs,
+    marginTop: theme.spacing.md,
+    paddingTop: theme.spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.border,
   },
   sheetCurrent: {
     color: theme.colors.textFaint,

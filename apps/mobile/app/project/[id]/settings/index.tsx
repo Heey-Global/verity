@@ -5,6 +5,7 @@
 // Project-specific bindings are direct entries; account credentials and MCP
 // connection definitions live in Verity settings.
 import {
+  allowedAgentsSummary,
   githubRepositoryAccessReady,
   modelDisplayName,
   projectBadge,
@@ -270,9 +271,9 @@ function ProjectSettingsIndexView({
         <SettingsListPanel>
           <SettingsNavRow
             icon="cpu"
-            title="Default model"
-            subtitle="New sessions start with it"
-            value={defaultModel !== null ? modelDisplayName(defaultModel) : 'Server default'}
+            title="Agents"
+            subtitle={allowedAgentsSummary(detail.settings?.allowedAgents)}
+            value={defaultModel !== null ? modelDisplayName(defaultModel) : 'Automatic'}
             onPress={() => to('/project/[id]/settings/model')}
           />
         </SettingsListPanel>

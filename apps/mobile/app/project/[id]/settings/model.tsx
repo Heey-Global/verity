@@ -1,11 +1,15 @@
-// Default model, per project: the model a new session in this
-// project starts with when nothing else picks one. The list is the same one the
-// new-session picker offers (`GET /models`), so a model that can be chosen here
-// can actually be spawned; "Server default" clears the override.
+// Agents, per project: which connected agents may run here, and the model a new
+// session starts with. The default list is the project's own `GET /models`, so a
+// model that can be chosen here can actually be spawned; "Automatic" clears the
+// override and lets the server pick the first allowed model.
 import {
+  agentLabel,
+  modelAgent,
   modelDisplayName,
   partitionModels,
+  PROJECT_AGENTS,
   type ModelList,
+  type ProjectAgent,
   type VerityClient,
 } from '@verity/mobile';
 import { useLocalSearchParams } from 'expo-router';
@@ -13,19 +17,23 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
+import { AgentProviderIcon } from '../../../../components/AgentProviderIcon';
+import { Icon } from '../../../../components/Icon';
 import {
   SettingsChoiceRow,
   SettingsDisclosure,
   SettingsGroup,
   SettingsListPanel,
   SettingsMessage,
+  SettingsPanel,
   SettingsScaffold,
+  SettingsToggleRow,
 } from '../../../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
 import { createVerityClient } from '../../../../lib/client';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
 
-export default function ProjectModelScreen() {
+export default function ProjectAgentsScreen() {
   const { id } = useLocalSearchParams<{ id: string | string[] }>();
   const projectId = projectIdParam(id);
   const client = useMemo(() => createVerityClient(), []);
@@ -34,29 +42,43 @@ export default function ProjectModelScreen() {
       <SettingsMessage
         title="Project unavailable"
         subtitle="This project could not be opened. Go back and pick it again."
-        screenTitle="Default model"
+        screenTitle="Agents"
       />
     );
   }
-  return <ProjectModelView client={client} projectId={projectId} />;
+  return <ProjectAgentsView client={client} projectId={projectId} />;
 }
 
-function ProjectModelView({ client, projectId }: { client: VerityClient; projectId: string }) {
+function AgentIcon({ agent }: { agent: ProjectAgent }) {
+  const { theme } = useUnistyles();
+  return agent === 'opencode' ? (
+    <Icon name="terminal" size={18} color={theme.colors.primary} />
+  ) : (
+    <AgentProviderIcon provider={agent} size={18} color={theme.colors.primary} />
+  );
+}
+
+function ProjectAgentsView({ client, projectId }: { client: VerityClient; projectId: string }) {
   const { theme } = useUnistyles();
   const { detail, loading, error, setError, load, onSettingsSaved } = useProjectDetail(
     client,
     projectId,
   );
+  // Every connected model decides which agents can be toggled; the project's own
+  // list is what its sessions may start with, including the resolved default.
+  const [connected, setConnected] = useState<ModelList | undefined>(undefined);
   const [models, setModels] = useState<ModelList | undefined>(undefined);
   const [modelsError, setModelsError] = useState<string | undefined>(undefined);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
+  const loadModels = useCallback(() => {
     let active = true;
-    void client
-      .listModels()
-      .then((list) => {
-        if (active) setModels(list);
+    void Promise.all([client.listModels(), client.listModels(projectId)])
+      .then(([all, project]) => {
+        if (!active) return;
+        setConnected(all);
+        setModels(project);
+        setModelsError(undefined);
       })
       .catch(() => {
         if (active) setModelsError('Could not load the available models.');
@@ -64,22 +86,27 @@ function ProjectModelView({ client, projectId }: { client: VerityClient; project
     return () => {
       active = false;
     };
-  }, [client]);
+  }, [client, projectId]);
+  useEffect(() => loadModels(), [loadModels]);
 
-  const choose = useCallback(
-    (model: string | null) => {
+  const save = useCallback(
+    (patch: { defaultModel?: string | null; allowedAgents?: ProjectAgent[] | null }) => {
       if (saving) return;
       setSaving(true);
       setError(undefined);
       void client
-        .updateProjectSettings(projectId, { defaultModel: model })
-        .then(onSettingsSaved)
+        .updateProjectSettings(projectId, patch)
+        .then((settings) => {
+          onSettingsSaved(settings);
+          // The server may have dropped a default the new rule excludes.
+          loadModels();
+        })
         .catch((caught) =>
-          setError(caught instanceof Error ? caught.message : 'Could not save the default model'),
+          setError(caught instanceof Error ? caught.message : 'Could not save the agents'),
         )
         .finally(() => setSaving(false));
     },
-    [client, onSettingsSaved, projectId, saving, setError],
+    [client, loadModels, onSettingsSaved, projectId, saving, setError],
   );
 
   if (loading && detail === undefined) {
@@ -94,11 +121,27 @@ function ProjectModelView({ client, projectId }: { client: VerityClient; project
       <SettingsMessage
         title="Couldn't load project"
         subtitle={error ?? 'Unknown error'}
-        screenTitle="Default model"
+        screenTitle="Agents"
         onRetry={() => load()}
       />
     );
   }
+
+  const stored = detail.settings?.allowedAgents ?? null;
+  const allowed: readonly ProjectAgent[] = stored ?? PROJECT_AGENTS;
+  const connectedAgents = new Set((connected?.models ?? []).map(modelAgent));
+  // An agent that is allowed but no longer connected stays visible, so the rule
+  // that still names it can be read and changed.
+  const listedAgents = PROJECT_AGENTS.filter(
+    (agent) => connectedAgents.has(agent) || (stored !== null && stored.includes(agent)),
+  );
+  const allowedConnected = allowed.filter((agent) => connectedAgents.has(agent));
+  const toggle = (agent: ProjectAgent, on: boolean) => {
+    const next = PROJECT_AGENTS.filter((candidate) =>
+      candidate === agent ? on : allowed.includes(candidate),
+    );
+    save({ allowedAgents: next.length === PROJECT_AGENTS.length ? null : next });
+  };
 
   const current = detail.settings?.defaultModel ?? null;
   const partitioned =
@@ -119,29 +162,53 @@ function ProjectModelView({ client, projectId }: { client: VerityClient; project
       subtitle={model}
       selected={model === current}
       disabled={saving}
-      onPress={() => choose(model)}
+      onPress={() => save({ defaultModel: model })}
       accessibilityLabel={`Use model ${modelDisplayName(model)}, ${model}`}
     />
   );
 
   return (
-    <SettingsScaffold title="Default model" detail state={{ error, saving }} onRetry={() => load()}>
+    <SettingsScaffold title="Agents" detail state={{ error, saving }} onRetry={() => load()}>
+      {listedAgents.length > 0 ? (
+        <SettingsGroup
+          title="Allowed"
+          description="Only these agents can run in this project, including handoffs, automations and background work."
+        >
+          <SettingsPanel>
+            {listedAgents.map((agent) => {
+              const on = allowed.includes(agent);
+              // The last connected agent stays on, or no session could start here.
+              const locked = on && connectedAgents.has(agent) && allowedConnected.length === 1;
+              return (
+                <SettingsToggleRow
+                  key={agent}
+                  icon={<AgentIcon agent={agent} />}
+                  label={agentLabel(agent)}
+                  value={on}
+                  disabled={saving || locked}
+                  onValueChange={(value) => toggle(agent, value)}
+                />
+              );
+            })}
+          </SettingsPanel>
+        </SettingsGroup>
+      ) : null}
       <SettingsGroup
-        title="Model"
-        description="New sessions in this project start with this model. A session can still switch to another one."
+        title="Default model"
+        description="New sessions in this project start with this model. A session can still switch to another allowed one."
       >
         <SettingsListPanel>
           <SettingsChoiceRow
-            title="Server default"
+            title="Automatic"
             subtitle={
-              models?.default !== undefined
-                ? `Currently ${modelDisplayName(models.default)}`
-                : 'Whatever the server picks'
+              current === null && models?.default !== undefined
+                ? `First allowed model · currently ${modelDisplayName(models.default)}`
+                : 'First allowed model'
             }
             selected={current === null}
             disabled={saving}
-            onPress={() => choose(null)}
-            accessibilityLabel="Use the server default model"
+            onPress={() => save({ defaultModel: null })}
+            accessibilityLabel="Use the first allowed model"
           />
           {orphaned ? row(current) : null}
           {partitioned?.primary.map(row)}

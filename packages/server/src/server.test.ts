@@ -6098,6 +6098,101 @@ describe('PATCH /projects/:id/settings', () => {
   });
 });
 
+describe('project allowed agents', () => {
+  async function project(id: string) {
+    await ctx.store.upsertProject({
+      id,
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state: 'absent',
+    });
+  }
+  const patchSettings = (id: string, payload: Record<string, unknown>) =>
+    app.inject({ method: 'PATCH', url: `/projects/${id}/settings`, payload });
+
+  it('rejects an empty, duplicated or unknown agent list', async () => {
+    await project('p-agents-validate');
+    for (const allowedAgents of [[], ['claude', 'claude'], ['gemini']]) {
+      const res = await patchSettings('p-agents-validate', { allowedAgents });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+
+  it('drops a default model the narrowed rule excludes and refuses a new excluded default', async () => {
+    await project('p-agents-default');
+    await patchSettings('p-agents-default', { defaultModel: 'claude-sonnet-5-5' });
+
+    const narrowed = await patchSettings('p-agents-default', { allowedAgents: ['codex'] });
+    expect(narrowed.statusCode).toBe(200);
+    expect(narrowed.json()).toMatchObject({
+      settings: { allowedAgents: ['codex'], defaultModel: null },
+    });
+
+    const excluded = await patchSettings('p-agents-default', { defaultModel: 'claude-opus-5-5' });
+    expect(excluded.statusCode).toBe(400);
+    expect(excluded.json()).toEqual({ error: 'Claude is not allowed in this project.' });
+
+    const allowed = await patchSettings('p-agents-default', { defaultModel: 'codex/gpt-5.6-sol' });
+    expect(allowed.json()).toMatchObject({ settings: { defaultModel: 'codex/gpt-5.6-sol' } });
+  });
+
+  it('narrows GET /models to the project and resolves its default to the first allowed model', async () => {
+    await project('p-agents-models');
+    await ctx.store.updateVeritySettings({
+      claudeCodeOauthCredentialsJson: '{"claudeAiOauth":{"accessToken":"claude-token"}}',
+      codexAuthJson: '{"tokens":{"access_token":"codex"}}',
+    });
+    await patchSettings('p-agents-models', { allowedAgents: ['codex'] });
+    const withModels = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      listModels: () => Promise.resolve(['codex/default', 'codex/gpt-5.6-sol']),
+    });
+    try {
+      const all = (await withModels.inject('/models')).json<{ models: string[] }>();
+      expect(all.models).toContain('claude-opus-5-5');
+      const res = await withModels.inject('/models?projectId=p-agents-models');
+      expect(res.json()).toEqual({
+        models: ['codex/gpt-5.6-sol'],
+        modelOrder: ['codex/gpt-5.6-sol'],
+        default: 'codex/gpt-5.6-sol',
+        allowedAgents: ['codex'],
+      });
+    } finally {
+      await withModels.close();
+    }
+  });
+
+  it('refuses a mid-session switch onto an excluded agent but keeps the current one', async () => {
+    await project('p-agents-switch');
+    await patchSettings('p-agents-switch', { allowedAgents: ['codex'] });
+    await ctx.store.createSession({
+      sessionId: 's-agents-switch',
+      worktree: '/wt/s-agents-switch',
+      model: 'claude-opus-5-5',
+      projectId: 'p-agents-switch',
+    });
+
+    const refused = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s-agents-switch',
+      payload: { model: 'claude-sonnet-5-5' },
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json()).toEqual({ error: 'Claude is not allowed in this project.' });
+
+    // Re-naming the model the session already runs is a no-op, not a switch.
+    const unchanged = await app.inject({
+      method: 'PATCH',
+      url: '/sessions/s-agents-switch',
+      payload: { model: 'claude-opus-5-5' },
+    });
+    expect(unchanged.statusCode).toBe(200);
+  });
+});
+
 describe('GET /models (#143)', () => {
   async function configureAgentLogins({
     claude = false,
@@ -11277,6 +11372,7 @@ describe('POST /sessions with project field (#174)', () => {
     dopplerTokenRef?: string | null;
     defaultBranch?: string | null;
     defaultModel?: string | null;
+    allowedAgents?: ('claude' | 'codex' | 'opencode')[] | null;
   };
   const updateProjectSettings = (projectId: string, patch: ProjectSettingsPatchForTest) =>
     (
@@ -11852,6 +11948,99 @@ describe('POST /sessions with project field (#174)', () => {
     } finally {
       await a.close();
     }
+  });
+
+  describe('allowed agents', () => {
+    const codexModels = ['codex/default', 'codex/gpt-5.6-sol', 'codex/gpt-5.6-terra'];
+    async function restrictedProjectServer(
+      projectId: string,
+      agents: ('claude' | 'codex' | 'opencode')[],
+    ) {
+      await ctx.store.updateVeritySettings({
+        claudeCodeOauthCredentialsJson: '{"claudeAiOauth":{"accessToken":"claude-token"}}',
+        codexAuthJson: '{"tokens":{"access_token":"codex"}}',
+      });
+      await ctx.store.upsertProject({
+        id: projectId,
+        owner: 'heey-global',
+        repo: 'verity',
+        containerName: 'dev-heey-global-verity',
+        state: 'active',
+      });
+      await updateProjectSettings(projectId, { allowedAgents: agents });
+      const projectWorktrees = fakeProjectWorktrees();
+      const server = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        provisioner: fakeProvisioner(),
+        projectCloneRoot: '/data/dev',
+        projectBackend: fakeProjectBackend,
+        projectWorktrees: () => projectWorktrees,
+        listModels: () => Promise.resolve(codexModels),
+        worktrees: { add: vi.fn(async () => '/wt/unused'), remove: vi.fn(async () => {}) },
+      });
+      return { server, projectWorktrees };
+    }
+
+    it('rejects an explicit model whose agent the project excludes, before any worktree exists', async () => {
+      const { server, projectWorktrees } = await restrictedProjectServer('p-agents-explicit', [
+        'codex',
+      ]);
+      try {
+        const res = await server.inject({
+          method: 'POST',
+          url: '/sessions',
+          payload: { prompt: 'go', project: 'heey-global/verity', model: 'claude-sonnet-5-5' },
+        });
+        expect(res.statusCode).toBe(400);
+        expect(res.json()).toEqual({ error: 'Claude is not allowed in this project.' });
+        expect(projectWorktrees.add).not.toHaveBeenCalled();
+      } finally {
+        await server.close();
+      }
+    });
+
+    it('skips a remembered model on an excluded agent and starts on the first allowed model', async () => {
+      const { server } = await restrictedProjectServer('p-agents-remembered', ['codex']);
+      // The project's last session ran on Claude, which a spawn would otherwise reuse.
+      await ctx.store.createSession({
+        sessionId: 's-agents-remembered-prior',
+        worktree: '/wt/prior',
+        model: 'claude-opus-5-5',
+        projectId: 'p-agents-remembered',
+      });
+      try {
+        const res = await server.inject({
+          method: 'POST',
+          url: '/sessions',
+          payload: { prompt: 'go', project: 'heey-global/verity' },
+        });
+        expect(res.statusCode).toBe(201);
+        const { sessionId }: { sessionId: string } = res.json();
+        expect((await ctx.store.getSession(sessionId))?.model).toBe('codex/gpt-5.6-sol');
+      } finally {
+        await server.close();
+      }
+    });
+
+    it('fails instead of falling back when no allowed agent is connected', async () => {
+      const { server, projectWorktrees } = await restrictedProjectServer('p-agents-none', [
+        'opencode',
+      ]);
+      try {
+        const res = await server.inject({
+          method: 'POST',
+          url: '/sessions',
+          payload: { prompt: 'go', project: 'heey-global/verity' },
+        });
+        expect(res.statusCode).toBe(400);
+        expect(res.json<{ error: string }>().error).toContain('No allowed agent is connected');
+        expect(projectWorktrees.add).not.toHaveBeenCalled();
+      } finally {
+        await server.close();
+      }
+    });
   });
 
   it('passes the project default branch into project worktree creation', async () => {

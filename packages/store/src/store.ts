@@ -426,9 +426,14 @@ export interface ProjectSettingsRecord {
   googleDriveFolderId: string | null;
   googleDriveFolderName: string | null;
   googleDriveAccessMode: 'read-only' | 'read-write';
+  /** Agents sessions in this project may use; null permits every connected agent. */
+  allowedAgents: ProjectAgent[] | null;
   createdAt: Date;
   updatedAt: Date;
 }
+
+export const PROJECT_AGENTS = ['claude', 'codex', 'opencode'] as const;
+export type ProjectAgent = (typeof PROJECT_AGENTS)[number];
 
 export interface HttpMcpConnectionRecord {
   id: string;
@@ -467,7 +472,8 @@ type ProjectSettingsKey =
   | 'memory'
   | 'googleDriveFolderId'
   | 'googleDriveFolderName'
-  | 'googleDriveAccessMode';
+  | 'googleDriveAccessMode'
+  | 'allowedAgents';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
@@ -5951,6 +5957,7 @@ export class EventStore implements EventSink {
       google_drive_folder_id: string | null;
       google_drive_folder_name: string | null;
       google_drive_access_mode: 'read-only' | 'read-write';
+      allowed_agents: ProjectAgent[] | null;
       created_at: Date;
       updated_at: Date;
       // See veritySettingsRowToRecord: false → no decrypt (sealed-safe public read).
@@ -5973,6 +5980,7 @@ export class EventStore implements EventSink {
       googleDriveFolderId: row.google_drive_folder_id,
       googleDriveFolderName: row.google_drive_folder_name,
       googleDriveAccessMode: row.google_drive_access_mode,
+      allowedAgents: row.allowed_agents,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -5992,6 +6000,7 @@ export class EventStore implements EventSink {
     'google_drive_folder_id',
     'google_drive_folder_name',
     'google_drive_access_mode',
+    'allowed_agents',
     'created_at',
     'updated_at',
   ] as const;
@@ -7033,6 +7042,7 @@ export class EventStore implements EventSink {
       google_drive_folder_id: normalizeSetting(patch.googleDriveFolderId),
       google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName),
       google_drive_access_mode: patch.googleDriveAccessMode ?? 'read-write',
+      allowed_agents: allowedAgentsColumn(patch.allowedAgents),
     };
     return this.db.transaction().execute(async (tx) => {
       // Ensure and lock the per-project settings row before applying the patch.
@@ -7090,6 +7100,9 @@ export class EventStore implements EventSink {
               : {}),
             ...(patch.googleDriveFolderName !== undefined
               ? { google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName) }
+              : {}),
+            ...(patch.allowedAgents !== undefined
+              ? { allowed_agents: allowedAgentsColumn(patch.allowedAgents) }
               : {}),
             updated_at: sql`now()`,
           }),
@@ -7648,6 +7661,14 @@ export class EventStore implements EventSink {
       .executeTakeFirst();
     return (result.numDeletedRows ?? 0n) > 0n;
   }
+}
+
+/** Stores the allowed agents in canonical order; an empty or full list is unrestricted. */
+function allowedAgentsColumn(value: readonly ProjectAgent[] | null | undefined): string | null {
+  if (value === undefined || value === null) return null;
+  const agents = PROJECT_AGENTS.filter((agent) => value.includes(agent));
+  if (agents.length === 0 || agents.length === PROJECT_AGENTS.length) return null;
+  return JSON.stringify(agents);
 }
 
 function normalizeSetting(value: string | null | undefined): string | null {

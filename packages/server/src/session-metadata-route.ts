@@ -34,6 +34,8 @@ export interface SessionMetadataRouteDeps {
   closeSession: Conductor['closeSession'];
   isModelAllowed: (model: string | undefined) => boolean;
   projectModelError: string;
+  /** The project's agent rule; answers the reason when it rejects `model`. */
+  projectAgentRejection?: (model: string, projectId: string) => Promise<string | undefined>;
 }
 
 /** Registers atomic session rename, favorite and backend/model handoff updates. */
@@ -62,6 +64,21 @@ export function registerSessionMetadataRoute(
     }
 
     const modelUnchanged = model !== undefined && current?.model === model;
+
+    // A session already on an agent the project later excluded keeps running; only
+    // a switch has to land on an allowed agent.
+    if (
+      model !== undefined &&
+      !modelUnchanged &&
+      current?.projectId != null &&
+      deps.projectAgentRejection !== undefined
+    ) {
+      const rejection = await deps.projectAgentRejection(model, current.projectId);
+      if (rejection !== undefined) {
+        reply.code(400);
+        return { error: rejection };
+      }
+    }
 
     // A rename is independent metadata and must land before a handoff that may
     // answer 409/503. Those responses explicitly tell the client it was applied.

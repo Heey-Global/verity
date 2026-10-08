@@ -10,6 +10,12 @@ import {
 } from './control-plane-project.js';
 import { createGitWorktreeProvisioner, type WorktreeProvisioner } from './worktree.js';
 import { projectClonePath } from './provisioner.js';
+import {
+  isModelAllowedForProject,
+  NoAllowedAgentError,
+  ProjectAgentNotAllowedError,
+  resolveProjectDefaultModel,
+} from './project-agent-policy.js';
 import type {
   ServerDeps,
   SpawnResult,
@@ -170,10 +176,43 @@ export function registerSessionCreateRoute(
         admitted.release = deps.beginProjectSpawn(project.id);
         const projectStore = deps.projectSettingsStore();
         projectSettings = await projectStore.getProjectSettings(project.id);
-        effectiveModel = body.model ?? projectSettings?.defaultModel ?? undefined;
+        // A stored default the project's agent rule excludes falls through to the
+        // resolver below rather than failing every spawn.
+        const storedDefault = projectSettings?.defaultModel ?? undefined;
+        effectiveModel =
+          body.model ??
+          (storedDefault !== undefined && isModelAllowedForProject(storedDefault, projectSettings)
+            ? storedDefault
+            : undefined);
         if (!(await deps.isConfiguredProjectSessionModel(effectiveModel))) {
           reply.code(400);
           return { error: deps.PROJECT_MODEL_ERROR };
+        }
+        if (
+          effectiveModel !== undefined &&
+          !isModelAllowedForProject(effectiveModel, projectSettings)
+        ) {
+          reply.code(400);
+          return { error: new ProjectAgentNotAllowedError(effectiveModel).message };
+        }
+        // A restricted project resolves its model before any worktree exists, so a
+        // project whose allowed agents are all disconnected fails cleanly instead of
+        // silently starting on an agent the operator excluded.
+        const allowedAgents = projectSettings?.allowedAgents ?? null;
+        if (effectiveModel === undefined && allowedAgents !== null) {
+          const available = await deps.availableModels({ allowLegacyCodexFallback: true });
+          const remembered = await deps.eventStore.getLastCreatedSessionModel(project.id);
+          effectiveModel =
+            remembered !== undefined &&
+            available.models.includes(remembered) &&
+            deps.isProjectSessionModel(remembered) &&
+            isModelAllowedForProject(remembered, projectSettings)
+              ? remembered
+              : resolveProjectDefaultModel(available, projectSettings, deps.isProjectSessionModel);
+          if (effectiveModel === undefined) {
+            reply.code(400);
+            return { error: new NoAllowedAgentError(allowedAgents).message };
+          }
         }
         // A Sandbox in a sleep lifecycle state is provisioned, not missing: its
         // clone and deps.worktrees sit on the host, and the first turn brings the
