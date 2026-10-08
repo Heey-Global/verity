@@ -307,7 +307,7 @@ if(tool === 'gh') {
   if(args[0] === 'pr' && args[1] === 'list') out(!s.noPullHistory && args.includes('--head') && (s.racedHead || s.rollingHead)?[{number:51,headRefOid:s.racedHead?'c'.repeat(40):s.rollingHead,author:{login:'app/github-actions'}}]:[]);
   if(args[0] === 'pr' && args[1] === 'create') {if(s.losePullCreation){s.losePullCreation=false;fail();}s.noPullHistory=false;out('https://github.com/example/repo/pull/51');}
   if(args[0] === 'pr' || args[0] === 'workflow') out('');
-  if(args[0] === 'release' && args[1] === 'create') {s.draft=true;out('');}
+  if(args[0] === 'release' && args[1] === 'create') {if(args.includes('--prerelease')){s.stagedVersion=args[2];}else s.draft=true;out('');}
   if(args[0] === 'release' && args[1] === 'edit') {
     if(s.loseRelease){s.loseRelease=false;fail();}
     if(!args.includes('--prerelease=true'))s.released=candidate.tag;s.draft=false;out('');
@@ -667,6 +667,30 @@ describe('OTA CLI interrupted external operations', () => {
     expect(
       service.state().calls.some((call) => call.startsWith('gh workflow run mobile-ota.yml')),
     ).toBe(true);
+  });
+
+  it('creates Staging atomically and never edits a release that Production could deliver', () => {
+    const service = serviceFixture();
+    const result = service.run('stage');
+    expect(result.status, result.stderr).toBe(0);
+    const calls = service.state().calls;
+    expect(
+      calls.some(
+        (call) =>
+          call.startsWith('gh release create') &&
+          call.includes('--prerelease') &&
+          !call.includes('--draft'),
+      ),
+    ).toBe(true);
+    expect(calls.some((call) => call.startsWith('gh release edit'))).toBe(false);
+    expect(service.state().stagedVersion).toBe('mobile-v1.33.3');
+  });
+
+  it('refuses to race a legacy draft publication with Production', () => {
+    const service = serviceFixture({ draft: true });
+    const result = service.run('stage');
+    expect(result.stderr).toContain('requires reconciliation');
+    expect(service.state().calls.some((call) => call.startsWith('gh release edit'))).toBe(false);
   });
 
   it('does not demote Production when delivery completes during a Staging retry', () => {

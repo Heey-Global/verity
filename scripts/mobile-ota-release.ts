@@ -849,10 +849,26 @@ function finishRelease(candidate: Artifact, staging = false) {
     `${candidate.notes.map((note) => `- ${note}`).join('\n')}\n\nEAS group: ${candidate.group}\nSource: ${candidate.commit}\nRuntime: ${candidate.runtime}\n`,
   );
   const releases = releaseRows();
-  // A staged release is immutable here. Production may have delivered it
-  // while a Staging retry was running; never demote that release on retry.
-  if (staging && releases.some((release) => release.tag_name === candidate.tag && !release.draft))
+  // Creating a published prerelease is atomic. Editing an existing release
+  // could race with Production delivery and demote it back to Staging.
+  if (staging) {
+    const existing = releases.find((release) => release.tag_name === candidate.tag);
+    if (existing?.draft)
+      throw new Error('Existing OTA draft requires reconciliation before Staging can complete');
+    if (!existing)
+      gh(
+        'release',
+        'create',
+        candidate.tag,
+        '--prerelease',
+        '--title',
+        `Mobile ${candidate.version} (OTA)`,
+        '--notes-file',
+        notesFile,
+        '--latest=false',
+      );
     return;
+  }
   if (!releases.some((release) => release.tag_name === candidate.tag))
     gh(
       'release',
