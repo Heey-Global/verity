@@ -101,3 +101,24 @@ it('keeps workflow release lookups compatible with current and historical titles
     expect(lookup).toContain('or .title == "chore(release): staging ' + product);
   }
 });
+
+// Environment labels must survive release-please's pending/tagged lifecycle.
+it.each(['backend', 'mobile', 'mobile-ota'])(
+  'adds the staging label to %s release PRs',
+  (train) => {
+    const config = JSON.parse(readFileSync(`release-please-config.${train}.json`, 'utf8')) as {
+      'extra-label'?: string;
+    };
+    expect(config['extra-label']?.split(',')).toContain('staging');
+  },
+);
+
+// Rolling promotion PRs need their label restored on updates as well as creation.
+it.each(['production-promotion', 'mobile-ota-release'])(
+  'labels new and updated %s PRs',
+  (script) => {
+    const source = readFileSync(`scripts/${script}.ts`, 'utf8');
+    expect(source).toMatch(/'pr',\s*'create',[\s\S]*?'--label',\s*'production'/);
+    expect(source).toMatch(/'pr',\s*'edit',[\s\S]*?'--add-label',\s*'production'/);
+  },
+);
