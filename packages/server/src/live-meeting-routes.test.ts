@@ -501,7 +501,12 @@ it('suggests a speaker name only when it was introduced verbatim', async () => {
   const checked = Fastify();
   const query = vi
     .fn()
-    .mockResolvedValueOnce(JSON.stringify({ name: 'Holger Teske', quote: 'Hi, ich bin Holger.' }))
+    .mockResolvedValueOnce(
+      // A code fence around the JSON must not fail the check.
+      '```json\n' +
+        JSON.stringify({ name: 'Holger Teske', quote: 'Hi, ich bin Holger.' }) +
+        '\n```',
+    )
     .mockResolvedValueOnce(
       JSON.stringify({ name: 'Anna', quote: 'ich bin heute die Moderatorin' }),
     );

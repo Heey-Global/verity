@@ -145,6 +145,37 @@ test('keeps the speaker of a phrase spoken with pauses', () => {
 
 // Older phrase-level timings span seconds; a voice heard for a sliver of one is no
 // evidence of who said the rest.
+test('counts repeated and overlapping turns of one speaker once', () => {
+  // Union coverage: 0.8–0.95 is heard once, 30 % of the word, enough for speaker 0.
+  expect(
+    speakerLines(
+      [{ text: 'gap', start: 0.8, end: 1.3 }],
+      [
+        { speaker: 0, start: 0, end: 0.9 },
+        { speaker: 0, start: 0.85, end: 0.95 },
+      ],
+    ),
+  ).toEqual([{ speaker: 0, text: 'gap', start: 0.8, end: 1.3 }]);
+});
+
+// Padding makes turn edges clip words slightly; such a word must not become unknown
+// when the clipping turn is the only voice around it.
+test('keeps the speaker of a word clipped by that speaker’s turn edge', () => {
+  expect(
+    speakerLines([{ text: 'klappt', start: 1, end: 2 }], [{ speaker: 0, start: 0, end: 1.1 }]),
+  ).toEqual([{ speaker: 0, text: 'klappt', start: 1, end: 2 }]);
+  // Clipped by one speaker while another starts right after: unknown.
+  expect(
+    speakerLines(
+      [{ text: 'klappt', start: 1, end: 2 }],
+      [
+        { speaker: 0, start: 0, end: 1.1 },
+        { speaker: 1, start: 2.1, end: 3 },
+      ],
+    ),
+  ).toEqual([{ speaker: null, text: 'klappt', start: 1, end: 2 }]);
+});
+
 test('leaves a long span unknown when a voice covers only a sliver of it', () => {
   expect(
     speakerLines([{ text: 'Long phrase', start: 0, end: 4 }], [{ speaker: 1, start: 1, end: 1.2 }]),

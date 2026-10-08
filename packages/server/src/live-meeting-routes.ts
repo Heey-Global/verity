@@ -476,7 +476,9 @@ export function registerLiveMeetingRoutes(
         AbortSignal.timeout(20_000),
       );
       if (!raw) throw new Error('Speaker name check returned no result');
-      const result = speakerNameResult.parse(JSON.parse(raw));
+      // Models sometimes wrap the JSON in a code fence despite the instruction.
+      const json = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);
+      const result = speakerNameResult.parse(JSON.parse(json));
       const name = verifiedSpeakerName(text, hints, result);
       return name ? { name, quote: result.quote!.trim() } : { name: null };
     } catch (error) {

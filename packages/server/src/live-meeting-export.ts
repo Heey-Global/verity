@@ -96,10 +96,14 @@ function speakerLines(
     // nobody. The share is therefore taken of the time any voice was heard, and
     // adjacent turns of one speaker count together.
     const covered = new Map<number | null, [number, number][]>();
+    // Turns running past the word's edge: evidence of who was speaking around it.
+    const crossing = new Set<number | null>();
     for (const turn of resolved) {
       const from = Math.max(word.start, turn.start);
       const to = Math.min(word.end, turn.end);
-      if (to > from) covered.set(turn.who, [...(covered.get(turn.who) ?? []), [from, to]]);
+      if (to <= from) continue;
+      covered.set(turn.who, [...(covered.get(turn.who) ?? []), [from, to]]);
+      if (turn.start < word.start || turn.end > word.end) crossing.add(turn.who);
     }
     const heard = heardFor([...covered.values()].flat());
     let speaker: number | null | undefined;
@@ -109,23 +113,24 @@ function speakerLines(
       // Two voices each heard for most of the word is real overlap: leave it unknown.
       const dominant = [...covered].filter(([, spans]) => heardFor(spans) > heard * 0.6);
       speaker = dominant.length === 1 ? dominant[0]![0] : null;
-    } else if (heard > 0) {
-      speaker = null;
-    } else if (word.start >= horizon) {
+    } else if (heard === 0 && word.start >= horizon) {
       // The diarizer has not reached this audio yet; it is pending, not unknown.
       speaker = undefined;
     } else {
-      // A short pause inside one person's speech belongs to that person.
+      // A short pause inside one person's speech belongs to that person, and so does a
+      // word clipped by that person's turn edge. Anyone else heard nearby leaves it
+      // unknown.
       const before = resolved.findLast(
         (turn) => turn.end <= word.start && word.start - turn.end < 0.6,
       );
       const after = resolved.find((turn) => turn.start >= word.end && turn.start - word.end < 0.6);
-      speaker =
-        before && after
-          ? before.who === after.who
-            ? before.who
-            : null
-          : (before?.who ?? after?.who ?? null);
+      const around = new Set([
+        ...covered.keys(),
+        ...(before ? [before.who] : []),
+        ...(after ? [after.who] : []),
+      ]);
+      // A voice heard only inside the word, with no one around it, is too little to go on.
+      speaker = (before || after || crossing.size) && around.size === 1 ? [...around][0]! : null;
     }
     const correction = corrections.findLast(
       (entry) => entry.start <= word.start && entry.end >= word.end,

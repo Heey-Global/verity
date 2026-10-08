@@ -1,3 +1,4 @@
+import { VerityApiError } from '@verity/mobile';
 import { isDemoMode, isEnteringDemoMode } from './demoMode';
 import { liveMeetingSTT, type STTEvent } from './liveMeetingSTT';
 import { createVerityClient } from './client';
@@ -192,6 +193,49 @@ it('suggests a speaker name from an introduction without overwriting a typed nam
     await jest.advanceTimersByTimeAsync(12_000);
     expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(2);
     expect(currentMeeting()?.speakerNames).toEqual({ '1': 'Anna' });
+    await endMeeting();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+// A model that keeps failing must not be asked about the same speaker every ten
+// seconds for the whole meeting; a server without the route stops checks entirely.
+it('spends the name check budget on failures and stops on a missing route', async () => {
+  jest.useFakeTimers();
+  try {
+    let onEvent!: (event: STTEvent) => void;
+    jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+      onEvent = listener;
+      return { remove: jest.fn() };
+    });
+    const checkMeetingSpeakerName = jest
+      .fn()
+      .mockRejectedValue(new VerityApiError(502, 'speaker name check failed'));
+    jest.mocked(createVerityClient).mockReturnValue({
+      checkMeetingSpeakerName,
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    await startMeeting('session-1');
+    const introduce = (start: number, speaker: number) => {
+      onEvent({
+        kind: 'segment',
+        text: 'I am here.',
+        final: true,
+        start,
+        end: start + 1,
+        runs: [{ text: 'I am here.', start, end: start + 1 }],
+      });
+      onEvent({ kind: 'speaker', speaker, start, end: start + 1 });
+    };
+    introduce(0, 0);
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(3);
+    checkMeetingSpeakerName.mockRejectedValue(new VerityApiError(404, 'not found'));
+    introduce(100, 1);
+    await jest.advanceTimersByTimeAsync(60_000);
+    introduce(200, 2);
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(4);
     await endMeeting();
   } finally {
     jest.useRealTimers();

@@ -3,7 +3,7 @@ import type { SpeakerLine } from './liveMeetingSpeakers';
 // These phrases only decide when to ask the model. Whether a name was given, and which,
 // is the model's call: "ich bin Lehrer" or "I'm ready" match here and are rejected there.
 const INTRODUCTION =
-  /(?<![\p{L}\p{N}])(?:ich\s+bin|ich\s+hei(?:ß|ss)e|mein\s+name|hier\s+ist|hier\s+spricht|i'?m|i\s+am|my\s+name|this\s+is|call\s+me)(?![\p{L}\p{N}])/iu;
+  /(?<![\p{L}\p{N}])(?:ich\s+bin|ich\s+hei(?:ß|ss)e|mein\s+name|hier\s+ist|hier\s+spricht|i['’]?m|i\s+am|my\s+name|this\s+is|call\s+me)(?![\p{L}\p{N}])/iu;
 
 /** Without an introduction phrase, a speaker's opening words are checked once after
  * this much speech, which also catches introductions the phrases do not cover. */

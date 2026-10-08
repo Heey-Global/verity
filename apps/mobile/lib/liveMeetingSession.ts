@@ -186,7 +186,13 @@ async function runSpeakerNameCheck(): Promise<void> {
     ...(meeting.speakerNameSuggestions ?? []).map((suggestion) => suggestion.speaker),
     ...rejectedSpeakers,
   ]);
-  const lines = meetingTranscriptRows(meeting).filter((row): row is SpeakerLine => 'start' in row);
+  // Open turns may still be reassigned; a name card must not follow a guess.
+  const finalizedThrough = Math.max(0, ...(meeting.speakerTurns ?? []).map((turn) => turn.end));
+  const lines = meetingTranscriptRows({
+    ...meeting,
+    tentativeSpeakerTurns: [],
+    speakerHorizon: finalizedThrough,
+  }).filter((row): row is SpeakerLine => 'start' in row);
   const now = Date.now();
   const check = nextSpeakerNameCheck(lines, skip, nameHistory, now);
   if (!check) {
@@ -228,15 +234,19 @@ async function runSpeakerNameCheck(): Promise<void> {
   } catch (error) {
     // A check answered after the next meeting started must not touch its state.
     if (active?.id !== meeting.id) return;
-    if (error instanceof VerityApiError && error.status === 503) {
+    const status = error instanceof VerityApiError ? error.status : null;
+    // No model, an older server without the route, or no right to spend one: stop.
+    if (status === 403 || status === 404 || status === 503) {
       nameChecksUnavailable = true;
       return;
     }
-    // Ask about the same words again after the interval rather than losing them.
+    // Ask about the same words again after the interval rather than losing them. Only
+    // a check refused for being concurrent is free; other failures spend the budget,
+    // so a persistent one cannot repeat for the whole meeting.
     nameHistory.set(check.speaker, {
       openingChecked: previous?.openingChecked ?? false,
       checkedThrough: previous?.checkedThrough ?? -Infinity,
-      checks: previous?.checks ?? 0,
+      checks: (previous?.checks ?? 0) + (status === 429 ? 0 : 1),
       lastAt: Date.now(),
     });
   } finally {
@@ -414,15 +424,26 @@ function onEvent(event: STTEvent) {
         turn.start >= 0 &&
         turn.end > turn.start,
     );
-    const current = turns.at(-1);
+    const current = turns.reduce<(typeof turns)[number] | undefined>(
+      (latest, turn) => (!latest || turn.end > latest.end ? turn : latest),
+      undefined,
+    );
+    const previousHorizon = active.speakerHorizon ?? -Infinity;
+    const horizon = Number.isFinite(event.through) ? event.through : previousHorizon;
+    // This arrives with every diarizer chunk. Redraw only when it changes what the
+    // transcript shows: different open turns, or the horizon reaching a waiting word.
+    const changed =
+      JSON.stringify(turns) !== JSON.stringify(active.tentativeSpeakerTurns ?? []) ||
+      (active.timedWords ?? []).some(
+        (word) => word.start >= previousHorizon && word.start < horizon,
+      );
     active = {
       ...active,
       tentativeSpeakerTurns: turns,
-      ...(Number.isFinite(event.through) ? { speakerHorizon: event.through } : {}),
-      ...(current ? { activeSpeaker: current.speaker, lastSpeakerAt: Date.now() } : {}),
+      ...(Number.isFinite(horizon) ? { speakerHorizon: horizon } : {}),
+      ...(current && changed ? { activeSpeaker: current.speaker, lastSpeakerAt: Date.now() } : {}),
     };
-    publish();
-    scheduleSpeakerNameCheck();
+    if (changed) publish();
     return;
   }
   if (event.kind === 'words') {
