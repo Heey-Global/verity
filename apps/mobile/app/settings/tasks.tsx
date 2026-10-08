@@ -57,9 +57,11 @@ export default function TasksSettingsScreen() {
         if (active) setAccess(next);
       });
       if (watchBridgeAvailable)
-        void watchStatus().then((next) => {
-          if (active) setWatch(next);
-        });
+        void watchStatus()
+          .then((next) => {
+            if (active) setWatch(next);
+          })
+          .catch(() => undefined);
     };
     refresh();
     const subscription = AppState.addEventListener('change', (state) => {
@@ -134,7 +136,11 @@ export default function TasksSettingsScreen() {
               icon="watch"
               title="Watch app"
               value={watchLabel(watch)}
-              onPress={() => void watchStatus().then(setWatch)}
+              onPress={() =>
+                void watchStatus()
+                  .then(setWatch)
+                  .catch(() => undefined)
+              }
               accessibilityLabel={`Watch app, ${watchLabel(watch)}`}
             />
             <SettingsNavRow

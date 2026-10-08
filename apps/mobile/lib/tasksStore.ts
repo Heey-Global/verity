@@ -84,8 +84,9 @@ export async function refreshTasks(force = false): Promise<void> {
   await ready;
   await queue?.sync(force);
 }
-/** `id` and `createdAt` come from captures made elsewhere (the Apple Watch): the
- *  stable id makes a repeated hand-over idempotent locally and on the server. */
+/** `id` and `createdAt` come from captures made elsewhere (the Apple Watch). The
+ *  stable id makes a repeated hand-over a no-op while the task is still in the
+ *  local queue, and the server answers a PUT for an existing id with that task. */
 export async function captureTask(
   body: TaskCapture,
   origin: { id?: string; createdAt?: string } = {},

@@ -3,13 +3,14 @@ import Foundation
 import WatchConnectivity
 
 /// One voice capture on the watch. The audio stays on disk until the iPhone has
-/// confirmed the transfer, so a capture survives an unreachable phone, a relaunch
-/// or a watch restart and is offered again from `resend()`.
+/// sent back its transcript, so a capture survives an unreachable phone, a
+/// relaunch, a watch restart or an iPhone that could not store the file, and is
+/// offered again from `resend()`.
 struct Capture: Codable, Identifiable, Equatable {
   enum State: String, Codable {
     /// Recorded; waiting for WatchConnectivity to deliver the file.
     case queued
-    /// The iPhone holds the audio; the transcript has not come back yet.
+    /// Transferred; the transcript has not come back yet.
     case delivered
     case transcribed
     case failed
@@ -187,13 +188,14 @@ final class CaptureStore: NSObject, ObservableObject {
 
   private func persist() {
     // Keep the history short, but never drop a capture still waiting to reach the
-    // iPhone: its entry is the only thing that offers the audio again. Settled
-    // entries no longer have audio on the watch.
+    // iPhone: its entry is the only thing that offers the audio again.
     var settled = 0
     captures = captures.filter { capture in
       guard capture.state != .queued else { return true }
       settled += 1
-      return settled <= 20
+      if settled <= 20 { return true }
+      try? FileManager.default.removeItem(at: audioURL(capture.id))
+      return false
     }
     guard let data = try? JSONEncoder().encode(captures) else { return }
     try? data.write(to: indexURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
@@ -233,7 +235,6 @@ extension CaptureStore: WCSessionDelegate {
         // Leave it queued; the next activation or launch offers it again.
         return
       }
-      try? FileManager.default.removeItem(at: self.audioURL(id))
       self.update(id) { if $0.state == .queued { $0.state = .delivered } }
     }
   }
@@ -249,12 +250,19 @@ extension CaptureStore: WCSessionDelegate {
         case "transcript":
           capture.state = .transcribed
           capture.text = text
+          try? FileManager.default.removeItem(at: self.audioURL(id))
+        case "rejected":
+          // The iPhone could not store the file: queue it again.
+          capture.state = .queued
         case "failed":
           capture.state = .failed
           capture.text = text
         default:
           break
         }
+      }
+      if kind == "rejected", let capture = self.captures.first(where: { $0.id == id }) {
+        self.send(capture)
       }
     }
   }

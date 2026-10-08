@@ -21,6 +21,7 @@ private struct WatchInboxEntry: Codable {
   var transcribeMs: Int?
   /// Transcription attempts so far; optional so entries from older builds decode.
   var attempts: Int?
+  var lastAttemptAt: Date?
 }
 
 /// Receives Apple Watch captures natively. iOS can wake or launch Verity in the
@@ -31,9 +32,13 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   static let shared = VerityWatchInbox()
   private static let protocolVersion = 1
   /// A failure on a background wake is often transient (speech assets still
-  /// downloading, background time expired), so a failed entry is retried at the
-  /// next launch or app activation, up to this many attempts in total.
+  /// downloading, background time expired), so an unfinished entry is retried
+  /// at a later launch or activation: at most this many attempts, spaced so a
+  /// burst of activations cannot use them up within seconds.
   private static let maxAttempts = 3
+  private static let retrySpacing: TimeInterval = 5 * 60
+  /// Entries that used up their attempts keep their audio this long, then go.
+  private static let failedRetention: TimeInterval = 7 * 24 * 60 * 60
 
   /// Set while JavaScript observes the bridge; called after an entry changes.
   /// Only touched on `queue`.
@@ -62,15 +67,18 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     queue.async { self.onChange = handler }
   }
 
-  /// On `queue`: transcribe what a previous run left unfinished, and give up on
-  /// entries that failed too often so their audio does not pile up.
+  /// On `queue`: transcribe what a previous run left unfinished. Entries that
+  /// used up their attempts stay (with their audio) until `failedRetention`.
   private func retry() {
+    let now = Date()
     for entry in entries() where entry.state != .transcribed && !transcribing.contains(entry.id) {
-      if (entry.attempts ?? 0) < Self.maxAttempts {
+      if (entry.attempts ?? 0) >= Self.maxAttempts {
+        if now.timeIntervalSince(entry.receivedAt) > Self.failedRetention {
+          remove(entry.id)
+          log("\(entry.id.prefix(8)) removed after \(Self.maxAttempts) failed attempts")
+        }
+      } else if entry.lastAttemptAt.map({ now.timeIntervalSince($0) > Self.retrySpacing }) ?? true {
         transcribe(entry.id)
-      } else {
-        remove(entry.id)
-        log("\(entry.id.prefix(8)) dropped after \(Self.maxAttempts) attempts")
       }
     }
   }
@@ -142,11 +150,17 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
         let id = metadata["id"] as? String, isCaptureId(id)
       else {
         log("ignored a file with unknown metadata")
+        // Let the watch keep its copy and offer it again after an update.
+        if let id = file.metadata?["id"] as? String { reply(["kind": "rejected", "id": id]) }
         return
       }
-      // A resent capture that already arrived: keep the first copy.
-      guard !FileManager.default.fileExists(atPath: entryURL(id).path) else {
+      // A resent capture that already arrived: keep the first copy, and repeat
+      // the transcript in case the watch never received it.
+      if let existing = load(id) {
         log("\(id.prefix(8)) duplicate ignored")
+        if existing.state == .transcribed, let text = existing.text {
+          reply(["kind": "transcript", "id": id, "text": text])
+        }
         return
       }
       do {
@@ -162,6 +176,9 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
         transcribe(id)
       } catch {
         log("\(id.prefix(8)) could not be stored: \(error.localizedDescription)")
+        remove(id)
+        // The watch still holds the audio; this sends it back into its queue.
+        reply(["kind": "rejected", "id": id])
       }
     }
   }
@@ -174,6 +191,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     guard !transcribing.contains(id), var entry = load(id) else { return }
     transcribing.insert(id)
     entry.attempts = (entry.attempts ?? 0) + 1
+    entry.lastAttemptAt = Date()
     entry.state = .received
     try? save(entry)
     let backgroundTime = BackgroundTime("watch-transcribe") {
@@ -224,9 +242,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
       log("\(id.prefix(8)) transcription failed after \(elapsed) ms: \(error.localizedDescription)")
     }
     try? save(entry)
-    if WCSession.default.activationState == .activated {
-      WCSession.default.transferUserInfo(reply)
-    }
+    self.reply(reply)
     let notify = onChange
     DispatchQueue.main.async { notify?() }
   }
@@ -278,6 +294,11 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
 
   private func load(_ id: String) -> WatchInboxEntry? {
     (try? Data(contentsOf: entryURL(id))).flatMap { try? JSONDecoder().decode(WatchInboxEntry.self, from: $0) }
+  }
+
+  private func reply(_ payload: [String: Any]) {
+    guard WCSession.default.activationState == .activated else { return }
+    WCSession.default.transferUserInfo(payload.merging(["v": Self.protocolVersion]) { new, _ in new })
   }
 
   private func remove(_ id: String) {
