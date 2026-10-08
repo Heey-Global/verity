@@ -563,7 +563,13 @@ function CopyField({
     <View style={styles.copyField}>
       <Text style={styles.copyFieldLabel}>{label}</Text>
       <View style={styles.copyFieldBox}>
-        <Text style={[styles.copyFieldValue, mono ? styles.monoText : null]} numberOfLines={1}>
+        <Text
+          style={[styles.copyFieldValue, mono ? styles.monoText : null]}
+          numberOfLines={1}
+          // A browser can refuse the clipboard outside a secure context, so the
+          // text stays selectable there; native relies on the Copy button.
+          selectable={Platform.OS === 'web'}
+        >
           {value}
         </Text>
         <Pressable
