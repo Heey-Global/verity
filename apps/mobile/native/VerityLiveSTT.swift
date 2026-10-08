@@ -472,6 +472,7 @@ private final class LiveSTTService {
     guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]) else {
       throw LiveSTTError.audioFormat
     }
+    try ensureActive(generation)
     let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
     analyzerInput = continuation
     try await analyzer.start(inputSequence: stream)
