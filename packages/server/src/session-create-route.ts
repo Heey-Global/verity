@@ -132,12 +132,35 @@ export function registerSessionCreateRoute(
           return { error: `project ${body.project} is not in the fleet registry` };
         }
         const project = await deps.ensureVerityControlProject();
+        projectSettings = await deps.projectSettingsStore().getProjectSettings(project.id);
+        effectiveModel = body.model ?? projectSettings?.defaultModel ?? undefined;
+        if (body.model !== undefined && !isModelAllowedForProject(body.model, projectSettings)) {
+          reply.code(400);
+          return { error: new ProjectAgentNotAllowedError(body.model).message };
+        }
+        const allowedAgents = projectSettings?.allowedAgents ?? null;
+        if (allowedAgents !== null) {
+          effectiveModel =
+            body.model ??
+            resolveProjectDefaultModel(
+              await deps.availableModels({ allowLegacyCodexFallback: true }),
+              projectSettings,
+              deps.isProjectSessionModel,
+            );
+          if (effectiveModel === undefined) {
+            reply.code(400);
+            return { error: new NoAllowedAgentError(allowedAgents).message };
+          }
+        }
+        if (!(await deps.isConfiguredProjectSessionModel(effectiveModel))) {
+          reply.code(400);
+          return { error: deps.PROJECT_MODEL_ERROR };
+        }
         projectId = project.id;
         projectWorktrees = deps.worktrees;
         projectWorktree = await projectWorktrees.add(
           deps.makeBranch(body.name ?? 'verity-control'),
         );
-        effectiveModel = body.model;
       } else {
         if (!deps.provisioner || !deps.projectCloneRoot || !deps.projectBackend) {
           reply.code(503);

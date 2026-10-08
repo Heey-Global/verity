@@ -42,6 +42,19 @@ function extractor(answer: string | undefined, overrides: Partial<ImageTextExtra
 
 const artifact = () => readFile(knowledgeExtractionPath(root, RELATIVE), 'utf8');
 
+it('skips extraction when the project has no available model', async () => {
+  await ingestKnowledgeBytes(root, RELATIVE, PNG);
+  const before = await artifact();
+  const { instance, query, onError } = extractor('Excluded agent response', {
+    modelFor: async () => undefined,
+  });
+  instance.enqueue({ projectId: 'p1', root, relativePath: RELATIVE, bytes: PNG });
+  await instance.idle();
+  expect(query).not.toHaveBeenCalled();
+  expect(onError).toHaveBeenCalledTimes(1);
+  expect(await artifact()).toBe(before);
+});
+
 it("appends the model's transcription to the image's artifact using the project model", async () => {
   await ingestKnowledgeBytes(root, RELATIVE, PNG);
   const { instance, query, modelFor } = extractor('ACME GmbH\nTotal 42,00 EUR');

@@ -11430,6 +11430,21 @@ describe('POST /sessions with project field (#174)', () => {
     expect(await ctx.store.consumePendingNotes(sessionId)).toEqual([]);
   });
 
+  it('enforces allowed agents before allocating a Verity Control worktree', async () => {
+    await ctx.store.updateVeritySettings({ advancedModeEnabled: true });
+    await app.inject({ method: 'GET', url: '/projects' });
+    await ctx.store.updateProjectSettings('verity-control', { allowedAgents: ['claude'] });
+    const before = readdirSync(worktreeRoot);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/sessions',
+      payload: { project: 'verity/control', model: 'codex/default' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: 'Codex is not allowed in this project.' });
+    expect(readdirSync(worktreeRoot)).toEqual(before);
+  });
+
   it('503s when project clone root is missing and project is specified', async () => {
     const a = buildServer({
       eventStore: ctx.store,
