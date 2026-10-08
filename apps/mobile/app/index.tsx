@@ -1,5 +1,10 @@
 import { useSessionRowCallbacks } from '../hooks/useSessionRowCallbacks';
-import { beginRowTouch, markFirstSessionRender, rowPress } from '../lib/sessionSwitchTiming';
+import {
+  beginRenderWork,
+  beginRowTouch,
+  markFirstSessionRender,
+  rowPress,
+} from '../lib/sessionSwitchTiming';
 import { cancelSessionSwitch, markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { isLinkableSession } from '../lib/sessionLinks';
 import { subscribeLiveRefresh } from '../lib/liveConnection';
@@ -180,6 +185,7 @@ function SessionList({ client }: { client: VerityClient }) {
   }>();
   const [selectedId, setSelectedId] = useState<string | null>(selected ?? null);
   if (selectedId) markFirstSessionRender(selectedId, 'selection-home-render-entry');
+  const finishHomeWork = beginRenderWork('home-body', selectedId ?? undefined);
   const lastSelectedParamRef = useRef(selected);
   const incomingSelectedRef = useRef<string | null>(null);
   // A session started inline from the sidebar "+" (wide layout): we preselect it
@@ -918,6 +924,7 @@ function SessionList({ client }: { client: VerityClient }) {
     </View>
   );
 
+  finishHomeWork();
   if (!wide) return master;
 
   return (
@@ -1261,6 +1268,7 @@ function ProjectGroup({
   updatingProjectIds?: ReadonlySet<string>;
   repairingProjectIds?: ReadonlySet<string>;
 }) {
+  const finishGroupWork = beginRenderWork('sidebar-group-body');
   const { theme } = useUnistyles();
   const {
     slotRef,
@@ -1320,6 +1328,7 @@ function ProjectGroup({
   const onHeaderLayout = (event: LayoutChangeEvent) => {
     if (!floating) reorder.reportCompactHeight(group.id, pitch(event.nativeEvent.layout.height));
   };
+  finishGroupWork();
   return (
     <Reanimated.View ref={slotRef} collapsable={false}>
       <Reanimated.View
@@ -1895,6 +1904,7 @@ const SessionRow = memo(function SessionRow({
   onMoveUp?: (() => void) | undefined;
   onMoveDown?: (() => void) | undefined;
 }) {
+  const finishRowWork = beginRenderWork('sidebar-row-body');
   const { theme } = useUnistyles();
   const [hovered, setHovered] = useState(false);
   useEffect(() => {
@@ -2054,6 +2064,7 @@ const SessionRow = memo(function SessionRow({
     </SwipeableSessionRow>
   );
 
+  finishRowWork();
   if (onSelect) {
     return swipeable(
       <Pressable

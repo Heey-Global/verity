@@ -1,4 +1,4 @@
-import { markFirstSessionRender } from '../../lib/sessionSwitchTiming';
+import { beginRenderWork, markFirstSessionRender } from '../../lib/sessionSwitchTiming';
 import { beginSessionSwitch, type SwitchTiming } from '@verity/mobile';
 import { markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { PinnedPlan } from '../../components/PinnedPlan';
@@ -627,13 +627,15 @@ const SessionFileImageSourceContext = createContext<
 >(null);
 const SearchHighlightContext = createContext<string | null>(null);
 
-function useTranscriptRows(messages: readonly Message[]): Row[] {
+function useTranscriptRows(messages: readonly Message[], sessionId: string): Row[] {
   const previous = useRef<Row[]>([]);
   return useMemo(() => {
+    const finishReconcile = beginRenderWork('transcript-reconcile', sessionId);
     const rows = groupRows(messages, previous.current);
+    finishReconcile();
     previous.current = rows;
     return rows;
-  }, [messages]);
+  }, [messages, sessionId]);
 }
 
 export function SessionChat({
@@ -654,7 +656,10 @@ export function SessionChat({
   retrySecret?: string;
 }) {
   markFirstSessionRender(sessionId, 'session-screen-render-entry');
+  const finishChatWork = beginRenderWork('chat-body', sessionId);
   const switchTiming = useMemo(() => sessionSwitchTiming(sessionId), [sessionId]);
+  const [loadedListSessionId, setLoadedListSessionId] = useState<string | null>(null);
+  const initialListLoaded = loadedListSessionId === sessionId;
   useEffect(() => {
     markSessionSwitch(switchTiming, 'session-screen-react-commit');
     return () => markSessionSwitch(switchTiming, 'session-screen-cleanup');
@@ -1234,13 +1239,13 @@ export function SessionChat({
   // Group consecutive tool calls into one collapsible row (Claude-app style: a run
   // of tools reads as a single rolling line, not N stacked cards). The reducer keeps
   // messages chronological; grouping needs that order.
-  const loadedTranscriptData = useTranscriptRows(session.messages);
+  const loadedTranscriptData = useTranscriptRows(session.messages, sessionId);
   const transcriptData = useMemo(
     () => withPlanningSnapshot(loadedTranscriptData, { planning, planningPlan, planningRevision }),
     [loadedTranscriptData, planning, planningPlan, planningRevision],
   );
-  const localMeetingData = useTranscriptRows(localMeetingMessages);
-  const pendingEchoData = useTranscriptRows(pendingEchoMessages);
+  const localMeetingData = useTranscriptRows(localMeetingMessages, sessionId);
+  const pendingEchoData = useTranscriptRows(pendingEchoMessages, sessionId);
   const liveChronologicalData = useMemo(
     () => [...transcriptData, ...localMeetingData, ...pendingEchoData],
     [transcriptData, localMeetingData, pendingEchoData],
@@ -2267,14 +2272,17 @@ export function SessionChat({
           olderLoadStalled,
           allowStalledRetry,
           historyAppendSettlingRef.current,
+          initialListLoaded,
         )
       ) {
         reportScrollDebug('start-reached-blocked', {
-          blockedBy: !hasOlder
-            ? 'no-older-history'
-            : historyAppendSettlingRef.current && !loadingOlder
-              ? 'append-settling'
-              : 'loading-older',
+          blockedBy: !initialListLoaded
+            ? 'initial-list-loading'
+            : !hasOlder
+              ? 'no-older-history'
+              : historyAppendSettlingRef.current && !loadingOlder
+                ? 'append-settling'
+                : 'loading-older',
         });
         return;
       }
@@ -2301,7 +2309,15 @@ export function SessionChat({
       });
       void loadOlder();
     },
-    [hasOlder, loadingOlder, loadOlder, olderLoadStalled, pendingUserJump, reportScrollDebug],
+    [
+      hasOlder,
+      loadingOlder,
+      loadOlder,
+      olderLoadStalled,
+      pendingUserJump,
+      reportScrollDebug,
+      initialListLoaded,
+    ],
   );
   loadOlderNearStartRef.current = requestOlderHistory;
   const onListContentSizeChange = useCallback((_width: number, height: number) => {
@@ -2309,14 +2325,22 @@ export function SessionChat({
   }, []);
   const initialHistoryPrefetchRef = useRef(false);
   useEffect(() => {
-    if (initialHistoryPrefetchRef.current || !loaded || restoring || !hasOlder || loadingOlder)
+    if (
+      initialHistoryPrefetchRef.current ||
+      !initialListLoaded ||
+      !loaded ||
+      restoring ||
+      !hasOlder ||
+      loadingOlder
+    )
       return;
     initialHistoryPrefetchRef.current = true;
-    // A single extra page starts behind the initial render. Subsequent pages are
-    // governed by the measured four-viewport buffer, so opening a long session
+    // Automatic pages must not compete with initial list measurement.
+    // A single extra page starts after FlashList reports its initial load.
+    // Subsequent pages use the measured four-viewport buffer, so opening a long session
     // cannot pull its whole transcript into memory.
     loadOlderNearStartRef.current();
-  }, [loaded, restoring, hasOlder, loadingOlder]);
+  }, [loaded, restoring, hasOlder, loadingOlder, initialListLoaded]);
   // Hold the settle window until the appended rows have been committed AND measured.
   // Nothing visible depends on it — it exists purely to space automatic follow-ups.
   useEffect(() => {
@@ -3509,6 +3533,7 @@ export function SessionChat({
   );
   const renderItem = useCallback(
     ({ item, index }: { item: Row; index: number }) => {
+      const finishItemWork = beginRenderWork('list-item-elements', sessionId);
       const isSearchTarget = index === highlightedRowIndex;
       const key = rowKey(item);
       const isLatestTranscriptRow =
@@ -3517,6 +3542,7 @@ export function SessionChat({
         <TranscriptRow item={item} isLatest={isLatestTranscriptRow} renderContent={renderRow} />
       );
       // Counter-flip each row so the inverted list reads the right way up.
+      finishItemWork();
       return rendered ? (
         <View style={styles.invertedItem}>
           <SearchHighlightContext.Provider value={isSearchTarget ? highlightedSearchQuery : null}>
@@ -3525,7 +3551,7 @@ export function SessionChat({
         </View>
       ) : null;
     },
-    [highlightedRowIndex, highlightedSearchQuery, latestTranscriptRowKey],
+    [highlightedRowIndex, highlightedSearchQuery, latestTranscriptRowKey, sessionId],
   );
   // Keep recycling pools shape-compatible. Agent prose gets bounded height buckets:
   // reusing a many-screen cell for a short progress update can leave the old native
@@ -3834,6 +3860,7 @@ export function SessionChat({
     </View>
   );
 
+  finishChatWork();
   return (
     <AnimatedKeyboardAvoidingView
       style={[styles.flex, keyboardAvoidance.resetStyle]}
@@ -4263,7 +4290,10 @@ export function SessionChat({
                   }
                 >
                   <FlashList
-                    onLoad={() => markSessionSwitch(switchTiming, 'flash-list-on-load')}
+                    onLoad={() => {
+                      markSessionSwitch(switchTiming, 'flash-list-on-load');
+                      setLoadedListSessionId(sessionId);
+                    }}
                     ref={listRef}
                     data={data}
                     keyExtractor={rowKey}

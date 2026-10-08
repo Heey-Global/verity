@@ -86,3 +86,28 @@ first render entry for the active gesture. They can include an interrupted rende
 that never commits. The interval to the existing React effect markers includes
 rendering, child work, scheduling and effect execution; it is not isolated CPU
 render time or native paint. These markers share the existing collection limits.
+
+
+Render work aggregates (`render-<stage>-total-ms` and `render-<stage>-count`)
+measure synchronous work in the home body, sidebar group/row bodies, chat body,
+transcript row reconciliation and list-item element construction. Each pair takes
+two phase entries regardless of render count. `value` holds the cumulative duration
+in milliseconds or invocation count; `elapsedMs` is the first recorded sample's
+completion time, not the aggregate duration. Collection stops at the first
+`flash-list-on-load` or the existing 30-second trace limit.
+
+Component-body intervals end before their return expression and exclude rendering
+of descendants, native layout and paint. List-item construction measures creation
+of React elements, not execution of their child components. Chat-body time includes
+transcript reconciliation, so these totals overlap and must not be added together.
+Interrupted attempts are included; renders that throw before reaching their end
+marker are not. Compare these totals with the entry/effect intervals to distinguish
+measured synchronous work from unmeasured child work and scheduling. This uses
+ordinary JavaScript clocks and works without a React profiling build.
+
+Automatic history pagination waits for the initial list's `onLoad` signal. Explicit
+message jumps and saved-anchor recovery can still load required pages before that
+signal. Verify on a device by opening a long session at the newest edge: automatic
+follow-up `events-request-start` should follow `flash-list-on-load`, and scrolling
+backwards should continue loading history. Also verify a deep saved anchor and an
+explicit message jump; those may legitimately request earlier pages.
