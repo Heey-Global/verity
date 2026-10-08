@@ -208,7 +208,8 @@ describe('sessionAttention', () => {
       pr: openPr({ mergeable: null, pipeline: 'success' }),
     });
     expect(flags.map((f) => f.kind)).toEqual(['merge_checking']);
-    expect(flags[0]).toMatchObject({ tone: 'done', blocking: false });
+    // Not `done`: green is reserved for a PR the merge button can actually merge.
+    expect(flags[0]).toMatchObject({ tone: 'idle', blocking: false });
   });
 
   it('does not surface an unknown-mergeability PR in the attention queue', () => {
@@ -221,11 +222,11 @@ describe('sessionAttention', () => {
     expect(attentionCount(sessions)).toBe(1);
   });
 
-  it('marks an open PR with checks still running as ci_running (non-blocking, attention)', () => {
+  it('marks an open PR with checks still running as ci_running (non-blocking, idle)', () => {
     for (const pipeline of ['pending', 'running'] as const) {
       const flags = sessionAttention({ status: 'idle', pr: openPr({ pipeline }) });
       expect(flags.map((f) => f.kind)).toEqual(['ci_running']);
-      expect(flags[0]).toMatchObject({ tone: 'attention', blocking: false });
+      expect(flags[0]).toMatchObject({ tone: 'idle', blocking: false });
     }
   });
 

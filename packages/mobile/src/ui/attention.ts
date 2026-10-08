@@ -47,9 +47,9 @@ const FLAGS: Record<AttentionKind, Omit<AttentionFlag, 'kind'>> = {
   ci_failed: { tone: 'danger', label: 'CI failed', blocking: true },
   merge_blocked: { tone: 'danger', label: 'Merge blocked', blocking: true },
   merge_ready: { tone: 'done', label: 'Ready to merge', blocking: false },
-  merge_checking: { tone: 'done', label: 'Checking mergeability', blocking: false },
+  merge_checking: { tone: 'idle', label: 'Checking mergeability', blocking: false },
   pr_unknown: { tone: 'attention', label: 'PR status unavailable', blocking: false },
-  ci_running: { tone: 'attention', label: 'CI running', blocking: false },
+  ci_running: { tone: 'idle', label: 'CI running', blocking: false },
   unread: { tone: 'active', label: 'New messages', blocking: false },
 };
 const ORDER: readonly AttentionKind[] = [
