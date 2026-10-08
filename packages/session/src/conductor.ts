@@ -5,6 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
   appendExternalPromptData,
+  DISMISSED_PLAN_SYSTEM_PROMPT,
   PLANNING_ACTIVE_SYSTEM_PROMPT,
   SANDBOX_NOT_READY_ERROR_KIND,
   turnFailureErrorKind,
@@ -16,6 +17,7 @@ import { isLocalProject } from '@verity/store';
 import { PLANNING_PERMISSION_MODE } from './runner.js';
 import type {
   EventStore,
+  PlanningConsent,
   QueuedTurnOpts,
   RunningTurnRecord,
   SessionRecord,
@@ -717,6 +719,7 @@ export interface DispatchTurnOptions extends PromptOrigin {
   queueBehindActiveTurn?: boolean;
   /** Atomically accept this plan revision with the durable implementation queue. */
   planningRevision?: number;
+  planningConsent?: PlanningConsent;
 }
 
 interface QueuedConductorTurn extends PromptOrigin {
@@ -903,6 +906,9 @@ export interface StartOptions {
  */
 export class Conductor {
   private readonly inFlight = new Set<string>();
+  private readonly dispatchTails = new Map<string, Promise<void>>();
+  private readonly failedSteeringPersistence = new Set<string>();
+  private readonly pendingUserDispatches = new Map<string, number>();
   private readonly runningPlanning = new Map<string, boolean>();
   /** Stop-watchdog waiters woken by {@link releaseInFlight} — how the cancel path
    * observes "the session is actually free again" regardless of WHICH settle path
@@ -3101,13 +3107,47 @@ export class Conductor {
     opts: TurnOptions = {},
     dispatchOpts: DispatchTurnOptions = {},
   ): Promise<{ queued: boolean; accepted?: boolean }> {
+    const run = async () => {
+      // Do not wait behind steering already delivered but not yet persisted.
+      if (
+        dispatchOpts.planningConsent !== undefined &&
+        ((this.pendingUserDispatches.get(sessionId) ?? 0) > 0 ||
+          this.failedSteeringPersistence.has(sessionId))
+      ) {
+        return { queued: false, accepted: false };
+      }
+      const previous = this.dispatchTails.get(sessionId);
+      let release!: () => void;
+      const tail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      this.dispatchTails.set(sessionId, tail);
+      const userDispatch = dispatchOpts.planningRevision === undefined;
+      if (userDispatch)
+        this.pendingUserDispatches.set(
+          sessionId,
+          (this.pendingUserDispatches.get(sessionId) ?? 0) + 1,
+        );
+      try {
+        // Acceptance and delivery of steering share an order, so a cancellation
+        // cannot reach the backend while an older approval commits.
+        await previous;
+        return await this.dispatchTurnInner(sessionId, prompt, opts, dispatchOpts);
+      } finally {
+        release();
+        if (this.dispatchTails.get(sessionId) === tail) this.dispatchTails.delete(sessionId);
+        if (userDispatch) {
+          const count = (this.pendingUserDispatches.get(sessionId) ?? 1) - 1;
+          if (count === 0) this.pendingUserDispatches.delete(sessionId);
+          else this.pendingUserDispatches.set(sessionId, count);
+        }
+      }
+    };
     const { clientReplyId } = dispatchOpts;
     if (clientReplyId === undefined) {
-      return this.dispatchTurnInner(sessionId, prompt, opts, dispatchOpts);
+      return run();
     }
-    return this.dispatchIdempotent(sessionId, clientReplyId, () =>
-      this.dispatchTurnInner(sessionId, prompt, opts, dispatchOpts),
-    );
+    return this.dispatchIdempotent(sessionId, clientReplyId, () => run());
   }
 
   /** Memoize a `clientReplyId`-keyed dispatch so a replayed quick reply returns the
@@ -3187,15 +3227,8 @@ export class Conductor {
           ...(opts.attachments ? { attachments: opts.attachments } : {}),
         }))
       ) {
-        // Delivered into the live turn. Persist the operator's prompt event so it
-        // shows in the transcript (claude's stream doesn't echo it). Fire-and-forget
-        // so it doesn't block the 202: claude can't answer the injected message
-        // before a model round-trip, which in practice dwarfs this local append, so
-        // the prompt event almost always lands ahead of the agent's reply to it.
-        // The seq counter orders by append time, not logical time, so under extreme
-        // store contention the prompt could theoretically land just after the reply
-        // — a transcript blemish, never a lost turn (the message is already in claude).
-        void this.persistSteeredPrompt(sessionId, displayPrompt, opts, originFields(dispatchOpts));
+        // Keep chat acceptance fenced until the steering prompt is durable.
+        await this.persistSteeredPrompt(sessionId, displayPrompt, opts, originFields(dispatchOpts));
         return { queued: false };
       }
       if (this.stopping.has(sessionId)) throw new SessionBusyError(sessionId);
@@ -3217,7 +3250,21 @@ export class Conductor {
         const input = { id, sessionId, prompt, opts: storedOpts };
         if (dispatchOpts.planningRevision !== undefined) {
           if (
-            !(await this.deps.store.enqueuePlanImplementation(input, dispatchOpts.planningRevision))
+            dispatchOpts.planningConsent !== undefined &&
+            ((this.pendingUserDispatches.get(sessionId) ?? 0) > 0 ||
+              this.failedSteeringPersistence.has(sessionId))
+          ) {
+            accepted = false;
+            return;
+          }
+
+          if (
+            !(await this.deps.store.enqueuePlanImplementation(
+              input,
+              dispatchOpts.planningRevision,
+              (event) => this.deps.bus?.publish(sessionId, event),
+              dispatchOpts.planningConsent,
+            ))
           ) {
             accepted = false;
             return;
@@ -3565,18 +3612,17 @@ export class Conductor {
     sessionId: string,
   ): Promise<{ cancelled: boolean; droppedQueued: RestoredQueuedTurn[] }> {
     this.stopping.set(sessionId, (this.stopping.get(sessionId) ?? 0) + 1);
-    let droppedQueued: RestoredQueuedTurn[] = [];
-    let clearError: unknown;
     try {
-      try {
-        droppedQueued = await this.clearQueue(sessionId);
-      } catch (error) {
-        clearError = error;
-      }
-      const cancelled = await this.cancelTurn(sessionId);
-      if (clearError !== undefined)
-        throw clearError instanceof Error ? clearError : new Error('queue cleanup failed');
-      return { cancelled, droppedQueued };
+      // Durable enqueues can stall independently of the agent. Signal cancellation
+      // immediately, but hold the stop fence until both operations have settled.
+      const [cancel, clear] = await Promise.allSettled([
+        this.cancelTurn(sessionId),
+        this.clearQueue(sessionId),
+      ]);
+      if (clear.status === 'rejected')
+        throw clear.reason instanceof Error ? clear.reason : new Error('queue cleanup failed');
+      if (cancel.status === 'rejected') throw cancel.reason;
+      return { cancelled: cancel.value, droppedQueued: clear.value };
     } finally {
       const remainingStops = (this.stopping.get(sessionId) ?? 1) - 1;
       if (remainingStops === 0) {
@@ -4993,6 +5039,7 @@ export class Conductor {
             ...originFields(origin),
           };
     const { seq, ts } = await this.deps.store.appendEvent(sessionId, event);
+    this.failedSteeringPersistence.delete(sessionId);
     this.deps.bus?.publish(sessionId, { seq, ts, event });
   }
 
@@ -5001,8 +5048,8 @@ export class Conductor {
    * (#101) — store its attachments content-addressed, then append the `prompt`
    * event. Best-effort: a failure routes to {@link ConductorDeps.onTurnError}
    * rather than rejecting, because the message has already been delivered to claude
-   * (the caller returned its 202); a missing prompt event is a transcript blemish,
-   * not a lost turn.
+   * so the caller can still receive its 202. A failure revokes chat consent
+   * until a subsequent prompt is durable; the backend already saw the steering.
    */
   private async persistSteeredPrompt(
     sessionId: string,
@@ -5019,6 +5066,8 @@ export class Conductor {
         origin,
       );
     } catch (error) {
+      // Delivered steering must not leave an earlier durable approval actionable.
+      this.failedSteeringPersistence.add(sessionId);
       this.reportTurnError(sessionId, error);
     }
   }
@@ -5488,7 +5537,9 @@ export class Conductor {
       // sessions: user-facing terminology and visible-media output contracts.
       appendSystemPrompt: planning
         ? `${systemPrompt}\n\n${PLANNING_ACTIVE_SYSTEM_PROMPT}`
-        : systemPrompt,
+        : session.planning === 'discarded'
+          ? `${systemPrompt}\n\n${DISMISSED_PLAN_SYSTEM_PROMPT}`
+          : systemPrompt,
       model: opts.model ?? session.model,
       storeSessionId: sessionId,
       // Hold stdin open so a mid-turn operator message can be folded into THIS

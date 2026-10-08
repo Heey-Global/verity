@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.59.3](https://github.com/Heey-Global/verity/compare/mobile-v1.59.2...mobile-v1.59.3) (2026-10-08)
+
+
+### Features
+
+* **projects:** restrict allowed agents per project ([#1326](https://github.com/Heey-Global/verity/issues/1326)) ([e309754](https://github.com/Heey-Global/verity/commit/e30975490d7b637b0bab69299b14ee7a2da039be))
+
+## [1.59.2](https://github.com/Heey-Global/verity/compare/mobile-v1.59.1...mobile-v1.59.2) (2026-10-08)
+
+
+### Features
+
+* **meetings:** add Attendee online source to Live Meeting ([#1325](https://github.com/Heey-Global/verity/issues/1325)) ([27f66ba](https://github.com/Heey-Global/verity/commit/27f66ba79dbdc9a602cb229c7b10467503769ec4))
+
+
+### Bug Fixes
+
+* **mobile:** preserve session visibility during drag pickup ([#1328](https://github.com/Heey-Global/verity/issues/1328)) ([dc85aeb](https://github.com/Heey-Global/verity/commit/dc85aeb0385aebb35a0de39a48f1cc0ccec41487))
+* **planning:** make plan proposals clear and actionable ([#1324](https://github.com/Heey-Global/verity/issues/1324)) ([fd78ac3](https://github.com/Heey-Global/verity/commit/fd78ac3388e089541c1da1d2d6a31c99d00dd11a))
+
+## [1.59.1](https://github.com/Heey-Global/verity/compare/mobile-v1.59.0...mobile-v1.59.1) (2026-10-08)
+
+
+### Features
+
+* **mobile:** reorder sessions within projects by long press ([#1323](https://github.com/Heey-Global/verity/issues/1323)) ([98c77f3](https://github.com/Heey-Global/verity/commit/98c77f30a6f92203cf48a5cc506e598309193d9e))
+* **sessions:** allow linking sessions in the same project ([#1317](https://github.com/Heey-Global/verity/issues/1317)) ([c366cf3](https://github.com/Heey-Global/verity/commit/c366cf3749b2621a3de769e1761122a310192457))
+
+
+### Bug Fixes
+
+* **mobile:** move PR status to the session row's second line ([#1321](https://github.com/Heey-Global/verity/issues/1321)) ([a662aa1](https://github.com/Heey-Global/verity/commit/a662aa12575fba2c111951a16151686e92293c38))
+* **sandbox:** kill the largest agent command before gVisor's host OOM kill ([#1322](https://github.com/Heey-Global/verity/issues/1322)) ([3be664e](https://github.com/Heey-Global/verity/commit/3be664e9126103d028915f386834ddbf239d0e08))
+* **session:** stabilize cancellation, activity and unread indicators ([#1316](https://github.com/Heey-Global/verity/issues/1316)) ([59f357b](https://github.com/Heey-Global/verity/commit/59f357b2e41095590e581e1745118cec6ac78dc7))
+* **tasks:** calm capture flow and polish task editing ([#1320](https://github.com/Heey-Global/verity/issues/1320)) ([3056a73](https://github.com/Heey-Global/verity/commit/3056a73c40d70a7901626bf72ee52e15f0beb324))
+
 ## [1.58.4](https://github.com/Heey-Global/verity/compare/mobile-v1.58.3...mobile-v1.58.4) (2026-10-07)
 
 

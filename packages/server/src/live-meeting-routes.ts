@@ -144,7 +144,14 @@ export function registerLiveMeetingRoutes(
      * it must be idempotent. Uploads are acknowledged only after filing succeeds. */
     onFinished?: (sessionId: string, meetingId: string) => Promise<void>;
   } = {},
-): void {
+): {
+  ingest: (meeting: import('@verity/store').LiveMeetingSyncRecord) => Promise<void>;
+  spoken: (
+    sessionId: string,
+    utterance: string,
+    context: string,
+  ) => Promise<Array<{ kind: 'research' | 'opinion'; request: string }>>;
+} {
   const fileFinished = async (sessionId: string, meetingId: string) => {
     if (!opts.onFinished) return;
     for (let attempt = 0; ; attempt += 1) {
@@ -487,4 +494,36 @@ export function registerLiveMeetingRoutes(
       await fileFinished(sessionId, meetingId);
     return { accepted: true };
   });
+  return {
+    ingest: async (meeting) => {
+      if (!(await store.liveMeetings.putMeeting(meeting)))
+        throw new Error('Meeting owner mismatch');
+      if (meeting.state === 'ended') await fileFinished(meeting.sessionId, meeting.id);
+      scheduleAnalysis(
+        meeting.sessionId,
+        meeting.id,
+        meeting.revision,
+        meeting.transcript,
+        meeting.state !== 'active',
+      );
+    },
+    spoken: async (sessionId, utterance, context) => {
+      if (!opts.query) return [];
+      const raw = await opts.query(
+        sessionId,
+        addressedPrompt(utterance, context),
+        AbortSignal.timeout(30_000),
+      );
+      if (!raw) throw new Error('Meeting request classification is unavailable');
+      return addressedResult
+        .parse(JSON.parse(raw))
+        .requests.filter(
+          (item) =>
+            item.request.length >= 3 &&
+            utterance.includes(item.request) &&
+            isReadOnlyRequest(item.request),
+        )
+        .slice(0, 3);
+    },
+  };
 }

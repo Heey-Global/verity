@@ -1,5 +1,4 @@
-import { enableTaskScreenshotSuggestions } from '../../lib/taskScreenshot';
-import { useTaskPreferences, saveTaskPreferences } from '../../lib/taskPreferences';
+import { useTaskPreferences } from '../../lib/taskPreferences';
 // Settings, top level: what is left to set up, where everything lives, and the
 // two app-wide switches. Everything with a form of its own is one tap deeper.
 //
@@ -13,7 +12,7 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import * as Application from 'expo-application';
-import { router, type Href } from 'expo-router';
+import { router, useFocusEffect, type Href } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 
@@ -78,6 +77,23 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   const [checkingForUpdate, setCheckingForUpdate] = useState(false);
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
   const updateVersion = useServerUpdateBadge(true);
+  const [connectedCount, setConnectedCount] = useState<number | undefined>(undefined);
+  // Re-read on focus: this screen stays mounted under /devices, where the
+  // count changes.
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      // Only the row's subtitle depends on it, so a failure leaves the row bare
+      // rather than raising a banner over the whole screen.
+      client
+        .listPairedDevices()
+        .then((devices) => active && setConnectedCount(devices.length))
+        .catch(() => undefined);
+      return () => {
+        active = false;
+      };
+    }, [client]),
+  );
 
   const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
   const exportDiagnostics = async () => {
@@ -161,6 +177,17 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           />
         </SettingsListPanel>
       </SettingsGroup>
+      <SettingsGroup title="Access">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="monitor"
+            title="Devices & Web Browsers"
+            subtitle={connectedCount !== undefined ? `${connectedCount} connected` : undefined}
+            onPress={() => router.push('/devices')}
+            accessibilityLabel="Manage devices and web browsers"
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
       <SettingsGroup title="Server">
         <SettingsListPanel>
           <SettingsNavRow
@@ -176,20 +203,21 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             subtitle="Verity Uplink"
             onPress={() => router.push('/settings/remote-access')}
           />
+        </SettingsListPanel>
+      </SettingsGroup>
+      <SettingsGroup title="Features">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="check-square"
+            title="Tasks"
+            subtitle="Capture bubble, screenshot suggestions"
+            value={taskPreferences.enabled ? 'On' : 'Off'}
+            onPress={() => router.push('/settings/tasks')}
+          />
           <SettingsNavRow
             icon="mic"
             title="Meeting transcription"
             onPress={() => router.push('/settings/transcription')}
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
-      <SettingsGroup title="Security">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="smartphone"
-            title="Paired devices"
-            onPress={() => router.push('/devices')}
-            accessibilityLabel="Manage paired devices"
           />
         </SettingsListPanel>
       </SettingsGroup>
@@ -236,43 +264,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             accessibilityLabel="Change server address"
           />
         </SettingsListPanel>
-      </SettingsGroup>
-
-      <SettingsGroup title="Tasks">
-        <SettingsPanel>
-          <SettingsToggleRow
-            label="Show capture bubble"
-            value={taskPreferences.enabled}
-            onValueChange={(value) => {
-              void saveTaskPreferences({ enabled: value }).catch((error) =>
-                Alert.alert(
-                  'Could not save preference',
-                  error instanceof Error ? error.message : 'Try again',
-                ),
-              );
-            }}
-          />
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => {
-              void enableTaskScreenshotSuggestions()
-                .then(() =>
-                  Alert.alert(
-                    'Screenshot suggestions enabled',
-                    'Quick capture can offer screenshots taken in the last two minutes.',
-                  ),
-                )
-                .catch((error) =>
-                  Alert.alert(
-                    'Screenshot suggestions unavailable',
-                    error instanceof Error ? error.message : 'Install the latest app build',
-                  ),
-                );
-            }}
-          >
-            <Text style={styles.disclosureTitle}>Allow screenshot suggestions</Text>
-          </Pressable>
-        </SettingsPanel>
       </SettingsGroup>
 
       <SettingsGroup title="Advanced">

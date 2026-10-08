@@ -662,4 +662,88 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.md,
     backgroundColor: '#ffffff',
   },
+  // App / Web Browser switch on the Devices screen.
+  accessTabs: {
+    flexDirection: 'row',
+    padding: 3,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  accessTab: {
+    flex: 1,
+    minHeight: 36,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.xs,
+    borderRadius: theme.radius.sm + 2,
+  },
+  accessTabSelected: {
+    backgroundColor: theme.colors.surface,
+  },
+  accessTabLabel: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.sm,
+    fontWeight: '600',
+  },
+  accessTabLabelSelected: {
+    color: theme.colors.text,
+  },
+  // A value the operator carries to another device: a label, the value on one
+  // line, and the action that moves it.
+  copyField: {
+    gap: theme.spacing.xs,
+  },
+  copyFieldLabel: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.xs,
+    fontWeight: '600',
+  },
+  copyFieldBox: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingLeft: theme.spacing.md,
+    paddingRight: theme.spacing.xs,
+    borderRadius: theme.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  copyFieldValue: {
+    flex: 1,
+    color: theme.colors.text,
+    fontSize: theme.text.sm,
+  },
+  monoText: {
+    fontFamily: MONO,
+    fontSize: theme.text.xs,
+  },
+  copyFieldButton: {
+    minHeight: 36,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.surface,
+  },
+  copyFieldButtonLabel: {
+    color: theme.colors.primary,
+    fontSize: theme.text.sm,
+    fontWeight: '600',
+  },
+  invitationHint: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+  },
+  // A destructive row action that does not outweigh the row it sits in.
+  quietDangerButton: {
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.xs,
+  },
 }));

@@ -388,6 +388,12 @@ export interface ProjectSettingsTable {
   google_drive_folder_id: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_folder_name: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_access_mode: Generated<'read-only' | 'read-write'>;
+  /** Agents sessions in this project may use; null permits every connected agent. */
+  allowed_agents: ColumnType<
+    ('claude' | 'codex' | 'opencode')[] | null,
+    string | null | undefined,
+    string | null
+  >;
   created_at: ColumnType<Date, string | undefined, never>;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
@@ -1329,7 +1335,20 @@ interface SessionMovesTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+interface SessionOverviewOrderTable {
+  group_key: string;
+  project_id: string | null;
+  ids: string[];
+}
+
+interface AttendeeStateTable {
+  id: string;
+  state_secret: string;
+}
+
 export interface Database {
+  attendee_state: AttendeeStateTable;
+  session_overview_order: SessionOverviewOrderTable;
   live_meetings: LiveMeetingsTable;
   live_meeting_notes: LiveMeetingNotesTable;
   live_meeting_insights: LiveMeetingInsightsTable;

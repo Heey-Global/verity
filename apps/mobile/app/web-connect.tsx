@@ -105,8 +105,8 @@ export default function WebConnectScreen() {
                 <Text style={styles.stepsTitle}>Where to get the link</Text>
                 <Text style={styles.step}>
                   <Text style={styles.stepNumber}>1 </Text>
-                  In the Verity app, open Settings → Devices → Pair another device, then tap Copy
-                  pairing link.
+                  In the Verity app, open Settings → Devices & Web Browsers → Web Browser, then tap
+                  Create pairing link and Copy.
                 </Text>
                 <Text style={styles.step}>
                   <Text style={styles.stepNumber}>2 </Text>

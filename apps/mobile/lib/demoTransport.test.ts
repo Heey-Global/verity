@@ -143,6 +143,25 @@ it('streams schema-valid replies and changes a local file without calling networ
     network.mockRestore();
   }
 });
+it('counts only reply text for unread state independently of history sequences', async () => {
+  const api = client();
+  const { sessionId } = (await api.createSession({
+    sessionId: 'unread-demo',
+    name: 'Unread demo',
+  })) as { sessionId: string };
+  await api.sendTurn(sessionId, { prompt: 'hello' });
+  expect((await api.getSession(sessionId)).eventCount).toBe(0);
+  jest.advanceTimersByTime(2000);
+  const detail = await api.getSession(sessionId);
+  const history = await api.getHistory(sessionId);
+  const textEvents = history.events.filter(
+    (row) => row.event.t === 'text' && row.event.delta.length > 0,
+  );
+  expect(detail.eventCount).toBe(textEvents.length);
+  expect(detail.eventCountVersion).toBe('agent-text-v2');
+  expect(history.events.at(-1)!.seq).toBeGreaterThan(detail.eventCount);
+});
+
 it('cancel and reset prevent delayed mutations and retire old sockets', async () => {
   const api = client();
   const id = (await api.listSessions())[0]!.sessionId;
@@ -169,7 +188,7 @@ it('cancel and reset prevent delayed mutations and retire old sockets', async ()
 it('supports stream lifecycle and resumes without duplicating old events', async () => {
   const api = client();
   const id = (await api.listSessions())[0]!.sessionId;
-  const seq = (await api.getSession(id)).eventCount;
+  const seq = (await api.getHistory(id)).events.at(-1)!.seq;
   const connection = demoLive(api);
   const stream = new SessionStream({ sessionId: id, transport: connection });
   connection.start();

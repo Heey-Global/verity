@@ -1397,3 +1397,123 @@ it('retains the initial load and live invalidations when periodic polling is dis
   await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
   model.stop();
 });
+
+describe('session ordering', () => {
+  function setup(rows: SessionSummary[]) {
+    const { client } = makeClient();
+    const overview = vi
+      .fn()
+      .mockResolvedValue({ sessions: rows, attention: [], sessionReordering: true });
+    const reorderSessions = vi.fn<(projectId: string | null, ids: string[]) => Promise<string[]>>();
+    Object.assign(client, { listSessionOverview: overview, reorderSessions });
+    return { model: new SessionListModel({ client }), overview, reorderSessions };
+  }
+
+  it('keeps manual groups stable while new sessions precede ranked sessions', async () => {
+    const { model } = setup([
+      { ...session('a', 'crashed'), projectId: 'p', sortOrder: 1 },
+      { ...session('new', 'idle'), projectId: 'p' },
+      { ...session('b', 'idle'), projectId: 'p', sortOrder: 0 },
+    ]);
+    await model.refresh();
+    expect(model.state.sessionReordering).toBe(true);
+    expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['new', 'b', 'a']);
+  });
+
+  it('serializes drags and rolls the latest failure back to the preceding confirmed order', async () => {
+    const { model, reorderSessions, overview } = setup([
+      session('a', 'idle'),
+      session('b', 'idle'),
+    ]);
+    await model.refresh();
+    let resolve!: (ids: string[]) => void;
+    reorderSessions.mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    );
+    reorderSessions.mockRejectedValueOnce(new Error('offline'));
+    const first = model.reorder(null, ['b', 'a']);
+    const second = model.reorder(null, ['a', 'b']);
+    expect(reorderSessions).toHaveBeenCalledTimes(1);
+    // An overlapping snapshot must not revert the newest optimistic drag.
+    await model.refresh();
+    expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['a', 'b']);
+    resolve(['b', 'a']);
+    await Promise.all([first, second]);
+    expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['b', 'a']);
+    expect(model.state.error).toBe('failed to reorder sessions');
+    expect(overview).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves new sessions and moved project membership during a canonical save', async () => {
+    const { model, overview, reorderSessions } = setup([
+      { ...session('a', 'idle'), projectId: 'p', sortOrder: 0 },
+      { ...session('b', 'idle'), projectId: 'p', sortOrder: 1 },
+    ]);
+    await model.refresh();
+    let resolve!: (ids: string[]) => void;
+    reorderSessions.mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    );
+    const saving = model.reorder('p', ['b', 'a']);
+    overview.mockResolvedValue({
+      attention: [],
+      sessionReordering: true,
+      sessions: [
+        { ...session('new', 'idle'), projectId: 'p' },
+        { ...session('a', 'idle'), projectId: 'other', sortOrder: 0 },
+        { ...session('b', 'idle'), projectId: 'p', sortOrder: 1 },
+      ],
+    });
+    await model.refresh();
+    resolve(['b']);
+    await saving;
+    expect(model.state.sessions.filter((s) => s.projectId === 'p').map((s) => s.sessionId)).toEqual(
+      ['new', 'b'],
+    );
+    expect(model.state.sessions.find((s) => s.sessionId === 'a')?.projectId).toBe('other');
+  });
+
+  it('ignores a pre-write snapshot after a successful save', async () => {
+    const { model, overview, reorderSessions } = setup([
+      session('a', 'idle'),
+      session('b', 'idle'),
+    ]);
+    await model.refresh();
+    let snapshot!: (value: {
+      sessions: SessionSummary[];
+      attention: never[];
+      sessionReordering: boolean;
+    }) => void;
+    overview.mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          snapshot = r;
+        }),
+    );
+    const refresh = model.refresh();
+    reorderSessions.mockResolvedValueOnce(['b', 'a']);
+    await model.reorder(null, ['b', 'a']);
+    snapshot({
+      sessions: [session('a', 'idle'), session('b', 'idle')],
+      attention: [],
+      sessionReordering: true,
+    });
+    await refresh;
+    expect(model.state.sessions.map((s) => s.sessionId)).toEqual(['b', 'a']);
+  });
+
+  it('retains legacy behavior without advertised capability', async () => {
+    const { model, overview, reorderSessions } = setup([session('a', 'idle')]);
+    overview.mockResolvedValue({ sessions: [session('a', 'idle')], attention: [] });
+    await model.refresh();
+    await model.reorder(null, ['a']);
+    expect(model.state.sessionReordering).toBe(false);
+    expect(reorderSessions).not.toHaveBeenCalled();
+  });
+});

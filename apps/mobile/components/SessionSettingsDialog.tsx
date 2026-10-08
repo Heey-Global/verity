@@ -27,6 +27,7 @@ const optionHeight = 48;
 
 type MoveResult = Awaited<ReturnType<VerityClient['moveSession']>>;
 export function SessionSettingsDialog({
+  initialSection,
   sessionId,
   sessionName,
   displayName,
@@ -41,6 +42,7 @@ export function SessionSettingsDialog({
   onChanged,
   onDelete,
 }: {
+  initialSection?: 'links';
   sessionId: string;
   sessionName: string | null;
   displayName: string;
@@ -76,6 +78,15 @@ export function SessionSettingsDialog({
     h: number;
     cardHeight: number;
   }>();
+  const settingsScrollRef = useRef<ScrollView>(null);
+  const linksOffset = useRef(0);
+  const openedLinks = useRef(false);
+  const scrollToLinks = () => {
+    if (initialSection === 'links' && !openedLinks.current && linksOffset.current > 0) {
+      settingsScrollRef.current?.scrollTo({ y: linksOffset.current, animated: false });
+      openedLinks.current = true;
+    }
+  };
   const cardRef = useRef<View>(null);
   const selectRef = useRef<View>(null);
   // A pending wait for the keyboard to hide; dropped whenever the list closes so
@@ -144,6 +155,12 @@ export function SessionSettingsDialog({
   const [error, setError] = useState<string>();
   const [result, setResult] = useState<MoveResult>();
   const [links, setLinks] = useState<Awaited<ReturnType<VerityClient['listSessionLinks']>>>([]);
+  const [savedLinks, setSavedLinks] = useState<typeof links>([]);
+  const [linksLoaded, setLinksLoaded] = useState(false);
+  const [linkLoadAttempt, setLinkLoadAttempt] = useState(0);
+  const linksDirty =
+    links.some((link) => !savedLinks.some((saved) => saved.sessionId === link.sessionId)) ||
+    savedLinks.some((saved) => !links.some((link) => link.sessionId === saved.sessionId));
   const [view, setView] = useState<'settings' | 'link'>('settings');
   const [linkQuery, setLinkQuery] = useState('');
   const [linkFilter, setLinkFilter] = useState<string | null>(null);
@@ -165,7 +182,6 @@ export function SessionSettingsDialog({
     slide.setValue(next === 'link' ? 1 : -1);
     Animated.timing(slide, { toValue: 0, duration: 180, useNativeDriver: true }).start();
   };
-  const [linkBusy, setLinkBusy] = useState(false);
   const [linkError, setLinkError] = useState<string>();
   const isLinked = (id: string) => links.some((link) => link.sessionId === id);
   const linkProjects = [
@@ -191,7 +207,11 @@ export function SessionSettingsDialog({
     void client
       .listSessionLinks(sessionId)
       .then((items) => {
-        if (active) setLinks(items);
+        if (active) {
+          setLinks(items);
+          setSavedLinks(items);
+          setLinksLoaded(true);
+        }
       })
       .catch(() => {
         if (active) setLinkError('Linked sessions could not be loaded.');
@@ -199,52 +219,55 @@ export function SessionSettingsDialog({
     return () => {
       active = false;
     };
-  }, [client, sessionId]);
-  const addLink = async (targetId: string) => {
-    setLinkBusy(true);
-    setLinkError(undefined);
-    try {
-      await client.linkSessions(sessionId, targetId);
-      setLinks(await client.listSessionLinks(sessionId));
-    } catch (error) {
-      setLinkError(
-        error instanceof VerityApiError && error.status < 500
-          ? `Could not link the sessions: ${error.message}.`
-          : 'Could not link the sessions. Please try again.',
-      );
-    } finally {
-      setLinkBusy(false);
-    }
+  }, [client, sessionId, linkLoadAttempt]);
+  const addLink = (targetId: string) => {
+    const candidate = linkableSessions.find((item) => item.id === targetId);
+    if (!candidate || !linksLoaded || isLinked(targetId)) return;
+    setLinks((current) => [
+      ...current,
+      {
+        sessionId: candidate.id,
+        name: candidate.name,
+        projectId: candidate.projectId,
+        projectName: candidate.projectName,
+      },
+    ]);
   };
-  const removeLink = async (targetId: string) => {
-    setLinkBusy(true);
-    setLinkError(undefined);
-    try {
-      await client.unlinkSessions(sessionId, targetId);
-      setLinks((current) => current.filter((link) => link.sessionId !== targetId));
-    } catch {
-      setLinkError('Could not disconnect the sessions. Please try again.');
-    } finally {
-      setLinkBusy(false);
-    }
+  const removeLink = (targetId: string) => {
+    setLinks((current) => current.filter((link) => link.sessionId !== targetId));
   };
   const willMove = unresolved || (target !== null && target !== projectId);
   const canSave =
     !busy &&
-    !linkBusy &&
-    (draftName.trim() !== (savedName ?? '') || willMove) &&
+    (draftName.trim() !== (savedName ?? '') || willMove || linksDirty) &&
     (!willMove || (canMove && !!target && (!commitConfirmation || leaveCommits)));
   const save = async () => {
     if (!canSave) return;
     Keyboard.dismiss();
     setBusy(true);
     setError(undefined);
-    let step: 'rename' | 'move' = 'rename';
+    let step: 'rename' | 'move' | 'links' = 'rename';
     try {
       const name = draftName.trim() || null;
       if (name !== savedName) {
         await client.renameSession(sessionId, name);
         setSavedName(name);
+        onChanged(false);
+      }
+      step = 'links';
+      // Record each successful write so retrying a partial save does not repeat it.
+      for (const link of savedLinks.filter(
+        (saved) => !links.some((draft) => draft.sessionId === saved.sessionId),
+      )) {
+        await client.unlinkSessions(sessionId, link.sessionId);
+        setSavedLinks((current) => current.filter((saved) => saved.sessionId !== link.sessionId));
+        onChanged(false);
+      }
+      for (const link of links.filter(
+        (draft) => !savedLinks.some((saved) => saved.sessionId === draft.sessionId),
+      )) {
+        await client.linkSessions(sessionId, link.sessionId);
+        setSavedLinks((current) => [...current, link]);
         onChanged(false);
       }
       if (!willMove || !target) {
@@ -276,9 +299,13 @@ export function SessionSettingsDialog({
         setUnresolved(false);
       }
       setError(
-        step === 'move'
-          ? moveErrorMessage(cause)
-          : 'The session name could not be saved. Please try again.',
+        step === 'links'
+          ? cause instanceof VerityApiError && cause.status < 500
+            ? `Could not save session links: ${cause.message}.`
+            : 'Session links could not be saved. Please try again.'
+          : step === 'move'
+            ? moveErrorMessage(cause)
+            : 'The session name could not be saved. Please try again.',
       );
       setCommitConfirmation(cause instanceof VerityApiError && cause.code === 'source_commits');
     } finally {
@@ -290,7 +317,7 @@ export function SessionSettingsDialog({
       ? projectName
       : (projects.find((project) => project.id === target)?.name ?? target);
   const close = () => {
-    if (!busy && !linkBusy) onClose();
+    if (!busy) onClose();
   };
   const deleteButton = !result && (
     <Pressable
@@ -307,7 +334,7 @@ export function SessionSettingsDialog({
   const cancelButton = !result && (
     <Pressable
       accessibilityRole="button"
-      disabled={busy || linkBusy}
+      disabled={busy}
       onPress={close}
       style={[styles.button, busy && styles.disabled]}
     >
@@ -351,7 +378,7 @@ export function SessionSettingsDialog({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Back to session settings"
-          disabled={linkBusy}
+          disabled={busy}
           onPress={back}
           style={styles.iconButton}
         >
@@ -370,7 +397,7 @@ export function SessionSettingsDialog({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Close session settings"
-          disabled={busy || linkBusy}
+          disabled={busy}
           onPress={close}
           style={styles.iconButton}
         >
@@ -383,6 +410,8 @@ export function SessionSettingsDialog({
     <>
       {header(result ? 'Session moved' : 'Session settings', undefined)}
       <ScrollView
+        ref={settingsScrollRef}
+        onContentSizeChange={scrollToLinks}
         style={styles.body}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
@@ -430,12 +459,15 @@ export function SessionSettingsDialog({
                 accessibilityValue={{ text: targetName ?? 'Choose a project' }}
                 accessibilityState={{
                   expanded: pickerOpen,
-                  disabled: busy || unresolved || !canMove || projects.length === 0,
+                  disabled: busy || unresolved || linksDirty || !canMove || projects.length === 0,
                 }}
-                disabled={busy || unresolved || !canMove || projects.length === 0}
+                disabled={busy || unresolved || linksDirty || !canMove || projects.length === 0}
                 onPress={togglePicker}
                 ref={selectRef}
-                style={[styles.select, (busy || unresolved || !canMove) && styles.disabled]}
+                style={[
+                  styles.select,
+                  (busy || unresolved || linksDirty || !canMove) && styles.disabled,
+                ]}
               >
                 <Icon name="folder" size={16} color={theme.colors.textMuted} />
                 <Text style={[styles.selectText, !target && styles.placeholder]} numberOfLines={1}>
@@ -448,6 +480,11 @@ export function SessionSettingsDialog({
                 />
               </Pressable>
             </View>
+            {linksDirty && (
+              <Text style={styles.hint}>
+                Save or discard link changes before moving the session.
+              </Text>
+            )}
             {!canMove && (
               <Text style={styles.hint}>
                 {moveDisabledReason ?? 'Moving is available for idle sessions in local projects.'}
@@ -492,7 +529,13 @@ export function SessionSettingsDialog({
                 original project.
               </Text>
             )}
-            <View style={styles.sectionHeaderRow}>
+            <View
+              style={styles.sectionHeaderRow}
+              onLayout={(event) => {
+                linksOffset.current = event.nativeEvent.layout.y;
+                scrollToLinks();
+              }}
+            >
               <Text style={styles.label} accessibilityRole="header">
                 Linked sessions
               </Text>
@@ -510,12 +553,14 @@ export function SessionSettingsDialog({
                 />
               </Pressable>
             </View>
-            <Text style={styles.description}>Share messages with agents in other projects.</Text>
+            <Text style={styles.description}>
+              Share messages with agents in this or other projects.
+            </Text>
             {linkInfoOpen ? (
               <Text style={styles.hint}>
-                Linked agents can share messages across projects, including information they can
-                access there. Disconnecting stops future messages; it cannot remove messages already
-                delivered.
+                Linked agents can share messages within and across projects, including information
+                they can access there. Disconnecting stops future messages; it cannot remove
+                messages already delivered.
               </Text>
             ) : null}
             <View style={styles.group}>
@@ -537,7 +582,7 @@ export function SessionSettingsDialog({
                     <Pressable
                       accessibilityRole="button"
                       accessibilityLabel={`Disconnect ${link.name ?? link.sessionId}`}
-                      disabled={linkBusy || busy || unresolved || willMove}
+                      disabled={!linksLoaded || busy || unresolved || willMove}
                       onPress={() => void removeLink(link.sessionId)}
                       style={styles.linkRemove}
                     >
@@ -549,13 +594,13 @@ export function SessionSettingsDialog({
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={links.length === 0 ? 'Link a session' : 'Link another session'}
-                accessibilityState={{ disabled: linkBusy || busy || unresolved || willMove }}
-                disabled={linkBusy || busy || unresolved || willMove}
+                accessibilityState={{ disabled: !linksLoaded || busy || unresolved || willMove }}
+                disabled={!linksLoaded || busy || unresolved || willMove}
                 onPress={() => showView('link')}
                 style={[
                   styles.groupRow,
                   links.length > 0 && styles.groupRowDivided,
-                  (linkBusy || busy || unresolved || willMove) && styles.disabled,
+                  (!linksLoaded || busy || unresolved || willMove) && styles.disabled,
                 ]}
               >
                 <View style={[styles.rowIcon, styles.rowIconAction]}>
@@ -577,6 +622,19 @@ export function SessionSettingsDialog({
                 {linkError}
               </Text>
             ) : null}
+            {!linksLoaded && linkError && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Retry loading linked sessions"
+                disabled={busy}
+                onPress={() => {
+                  setLinkError(undefined);
+                  setLinkLoadAttempt((attempt) => attempt + 1);
+                }}
+              >
+                <Text style={styles.linkActionText}>Retry loading linked sessions</Text>
+              </Pressable>
+            )}
             {willMove ? (
               <Text style={styles.hint}>Save the project change before linking sessions.</Text>
             ) : null}
@@ -608,7 +666,11 @@ export function SessionSettingsDialog({
   );
   const linkView = (
     <>
-      {header('Link a session', 'Tap an agent to link it immediately.', () => showView('settings'))}
+      {header(
+        'Link a session',
+        'Choose sessions, then save your changes in session settings.',
+        () => showView('settings'),
+      )}
       <View style={styles.linkTools}>
         <View style={styles.search}>
           <Icon name="search" size={16} color={theme.colors.textMuted} />
@@ -682,8 +744,8 @@ export function SessionSettingsDialog({
                   key={item.id}
                   accessibilityRole="button"
                   accessibilityLabel={linked ? `${item.name}, linked` : `Link ${item.name}`}
-                  accessibilityState={{ disabled: linked || linkBusy, selected: linked }}
-                  disabled={linked || linkBusy}
+                  accessibilityState={{ disabled: linked || busy, selected: linked }}
+                  disabled={linked || busy}
                   onPress={() => void addLink(item.id)}
                   style={({ pressed }) => [styles.candidate, pressed && styles.candidatePressed]}
                 >
@@ -718,7 +780,7 @@ export function SessionSettingsDialog({
         {linkGroups.length === 0 ? (
           <Text style={styles.emptyText}>
             {linkableSessions.length === 0
-              ? 'No sessions in other projects to link.'
+              ? 'No other sessions available to link.'
               : 'No sessions match your search.'}
           </Text>
         ) : null}
@@ -727,11 +789,11 @@ export function SessionSettingsDialog({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Done linking"
-          disabled={linkBusy}
+          disabled={busy}
           onPress={() => showView('settings')}
           style={[styles.button, styles.secondary]}
         >
-          {linkBusy ? <ActivityIndicator size="small" color={theme.colors.textMuted} /> : null}
+          {busy ? <ActivityIndicator size="small" color={theme.colors.textMuted} /> : null}
           <Text style={styles.secondaryText}>Done</Text>
         </Pressable>
       </View>
@@ -761,7 +823,7 @@ export function SessionSettingsDialog({
       transparent
       animationType="fade"
       // Android back leaves the link view first, like its on-screen back button.
-      onRequestClose={linking ? () => !linkBusy && showView('settings') : close}
+      onRequestClose={linking ? () => !busy && showView('settings') : close}
     >
       <KeyboardAvoidingView
         style={{ flex: 1 }}
@@ -831,9 +893,9 @@ export function SessionSettingsDialog({
                         accessibilityLabel={project.name}
                         accessibilityState={{
                           selected: target === project.id,
-                          disabled: busy || unresolved || !canMove,
+                          disabled: busy || unresolved || linksDirty || !canMove,
                         }}
-                        disabled={busy || unresolved || !canMove}
+                        disabled={busy || unresolved || linksDirty || !canMove}
                         style={[styles.option, target === project.id && styles.selected]}
                         onPress={() => {
                           setTarget(project.id);

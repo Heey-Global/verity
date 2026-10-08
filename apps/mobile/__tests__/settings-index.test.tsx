@@ -46,11 +46,22 @@ describe('settings index — destinations', () => {
       }),
     );
     render(<SettingsIndexScreen />);
-    fireEvent.press(screen.getByLabelText('Manage paired devices'));
+    fireEvent.press(screen.getByLabelText('Manage devices and web browsers'));
     expect(mockPush).toHaveBeenCalledWith('/devices');
     expect(screen.getByLabelText('Advanced mode')).toBeDisabled();
     expect(screen.queryByText('Needs setup')).toBeNull();
     await act(async () => undefined);
+  });
+
+  // The count is the only thing on the row that says browsers are covered too.
+  it('counts connected devices and browsers on the access row', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        listPairedDevices: jest.fn().mockResolvedValue([{ id: 'a' }, { id: 'b' }, { id: 'c' }]),
+      }),
+    );
+    render(<SettingsIndexScreen />);
+    expect(await screen.findByText('3 connected')).toBeOnTheScreen();
   });
 
   it('renders a not-connected message when no server URL is configured', () => {
@@ -66,7 +77,7 @@ describe('settings index — destinations', () => {
     ['Connections', '/settings/services'],
     ['Server update', '/settings/server-update'],
     ['Change server address', '/onboarding/server-url?reconfigure=1'],
-    ['Manage paired devices', '/devices'],
+    ['Manage devices and web browsers', '/devices'],
   ])('routes %s to %s', async (label, href) => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);

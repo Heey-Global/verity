@@ -20,7 +20,7 @@ export function registerSessionSeenRoute(app: FastifyInstance, deps: SessionSeen
     const { eventCount, counterVersion } = sessionSeenBody.parse(request.body);
     const current = await deps.store.getSessionEventStats(id);
     // Pre-upgrade clients can hold all-event counts that would hide future messages.
-    if (counterVersion !== 'dev-servers-excluded-v1' || eventCount > (current?.eventCount ?? 0)) {
+    if (counterVersion !== 'agent-text-v2' || eventCount > (current?.eventCount ?? 0)) {
       if (!(await deps.store.getSession(id))) {
         reply.code(404);
         return { error: `session ${id} not found` };

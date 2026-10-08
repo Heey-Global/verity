@@ -579,3 +579,25 @@ it('files late notes after a restart and retries filing failures', async () => {
     await restarted.close();
   }
 });
+
+it('files server-owned online meetings through the same finished-meeting hook', async () => {
+  const online = Fastify();
+  const onFinished = vi.fn().mockResolvedValue(undefined);
+  const controller = registerLiveMeetingRoutes(online, ctx.store, { onFinished });
+  try {
+    const record = {
+      ...meeting,
+      id: 'meeting-1',
+      sessionId: 'session-1',
+      engine: 'attendee',
+      state: 'active' as const,
+      ownerTokenHash: createHash('sha256').update(ownerToken).digest('hex'),
+    };
+    await controller.ingest(record);
+    expect(onFinished).not.toHaveBeenCalled();
+    await controller.ingest({ ...record, state: 'ended', endedAt: 200, revision: 2 });
+    expect(onFinished).toHaveBeenCalledWith('session-1', 'meeting-1');
+  } finally {
+    await online.close();
+  }
+});

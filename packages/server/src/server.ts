@@ -1,3 +1,6 @@
+import { attendeeResearchHints } from './attendee-research.js';
+import { AttendeeMeetings } from './attendee-meetings.js';
+import { registerAttendeeRoutes } from './attendee-routes.js';
 import { readMatrixDiagnosticSnapshot } from './matrix-diagnostic-snapshot.js';
 import { createControlDiagnosticsTool } from './control-diagnostics-tool.js';
 import type { createRuntimeDiagnostics } from './runtime-diagnostics.js';
@@ -17,6 +20,7 @@ import { fileVersion, FileWriteError, writeSessionText } from './session-file-wr
 import { renameWorktreeFile } from './rename-worktree-file.js';
 import { turnCore } from './session-request-core.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
+import { registerSessionOrderRoute } from './session-order-route.js';
 import { registerSessionListRoute } from './session-list-route.js';
 import { registerVerityControlSessionRoute } from './verity-control-session-route.js';
 import { registerSessionMergeRoutes } from './session-merge-routes.js';
@@ -171,7 +175,11 @@ import type {
   SessionProjectionFacts,
   SessionRecord,
 } from '@verity/store';
-import { PROJECT_MEMORY_MAX_CHARS, SealedError } from '@verity/store';
+import {
+  PROJECT_MEMORY_MAX_CHARS,
+  ProjectDefaultModelNotAllowedError,
+  SealedError,
+} from '@verity/store';
 import websocketPlugin, { type WebSocket } from '@fastify/websocket';
 import rateLimitPlugin from '@fastify/rate-limit';
 import compressPlugin from '@fastify/compress';
@@ -187,6 +195,7 @@ import { z, ZodError } from 'zod';
 import {
   deriveSessionStatusFromProjection,
   permissionEventAwaitsInput,
+  sessionHasOpenTasks,
   projectionTailIsSelfContained,
   type SessionStatus,
 } from './status.js';
@@ -334,7 +343,11 @@ import {
 import { parseOwnerRepo } from './canonical.js';
 import { startAutomationScheduler } from './automation-scheduler.js';
 import { registerAutomationRoutes } from './automation-routes.js';
-import { createSessionPlanning, registerPlanningRoutes } from './planning.js';
+import {
+  createSessionPlanning,
+  trustedPlanInstructionConsent,
+  registerPlanningRoutes,
+} from './planning.js';
 import type { ListenerDiscovery } from './listener-discovery.js';
 import { registerLocalPreviewRoutes } from './local-preview-routes.js';
 import {
@@ -364,6 +377,13 @@ import {
 import { containerPathFor } from './project-backend.js';
 import type { ProjectRuntime } from './project-runtime.js';
 import type { ProjectEnvironmentSettings } from './project-settings-env.js';
+import {
+  filterModelListForProject,
+  isModelAllowedForProject,
+  ProjectAgentNotAllowedError,
+  resolveProjectDefaultModel,
+  type ProjectAgent,
+} from './project-agent-policy.js';
 import type { SandboxUpdateChecker, SandboxUpdateStatus } from './sandbox-updates.js';
 import {
   isDriftReportable,
@@ -660,6 +680,8 @@ export interface ProjectSettingsRecord {
   googleDriveFolderId: string | null;
   googleDriveFolderName: string | null;
   googleDriveAccessMode: 'read-only' | 'read-write';
+  /** Agents sessions in this project may use; null permits every connected agent. */
+  allowedAgents: ProjectAgent[] | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -676,7 +698,8 @@ type ProjectSettingsKey =
   | 'memory'
   | 'googleDriveFolderId'
   | 'googleDriveFolderName'
-  | 'googleDriveAccessMode';
+  | 'googleDriveAccessMode'
+  | 'allowedAgents';
 
 type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
@@ -848,6 +871,7 @@ function emptyProjectSettings(projectId: string): ProjectSettingsRecord {
     googleDriveFolderId: null,
     googleDriveFolderName: null,
     googleDriveAccessMode: 'read-only',
+    allowedAgents: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   };
@@ -1060,6 +1084,7 @@ function publicProjectSettings(
     googleDriveFolderId: settings.googleDriveFolderId,
     googleDriveFolderName: settings.googleDriveFolderName,
     googleDriveAccessMode: settings.googleDriveAccessMode,
+    allowedAgents: settings.allowedAgents,
     createdAt: settings.createdAt,
     updatedAt: settings.updatedAt,
   };
@@ -1145,6 +1170,7 @@ export interface ServerDeps {
   onGoogleCredentialsChanged?: (() => void) | undefined;
   /** Sealable at-rest secret cipher backing `/secret/status|init|unlock`.
    *  Omit → the secret store is treated as an unmanaged always-unlocked no-op. */
+  attendeeEdge?: import('./preview-share-manager.js').PreviewEdgeControl;
   secretCipher?: SealableSecretCipher | undefined;
   /** Per-device API auth-token registry backing the C1 auth gate. When present
    *  AND enabled (a master password exists), a global `onRequest` hook requires a
@@ -2802,6 +2828,9 @@ interface SessionPrSummary {
 }
 
 export interface SessionSummary extends SessionRecord {
+  linked?: boolean;
+  /** Position within a manually ordered overview group; null means automatic. */
+  sortOrder?: number | null;
   status: SessionStatus;
   /** Permission ids currently awaiting a decision. Carried on the list so the
    * overview can retire its "Needs input" badge optimistically after answering. */
@@ -2825,11 +2854,13 @@ export interface SessionSummary extends SessionRecord {
    * can show the session's issue (`<type>/<issue>-<slug>`). ABSENT while the label
    * is cold, the worktree is gone, or branch switching is not configured. */
   branch?: string;
-  /** Persisted events excluding dev-server snapshots; compared against the synced
+  /** Background work can continue while the main agent awaits input. */
+  backgroundWorking?: boolean;
+  /** Nonempty agent-text events; compared against the synced
    * read marker to show the overview unread dot. */
   eventCount: number;
   /** Version associated with eventCount; absent in summaries from older servers. */
-  eventCountVersion?: 'dev-servers-excluded-v1';
+  agentTextCounterVersion?: 'agent-text-v2';
   /** Timestamp of the newest canonical event, for metadata-only recency displays. */
   lastActivityAt: number | null;
   /**
@@ -2859,6 +2890,7 @@ export interface SessionSummary extends SessionRecord {
  * response instead of a channel of its own.
  */
 export interface SessionListEnvelope {
+  sessionReordering?: true;
   sessions: SessionSummary[];
   attention?: AttentionSignal[];
 }
@@ -3671,7 +3703,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     isModelAllowed: async (model, session) =>
       session.projectId === null
         ? (await availableModels()).models.includes(model)
-        : isConfiguredProjectSessionModel(model),
+        : (await isConfiguredProjectSessionModel(model)) &&
+          (await projectAgentRejection(model, session.projectId)) === undefined,
     // A sealed secret store or a project that is still being set up is not the
     // automation's fault; those slots are skipped rather than counted toward the
     // pause after repeated failures.
@@ -4887,9 +4920,25 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   const activityBusyCache = new Map<
     string,
-    { revision: string; lastEventSeq: number; busy: Promise<boolean> }
+    {
+      revision: string;
+      lastEventSeq: number;
+      busy: Promise<{
+        busy: boolean;
+        status: SessionStatus;
+        openTasks: boolean;
+        waitingPermission: boolean;
+      }>;
+    }
   >();
-  const activityLogBusy = async (id: string): Promise<boolean> => {
+  const activityLogBusy = async (
+    id: string,
+  ): Promise<{
+    busy: boolean;
+    status: SessionStatus;
+    openTasks: boolean;
+    waitingPermission: boolean;
+  }> => {
     const stats = await deps.eventStore.getSessionEventStats(id);
     const cached = activityBusyCache.get(id);
     if (
@@ -4903,10 +4952,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return cached.busy;
     }
     activityBusyCache.delete(id);
-    const busy = activityProjection(id).then(
-      ({ events, hasTaskLifecycle }) =>
-        hasTaskLifecycle && deriveSessionStatusFromProjection(events, events.length) === 'running',
-    );
+    const busy = activityProjection(id).then(({ events, hasTaskLifecycle }) => {
+      const status = deriveSessionStatusFromProjection(events, events.length);
+      const openTasks = sessionHasOpenTasks(events);
+      return {
+        busy: hasTaskLifecycle && (status === 'running' || (AWAITING.has(status) && openTasks)),
+        status,
+        openTasks,
+        waitingPermission: permissionEventAwaitsInput(events),
+      };
+    });
     if (stats === undefined) return busy;
     // Cache only the pure log result, never conductor state or payload arrays.
     // Revision catches lower-seq commits and removed provisional events; seq
@@ -4957,7 +5012,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const pendingPermissions = [
       ...new Set([...conductor.pendingPermissions(session.sessionId), ...pendingLinks]),
     ];
-    // Unread counts exclude listener snapshots; the seq still identifies a nonempty log.
+    // Unread counts include only agent text; the seq still identifies a nonempty log.
     const projectedStatus = liveStatusFromProjection(
       session.sessionId,
       events,
@@ -4987,6 +5042,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return {
       ...session,
       status,
+      ...(AWAITING.has(status) && sessionHasOpenTasks(events) ? { backgroundWorking: true } : {}),
       pendingPermissions,
       ...(status === 'awaiting_input' && pendingPermissions.length > 0
         ? { permissionAwaitingInput: true as const }
@@ -5001,7 +5057,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       resumable,
       ...(branch !== undefined ? { branch } : {}),
       eventCount: facts.eventCount,
-      eventCountVersion: 'dev-servers-excluded-v1',
+      agentTextCounterVersion: 'agent-text-v2',
       // Omit entirely when unresolved/unconfigured (exactOptionalPropertyTypes): a
       // literal `undefined` isn't assignable to `pr?: … | null`, and absent reads as
       // "no marker" on the client anyway.
@@ -5116,6 +5172,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return attentionSignals({ secretStatus, updater, codexUsage: usage, now: Date.now() });
   };
 
+  registerSessionOrderRoute(app, { store: deps.eventStore });
   registerSessionListRoute(app, {
     store: deps.eventStore,
     prunePrSummaryCache,
@@ -5169,11 +5226,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
       : {}),
   });
-  registerConnectionUsageRoutes(
-    app,
-    deps.eventStore,
-    async () => (await availableModels()).default,
-  );
+  registerConnectionUsageRoutes(app, deps.eventStore, () => availableModels());
   registerProjectGoogleRoutes(app, deps.eventStore);
   registerGmailRoutes(app, {
     eventStore: deps.eventStore,
@@ -5608,11 +5661,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
               project.id,
             );
-            const model = settings?.defaultModel ?? (await availableModels()).default;
-            if (!isProjectSessionModel(model)) {
+            const model = resolveProjectDefaultModel(
+              await availableModels({ allowLegacyCodexFallback: true }),
+              settings,
+              isProjectSessionModel,
+            );
+            if (model === undefined || !(await isConfiguredProjectSessionModel(model))) {
               throw new ControlPlaneSessionToolError('project has no eligible default model');
             }
-            const selectedModel = model as string;
+            const selectedModel = model;
             const projectClone = projectClonePath(deps.projectCloneRoot, project);
             const worktreeOpts = {
               refreshBase: true,
@@ -5811,6 +5868,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
     // Bind the eventual card answer to the plan that existed before the card opened.
     const planningApprovalRevisions = new WeakMap<object, number>();
+    const planningConsents = new WeakMap<object, import('@verity/store').PlanningConsent>();
     const gateway = createMcpGateway({
       ...gatewayDeps,
       // Runs before the card, so a caller that may not use these tools is turned away without
@@ -5833,20 +5891,27 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           // decided, instead of raising a card whose answer could change nothing.
           if (toolName !== START_PLANNING_TOOL && session.planning !== 'active')
             throw new ControlPlaneSessionAuthorityError('this session is not in planning mode');
-          if (toolName === END_PLANNING_TOOL) {
+          if (toolName === END_PLANNING_TOOL && session.planningRevision !== undefined)
+            planningApprovalRevisions.set(input.request as object, session.planningRevision);
+          if (
+            toolName === END_PLANNING_TOOL &&
+            (input.request as { action?: string }).action !== 'discard'
+          ) {
             if (session.planningPlan == null || session.planningRevision === undefined)
               throw new ControlPlaneSessionAuthorityError(
-                'Present a plan before requesting implementation.',
+                'No plan was submitted. Call verity_present_plan with the complete plan first, then call verity_end_planning again.',
               );
-            planningApprovalRevisions.set(input.request as object, session.planningRevision);
           }
           return;
         }
         // Gateway capabilities run outside the backend's read-only sandbox.
         // Neither a standing grant nor a new approval may reopen them while planning.
+        // The task list is Verity's own record of the session, not an external effect,
+        // and recording the agreed steps belongs to planning.
         if (
-          (await deps.eventStore.getSession(sessionId))?.planning === 'active' ||
-          conductor.isPlanningTurn?.(sessionId)
+          toolName !== 'verity_tasks' &&
+          ((await deps.eventStore.getSession(sessionId))?.planning === 'active' ||
+            conductor.isPlanningTurn?.(sessionId))
         ) {
           throw new ControlPlaneSessionAuthorityError(
             'External tools are unavailable in planning mode; use read-only local tools.',
@@ -6028,6 +6093,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
       },
       hasStandingAuthorization: async ({
+        turnId,
         projectId,
         sessionId,
         toolName,
@@ -6040,12 +6106,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;
         }
-        // Starting planning only takes the agent's own permissions away, and a
-        // presented plan only shows text, so neither needs the operator. Ending it is
-        // the operator's decision and always raises the card.
+
         if (toolName === START_PLANNING_TOOL || toolName === PRESENT_PLAN_TOOL) {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;
+        }
+        if (
+          toolName === END_PLANNING_TOOL &&
+          (request as { action?: string }).action !== 'discard'
+        ) {
+          const consent = await trustedPlanInstructionConsent(deps.eventStore, sessionId, turnId);
+          if (consent !== undefined) {
+            planningConsents.set(request as object, consent);
+            const session = await deps.eventStore.getSession(sessionId);
+            return session?.projectId === projectId;
+          }
         }
         if (toolName === 'verity_send_session_message') {
           const session = await deps.eventStore.getSession(sessionId);
@@ -6155,18 +6230,35 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return {
             presented: true,
             planningRevision,
-            note: 'The user sees this plan with an "Implement plan" button. Wait for their decision and do not implement it.',
+            note: 'The plan is pinned above the composer with Implement and Dismiss buttons. End your turn without repeating it; wait for the user.',
           };
         }
         if (input.toolName === END_PLANNING_TOOL) {
-          // Reached only through an approved card.
+          if ((input.request as { action?: string }).action === 'discard') {
+            if (
+              !(await sessionPlanning.discard(
+                input.sessionId,
+                planningApprovalRevisions.get(input.request as object),
+              ))
+            )
+              throw new ControlPlaneSessionAuthorityError('this session is not in planning mode');
+            return {
+              planning: 'discarded',
+              note: 'Planning ended without implementing. End this turn; normal access resumes with the next user message.',
+            };
+          }
+          // The user's instruction in chat already authorizes implementation.
           const planningRevision = planningApprovalRevisions.get(input.request as object);
           if (
             planningRevision === undefined ||
-            !(await sessionPlanning.implement(input.sessionId, planningRevision))
+            !(await sessionPlanning.implement(
+              input.sessionId,
+              planningRevision,
+              planningConsents.get(input.request as object),
+            ))
           )
             throw new ControlPlaneSessionAuthorityError(
-              'The plan was updated. Please review the current plan and request approval again.',
+              'The plan was updated. Please review the current plan before implementing.',
             );
           return {
             planning: 'implemented',
@@ -6386,7 +6478,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // confirms rather than on every unattended run.
     validateModel: async (model, session) => {
       if (session.projectId !== null) {
-        return (await isConfiguredProjectSessionModel(model)) ? null : PROJECT_MODEL_ERROR;
+        if (!(await isConfiguredProjectSessionModel(model))) return PROJECT_MODEL_ERROR;
+        return (await projectAgentRejection(model, session.projectId)) ?? null;
       }
       return (await availableModels()).models.includes(model)
         ? null
@@ -6700,9 +6793,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             },
           }),
           cwd: deps.refineCwd,
-          modelFor: async (projectId) =>
-            (await projectSettingsStore(deps.eventStore).getProjectSettings(projectId))
-              ?.defaultModel ?? (await availableModels()).default,
+          modelFor: (projectId) => projectDefaultModel(projectId),
           onError: (error, job) =>
             app.log.warn(
               { err: error, projectId: job.projectId, path: job.relativePath },
@@ -6793,7 +6884,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     isSealed: () => deps.secretCipher?.isSealed() === true,
     updateSettings: async (id, patch) => {
-      const settings = await projectSettingsStore(deps.eventStore).updateProjectSettings(id, patch);
+      const store = projectSettingsStore(deps.eventStore);
+      let settings: ProjectSettingsRecord | undefined;
+      try {
+        settings = await store.updateProjectSettings(id, patch);
+      } catch (error) {
+        if (error instanceof ProjectDefaultModelNotAllowedError) {
+          throw new ProjectAgentNotAllowedError(error.model);
+        }
+        throw error;
+      }
       return settings === undefined ? undefined : publicProjectSettings(settings)!;
     },
   });
@@ -7409,6 +7509,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     deleteSessionEverywhere,
     advancedModeEnabled,
     ensureControlProject: ensureVerityControlProject,
+    resolveProjectModel: async (projectId) => {
+      const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
+      const model =
+        settings?.allowedAgents == null
+          ? (settings?.defaultModel ?? DEFAULT_MODEL)
+          : resolveProjectDefaultModel(
+              await availableModels({ allowLegacyCodexFallback: true }),
+              settings,
+              isProjectSessionModel,
+            );
+      return (await isConfiguredProjectSessionModel(model)) ? model : undefined;
+    },
   });
 
   // The usable model set for the picker (ADR 0001 / #143): Claude and Codex are
@@ -7455,6 +7567,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       add(id);
     }
+    // Spawn callers can use the authenticated CLI default even when discovery fails.
+    // Keep it eligible when a project's rule excludes the global Claude default.
+    if (options.allowLegacyCodexFallback === true && codexConfigured && codexModels.length === 0) {
+      add(CODEX_DEFAULT_MODEL);
+    }
     const models = sortModelIds(merged);
     const modelOrder = [
       ...models.filter((id) => !id.includes('/')),
@@ -7478,6 +7595,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           : {}),
     };
   };
+  /** Why the project's agent rule rejects `model`, or undefined when it is allowed. */
+  const projectAgentRejection = async (
+    model: string,
+    projectId: string,
+  ): Promise<string | undefined> => {
+    const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
+    return isModelAllowedForProject(model, settings)
+      ? undefined
+      : new ProjectAgentNotAllowedError(model).message;
+  };
+  /** The model a project's new work starts with, honouring its agent rule. */
+  const projectDefaultModel = async (projectId: string | null): Promise<string | undefined> => {
+    const available = await availableModels();
+    if (projectId === null) return available.default;
+    const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
+    return resolveProjectDefaultModel(available, settings, isProjectSessionModel);
+  };
   const isConfiguredProjectSessionModel = async (model: string | undefined): Promise<boolean> => {
     if (!isProjectSessionModel(model)) return false;
     if (model === undefined || !model.startsWith('verity/')) return true;
@@ -7488,7 +7622,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
 
   registerSessionReadRoutes(app, {
-    listModels: availableModels,
+    listModels: async (projectId) => {
+      const available = await availableModels();
+      if (projectId === undefined) return available;
+      const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
+      return filterModelListForProject(available, settings, isProjectSessionModel);
+    },
     getSession: async (id): Promise<SessionDetail | undefined> => {
       const session = await deps.eventStore.getSession(id);
       if (!session) return undefined;
@@ -7536,7 +7675,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ...(rateLimits.length > 0 ? { rateLimits } : {}),
         resumable: await worktreeExists(session.worktree),
         eventCount: facts.eventCount,
-        eventCountVersion: 'dev-servers-excluded-v1',
+        agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: facts.lastActivityAt,
         busy: conductor.isBusy(id) || hasMeetingJob(id),
         queued: conductor.queuedItems(id),
@@ -7557,7 +7696,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return baseUrl && apiKey ? { baseUrl, apiKey } : undefined;
     },
   });
-  registerLiveMeetingRoutes(app, deps.eventStore, {
+  const meetingController = registerLiveMeetingRoutes(app, deps.eventStore, {
     onFinished: (sessionId, meetingId) =>
       fileLiveMeeting({
         eventStore: deps.eventStore,
@@ -7576,11 +7715,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     query: async (sessionId, prompt, signal) => {
       const session = await deps.eventStore.getSession(sessionId);
       if (!session) return undefined;
-      const projectModel = session.projectId
-        ? (await projectSettingsStore(deps.eventStore).getProjectSettings(session.projectId))
-            ?.defaultModel
+      const settings = session.projectId
+        ? await projectSettingsStore(deps.eventStore).getProjectSettings(session.projectId)
         : undefined;
-      const model = projectModel ?? session.model;
+      const projectModel = settings?.defaultModel ?? undefined;
+      // The analysis must stay on an agent the project allows, even when the
+      // session itself still runs on one the project has since excluded.
+      const model =
+        projectModel !== undefined && isModelAllowedForProject(projectModel, settings)
+          ? projectModel
+          : isModelAllowedForProject(session.model, settings)
+            ? session.model
+            : resolveProjectDefaultModel(await availableModels(), settings, isProjectSessionModel);
+      if (model === undefined) return undefined;
       if (model.startsWith('codex/') || model.startsWith('verity/'))
         return directMeetingQuery({ model, prompt, signal });
       return conductor.query({
@@ -7592,6 +7739,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       });
     },
   });
+  const attendeeMeetings = new AttendeeMeetings({
+    store: deps.eventStore,
+    ...(deps.attendeeEdge ? { edge: deps.attendeeEdge } : {}),
+    ingest: meetingController.ingest,
+    spoken: attendeeResearchHints({ store: deps.eventStore, classify: meetingController.spoken }),
+  });
+  registerAttendeeRoutes(app, attendeeMeetings, () =>
+    Boolean(deps.secretCipher && !deps.secretCipher.isSealed()),
+  );
+  app.addHook('onReady', () => attendeeMeetings.open());
+  app.addHook('onClose', () => attendeeMeetings.close());
   registerMeetingTranscriptRoutes(app, {
     save: async (request, reply, id, body) => {
       const session = await deps.eventStore.getSession(id);
@@ -8656,9 +8814,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             reply.code(404);
             return { error: `session ${id} not found` };
           }
-          // In-flight OR log-derived running (open background task). `||` short-circuits,
-          // so a busy session skips the event-log read entirely — only an idle-looking
-          // conductor pays the hydration to catch the settled-turn/open-task gap. Carry
+          // In-flight OR log-derived running (open background task). The cached
+          // projection also separates input waits from active background work. Carry
           // the display name so the header reflects an auto-generated (or externally
           // renamed) title within a poll, without a remount. `branch` is still gated on
           // the branch-switching dep (a git read).
@@ -8669,7 +8826,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           // Log hydration exists specifically for a background task that outlived
           // conductor tracking. Neutral notices (including meeting progress) are
           // not turns and must not make an otherwise-finished session busy forever.
-          const busy = base.busy || (await activityLogBusy(id));
+          const log = await activityLogBusy(id);
+          const busy = base.busy || log.busy;
+          const awaiting =
+            base.pendingPermissions.length > 0 ||
+            (AWAITING.has(log.status) && !log.waitingPermission);
+          const activityAnimating =
+            busy && !base.terminationUnconfirmed && (!awaiting || log.openTasks);
           const branches = await branchesForSession(session);
           const branch = branches
             ? await currentBranchCached(branches, session.worktree)
@@ -8677,6 +8840,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           return {
             ...base,
             busy,
+            activityAnimating,
             name: session.name,
             ...(branch !== undefined ? { branch } : {}),
             // Polled with the rest so the planning bar follows an agent that starts
@@ -8776,6 +8940,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     closeSession: (id) => conductor.closeSession?.(id),
     isModelAllowed: isProjectSessionModel,
     projectModelError: PROJECT_MODEL_ERROR,
+    projectAgentRejection: (model, projectId) => projectAgentRejection(model, projectId),
   });
   // Advance a session's "last seen" mark for the overview unread dot (#387). The
   // client sends the `eventCount` it just observed when the operator opened the
@@ -8965,6 +9130,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ) {
         reply.code(400);
         return { error: PROJECT_MODEL_ERROR };
+      }
+      // Existing sessions keep their model, but a turn override is new work on its chosen agent.
+      if (body.model !== undefined && body.model !== session?.model && session?.projectId != null) {
+        const rejection = await projectAgentRejection(body.model, session.projectId);
+        if (rejection !== undefined) {
+          reply.code(400);
+          return { error: rejection };
+        }
       }
       // SBX-4: reject a turn against a project whose sandbox cannot become active
       // (stopped/failed/restarting) up front — 409 + repair hint — instead of

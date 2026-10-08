@@ -51,3 +51,33 @@ export async function enableTaskScreenshotSuggestions(): Promise<void> {
       'Photo-library access was not granted. You can still attach photos with the picker.',
     );
 }
+
+export type ScreenshotAccess = 'granted' | 'undetermined' | 'denied' | 'unavailable';
+
+/** Whether quick capture may look for screenshots, without prompting. */
+export async function screenshotAccess(): Promise<ScreenshotAccess> {
+  if (Platform.OS === 'web') return 'unavailable';
+  try {
+    const media = await import('expo-media-library');
+    const permission = await media.getPermissionsAsync(false, ['photo']);
+    if (permission.granted) return 'granted';
+    return permission.canAskAgain ? 'undetermined' : 'denied';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+/** A small JPEG data URI of the screenshot. Library URIs (ph://) do not render
+ *  in Image on every platform, so the suggestion shows this instead. */
+export async function previewTaskScreenshot(screenshot: { uri: string }): Promise<string | null> {
+  try {
+    const image = await manipulateAsync(screenshot.uri, [{ resize: { width: 120 } }], {
+      base64: true,
+      compress: 0.7,
+      format: SaveFormat.JPEG,
+    });
+    return image.base64 ? `data:image/jpeg;base64,${image.base64}` : null;
+  } catch {
+    return null;
+  }
+}

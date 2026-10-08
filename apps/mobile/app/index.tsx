@@ -1,4 +1,7 @@
+import { isLinkableSession } from '../lib/sessionLinks';
 import { subscribeLiveRefresh } from '../lib/liveConnection';
+import { moveProjectIdToIndex } from '../lib/projectReorder';
+import { SessionDragSlot } from '../components/SessionDragSlot';
 import { SessionIssueRef } from '../components/SessionIssueRef';
 import { SwipeableSessionRow } from '../components/SessionRowActions';
 import {
@@ -46,7 +49,16 @@ import {
   parseBranchIssue,
 } from '@verity/mobile';
 import { Link, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefCallback,
+} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -66,7 +78,7 @@ import Reanimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { AttentionMarkers } from '../components/AttentionMarkers';
+import { AttentionMarkers, drawsAttentionMarker } from '../components/AttentionMarkers';
 import { Icon } from '../components/Icon';
 import { ProjectPortChip, type ProjectPortLink } from '../components/ProjectPortChip';
 import { ProjectOverviewList } from '../components/ProjectOverviewList';
@@ -74,6 +86,7 @@ import { ProjectSessionsCollapse } from '../components/ProjectSessionsCollapse';
 import {
   useProjectReorder,
   useProjectRowDrag,
+  useSessionDragOrder,
   type ProjectReorderController,
 } from '../components/useProjectReorder';
 import { ProjectStatusDot } from '../components/ProjectStatusDot';
@@ -203,6 +216,8 @@ function SessionList({ client }: { client: VerityClient }) {
     refresh,
     remove,
     setFavorite,
+    sessionReordering,
+    reorder: reorderSessions,
     providerLimitRows,
     serverAttention,
   } = useSessionList(client);
@@ -253,7 +268,10 @@ function SessionList({ client }: { client: VerityClient }) {
     () => orderedGroups.filter((group) => !isPausedProjectGroup(group)),
     [orderedGroups],
   );
-  const pausedGroups = useMemo(() => orderedGroups.filter(isPausedProjectGroup), [orderedGroups]);
+  const livePausedGroups = useMemo(
+    () => orderedGroups.filter(isPausedProjectGroup),
+    [orderedGroups],
+  );
   const liveActiveGroupIds = useMemo(
     () => liveActiveGroups.map((group) => group.id),
     [liveActiveGroups],
@@ -290,19 +308,57 @@ function SessionList({ client }: { client: VerityClient }) {
     },
     [client, refreshProjects, sortableGroupIds],
   );
+  const sessionOrders = useMemo(
+    () =>
+      sessionReordering
+        ? Object.fromEntries(
+            orderedGroups
+              .filter((group) => !group.inactiveProjectId)
+              .map((group) => [
+                group.id,
+                group.sessions.map((session) => `session:${session.sessionId}`),
+              ]),
+          )
+        : {},
+    [orderedGroups, sessionReordering],
+  );
+  const onDropSession = useCallback(
+    (scope: string, order: readonly string[]) => {
+      const group = orderedGroups.find((entry) => entry.id === scope);
+      if (!group) return;
+      const ids = order.map((id) => id.slice('session:'.length));
+      void reorderSessions(group.project?.id ?? null, ids);
+    },
+    [orderedGroups, reorderSessions],
+  );
   const reorder = useProjectReorder({
     order: liveActiveGroupIds,
     sortable: sortableGroupIds,
     onDrop: onDropProject,
+    sessionOrders,
+    onDropSession,
   });
   const draggingProjectId = reorder.draggingId;
+  const draggingSessionId = reorder.draggingSessionId;
+  const draggingAnything = draggingProjectId !== null || draggingSessionId !== null;
   // A poll landing mid-drag must not reshuffle the rows under the finger: the
   // list keeps the groups it was showing at pickup until the drop commits.
   const frozenActiveGroups = useRef(liveActiveGroups);
   useEffect(() => {
-    if (draggingProjectId === null) frozenActiveGroups.current = liveActiveGroups;
-  }, [draggingProjectId, liveActiveGroups]);
-  const activeGroups = draggingProjectId === null ? liveActiveGroups : frozenActiveGroups.current;
+    if (!draggingAnything) frozenActiveGroups.current = liveActiveGroups;
+  }, [draggingAnything, liveActiveGroups]);
+  const activeGroups = draggingAnything ? frozenActiveGroups.current : liveActiveGroups;
+  const frozenPausedGroups = useRef(livePausedGroups);
+  useEffect(() => {
+    if (!draggingAnything) frozenPausedGroups.current = livePausedGroups;
+  }, [draggingAnything, livePausedGroups]);
+  const pausedGroups = draggingAnything ? frozenPausedGroups.current : livePausedGroups;
+  const floatingSessionGroup = [...activeGroups, ...pausedGroups].find(
+    (group) => group.id === reorder.draggingSessionScope,
+  );
+  const floatingSession = floatingSessionGroup?.sessions.find(
+    (session) => `session:${session.sessionId}` === draggingSessionId,
+  );
   const activeGroupIds = useMemo(() => activeGroups.map((group) => group.id), [activeGroups]);
   const defaultNewSessionProject = useMemo(
     () =>
@@ -366,7 +422,7 @@ function SessionList({ client }: { client: VerityClient }) {
   // The session whose actions sheet is open (its long-press opened the modal), or
   // null when the modal is closed.
   const [moveGeneration, setMoveGeneration] = useState(0);
-  const [renaming, setRenaming] = useState<SessionSummary | null>(null);
+  const [renaming, setRenaming] = useState<(SessionSummary & { openLinks?: boolean }) | null>(null);
 
   // Drop a stale split-pane selection: if the chosen session disappears (deleted,
   // or it was never refreshed in), clear it so the right pane falls back to the
@@ -437,8 +493,11 @@ function SessionList({ client }: { client: VerityClient }) {
   // at its current event count, clearing its unread dot.
   const onOpenSession = useCallback(
     (session: SessionSummary) => {
-      if (client) prefetchBranches(client, session.sessionId);
-      markSeen(session.sessionId, session.eventCount, session.eventCountVersion);
+      // Let Link navigation or split-pane selection start before updating the list.
+      setTimeout(() => {
+        markSeen(session.sessionId, session.eventCount, session.eventCountVersion);
+        if (client) prefetchBranches(client, session.sessionId);
+      }, 0);
     },
     [client, markSeen],
   );
@@ -542,7 +601,7 @@ function SessionList({ client }: { client: VerityClient }) {
             (collapsedOverride.get(item.id) ?? item.project?.collapsed ?? false)
           }
           onToggle={() => {
-            if (draggingProjectId !== null) return;
+            if (draggingAnything) return;
             const nextValue = !(collapsedOverride.get(item.id) ?? item.project?.collapsed ?? false);
             setCollapsedOverride((current) => {
               const next = new Map(current);
@@ -578,7 +637,9 @@ function SessionList({ client }: { client: VerityClient }) {
           renderedOrder={activeGroupIds}
           sortable={isReorderableGroup(item)}
           dragging={draggingProjectId === item.id}
-          reordering={draggingProjectId !== null}
+          reordering={draggingAnything}
+          sessionReordering={sessionReordering && !item.inactiveProjectId}
+          onReorderSession={onDropSession}
           onRenameSession={setRenaming}
           onToggleFavoriteSession={onToggleFavoriteSession}
           onDeleteSession={onDeleteSession}
@@ -602,6 +663,9 @@ function SessionList({ client }: { client: VerityClient }) {
       activeGroupIds,
       collapsedOverride,
       draggingProjectId,
+      draggingAnything,
+      sessionReordering,
+      onDropSession,
       enqueueProjectCollapse,
       reorder,
       wide,
@@ -698,7 +762,7 @@ function SessionList({ client }: { client: VerityClient }) {
             onContentSizeChange={reorder.onContentSizeChange}
             onScroll={reorder.onScroll}
             scrollEventThrottle={16}
-            draggingProjectId={draggingProjectId}
+            draggingProjectId={draggingProjectId ?? draggingSessionId}
             refreshing={refreshingOverview}
             onRefresh={onRefreshOverview}
             data={activeGroups}
@@ -751,6 +815,37 @@ function SessionList({ client }: { client: VerityClient }) {
               </>
             }
           />
+          {floatingSession && reorder.sessionDragToken !== null ? (
+            <Reanimated.View
+              pointerEvents="none"
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+              key={reorder.sessionDragToken}
+              onLayout={() => {
+                if (reorder.sessionDragToken !== null)
+                  reorder.confirmSessionOverlay(reorder.sessionDragToken);
+              }}
+              style={[reorder.overlayStyle, styles.sessionDragOverlay]}
+            >
+              <SessionRow
+                session={floatingSession}
+                onRename={() => {}}
+                onToggleFavorite={() => {}}
+                onDelete={() => {}}
+                unread={unread.has(floatingSession.sessionId)}
+                previewActive={previewUrls.has(floatingSession.sessionId)}
+                previewPublic={publicPreviews.has(floatingSession.sessionId)}
+                previewUrl={previewUrls.get(floatingSession.sessionId) ?? null}
+                repo={
+                  floatingSessionGroup?.project?.kind === 'github'
+                    ? floatingSessionGroup.project
+                    : undefined
+                }
+                selected={selectedId === floatingSession.sessionId}
+                floating
+              />
+            </Reanimated.View>
+          ) : null}
           {draggingProjectId !== null ? (
             <Reanimated.View
               pointerEvents="none"
@@ -770,6 +865,7 @@ function SessionList({ client }: { client: VerityClient }) {
       {renaming && client && (
         <SessionSettingsDialog
           key={renaming.sessionId}
+          initialSection={renaming.openLinks ? 'links' : undefined}
           sessionId={renaming.sessionId}
           sessionName={renaming.name}
           displayName={sessionLabel(renaming)}
@@ -793,18 +889,7 @@ function SessionList({ client }: { client: VerityClient }) {
             .filter((project) => project.kind === 'local')
             .map((project) => ({ id: project.id, name: project.repo }))}
           linkableSessions={sessions
-            .filter(
-              (candidate) =>
-                candidate.projectId !== renaming.projectId &&
-                candidate.projectId !== null &&
-                candidate.resumable !== false &&
-                projects.some(
-                  (project) =>
-                    project.id === candidate.projectId &&
-                    project.state === 'active' &&
-                    project.kind !== 'control_plane',
-                ),
-            )
+            .filter((candidate) => isLinkableSession(candidate, renaming.sessionId, projects))
             .map((candidate) => ({
               id: candidate.sessionId,
               name: sessionLabel(candidate),
@@ -1117,6 +1202,8 @@ function ProjectGroup({
   sortable,
   dragging,
   reordering,
+  sessionReordering,
+  onReorderSession,
   onRenameSession,
   onToggleFavoriteSession,
   onDeleteSession,
@@ -1145,7 +1232,9 @@ function ProjectGroup({
   sortable: boolean;
   dragging: boolean;
   reordering: boolean;
-  onRenameSession: (session: SessionSummary) => void;
+  sessionReordering: boolean;
+  onReorderSession: (scope: string, order: readonly string[]) => void;
+  onRenameSession: (session: SessionSummary & { openLinks?: boolean }) => void;
   onToggleFavoriteSession: (session: SessionSummary) => void;
   onDeleteSession: (session: SessionSummary) => void;
   onSelectSession?: (id: string) => void;
@@ -1177,6 +1266,7 @@ function ProjectGroup({
     enabled: sortable,
     floating,
   });
+  const sessionDragOrder = useSessionDragOrder(group.sessions);
   const [headerHovered, setHeaderHovered] = useState(false);
   // Container state for the leading dot. A group with no project row is either an
   // orphan (including soft-deleted projects, which are not repairable) or the
@@ -1419,31 +1509,72 @@ function ProjectGroup({
           <ProjectSessionsCollapse collapsed={collapsed}>
             <View style={styles.projectSessions}>
               {group.sessions.map((session, index) => (
-                <Fragment key={session.sessionId}>
-                  {/* Quiet inset hairline between sessions (never above the first — the
+                <SessionDragSlot
+                  key={session.sessionId}
+                  id={`session:${session.sessionId}`}
+                  scope={group.id}
+                  order={sessionDragOrder}
+                  reorder={reorder}
+                  enabled={sessionReordering && !collapsed}
+                >
+                  {(handle) => (
+                    <Fragment>
+                      {/* Quiet inset hairline between sessions (never above the first — the
                   project header already draws its own bottom border). Inset to start
                   under the session title, leaving the dot gutter clear (iOS-style
                   leading inset), so adjacent session blocks read as separate without
                   the restless full-width line grid the group had before. */}
-                  {index > 0 ? <View style={styles.sessionDivider} /> : null}
-                  <SessionRow
-                    session={session}
-                    onRename={() => onRenameSession(session)}
-                    onToggleFavorite={() => onToggleFavoriteSession(session)}
-                    onDelete={() => onDeleteSession(session)}
-                    onSelect={
-                      onSelectSession ? () => onSelectSession(session.sessionId) : undefined
-                    }
-                    onOpen={() => onOpenSession(session)}
-                    unread={unread.has(session.sessionId)}
-                    previewActive={previewUrls.has(session.sessionId)}
-                    previewPublic={publicPreviews.has(session.sessionId)}
-                    previewUrl={previewUrls.get(session.sessionId) ?? null}
-                    repo={group.project?.kind === 'github' ? group.project : undefined}
-                    selected={selectedId === session.sessionId}
-                    renaming={renamingId === session.sessionId}
-                  />
-                </Fragment>
+                      {index > 0 ? <View style={styles.sessionDivider} /> : null}
+                      <SessionRow
+                        session={session}
+                        dragHandleRef={handle}
+                        reorderable={sessionReordering}
+                        interactionsLocked={reordering}
+                        onMoveUp={
+                          sessionReordering && index > 0
+                            ? () =>
+                                onReorderSession(
+                                  group.id,
+                                  moveProjectIdToIndex(
+                                    group.sessions.map((entry) => `session:${entry.sessionId}`),
+                                    `session:${session.sessionId}`,
+                                    index - 1,
+                                  ),
+                                )
+                            : undefined
+                        }
+                        onMoveDown={
+                          sessionReordering && index < group.sessions.length - 1
+                            ? () =>
+                                onReorderSession(
+                                  group.id,
+                                  moveProjectIdToIndex(
+                                    group.sessions.map((entry) => `session:${entry.sessionId}`),
+                                    `session:${session.sessionId}`,
+                                    index + 1,
+                                  ),
+                                )
+                            : undefined
+                        }
+                        onOpenLinks={() => onRenameSession({ ...session, openLinks: true })}
+                        onRename={() => onRenameSession(session)}
+                        onToggleFavorite={() => onToggleFavoriteSession(session)}
+                        onDelete={() => onDeleteSession(session)}
+                        onSelect={
+                          onSelectSession ? () => onSelectSession(session.sessionId) : undefined
+                        }
+                        onOpen={() => onOpenSession(session)}
+                        unread={unread.has(session.sessionId)}
+                        previewActive={previewUrls.has(session.sessionId)}
+                        previewPublic={publicPreviews.has(session.sessionId)}
+                        previewUrl={previewUrls.get(session.sessionId) ?? null}
+                        repo={group.project?.kind === 'github' ? group.project : undefined}
+                        selected={selectedId === session.sessionId}
+                        renaming={renamingId === session.sessionId}
+                      />
+                    </Fragment>
+                  )}
+                </SessionDragSlot>
               ))}
             </View>
           </ProjectSessionsCollapse>
@@ -1735,6 +1866,7 @@ function ProviderLimitSegment({
 function SessionRow({
   session,
   onRename,
+  onOpenLinks,
   onToggleFavorite,
   onDelete,
   onSelect,
@@ -1746,8 +1878,15 @@ function SessionRow({
   repo,
   selected,
   renaming,
+  dragHandleRef,
+  reorderable = false,
+  interactionsLocked = false,
+  floating = false,
+  onMoveUp,
+  onMoveDown,
 }: {
   session: SessionSummary;
+  onOpenLinks?: () => void;
   onRename: () => void;
   onToggleFavorite: () => void;
   onDelete: () => void;
@@ -1763,6 +1902,12 @@ function SessionRow({
   repo?: RepoIdentity | undefined;
   selected?: boolean;
   renaming?: boolean;
+  dragHandleRef?: RefCallback<View>;
+  reorderable?: boolean;
+  interactionsLocked?: boolean;
+  floating?: boolean;
+  onMoveUp?: (() => void) | undefined;
+  onMoveDown?: (() => void) | undefined;
 }) {
   const { theme } = useUnistyles();
   const [hovered, setHovered] = useState(false);
@@ -1771,7 +1916,7 @@ function SessionRow({
   const label = sessionLabel(session);
   const favorite = session.favorite === true;
   const subtitle = modelDisplayName(session.model);
-  const running = session.status === 'running';
+  const running = session.status === 'running' || session.backgroundWorking === true;
   // "Done"/"Idle" are implicit from the ABSENCE of the working dot, so they get no
   // label — only states worth actively noticing keep a pill (see showsSessionLabel).
   const showLabel = showsSessionLabel(session.status);
@@ -1792,6 +1937,7 @@ function SessionRow({
   const notice = attentionNotice(session.attention);
   const edgeMarkers = sessionMarkers({
     favorite,
+    linked: session.linked,
     automation: session.automation?.status,
     shared: previewActive ? (previewPublic ? 'online' : 'local') : undefined,
   });
@@ -1827,33 +1973,31 @@ function SessionRow({
           finished session with something new to read), else nothing. */}
       <View style={styles.colChevron} />
       <View style={styles.colDot}>{running ? <WorkingDot /> : unread ? <UnreadDot /> : null}</View>
-      {/* Name with the attention markers and lifecycle label at its right end; below
-          it the model, followed directly by the session's standing features
-          (automation, preview). Attached to the model, they use the room a short
-          model name leaves free instead of competing for the right end, which on a
-          phone has no space for them beside the label. */}
+      {/* Name with the lifecycle label at its right end; below it the model,
+          followed by the issue and its PR status. Attached to the model, they use
+          the room a short model name leaves free instead of competing with the
+          marker column at the right end. */}
       <View style={[styles.titleBlock, styles.sessionTitleBlock]}>
         <View style={styles.sessionLine}>
-          <Text style={styles.sessionTitle} numberOfLines={1}>
-            {label}
-          </Text>
-          {markers.length > 0 || showLabel ? (
+          <View ref={dragHandleRef} collapsable={false} style={styles.sessionDragHandle}>
+            <Text style={styles.sessionTitle} numberOfLines={1}>
+              {label}
+            </Text>
+          </View>
+          {/* The lifecycle label is hidden while working since the left dot
+              already conveys it. */}
+          {showLabel ? (
             <View style={[styles.sessionLineEnd, styles.sessionTitleLineEnd]}>
-              <AttentionMarkers flags={markers} />
-              {/* The lifecycle label is hidden while working since the left dot
-                  already conveys it. */}
-              {showLabel ? (
-                <View
-                  style={[
-                    styles.statusPill,
-                    { borderColor: toneColor, backgroundColor: `${toneColor}1f` },
-                  ]}
-                >
-                  <Text style={[styles.statusPillText, { color: toneColor }]} numberOfLines={1}>
-                    {badge.label}
-                  </Text>
-                </View>
-              ) : null}
+              <View
+                style={[
+                  styles.statusPill,
+                  { borderColor: toneColor, backgroundColor: `${toneColor}1f` },
+                ]}
+              >
+                <Text style={[styles.statusPillText, { color: toneColor }]} numberOfLines={1}>
+                  {badge.label}
+                </Text>
+              </View>
             </View>
           ) : null}
         </View>
@@ -1869,21 +2013,41 @@ function SessionRow({
           >
             {notice ? attentionNoticeText(notice) : subtitle}
           </Text>
-          {hasIssue ? (
+          {/* The PR status sits after the issue it belongs to, not at the end of the
+              title line, where it collided with the marker column. */}
+          {hasIssue || drawsAttentionMarker(markers) ? (
             <View style={styles.sessionFeatures}>
               <Text style={styles.rowSub} accessible={false} importantForAccessibility="no">
                 ·
               </Text>
               <SessionIssueRef branch={session.branch} repo={repo} />
+              <AttentionMarkers flags={markers} size={13} inline />
             </View>
           ) : null}
         </View>
       </View>
       {/* Favorite, automation and sharing: icon + short bar on the trailing edge,
           so the leading edge stays with the working/unread dot. */}
-      <SessionMarkerColumn markers={edgeMarkers} previewUrl={previewUrl ?? null} />
+      <SessionMarkerColumn
+        markers={edgeMarkers}
+        previewUrl={previewUrl ?? null}
+        onOpenLinks={interactionsLocked ? undefined : onOpenLinks}
+      />
     </View>
   );
+
+  if (floating) return <View style={styles.row}>{rowBody}</View>;
+  const moveActions = {
+    accessibilityActions: [
+      ...(onMoveUp ? [{ name: 'moveUp', label: 'Move up' }] : []),
+      ...(onMoveDown ? [{ name: 'moveDown', label: 'Move down' }] : []),
+    ],
+    onAccessibilityAction: ({ nativeEvent }: { nativeEvent: { actionName: string } }) => {
+      if (interactionsLocked) return;
+      if (nativeEvent.actionName === 'moveUp') onMoveUp?.();
+      if (nativeEvent.actionName === 'moveDown') onMoveDown?.();
+    },
+  };
 
   // Wide layout: select into the right pane instead of navigating. Narrow layout:
   // navigate to the full-screen session via the Link, exactly as before.
@@ -1894,6 +2058,7 @@ function SessionRow({
       onToggleFavorite={onToggleFavorite}
       onDelete={onDelete}
       onEdit={onRename}
+      disabled={interactionsLocked}
     >
       {row}
     </SwipeableSessionRow>
@@ -1910,16 +2075,23 @@ function SessionRow({
         ]}
         onHoverIn={() => setHovered(true)}
         onHoverOut={() => setHovered(false)}
+        disabled={interactionsLocked}
+        {...moveActions}
         onPress={() => {
-          onOpen?.();
+          if (interactionsLocked) return;
           onSelect();
+          onOpen?.();
         }}
-        onLongPress={onRename}
+        onLongPress={reorderable ? undefined : onRename}
         delayLongPress={300}
         accessibilityRole="button"
         accessibilityState={{ selected: !!selected }}
         accessibilityLabel={a11yLabel}
-        accessibilityHint="Long press to edit session settings"
+        accessibilityHint={
+          reorderable
+            ? 'Hold the session title to move it within this project. Swipe for settings.'
+            : 'Long press to edit session settings'
+        }
       >
         {rowBody}
       </Pressable>,
@@ -1940,10 +2112,18 @@ function SessionRow({
         ]}
         onHoverIn={() => setHovered(true)}
         onHoverOut={() => setHovered(false)}
-        onPress={() => onOpen?.()}
-        onLongPress={onRename}
+        disabled={interactionsLocked}
+        {...moveActions}
+        onPress={() => {
+          if (!interactionsLocked) onOpen?.();
+        }}
+        onLongPress={reorderable ? undefined : onRename}
         delayLongPress={300}
-        accessibilityHint="Long press to edit session settings"
+        accessibilityHint={
+          reorderable
+            ? 'Hold the session title to move it within this project. Swipe for settings.'
+            : 'Long press to edit session settings'
+        }
       >
         {rowBody}
       </Pressable>
@@ -2515,6 +2695,8 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.text.xs,
     lineHeight: 17 * theme.fontScale,
   },
+  sessionDragHandle: { flex: 1, minWidth: 0 },
+  sessionDragOverlay: { backgroundColor: theme.colors.surfaceAlt, borderRadius: theme.radius.sm },
   sessionTitle: {
     minWidth: 0,
     flexShrink: 1,

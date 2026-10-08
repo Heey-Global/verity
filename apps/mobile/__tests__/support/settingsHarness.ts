@@ -201,6 +201,7 @@ export function makeProject(
 
 export type ClientOverrides = {
   settings?: VeritySettings;
+  listPairedDevices?: jest.Mock;
   getVeritySettings?: jest.Mock;
   updateVeritySettings?: jest.Mock;
   getSecretStatus?: jest.Mock;
@@ -278,6 +279,7 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     listIntegrations:
       opts.listIntegrations ?? jest.fn().mockResolvedValue({ accounts: [], sources: [] }),
     listProviderLimits: opts.listProviderLimits ?? jest.fn().mockResolvedValue([]),
+    listPairedDevices: opts.listPairedDevices ?? jest.fn().mockResolvedValue([]),
   };
   // `null` stands for a server too old to have the endpoint at all — the method
   // is absent, not failing, which is a case the MCP list has to tell apart.

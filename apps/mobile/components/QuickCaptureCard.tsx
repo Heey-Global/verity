@@ -1,5 +1,4 @@
 import {
-  TASK_SAVE_DELAY_MS,
   TASK_SILENCE_MS,
   projectDisplayName,
   type AttachmentUpload,
@@ -24,7 +23,14 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon } from './Icon';
 import { useVoiceInput } from '../hooks/useVoiceInput';
 import { pickFiles, pickImagesFromLibrary } from '../lib/attachments';
-import { recentTaskScreenshot, readTaskScreenshot } from '../lib/taskScreenshot';
+import {
+  enableTaskScreenshotSuggestions,
+  previewTaskScreenshot,
+  readTaskScreenshot,
+  recentTaskScreenshot,
+  screenshotAccess,
+} from '../lib/taskScreenshot';
+import { saveTaskPreferences, useTaskPreferences } from '../lib/taskPreferences';
 import { captureTask } from '../lib/tasksStore';
 
 export function QuickCaptureCard({
@@ -40,26 +46,38 @@ export function QuickCaptureCard({
 }) {
   const { theme } = useUnistyles();
   const [text, setText] = useState('');
+  const preferences = useTaskPreferences();
   const [screenshot, setScreenshot] = useState<{ uri: string; filename: string } | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  /** Show the one-line photo-access explainer instead of failing silently. */
+  const [askAccess, setAskAccess] = useState(false);
+  const lookForScreenshot = useRef(async (isActive: () => boolean) => {
+    const found = await recentTaskScreenshot();
+    if (!isActive() || !found) return;
+    setScreenshot(found);
+    const uri = await previewTaskScreenshot(found);
+    if (isActive()) setPreview(uri);
+  });
   useEffect(() => {
+    if (!preferences.loaded || !preferences.screenshots) return;
     let active = true;
-    void recentTaskScreenshot().then((value) => {
-      if (active) setScreenshot(value);
+    const isActive = () => active;
+    void screenshotAccess().then((access) => {
+      if (!active) return;
+      if (access === 'granted') void lookForScreenshot.current(isActive);
+      else if (access === 'undetermined' && !preferences.screenshotPromptDismissed)
+        setAskAccess(true);
     });
     return () => {
       active = false;
     };
-  }, []);
+  }, [preferences.loaded, preferences.screenshots, preferences.screenshotPromptDismissed]);
   const [uploads, setUploads] = useState<AttachmentUpload[]>([]);
   const [projectId, setProjectId] = useState(context.projectId);
-  const [editing, setEditing] = useState(false);
   const [other, setOther] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [remaining, setRemaining] = useState(TASK_SAVE_DELAY_MS);
   const voice = useVoiceInput(text, setText, undefined, { silenceMs: TASK_SILENCE_MS });
   const started = useRef(false);
-  const recorded = useRef(false);
-  const saveRef = useRef<() => void>(() => undefined);
   const savingRef = useRef(false);
   useEffect(() => {
     if (!started.current) {
@@ -67,13 +85,9 @@ export function QuickCaptureCard({
       voice.toggle();
     }
   }, [voice]);
-  useEffect(() => {
-    if (voice.state === 'recording') recorded.current = true;
-  }, [voice.state]);
   const save = async (target = projectId) => {
     if (!text.trim() || savingRef.current) return;
     if (uploads.reduce((total, upload) => total + upload.data.length, 0) > 45_000_000) {
-      setEditing(true);
       Alert.alert('Attachments too large', 'Keep the total attachment size below 33 MB.');
       return;
     }
@@ -94,36 +108,12 @@ export function QuickCaptureCard({
       );
       onClose();
     } catch (error) {
-      setEditing(true);
       Alert.alert('Could not save task', error instanceof Error ? error.message : 'Try again');
     } finally {
       savingRef.current = false;
       setSaving(false);
     }
   };
-  saveRef.current = () => {
-    void save();
-  };
-  // One predicate drives both the auto-save timer and the countdown UI.
-  const autoSaving =
-    voice.state === 'idle' && recorded.current && text.trim().length > 0 && !editing && !saving;
-  useEffect(() => {
-    // Reset while paused, so the bar is already full when the countdown resumes.
-    if (!autoSaving) {
-      setRemaining(TASK_SAVE_DELAY_MS);
-      return;
-    }
-    const start = Date.now();
-    const timer = setInterval(() => {
-      const next = Math.max(0, TASK_SAVE_DELAY_MS - (Date.now() - start));
-      setRemaining(next);
-      if (next === 0) {
-        clearInterval(timer);
-        saveRef.current();
-      }
-    }, 100);
-    return () => clearInterval(timer);
-  }, [autoSaving]);
   const dismiss = () => {
     if (!savingRef.current) {
       voice.abort();
@@ -137,8 +127,6 @@ export function QuickCaptureCard({
     },
   });
   const pick = async (kind: 'photo' | 'file') => {
-    const wasEditing = editing;
-    setEditing(true);
     if (uploads.length >= 8) return;
     try {
       const selected = await (kind === 'photo'
@@ -148,22 +136,22 @@ export function QuickCaptureCard({
     } catch (error) {
       Alert.alert('Could not attach', error instanceof Error ? error.message : 'Try again');
     } finally {
-      setEditing(wasEditing);
     }
   };
   const recording = voice.state === 'recording';
   // Chips and Save only once dictation has fully settled, so a late final
   // result is never cut off by an early save.
   const settled = voice.state === 'idle';
-  const chips = [...new Set([context.projectId, null, ...projects.slice(0, 3).map((p) => p.id)])];
+  // The picked project always shows as a selected chip, also when it came from Other….
+  const chips = [
+    ...new Set([projectId, context.projectId, null, ...projects.slice(0, 3).map((p) => p.id)]),
+  ];
   const label = (id: string | null) =>
     id === null
       ? 'General'
       : projectDisplayName(
           projects.find((p) => p.id === id) ?? { owner: '', repo: id, kind: 'local' },
         );
-  const counting = autoSaving;
-  const shown = remaining;
   const chip = (id: string | null) => {
     const selected = projectId === id;
     return (
@@ -171,10 +159,7 @@ export function QuickCaptureCard({
         key={id ?? 'general'}
         accessibilityRole="button"
         accessibilityState={{ selected }}
-        onPress={() => {
-          setProjectId(id);
-          void save(id);
-        }}
+        onPress={() => setProjectId(id)}
         style={({ pressed }) => [
           styles.chip,
           selected ? styles.chipSelected : null,
@@ -205,9 +190,7 @@ export function QuickCaptureCard({
             ) : (
               <Text style={styles.headLabel}>{saving ? 'Saving…' : 'New task'}</Text>
             )}
-            <Text style={styles.target} numberOfLines={1}>
-              → <Text style={styles.targetName}>{label(projectId)}</Text>
-            </Text>
+            <View style={styles.headSpacer} />
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Discard capture"
@@ -230,9 +213,7 @@ export function QuickCaptureCard({
             maxLength={2000}
             placeholder={recording ? 'Listening…' : 'What needs doing?'}
             placeholderTextColor={theme.colors.textFaint}
-            onFocus={() => setEditing(true)}
             onChangeText={(value) => {
-              setEditing(true);
               voice.onComposerEdit(value);
               setText(value);
             }}
@@ -243,10 +224,12 @@ export function QuickCaptureCard({
           ) : null}
           {screenshot ? (
             <View style={styles.suggest}>
-              {/* An icon rather than the asset itself: library URIs (ph://) do not
-                  render reliably in Image on every platform. */}
               <View style={styles.suggestThumb}>
-                <Icon name="image" size={18} color={theme.colors.textMuted} />
+                {preview ? (
+                  <Image source={{ uri: preview }} style={styles.suggestImage} />
+                ) : (
+                  <Icon name="image" size={18} color={theme.colors.textMuted} />
+                )}
               </View>
               <View style={styles.suggestBody}>
                 <Text style={styles.suggestTitle}>Screenshot from just now</Text>
@@ -255,7 +238,6 @@ export function QuickCaptureCard({
               <Pressable
                 accessibilityRole="button"
                 onPress={() => {
-                  setEditing(true);
                   void readTaskScreenshot(screenshot)
                     .then((items) => {
                       setUploads((previous) => [...previous, ...items]);
@@ -274,6 +256,43 @@ export function QuickCaptureCard({
               </Pressable>
             </View>
           ) : null}
+          {askAccess && !screenshot ? (
+            <View style={styles.perm}>
+              <View style={styles.permIcon}>
+                <Icon name="image" size={16} color={theme.colors.textMuted} />
+              </View>
+              <View style={styles.suggestBody}>
+                <Text style={styles.suggestTitle}>Attach screenshots in one tap</Text>
+                <Text style={styles.hint}>
+                  Verity needs photo access to offer the screenshot you just took.
+                </Text>
+              </View>
+              <View style={styles.permActions}>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => {
+                    setAskAccess(false);
+                    void enableTaskScreenshotSuggestions()
+                      .then(() => lookForScreenshot.current(() => true))
+                      .catch(() => undefined);
+                  }}
+                  style={({ pressed }) => [styles.attach, pressed ? styles.pressed : null]}
+                >
+                  <Text style={styles.attachLabel}>Allow</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  hitSlop={6}
+                  onPress={() => {
+                    setAskAccess(false);
+                    void saveTaskPreferences({ screenshotPromptDismissed: true });
+                  }}
+                >
+                  <Text style={styles.hint}>Not now</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
           {uploads.length ? (
             <ScrollView horizontal contentContainerStyle={styles.thumbs}>
               {uploads.map((upload, index) => (
@@ -281,7 +300,6 @@ export function QuickCaptureCard({
                   key={index}
                   accessibilityLabel={`Remove attachment ${String(index + 1)}`}
                   onPress={() => {
-                    setEditing(true);
                     setUploads((items) => items.filter((_, i) => i !== index));
                   }}
                   style={styles.thumb}
@@ -306,10 +324,60 @@ export function QuickCaptureCard({
               ))}
             </ScrollView>
           ) : null}
-          {!settled ? (
-            <View style={styles.toolsRow}>
-              <AttachButton onPick={pick} />
-              <Text style={styles.hint}>Stops when you pause</Text>
+          {/* One layout throughout: the project is picked here while or after
+              speaking, and only the footer's main button changes. Nothing is
+              saved until the operator taps Save. */}
+          <View style={styles.chips}>
+            {chips.map(chip)}
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setOther(!other)}
+              style={({ pressed }) => [styles.chip, pressed ? styles.pressed : null]}
+            >
+              <Text style={[styles.chipLabel, styles.chipLabelMuted]}>Other…</Text>
+            </Pressable>
+          </View>
+          {other ? (
+            <ScrollView style={styles.otherList}>
+              {projects.map((project) => (
+                <Pressable
+                  key={project.id}
+                  style={({ pressed }) => [styles.otherRow, pressed ? styles.pressed : null]}
+                  onPress={() => {
+                    setProjectId(project.id);
+                    setOther(false);
+                  }}
+                >
+                  <Text style={styles.chipLabel}>{projectDisplayName(project)}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          ) : null}
+          <View style={styles.footer}>
+            <AttachButton onPick={pick} />
+            <Text style={[styles.hint, styles.footerHint]} numberOfLines={1}>
+              {settled ? '' : 'Stops when you pause'}
+            </Text>
+            {settled ? (
+              <Pressable
+                accessibilityRole="button"
+                disabled={!text.trim() || saving}
+                onPress={() => {
+                  void save();
+                }}
+                style={({ pressed }) => [
+                  styles.save,
+                  !text.trim() ? styles.saveDisabled : null,
+                  pressed ? styles.pressed : null,
+                ]}
+              >
+                {saving ? (
+                  <ActivityIndicator color={theme.colors.onPrimary} />
+                ) : (
+                  <Text style={styles.saveLabel}>Save</Text>
+                )}
+              </Pressable>
+            ) : (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Stop recording"
@@ -323,81 +391,8 @@ export function QuickCaptureCard({
               >
                 <View style={styles.stopSquare} />
               </Pressable>
-            </View>
-          ) : (
-            <>
-              <View style={styles.chips}>
-                {chips.map(chip)}
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => {
-                    setEditing(true);
-                    setOther(!other);
-                  }}
-                  style={({ pressed }) => [styles.chip, pressed ? styles.pressed : null]}
-                >
-                  <Text style={[styles.chipLabel, styles.chipLabelMuted]}>Other…</Text>
-                </Pressable>
-              </View>
-              {other ? (
-                <ScrollView style={styles.otherList}>
-                  {projects.map((project) => (
-                    <Pressable
-                      key={project.id}
-                      style={({ pressed }) => [styles.otherRow, pressed ? styles.pressed : null]}
-                      onPress={() => {
-                        setProjectId(project.id);
-                        void save(project.id);
-                      }}
-                    >
-                      <Text style={styles.chipLabel}>{projectDisplayName(project)}</Text>
-                    </Pressable>
-                  ))}
-                </ScrollView>
-              ) : null}
-              <View style={styles.footer}>
-                <AttachButton onPick={pick} />
-                {counting ? (
-                  <View style={styles.countdown}>
-                    <View style={styles.countdownTrack}>
-                      <View
-                        style={[
-                          styles.countdownFill,
-                          {
-                            width:
-                              `${String(Math.round((shown / TASK_SAVE_DELAY_MS) * 100))}%` as `${number}%`,
-                          },
-                        ]}
-                      />
-                    </View>
-                    <Text style={styles.hint}>
-                      Saving to {label(projectId)} · swipe down to discard
-                    </Text>
-                  </View>
-                ) : (
-                  <View style={styles.footerSpacer} />
-                )}
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={!text.trim() || saving}
-                  onPress={() => {
-                    void save();
-                  }}
-                  style={({ pressed }) => [
-                    styles.save,
-                    !text.trim() ? styles.saveDisabled : null,
-                    pressed ? styles.pressed : null,
-                  ]}
-                >
-                  {saving ? (
-                    <ActivityIndicator color={theme.colors.onPrimary} />
-                  ) : (
-                    <Text style={styles.saveLabel}>{counting ? 'Save now' : 'Save'}</Text>
-                  )}
-                </Pressable>
-              </View>
-            </>
-          )}
+            )}
+          </View>
         </View>
       </KeyboardAvoidingView>
     </Modal>
@@ -447,9 +442,17 @@ function AttachButton({ onPick }: { onPick(kind: 'photo' | 'file'): Promise<void
 }
 
 const styles = StyleSheet.create((theme) => ({
-  backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.35)' },
+  backdrop: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    paddingHorizontal: theme.spacing.sm,
+  },
   card: {
-    marginHorizontal: theme.spacing.sm,
+    // Never the full width of a tablet: a capture card, not a sheet.
+    width: '100%',
+    maxWidth: 480,
+    alignSelf: 'center',
     marginBottom: theme.spacing.xl,
     paddingHorizontal: theme.spacing.lg,
     paddingBottom: theme.spacing.lg,
@@ -465,13 +468,6 @@ const styles = StyleSheet.create((theme) => ({
   recDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: theme.colors.tone.danger },
   recLabel: { color: theme.colors.tone.danger, fontSize: theme.text.sm, fontWeight: '600' },
   headLabel: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '600' },
-  target: {
-    marginLeft: 'auto',
-    color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    flexShrink: 1,
-  },
-  targetName: { color: theme.colors.text, fontWeight: '600' },
   bars: { flexDirection: 'row', alignItems: 'center', gap: 3, height: 22, marginLeft: 4 },
   bar: { width: 3, borderRadius: 2 },
   error: { color: theme.colors.tone.danger, fontSize: theme.text.sm },
@@ -496,11 +492,34 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surfaceAlt,
   },
   suggestThumb: {
+    overflow: 'hidden',
     width: 34,
     height: 48,
     borderRadius: 6,
     backgroundColor: theme.colors.background,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
+  suggestImage: { width: '100%', height: '100%' },
+  perm: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    padding: theme.spacing.sm,
+    borderRadius: theme.radius.md + 4,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: theme.colors.border,
+  },
+  permIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: theme.colors.surfaceAlt,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  permActions: { alignItems: 'center', gap: 6 },
   suggestBody: { flex: 1, gap: 2 },
   suggestTitle: { color: theme.colors.text, fontSize: theme.text.sm },
   attach: {
@@ -545,7 +564,6 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  toolsRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
   tool: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -558,7 +576,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   toolGroup: { flexDirection: 'row', gap: theme.spacing.sm },
   stop: {
-    marginLeft: 'auto',
     width: 44,
     height: 44,
     borderRadius: 22,
@@ -592,16 +609,9 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
-  footer: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
-  countdown: { flex: 1, gap: 6 },
-  countdownTrack: {
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: theme.colors.surfaceAlt,
-    overflow: 'hidden',
-  },
-  countdownFill: { height: '100%', borderRadius: 2, backgroundColor: theme.colors.primary },
-  footerSpacer: { flex: 1 },
+  footer: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md, minHeight: 44 },
+  headSpacer: { flex: 1 },
+  footerHint: { flex: 1 },
   save: {
     minHeight: 40,
     minWidth: 88,

@@ -5,6 +5,7 @@ import {
   BREVITY_SYSTEM_PROMPT,
   CHOICES_SYSTEM_PROMPT,
   CODE_REVIEW_SYSTEM_PROMPT,
+  DISMISSED_PLAN_SYSTEM_PROMPT,
   DELEGATION_SYSTEM_PROMPT,
   LANGUAGE_SYSTEM_PROMPT,
   LOCAL_PROJECT_SYSTEM_PROMPT,
@@ -1105,6 +1106,30 @@ describe('Conductor.sendTurn', () => {
     expect(fake.last().permissionMode).toBe('acceptEdits');
     expect(fake.last().planning).toBeUndefined();
     expect(fake.last().appendSystemPrompt).not.toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
+  });
+
+  it('keeps a dismissed plan as history without authorizing its implementation on resumed turns', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.setSessionPlanning('s1', 'active');
+    await ctx.store.presentSessionPlan('s1', '1. Change the gestures');
+    await ctx.store.setSessionPlanning('s1', 'discarded');
+    const fake = scriptedBackend({ sessionId: 'thread' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      permissionMode: 'auto',
+      worktreeExists: async () => true,
+    });
+
+    // A resumed backend may still carry the old planning instructions and plan.
+    for (const message of ['Discuss another approach', 'What about step 1?']) {
+      await conductor.sendTurn('s1', message);
+      expect(fake.last().appendSystemPrompt).toContain(DISMISSED_PLAN_SYSTEM_PROMPT);
+      expect(fake.last().appendSystemPrompt).not.toContain(PLANNING_ACTIVE_SYSTEM_PROMPT);
+      expect(fake.last().planning).toBeUndefined();
+      expect(fake.last().permissionMode).toBe('auto');
+    }
+    expect((await ctx.store.getSession('s1'))?.planningPlan).toBe('1. Change the gestures');
   });
 
   it('appends the assigned-tasks section on fresh and resumed turns alike', async () => {
@@ -2294,6 +2319,7 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
 
   it('stopSession includes an enqueue already awaiting durable storage and prevents it from draining', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    let turnSignal: AbortSignal | undefined;
     let releaseTurn = (): void => undefined;
     const turnGate = new Promise<void>((resolve) => {
       releaseTurn = resolve;
@@ -2311,7 +2337,11 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     });
     const conductor = new Conductor({
       store: ctx.store,
-      backend: gatedBackend(turnGate).backend,
+      backend: gatedBackend(turnGate, {
+        during: async (turn) => {
+          turnSignal = turn.opts.signal;
+        },
+      }).backend,
       worktreeExists: async () => true,
     });
 
@@ -2321,12 +2351,16 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     });
     await vi.waitFor(() => expect(enqueueStarted).toHaveBeenCalledOnce());
     const stop = conductor.stopSession('s1');
-    releaseEnqueue();
+    try {
+      // A stalled durable enqueue must not delay signalling the active agent.
+      await vi.waitFor(() => expect(turnSignal?.aborted).toBe(true));
+    } finally {
+      releaseEnqueue();
+      releaseTurn();
+      await stop;
+    }
 
     await expect(enqueue).resolves.toEqual({ queued: true });
-    // A cancel ACK is not process exit. Let the old backend actually finish before
-    // Stop may report the cancellation as complete.
-    releaseTurn();
     await expect(stop).resolves.toMatchObject({
       cancelled: true,
       droppedQueued: [expect.objectContaining({ prompt: 'queued while stopping' })],
@@ -6552,6 +6586,185 @@ describe('Conductor mid-turn steering (#101)', () => {
     expect(prompts.find((event) => event.text === 'Merged PR #119')?.steered).toBe(true);
   });
 
+  it('refuses chat implementation while newer steering awaits prompt persistence', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', '1. First');
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'Implement plan');
+    await waitFor(fake.ready);
+    const running = (await ctx.store.listRunningTurns())[0]!;
+    let unblock!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    const append = ctx.store.appendEvent.bind(ctx.store);
+    const spy = vi.spyOn(ctx.store, 'appendEvent').mockImplementation(async (...args) => {
+      if (args[1].t === 'prompt' && args[1].steered) await barrier;
+      return append(...args);
+    });
+    const steer = conductor.dispatchTurn('s1', 'Wait, do not implement');
+    await waitFor(() => fake.steered.length === 1);
+    try {
+      // The backend already sees the cancellation, while durable history still
+      // contains the previous approval. It must not reopen write access.
+      expect(
+        await conductor.dispatchTurn(
+          's1',
+          'Implement',
+          {},
+          {
+            planningRevision: revision!,
+            queueBehindActiveTurn: true,
+            planningConsent: {
+              turnId: running.turnId!,
+              promptSeq: running.promptSeq,
+              runningPromptSeq: running.promptSeq,
+            },
+          },
+        ),
+      ).toEqual({ queued: false, accepted: false });
+      expect((await ctx.store.getSession('s1'))?.planning).toBe('active');
+      expect(await ctx.store.listQueuedTurns()).toEqual([]);
+    } finally {
+      unblock();
+      await steer;
+      spy.mockRestore();
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+  });
+
+  it('keeps chat consent revoked after delivered steering fails persistence', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', '1. First');
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'Implement plan');
+    await waitFor(fake.ready);
+    const running = (await ctx.store.listRunningTurns())[0]!;
+    const consent = {
+      turnId: running.turnId!,
+      promptSeq: running.promptSeq,
+      runningPromptSeq: running.promptSeq,
+    };
+    const append = ctx.store.appendEvent.bind(ctx.store);
+    const spy = vi.spyOn(ctx.store, 'appendEvent').mockImplementation(async (...args) => {
+      if (args[1].t === 'prompt' && args[1].steered) throw new Error('prompt storage unavailable');
+      return append(...args);
+    });
+    try {
+      await conductor.dispatchTurn('s1', 'Wait, do not implement');
+      expect(fake.steered).toHaveLength(1);
+      // Dispatch has finished, so no pending counter protects the old approval.
+      expect(
+        await conductor.dispatchTurn(
+          's1',
+          'Implement',
+          {},
+          {
+            planningRevision: revision!,
+            queueBehindActiveTurn: true,
+            planningConsent: consent,
+          },
+        ),
+      ).toEqual({ queued: false, accepted: false });
+      expect((await ctx.store.getSession('s1'))?.planning).toBe('active');
+      expect(await ctx.store.listQueuedTurns()).toEqual([]);
+      spy.mockRestore();
+      await conductor.dispatchTurn('s1', 'Implement plan', {}, { initiatedBy: { userId: 'u1' } });
+      const latest = (await ctx.store.getEventsAfter('s1', running.promptSeq))
+        .filter(({ event }) => event.t === 'prompt')
+        .at(-1)!;
+      expect(
+        await conductor.dispatchTurn(
+          's1',
+          'Implement',
+          {},
+          {
+            planningRevision: revision!,
+            queueBehindActiveTurn: true,
+            planningConsent: { ...consent, promptSeq: latest.seq },
+          },
+        ),
+      ).toEqual({ queued: true });
+    } finally {
+      spy.mockRestore();
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+  });
+
+  it('orders steering delivery after a chat acceptance already committing', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.startSessionPlanning('s1');
+    const revision = await ctx.store.presentSessionPlan('s1', '1. First');
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'Implement plan');
+    await waitFor(fake.ready);
+    const running = (await ctx.store.listRunningTurns())[0]!;
+    let unblock!: () => void;
+    let accepting = false;
+    const barrier = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    const enqueue = ctx.store.enqueuePlanImplementation.bind(ctx.store);
+    const spy = vi
+      .spyOn(ctx.store, 'enqueuePlanImplementation')
+      .mockImplementation(async (...args) => {
+        accepting = true;
+        await barrier;
+        // Delivery of newer steering here would make the durable old approval stale.
+        expect(fake.steered).toEqual([]);
+        return enqueue(...args);
+      });
+    const implementation = conductor.dispatchTurn(
+      's1',
+      'Implement',
+      {},
+      {
+        planningRevision: revision!,
+        queueBehindActiveTurn: true,
+        planningConsent: {
+          turnId: running.turnId!,
+          promptSeq: running.promptSeq,
+          runningPromptSeq: running.promptSeq,
+        },
+      },
+    );
+    await waitFor(() => accepting);
+    const cancellation = conductor.dispatchTurn('s1', 'Wait, do not implement');
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(fake.steered).toEqual([]);
+      unblock();
+      expect(await implementation).toEqual({ queued: true });
+      // Acceptance linearizes first; the later prompt gets its own normal turn.
+      expect(await cancellation).toEqual({ queued: true });
+      expect(fake.steered).toEqual([]);
+    } finally {
+      unblock();
+      await Promise.allSettled([implementation, cancellation]);
+      spy.mockRestore();
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+  });
   it('keeps the live planning turn restricted after a planning decision', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.setSessionPlanning('s1', 'active');
@@ -6615,10 +6828,24 @@ describe('Conductor mid-turn steering (#101)', () => {
 
   it('durably accepts and dispatches a plan when the session is idle', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.tasks.upsert({
+      id: 'existing-task',
+      ownerUserId: '00000000-0000-4000-8000-000000000001',
+      sessionId: 's1',
+      origin: 'user',
+      title: 'Existing work',
+    });
     await ctx.store.startSessionPlanning('s1');
-    const revision = await ctx.store.presentSessionPlan('s1', 'Approved work');
+    const revision = await ctx.store.presentSessionPlan(
+      's1',
+      '# Approved work\n\n## Goal\nFix gestures.\n\n## Steps\n1. **Gestures** — separate swipe and drag.',
+    );
     const fake = steerableBackend();
+    const bus = new InMemoryEventBus();
+    const published: AgentEvent[] = [];
+    bus.subscribe('s1', ({ event }) => published.push(event));
     const conductor = new Conductor({
+      bus,
       store: ctx.store,
       backend: fake.backend,
       worktreeExists: async () => true,
@@ -6635,6 +6862,19 @@ describe('Conductor mid-turn steering (#101)', () => {
       ).toEqual({ queued: true });
       await waitFor(fake.ready);
       expect(enqueue).toHaveBeenCalledOnce();
+      // Task creation must reach live devices as well as the recovery log.
+      const taskEvents = published.filter((event) => event.t === 'tasks_updated');
+      expect(taskEvents).toHaveLength(1);
+      expect(taskEvents[0]).toMatchObject({
+        origin: 'agent',
+        change: 'added',
+        taskIds: [expect.any(String)],
+      });
+      expect(
+        (await ctx.store.getEventsAfter('s1', 0))
+          .filter(({ event }) => event.t === 'tasks_updated')
+          .map(({ event }) => event),
+      ).toEqual(taskEvents);
       expect((await ctx.store.getSession('s1'))?.planning).toBe('implemented');
       expect(fake.last().planning).not.toBe(true);
       expect(

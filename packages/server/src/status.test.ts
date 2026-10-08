@@ -17,7 +17,22 @@ import {
   deriveSessionStatusFromProjection,
   permissionEventAwaitsInput,
   projectionTailIsSelfContained,
+  sessionHasOpenTasks,
 } from './status.js';
+
+it('keeps current background tasks through input waits but clears terminal and old-turn tasks', () => {
+  const start: AgentEvent = { t: 'task', id: 'child', phase: 'started' };
+  expect(sessionHasOpenTasks([start, { t: 'status', state: 'awaiting_input' }])).toBe(true);
+  for (const end of [
+    { t: 'task', id: 'child', phase: 'ended' },
+    { t: 'status', state: 'completed' },
+    { t: 'status', state: 'crashed' },
+    { t: 'interrupted' },
+    { t: 'prompt', text: 'next turn' },
+  ] as const)
+    expect(sessionHasOpenTasks([start, end])).toBe(false);
+  expect(sessionHasOpenTasks([start, { t: 'prompt', text: 'steer', steered: true }])).toBe(true);
+});
 
 const text: AgentEvent = { t: 'text', delta: 'hi' };
 const running: AgentEvent = { t: 'status', state: 'running' };

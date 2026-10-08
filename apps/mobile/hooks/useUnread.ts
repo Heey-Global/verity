@@ -34,6 +34,7 @@ export function useUnread(client: VerityClient, sessions: readonly SessionSummar
   // re-send an unchanged mark. Kept in a ref so `markSeen` stays referentially
   // stable regardless of poll cadence.
   const sentRef = useRef<Map<string, number>>(new Map());
+  const writesRef = useRef(new Map<string, symbol>());
 
   const versionsRef = useRef(new Map(sessions.map((s) => [s.sessionId, s.eventCountVersion])));
   useEffect(() => {
@@ -41,7 +42,10 @@ export function useUnread(client: VerityClient, sessions: readonly SessionSummar
       (s) => versionsRef.current.get(s.sessionId) !== s.eventCountVersion,
     );
     for (const s of sessions) versionsRef.current.set(s.sessionId, s.eventCountVersion);
-    for (const s of changed) sentRef.current.delete(s.sessionId);
+    for (const s of changed) {
+      sentRef.current.delete(s.sessionId);
+      writesRef.current.delete(s.sessionId);
+    }
     if (changed.length)
       setOverrides((current) => {
         const next = new Map(current);
@@ -64,6 +68,8 @@ export function useUnread(client: VerityClient, sessions: readonly SessionSummar
       const alreadySent = sentRef.current.get(sessionId);
       if (alreadySent !== undefined && alreadySent >= eventCount) return;
       sentRef.current.set(sessionId, eventCount);
+      const write = Symbol('seen-write');
+      writesRef.current.set(sessionId, write);
       setOverrides((prev) => advanceOverride(prev, sessionId, eventCount));
       // Persist the mark so the dot clears on every device. A failed write rolls the
       // override + sent-mark back to server truth so a dot isn't stranded cleared
@@ -71,6 +77,8 @@ export function useUnread(client: VerityClient, sessions: readonly SessionSummar
       // guarded on the value still equaling THIS failed count, so a newer in-flight
       // markSeen(sessionId, N2) that already advanced past N1 is left untouched.
       void client.setSessionSeen(sessionId, eventCount, counterVersion).catch(() => {
+        // A pre-migration write can fail after a new counter reused the same count.
+        if (writesRef.current.get(sessionId) !== write) return;
         if (sentRef.current.get(sessionId) === eventCount) sentRef.current.delete(sessionId);
         setOverrides((current) => {
           if (current.get(sessionId) !== eventCount) return current;

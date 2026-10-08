@@ -46,7 +46,7 @@ jest.mock('../lib/serverProfile', () => ({
   }),
 }));
 
-import { Alert } from 'react-native';
+import { Alert, Linking } from 'react-native';
 
 import DevicesScreen from '../app/devices';
 import { resetVeritySettingsStore } from '../lib/settingsStore';
@@ -83,7 +83,7 @@ it('lists the current device and creates a copyable pairing invitation', async (
   // Unseen devices fall back to the pairing date rather than claiming activity.
   expect(screen.getAllByText(`Paired ${new Date(PAIRED_AT).toLocaleDateString()}`)).toHaveLength(2);
 
-  fireEvent.press(screen.getByLabelText('Pair another device'));
+  fireEvent.press(screen.getByLabelText('Create pairing link'));
   expect(await screen.findByTestId('pairing-qr')).toBeOnTheScreen();
   fireEvent.press(screen.getByLabelText('Copy pairing link'));
   await waitFor(() =>
@@ -95,6 +95,31 @@ it('lists the current device and creates a copyable pairing invitation', async (
   expect(payload.url).toBe('https://verity-new.example:8082');
 });
 
+// The browser needs the address it is served from as well as the link: the
+// endpoint the link names must be the one the browser is sent to, or the
+// signed identity check on the sign-in page compares against another server.
+it('offers the web address of the pinned endpoint on the Web Browser tab', async () => {
+  const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);
+  try {
+    render(<DevicesScreen />);
+    fireEvent.press(await screen.findByLabelText('Create pairing link'));
+    expect(await screen.findByTestId('pairing-qr')).toBeOnTheScreen();
+
+    fireEvent.press(screen.getByLabelText('Web Browser'));
+    expect(screen.queryByTestId('pairing-qr')).not.toBeOnTheScreen();
+    expect(screen.getByText('https://verity-new.example:8082/app/')).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText('Open web address'));
+    expect(openURL).toHaveBeenCalledWith('https://verity-new.example:8082/app/');
+
+    fireEvent.press(screen.getByLabelText('Copy pairing link'));
+    await waitFor(() =>
+      expect(mockCopy).toHaveBeenCalledWith(expect.stringMatching(/^verity:\/\/pair\?/)),
+    );
+  } finally {
+    openURL.mockRestore();
+  }
+});
+
 it('removes an invitation when it expires', async () => {
   jest.useFakeTimers();
   mockInvite.mockResolvedValue({
@@ -104,7 +129,7 @@ it('removes an invitation when it expires', async () => {
   render(<DevicesScreen />);
   await act(async () => Promise.resolve());
 
-  fireEvent.press(screen.getByLabelText('Pair another device'));
+  fireEvent.press(screen.getByLabelText('Create pairing link'));
   expect(await screen.findByTestId('pairing-qr')).toBeOnTheScreen();
   act(() => jest.advanceTimersByTime(1_000));
 

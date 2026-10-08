@@ -1,11 +1,15 @@
-import { isCodexModel } from '@verity/session';
 import type { EventStore } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
+import {
+  modelAgent,
+  resolveProjectDefaultModel,
+  type PolicyModelList,
+} from './project-agent-policy.js';
 
 export function registerConnectionUsageRoutes(
   app: FastifyInstance,
   store: EventStore,
-  getDefaultModel?: () => Promise<string | undefined>,
+  getModels?: () => Promise<PolicyModelList | undefined>,
 ): void {
   app.get('/connections/usage', async () => {
     const projects = (await store.listProjects()).filter(
@@ -13,7 +17,7 @@ export function registerConnectionUsageRoutes(
     );
     const sources = await store.integrations.listSources();
     const sessions = await store.listSessions();
-    const defaultModel = await getDefaultModel?.();
+    const modelList = await getModels?.();
     const usage = {
       github: 0,
       claude: 0,
@@ -55,16 +59,14 @@ export function registerConnectionUsageRoutes(
       // A login alone does not imply use: count effective defaults and session
       // choices according to the same model routing contract as the conductor.
       const models = [
-        settings?.defaultModel ?? defaultModel,
+        modelList === undefined
+          ? (settings?.defaultModel ?? undefined)
+          : resolveProjectDefaultModel(modelList, settings),
         ...sessions
           .filter((session) => session.projectId === project.id)
           .map((session) => session.model),
       ].filter((model): model is string => Boolean(model));
-      const backends = new Set(
-        models.map((model) =>
-          isCodexModel(model) ? 'codex' : model.includes('/') ? 'opencode' : 'claude',
-        ),
-      );
+      const backends = new Set(models.map(modelAgent));
       for (const backend of ['claude', 'codex', 'opencode'] as const)
         if (backends.has(backend)) usage[backend]++;
     }

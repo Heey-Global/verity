@@ -7,7 +7,9 @@ const app = Fastify();
 let defaultModel: string | undefined;
 beforeAll(async () => {
   ctx = await createTestDb();
-  registerConnectionUsageRoutes(app, ctx.store, async () => defaultModel);
+  registerConnectionUsageRoutes(app, ctx.store, async () =>
+    defaultModel === undefined ? undefined : { models: [defaultModel], default: defaultModel },
+  );
   await app.ready();
 });
 afterAll(async () => {

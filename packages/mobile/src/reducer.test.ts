@@ -17,6 +17,19 @@ function userText(messages: readonly { kind: string }[]): UserTextMessage[] {
 }
 
 describe('SessionReducer — sub-agent attribution', () => {
+  it.each<AgentEvent>([
+    { t: 'status', state: 'running' },
+    { t: 'task', id: 'bg', phase: 'started' },
+  ])('shows working when a lifecycle start arrives without its prompt (%j)', (event) => {
+    const r = new SessionReducer();
+    r.apply(1, { t: 'status', state: 'completed' });
+    r.apply(2, event);
+    expect(r.running).toBe(true);
+    expect(r.activitySeq).toBe(2);
+    r.apply(3, { t: 'dev_servers_changed', devServers: [] });
+    expect(r.activitySeq).toBe(2);
+  });
+
   it('tags sub-agent text/tool events with parentToolId and keeps contexts separate', () => {
     const r = new SessionReducer();
     r.apply(1, { t: 'tool_call', id: 'agent1', name: 'Agent', input: { description: 'map it' } });
@@ -1327,4 +1340,16 @@ it('renders durable task updates without ending the running turn', () => {
   // The operator ticking a task off in the panel is not transcript content.
   reducer.apply(3, { t: 'tasks_updated', origin: 'user', change: 'completed', taskIds: ['one'] });
   expect(reducer.messages).toHaveLength(1);
+});
+
+it('preserves background work across steering and clears it for a fresh turn', () => {
+  const reducer = new SessionReducer();
+  reducer.apply(1, { t: 'prompt', text: 'Start' });
+  reducer.apply(2, { t: 'task', id: 'background', phase: 'started' });
+  reducer.apply(3, { t: 'prompt', text: 'Continue', steered: true });
+  reducer.apply(4, { t: 'status', state: 'awaiting_input' });
+  // Steering must not hide background work while the main agent waits for input.
+  expect(reducer.hasOpenTasks).toBe(true);
+  reducer.apply(5, { t: 'prompt', text: 'New turn' });
+  expect(reducer.hasOpenTasks).toBe(false);
 });

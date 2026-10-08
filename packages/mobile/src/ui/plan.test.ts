@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { ToolCall } from '../happy/message.js';
 import {
   planHeadline,
+  planProposalContent,
+  planProposalFullyRepresented,
   planProposal,
   planProposalRevision,
   planProposalDisplay,
+  planProposalHeadline,
   planView,
 } from './plan.js';
 
@@ -125,5 +128,76 @@ describe('planProposalDisplay', () => {
     expect(
       planProposalDisplay(shown, true, { planningPlan: 'Older poll', planningRevision: 1 }),
     ).toEqual(shown);
+  });
+});
+
+describe('planProposalHeadline', () => {
+  it('counts the top-level steps of the Steps section only', () => {
+    const plan = [
+      '## Goal',
+      '1. Not a step, just a numbered goal line.',
+      '',
+      '## Steps',
+      '1. **Server** — allow the task list.',
+      '   1. A sub-step belongs to its parent.',
+      '2. **App** — show the step count.',
+      '10. **Docs** — two-digit numbers count too.',
+      '',
+      '## Open questions',
+      '1. Not a step either.',
+    ].join('\n');
+    expect(planProposalHeadline(plan)).toBe('Plan · 3 steps');
+  });
+
+  it('falls back to every numbered item, and to a bare title without any', () => {
+    expect(planProposalHeadline('1. Only step')).toBe('Plan · 1 step');
+    expect(planProposalHeadline('Free text, no list.')).toBe('Plan');
+  });
+});
+
+describe('planProposalContent', () => {
+  it('separates the submitted plan without rendering questions as steps', () => {
+    expect(
+      planProposalContent(
+        '# Separate gestures\n\n## Goal\nAvoid accidental drags.\n\n## Steps\n1. **Threshold** — change detection.\n2. **Tests** — verify scrolling.\n\n## Open questions\n- Haptics?',
+      ),
+    ).toEqual({
+      title: 'Separate gestures',
+      goal: 'Avoid accidental drags.',
+      steps: ['**Threshold** — change detection.', '**Tests** — verify scrolling.'],
+    });
+  });
+  it('keeps old plain plans readable and preserves multiline steps', () => {
+    expect(planProposalContent('A plain plan')).toEqual({
+      title: '',
+      goal: 'A plain plan',
+      steps: [],
+    });
+    expect(planProposalContent('## Steps\n1. Change detection\n   and verify it.')).toEqual({
+      title: '',
+      goal: '',
+      steps: ['Change detection\nand verify it.'],
+    });
+  });
+});
+
+it('counts only the numbered steps when the goal also contains a numbered list', () => {
+  const markdown =
+    '## Goal\n1. Describe the outcome.\n## Steps\n1. Make the change.\n2. Verify it.';
+  expect(planProposalContent(markdown).steps).toEqual(['Make the change.', 'Verify it.']);
+  expect(planProposalHeadline(markdown)).toBe('Plan · 2 steps');
+});
+
+describe('planProposalFullyRepresented', () => {
+  it('only uses the structured display when it preserves the whole proposal', () => {
+    const plan = '# Gestures\n## Goal\nFix dragging.\n## Steps\n1. **Fix** — separate gestures.';
+    expect(planProposalFullyRepresented(plan)).toBe(true);
+    for (const extra of [
+      '\n## Risks\nDo not change navigation.',
+      '\n## Constraints\nKeep compatibility.',
+    ]) {
+      expect(planProposalFullyRepresented(plan + extra)).toBe(false);
+    }
+    expect(planProposalFullyRepresented('## Steps\n- Fix dragging.')).toBe(false);
   });
 });

@@ -7,6 +7,10 @@ let state = {
   fraction: 0.65,
   /** The first tap explains the bubble before it records. */
   introSeen: false,
+  /** Offer a screenshot taken in the last two minutes in the capture card. */
+  screenshots: true,
+  /** The operator answered "Not now" to the in-card photo-access prompt. */
+  screenshotPromptDismissed: false,
   /** Stored preferences have been read; until then the intro is not offered. */
   loaded: false,
 };
@@ -27,6 +31,8 @@ export function useTaskPreferences(): typeof state {
             side: value.side === 'left' ? 'left' : 'right',
             fraction: Math.max(0.1, Math.min(0.9, value.fraction || 0.65)),
             introSeen: value.introSeen === true,
+            screenshots: value.screenshots !== false,
+            screenshotPromptDismissed: value.screenshotPromptDismissed === true,
             loaded: true,
           };
         } else {

@@ -164,7 +164,9 @@ describe('real control socket with connector reservation', () => {
       reserveGate: { started: beginReservation, ready: reservationReady },
     });
     const peer = await nextPeer(f.peers, 0);
-    expect(peer.received[0]).toMatchObject({ capabilities: ['remote-control-v1'] });
+    expect(peer.received[0]).toMatchObject({
+      capabilities: expect.arrayContaining(['remote-control-v1']),
+    });
     request(peer, 'session_one');
     await reservationStarted;
     await new Promise((resolve) => setTimeout(resolve, 50));

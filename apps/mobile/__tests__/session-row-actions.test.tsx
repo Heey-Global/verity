@@ -69,15 +69,25 @@ describe('SessionContextMenu', () => {
 });
 
 describe('SwipeableSessionRow', () => {
-  function renderRow(favorite: boolean) {
+  function renderRow(favorite: boolean, disabled = false) {
     const handlers = { onToggleFavorite: jest.fn(), onDelete: jest.fn(), onEdit: jest.fn() };
     render(
-      <SwipeableSessionRow favorite={favorite} label="Fix login" {...handlers}>
+      <SwipeableSessionRow favorite={favorite} label="Fix login" disabled={disabled} {...handlers}>
         <Text>row content</Text>
       </SwipeableSessionRow>,
     );
     return handlers;
   }
+
+  it('drops queued swipe actions while a row drag owns the touch', () => {
+    const handlers = renderRow(false, true);
+    fireEvent.press(screen.getByLabelText('Favorite'));
+    fireEvent.press(screen.getByLabelText('Delete'));
+    fireEvent.press(screen.getByLabelText('Edit'));
+    expect(handlers.onToggleFavorite).not.toHaveBeenCalled();
+    expect(handlers.onDelete).not.toHaveBeenCalled();
+    expect(handlers.onEdit).not.toHaveBeenCalled();
+  });
 
   it('fires favorite and delete from their swipe actions', () => {
     const { onToggleFavorite, onDelete } = renderRow(false);

@@ -7,6 +7,7 @@ import {
   externalizeToolResultImages,
   externalizeToolResultText,
   parseAgentEvent,
+  parsePlanningProposal,
 } from '@verity/events';
 import { type Kysely, type Selectable, sql, type Transaction } from 'kysely';
 import { type SecretCipher, createPassthroughCipher } from './crypto.js';
@@ -426,8 +427,21 @@ export interface ProjectSettingsRecord {
   googleDriveFolderId: string | null;
   googleDriveFolderName: string | null;
   googleDriveAccessMode: 'read-only' | 'read-write';
+  /** Agents sessions in this project may use; null permits every connected agent. */
+  allowedAgents: ProjectAgent[] | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export const PROJECT_AGENTS = ['claude', 'codex', 'opencode'] as const;
+export type ProjectAgent = (typeof PROJECT_AGENTS)[number];
+
+/** An explicit default cannot be persisted outside the project's current agent rule. */
+export class ProjectDefaultModelNotAllowedError extends Error {
+  constructor(readonly model: string) {
+    super(`Project default model ${model} is not allowed.`);
+    this.name = 'ProjectDefaultModelNotAllowedError';
+  }
 }
 
 export interface HttpMcpConnectionRecord {
@@ -467,7 +481,8 @@ type ProjectSettingsKey =
   | 'memory'
   | 'googleDriveFolderId'
   | 'googleDriveFolderName'
-  | 'googleDriveAccessMode';
+  | 'googleDriveAccessMode'
+  | 'allowedAgents';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
@@ -877,7 +892,7 @@ function emptyUsageTotals(): UsageTotals {
  * {@link EventStore.listSessionProjectionFacts}.
  */
 export interface SessionEventStats {
-  /** Persisted events excluding dev-server snapshots; used for unread state. */
+  /** Nonempty agent-text events; used for unread state. */
   eventCount: number;
   lastEventSeq: number;
   lastActivityAt: number | null;
@@ -886,7 +901,7 @@ export interface SessionEventStats {
 }
 
 export interface SessionProjectionFacts {
-  /** Persisted events excluding dev-server snapshots; the overview unread counter. */
+  /** Nonempty agent-text events; the overview unread counter. */
   eventCount: number;
   /** Highest event seq visible in the snapshot; bounds a later fallback read. */
   lastEventSeq: number;
@@ -928,6 +943,12 @@ export interface QueuedTurnRecord {
 
 /** Input to {@link EventStore.enqueueTurn}: a queued turn minus the `seq` the
  * database assigns. */
+export interface PlanningConsent {
+  turnId: string;
+  promptSeq: number;
+  runningPromptSeq: number;
+}
+
 export type QueuedTurnInput = Omit<QueuedTurnRecord, 'seq'>;
 
 /** The durable "a turn is in flight for this session" marker (lifecycle Phase 1).
@@ -1339,6 +1360,37 @@ export class EventStore implements EventSink {
   readonly liveMeetings: LiveMeetingStore;
   readonly tasks: TaskStore;
   readonly managedDevServers: ManagedDevServerStore;
+
+  async getAttendeeState<T>(id: string): Promise<T | undefined> {
+    const result = await sql<{
+      state_secret: string;
+    }>`select state_secret from attendee_state where id = ${id}`.execute(this.db);
+    const row = result.rows[0];
+    return row ? (JSON.parse(this.cipher.decrypt(row.state_secret)) as T) : undefined;
+  }
+
+  async putAttendeeState(id: string, state: unknown): Promise<void> {
+    const encrypted = this.cipher.encrypt(JSON.stringify(state));
+    await sql`insert into attendee_state (id, state_secret) values (${id}, ${encrypted}) on conflict (id) do update set state_secret = excluded.state_secret`.execute(
+      this.db,
+    );
+  }
+
+  async listAttendeeState<T>(): Promise<Array<{ id: string; state: T }>> {
+    const result = await sql<{
+      id: string;
+      state_secret: string;
+    }>`select id, state_secret from attendee_state where id <> 'config'`.execute(this.db);
+    return result.rows.map((row) => ({
+      id: row.id,
+      state: JSON.parse(this.cipher.decrypt(row.state_secret)) as T,
+    }));
+  }
+
+  async deleteAttendeeState(id: string): Promise<void> {
+    await sql`delete from attendee_state where id = ${id}`.execute(this.db);
+  }
+
   /** One delivery at a time leaves pool capacity for conductor acceptance. */
   private sessionLinkDeliveryTail: Promise<void> = Promise.resolve();
 
@@ -1353,22 +1405,18 @@ export class EventStore implements EventSink {
         .orderBy('session_id')
         .forShare()
         .execute();
-      if (
-        sessions.length !== 2 ||
-        !sessions[0]?.project_id ||
-        !sessions[1]?.project_id ||
-        sessions[0].project_id === sessions[1].project_id
-      )
-        throw new Error('linked sessions must belong to different projects');
+      if (sessions.length !== 2 || !sessions[0]?.project_id || !sessions[1]?.project_id)
+        throw new Error('linked sessions must belong to projects');
+      const projectIds = [...new Set([sessions[0].project_id, sessions[1].project_id])];
       const projects = await tx
         .selectFrom('projects')
         .select(['id', 'state', 'hidden_at', 'kind'])
-        .where('id', 'in', [sessions[0].project_id, sessions[1].project_id])
+        .where('id', 'in', projectIds)
         .orderBy('id')
         .forShare()
         .execute();
       if (
-        projects.length !== 2 ||
+        projects.length !== projectIds.length ||
         projects.some(
           (project) =>
             !isSessionLinkProject({
@@ -1398,6 +1446,15 @@ export class EventStore implements EventSink {
       .returning('session_a')
       .executeTakeFirst();
     return deleted !== undefined;
+  }
+
+  /** Both endpoints are marked using one query for the overview. */
+  async linkedSessionIds(): Promise<Set<string>> {
+    const rows = await this.db
+      .selectFrom('session_links')
+      .select(['session_a', 'session_b'])
+      .execute();
+    return new Set(rows.flatMap((row) => [row.session_a, row.session_b]));
   }
 
   async listSessionLinks(sessionId: string): Promise<SessionLinkRecord[]> {
@@ -2353,6 +2410,82 @@ export class EventStore implements EventSink {
     }));
   }
 
+  /** Overview positions are separate from the chronological session registry. */
+  async sessionSortOrders(sessions: readonly SessionRecord[]): Promise<Map<string, number>> {
+    const groups = await this.db.selectFrom('session_overview_order').selectAll().execute();
+    const result = new Map<string, number>();
+    for (const group of groups) {
+      const members = sessions.filter((session) => session.projectId === group.project_id);
+      const live = new Set(members.map((session) => session.sessionId));
+      const stored = new Set(group.ids);
+      // Newly created sessions lead the manual group without disturbing existing positions.
+      const ids = [
+        ...members
+          .filter((session) => !stored.has(session.sessionId))
+          .reverse()
+          .map((session) => session.sessionId),
+        ...group.ids.filter((id) => live.has(id)),
+      ];
+      ids.forEach((id, index) => result.set(id, index));
+    }
+    return result;
+  }
+
+  async reorderSessions(projectId: string | null, ids: readonly string[]): Promise<string[]> {
+    if (new Set(ids).size !== ids.length) throw new Error('Duplicate session IDs');
+    return this.db.transaction().execute(async (tx) => {
+      // Serialize reorders against membership changes, including moves and inserts.
+      // Reordering is infrequent; a short registry lock avoids lost concurrent additions.
+      await sql`lock table sessions in share row exclusive mode`.execute(tx);
+      if (
+        projectId !== null &&
+        !(await tx
+          .selectFrom('projects')
+          .select('id')
+          .where('id', '=', projectId)
+          .executeTakeFirst())
+      ) {
+        throw new Error('Project not found');
+      }
+      const sessions = await tx
+        .selectFrom('sessions')
+        .select(['session_id', 'project_id'])
+        .orderBy('created_at', 'desc')
+        .orderBy('session_id', 'desc')
+        .execute();
+      const requested = new Set(ids);
+      if (
+        sessions.some(
+          (session) => requested.has(session.session_id) && session.project_id !== projectId,
+        )
+      ) {
+        throw new Error('Session belongs to another project');
+      }
+      const members = sessions.filter((session) => session.project_id === projectId);
+      const live = new Set(members.map((session) => session.session_id));
+      const canonical = [
+        ...members
+          .filter((session) => !requested.has(session.session_id))
+          .map((session) => session.session_id),
+        ...ids.filter((id) => live.has(id)),
+      ];
+      await tx
+        .insertInto('session_overview_order')
+        .values({
+          group_key: JSON.stringify(projectId),
+          project_id: projectId,
+          ids: sql<string[]>`${JSON.stringify(canonical)}::jsonb`,
+        })
+        .onConflict((conflict) =>
+          conflict
+            .column('group_key')
+            .doUpdateSet({ ids: sql<string[]>`${JSON.stringify(canonical)}::jsonb` }),
+        )
+        .execute();
+      return canonical;
+    });
+  }
+
   async listPreparedSessionMoves() {
     return await this.db
       .selectFrom('session_moves')
@@ -2714,9 +2847,8 @@ export class EventStore implements EventSink {
     // A device can approve an old card while another device is publishing its revision.
     // Checking in this UPDATE prevents the read-before-write race from accepting it.
     if (expectedRevision !== undefined) {
-      query = query
-        .where('planning_revision', '=', expectedRevision)
-        .where('planning_plan', 'is not', null);
+      query = query.where('planning_revision', '=', expectedRevision);
+      if (planning !== 'discarded') query = query.where('planning_plan', 'is not', null);
     }
     const result = await query.executeTakeFirst();
     return result.numUpdatedRows > 0n;
@@ -4475,8 +4607,48 @@ export class EventStore implements EventSink {
 
   /** Accept a plan and its implementation backlog entry together. A restart
    * between acceptance and the live queue update must still recover the work. */
-  async enqueuePlanImplementation(input: QueuedTurnInput, revision: number): Promise<boolean> {
-    return this.db.transaction().execute(async (tx) => {
+  async enqueuePlanImplementation(
+    input: QueuedTurnInput,
+    revision: number,
+    onPersisted?: (event: SequencedEvent) => void,
+    consent?: PlanningConsent,
+  ): Promise<boolean> {
+    const persisted: { seq: number; createdAt: Date; event: AgentEvent }[] = [];
+    const accepted = await this.db.transaction().execute(async (tx) => {
+      // A newer user prompt revokes chat consent before any tasks or work commit.
+      await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(input.sessionId)}))`.execute(
+        tx,
+      );
+      if (consent !== undefined) {
+        const running = await tx
+          .selectFrom('running_turns')
+          .select(['turn_id', 'prompt_seq'])
+          .where('session_id', '=', input.sessionId)
+          .forUpdate()
+          .executeTakeFirst();
+        const queuedPrompt = await tx
+          .selectFrom('queued_turns')
+          .select('id')
+          .where('session_id', '=', input.sessionId)
+          .limit(1)
+          .executeTakeFirst();
+        if (queuedPrompt !== undefined) return false;
+        const latest = await tx
+          .selectFrom('events')
+          .select('id')
+          .where('session_id', '=', input.sessionId)
+          .where('type', '=', 'prompt')
+          .orderBy('id', 'desc')
+          .limit(1)
+          .executeTakeFirst();
+        if (
+          running?.turn_id !== consent.turnId ||
+          Number(running.prompt_seq) !== consent.runningPromptSeq ||
+          Number(latest?.id) !== consent.promptSeq
+        )
+          return false;
+      }
+
       const result = await tx
         .updateTable('sessions')
         .set({ planning: 'implemented' })
@@ -4486,6 +4658,56 @@ export class EventStore implements EventSink {
         .where('planning_plan', 'is not', null)
         .executeTakeFirst();
       if (result.numUpdatedRows === 0n) return false;
+      const session = await tx
+        .selectFrom('sessions')
+        .select(['project_id', 'planning_plan'])
+        .where('session_id', '=', input.sessionId)
+        .executeTakeFirstOrThrow();
+      const tasks = new TaskStore(tx, this.cipher);
+      const ownerUserId = await tasks.agentTaskOwner(input.sessionId, session.project_id);
+      if (ownerUserId !== undefined) {
+        const steps = parsePlanningProposal(session.planning_plan!).steps;
+        const taskIds: string[] = [];
+        for (const [index, step] of steps.entries()) {
+          const id = randomUUID();
+          const title = step
+            .replace(/\*\*/g, '')
+            .split(/\s+[—–]\s+|\n/)[0]!
+            .slice(0, 2_000);
+          await tasks.upsert({
+            id,
+            ownerUserId,
+            projectId: session.project_id,
+            sessionId: input.sessionId,
+            sourceSessionId: input.sessionId,
+            origin: 'agent',
+            title,
+            detail: step.slice(0, 20_000),
+            sort: index,
+          });
+          taskIds.push(id);
+        }
+        // The event and tasks commit with acceptance: recovery never loses the link
+        // to the accepted steps, and concurrent decisions cannot duplicate them.
+        for (let offset = 0; offset < taskIds.length; offset += 100) {
+          const event: AgentEvent = {
+            t: 'tasks_updated',
+            origin: 'agent',
+            change: 'added',
+            taskIds: taskIds.slice(offset, offset + 100),
+          };
+          const eventRow = await this.prepareEventRow(event);
+          await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(input.sessionId)}))`.execute(
+            tx,
+          );
+          const row = await tx
+            .insertInto('events')
+            .values({ session_id: input.sessionId, type: eventRow.type, payload: eventRow.payload })
+            .returning(['id', 'created_at'])
+            .executeTakeFirstOrThrow();
+          persisted.push({ seq: Number(row.id), createdAt: row.created_at, event });
+        }
+      }
       await tx
         .insertInto('queued_turns')
         .values({
@@ -4497,6 +4719,11 @@ export class EventStore implements EventSink {
         .execute();
       return true;
     });
+    for (const row of persisted) {
+      this.enqueuePersistedMessageEvent(input.sessionId, row.seq, row.createdAt, row.event);
+      onPersisted?.({ seq: row.seq, ts: row.createdAt.getTime(), event: row.event });
+    }
+    return accepted;
   }
 
   /**
@@ -5955,6 +6182,7 @@ export class EventStore implements EventSink {
       google_drive_folder_id: string | null;
       google_drive_folder_name: string | null;
       google_drive_access_mode: 'read-only' | 'read-write';
+      allowed_agents: ProjectAgent[] | null;
       created_at: Date;
       updated_at: Date;
       // See veritySettingsRowToRecord: false → no decrypt (sealed-safe public read).
@@ -5977,6 +6205,7 @@ export class EventStore implements EventSink {
       googleDriveFolderId: row.google_drive_folder_id,
       googleDriveFolderName: row.google_drive_folder_name,
       googleDriveAccessMode: row.google_drive_access_mode,
+      allowedAgents: row.allowed_agents,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -5996,6 +6225,7 @@ export class EventStore implements EventSink {
     'google_drive_folder_id',
     'google_drive_folder_name',
     'google_drive_access_mode',
+    'allowed_agents',
     'created_at',
     'updated_at',
   ] as const;
@@ -7037,6 +7267,7 @@ export class EventStore implements EventSink {
       google_drive_folder_id: normalizeSetting(patch.googleDriveFolderId),
       google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName),
       google_drive_access_mode: patch.googleDriveAccessMode ?? 'read-write',
+      allowed_agents: allowedAgentsColumn(patch.allowedAgents),
     };
     return this.db.transaction().execute(async (tx) => {
       // Ensure and lock the per-project settings row before applying the patch.
@@ -7045,12 +7276,34 @@ export class EventStore implements EventSink {
         .values({ project_id: projectId })
         .onConflict((oc) => oc.column('project_id').doNothing())
         .execute();
-      await tx
+      const current = await tx
         .selectFrom('project_settings')
-        .select('project_id')
+        .select(['project_id', 'default_model', 'allowed_agents'])
         .where('project_id', '=', projectId)
         .forUpdate()
         .executeTakeFirstOrThrow();
+
+      const allowedAgents =
+        patch.allowedAgents === undefined
+          ? current.allowed_agents
+          : values.allowed_agents === null
+            ? null
+            : patch.allowedAgents;
+      let defaultModel =
+        patch.defaultModel === undefined ? current.default_model : values.default_model;
+      if (defaultModel !== null && allowedAgents !== null) {
+        const agent: ProjectAgent = defaultModel.startsWith('codex/')
+          ? 'codex'
+          : defaultModel.includes('/')
+            ? 'opencode'
+            : 'claude';
+        if (!allowedAgents.includes(agent)) {
+          if (patch.defaultModel !== undefined)
+            throw new ProjectDefaultModelNotAllowedError(defaultModel);
+          // The locked row prevents concurrent default and agent patches from leaving a dead default.
+          defaultModel = null;
+        }
+      }
 
       const row = await tx
         .insertInto('project_settings')
@@ -7082,8 +7335,8 @@ export class EventStore implements EventSink {
             ...(patch.defaultBranch !== undefined
               ? { default_branch: normalizeSetting(patch.defaultBranch) }
               : {}),
-            ...(patch.defaultModel !== undefined
-              ? { default_model: normalizeSetting(patch.defaultModel) }
+            ...(patch.defaultModel !== undefined || defaultModel !== current.default_model
+              ? { default_model: defaultModel }
               : {}),
             ...(patch.memory !== undefined ? { memory } : {}),
             ...(patch.googleDriveFolderId !== undefined
@@ -7094,6 +7347,9 @@ export class EventStore implements EventSink {
               : {}),
             ...(patch.googleDriveFolderName !== undefined
               ? { google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName) }
+              : {}),
+            ...(patch.allowedAgents !== undefined
+              ? { allowed_agents: allowedAgentsColumn(patch.allowedAgents) }
               : {}),
             updated_at: sql`now()`,
           }),
@@ -7652,6 +7908,14 @@ export class EventStore implements EventSink {
       .executeTakeFirst();
     return (result.numDeletedRows ?? 0n) > 0n;
   }
+}
+
+/** Stores the allowed agents in canonical order; an empty or full list is unrestricted. */
+function allowedAgentsColumn(value: readonly ProjectAgent[] | null | undefined): string | null {
+  if (value === undefined || value === null) return null;
+  const agents = PROJECT_AGENTS.filter((agent) => value.includes(agent));
+  if (agents.length === 0 || agents.length === PROJECT_AGENTS.length) return null;
+  return JSON.stringify(agents);
 }
 
 function normalizeSetting(value: string | null | undefined): string | null {

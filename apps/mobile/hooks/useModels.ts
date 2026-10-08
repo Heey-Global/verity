@@ -1,4 +1,4 @@
-import { type VerityClient, VerityApiError } from '@verity/mobile';
+import { type ProjectAgent, type VerityClient, VerityApiError } from '@verity/mobile';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 export interface UseModels {
@@ -11,6 +11,8 @@ export interface UseModels {
   moreModels: string[];
   /** The server's advertised spawn default (a Claude id), or undefined until loaded. */
   defaultModel: string | undefined;
+  /** The project's allowed agents when it excludes some; undefined when unrestricted. */
+  allowedAgents: ProjectAgent[] | undefined;
   /** True while the initial (or a forced) load is in flight. */
   loading: boolean;
   /** A human-readable load error, or undefined. */
@@ -28,11 +30,17 @@ export interface UseModels {
  * Ordering + default resolution are the picker UI's job (via the pure `orderModels` /
  * `defaultModel` helpers); this hook just surfaces the raw server response.
  */
-export function useModels(client: VerityClient, enabled = true): UseModels {
+export function useModels(
+  client: VerityClient,
+  enabled = true,
+  /** Narrows the list to the project's allowed agents. */
+  projectId?: string | null,
+): UseModels {
   const [models, setModels] = useState<string[]>([]);
   const [modelOrder, setModelOrder] = useState<string[]>([]);
   const [moreModels, setMoreModels] = useState<string[]>([]);
   const [defaultModel, setDefaultModel] = useState<string | undefined>(undefined);
+  const [allowedAgents, setAllowedAgents] = useState<ProjectAgent[] | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
 
@@ -52,12 +60,13 @@ export function useModels(client: VerityClient, enabled = true): UseModels {
     const fresh = (): boolean => mounted.current && id === reqId.current;
     setLoading(true);
     try {
-      const res = await client.listModels();
+      const res = await client.listModels(projectId ?? undefined);
       if (!fresh()) return;
       setModels(res.models);
       setModelOrder(res.modelOrder ?? res.models);
       setMoreModels(res.moreModels ?? []);
       setDefaultModel(res.default);
+      setAllowedAgents(res.allowedAgents);
       setError(undefined);
     } catch (caught) {
       if (!fresh()) return;
@@ -65,7 +74,7 @@ export function useModels(client: VerityClient, enabled = true): UseModels {
     } finally {
       if (fresh()) setLoading(false);
     }
-  }, [client]);
+  }, [client, projectId]);
 
   useEffect(() => {
     if (enabled) void load();
@@ -75,5 +84,5 @@ export function useModels(client: VerityClient, enabled = true): UseModels {
     void load();
   }, [load]);
 
-  return { models, modelOrder, moreModels, defaultModel, loading, error, refresh };
+  return { models, modelOrder, moreModels, defaultModel, allowedAgents, loading, error, refresh };
 }

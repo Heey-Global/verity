@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { VerityApiError, VerityClient, projectRecordSchema, type TurnRequest } from './api.js';
+import {
+  VerityApiError,
+  VerityClient,
+  projectRecordSchema,
+  sessionSummarySchema,
+  sessionDetailSchema,
+  type TurnRequest,
+} from './api.js';
 
 const ZERO_USAGE = {
   inputTokens: 0,
@@ -9,6 +16,47 @@ const ZERO_USAGE = {
   cacheCreationTokens: 0,
   turns: 0,
 };
+
+it('normalizes the additive agent-text counter version without breaking legacy readers', () => {
+  const wire = {
+    sessionId: 's1',
+    worktree: '/wt/s1',
+    model: 'm',
+    name: null,
+    status: 'idle',
+    usage: ZERO_USAGE,
+    eventCount: 2,
+    agentTextCounterVersion: 'agent-text-v2',
+    lastSeenEventCount: 1,
+  };
+  // Installed clients restrict the older field to a literal; a replacement value
+  // there would reject the entire session list rather than just the read marker.
+  const legacy = z.object({ eventCountVersion: z.literal('dev-servers-excluded-v1').optional() });
+  expect(() => legacy.parse(wire)).not.toThrow();
+  expect(sessionSummarySchema.parse(wire).eventCountVersion).toBe('agent-text-v2');
+  expect(sessionDetailSchema.parse(wire).eventCountVersion).toBe('agent-text-v2');
+});
+
+it.each([undefined, 'dev-servers-excluded-v1', 'agent-text-v2'])(
+  'accepts summaries with counter version %s',
+  (eventCountVersion) => {
+    const parsed = sessionSummarySchema.parse({
+      sessionId: 's1',
+      worktree: '/wt/s1',
+      model: 'm',
+      name: null,
+      status: 'awaiting_input',
+      usage: ZERO_USAGE,
+      resumable: true,
+      eventCount: 2,
+      lastSeenEventCount: 1,
+      eventCountVersion,
+      backgroundWorking: true,
+    });
+    expect(parsed.eventCountVersion).toBe(eventCountVersion);
+    expect(parsed.backgroundWorking).toBe(true);
+  },
+);
 
 interface Call {
   url: string;
@@ -806,7 +854,11 @@ describe('VerityClient.listSessionOverview', () => {
   it('reads a healthy envelope (no attention key) as no signals', async () => {
     const { fetch } = fakeFetch(json({ sessions: [summary] }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-    expect(await client.listSessionOverview()).toEqual({ sessions: [summary], attention: [] });
+    expect(await client.listSessionOverview()).toEqual({
+      sessions: [summary],
+      attention: [],
+      sessionReordering: false,
+    });
   });
 
   // A server that predates the envelope ignores the query parameter and answers
@@ -815,7 +867,11 @@ describe('VerityClient.listSessionOverview', () => {
   it('accepts the bare array an older server still returns', async () => {
     const { fetch } = fakeFetch(json([summary]));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-    expect(await client.listSessionOverview()).toEqual({ sessions: [summary], attention: [] });
+    expect(await client.listSessionOverview()).toEqual({
+      sessions: [summary],
+      attention: [],
+      sessionReordering: false,
+    });
   });
 
   // Symmetrically: a server NEWER than this app may add a code it never heard of.
@@ -1992,14 +2048,14 @@ describe('VerityClient.setSessionSeen (#387)', () => {
     const { fetch, calls } = fakeFetch(json({ sessionId: 's1', lastSeenEventCount: 7 }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
 
-    const res = await client.setSessionSeen('s1', 7, 'dev-servers-excluded-v1');
+    const res = await client.setSessionSeen('s1', 7, 'agent-text-v2');
 
     expect(res).toEqual({ sessionId: 's1', lastSeenEventCount: 7 });
     expect(calls[0]?.url).toBe('http://host/sessions/s1/seen');
     expect(calls[0]?.init?.method).toBe('PATCH');
     expect(calls[0]?.init?.headers).toEqual({ 'content-type': 'application/json' });
     expect(calls[0]?.init?.body).toBe(
-      JSON.stringify({ eventCount: 7, counterVersion: 'dev-servers-excluded-v1' }),
+      JSON.stringify({ eventCount: 7, counterVersion: 'agent-text-v2' }),
     );
   });
 
@@ -3416,6 +3472,30 @@ it('moves a session with a stable retry key and parses the retained-workspace re
   expect(JSON.parse(calls[0]?.init?.body as string)).toEqual(body);
 });
 
+it('labels Attendee JSON writes so the server parses configuration and meeting commands', async () => {
+  const { fetch, calls } = fakeFetchSequence(
+    json({ configured: true }),
+    json({ configured: false }),
+    json({ meetingId: 'meeting' }),
+    json({ accepted: true }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.saveAttendeeSettings({ apiKey: 'fixture', webhookSecret: 'fixture' });
+  await client.saveAttendeeSettings(null);
+  await client.startOnlineMeeting('session', 'https://meet.google.com/abc-defg-hij');
+  await client.editOnlineMeetingSpeakers('session', 'meeting', {
+    speakerNames: {},
+    speakerCorrections: [],
+    speakerMerges: {},
+  });
+  for (const call of calls) {
+    expect(new Headers(call.init?.headers).get('content-type')).toBe('application/json');
+    expect(typeof call.init?.body).toBe('string');
+  }
+  expect(jsonBody(calls[1])).toBeNull();
+  expect(jsonBody(calls[2])).toMatchObject({ meetingUrl: 'https://meet.google.com/abc-defg-hij' });
+});
+
 describe('Uplink diagnostics schema', () => {
   it('keeps the status fields when a Core stream record is out of shape', async () => {
     const { uplinkDiagnosticsSchema } = await import('./api.js');
@@ -3781,5 +3861,41 @@ describe('VerityClient tasks', () => {
     await client.updateTask(task.id, { title: 'Edited', expectedRevision: 1 });
     expect(jsonBody(calls[0])).toEqual({ title: 'Edited', expectedRevision: 1 });
     await expect(client.listTasks()).rejects.toThrow();
+  });
+});
+
+describe('session reorder API', () => {
+  it('reads the advertised capability and ranked summaries', async () => {
+    const wire = {
+      sessionId: 's1',
+      worktree: '/wt/s1',
+      model: 'm',
+      name: null,
+      status: 'idle',
+      usage: ZERO_USAGE,
+      sortOrder: 2,
+      backgroundWorking: true,
+      agentTextCounterVersion: 'agent-text-v2',
+    };
+    const { fetch } = fakeFetch(json({ sessions: [wire], sessionReordering: true }));
+    const overview = await new VerityClient({
+      baseUrl: 'http://host',
+      fetch,
+    }).listSessionOverview();
+    expect(overview.sessionReordering).toBe(true);
+    // Counter normalization must not strip the independently persisted order.
+    expect(overview.sessions[0]).toMatchObject({
+      sortOrder: wire.sortOrder,
+      backgroundWorking: wire.backgroundWorking,
+      eventCountVersion: wire.agentTextCounterVersion,
+    });
+  });
+  it('persists a project-bound order and reads canonical IDs', async () => {
+    const { fetch, calls } = fakeFetch(json({ ids: ['b', 'a'] }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.reorderSessions('p', ['b', 'a'])).toEqual(['b', 'a']);
+    expect(calls[0]?.url).toBe('http://host/sessions/order');
+    expect(calls[0]?.init?.method).toBe('PATCH');
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ projectId: 'p', ids: ['b', 'a'] }));
   });
 });
