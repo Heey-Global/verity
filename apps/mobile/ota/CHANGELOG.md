@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.60.1](https://github.com/Heey-Global/verity/compare/mobile-v1.60.0...mobile-v1.60.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* synchronize PR overview markers and immediate status bar ([#1347](https://github.com/Heey-Global/verity/issues/1347)) ([d70103d](https://github.com/Heey-Global/verity/commit/d70103dfafd03f197a6bfa54af0f166f0371be82))
+
 ## [1.59.3](https://github.com/Heey-Global/verity/compare/mobile-v1.59.2...mobile-v1.59.3) (2026-10-08)
 
 
