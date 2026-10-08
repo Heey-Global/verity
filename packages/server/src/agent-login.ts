@@ -264,10 +264,13 @@ export function createProcessAgentLoginService(options: {
   const cleanup = (session: LoginSession): void => {
     clearTimeout(session.cleanupTimer);
     if (session.submitTimer) clearTimeout(session.submitTimer);
-    if (session.child && session.status !== 'complete') {
+    const removeDirectory = () => rmSync(session.dir, { recursive: true, force: true });
+    if (session.child) {
+      session.child.once('close', removeDirectory);
       session.child.kill('SIGTERM');
+    } else {
+      removeDirectory();
     }
-    rmSync(session.dir, { recursive: true, force: true });
   };
 
   const fail = (session: LoginSession, message: string): void => {
@@ -280,7 +283,8 @@ export function createProcessAgentLoginService(options: {
   };
 
   const maybeComplete = async (session: LoginSession): Promise<void> => {
-    if (session.status === 'complete') return;
+    // A credential file can appear before the CLI finishes writing its other state.
+    if (session.child || session.status === 'complete' || session.status === 'failed') return;
     if (session.provider === 'codex') {
       const authJson = readCodexAuthJson(session);
       if (!authJson) return;
@@ -407,8 +411,9 @@ export function createProcessAgentLoginService(options: {
     child.stdout.on('data', collect);
     child.stderr.on('data', collect);
     child.on('error', (error) => fail(session, error.message));
-    child.on('exit', () => {
+    child.on('close', () => {
       session.child = null;
+      if (!sessions.has(session.id)) return;
       const transcript = existsSync(transcriptPath) ? readFileSync(transcriptPath, 'utf8') : '';
       session.output = `${session.output}\n${transcript}`.slice(-MAX_OUTPUT_CHARS);
       markFromOutput(session);

@@ -8,7 +8,7 @@ import {
   type IntegrationStore,
 } from '@verity/store';
 import { z } from 'zod';
-import { affectedChatDay, projectChatDay } from './knowledge-projection.js';
+import { affectedChatDay, orphanMessage, projectChatHistory } from './knowledge-projection.js';
 import { ensureProjectKnowledge, KNOWLEDGE_DOCUMENTS_DIR } from '../knowledge-folder.js';
 import { ingestKnowledgeBytes, removeKnowledgeExtraction } from '../knowledge-file-ingest.js';
 import type { ImageTextJob } from '../knowledge-image-text.js';
@@ -276,8 +276,8 @@ export function registerIntegrationRoutes(
         let target = input.targetEventId
           ? await store.getEvent(input.accountId, input.sourceId, input.targetEventId)
           : null;
-        // Reject orphan edits, but persist redactions so late targets cannot resurrect deleted content.
-        if (input.kind === 'edit' && target?.kind !== 'message') {
+        // Reject non-message targets, but retain redactions to prevent late content resurrection.
+        if (input.kind === 'edit' && target !== null && target.kind !== 'message') {
           // Older workers may not report retry sidecars; access logs alone hide the failed event.
           request.log.warn(
             {
@@ -287,7 +287,7 @@ export function registerIntegrationRoutes(
               eventId: input.eventId,
               targetEventId: input.targetEventId,
               kind: input.kind,
-              targetState: target === null ? 'missing' : 'non_message',
+              targetState: 'non_message',
             },
             'Matrix event import rejected',
           );
@@ -307,9 +307,11 @@ export function registerIntegrationRoutes(
                 : 'source_unavailable',
           });
         }
-        // A target may be imported while the redaction waits for the source transaction lock.
-        if (input.kind === 'redaction' && input.targetEventId) {
-          target = await store.getEvent(input.accountId, input.sourceId, input.targetEventId);
+        // Re-read after ingestion so missing history can be projected from retained edits.
+        if (input.kind !== 'message' && input.targetEventId) {
+          target =
+            (await store.getEvent(input.accountId, input.sourceId, input.targetEventId)) ??
+            (await orphanMessage(store, input.accountId, input.sourceId, input.targetEventId));
         }
         const day = affectedChatDay(input, target);
         if (day) {
@@ -320,13 +322,14 @@ export function registerIntegrationRoutes(
             return reply
               .code(409)
               .send({ error: 'Room binding changed', code: 'source_binding_changed' });
-          await projectChatDay(store, deps.dataRoot, {
+          await projectChatHistory(store, deps.dataRoot, {
             accountId: input.accountId,
             sourceId: input.sourceId,
             projectId: result.projectId,
             displayName: binding.displayName,
             activatedAt: binding.activatedAt,
             day,
+            originalId: input.targetEventId ?? input.eventId,
           });
           if (input.kind === 'redaction' && target?.body) {
             const prefix = `Attachment: ${KNOWLEDGE_DOCUMENTS_DIR}/matrix/`;
@@ -436,13 +439,14 @@ export function registerIntegrationRoutes(
         }
         // The event is persisted before the file write; a failed write stays in the
         // connector outbox and is retried until the original and projection exist.
-        await projectChatDay(store, deps.dataRoot, {
+        await projectChatHistory(store, deps.dataRoot, {
           accountId: input.accountId,
           sourceId: input.sourceId,
           projectId: result.projectId,
           displayName: binding.displayName,
           activatedAt: binding.activatedAt,
           day: input.occurredAt.toISOString().slice(0, 10),
+          originalId: input.eventId,
         });
         await store.markProjected(input.accountId, input.sourceId);
         return { accepted: result.inserted, path: relative };
