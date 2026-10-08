@@ -23,7 +23,10 @@ export interface GuardedProcess {
 
 /** A process chosen as the root of the tree to kill. */
 export interface MemoryGuardVictim extends GuardedProcess {
-  /** `session`: a child of a session's ACP adapter; `command`: a child of that; `detached`: a tree under init. */
+  /**
+   * `session`: a whole agent-CLI tree; `command`: a command an agent ran, under
+   * its CLI or directly under its adapter; `detached`: a tree under init.
+   */
   tier: 'session' | 'command' | 'detached';
   /** RSS summed over the process and all its descendants. */
   treeRssBytes: number;

@@ -157,7 +157,7 @@ describe('resolveReserveBytes', () => {
 describe('victim selection', () => {
   it('lists processes from /proc/<pid>/status and skips entries that vanish mid-walk', () => {
     const files = sandbox();
-    const processes = listProcesses(reader(files), () => [...listPids(files)(), '9999']);
+    const processes = listProcesses(guestReader(files), () => [...listPids(files)(), '9999']);
     expect(processes).toHaveLength(11);
     expect(processes.find((p) => p.pid === 6102)).toEqual({
       pid: 6102,
@@ -165,12 +165,12 @@ describe('victim selection', () => {
       uid: 1000,
       rssBytes: 950 * MIB,
       name: 'node',
-      startTime: '',
+      startTime: '6102',
     });
   });
 
   it('picks the whole command an agent ran, ranked by tree RSS, and never infrastructure', () => {
-    const processes = listProcesses(reader(sandbox()), listPids(sandbox()));
+    const processes = listProcesses(guestReader(sandbox()), listPids(sandbox()));
     // The largest single process is worker 6102, but a pool respawns a lone
     // worker: killing it frees nothing for long and repeats every cooldown. The
     // unit is the tool shell 6000 with vitest and both workers under it.
@@ -198,7 +198,7 @@ describe('victim selection', () => {
     // process it would turn every detached tree into a child of an agent "anchor".
     const files = sandbox();
     files['/proc/1/status'] = status('docker-init', 0, 1000, 2 * MIB);
-    const processes = listProcesses(reader(files), listPids(files));
+    const processes = listProcesses(guestReader(files), listPids(files));
     expect(chooseVictim(processes, { agentUid: 1000 })?.pid).toBe(6000);
     const detachedOnly = processes.filter((p) => ![6000, 6100, 6101, 6102].includes(p.pid));
     expect(chooseVictim(detachedOnly, { agentUid: 1000 })).toMatchObject({
@@ -214,14 +214,14 @@ describe('victim selection', () => {
     // tree with it — one session lost rather than the container.
     files['/proc/5867/status'] = status('claude', 5574, 1000, 3 * GIB);
     expect(
-      chooseVictim(listProcesses(reader(files), listPids(files)), { agentUid: 1000 }),
+      chooseVictim(listProcesses(guestReader(files), listPids(files)), { agentUid: 1000 }),
     ).toMatchObject({ pid: 5867, tier: 'session' });
     // The adapter the broker started is the session's anchor: never a candidate,
     // however large. Its child, the CLI, still is.
     files['/proc/5867/status'] = status('claude', 5574, 1000, 500 * MIB);
     files['/proc/5574/status'] = status('node', 470, 1000, 5 * GIB);
     expect(
-      chooseVictim(listProcesses(reader(files), listPids(files)), { agentUid: 1000 })?.pid,
+      chooseVictim(listProcesses(guestReader(files), listPids(files)), { agentUid: 1000 })?.pid,
     ).toBe(6000);
   });
 
@@ -231,7 +231,7 @@ describe('victim selection', () => {
     const files = sandbox();
     files['/proc/9500/status'] = status('node', 0, 1000, 3 * GIB);
     files['/proc/9501/status'] = status('node', 9500, 1000, 100 * MIB);
-    const processes = listProcesses(reader(files), listPids(files));
+    const processes = listProcesses(guestReader(files), listPids(files));
     const victim = chooseVictim(processes, { agentUid: 1000 });
     expect(victim?.pid).not.toBe(9500);
     expect(victim?.pid).toBe(6000);
@@ -246,7 +246,7 @@ describe('victim selection', () => {
     for (let i = 0; i < 20; i += 1) {
       files[`/proc/${6300 + i}/status`] = status('node', 5867, 1000, 60 * MIB);
     }
-    const processes = listProcesses(reader(files), listPids(files));
+    const processes = listProcesses(guestReader(files), listPids(files));
     expect(chooseVictim(processes, { agentUid: 1000, minimumSessionRssBytes: GIB })).toMatchObject({
       pid: 5867,
       tier: 'session',
@@ -260,7 +260,7 @@ describe('victim selection', () => {
     const files = sandbox();
     files['/proc/6200/status'] = status('bash', 5867, 1000, 5 * MIB);
     files['/proc/6201/status'] = status('node', 6200, 1000, 1300 * MIB);
-    const processes = listProcesses(reader(files), listPids(files));
+    const processes = listProcesses(guestReader(files), listPids(files));
     expect(chooseVictim(processes, { agentUid: 1000 })).toMatchObject({
       pid: 6000,
       tier: 'command',
@@ -273,14 +273,14 @@ describe('victim selection', () => {
     // cost a session for memory no kill frees.
     const files = sandbox();
     for (const pid of [6000, 6100, 6101, 6102, 7000]) delete files[`/proc/${pid}/status`];
-    const idle = listProcesses(reader(files), listPids(files));
+    const idle = listProcesses(guestReader(files), listPids(files));
     expect(chooseVictim(idle, { agentUid: 1000, minimumSessionRssBytes: GIB })).toBeUndefined();
     // A larger idle CLI must not mask a smaller session whose command is the
     // consumer: rejecting the first candidate is not a reason to stop looking.
     files['/proc/9000/status'] = status('node', 470, 1000, 150 * MIB);
     files['/proc/9001/status'] = status('claude', 9000, 1000, 200 * MIB);
     files['/proc/9002/status'] = status('bash', 9001, 1000, 300 * MIB);
-    const busy = listProcesses(reader(files), listPids(files));
+    const busy = listProcesses(guestReader(files), listPids(files));
     expect(chooseVictim(busy, { agentUid: 1000, minimumSessionRssBytes: GIB })).toMatchObject({
       pid: 9002,
       tier: 'command',
@@ -302,18 +302,22 @@ describe('victim selection', () => {
       '/proc/7000/status': status('node', 1, 1000, 600 * MIB),
     };
     const options = { agentUid: 1000, minimumSessionRssBytes: 1.2 * GIB };
-    expect(chooseVictim(listProcesses(reader(files), listPids(files)), options)).toMatchObject({
-      pid: 8001,
-      tier: 'command',
-      treeRssBytes: 2305 * MIB,
-    });
+    expect(chooseVictim(listProcesses(guestReader(files), listPids(files)), options)).toMatchObject(
+      {
+        pid: 8001,
+        tier: 'command',
+        treeRssBytes: 2305 * MIB,
+      },
+    );
     // `bash -c 'node script.js'` execs node: one large process, no children.
     for (const pid of [8001, 8002, 8003, 8004]) delete files[`/proc/${pid}/status`];
     files['/proc/8005/status'] = status('node', 8000, 1000, 900 * MIB);
-    expect(chooseVictim(listProcesses(reader(files), listPids(files)), options)).toMatchObject({
-      pid: 8005,
-      tier: 'command',
-    });
+    expect(chooseVictim(listProcesses(guestReader(files), listPids(files)), options)).toMatchObject(
+      {
+        pid: 8005,
+        tier: 'command',
+      },
+    );
   });
 
   it('declines when nothing agent-owned is large enough to matter', () => {
@@ -332,7 +336,7 @@ describe('victim selection', () => {
   });
 
   it('walks descendants deepest first', () => {
-    const processes = listProcesses(reader(sandbox()), listPids(sandbox()));
+    const processes = listProcesses(guestReader(sandbox()), listPids(sandbox()));
     expect(descendantsOf(5867, processes).map((p) => p.pid)).toEqual([6101, 6102, 6100, 6000]);
     expect(descendantsOf(6102, processes)).toEqual([]);
   });
@@ -666,6 +670,22 @@ describe('createMemoryGuard', () => {
     clock += 3_600_000;
     expect(guard.tick().outcome).toBe('suspended');
     expect(kills()).toBe(8);
+  });
+
+  it('passes over a victim it could never signal and takes the next one', () => {
+    // Unreadable start time: the fence rejects it, so choosing it would mean a
+    // "kill" that signals nothing, every cooldown, while usage climbs.
+    const files = { ...sandbox(), ...cgroup(5.5 * GIB), '/proc/6000/stat': '' };
+    const kill = vi.fn<(pid: number, signal: NodeJS.Signals) => void>();
+    const guard = createMemoryGuard({
+      readFile: guestReader(files),
+      listPids: listPids(files),
+      readLink: () => '/',
+      kill,
+      agentUid: 1000,
+      now: () => 0,
+    });
+    expect(guard.tick()).toMatchObject({ outcome: 'kill', victim: { pid: 7000 } });
   });
 
   it('does not judge a kill that signalled nothing', () => {

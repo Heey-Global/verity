@@ -298,7 +298,10 @@ export function chooseVictim(
       tier === 'session'
         ? resolveSession(candidate, treeRssBytes)
         : { ...candidate, tier, treeRssBytes };
-    if (victim === undefined || victim.treeRssBytes < MINIMUM_VICTIM_RSS_BYTES) continue;
+    // A root whose start time could not be read can never pass the signal
+    // fence; chosen anyway, it would be picked every cooldown and never hit.
+    if (victim === undefined || victim.startTime === '') continue;
+    if (victim.treeRssBytes < MINIMUM_VICTIM_RSS_BYTES) continue;
     if (larger(victim, best)) best = victim;
   }
   return best;
