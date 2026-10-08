@@ -40,7 +40,7 @@ interface ForgeAuthorization {
   registryTokenResponse?: boolean;
   verifyRelatedIssues?: boolean;
   action: ForgeAction;
-  authorization: string;
+  authorization?: string;
   credentials: readonly { value: string; alias: string }[];
 }
 
@@ -163,14 +163,17 @@ export function createGitHubForgeAdapter(options: {
       if (url.hostname !== request.hostname || url.hash) rejected();
       const repoPath = `${binding.owner}/${binding.repo}`.toLowerCase();
       let action: ForgeAction;
+      let anonymousGitRead = false;
       let graph:
         { query: string; variables: Record<string, unknown>; operationName?: string } | undefined;
       if (request.hostname === 'github.com') {
         const match = /^\/([^/]+)\/([^/]+)\/(info\/refs|git-upload-pack|git-receive-pack)$/.exec(
           url.pathname,
         );
-        if (!match || `${match[1]}/${match[2]!.replace(/\.git$/, '')}`.toLowerCase() !== repoPath)
+        if (!match || !/^[A-Za-z0-9_.-]+$/.test(match[1]!) || !/^[A-Za-z0-9_.-]+$/.test(match[2]!))
           rejected();
+        const boundRepository =
+          `${match[1]}/${match[2]!.replace(/\.git$/, '')}`.toLowerCase() === repoPath;
         const operation = match[3] === 'info/refs' ? url.searchParams.get('service') : match[3];
         if (
           (match[3] === 'info/refs' ? request.method !== 'GET' : request.method !== 'POST') ||
@@ -181,6 +184,10 @@ export function createGitHubForgeAdapter(options: {
           rejected();
         if (operation !== 'git-upload-pack' && operation !== 'git-receive-pack') rejected();
         action = operation === 'git-upload-pack' ? 'git-read' : 'git-write';
+        if (!boundRepository) {
+          if (action !== 'git-read') rejected();
+          anonymousGitRead = true;
+        }
       } else if (request.hostname === 'uploads.github.com') {
         const prefix = `/repos/${repoPath}/releases/`;
         if (
@@ -229,6 +236,9 @@ export function createGitHubForgeAdapter(options: {
             ['GET', 'HEAD'].includes(request.method) ? 'pulls-read' : 'pulls-write',
           );
       }
+
+      // Anonymous upstream reads cannot access private repositories or carry project credentials.
+      if (anonymousGitRead) return { action, credentials: [] };
 
       const verifyNode = async (
         id: unknown,
