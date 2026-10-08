@@ -6,7 +6,9 @@ import WatchConnectivity
 
 /// A watch capture held on the iPhone until JavaScript has stored it as a task.
 private struct WatchInboxEntry: Codable {
-  enum State: String, Codable { case received, transcribed, failed }
+  /// `stored`: JavaScript saved the task. The entry stays without audio for a
+  /// while so a late redelivery of the same recording is recognised, not saved again.
+  enum State: String, Codable { case received, transcribed, failed, stored }
 
   let id: String
   let createdAt: String
@@ -37,8 +39,9 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   /// burst of activations cannot use them up within seconds.
   private static let maxAttempts = 3
   private static let retrySpacing: TimeInterval = 5 * 60
-  /// Entries that used up their attempts keep their audio this long, then go.
-  private static let failedRetention: TimeInterval = 7 * 24 * 60 * 60
+  /// Entries that used up their attempts keep their audio this long, and stored
+  /// entries are remembered this long, then both go.
+  private static let retention: TimeInterval = 7 * 24 * 60 * 60
 
   /// Set while JavaScript observes the bridge; called after an entry changes.
   /// Only touched on `queue`.
@@ -68,12 +71,15 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   }
 
   /// On `queue`: transcribe what a previous run left unfinished. Entries that
-  /// used up their attempts stay (with their audio) until `failedRetention`.
+  /// used up their attempts, and stored ones, stay until `retention`.
   private func retry() {
     let now = Date()
     for entry in entries() where entry.state != .transcribed && !transcribing.contains(entry.id) {
-      if (entry.attempts ?? 0) >= Self.maxAttempts {
-        if now.timeIntervalSince(entry.receivedAt) > Self.failedRetention {
+      let expired = now.timeIntervalSince(entry.receivedAt) > Self.retention
+      if entry.state == .stored {
+        if expired { remove(entry.id) }
+      } else if (entry.attempts ?? 0) >= Self.maxAttempts {
+        if expired {
           remove(entry.id)
           log("\(entry.id.prefix(8)) removed after \(Self.maxAttempts) failed attempts")
         }
@@ -100,8 +106,10 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
 
   func acknowledge(_ id: String) {
     queue.sync {
-      guard isCaptureId(id) else { return }
-      remove(id)
+      guard isCaptureId(id), var entry = load(id) else { return }
+      try? FileManager.default.removeItem(at: audioURL(id))
+      entry.state = .stored
+      try? save(entry)
       log("\(id.prefix(8)) stored as task")
     }
   }
@@ -158,7 +166,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
       // the transcript in case the watch never received it.
       if let existing = load(id) {
         log("\(id.prefix(8)) duplicate ignored")
-        if existing.state == .transcribed, let text = existing.text {
+        if existing.state == .transcribed || existing.state == .stored, let text = existing.text {
           reply(["kind": "transcript", "id": id, "text": text])
         }
         return
@@ -242,7 +250,10 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
       log("\(id.prefix(8)) transcription failed after \(elapsed) ms: \(error.localizedDescription)")
     }
     try? save(entry)
-    self.reply(reply)
+    // The watch only hears about a failure once no retry is left.
+    if entry.state == .transcribed || (entry.attempts ?? 0) >= Self.maxAttempts {
+      self.reply(reply)
+    }
     let notify = onChange
     DispatchQueue.main.async { notify?() }
   }

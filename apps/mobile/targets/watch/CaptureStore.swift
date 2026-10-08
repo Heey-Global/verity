@@ -191,7 +191,8 @@ final class CaptureStore: NSObject, ObservableObject {
     // iPhone: its entry is the only thing that offers the audio again.
     var settled = 0
     captures = captures.filter { capture in
-      guard capture.state != .queued else { return true }
+      // Queued and delivered captures may still need their audio sent (again).
+      guard capture.state == .transcribed || capture.state == .failed else { return true }
       settled += 1
       if settled <= 20 { return true }
       try? FileManager.default.removeItem(at: audioURL(capture.id))
@@ -252,7 +253,8 @@ extension CaptureStore: WCSessionDelegate {
           capture.text = text
           try? FileManager.default.removeItem(at: self.audioURL(id))
         case "rejected":
-          // The iPhone could not store the file: queue it again.
+          // The iPhone could not store the file: queue it for the next launch.
+          // Resending at once would loop while the iPhone's condition lasts.
           capture.state = .queued
         case "failed":
           capture.state = .failed
@@ -260,9 +262,6 @@ extension CaptureStore: WCSessionDelegate {
         default:
           break
         }
-      }
-      if kind == "rejected", let capture = self.captures.first(where: { $0.id == id }) {
-        self.send(capture)
       }
     }
   }
