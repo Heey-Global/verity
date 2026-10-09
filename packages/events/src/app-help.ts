@@ -58,7 +58,21 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
       'A project is either an empty local project or a GitHub repository, and gets its own sandbox container on the server. A session is one conversation with one agent and works on its own branch with its own copy of the files, so several sessions can run in parallel without interfering. Start a new session from the project or with the plus button on the home screen.',
     appLink: 'verity://project/new',
     docsPath: 'docs/getting-started.md',
-    keywords: ['project', 'session', 'sandbox', 'container', 'branch', 'new', 'parallel'],
+    // Bare "project" and "session" appear in almost every settings question, so
+    // only phrases that are about projects and sessions themselves count here.
+    keywords: [
+      'new project',
+      'create project',
+      'add project',
+      'new session',
+      'start session',
+      'what is a project',
+      'what is a session',
+      'sandbox',
+      'container',
+      'branch',
+      'parallel',
+    ],
   },
   {
     id: 'connections',
@@ -369,7 +383,6 @@ const STOP_WORDS = new Set([
   'use',
   'you',
   'your',
-  'my',
   'for',
   'with',
   'that',
@@ -435,7 +448,7 @@ export function answerAppHelp(request: AppHelpRequest): AppHelpAnswer {
     const ranked = APP_HELP_TOPICS.map((topic) => ({ topic, score: score(topic, query) }))
       .filter((candidate) => candidate.score > 0)
       .sort((a, b) => b.score - a.score);
-    // Common words like "agent" or "project" give every topic a point; keep only
+    // Words shared by many entries, such as "connect" or "project", still give several topics a point; keep only
     // entries close to the best match so the agent is not handed unrelated links.
     const best = ranked[0]?.score ?? 0;
     const relevant = ranked

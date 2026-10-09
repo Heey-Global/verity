@@ -97,6 +97,22 @@ describe('answerAppHelp', () => {
     }
   });
 
+  // "project" is in most settings questions; as a keyword it pulled the
+  // projects-and-sessions entry and its new-project link behind the real answer.
+  it('does not answer a connection question with the projects overview', () => {
+    const answer = answerAppHelp({ query: 'How do I connect GitHub to my project?' });
+    const ids = 'entries' in answer ? answer.entries.map((entry) => entry.id) : [];
+    expect(ids[0]).toBe('github');
+    expect(ids).not.toContain('projects-and-sessions');
+  });
+
+  it('still finds the projects overview for questions about projects', () => {
+    for (const query of ['How do I add a new project?', 'Can I run sessions in parallel?']) {
+      const answer = answerAppHelp({ query });
+      expect('entries' in answer && answer.entries[0]?.id, query).toBe('projects-and-sessions');
+    }
+  });
+
   it('returns the index with a note when nothing matches the query', () => {
     const answer = answerAppHelp({ query: 'xyzzy plugh' });
     expect('topics' in answer && answer.note).toContain('No topic matched');
