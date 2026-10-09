@@ -121,14 +121,34 @@ export function startStallSampling(trace: SwitchTiming): void {
   let maximum = 0;
   let samples = 0;
   let entry: SwitchTiming['phases'][number] | undefined;
+  let peakStart: SwitchTiming['phases'][number] | undefined;
+  let peakEnd: SwitchTiming['phases'][number] | undefined;
   const sample = () => {
-    maximum = Math.max(maximum, performance.now() - expected, 0);
+    const now = performance.now();
+    const lag = Math.max(now - expected, 0);
+    const newPeak = lag > maximum;
+    maximum = Math.max(maximum, lag);
     if (!entry) {
       const before = trace.phases.length;
       markSessionSwitch(trace, 'js-timer-lag-max-ms', maximum);
       if (trace.phases.length > before) entry = trace.phases.at(-1);
     }
     if (entry) entry.value = Math.round(maximum * 10) / 10;
+    // A maximum updated in place otherwise loses its position among client phases.
+    // The interval starts at the timer deadline, not at a known blocking function.
+    if (newPeak && !peakStart && trace.recorded <= 62) {
+      const before = trace.phases.length;
+      markSessionSwitch(trace, 'js-timer-peak-deadline-ms', 0);
+      markSessionSwitch(trace, 'js-timer-peak-observed-ms', 0);
+      if (trace.phases.length === before + 2) {
+        peakStart = trace.phases[before];
+        peakEnd = trace.phases[before + 1];
+      }
+    }
+    if (newPeak && peakStart && peakEnd) {
+      peakStart.value = Math.round((expected - trace.started) * 10) / 10;
+      peakEnd.value = Math.round((now - trace.started) * 10) / 10;
+    }
   };
   const stop = (flush = false) => {
     if (
@@ -170,4 +190,60 @@ export function switchMeasurementOpen(trace: SwitchTiming | undefined): boolean 
     !listCompleted(trace) &&
     performance.now() - trace.started < 10_000
   );
+}
+
+export type ClientActivity =
+  | 'socket-message'
+  | 'session-list-publish'
+  | 'project-list-publish'
+  | 'anchor-read'
+  | 'anchor-parse';
+const activityTotals = new WeakMap<
+  SwitchTiming,
+  Map<
+    ClientActivity,
+    { entries: SwitchTiming['phases']; total: number; maximum: number; count: number }
+  >
+>();
+
+/** Durations include scheduling when used across a promise; peak endpoints locate overlap only. */
+export function beginClientActivity(stage: ClientActivity): () => void {
+  const trace = lastTouchedSessionId ? sessionSwitchTiming(lastTouchedSessionId) : undefined;
+  if (!switchMeasurementOpen(trace)) return noop;
+  const active = trace!;
+  const started = performance.now();
+  let finished = false;
+  return () => {
+    if (finished) return;
+    finished = true;
+    if (!switchMeasurementOpen(active)) return;
+    const ended = performance.now();
+    const duration = ended - started;
+    if (!Number.isFinite(duration) || duration < 0) return;
+    let stages = activityTotals.get(active);
+    if (!stages) {
+      stages = new Map();
+      activityTotals.set(active, stages);
+    }
+    let total = stages.get(stage);
+    if (!total) {
+      if (active.recorded > 60) return;
+      const before = active.phases.length;
+      for (const suffix of ['total-ms', 'count', 'peak-start-ms', 'peak-end-ms']) {
+        markSessionSwitch(active, `activity-${stage}-${suffix}`, 0);
+      }
+      total = { entries: active.phases.slice(before), total: 0, maximum: -1, count: 0 };
+      if (total.entries.length !== 4) return;
+      stages.set(stage, total);
+    }
+    total.total += duration;
+    total.count++;
+    total.entries[0]!.value = Math.round(total.total * 10) / 10;
+    total.entries[1]!.value = total.count;
+    if (duration > total.maximum) {
+      total.maximum = duration;
+      total.entries[2]!.value = Math.round((started - active.started) * 10) / 10;
+      total.entries[3]!.value = Math.round((ended - active.started) * 10) / 10;
+    }
+  };
 }

@@ -1,3 +1,4 @@
+import { beginClientActivity } from '../lib/sessionSwitchTiming';
 import { subscribeLiveRefresh } from '../lib/liveConnection';
 import {
   type VerityClient,
@@ -43,7 +44,19 @@ export function useSessionList(client: VerityClient): UseSessionList {
   // (its `state` getter returns a new literal + a new array), so React never bails
   // out of a re-render on a same-reference no-op.
   const model = useMemo(
-    () => new SessionListModel({ client, pollIntervalMs: 0, onChange: (s) => setState(s) }),
+    () =>
+      new SessionListModel({
+        client,
+        pollIntervalMs: 0,
+        onChange: (s) => {
+          const finish = beginClientActivity('session-list-publish');
+          try {
+            setState(s);
+          } finally {
+            finish();
+          }
+        },
+      }),
     [client],
   );
 
