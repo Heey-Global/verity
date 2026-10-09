@@ -11,6 +11,7 @@ import {
   type BrokeredGrantChannel,
   type RunnerSupervisorBackend,
 } from './backend.js';
+import { stageImageAttachments } from './file-attachments.js';
 import type { RunTurnOptions } from './backend-contract.js';
 import type { EventBus } from './bus.js';
 import { FileTailRunnerClient, type RunnerFrameStore } from './file-tail-runner-client.js';
@@ -1031,7 +1032,7 @@ export class SupervisorRunnerClient implements RunnerClient {
     // `onSteer` and `onPermissionRequest` DO carry behavior the worker cannot perform
     // yet: both need a mid-turn Server↔worker round trip over the control socket. Keep
     // failing closed on them so routing can never silently drop steering or a
-    // permission prompt. `attachments` is carried (inline image blocks over start-turn).
+    // permission prompt. `attachments` is carried as turn-scoped image file references.
     if (opts.onSteer !== undefined || opts.onPermissionRequest !== undefined) {
       throw new Error('turn options are not yet supported by the supervisor worker');
     }
@@ -1108,7 +1109,9 @@ export class SupervisorRunnerClient implements RunnerClient {
       worktree: opts.worktree,
       cwd: opts.cwd,
       prompt: opts.prompt ?? '',
-      ...(opts.attachments?.length ? { attachments: [...opts.attachments] } : {}),
+      ...(opts.attachments?.length
+        ? { attachments: await stageImageAttachments(opts.cwd, opts.turnId, opts.attachments) }
+        : {}),
       ...(opts.model !== undefined ? { model: opts.model } : {}),
       steerable: opts.steerable === true,
       permissionControl: opts.permissionControl === true,
@@ -1899,22 +1902,13 @@ async function inspectSettledStream(
   }
 }
 
-/**
- * Refuse over-cap frames here rather than discovering the bound mid-write. The
- * supervisor rejects the whole serialized request — inline image base64 included —
- * so name the size and the attachment count: those are the two facts that turn "the
- * turn failed" into "this photo is too big to send".
- */
-function oversizeRequestError(frame: string, request: Record<string, unknown>): Error | undefined {
+/** Refuse oversized text and request metadata before writing to the supervisor. */
+function oversizeRequestError(frame: string): Error | undefined {
   const frameBytes = Buffer.byteLength(frame) - 1;
   if (frameBytes <= MAX_SUPERVISOR_REQUEST_BYTES) return undefined;
-  const attachments = Array.isArray(request.attachments) ? request.attachments.length : 0;
   return new Error(
     `runner supervisor request too large: ${describeBytes(frameBytes)} exceeds the ` +
-      `${describeBytes(MAX_SUPERVISOR_REQUEST_BYTES)} limit` +
-      (attachments > 0
-        ? ` — send fewer or smaller image attachments (${String(attachments)} attached)`
-        : ''),
+      `${describeBytes(MAX_SUPERVISOR_REQUEST_BYTES)} limit — shorten the prompt or request configuration`,
   );
 }
 
@@ -1940,7 +1934,7 @@ export async function requestRunnerSupervisor(
   timeoutMs = DEFAULT_SUPERVISOR_REQUEST_TIMEOUT_MS,
 ): Promise<Record<string, unknown>> {
   const frame = `${JSON.stringify({ protocolVersion: MIN_SUPPORTED_PROTOCOL_VERSION, ...request })}\n`;
-  const oversize = oversizeRequestError(frame, request);
+  const oversize = oversizeRequestError(frame);
   if (oversize !== undefined) throw oversize;
   return await new Promise((resolve, reject) => {
     const socket = createConnection(socketPath);
@@ -2082,7 +2076,7 @@ export async function requestRunnerSupervisorStart(
   onAccepted?: () => void,
 ): Promise<Record<string, unknown>> {
   const frame = `${JSON.stringify({ protocolVersion: MIN_SUPPORTED_PROTOCOL_VERSION, ...request, startAck: true })}\n`;
-  const oversize = oversizeRequestError(frame, request);
+  const oversize = oversizeRequestError(frame);
   if (oversize !== undefined) throw new SupervisorStartRequestError(oversize, false, true);
   return await new Promise((resolve, reject) => {
     const socket = createConnection(socketPath);

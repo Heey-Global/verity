@@ -187,11 +187,8 @@ describe('requestRunnerSupervisor', () => {
     });
   });
 
-  // Two phone photos are ~6 MiB of base64 in one start-turn frame. The supervisor
-  // refuses at 4 MiB and closes mid-write, so the operator saw `write EPIPE` — a
-  // message naming neither the size nor the attachments that caused it, and one
-  // that reads like a dead agent process rather than a payload that is too big.
-  it('refuses an over-cap request before writing it, naming size and attachments', async () => {
+  // Oversized text must be refused locally; otherwise a mid-write disconnect hides the cause.
+  it('refuses an over-cap text request before writing it', async () => {
     const socket = join(dir, 'oversize.sock');
     let framesSeen = 0;
     await mkdir(join(socket, '..'), { recursive: true });
@@ -209,9 +206,11 @@ describe('requestRunnerSupervisor', () => {
     await expect(
       requestRunnerSupervisor(socket, {
         kind: 'start-turn',
-        attachments: [{ data: 'A'.repeat(MAX_SUPERVISOR_REQUEST_BYTES) }, { data: 'B' }],
+        prompt: 'A'.repeat(MAX_SUPERVISOR_REQUEST_BYTES),
       }),
-    ).rejects.toThrow(/request too large: 4\.0 MiB exceeds the 4\.0 MiB limit — .*\(2 attached\)/u);
+    ).rejects.toThrow(
+      /request too large: 4\.0 MiB exceeds the 4\.0 MiB limit — shorten the prompt/u,
+    );
     // Not one byte on the wire: the refusal must not depend on reaching a
     // supervisor, or a same-size frame would still race its own write.
     expect(framesSeen).toBe(0);
@@ -450,14 +449,24 @@ describe('SupervisorRunnerClient', () => {
 
   it('carries image attachments over start-turn without tripping the parity guard', async () => {
     const request = await captureStartRequest('attach-runtime', {
+      cwd: dir,
       prompt: 'look',
       attachments: [{ kind: 'image', mediaType: 'image/png', data: 'aGk=' }],
     });
     expect(request).toMatchObject({
       kind: 'start-turn',
       prompt: 'look',
-      attachments: [{ kind: 'image', mediaType: 'image/png', data: 'aGk=' }],
+      attachments: [
+        {
+          kind: 'image',
+          mediaType: 'image/png',
+          filePath: expect.stringContaining('/attachments/turn-turn-1/'),
+          byteSize: 2,
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        },
+      ],
     });
+    expect(JSON.stringify(request)).not.toContain('aGk=');
   });
 
   it('omits attachments entirely for a turn without any (unchanged wire shape)', async () => {

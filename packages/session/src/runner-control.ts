@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import type { PermissionDecision, PermissionRequest } from '@verity/adapter-claude';
 import { RUNNER_FRAME_PROTOCOL_VERSION } from '@verity/store';
 import type { SteerMessage } from './backend-contract.js';
+import { stageImageAttachments } from './file-attachments.js';
 
 /**
  * The Server -> Runner control transport (ADR 0006 D1/D5). Every command carries
@@ -978,6 +979,8 @@ export async function connectControl(
      * This is the N+1→N compatibility path for control sockets predating `inspect`. */
     verifiedProtocolVersion?: number;
     attachTimeoutMs?: number;
+    /** Shared worktree for staging image commands outside the control frame. */
+    attachmentCwd?: string;
     capability?: string;
   } = {},
 ): Promise<ControlSocketClient> {
@@ -1168,12 +1171,23 @@ export async function connectControl(
     snapshot,
     steer: async (message, commandOpts) => {
       const id = commandId(commandOpts);
+      const stagedMessage =
+        opts.attachmentCwd !== undefined && message.attachments?.length
+          ? {
+              ...message,
+              attachments: await stageImageAttachments(
+                opts.attachmentCwd,
+                turnId,
+                message.attachments,
+              ),
+            }
+          : message;
       const reply = await request({
         kind: 'steer',
         turnId,
         commandId: id,
         leaseEpoch,
-        message,
+        message: stagedMessage as SteerMessage,
       });
       if (reply === undefined) throw new ControlDeliveryUnknownError(id);
       if (reply.kind === 'reject') {

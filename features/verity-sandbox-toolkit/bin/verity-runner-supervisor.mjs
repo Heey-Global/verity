@@ -2,7 +2,16 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { accessSync, constants, statSync } from 'node:fs';
+import {
+  accessSync,
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+  statSync,
+} from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import { constants as osConstants } from 'node:os';
 import { access, chmod, lstat, mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
@@ -208,11 +217,11 @@ export function supervisorWorkerEnv(environment) {
 }
 // Image attachments are the only upload kind that survives to the runner: file
 // uploads are materialized to disk + reduced to a prompt suffix server-side before
-// launch (packages/session/src/file-attachments.ts), so only inline `image` blocks
+// launch (packages/session/src/file-attachments.ts), so only staged image references
 // cross the start-turn protocol. Kept 1:1 with @verity/events imageMediaTypeSchema.
 const IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
 // Matches the Server's per-turn upload cap (packages/server/src/server.ts). The total
-// inline payload is additionally bounded by MAX_START_REQUEST_BYTES below.
+// image bytes are bounded independently from the remaining request text.
 const MAX_START_ATTACHMENTS = 8;
 const MAX_WORKER_ERROR_BYTES = 16 * 1024;
 const WORKER_ERROR_DRAIN_TIMEOUT_MS = 100;
@@ -1468,10 +1477,98 @@ export async function claimTurn(runtimeDir, request, runnerInstanceId) {
   };
 }
 
+/** Verify turn-owned image bytes before the worker can consume the reference. */
+export function validateImageReferences(value, cwd, turnId) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > MAX_START_ATTACHMENTS) {
+    throw new Error('invalid attachments');
+  }
+  return value.map((item) => {
+    if (
+      !isObject(item) ||
+      item.kind !== 'image' ||
+      !IMAGE_MEDIA_TYPES.has(item.mediaType) ||
+      typeof item.filePath !== 'string' ||
+      !Number.isSafeInteger(item.byteSize) ||
+      item.byteSize < 1 ||
+      item.byteSize > 7_500_000 ||
+      typeof item.sha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/u.test(item.sha256)
+    )
+      throw new Error('invalid attachment');
+    const root = join(cwd, '.verity-sessions', 'attachments', `turn-${turnId}`);
+    const name = item.filePath.slice(root.length + 1);
+    if (
+      !item.filePath.startsWith(`${root}/`) ||
+      !/^[\w.-]+$/u.test(name) ||
+      name === '.' ||
+      name === '..'
+    ) {
+      throw new Error('invalid attachment path');
+    }
+    const handles = [];
+    try {
+      if (lstatSync(cwd).isSymbolicLink()) throw new Error('invalid attachment directory');
+      let directory = openSync(
+        cwd,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      handles.push(directory);
+      for (const part of ['.verity-sessions', 'attachments', `turn-${turnId}`]) {
+        if (lstatSync(join(`/proc/self/fd/${directory}`, part)).isSymbolicLink())
+          throw new Error('invalid attachment directory');
+        directory = openSync(
+          join(`/proc/self/fd/${directory}`, part),
+          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+        );
+        handles.push(directory);
+      }
+      if (lstatSync(join(`/proc/self/fd/${directory}`, name)).isSymbolicLink())
+        throw new Error('invalid attachment file');
+      const file = openSync(
+        join(`/proc/self/fd/${directory}`, name),
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      handles.push(file);
+      const stats = fstatSync(file);
+      if (!stats.isFile() || stats.size !== item.byteSize)
+        throw new Error('invalid attachment size');
+      const hash = createHash('sha256');
+      const buffer = Buffer.alloc(Math.min(item.byteSize, 64 * 1024));
+      let offset = 0;
+      while (offset < item.byteSize) {
+        const count = readSync(
+          file,
+          buffer,
+          0,
+          Math.min(buffer.length, item.byteSize - offset),
+          offset,
+        );
+        if (count === 0) throw new Error('invalid attachment size');
+        hash.update(buffer.subarray(0, count));
+        offset += count;
+      }
+      if (fstatSync(file).size !== item.byteSize || hash.digest('hex') !== item.sha256) {
+        throw new Error('invalid attachment checksum');
+      }
+    } catch (error) {
+      throw new Error('invalid attachment reference', { cause: error });
+    } finally {
+      for (const handle of handles.reverse()) closeSync(handle);
+    }
+    return {
+      kind: 'image',
+      mediaType: item.mediaType,
+      filePath: item.filePath,
+      byteSize: item.byteSize,
+      sha256: item.sha256,
+    };
+  });
+}
+
 export function validateStartTurnRequest(request) {
   if (!isObject(request) || request.kind !== 'start-turn') throw new Error('invalid start request');
-  // The whole serialized request — inline image base64 included — is bounded here, so
-  // an oversize image is rejected outright rather than silently truncated. This runs
+  // The remaining serialized request is bounded independently of staged image bytes. This runs
   // before per-field checks so a huge payload never reaches the shape validation.
   if (Buffer.byteLength(JSON.stringify(request)) > MAX_START_REQUEST_BYTES) {
     throw new Error('start request exceeds supervisor limit');
@@ -1515,25 +1612,7 @@ export function validateStartTurnRequest(request) {
     }
     return value;
   };
-  const attachmentList = (value) => {
-    if (value === undefined) return undefined;
-    if (!Array.isArray(value) || value.length > MAX_START_ATTACHMENTS) {
-      throw new Error('invalid attachments');
-    }
-    return value.map((item) => {
-      if (
-        !isObject(item) ||
-        item.kind !== 'image' ||
-        !IMAGE_MEDIA_TYPES.has(item.mediaType) ||
-        typeof item.data !== 'string' ||
-        item.data.length === 0
-      ) {
-        throw new Error('invalid attachment');
-      }
-      return { kind: 'image', mediaType: item.mediaType, data: item.data };
-    });
-  };
-  const attachments = attachmentList(request.attachments);
+  const attachments = validateImageReferences(request.attachments, cwd, request.turnId);
   const appendSystemPrompt = optionalString(
     request.appendSystemPrompt,
     'appendSystemPrompt',

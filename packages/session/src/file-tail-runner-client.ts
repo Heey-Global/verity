@@ -161,6 +161,7 @@ class ReconnectingControlChannel {
     private readonly capability: string | undefined,
     private readonly isSettled: () => boolean,
     private readonly verifiedProtocolVersion: number | undefined,
+    private readonly attachmentCwd: string | undefined,
     connectInitial: () => Promise<ControlSocketClient | undefined>,
   ) {
     this.initial = connectInitial()
@@ -185,6 +186,7 @@ class ReconnectingControlChannel {
     failed.close();
     this.reconnecting = connectControl(this.controlSocketPath, {
       turnId: this.turnId,
+      ...(this.attachmentCwd !== undefined ? { attachmentCwd: this.attachmentCwd } : {}),
       controllerId: this.controllerId,
       ...(this.capability !== undefined ? { capability: this.capability } : {}),
       resumeLeaseEpoch: failed.leaseEpoch,
@@ -473,12 +475,14 @@ export class FileTailRunnerClient implements RunnerClient {
             opts.startCommandId,
             () => settled,
             RUNNER_FRAME_PROTOCOL_VERSION,
+            opts.cwd,
             () =>
               serverStarted.then((t) =>
                 externalLaunch === undefined && t === undefined
                   ? undefined
                   : connectControl(controlSocketPath, {
                       turnId,
+                      attachmentCwd: opts.cwd,
                       controllerId,
                       ...(opts.startCommandId !== undefined
                         ? { capability: opts.startCommandId }
@@ -663,9 +667,11 @@ export class FileTailRunnerClient implements RunnerClient {
       target.controlCapability,
       () => settled,
       target.protocolVersion,
+      target.attachmentCwd,
       () =>
         connectControl(controlSocketPath, {
           turnId,
+          ...(target.attachmentCwd !== undefined ? { attachmentCwd: target.attachmentCwd } : {}),
           controllerId,
           ...(target.controlCapability !== undefined
             ? { capability: target.controlCapability }

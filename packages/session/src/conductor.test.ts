@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   AUTONOMY_SYSTEM_PROMPT,
@@ -2978,13 +2981,90 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     run: () => Promise.reject(new Error('backend.run must not be called on a reattach')),
   };
 
-  async function seedMarker(turnId: string): Promise<number> {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+  async function seedMarker(turnId: string, worktree = '/wt/s1'): Promise<number> {
+    await ctx.store.createSession({ sessionId: 's1', worktree, model: 'm' });
     const { seq } = await ctx.store.appendEvent('s1', { t: 'prompt', text: 'go' });
     await ctx.store.markTurnRunning({ sessionId: 's1', promptSeq: seq });
     await ctx.store.bindTurnIdentity('s1', { turnId, startCommandId: `${turnId}-start` });
     return seq;
   }
+
+  it.each(['result', 'forced-cancel'] as const)(
+    'cleans staged images after recovered %s termination',
+    async (termination) => {
+      const worktree = await mkdtemp(join(tmpdir(), 'verity-image-settle-'));
+      const turnId = 'image-settle';
+      const directory = join(worktree, '.verity-sessions', 'attachments', `turn-${turnId}`);
+      try {
+        await mkdir(directory, { recursive: true });
+        await writeFile(join(directory, 'image.png'), 'original image bytes');
+        await seedMarker(turnId, worktree);
+        let finish!: (result: RunResult) => void;
+        const result = new Promise<RunResult>((resolve) => (finish = resolve));
+        const runner = fakeAttachRunner(result, true);
+        const { recovery } = fakeRecovery({
+          status: 'live',
+          target: {
+            turnId,
+            sessionId: 's1',
+            eventFilePath: '/rt/events.jsonl',
+            controlSocketPath: '/rt/control.sock',
+          },
+        });
+        const conductor = new Conductor({
+          store: ctx.store,
+          backend: inertBackend,
+          worktreeExists: async () => true,
+          runner: runner.factory,
+          runnerRecovery: recovery,
+        });
+        await conductor.recover();
+        await expect(stat(directory)).resolves.toBeDefined();
+        if (termination === 'result') {
+          finish({ sessionId: 's1', exitCode: 0, stderr: '', aborted: false });
+        } else {
+          await conductor.cancelTurn('s1');
+        }
+        await vi.waitFor(
+          async () => {
+            await expect(stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+          },
+          { timeout: 10000 },
+        );
+        await conductor.drainOnShutdown();
+      } finally {
+        await rm(worktree, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(['dead', 'uncertain'] as const)(
+    'removes staged images only for a confirmed %s recovery outcome',
+    async (status) => {
+      const worktree = await mkdtemp(join(tmpdir(), 'verity-image-recovery-'));
+      const turnId = 'image-recovery';
+      const directory = join(worktree, '.verity-sessions', 'attachments', `turn-${turnId}`);
+      try {
+        await mkdir(directory, { recursive: true });
+        await writeFile(join(directory, 'image.png'), 'original image bytes');
+        await seedMarker(turnId, worktree);
+        const { recovery } = fakeRecovery({ status });
+        const conductor = new Conductor({
+          store: ctx.store,
+          backend: inertBackend,
+          worktreeExists: async () => true,
+          runnerRecovery: recovery,
+        });
+        await conductor.recover();
+        if (status === 'dead')
+          await expect(stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+        else await expect(stat(directory)).resolves.toBeDefined();
+        await conductor.drainOnShutdown();
+      } finally {
+        await rm(worktree, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('reattaches a LIVE recovered turn instead of settling it, and settles on the terminal frame', async () => {
     await seedMarker('turn-1');
@@ -3014,6 +3094,7 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     expect(calls).toEqual([{ sessionId: 's1', turnId: 'turn-1' }]);
     expect(runner.attachTargets).toEqual([
       {
+        attachmentCwd: '/wt/s1',
         turnId: 'turn-1',
         sessionId: 's1',
         eventFilePath: '/rt/events.jsonl',

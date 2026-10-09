@@ -27,7 +27,7 @@ import type { EventBus } from './bus.js';
 import { AcpClaudeBackend } from './acp-claude-backend.js';
 import { brokeredGrantChannel, type Backend, type BrokeredGrantChannel } from './backend.js';
 import { isCodexModel } from './codex-model.js';
-import { materializeFileAttachments } from './file-attachments.js';
+import { cleanupTurnImageAttachments, materializeFileAttachments } from './file-attachments.js';
 import { buildHandoffPrompt } from './handoff.js';
 import { isNoSessionInitFailure } from './ingest.js';
 import { withMeetingContext } from './meeting-context.js';
@@ -233,6 +233,8 @@ import {
  * (as the old single-controller-per-recovery path did).
  */
 class SessionTurnHandle implements RunnerTurn {
+  /** Removes this attempt's staged images after confirmed worker termination. */
+  cleanupImages: (() => Promise<void>) | undefined;
   readonly controller = new AbortController();
   /** The live per-attempt Runner turn; undefined until the run starts. */
   delegate: RunnerTurn | undefined;
@@ -1375,6 +1377,7 @@ export class Conductor {
     const startCommandId = randomUUID();
     await this.bindTurnIdentity(sessionId, turnId, startCommandId);
     runOpts.turnId = turnId;
+    handle.cleanupImages = () => cleanupTurnImageAttachments(runOpts.cwd, turnId);
     runOpts.startCommandId = startCommandId;
     const { opts: dispatchOpts, cleanup } = await this.prepareFileAttachments(runOpts);
     // Last check before a worker exists. Everything above — backend resolution, the
@@ -1434,6 +1437,7 @@ export class Conductor {
     handle.delegate = turn;
     try {
       const result = await turn.result;
+      await cleanupTurnImageAttachments(runOpts.cwd, turnId);
       // `onSession` is the only bind a backend vouches for: it fires when the
       // conversation is actually open. `result.sessionId` is the fallback for a
       // backend that reveals its thread no earlier than the settle — but on a
@@ -2560,6 +2564,9 @@ export class Conductor {
     if (this.turns.get(sessionId) === handle) this.turns.delete(sessionId);
     this.clearPermissions(sessionId);
     try {
+      void handle
+        .cleanupImages?.()
+        .catch((error: unknown) => this.reportTurnError(sessionId, error));
       // BOUNDED: the terminal write is ordered before the release below (SR-1), but a
       // hanging store append must not block the fence forever. This point is only
       // reached once the previous backend's termination is established, so what is at
@@ -3706,6 +3713,18 @@ export class Conductor {
     for (const sessionId of sessions) this.drainNext(sessionId);
   }
 
+  private async cleanupRecoveredImageAttachments(marker: RunningTurnRecord): Promise<void> {
+    if (marker.turnId === null) return;
+    try {
+      const session = await this.deps.store.getSession(marker.sessionId);
+      if (session !== undefined) {
+        await cleanupTurnImageAttachments(session.worktree, marker.turnId);
+      }
+    } catch (error) {
+      this.reportTurnError(marker.sessionId, error);
+    }
+  }
+
   /**
    * Lifecycle Phase 1: settle every turn left in flight by a crash/restart. For
    * each durable `running_turns` marker, look at the events after its prompt
@@ -3724,6 +3743,12 @@ export class Conductor {
         // and only the marker cleanup was lost — drop the marker, never reattach.
         const after = await this.deps.store.getEventsAfter(marker.sessionId, marker.promptSeq);
         if (after.some((e) => isTurnTerminalEvent(e.event))) {
+          // An interrupted marker may close an uncertain turn whose worker still lives.
+          if (after.some((row) => row.event.t === 'result')) {
+            await this.cleanupRecoveredImageAttachments(marker);
+          } else if ((await this.discoverAbandonedRunner(marker)).status === 'dead') {
+            await this.cleanupRecoveredImageAttachments(marker);
+          }
           if (this.leaveUncertainRecovery(marker.sessionId)) {
             this.releaseInFlight(marker.sessionId);
           }
@@ -3755,6 +3780,7 @@ export class Conductor {
           continue;
         }
         // Step 6: confirmed dead — settle (`interrupted`) and drop the marker.
+        await this.cleanupRecoveredImageAttachments(marker);
         await this.emitInterrupted(marker.sessionId);
         await this.deps.store.clearRunningTurn(marker.sessionId);
         if (this.leaveUncertainRecovery(marker.sessionId)) {
@@ -3999,6 +4025,7 @@ export class Conductor {
     // landed only while the log was still where the probe left it, so requiring it to
     // still be the NEWEST event extends that proof up to here.
     if (!(await this.deadVerdictStillApplies(marker, noticeSeq))) return;
+    void this.cleanupRecoveredImageAttachments(marker);
     // A dead Runner cannot emit again. A stalled Runner is deliberately still
     // alive, so fence its turn BEFORE releasing the session: even an acknowledged
     // cancel may race with a final frame, and that frame must never land in a
@@ -4196,6 +4223,11 @@ export class Conductor {
       }
       const after = await this.deps.store.getEventsAfter(marker.sessionId, marker.promptSeq);
       if (after.some((event) => isTurnTerminalEvent(event.event))) {
+        if (after.some((row) => row.event.t === 'result')) {
+          await this.cleanupRecoveredImageAttachments(marker);
+        } else if ((await this.discoverAbandonedRunner(marker)).status === 'dead') {
+          await this.cleanupRecoveredImageAttachments(marker);
+        }
         await this.deps.store.clearRunningTurn(marker.sessionId);
         this.leaveUncertainRecovery(marker.sessionId);
         this.releaseInFlight(marker.sessionId);
@@ -4298,6 +4330,7 @@ export class Conductor {
       // anchor — either way the settle would be writing into someone else's turn. Come
       // back and re-read the whole state instead of pushing a stale verdict through.
       if (settled === null) return this.scheduleUncertainRecovery(marker);
+      if (outcome.status === 'dead') await this.cleanupRecoveredImageAttachments(marker);
       await this.deps.store.clearRunningTurn(marker.sessionId, marker.promptSeq);
       this.leaveUncertainRecovery(marker.sessionId);
       this.releaseInFlight(marker.sessionId);
@@ -4361,10 +4394,14 @@ export class Conductor {
       // start a SECOND turn for this session while the recovered one is still running
       // (recovery runs before the queue drains, so this cannot contend).
       const boundHandle = handle;
-      const turn = runner.attach(target, {
-        onPermissionRequest: (request) => this.trackPendingPermission(marker.sessionId, request),
-        ...(this.deps.bus !== undefined ? { bus: this.deps.bus } : {}),
-      });
+      handle.cleanupImages = () => cleanupTurnImageAttachments(session.worktree, target.turnId);
+      const turn = runner.attach(
+        { ...target, attachmentCwd: session.worktree },
+        {
+          onPermissionRequest: (request) => this.trackPendingPermission(marker.sessionId, request),
+          ...(this.deps.bus !== undefined ? { bus: this.deps.bus } : {}),
+        },
+      );
       boundHandle.delegate = turn;
       // Continue tailing in the background; settle when the terminal frame arrives.
       void turn.result.then(
@@ -4442,6 +4479,7 @@ export class Conductor {
       if (!ownsSettle) {
         // force-settled — nothing left to write
       } else if (result !== undefined) {
+        void this.cleanupRecoveredImageAttachments(marker);
         if (result.aborted) await this.emitInterrupted(marker.sessionId);
         else await this.ensureTerminalMarker(marker.sessionId, marker.promptSeq, result);
       } else {
@@ -4818,8 +4856,11 @@ export class Conductor {
           ...(this.deps.bus !== undefined ? { bus: this.deps.bus } : {}),
         });
         handle.delegate = turn;
+        handle.cleanupImages = () => cleanupTurnImageAttachments(runOpts.cwd, turnId);
         try {
-          return await turn.result;
+          const result = await turn.result;
+          await cleanupTurnImageAttachments(runOpts.cwd, turnId);
+          return result;
         } finally {
           await cleanup();
         }
