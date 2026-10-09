@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.65.2](https://github.com/Heey-Global/verity/compare/mobile-v1.65.1...mobile-v1.65.2) (2026-10-09)
+
+
+### Bug Fixes
+
+* **mobile:** record connection tests from a fresh tunnel ([#1449](https://github.com/Heey-Global/verity/issues/1449)) ([1d97933](https://github.com/Heey-Global/verity/commit/1d9793383956bfc339d478fff901084d661a4a40))
+
 ## [1.65.1](https://github.com/Heey-Global/verity/compare/mobile-v1.65.0...mobile-v1.65.1) (2026-10-09)
 
 
