@@ -49,7 +49,7 @@
     "@agentclientprotocol/codex-acp": "2.1.1",
     "@devcontainers/cli": "0.89.0",
     "@eslint/js": "10.0.1",
-    "@modelcontextprotocol/sdk": "1.32.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@openai/codex": "0.160.0",
     "@types/node": "24.19.1",
     "@types/semver": "7.8.0",
