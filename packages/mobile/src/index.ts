@@ -578,6 +578,8 @@ export { type ProjectGitHubIssues, type ProjectGitHubIssue } from './api.js';
 export {
   cancelSessionSwitch,
   exportSessionSwitchTimings,
+  beginSwitchTransportRequest,
+  markSwitchTransportRequest,
   beginSessionSwitch,
   sessionSwitchTiming,
   markSessionSwitch,

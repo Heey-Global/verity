@@ -1,3 +1,4 @@
+import { markSwitchTransportRequest } from '@verity/mobile';
 import { requireNativeModule } from 'expo-modules-core';
 import {
   directRouteKnownReachable,
@@ -16,6 +17,7 @@ type NativeResponse = {
 } & ({ bodyBase64: string; bodyText?: never } | { bodyText: string; bodyBase64?: never });
 
 interface NativePinnedTransport {
+  exportTransportTimings?: () => { records: unknown[]; omitted: number };
   request(
     requestId: string,
     url: string,
@@ -101,13 +103,24 @@ function native(): NativePinnedTransport {
   return nativeModule;
 }
 
-function requestNative(
+async function requestNative(
   transport: NativePinnedTransport,
   ...args: Parameters<NativePinnedTransport['request']>
 ): Promise<NativeResponse> {
   // OTA JavaScript also runs on older native builds. Select by capability once
   // per request; a failed V2 mutation must never be replayed through the old API.
-  return transport.requestV2 ? transport.requestV2(...args) : transport.request(...args);
+  const diagnosticRequestId = args[3]['x-verity-switch-request'];
+  markSwitchTransportRequest(diagnosticRequestId, 'native-dispatch', args[6] > 0 ? 1 : 0);
+  try {
+    const response = await (transport.requestV2
+      ? transport.requestV2(...args)
+      : transport.request(...args));
+    markSwitchTransportRequest(diagnosticRequestId, 'native-return', Date.now());
+    return response;
+  } catch (error) {
+    markSwitchTransportRequest(diagnosticRequestId, 'native-error');
+    throw error;
+  }
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -192,10 +205,14 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
     init.signal?.addEventListener('abort', onAbort, { once: true });
     let response!: NativeResponse;
     try {
+      const diagnosticRequestId = headers['x-verity-switch-request'];
+      markSwitchTransportRequest(diagnosticRequestId, 'pinned-entry');
       const encodedBody = fileUri ? null : await encodeBody(init.body);
+      markSwitchTransportRequest(diagnosticRequestId, 'body-encoded');
       const replayable =
         !fileUri && (init.method ?? 'GET').toUpperCase() === 'GET' && encodedBody === null;
       const port = useRemote ? await remoteControlPortForUrl(url, replayable) : 0;
+      markSwitchTransportRequest(diagnosticRequestId, 'route-ready', port > 0 ? 1 : 0);
       if (init.signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError');
       }
@@ -508,4 +525,88 @@ export function createPinnedWebSocket(
       subscription.remove();
     },
   };
+}
+
+/** Optional native capability: older installed builds remain usable and report the gap. */
+export function exportPinnedTransportTimings(): {
+  available: boolean;
+  records: Record<string, unknown>[];
+  omitted: number;
+} {
+  try {
+    const transport = native();
+    if (!transport.exportTransportTimings) return { available: false, records: [], omitted: 0 };
+    const result = transport.exportTransportTimings();
+    const numeric = new Set([
+      'nativeEntryWallMs',
+      'nativeResumeMs',
+      'nativeCompletionMs',
+      'nativeCompletionWallMs',
+      'nativeResponseReadyMs',
+      'nativeResponseReadyWallMs',
+      'transactionCount',
+      'fetchStartMs',
+      'dnsStartMs',
+      'dnsEndMs',
+      'connectStartMs',
+      'connectEndMs',
+      'tlsStartMs',
+      'tlsEndMs',
+      'requestStartMs',
+      'requestEndMs',
+      'responseStartMs',
+      'responseEndMs',
+    ]);
+    const boolean = new Set([
+      'metricsAvailable',
+      'failed',
+      'transactionsTruncated',
+      'reusedConnection',
+      'proxyConnection',
+    ]);
+    const allowedStrings: Record<string, readonly string[]> = {
+      route: ['direct', 'tunnel'],
+      proxyMode: ['none', 'socks', 'connect'],
+      protocol: ['http/1.0', 'http/1.1', 'h2', 'h3', 'other'],
+    };
+    const sanitize = (input: unknown): Record<string, unknown> => {
+      if (!input || typeof input !== 'object') return {};
+      const output: Record<string, unknown> = {};
+      for (const [name, value] of Object.entries(input)) {
+        if (numeric.has(name) && typeof value === 'number' && Number.isFinite(value))
+          output[name] = value;
+        if (boolean.has(name) && typeof value === 'boolean') output[name] = value;
+        if (allowedStrings[name]?.includes(value as string)) output[name] = value;
+      }
+      return output;
+    };
+    const records = Array.isArray(result.records)
+      ? result.records.slice(-32).flatMap((input: unknown) => {
+          if (!input || typeof input !== 'object') return [];
+          const record = input as Record<string, unknown>;
+          if (
+            typeof record.requestId !== 'string' ||
+            !/^[a-z0-9-]{1,80}$/.test(record.requestId) ||
+            record.requestId.trim() !== record.requestId
+          )
+            return [];
+          return [
+            {
+              ...sanitize(record),
+              requestId: record.requestId,
+              transactions: Array.isArray(record.transactions)
+                ? record.transactions.slice(-4).map(sanitize)
+                : [],
+            },
+          ];
+        })
+      : [];
+    return {
+      available: true,
+      records,
+      omitted: Number.isSafeInteger(result.omitted) && result.omitted >= 0 ? result.omitted : 0,
+    };
+  } catch {
+    return { available: false, records: [], omitted: 0 };
+  }
 }

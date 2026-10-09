@@ -144,3 +144,51 @@ The UI probe cannot cover the interval before the chat mounts.
 `render-transcript-row-body` measures the synchronous row content factory;
 `render-markdown-body` includes Markdown parsing and element creation. Descendant
 components and native text layout remain outside these body measurements.
+
+### Correlated transport measurement
+
+Each timed session/detail or events request gets an opaque
+`x-verity-switch-request` token plus a fixed `x-verity-switch-kind`. The token
+contains no session identifier and grants no authority. `transportRequests`
+retains at most 16 requests per gesture and 24 milestones per request for the
+30-second trace window. `transportOmissions` counts rejected requests/milestones. Late callbacks stay on their original gesture. Retries
+share the logical request token and add separate native attempts.
+
+Client milestones distinguish fetch dispatch, pinned transport entry, body
+encoding, route readiness, native dispatch/return and fetch return/error. Route
+milestone values are 0 for direct and 1 for tunnel. The `native-return` value is
+the device wall timestamp at JS continuation, not a server timestamp.
+
+`nativeTransportTimings` reports capability availability, up to 32 attempts and
+an omission count. Older installed native builds report `available: false`;
+OTA JavaScript alone cannot add this native capability. Native records contain
+entry, resume, completion and response-ready times, route/proxy dialect and up
+to four URLSession transactions. Transactions expose DNS, connection, TLS,
+request and response milestones, protocol and reuse. `metricsAvailable: false`
+means metrics had not arrived; export snapshots also capture later metrics
+without delaying the HTTP response. No URLs, headers or payloads are retained.
+
+Read native intervals within their own clock domain. Resume to request start
+includes scheduling and connection setup; it is not proof of a connection queue.
+Completion to response-ready includes native conversion and continuation work.
+Response-ready wall time to the JS continuation can help identify bridge delivery
+latency, but a device clock adjustment invalidates that wall-clock difference.
+Do not subtract device and server wall times without clock calibration.
+
+The managed gateway emits one `session-switch-http` record per admitted
+request with the same token, arrival wall time and monotonic offsets for forward,
+socket assignment, upstream request finish, response headers/end and downstream
+completion. Core records arrival and completion/abort/timeout with that token; completion uses
+its own monotonic elapsed time. Gateway and Core each
+limit these diagnostics to 120 requests per minute in constant memory. Missing
+records can mean a budget limit, maintenance rejection, an older server or a route
+that bypasses the gateway; absence alone does not establish transport failure.
+These records do not log session paths or raw request headers.
+
+For a device verification, install a native client containing the transport API
+and deploy the instrumented gateway/Core through their approved release workflows.
+Switch between the same sessions, export before restart, and match the opaque
+request tokens to gateway/Core records. Determine which intervals dominate before
+changing connection limits or request scheduling. Native input delivery, actual
+paint, and the function responsible for unmeasured React/JS work remain outside
+this transport measurement.

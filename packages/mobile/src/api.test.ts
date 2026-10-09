@@ -1,4 +1,4 @@
-import { beginSessionSwitch } from './sessionSwitchTiming.js';
+import { beginSessionSwitch, exportSessionSwitchTimings } from './sessionSwitchTiming.js';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
@@ -4011,4 +4011,27 @@ it('does not attach continued old-model pagination to a returning gesture', asyn
   await client.getHistory('paginate', { beforeSeq: 5, timing: undefined });
   expect(returned.phases).toEqual([]);
   expect(original.phases).toEqual([]);
+});
+
+it('sends correlation headers only for an explicit timed session request', async () => {
+  const { fetch, calls } = fakeFetchSequence(
+    json({ events: [], hasMore: false }),
+    json({ events: [], hasMore: false }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.getHistory('untimed');
+  expect(
+    (calls[0]?.init?.headers as Record<string, string> | undefined)?.['x-verity-switch-request'],
+  ).toBeUndefined();
+  const trace = beginSessionSwitch('private-correlated-target');
+  await client.getHistory('private-correlated-target');
+  const headers = calls[1]?.init?.headers as Record<string, string>;
+  expect(headers['x-verity-switch-request']).toBe(`${trace.id}-r1`);
+  expect(headers['x-verity-switch-kind']).toBe('events');
+  expect(
+    exportSessionSwitchTimings()
+      .at(-1)
+      ?.transportRequests[0]?.phases.map((p) => p.phase),
+  ).toEqual(['fetch-dispatch', 'fetch-return']);
+  expect(headers['x-verity-switch-request']).not.toContain('private');
 });

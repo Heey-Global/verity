@@ -1,5 +1,11 @@
 import { beginRowTouch, markFirstSessionRender, rowPress } from './sessionSwitchTiming';
-import { markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
+import {
+  markSessionSwitch,
+  sessionSwitchTiming,
+  beginSessionSwitch,
+  beginSwitchTransportRequest,
+  markSwitchTransportRequest,
+} from '@verity/mobile';
 import * as Updates from 'expo-updates';
 import { Share } from 'react-native';
 import { shareUpdateDiagnostics } from './updateDiagnostics';
@@ -185,4 +191,29 @@ it('bounds render entry diagnostics and keeps them attached to the active gestur
   expect(first.phases.some((p) => p.phase === 'session-screen-render-entry')).toBe(false);
   markFirstSessionRender('second', 'session-screen-render-entry');
   expect(sessionSwitchTiming('second')!.phases.at(-1)?.phase).toBe('session-screen-render-entry');
+});
+
+// Full transport traces must not bypass the export byte ceiling before logs are added.
+it('bounds transport metadata while retaining the latest gesture', async () => {
+  readLogs.mockResolvedValue([]);
+  for (let i = 0; i < 8; i++) {
+    const trace = beginSessionSwitch(`private-overflow-${i}`);
+    for (let phase = 0; phase < 64; phase++) {
+      markSessionSwitch(trace, 'render-bounded-metric', 12345678);
+      markSessionSwitch(trace, 'bounded-lifecycle-marker', 12345678);
+    }
+    for (let request = 0; request < 16; request++) {
+      const id = beginSwitchTransportRequest(trace, 'events');
+      for (let phase = 0; phase < 24; phase++)
+        markSwitchTransportRequest(id, 'native-return', 1791549632165);
+    }
+  }
+  await shareUpdateDiagnostics();
+  const report = sharedReport();
+  expect(report.captureSummary.omittedSwitches).toBeGreaterThan(0);
+  expect(report.sessionSwitchTimings.at(-1).transportRequests).toHaveLength(16);
+  expect(Buffer.byteLength(JSON.stringify(report, null, 2))).toBeLessThanOrEqual(
+    report.logSummary.maxBytes,
+  );
+  expect(JSON.stringify(report)).not.toContain('private-overflow');
 });

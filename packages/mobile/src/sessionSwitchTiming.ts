@@ -85,6 +85,8 @@ export function exportSessionSwitchTimings(): {
   status: string;
   droppedPhases: number;
   readiness: 'list-loaded' | 'not-recorded';
+  transportRequests: SwitchTransportRequest[];
+  transportOmissions: { requests: number; phases: number };
   phases: SwitchTiming['phases'];
 }[] {
   return retained.map((trace) => ({
@@ -96,6 +98,11 @@ export function exportSessionSwitchTimings(): {
     readiness: trace.phases.some((p) => p.phase === 'flash-list-on-load')
       ? 'list-loaded'
       : 'not-recorded',
+    transportOmissions: { ...(transportOmissions.get(trace) ?? { requests: 0, phases: 0 }) },
+    transportRequests: (transportRequests.get(trace) ?? []).map((request) => ({
+      ...request,
+      phases: request.phases.map((phase) => ({ ...phase })),
+    })),
     phases: trace.phases.map((phase) => ({ ...phase })),
   }));
 }
@@ -104,4 +111,67 @@ export function cancelSessionSwitch(sessionId: string): void {
   const trace = sessionSwitchTiming(sessionId);
   markSessionSwitch(trace, 'touch-cancel');
   if (trace) trace.status = 'cancelled';
+}
+
+export type SwitchTransportPhase =
+  | 'fetch-dispatch'
+  | 'pinned-entry'
+  | 'body-encoded'
+  | 'route-ready'
+  | 'native-dispatch'
+  | 'native-return'
+  | 'native-error'
+  | 'fetch-return'
+  | 'fetch-error';
+export type SwitchTransportRequest = {
+  requestId: string;
+  kind: 'events' | 'session';
+  phases: { phase: SwitchTransportPhase; elapsedMs: number; value?: number }[];
+};
+const transportRequests = new WeakMap<SwitchTiming, SwitchTransportRequest[]>();
+const transportOmissions = new WeakMap<SwitchTiming, { requests: number; phases: number }>();
+
+/** Opaque per-attempt correlation; never encodes the session or request URL. */
+export function beginSwitchTransportRequest(
+  trace: SwitchTiming | undefined,
+  kind: SwitchTransportRequest['kind'],
+): string | undefined {
+  if (!trace || sessionSwitchTiming(trace.sessionId) !== trace) return;
+  const requests = transportRequests.get(trace) ?? [];
+  if (requests.length >= 16) {
+    const omitted = transportOmissions.get(trace) ?? { requests: 0, phases: 0 };
+    omitted.requests++;
+    transportOmissions.set(trace, omitted);
+    return;
+  }
+  const requestId = `${trace.id}-r${requests.length + 1}`;
+  requests.push({ requestId, kind, phases: [] });
+  transportRequests.set(trace, requests);
+  markSwitchTransportRequest(requestId, 'fetch-dispatch');
+  return requestId;
+}
+
+/** Late results remain on their original trace, never on a replacement gesture. */
+export function markSwitchTransportRequest(
+  requestId: string | undefined,
+  phase: SwitchTransportPhase,
+  value?: number,
+): void {
+  if (!requestId) return;
+  for (const trace of retained) {
+    const request = transportRequests.get(trace)?.find((entry) => entry.requestId === requestId);
+    if (!request || now() - trace.started >= 30_000) continue;
+    if (request.phases.length >= 24) {
+      const omitted = transportOmissions.get(trace) ?? { requests: 0, phases: 0 };
+      omitted.phases++;
+      transportOmissions.set(trace, omitted);
+      return;
+    }
+    request.phases.push({
+      phase,
+      elapsedMs: Math.round((now() - trace.started) * 10) / 10,
+      ...(value !== undefined && Number.isFinite(value) ? { value } : {}),
+    });
+    return;
+  }
 }
