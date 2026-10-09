@@ -9,6 +9,8 @@ export interface MeetingAnswerCard {
   status: 'working' | 'ready' | 'failed';
   answer: string;
   requestId?: string;
+  questionId?: string;
+  responseMs?: number;
   /** Another request was steered into this one's turn before it answered, so the reply
    * cannot be told apart; the card offers a separate retry instead of a guessed answer. */
   combined?: boolean;
@@ -17,7 +19,7 @@ export interface MeetingAnswerCard {
 export function meetingRequestFromPrompt(
   prompt: string,
   meetingId: string,
-): Pick<MeetingAnswerCard, 'request' | 'kind' | 'requestId'> | null {
+): Pick<MeetingAnswerCard, 'request' | 'kind' | 'requestId' | 'questionId'> | null {
   const separator = prompt.indexOf('\n\n');
   if (separator < 0) return null;
   const header = prompt.slice(0, separator);
@@ -25,8 +27,16 @@ export function meetingRequestFromPrompt(
   const request = prompt.slice(separator + 2, context < 0 ? undefined : context).trim();
   if (!request) return null;
   const requestId = /(?:^|\n\n)Meeting request reference: ([a-zA-Z0-9-]+)/u.exec(prompt)?.[1];
+  const questionId = /(?:^|\n\n)Meeting question reference: (question-[a-zA-Z0-9-]+)/u.exec(
+    prompt,
+  )?.[1];
   if (header === `Research this point raised during live meeting ${meetingId}:`)
-    return { request, kind: 'research', ...(requestId ? { requestId } : {}) };
+    return {
+      request,
+      kind: 'research',
+      ...(requestId ? { requestId } : {}),
+      ...(questionId ? { questionId } : {}),
+    };
   if (header === `During live meeting ${meetingId}, please respond to this request:`)
     return { request, kind: 'request', ...(requestId ? { requestId } : {}) };
   return null;
@@ -35,11 +45,13 @@ export function meetingRequestFromPrompt(
 export function meetingAnswerCards(events: SessionEvent[], meetingId: string): MeetingAnswerCard[] {
   const cards: MeetingAnswerCard[] = [];
   let current: MeetingAnswerCard | null = null;
-  for (const { seq, event } of events) {
+  let startedAt: number | undefined;
+  for (const { seq, event, ts } of events) {
     if (event.t === 'prompt') {
       const request = meetingRequestFromPrompt(event.text, meetingId);
       // A steered prompt joins the running turn: what follows answers the newer request.
       if (event.steered && !request) continue;
+      startedAt = ts;
       if (event.steered && current && !current.combined) {
         Object.assign(current, { status: 'failed', combined: true, answer: '' });
       }
@@ -55,7 +67,11 @@ export function meetingAnswerCards(events: SessionEvent[], meetingId: string): M
       // Progress before research tools is not the answer to show in the meeting card.
       current.answer = '';
     } else if (event.t === 'result' && current && !current.combined) {
-      if (current.answer.trim()) current.status = 'ready';
+      if (current.answer.trim()) {
+        current.status = 'ready';
+        if (startedAt !== undefined && ts !== undefined)
+          current.responseMs = Math.max(0, ts - startedAt);
+      }
     } else if (event.t === 'interrupted' && current && !current.combined) {
       current.status = current.answer.trim() ? 'ready' : 'failed';
       current = null;

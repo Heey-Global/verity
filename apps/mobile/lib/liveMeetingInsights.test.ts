@@ -1,15 +1,13 @@
 import { meetingRequestFromPrompt } from './liveMeetingAnswers';
-import {
-  latestResearchQuestion,
-  meetingRequestPrompt,
-  researchPrompt,
-} from './liveMeetingInsights';
+import { meetingQuestionKey, meetingRequestPrompt, researchPrompt } from './liveMeetingInsights';
 
-test('offers only a question present in the recent transcript', () => {
-  expect(latestResearchQuestion('We should check this. Is the deadline still Friday?')).toBe(
-    'Is the deadline still Friday?',
+test('uses the same identity for spoken and typed variants of a question', () => {
+  expect(meetingQuestionKey('Verity, recherchiere mal, Was kostet das?')).toBe(
+    meetingQuestionKey('was kostet das'),
   );
-  expect(latestResearchQuestion('The deadline is Friday.')).toBeNull();
+  expect(meetingQuestionKey('Was kostet das?')).not.toBe(
+    meetingQuestionKey('Was kostet etwas anderes?'),
+  );
 });
 
 test('keeps research and direct requests in the same meeting context', () => {

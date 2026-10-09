@@ -301,6 +301,22 @@ but do not navigate away from the meeting screen. Show a working card, then a co
 the full session chat opens only when the person explicitly taps “Open in chat.” Restore answer
 cards from the session history when the meeting screen is reopened.
 
+Completed question-like transcript sections have a separate, debounced model check (1.5 s),
+with short verbatim context, at most two checks in flight and three attempts per window.
+Corrected text supersedes stale results. The classifier joins recognition fragments, removes
+filler and rejects casual or answered questions. Persistent question identities replace the
+local question heuristic; periodic analysis remains responsible for claims and contradictions.
+Question cards keep their identity through research and answer. Closing a card hides it without
+cancelling the session turn. The newest answer expands automatically; older answers show their
+first line and expand on tap, with the full question always visible.
+
+Meeting requests may use an advertised model from the same backend for that turn only:
+Claude Opus/Fable uses Sonnet, and Codex uses Luna. Model discovery failure retains the session
+model. Session settings and web permissions remain unchanged. These are candidate latency
+optimizations, not a measured performance guarantee; live provider quality and latency require
+comparison on representative questions. Server logs separate question queue/model timing;
+the app derives answer elapsed time from session-history timestamps (including queue time).
+
 Responses are text first; reading aloud is explicit. Accepted findings can become attributed notes
 with source links. Do not automatically send messages, modify external systems or turn unconfirmed
 suggestions into commitments. Research and questioning remain within the self-hosted core boundary.

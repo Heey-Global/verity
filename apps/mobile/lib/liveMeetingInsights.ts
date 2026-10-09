@@ -1,7 +1,12 @@
-export function latestResearchQuestion(transcript: string): string | null {
-  const recent = transcript.slice(-1600);
-  const questions = recent.match(/[^.!?\n]{8,240}\?/g);
-  return questions?.at(-1)?.trim() ?? null;
+/** Stable across casing, punctuation and spoken research prefixes. */
+export function meetingQuestionKey(text: string): string {
+  return text
+    .toLocaleLowerCase()
+    .replace(
+      /^(?:verity[,!:]?\s*)?(?:(?:recherchier(?:e)?(?:\s+mal)?|research|check|prüf(?:e)?)(?:\s+(?:mal|bitte|please))?[,!:]?\s+)/iu,
+      '',
+    )
+    .replace(/[^\p{L}\p{N}]/gu, '');
 }
 
 function recentContext(transcript: string): string {
@@ -28,6 +33,7 @@ export function researchPrompt(
   question: string,
   transcript: string,
   requestId?: string,
+  questionId?: string,
 ): string {
   return [
     `Research this point raised during live meeting ${meetingId}:`,
@@ -35,6 +41,7 @@ export function researchPrompt(
     `Recent meeting transcript:\n${recentContext(transcript)}`,
     meetingAnswerInstructions,
     ...(requestId ? [`Meeting request reference: ${requestId}`] : []),
+    ...(questionId ? [`Meeting question reference: ${questionId}`] : []),
   ].join('\n\n');
 }
 

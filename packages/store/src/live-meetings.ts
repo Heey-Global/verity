@@ -52,7 +52,11 @@ export interface LiveMeetingInsight {
 export class LiveMeetingStore {
   constructor(private readonly db: Kysely<Database>) {}
 
-  async addInsight(sessionId: string, insight: LiveMeetingInsight): Promise<boolean> {
+  async addInsight(
+    sessionId: string,
+    insight: LiveMeetingInsight,
+    replace = false,
+  ): Promise<boolean> {
     const meeting = await this.db
       .selectFrom('live_meetings')
       .select('session_id')
@@ -71,7 +75,14 @@ export class LiveMeetingStore {
         source_path: insight.sourcePath,
         created_at: insight.createdAt,
       })
-      .onConflict((conflict) => conflict.column('id').doNothing())
+      .onConflict((conflict) =>
+        replace
+          ? conflict
+              .column('id')
+              .doUpdateSet({ summary: insight.summary, evidence_a: insight.evidenceA })
+              .where('live_meeting_insights.meeting_id', '=', insight.meetingId)
+          : conflict.column('id').doNothing(),
+      )
       .execute();
     return true;
   }

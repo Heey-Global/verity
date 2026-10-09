@@ -187,3 +187,26 @@ test('reports truncation only when the compact answer leaves content out', () =>
     ),
   ).toBe(true);
 });
+
+test('preserves a stable question reference and measures response time from persisted events', () => {
+  const cards = meetingAnswerCards(
+    [
+      {
+        seq: 1,
+        ts: 1000,
+        event: {
+          t: 'prompt',
+          text: 'Research this point raised during live meeting meeting-1:\n\nWhat is the price?\n\nRecent meeting transcript:\nWhat is the price?\n\nMeeting question reference: question-price',
+        },
+      },
+      { seq: 2, ts: 1500, event: { t: 'text', delta: 'Ten euros.' } },
+      { seq: 3, ts: 2500, event: { t: 'result' } },
+    ] as SessionHistoryPage['events'],
+    'meeting-1',
+  );
+  expect(cards[0]).toMatchObject({
+    questionId: 'question-price',
+    responseMs: 1500,
+    status: 'ready',
+  });
+});

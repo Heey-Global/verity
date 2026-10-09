@@ -171,6 +171,8 @@ it('keeps research and fact checks in the meeting while sending turns to its ses
   const sendTurn = jest.fn().mockResolvedValue({ turnId: 'turn-1' });
   jest.mocked(createVerityClient).mockReturnValue({
     sendTurn,
+    getSession: jest.fn().mockResolvedValue({ model: 'claude-opus-5-5', projectId: 'project' }),
+    listModels: jest.fn().mockResolvedValue({ models: ['claude-sonnet-5-5'] }),
     getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
     getLiveMeetingInsights: jest.fn().mockResolvedValue([
       {
@@ -182,6 +184,16 @@ it('keeps research and fact checks in the meeting while sending turns to its ses
         evidenceB: 'Friday',
         sourcePath: 'insights/plan.md',
         createdAt: 1,
+      },
+      {
+        id: 'question-release',
+        meetingId: meeting.id,
+        kind: 'research',
+        summary: 'Is the release still Friday?',
+        evidenceA: 'Is the release still Friday?',
+        evidenceB: null,
+        sourcePath: null,
+        createdAt: 2,
       },
     ]),
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
@@ -196,7 +208,10 @@ it('keeps research and fact checks in the meeting while sending turns to its ses
   await waitFor(() => {
     expect(sendTurn).toHaveBeenCalledWith(
       'session-1',
-      expect.objectContaining({ prompt: expect.stringContaining('Is the release still Friday?') }),
+      expect.objectContaining({
+        prompt: expect.stringContaining('Is the release still Friday?'),
+        model: 'claude-sonnet-5-5',
+      }),
     );
     expect(screen.getByText('RESEARCHING')).toBeOnTheScreen();
   });
@@ -1549,10 +1564,20 @@ it('saves a noticed point as a note and hides a dismissed question', async () =>
         sourcePath: null,
         createdAt: 1,
       },
+      {
+        id: 'question-release',
+        meetingId: meeting.id,
+        kind: 'research',
+        summary: 'Is the release still Friday?',
+        evidenceA: 'Is the release still Friday?',
+        evidenceB: null,
+        sourcePath: null,
+        createdAt: 2,
+      },
     ]),
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   render(<MeetingScreen />);
-  fireEvent.press(await screen.findByLabelText('Save as note'));
+  fireEvent.press((await screen.findAllByLabelText('Save as note'))[0]!);
   await waitFor(() =>
     expect(saveNote).toHaveBeenCalledWith(
       expect.objectContaining({ meetingId: meeting.id, text: 'The delivery dates differ.' }),
@@ -1562,11 +1587,11 @@ it('saves a noticed point as a note and hides a dismissed question', async () =>
   expect(await screen.findByTestId('meeting-note')).toHaveTextContent(
     /The delivery dates differ\./,
   );
-  expect(screen.queryByLabelText('Save as note')).toBeNull();
+  expect(screen.getAllByLabelText('Save as note')).toHaveLength(1);
 
   expect(screen.getByText('Is the release still Friday?')).toBeOnTheScreen();
   // The open question is the last card, after the insight it did not come from.
-  fireEvent.press(screen.getAllByText('Not now').at(-1)!);
+  fireEvent.press(screen.getAllByLabelText('Dismiss meeting question').at(-1)!);
   expect(screen.queryByText('Is the release still Friday?')).toBeNull();
 });
 
@@ -1606,4 +1631,70 @@ it('does not show a noticed-point note whose save failed', async () => {
   expect(screen.queryByTestId('meeting-note')).toBeNull();
   expect(finalizeNote).not.toHaveBeenCalled();
   expect(screen.queryByText(/note not saved/)).toBeNull();
+});
+
+it('keeps one card per question, expands the newest answer and dismisses without cancelling', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-cards',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: 1,
+    endedAt: null,
+    state: 'active',
+    transcript: 'What is the price? When is delivery?',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  const cancelTurn = jest.fn();
+  const questionPrompt = (question: string, id: string) =>
+    `Research this point raised during live meeting ${meeting.id}:\n\n${question}\n\nRecent meeting transcript:\n${meeting.transcript}\n\nMeeting question reference: ${id}`;
+  jest.mocked(createVerityClient).mockReturnValue({
+    cancelTurn,
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+    getHistory: jest.fn().mockResolvedValue({
+      hasMore: false,
+      events: [
+        {
+          seq: 1,
+          event: { t: 'prompt', text: questionPrompt('What is the price?', 'question-price') },
+        },
+        { seq: 2, event: { t: 'text', delta: '- Price is ten.\n- Tax is included.' } },
+        { seq: 3, event: { t: 'result' } },
+        {
+          seq: 4,
+          event: { t: 'prompt', text: questionPrompt('When is delivery?', 'question-delivery') },
+        },
+        {
+          seq: 5,
+          event: { t: 'text', delta: '- Delivery is Tuesday.\n- Tracking arrives Monday.' },
+        },
+        { seq: 6, event: { t: 'result' } },
+      ],
+    }),
+    getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
+    getLiveMeetingInsights: jest.fn().mockResolvedValue([
+      {
+        id: 'question-price',
+        meetingId: meeting.id,
+        kind: 'research',
+        summary: 'How much is it?',
+        evidenceA: 'What is the price?',
+        evidenceB: null,
+        sourcePath: null,
+        createdAt: 1,
+      },
+    ]),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Tracking arrives Monday.')).toBeOnTheScreen();
+  expect(screen.queryByText('Tax is included.')).toBeNull();
+  expect(screen.queryByText('How much is it?')).toBeNull();
+  expect(screen.getAllByText('What is the price?')).toHaveLength(1);
+  fireEvent.press(screen.getAllByLabelText('Toggle meeting answer')[0]!);
+  expect(screen.getByText('Tax is included.')).toBeOnTheScreen();
+  expect(screen.queryByText('Tracking arrives Monday.')).toBeNull();
+  fireEvent.press(screen.getAllByLabelText('Dismiss meeting answer')[1]!);
+  expect(screen.queryByText('When is delivery?')).toBeNull();
+  expect(cancelTurn).not.toHaveBeenCalled();
 });

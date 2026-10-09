@@ -138,6 +138,7 @@ export function NoticedCard({
   prominent = false,
   onDismiss,
   dismissLabel = 'Dismiss',
+  onToggle,
   children,
 }: {
   label: string;
@@ -155,6 +156,7 @@ export function NoticedCard({
   onDismiss?: () => void;
   dismissLabel?: string;
   children?: ReactNode;
+  onToggle?: () => void;
 }) {
   const { theme } = useUnistyles();
   return (
@@ -176,9 +178,20 @@ export function NoticedCard({
         ) : null}
       </View>
       {quote ? <Text style={styles.cardQuote}>{quote}</Text> : null}
-      <Text style={prominent ? styles.cardQuestion : styles.cardTitle}>{title}</Text>
+      {onToggle ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Toggle meeting answer"
+          onPress={onToggle}
+        >
+          <Text style={prominent ? styles.cardQuestion : styles.cardTitle}>{title}</Text>
+          {children}
+        </Pressable>
+      ) : (
+        <Text style={prominent ? styles.cardQuestion : styles.cardTitle}>{title}</Text>
+      )}
       {body ? <Text style={styles.cardBody}>{body}</Text> : null}
-      {children}
+      {!onToggle ? children : null}
       {source ? <Text style={styles.cardSource}>{source}</Text> : null}
       <ActionRow actions={actions} />
     </View>
