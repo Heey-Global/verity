@@ -126,8 +126,12 @@ export function useVoiceInput(
   value: string,
   onChangeText: (next: string) => void,
   onAutoSend?: (text: string) => Promise<boolean>,
-  options?: { silenceMs?: number },
+  options?: { silenceMs?: number; visible?: boolean },
 ): UseVoiceInput {
+  useEffect(() => {
+    if (Platform.OS !== 'ios' || options?.visible === false || isDemoMode()) return;
+    return voiceRecognition.retainPreparation(preferredLanguageTags(true));
+  }, [options?.visible]);
   const owner = useRef(Symbol('voice-input'));
   const nativeStarted = useRef(false);
   const startAttempt = useRef(0);
@@ -377,11 +381,15 @@ export function useVoiceInput(
       setAutoMode(false);
       return;
     }
+    const tappedAt = Date.now();
     const attempt = ++startAttempt.current;
     recognitionOwner = owner.current;
     listeningRef.current = true;
     setError(undefined);
-    if (Platform.OS === 'ios') setState('recording');
+    if (Platform.OS === 'ios') {
+      setPreparation('preparing');
+      setState('recording');
+    }
     void (async () => {
       try {
         setPreparation('preparing');
@@ -420,7 +428,7 @@ export function useVoiceInput(
         nativeStarted.current = true;
         if (Platform.OS === 'ios') {
           setState('recording');
-          await voiceRecognition.startIOS(lang);
+          await voiceRecognition.startIOS(lang, tappedAt);
         } else
           ExpoSpeechRecognitionModule.start({
             volumeChangeEventOptions: { enabled: true, intervalMillis: 100 },

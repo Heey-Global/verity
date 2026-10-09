@@ -2,6 +2,11 @@ import { requireNativeModule } from 'expo-modules-core';
 
 const events = new Set([
   'capture_started',
+  'stream_open_requested',
+  'stream_opened',
+  'stream_send_requested',
+  'stream_send_completed',
+  'stream_stalled',
   'socket_resume',
   'socket_open',
   'attached',
@@ -43,6 +48,7 @@ const domains = new Set([
 ]);
 const paths = new Set(['satisfied', 'unsatisfied', 'requiresConnection', 'unknown']);
 const eventKeys = new Set([
+  'streamId',
   'sequence',
   'utc',
   'elapsedMs',
@@ -68,6 +74,8 @@ const snapshotKeys = new Set([
   'expired',
   'dropped',
   'events',
+  'streams',
+  'streamUpdatesDropped',
 ]);
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -75,6 +83,50 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 function integer(value: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): boolean {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max;
+}
+
+const streamKeys = new Set([
+  'streamId',
+  'proxy',
+  'endedBy',
+  'sentBytes',
+  'receivedBytes',
+  'deliveredBytes',
+  'outgoingFrames',
+  'incomingFrames',
+  'outgoingTLSRecords',
+  'incomingTLSRecords',
+  'firstHandshake',
+]);
+function validStream(value: unknown): boolean {
+  if (!record(value) || Object.keys(value).some((key) => !streamKeys.has(key))) return false;
+  if (
+    typeof value.streamId !== 'string' ||
+    !/^[A-F0-9]{32}$/u.test(value.streamId) ||
+    !['socks', 'connect'].includes(value.proxy as string) ||
+    !['open', 'local', 'remote', 'reset', 'stopped'].includes(value.endedBy as string)
+  )
+    return false;
+  for (const key of [
+    'sentBytes',
+    'receivedBytes',
+    'deliveredBytes',
+    'outgoingFrames',
+    'incomingFrames',
+  ]) {
+    if (!integer(value[key])) return false;
+  }
+  for (const key of ['outgoingTLSRecords', 'incomingTLSRecords']) {
+    const types = value[key];
+    if (!Array.isArray(types) || types.length > 8 || types.some((type) => !integer(type, 20, 23)))
+      return false;
+  }
+  return (
+    typeof value.firstHandshake === 'string' &&
+    (['none', 'hrr'].includes(value.firstHandshake) ||
+      (/^(?:0|[1-9]\d{0,2})$/u.test(value.firstHandshake) &&
+        integer(Number(value.firstHandshake), 0, 255)))
+  );
 }
 
 /** Reject unknown fields instead of copying untrusted native diagnostics into an export. */
@@ -106,6 +158,19 @@ function acceptedDataDiagnostics(value: unknown): string | null {
     snapshot.events.length > 128
   )
     return null;
+  if ((snapshot.streams === undefined) !== (snapshot.streamUpdatesDropped === undefined))
+    return null;
+  if (snapshot.streams !== undefined) {
+    if (
+      !Array.isArray(snapshot.streams) ||
+      snapshot.streams.length > 16 ||
+      !integer(snapshot.streamUpdatesDropped) ||
+      snapshot.streams.some((stream) => !validStream(stream))
+    )
+      return null;
+    const ids = snapshot.streams.map((stream) => (stream as Record<string, unknown>).streamId);
+    if (new Set(ids).size !== ids.length) return null;
+  }
   let sequence = 0;
   let elapsed = 0;
   for (const entry of snapshot.events) {
@@ -118,6 +183,19 @@ function acceptedDataDiagnostics(value: unknown): string | null {
       !Number.isFinite(Date.parse(entry.utc)) ||
       typeof entry.event !== 'string' ||
       !events.has(entry.event)
+    )
+      return null;
+    const streamEvent = [
+      'stream_open_requested',
+      'stream_opened',
+      'stream_send_requested',
+      'stream_send_completed',
+      'stream_stalled',
+    ].includes(entry.event as string);
+    if (
+      streamEvent !== (entry.streamId !== undefined) ||
+      (entry.streamId !== undefined &&
+        (typeof entry.streamId !== 'string' || !/^[A-F0-9]{32}$/u.test(entry.streamId)))
     )
       return null;
     for (const [key, allowed] of [

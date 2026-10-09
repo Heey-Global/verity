@@ -37,6 +37,24 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) 
       precondition(events.filter { $0["event"] as? String == "socket_cancel" }.count == 1)
       precondition(snapshot["sessionHash"] as? String != "fixture-session")
       precondition(snapshot["delegateAvailable"] as? Bool == false)
+      let streamSnapshots = snapshot["streams"] as! [[String: Any]]
+      // Teardown must leave stream/TLS evidence in the recorder, not only the live summary.
+      precondition(!streamSnapshots.isEmpty)
+      precondition(streamSnapshots.count <= RemoteDataDiagnostics.streamCapacity)
+      for stream in streamSnapshots {
+        let id = stream["streamId"] as! String
+        precondition(id.range(of: "^[A-F0-9]{32}$", options: .regularExpression) != nil)
+        precondition(stream["proxy"] as? String == (connect ? "connect" : "socks"))
+        precondition(stream["endedBy"] as? String != "open")
+        precondition((stream["outgoingTLSRecords"] as! [Int]).count <= 8)
+        precondition((stream["incomingTLSRecords"] as! [Int]).count <= 8)
+      }
+      let opened = events.firstIndex { $0["event"] as? String == "stream_opened" }
+      let requested = events.firstIndex { $0["event"] as? String == "stream_send_requested" }
+      let completed = events.firstIndex { $0["event"] as? String == "stream_send_completed" }
+      precondition(opened != nil && requested != nil && completed != nil)
+      precondition(opened! < requested! && requested! < completed!)
+      precondition(events[requested!]["streamId"] as? String == events[completed!]["streamId"] as? String)
       tunnel.disableDataDiagnostics()
       outer.invalidateAndCancel()
     }

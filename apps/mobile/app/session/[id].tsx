@@ -1,3 +1,5 @@
+import { TranscriptTimingContext } from '../../components/TranscriptRow';
+import { useSwitchFrameTiming } from '../../hooks/useSwitchFrameTiming';
 import {
   beginRenderWork,
   markFirstSessionRender,
@@ -674,6 +676,7 @@ export function SessionChat({
   const switchTiming = useMemo(() => sessionSwitchTiming(sessionId), [sessionId]);
   const [loadedListSessionId, setLoadedListSessionId] = useState<string | null>(null);
   const initialListLoaded = loadedListSessionId === sessionId;
+  useSwitchFrameTiming(switchTiming, initialListLoaded);
   useEffect(() => {
     markSessionSwitch(switchTiming, 'session-screen-react-commit');
     return () => markSessionSwitch(switchTiming, 'session-screen-cleanup');
@@ -1141,7 +1144,16 @@ export function SessionChat({
   );
   // Live dictation writes recognized speech straight into the draft as it streams.
   const voiceAutoSendRef = useRef<(text: string) => Promise<boolean>>(async () => false);
-  const voice = useVoiceInput(draft, setDraft, (text) => voiceAutoSendRef.current(text));
+  const [voiceVisible, setVoiceVisible] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setVoiceVisible(true);
+      return () => setVoiceVisible(false);
+    }, []),
+  );
+  const voice = useVoiceInput(draft, setDraft, (text) => voiceAutoSendRef.current(text), {
+    visible: voiceVisible,
+  });
   // Branch switcher (#91): tap the top chip to switch this session's worktree to a
   // different branch — the chat (one persistent thread per session) stays put.
   const branches = useBranches(client, sessionId, loaded || !locallyCreated);
@@ -3588,7 +3600,12 @@ export function SessionChat({
       const isLatestTranscriptRow =
         latestTranscriptRowKey !== null && key === latestTranscriptRowKey;
       const rendered = (
-        <TranscriptRow item={item} isLatest={isLatestTranscriptRow} renderContent={renderRow} />
+        <TranscriptRow
+          sessionId={sessionId}
+          item={item}
+          isLatest={isLatestTranscriptRow}
+          renderContent={renderRow}
+        />
       );
       // Counter-flip each row so the inverted list reads the right way up.
       finishItemWork();
@@ -4642,6 +4659,7 @@ export function SessionChat({
         onStop={onStop}
         dead={dead}
         voiceState={voice.state}
+        voicePreparation={voice.preparation}
         voiceAutoMode={voice.autoMode}
         voiceCountdown={voice.countdown}
         onMic={voice.toggle}
@@ -6970,8 +6988,12 @@ function MarkdownText({
   sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
   onOpenImage: (source: ImageSource, label: string) => void;
 }) {
+  const finishMarkdownWork = beginRenderWork(
+    'markdown-body',
+    useContext(TranscriptTimingContext) ?? '',
+  );
   const blocks = useMemo(() => parseMarkdownBlocks(content), [content]);
-  return (
+  const rendered = (
     <View>
       {blocks.map((block, i) =>
         block.type === 'table' ? (
@@ -6991,6 +7013,8 @@ function MarkdownText({
       )}
     </View>
   );
+  finishMarkdownWork();
+  return rendered;
 }
 
 // A markdown table (GitHub-flavored: a header row, a `|---|` separator, body
@@ -9337,6 +9361,7 @@ function InputBar({
   activityAnimating,
   onStop,
   dead,
+  voicePreparation,
   voiceState,
   voiceAutoMode,
   voiceCountdown,
@@ -9382,6 +9407,7 @@ function InputBar({
   onStop: () => void;
   /** Session can't be resumed (worktree gone) — lock the input, no send/mic. */
   dead: boolean;
+  voicePreparation?: string | null;
   voiceState: VoiceState;
   voiceAutoMode: boolean;
   voiceCountdown: number | null;
@@ -9513,13 +9539,15 @@ function InputBar({
             placeholder={
               dead
                 ? 'This session can’t be resumed'
-                : voiceState === 'recording'
-                  ? 'Listening…'
-                  : hasPlan
-                    ? 'Reply to change the plan…'
-                    : planning
-                      ? 'Answer, or add what matters to you…'
-                      : 'Message this agent…'
+                : voicePreparation
+                  ? 'Preparing microphone…'
+                  : voiceState === 'recording'
+                    ? 'Listening…'
+                    : hasPlan
+                      ? 'Reply to change the plan…'
+                      : planning
+                        ? 'Answer, or add what matters to you…'
+                        : 'Message this agent…'
             }
             placeholderTextColor={theme.colors.textFaint}
             editable={!dead}

@@ -6,6 +6,7 @@ import {
 } from '@verity/mobile';
 import {
   beginRenderWork,
+  beginClientActivity,
   markInitialListLoad,
   rowPress,
   type RenderWorkStage,
@@ -84,12 +85,12 @@ it('keeps stages independent and bounds them to twelve phase entries', () => {
 it('does not leave partial aggregates or change unrelated entries when the trace is full', () => {
   rowPress('a');
   const trace = sessionSwitchTiming('a')!;
-  while (trace.recorded < 63) markSessionSwitch(trace, 'existing');
+  while (trace.recorded < 64) markSessionSwitch(trace, 'render-existing');
   const before = JSON.stringify(trace.phases);
   beginRenderWork('chat-body', 'a')();
   expect(JSON.stringify(trace.phases)).toBe(before);
   markSessionSwitch(trace, 'final');
-  expect(trace.phases).toHaveLength(64);
+  expect(trace.phases).toHaveLength(65);
 });
 
 it('ignores expired and permission traces', () => {
@@ -104,17 +105,62 @@ it('ignores expired and permission traces', () => {
   expect(permission.phases).toHaveLength(0);
 });
 
-it('stops existing aggregates when list completion cannot fit in the phase buffer', () => {
+it('preserves list completion after aggregates consume the metric budget', () => {
   rowPress('a');
   const trace = sessionSwitchTiming('a')!;
   beginRenderWork('chat-body', 'a')();
   const finish = beginRenderWork('chat-body', 'a');
-  while (trace.recorded < 64) markSessionSwitch(trace, 'existing');
-  const before = JSON.stringify(trace.phases);
+  while (trace.recorded < 64) markSessionSwitch(trace, 'render-existing');
   markInitialListLoad(trace);
-  expect(trace.phases.some((p) => p.phase === 'flash-list-on-load')).toBe(false);
+  const before = JSON.stringify(trace.phases);
+  expect(trace.phases.some((p) => p.phase === 'flash-list-on-load')).toBe(true);
   clock += 100;
   finish();
   beginRenderWork('chat-body', 'a')();
   expect(JSON.stringify(trace.phases)).toBe(before);
+});
+
+it('bounds client activity and locates its longest interval without exporting content', () => {
+  rowPress('private-activity-session');
+  for (let i = 0; i < 100; i++) {
+    const finish = beginClientActivity('socket-message');
+    clock += i === 50 ? 500 : 1;
+    finish();
+    finish();
+  }
+  const trace = sessionSwitchTiming('private-activity-session')!;
+  expect(
+    trace.phases
+      .filter((p) => p.phase.startsWith('activity-'))
+      .map(({ phase, value }) => ({ phase, value })),
+  ).toEqual([
+    { phase: 'activity-socket-message-total-ms', value: 599 },
+    { phase: 'activity-socket-message-count', value: 100 },
+    { phase: 'activity-socket-message-peak-start-ms', value: 50 },
+    { phase: 'activity-socket-message-peak-end-ms', value: 550 },
+  ]);
+  expect(JSON.stringify(exportSessionSwitchTimings())).not.toContain('private-activity-session');
+  const finish = beginClientActivity('anchor-read');
+  rowPress('other');
+  clock += 1000;
+  finish();
+  expect(sessionSwitchTiming('other')!.phases.some((p) => p.phase.startsWith('activity-'))).toBe(
+    false,
+  );
+});
+
+it('does not collect client activity after list completion or beyond the phase budget', () => {
+  rowPress('bounded');
+  const trace = sessionSwitchTiming('bounded')!;
+  const finish = beginClientActivity('anchor-read');
+  markInitialListLoad(trace);
+  clock += 100;
+  finish();
+  beginClientActivity('socket-message')();
+  expect(trace.phases.some((p) => p.phase.startsWith('activity-'))).toBe(false);
+  rowPress('full');
+  const full = sessionSwitchTiming('full')!;
+  for (let i = 0; i < 61; i++) markSessionSwitch(full, 'render-existing');
+  beginClientActivity('socket-message')();
+  expect(full.phases).toHaveLength(62);
 });

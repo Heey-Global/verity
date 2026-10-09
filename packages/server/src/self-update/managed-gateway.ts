@@ -1,3 +1,7 @@
+import {
+  switchRequestDiagnostic,
+  createSwitchDiagnosticBudget,
+} from '../switch-request-diagnostic.js';
 import { randomUUID } from 'node:crypto';
 import type { TLSSocket } from 'node:tls';
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -42,7 +46,7 @@ export interface ManagedGatewayBackend {
 }
 
 export interface ManagedGatewayConfig {
-  /** Fixed metadata only; never request URLs, headers, addresses or error messages. */
+  /** Fixed metadata and validated opaque diagnostic tokens only; never URLs, raw headers, addresses or error messages. */
   readonly log?: (event: Record<string, string | number>) => void;
   readonly tls?: { readonly key: string | Buffer; readonly cert: string | Buffer };
   readonly publicHost?: string;
@@ -253,8 +257,38 @@ function proxyHttp(
   upstreamRequests: Set<Destroyable>,
   upstreamSockets: Set<Socket>,
   backendClientIdentitySecret: Buffer | undefined,
+  diagnosticLog?: (event: Record<string, string | number>) => void,
 ): void {
+  const diagnostic = switchRequestDiagnostic(request.method, request.url, request.headers);
+  const started = performance.now();
+  const fields: Record<string, string | number> | undefined =
+    diagnosticLog && diagnostic
+      ? {
+          event: 'session-switch-http',
+          ...diagnostic,
+          receivedAt: Date.now(),
+          httpVersion: request.httpVersion,
+        }
+      : undefined;
+  const mark = (phase: string): void => {
+    if (fields) fields[phase] = Math.round((performance.now() - started) * 1000) / 1000;
+  };
+  let reported = false;
+  const report = (outcome: string): void => {
+    if (!fields || reported) return;
+    reported = true;
+    mark('downstreamCompletedMs');
+    diagnosticLog?.({ ...fields, outcome, statusCode: response.statusCode });
+  };
+  response.once('finish', () => report('finished'));
+  response.once('close', () => report('closed'));
   const headers = { ...request.headers };
+  delete headers['x-verity-switch-request'];
+  delete headers['x-verity-switch-kind'];
+  if (diagnostic) {
+    headers['x-verity-switch-request'] = diagnostic.diagnosticRequestId;
+    headers['x-verity-switch-kind'] = diagnostic.kind;
+  }
   for (const header of HOP_BY_HOP) delete headers[header];
   delete headers[MANAGED_CLIENT_IDENTITY_HEADER];
   delete headers[MANAGED_BROWSER_ORIGIN_HEADER];
@@ -278,6 +312,7 @@ function proxyHttp(
     );
   }
   headers.host = `${backend.host}:${String(port)}`;
+  mark('forwardMs');
   const upstream = httpRequest(
     {
       host: backend.host,
@@ -288,6 +323,9 @@ function proxyHttp(
       timeout: timeoutMs,
     },
     (upstreamResponse) => {
+      mark('upstreamResponseMs');
+      if (fields) fields.upstreamReusedSocket = upstream.reusedSocket ? 1 : 0;
+      upstreamResponse.once('end', () => mark('upstreamEndMs'));
       const responseHeaders = { ...upstreamResponse.headers };
       for (const header of HOP_BY_HOP) delete responseHeaders[header];
       response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders);
@@ -296,7 +334,11 @@ function proxyHttp(
   );
   upstreamRequests.add(upstream);
   upstream.once('close', () => upstreamRequests.delete(upstream));
-  upstream.once('socket', (socket) => trackUpstreamSocket(socket, upstreamSockets));
+  upstream.once('finish', () => mark('upstreamRequestFinishMs'));
+  upstream.once('socket', (socket) => {
+    mark('socketAssignedMs');
+    trackUpstreamSocket(socket, upstreamSockets);
+  });
   upstream.once('timeout', () => upstream.destroy(new Error('managed gateway upstream timeout')));
   upstream.once('error', () => {
     if (!response.headersSent) response.writeHead(502, { 'content-type': 'application/json' });
@@ -433,6 +475,7 @@ export async function startManagedGateway(
   const upstreamRequests = new Set<Destroyable>();
   const upstreamSockets = new Set<Socket>();
   const activeHttpSockets = new Map<Socket, number>();
+  const admitSwitchDiagnostic = createSwitchDiagnosticBudget();
   let activeRequests = 0;
   let maintenance = false;
   let draining = false;
@@ -471,6 +514,11 @@ export async function startManagedGateway(
       upstreamRequests,
       upstreamSockets,
       config.clientIdentitySecret,
+      config.log &&
+        switchRequestDiagnostic(request.method, request.url, request.headers) &&
+        admitSwitchDiagnostic()
+        ? config.log
+        : undefined,
     );
   };
   const tlsDiagnostics = new WeakMap<

@@ -299,3 +299,44 @@ backend maintenance inputs, or website version/ref. OTA promotion can be retried
 through its own workflow. Always inspect the recorded source and artifact
 identity; a successful retry should complete the original operation, not create
 a new one under the same name.
+
+## Tag registration and workflow merge ordering
+
+The dispatcher's `register-release-tags` job reserves approved release commits
+before entering any product's build queue. A tag records the source commit; it
+does not publish a GitHub release, move a channel, or approve production. Release
+Please still creates the draft, and the existing train lock still owns planning
+and publication. Existing tags must identify the validated source and are never
+moved. Registration requires only the standard `GITHUB_TOKEN` permissions.
+
+GitHub can reject tagging an older commit after its workflow contents have been
+removed from the current branch. Early registration alone does not close that
+race. CI's `release-tag-barrier` checks the base's release tags before a PR changes
+anything under `.github/workflows`, including deletions and rename sources.
+Ordinary source-only PRs pass without waiting for tags or builds. If the barrier
+fails because registration is still running, rerun CI once registration succeeds.
+A failed registration needs recovery; merging the workflow change is not a
+recovery mechanism.
+
+### Required repository configuration
+
+A repository administrator must enable these settings on `main` after deploying
+the workflow. The code alone does **not** enforce merge ordering:
+
+1. Require the GitHub Actions status check `release-tag-barrier`.
+2. Enable **Require branches to be up to date before merging** (strict required
+   status checks). This invalidates a passing check when another release merges.
+3. Apply the rule to administrators and automation; do not grant bypasses that
+   can merge workflow changes without the check. Preserve all existing required
+   checks and other protections when editing the rule.
+
+Do not substitute a non-strict status rule: two PRs could pass against the same
+base, then the workflow PR could overtake the release PR. This setup uses strict
+branch protection, not a merge queue; a merge queue would need its own
+`merge_group` check coverage before being enabled.
+
+Verify configuration with a workflow-changing PR based on a main commit whose
+release tag is absent: the barrier must fail and merging must be blocked. Once
+the exact tag is registered, rerun CI and confirm the barrier passes. Then advance
+main and confirm GitHub requires the PR to update before merging. Activation is
+incomplete until both the required check and strict base freshness are enforced.

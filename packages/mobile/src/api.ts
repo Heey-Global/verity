@@ -1,5 +1,7 @@
 import {
   markSessionSwitch,
+  beginSwitchTransportRequest,
+  markSwitchTransportRequest,
   sessionSwitchTiming,
   type SwitchTiming,
 } from './sessionSwitchTiming.js';
@@ -4634,7 +4636,25 @@ export class VerityClient {
     const timing = timingOverride?.trace;
     const timingKind = path.includes('/events') ? 'events' : 'session';
     markSessionSwitch(timing, `${timingKind}-request-start`);
-    const res = await fetchImpl(`${this.baseUrl}${path}`, init);
+    const diagnosticRequestId = beginSwitchTransportRequest(timing, timingKind);
+    if (diagnosticRequestId) {
+      init = {
+        ...init,
+        headers: {
+          ...(init.headers as Record<string, string>),
+          'x-verity-switch-request': diagnosticRequestId,
+          'x-verity-switch-kind': timingKind,
+        },
+      };
+    }
+    let res: Response;
+    try {
+      res = await fetchImpl(`${this.baseUrl}${path}`, init);
+      markSwitchTransportRequest(diagnosticRequestId, 'fetch-return', res.status);
+    } catch (error) {
+      markSwitchTransportRequest(diagnosticRequestId, 'fetch-error');
+      throw error;
+    }
     markSessionSwitch(timing, `${timingKind}-fetch-return`, res.status);
     if (!res.ok) {
       // A 401 on a GATED route AFTER we sent a token means that token is

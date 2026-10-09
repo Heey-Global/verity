@@ -147,6 +147,7 @@ const VERITY_TOOL_LABELS: Record<string, string> = {
   verity_present_plan: 'Verity Plan',
   verity_end_planning: 'Verity Implement Plan',
   verity_tasks: 'Verity Tasks',
+  verity_app_help: 'Verity Help',
 };
 
 /** Strip only Verity's own backend qualification, including tools added by the platform. */

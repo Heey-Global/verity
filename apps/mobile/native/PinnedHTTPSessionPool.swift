@@ -177,3 +177,102 @@ func pinnedHTTPResponse(data: Data, response: HTTPURLResponse, preferText: Bool)
   } else { result["bodyBase64"] = data.base64EncodedString() }
   return result
 }
+
+/// Content-free, bounded device-clock diagnostics. Timer gaps are scheduling intervals,
+/// not evidence that JavaScript or a native thread was continuously executing.
+final class PinnedTransportTiming: @unchecked Sendable {
+  private let lock = NSLock()
+  private let entry = ProcessInfo.processInfo.systemUptime
+  private let entryDate = Date()
+  private var fields: [String: Any]
+
+  init?(headers: [String: String], proxyPort: Int, proxyMode: String) {
+    guard let id = headers.first(where: { $0.key.lowercased() == "x-verity-switch-request" })?.value,
+      id.range(of: "^[a-z0-9-]{1,80}$", options: .regularExpression) == (id.startIndex..<id.endIndex)
+    else { return nil }
+    fields = ["requestId": id, "metricsAvailable": false,
+      "nativeEntryWallMs": entryDate.timeIntervalSince1970 * 1000,
+      "route": proxyPort > 0 ? "tunnel" : "direct",
+      "proxyMode": proxyPort > 0 ? proxyMode : "none"]
+  }
+
+  func resumed() {
+    lock.lock()
+    fields["nativeResumeMs"] = (ProcessInfo.processInfo.systemUptime - entry) * 1000
+    lock.unlock()
+  }
+
+  func completed(error: Error?) {
+    lock.lock()
+    fields["nativeCompletionMs"] = (ProcessInfo.processInfo.systemUptime - entry) * 1000
+    fields["nativeCompletionWallMs"] = Date().timeIntervalSince1970 * 1000
+    fields["failed"] = error != nil
+    lock.unlock()
+  }
+
+  func responseReady() {
+    lock.lock()
+    fields["nativeResponseReadyMs"] = (ProcessInfo.processInfo.systemUptime - entry) * 1000
+    fields["nativeResponseReadyWallMs"] = Date().timeIntervalSince1970 * 1000
+    lock.unlock()
+  }
+
+  func collected(_ metrics: URLSessionTaskMetrics) {
+    // URLSession dates share the device wall clock, not the server clock. Do not
+    // combine these offsets with server timestamps without clock calibration.
+    func offset(_ date: Date?) -> Double? {
+      date.map { $0.timeIntervalSince(entryDate) * 1000 }
+    }
+    let transactions: [[String: Any]] = metrics.transactionMetrics.suffix(4).map { tx in
+      var value: [String: Any] = ["reusedConnection": tx.isReusedConnection,
+        "proxyConnection": tx.isProxyConnection]
+      let knownProtocols: Set<String> = ["http/1.0", "http/1.1", "h2", "h3"]
+      value["protocol"] = knownProtocols.contains(tx.networkProtocolName ?? "")
+        ? tx.networkProtocolName : "other"
+      let dates: [(String, Date?)] = [
+        ("fetchStartMs", tx.fetchStartDate), ("dnsStartMs", tx.domainLookupStartDate),
+        ("dnsEndMs", tx.domainLookupEndDate), ("connectStartMs", tx.connectStartDate),
+        ("connectEndMs", tx.connectEndDate), ("tlsStartMs", tx.secureConnectionStartDate),
+        ("tlsEndMs", tx.secureConnectionEndDate), ("requestStartMs", tx.requestStartDate),
+        ("requestEndMs", tx.requestEndDate), ("responseStartMs", tx.responseStartDate),
+        ("responseEndMs", tx.responseEndDate)]
+      for (name, date) in dates { if let elapsed = offset(date) { value[name] = elapsed } }
+      return value
+    }
+    lock.lock()
+    fields["metricsAvailable"] = true
+    fields["transactionCount"] = metrics.transactionMetrics.count
+    fields["transactionsTruncated"] = metrics.transactionMetrics.count > 4
+    fields["transactions"] = transactions
+    lock.unlock()
+  }
+
+  func snapshot() -> [String: Any] {
+    lock.lock()
+    defer { lock.unlock() }
+    return fields
+  }
+}
+
+final class PinnedTransportTimingRegistry: @unchecked Sendable {
+  private let lock = NSLock()
+  private var records: [PinnedTransportTiming] = []
+  private var omitted = 0
+  func retain(_ record: PinnedTransportTiming) {
+    lock.lock()
+    records.append(record)
+    if records.count > 32 {
+      let excess = records.count - 32
+      omitted += excess
+      records.removeFirst(excess)
+    }
+    lock.unlock()
+  }
+  func snapshot() -> [String: Any] {
+    lock.lock()
+    let retained = records
+    let dropped = omitted
+    lock.unlock()
+    return ["records": retained.map { $0.snapshot() }, "omitted": dropped]
+  }
+}
