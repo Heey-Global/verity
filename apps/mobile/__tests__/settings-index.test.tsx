@@ -1,3 +1,5 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { FEATURE_HINT_KEYS } from '../lib/featureHints';
 // The Settings index: what is still unfinished, where the rest of it lives, and
 // the two switches that stayed on the top level.
 //
@@ -350,4 +352,33 @@ describe('settings index — legacy deep links', () => {
     await screen.findByLabelText('Connections');
     expect(mockReplace).not.toHaveBeenCalled();
   });
+});
+
+it('resets device hints and opens explicit welcome replay from Settings', async () => {
+  for (const key of FEATURE_HINT_KEYS) await AsyncStorage.setItem(`verity.hints.v1.${key}`, 'seen');
+  await AsyncStorage.setItem('verity.unrelated.preference', 'keep');
+  mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+  render(<SettingsIndexScreen />);
+  fireEvent.press(screen.getByText('Show welcome tour again'));
+  await waitFor(() =>
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: '/onboarding/starter',
+      params: { replay: '1' },
+    }),
+  );
+  for (const key of FEATURE_HINT_KEYS)
+    expect(await AsyncStorage.getItem(`verity.hints.v1.${key}`)).toBeNull();
+  expect(await AsyncStorage.getItem('verity.unrelated.preference')).toBe('keep');
+});
+
+it('keeps the Settings screen open when resetting hints fails', async () => {
+  jest.spyOn(AsyncStorage, 'multiRemove').mockRejectedValueOnce(new Error('Storage unavailable'));
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+  render(<SettingsIndexScreen />);
+  fireEvent.press(screen.getByText('Show welcome tour again'));
+  await waitFor(() =>
+    expect(alert).toHaveBeenCalledWith('Could not reset hints', 'Storage unavailable'),
+  );
+  expect(mockPush).not.toHaveBeenCalled();
 });

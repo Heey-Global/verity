@@ -13,6 +13,7 @@ interface MockModel {
   resume: jest.Mock;
   setView: jest.Mock;
   refreshActivity: jest.Mock;
+  refreshMetadata: jest.Mock;
 }
 const mockModels: MockModel[] = [];
 jest.mock('@verity/mobile', () => ({
@@ -27,6 +28,7 @@ jest.mock('@verity/mobile', () => ({
       resume: jest.fn(),
       setView: jest.fn(),
       refreshActivity: jest.fn(),
+      refreshMetadata: jest.fn(),
     };
     mockModels.push(model);
     return model;
@@ -58,6 +60,12 @@ describe('useSession frame publication', () => {
   let nextFrame = 0;
   const client = {} as VerityClient;
   let initialAppState: AppStateStatus;
+
+  it('refreshes metadata after session settings change', () => {
+    const { result } = renderHook(() => useSession(client, 's1', 'http://host'));
+    act(() => result.current.refreshMetadata());
+    expect(mockModels[0]?.refreshMetadata).toHaveBeenCalledTimes(1);
+  });
 
   beforeEach(() => {
     mockModels.length = 0;

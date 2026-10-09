@@ -1,3 +1,7 @@
+import { isLinkableSession } from '../../lib/sessionLinks';
+import { SessionSettingsDialog } from '../../components/SessionSettingsDialog';
+import { useFeatureHint } from '../../components/FeatureHint';
+import { appendHelpQuestion } from '../../lib/featureHints';
 import { TranscriptTimingContext } from '../../components/TranscriptRow';
 import { useSwitchFrameTiming } from '../../hooks/useSwitchFrameTiming';
 import {
@@ -686,6 +690,7 @@ export function SessionChat({
   const { theme } = useUnistyles();
   const {
     session,
+    refreshMetadata,
     streamError,
     sending,
     sendError,
@@ -2445,6 +2450,35 @@ export function SessionChat({
   // tap-revealed action row under a message (next to Copy); recalled from the header
   // sheet, which jumps back to the message.
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
+  const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
+  const [sessionMenuAnchor, setSessionMenuAnchor] = useState<AttachAnchor | null>(null);
+  const sessionMenuRef = useRef<View>(null);
+  const [settingsProjects, setSettingsProjects] = useState<
+    Awaited<ReturnType<VerityClient['listProjects']>>
+  >([]);
+  const [settingsSessions, setSettingsSessions] = useState<
+    Awaited<ReturnType<VerityClient['listSessions']>>
+  >([]);
+  useEffect(() => {
+    if (!sessionSettingsOpen) return;
+    let active = true;
+    void Promise.all([client.listProjects(), client.listSessions()])
+      .then(([projects, sessions]) => {
+        if (active) {
+          setSettingsProjects(projects);
+          setSettingsSessions(sessions);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [client, sessionSettingsOpen]);
+  const askHelp = (question: string) => {
+    voice.abort();
+    setDraft((current) => appendHelpQuestion(current, question));
+  };
+  const featureHint = useFeatureHint(askHelp, sessionId);
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesInitialPath, setFilesInitialPath] = useState<string | null>(null);
   const [filesInitialRoot, setFilesInitialRoot] = useState<SessionFileRoot>('worktree');
@@ -2459,6 +2493,8 @@ export function SessionChat({
   const openAppLink = useCallback<OpenAppLink>(
     (target) => {
       switch (target.kind) {
+        case 'session-settings':
+          return () => setSessionSettingsOpen(true);
         case 'route':
           return () => router.push(target.path);
         case 'project-settings': {
@@ -3283,9 +3319,12 @@ export function SessionChat({
   }, [uploadMeetingAudio]);
   const onLiveMeeting = useCallback(() => {
     setAttachMenuOpen(false);
-    voice.abort();
-    router.push({ pathname: '/meeting/[sessionId]', params: { sessionId } });
-  }, [sessionId, voice]);
+    void featureHint.confirm('live-meeting').then((proceed) => {
+      if (!proceed) return;
+      voice.abort();
+      router.push({ pathname: '/meeting/[sessionId]', params: { sessionId } });
+    });
+  }, [sessionId, voice, featureHint.confirm]);
   const onConnectGoogleService = useCallback(
     (service: GoogleService) => {
       setAttachMenuOpen(false);
@@ -3858,6 +3897,19 @@ export function SessionChat({
         {/* Actions sit on the title row as large round buttons, so the header needs a
             single row and the targets are big enough to hit and recognise. */}
         <View style={styles.headerActions}>
+          <View ref={sessionMenuRef} collapsable={false}>
+            <HeaderActionButton
+              icon="more-horizontal"
+              label="Session menu"
+              accessibilityLabel="Open session menu"
+              onHint={showHeaderHint}
+              onPress={() =>
+                sessionMenuRef.current?.measureInWindow((x, y, width, height) =>
+                  setSessionMenuAnchor({ x, y, width, height }),
+                )
+              }
+            />
+          </View>
           {projectId ? (
             <HeaderActionButton
               icon="monitor"
@@ -4158,6 +4210,7 @@ export function SessionChat({
       ) : null}
       {staticPreviewOpen && projectId ? (
         <StaticPreviewSheet
+          onAskHelp={askHelp}
           detectedServers={session.devServers}
           initialServer={previewServer}
           onAskAgent={(prompt) => {
@@ -4176,6 +4229,92 @@ export function SessionChat({
             setPreviewServer(undefined);
             refreshStaticPreview();
           }}
+        />
+      ) : null}
+      {featureHint.sheet}
+      {sessionMenuAnchor ? (
+        <ActionMenu
+          anchor={sessionMenuAnchor}
+          label="Session menu"
+          onClose={() => setSessionMenuAnchor(null)}
+          items={[
+            {
+              icon: 'settings',
+              title: 'Session settings',
+              subtitle: 'Rename, link or manage this session',
+              onPress: () => {
+                setSessionMenuAnchor(null);
+                setSessionSettingsOpen(true);
+              },
+            },
+          ]}
+        />
+      ) : null}
+      {sessionSettingsOpen ? (
+        <SessionSettingsDialog
+          key={sessionId}
+          sessionId={sessionId}
+          sessionName={name ?? null}
+          displayName={sessionFallback}
+          projectId={projectId ?? null}
+          projectName={
+            settingsProjects.find((project) => project.id === projectId)?.repo ?? 'No project'
+          }
+          canMove={
+            !busy &&
+            settingsProjects.some((project) => project.id === projectId && project.kind === 'local')
+          }
+          moveDisabledReason={
+            busy
+              ? 'Finish the current turn before changing projects.'
+              : 'Moving is available for normal sessions in local projects.'
+          }
+          projects={settingsProjects
+            .filter((project) => project.kind === 'local')
+            .map((project) => ({ id: project.id, name: project.repo }))}
+          linkableSessions={settingsSessions
+            .filter((candidate) => isLinkableSession(candidate, sessionId, settingsProjects))
+            .map((candidate) => ({
+              id: candidate.sessionId,
+              name: candidate.name ?? candidate.sessionId,
+              projectId: candidate.projectId!,
+              projectName:
+                settingsProjects.find((project) => project.id === candidate.projectId)?.repo ??
+                candidate.projectId!,
+            }))}
+          client={client}
+          onClose={() => setSessionSettingsOpen(false)}
+          onChanged={() => {
+            refreshMetadata();
+            branchesRefresh();
+          }}
+          onDelete={() =>
+            Alert.alert(
+              'Delete session?',
+              `This permanently removes "${sessionFallback}", its history and worktree. This cannot be undone.`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Delete',
+                  style: 'destructive',
+                  onPress: () => {
+                    void client
+                      .deleteSession(sessionId)
+                      .then(() => {
+                        setSessionSettingsOpen(false);
+                        router.replace('/');
+                      })
+                      .catch((error: unknown) =>
+                        Alert.alert(
+                          'Could not delete session',
+                          error instanceof Error ? error.message : 'Please try again.',
+                        ),
+                      );
+                  },
+                },
+              ],
+            )
+          }
         />
       ) : null}
       {filesOpen ? (
@@ -4593,6 +4732,7 @@ export function SessionChat({
       {visiblePullRequest ? (
         <PullRequestBar
           key={visiblePullRequest.number}
+          confirmHint={() => featureHint.confirm('review-and-pull-requests')}
           pullRequest={visiblePullRequest}
           onMerge={onMergePullRequest}
           onRefresh={branchesRefresh}
@@ -4606,6 +4746,7 @@ export function SessionChat({
       branches.current !== branches.localMergeBase &&
       !branches.workspaceMissing ? (
         <LocalMergeBar
+          confirmHint={() => featureHint.confirm('review-and-pull-requests')}
           branch={branches.current}
           base={branches.localMergeBase}
           busy={working}
@@ -9081,11 +9222,13 @@ function QueuedMessages({
 }
 
 function PullRequestBar({
+  confirmHint,
   pullRequest,
   onMerge,
   onRefresh,
   onDismiss,
 }: {
+  confirmHint: () => Promise<boolean>;
   pullRequest: NonNullable<UseBranches['pullRequest']>;
   onMerge: UseBranches['mergePullRequest'];
   onRefresh: () => void;
@@ -9172,6 +9315,11 @@ function PullRequestBar({
       setMerging(true);
       setError(undefined);
       setMergeRejectedFor(undefined);
+      if (!(await confirmHint())) {
+        if (mounted.current) setMerging(false);
+        return;
+      }
+      if (!mounted.current) return;
       const result = await onMerge(pullRequest.number);
       if (!mounted.current) return;
       setMerging(false);
@@ -9191,7 +9339,12 @@ function PullRequestBar({
       <View style={styles.prBar}>
         <Pressable
           style={({ pressed }) => [styles.prOpenTarget, pressed ? styles.prBarPressed : null]}
-          onPress={() => void Linking.openURL(pullRequest.url).catch(() => undefined)}
+          onPress={() =>
+            void confirmHint().then((proceed) => {
+              if (proceed && mounted.current)
+                void Linking.openURL(pullRequest.url).catch(() => undefined);
+            })
+          }
           accessibilityRole="link"
           accessibilityLabel={`Open pull request ${String(pullRequest.number)} on GitHub`}
         >
@@ -9216,7 +9369,11 @@ function PullRequestBar({
               styles.prDismissButton,
               pressed ? styles.prDismissButtonPressed : null,
             ]}
-            onPress={onDismiss}
+            onPress={() =>
+              void confirmHint().then((proceed) => {
+                if (proceed && mounted.current) onDismiss();
+              })
+            }
             accessibilityRole="button"
             accessibilityLabel={`Hide pull request ${String(pullRequest.number)} status`}
           >
@@ -9237,7 +9394,14 @@ function PullRequestBar({
                 ? styles.prMergeButtonPressed
                 : null,
             ]}
-            onPress={button.kind === 'refresh' ? onRefresh : merge}
+            onPress={
+              button.kind === 'refresh'
+                ? () =>
+                    void confirmHint().then((proceed) => {
+                      if (proceed && mounted.current) onRefresh();
+                    })
+                : merge
+            }
             disabled={!mergeButtonEnabled && button.kind !== 'refresh'}
             accessibilityRole="button"
             accessibilityState={{
@@ -9268,11 +9432,13 @@ function PullRequestBar({
 /** Save a local session's work through the agent and then into the project base.
  *  The server checks the commit and merge preconditions. */
 function LocalMergeBar({
+  confirmHint,
   branch,
   base,
   busy,
   onSave,
 }: {
+  confirmHint: () => Promise<boolean>;
   branch: string;
   base: string;
   busy: boolean;
@@ -9330,7 +9496,11 @@ function LocalMergeBar({
             saving || busy ? styles.prMergeButtonDisabled : null,
             pressed && !saving && !busy ? styles.prMergeButtonPressed : null,
           ]}
-          onPress={save}
+          onPress={() =>
+            void confirmHint().then((proceed) => {
+              if (proceed && mounted.current) save();
+            })
+          }
           disabled={saving || busy}
           accessibilityRole="button"
           accessibilityState={{ disabled: saving || busy, busy: saving }}

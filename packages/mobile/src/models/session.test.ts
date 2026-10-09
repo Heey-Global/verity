@@ -47,6 +47,21 @@ function metadataHistoryEvent(seq: number): { seq: number; event: AgentEvent } {
 }
 
 describe('SessionModel — stream', () => {
+  it('refreshes the name and project after session settings change', async () => {
+    const client = stubClient();
+    vi.spyOn(client, 'getSession').mockResolvedValue({
+      name: 'Renamed',
+      projectId: 'moved-project',
+      resumable: true,
+    } as Awaited<ReturnType<VerityClient['getSession']>>);
+    const model = new SessionModel({ client, sessionId: 's1', transport: new FakeTransport() });
+    model.refreshMetadata();
+    await flush();
+    expect(model.state.name).toBe('Renamed');
+    expect(model.state.projectId).toBe('moved-project');
+    model.stop();
+  });
+
   it('publishes REST history before the live replay has caught up', async () => {
     const { connect, sockets } = recordingConnect();
     let resolveHistory!: (page: Awaited<ReturnType<VerityClient['getHistory']>>) => void;

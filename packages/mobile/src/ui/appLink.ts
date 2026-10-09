@@ -59,6 +59,7 @@ export type AppLinkTarget =
   | { kind: 'project-settings'; page: AppLinkProjectSettingsPage | null }
   | { kind: 'new-project' }
   | { kind: 'preview' }
+  | { kind: 'session-settings' }
   | { kind: 'files'; root: 'worktree' | 'knowledge' };
 
 /**
@@ -92,6 +93,7 @@ export function parseAppLink(url: string): AppLinkTarget | null {
     return null;
   }
   if (head === 'session' && segments.length === 2) {
+    if (second === 'settings') return { kind: 'session-settings' };
     if (second === 'preview') return { kind: 'preview' };
     if (second === 'files') return { kind: 'files', root: 'worktree' };
   }

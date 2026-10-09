@@ -1,3 +1,4 @@
+import { resetFeatureHints } from '../../lib/featureHints';
 import { useTaskPreferences } from '../../lib/taskPreferences';
 // Settings, top level: what is left to set up, where everything lives, and the
 // two app-wide switches. Everything with a form of its own is one tap deeper.
@@ -227,6 +228,25 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           reconfigure mode; the only way back to it once a non-null URL is persisted. */}
       <SettingsGroup title="This app">
         <SettingsListPanel>
+          {!isDemoMode() ? (
+            <SettingsNavRow
+              icon="help-circle"
+              title="Show welcome tour again"
+              subtitle="Open the welcome session and reset feature hints on this device"
+              onPress={() => {
+                void resetFeatureHints()
+                  .then(() =>
+                    router.push({ pathname: '/onboarding/starter', params: { replay: '1' } }),
+                  )
+                  .catch((error: unknown) =>
+                    Alert.alert(
+                      'Could not reset hints',
+                      error instanceof Error ? error.message : 'Please try again.',
+                    ),
+                  );
+              }}
+            />
+          ) : null}
           <SettingsNavRow
             icon="file-text"
             title="Diagnostics"

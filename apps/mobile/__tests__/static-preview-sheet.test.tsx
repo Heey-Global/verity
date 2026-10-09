@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { Alert, Linking, Modal, Platform, Share } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
@@ -112,7 +113,8 @@ function enableDetectedOnline() {
   fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await AsyncStorage.setItem('verity.hints.v1.preview-and-sharing', 'seen');
   jest.clearAllMocks();
 });
 
@@ -1718,7 +1720,16 @@ describe('managed dev servers', () => {
         stopPublicPreviewShare,
       }),
     );
-    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' });
+    // The server entry can arrive before its links; turning a still-unchecked
+    // switch on would exercise publishing instead of revocation.
+    await waitFor(() =>
+      expect(
+        screen.getByRole('switch', { name: 'Shared online for Curtis Demo' }).props
+          .accessibilityState.checked,
+      ).toBe(true),
+    );
+    fireEvent.press(screen.getByRole('switch', { name: 'Shared online for Curtis Demo' }));
     await waitFor(() => expect(stopPublicPreviewShare).toHaveBeenCalledWith('link-1'));
   });
 
@@ -1836,4 +1847,24 @@ describe('managed dev servers', () => {
     fireEvent.press(await screen.findByRole('button', { name: 'Save API as an entry' }));
     expect(onAskAgent).toHaveBeenCalledWith(expect.stringContaining('verity-dev-server add'));
   });
+});
+
+it('explains first online sharing before publishing and Ask in chat cancels', async () => {
+  await AsyncStorage.removeItem('verity.hints.v1.preview-and-sharing');
+  const createSessionPortPreviewShare = jest.fn(async () => portShare());
+  const onAskHelp = jest.fn();
+  renderSheet(makeClient({ createSessionPortPreviewShare }), { onAskHelp });
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
+    buttons?.find((button) => button.text === '1 hour')?.onPress?.();
+  });
+  await screen.findByRole('switch', { name: 'Shared online' });
+  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
+  await screen.findByText('Ask in chat');
+  expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByText('Ask in chat'));
+  await waitFor(() =>
+    expect(onAskHelp).toHaveBeenCalledWith('How does Shared online preview sharing work?'),
+  );
+  expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
 });

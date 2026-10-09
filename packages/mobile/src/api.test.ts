@@ -4035,3 +4035,18 @@ it('sends correlation headers only for an explicit timed session request', async
   ).toEqual(['fetch-dispatch', 'fetch-return']);
   expect(headers['x-verity-switch-request']).not.toContain('private');
 });
+
+it('sends explicit replay and retry options to the welcome endpoint', async () => {
+  const { fetch, calls } = fakeFetch(
+    new Response(JSON.stringify({ state: 'preparing', sessionId: null, projectId: 'starter' })),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.openWelcomeSession({ replay: true, retry: true })).toEqual({
+    state: 'preparing',
+    sessionId: null,
+    projectId: 'starter',
+  });
+  expect(calls[0]?.url).toBe('http://host/onboarding/welcome');
+  expect(calls[0]?.init?.method).toBe('POST');
+  expect(calls[0]?.init?.body).toBe(JSON.stringify({ replay: true, retry: true }));
+});
