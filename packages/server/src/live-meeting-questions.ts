@@ -26,8 +26,7 @@ export function questionWindow(transcript: string): string | null {
     (sentence) => sentence[0].trim().length >= 8 && trigger.test(sentence[0].trim()),
   );
   if (last < 0) return null;
-  const first = sentences[Math.max(0, last - 3)]!;
-  return recent.slice(first.index).trim();
+  return recent.trim();
 }
 
 export function meetingQuestionChecks(options: {

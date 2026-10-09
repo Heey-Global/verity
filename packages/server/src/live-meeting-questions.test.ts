@@ -266,3 +266,31 @@ it('rechecks an open question when an answer arrives without final punctuation',
   });
   s.controller.close();
 });
+
+it('retains earlier question evidence when a later topic precedes its answer', async () => {
+  vi.useFakeTimers();
+  const question = 'What is the price?';
+  const text =
+    question +
+    ' One moment. I will check. Please wait. Almost there. When is delivery? The price is ten euros.';
+  const query = vi.fn().mockResolvedValue(
+    JSON.stringify({
+      questions: [{ question: 'When is delivery?', quote: 'When is delivery?' }],
+    }),
+  );
+  const s = setup(query);
+  s.insights.mockResolvedValue([{ id: 'question-price', summary: question }]);
+  s.controller.ingest(meeting(text));
+  await vi.advanceTimersByTimeAsync(20);
+  expect(query.mock.calls[0]?.[1]).toContain(text);
+  expect(s.reconcileQuestions).toHaveBeenCalledWith(
+    'session',
+    'meeting',
+    1,
+    expect.objectContaining({
+      text,
+      insights: [expect.objectContaining({ evidenceA: 'When is delivery?' })],
+    }),
+  );
+  s.controller.close();
+});
