@@ -299,3 +299,32 @@ it('retracts corrected question evidence without removing claims or another sess
     expect.objectContaining({ id: 'claim-price' }),
   ]);
 });
+
+it('reconciles only classified question evidence and preserves accepted identities and older questions', async () => {
+  const transcript =
+    'What is the price? It costs ten euros. When is delivery? Why is the sky blue?';
+  await ctx.store.liveMeetings.putMeeting({ ...meeting, transcript });
+  for (const [id, evidenceA] of [
+    ['question-price', 'What is the price?'],
+    ['question-delivery', 'When is delivery?'],
+    ['question-sky', 'Why is the sky blue?'],
+    ['claim-price', 'What is the price?'],
+  ] as const)
+    await ctx.store.liveMeetings.addInsight('session-1', {
+      id,
+      meetingId: meeting.id,
+      kind: 'research',
+      summary: evidenceA,
+      evidenceA,
+      evidenceB: null,
+      sourcePath: null,
+      createdAt: 1,
+    });
+  await ctx.store.liveMeetings.reconcileQuestions('session-1', meeting.id, 1, {
+    text: 'What is the price? It costs ten euros. When is delivery?',
+    acceptedIds: ['question-delivery'],
+  });
+  expect(
+    (await ctx.store.liveMeetings.insights('session-1', meeting.id))?.map(({ id }) => id).sort(),
+  ).toEqual(['claim-price', 'question-delivery', 'question-sky']);
+});

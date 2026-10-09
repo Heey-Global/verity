@@ -88,7 +88,12 @@ export class LiveMeetingStore {
   }
 
   /** Remove question suggestions invalidated by recognition corrections, under the meeting lock. */
-  async reconcileQuestions(sessionId: string, meetingId: string, revision: number): Promise<void> {
+  async reconcileQuestions(
+    sessionId: string,
+    meetingId: string,
+    revision: number,
+    classified?: { text: string; acceptedIds: readonly string[] },
+  ): Promise<void> {
     await this.db.transaction().execute(async (trx) => {
       const meeting = await trx
         .selectFrom('live_meetings')
@@ -105,7 +110,13 @@ export class LiveMeetingStore {
         .where('id', 'like', 'question-%')
         .execute();
       const removed = questions
-        .filter((question) => !meeting.transcript.includes(question.evidence_a))
+        .filter(
+          (question) =>
+            !meeting.transcript.includes(question.evidence_a) ||
+            (classified !== undefined &&
+              classified.text.includes(question.evidence_a) &&
+              !classified.acceptedIds.includes(question.id)),
+        )
         .map(({ id }) => id);
       if (removed.length)
         await trx

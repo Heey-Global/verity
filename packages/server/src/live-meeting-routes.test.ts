@@ -762,3 +762,41 @@ it('keeps explicit questions out of periodic claim cards even when model output 
     await checked.close();
   }
 });
+
+it('retracts a published question after appended speech answers it', async () => {
+  const checked = Fastify();
+  const query = vi
+    .fn()
+    .mockResolvedValueOnce(
+      JSON.stringify({
+        questions: [{ question: 'Was kostet der Plan?', quote: 'Was kostet der Plan?' }],
+      }),
+    )
+    .mockResolvedValueOnce(JSON.stringify({ questions: [] }));
+  registerLiveMeetingRoutes(checked, ctx.store, { query, delayMs: 60_000 });
+  try {
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, transcript: 'Was kostet der Plan?' },
+    });
+    await vi.waitFor(
+      async () =>
+        expect(await ctx.store.liveMeetings.insights('session-1', 'meeting-1')).toHaveLength(1),
+      { timeout: 5000 },
+    );
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, revision: 2, transcript: 'Was kostet der Plan? Er kostet zehn Euro.' },
+    });
+    await vi.waitFor(
+      async () =>
+        expect(await ctx.store.liveMeetings.insights('session-1', 'meeting-1')).toHaveLength(0),
+      { timeout: 5000 },
+    );
+    expect(query).toHaveBeenCalledTimes(2);
+  } finally {
+    await checked.close();
+  }
+});

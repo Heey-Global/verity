@@ -126,6 +126,7 @@ export function meetingQuestionChecks(options: {
       const { questions } = resultSchema.parse(
         JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1)),
       );
+      const acceptedIds: string[] = [];
       for (const question of questions) {
         if (!text.includes(question.quote)) continue;
         const existing = known.find(
@@ -136,6 +137,7 @@ export function meetingQuestionChecks(options: {
           `question-${createHash('sha256')
             .update(`${meeting.id}\0${key(question.question)}`)
             .digest('hex')}`;
+        acceptedIds.push(id);
         await options.store.liveMeetings.addInsight(
           meeting.sessionId,
           {
@@ -155,6 +157,9 @@ export function meetingQuestionChecks(options: {
         meeting.sessionId,
         meeting.id,
         meeting.revision,
+        questions.every((question) => text.includes(question.quote))
+          ? { text, acceptedIds }
+          : undefined,
       );
       state.reconciled = meeting.transcript;
       await options.onUpdated?.(state.meeting);
