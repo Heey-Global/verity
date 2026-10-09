@@ -51,6 +51,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-tag-barrier:
+    # Require this check with strict up-to-date branches on main. A green check
+    # against an older base cannot authorize a merge past a new release commit.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+      - name: Protect untagged releases from workflow changes
+        if: github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${PR_BASE:-$(git rev-parse origin/main)}"
+          # Include deletions and rename sources; otherwise moving a workflow
+          # could pass the barrier while removing the permitted workflow tree.
+          if ! git diff --quiet --no-renames "$base" HEAD -- .github/workflows; then
+            node scripts/release-tag-registration.mjs check "$base"
+          fi
+
   changes:
     runs-on: ubuntu-24.04
     # `actions: read` is for the base commit's own CI verdict, which the
