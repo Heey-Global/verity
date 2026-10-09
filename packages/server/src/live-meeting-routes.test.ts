@@ -804,3 +804,165 @@ it('retracts a published question when an answer follows an intervening sentence
     await checked.close();
   }
 });
+
+it('preserves declarative claims beginning with question words', async () => {
+  const checked = Fastify();
+  const statements = [
+    'What we need is ten million euros.',
+    'Was wir brauchen, sind zehn Millionen Euro.',
+  ];
+  const query = vi.fn().mockResolvedValue(
+    JSON.stringify({
+      insights: statements.map((evidenceA) => ({
+        kind: 'research',
+        summary: 'Check the stated budget.',
+        evidenceA,
+      })),
+    }),
+  );
+  registerLiveMeetingRoutes(checked, ctx.store, { query, delayMs: 1 });
+  try {
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: {
+        ...meeting,
+        transcript:
+          statements.join(' ') + ' We should verify both amounts before making a decision.',
+      },
+    });
+    await vi.waitFor(async () =>
+      expect(
+        (await ctx.store.liveMeetings.insights('session-1', 'meeting-1'))
+          ?.map(({ evidenceA }) => evidenceA)
+          .sort(),
+      ).toEqual([...statements].sort()),
+    );
+  } finally {
+    await checked.close();
+  }
+});
+
+it('does not duplicate an already classified question lacking question punctuation', async () => {
+  const checked = Fastify();
+  const question = 'What does the plan cost.';
+  const query = vi.fn().mockResolvedValue(
+    JSON.stringify({
+      insights: [{ kind: 'research', summary: 'Check the plan price.', evidenceA: question }],
+    }),
+  );
+  const onFinished = vi.fn().mockResolvedValue(undefined);
+  registerLiveMeetingRoutes(checked, ctx.store, { query, delayMs: 1, onFinished });
+  try {
+    await ctx.store.liveMeetings.putMeeting({
+      id: 'meeting-1',
+      sessionId: 'session-1',
+      ...meeting,
+      ownerTokenHash: createHash('sha256').update(ownerToken).digest('hex'),
+      state: 'active',
+      transcript:
+        question + ' We need these figures before approving the plan and making a decision.',
+    });
+    await ctx.store.liveMeetings.addInsight('session-1', {
+      id: 'question-plan',
+      meetingId: 'meeting-1',
+      kind: 'research',
+      summary: 'What does the plan cost?',
+      evidenceA: question,
+      evidenceB: null,
+      sourcePath: null,
+      createdAt: 1,
+    });
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: {
+        ...meeting,
+        revision: 2,
+        state: 'ended',
+        endedAt: 1000,
+        transcript:
+          question + ' We need these figures before approving the plan and making a decision.',
+      },
+    });
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(2));
+    expect(
+      (await ctx.store.liveMeetings.insights('session-1', 'meeting-1'))?.map(({ id }) => id),
+    ).toEqual(['question-plan']);
+  } finally {
+    await checked.close();
+  }
+});
+
+it.each(['http', 'controller'] as const)(
+  'binds a paraphrased spoken request only to a question in its own meeting: %s',
+  async (path) => {
+    const checked = Fastify();
+    const query = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        requests: [
+          {
+            kind: 'research',
+            request: 'research its monthly price',
+            questionId: 'question-price',
+            questionTitle: 'Injected title',
+          },
+          { kind: 'research', request: 'check the launch date', questionId: 'question-foreign' },
+          { kind: 'opinion', request: 'explain the budget', questionId: null },
+        ],
+      }),
+    );
+    const controller = registerLiveMeetingRoutes(checked, ctx.store, { query });
+    for (const [meetingId, questionId] of [
+      ['meeting-1', 'question-price'],
+      ['meeting-other', 'question-foreign'],
+    ] as const) {
+      await ctx.store.liveMeetings.putMeeting({
+        ...meeting,
+        id: meetingId,
+        sessionId: 'session-1',
+        state: 'active',
+        ownerTokenHash: createHash('sha256').update(ownerToken).digest('hex'),
+      });
+      await ctx.store.liveMeetings.addInsight('session-1', {
+        id: questionId,
+        meetingId,
+        kind: 'research',
+        summary: 'What does the plan cost?',
+        evidenceA: 'What does the plan cost?',
+        evidenceB: null,
+        sourcePath: null,
+        createdAt: 1,
+      });
+    }
+    const utterance =
+      'Verity, research its monthly price and check the launch date and explain the budget.';
+    try {
+      const requests =
+        path === 'http'
+          ? (
+              await checked.inject({
+                method: 'POST',
+                url: `${url}/addressed`,
+                payload: { utterance, context: '' },
+              })
+            ).json().requests
+          : await controller.spoken('session-1', utterance, '', 'meeting-1');
+      expect(requests).toEqual([
+        {
+          kind: 'research',
+          request: 'research its monthly price',
+          questionId: 'question-price',
+          questionTitle: 'What does the plan cost?',
+        },
+        { kind: 'research', request: 'check the launch date' },
+        { kind: 'opinion', request: 'explain the budget' },
+      ]);
+      expect(query.mock.calls[0]?.[1]).toContain('question-price');
+      expect(query.mock.calls[0]?.[1]).not.toContain('question-foreign');
+    } finally {
+      await checked.close();
+    }
+  },
+);

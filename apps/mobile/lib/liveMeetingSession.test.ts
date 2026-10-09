@@ -955,3 +955,48 @@ it.each(['pause', 'switch server'] as const)(
     }
   },
 );
+
+it.each(['research', 'opinion'] as const)(
+  'carries the classified question identity into a spoken %s turn and event',
+  async (kind) => {
+    const sendTurn = jest.fn().mockResolvedValue({ turnId: 'turn-1' });
+    jest.mocked(createVerityClient).mockReturnValue({
+      sendTurn,
+      checkSpokenMeetingRequest: jest.fn().mockResolvedValue([
+        {
+          kind,
+          request: 'prüfe den monatlichen Preis',
+          questionId: 'question-price',
+          questionTitle: 'What does the plan cost?',
+        },
+      ]),
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    let onEvent!: (event: STTEvent) => void;
+    jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+      onEvent = listener;
+      return { remove: jest.fn() };
+    });
+    const events: Array<{ status: string; questionId?: string; questionTitle?: string }> = [];
+    const unsubscribe = subscribeVoiceMeetingRequest((event) => events.push(event));
+    try {
+      await startMeeting('session-1');
+      onEvent({ kind: 'status', state: 'listening' });
+      onEvent({ kind: 'snapshot', text: 'Verity, prüfe den monatlichen Preis.', final: true });
+      await waitFor(() => expect(events.some(({ status }) => status === 'sent')).toBe(true));
+      expect(sendTurn).toHaveBeenCalledWith(
+        'session-1',
+        expect.objectContaining({
+          prompt: expect.stringContaining('Meeting question reference: question-price'),
+        }),
+      );
+      expect(events.find(({ status }) => status === 'sent')?.questionId).toBe('question-price');
+      expect(events.find(({ status }) => status === 'sent')).toMatchObject({
+        questionTitle: 'What does the plan cost?',
+      });
+      expect(sendTurn.mock.calls[0]?.[1]?.prompt).toContain('Meeting question title:');
+    } finally {
+      unsubscribe();
+      await endMeeting();
+    }
+  },
+);

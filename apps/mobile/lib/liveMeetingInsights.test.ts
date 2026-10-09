@@ -42,3 +42,23 @@ test.each([researchPrompt, meetingRequestPrompt])(
     });
   },
 );
+
+test.each([researchPrompt, meetingRequestPrompt])(
+  'preserves the complete question title through history, independently of the spoken wording',
+  (buildPrompt) => {
+    const title = 'What is the \"monthly\" price?\nIncluding tax?';
+    const prompt = buildPrompt(
+      'meeting-1',
+      'research its monthly price',
+      'context',
+      'request-1',
+      'question-price',
+      title,
+    );
+    expect(meetingRequestFromPrompt(prompt, 'meeting-1')).toMatchObject({
+      request: 'research its monthly price',
+      questionId: 'question-price',
+      questionTitle: title,
+    });
+  },
+);

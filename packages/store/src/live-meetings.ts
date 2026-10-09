@@ -103,12 +103,12 @@ export class LiveMeetingStore {
         .forUpdate()
         .executeTakeFirst();
       if (!meeting || Number(meeting.revision) !== revision) return;
-      const questions = await trx
+      const insights = await trx
         .selectFrom('live_meeting_insights')
-        .select(['id', 'evidence_a'])
+        .select(['id', 'kind', 'evidence_a'])
         .where('meeting_id', '=', meetingId)
-        .where('id', 'like', 'question-%')
         .execute();
+      const questions = insights.filter(({ id }) => id.startsWith('question-'));
       const removed = questions
         .filter(
           (question) =>
@@ -118,6 +118,23 @@ export class LiveMeetingStore {
               !classified.acceptedIds.includes(question.id)),
         )
         .map(({ id }) => id);
+      const evidenceKey = (text: string) => text.trim().replace(/[.!?]+$/u, '');
+      const acceptedEvidence = new Set(
+        questions
+          .filter(({ id }) => !removed.includes(id))
+          .map((question) => evidenceKey(question.evidence_a)),
+      );
+      // A batch result can land before classification; once validated, the question owns that evidence.
+      removed.push(
+        ...insights
+          .filter(
+            (insight) =>
+              insight.kind === 'research' &&
+              !insight.id.startsWith('question-') &&
+              acceptedEvidence.has(evidenceKey(insight.evidence_a)),
+          )
+          .map(({ id }) => id),
+      );
       if (removed.length)
         await trx
           .deleteFrom('live_meeting_insights')

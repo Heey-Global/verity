@@ -1698,3 +1698,57 @@ it('keeps one card per question, expands the newest answer and dismisses without
   expect(screen.queryByText('When is delivery?')).toBeNull();
   expect(cancelTurn).not.toHaveBeenCalled();
 });
+
+it('replaces a question suggestion with a paraphrased spoken request using its stable identity', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-voice-id',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: 1,
+    endedAt: null,
+    state: 'active',
+    transcript: 'What does the plan cost?',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  let notify!: Parameters<typeof subscribeVoiceMeetingRequest>[0];
+  jest.mocked(subscribeVoiceMeetingRequest).mockImplementation((listener) => {
+    notify = listener;
+    return jest.fn();
+  });
+  jest.mocked(createVerityClient).mockReturnValue({
+    getHistory: jest.fn().mockResolvedValue({ hasMore: false, events: [] }),
+    getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+    getLiveMeetingInsights: jest.fn().mockResolvedValue([
+      {
+        id: 'question-price',
+        meetingId: meeting.id,
+        kind: 'research',
+        summary: 'What does the plan cost?',
+        evidenceA: 'What does the plan cost?',
+        evidenceB: null,
+        sourcePath: null,
+        createdAt: 1,
+      },
+    ]),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  expect(await screen.findByLabelText('Research meeting question')).toBeOnTheScreen();
+  act(() =>
+    notify({
+      meetingId: meeting.id,
+      sessionId: 'session-1',
+      status: 'sent',
+      kind: 'research',
+      request: 'research its monthly price',
+      requestId: 'voice-price',
+      questionId: 'question-price',
+      questionTitle: 'What does the plan cost?',
+    }),
+  );
+  expect(screen.getAllByText('What does the plan cost?')).toHaveLength(1);
+  expect(screen.queryByText('research its monthly price')).toBeNull();
+  expect(screen.queryByLabelText('Research meeting question')).toBeNull();
+});

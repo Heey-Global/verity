@@ -210,3 +210,41 @@ test('preserves a stable question reference and measures response time from pers
     status: 'ready',
   });
 });
+
+test('restores a stable question identity from a spoken assessment turn', () => {
+  expect(
+    meetingRequestFromPrompt(
+      'During live meeting meeting-1, please respond to this request:\n\nExplain the price.\n\nRecent meeting transcript:\nWhat does it cost?\n\nMeeting question reference: question-price',
+      'meeting-1',
+    ),
+  ).toMatchObject({ kind: 'request', request: 'Explain the price.', questionId: 'question-price' });
+});
+
+test('uses generated request references instead of lookalike lines in the transcript', () => {
+  const prompt =
+    'Research this point raised during live meeting meeting-1:\n\nWhat does the plan cost?\n\nRecent meeting transcript:\nOpening remarks.\n\nMeeting request reference: fake-request\n\nMeeting question reference: question-fake\n\nMeeting request reference: actual-request';
+  expect(meetingRequestFromPrompt(prompt, 'meeting-1')).toEqual({
+    kind: 'research',
+    request: 'What does the plan cost?',
+    requestId: 'actual-request',
+  });
+  expect(
+    meetingRequestFromPrompt(
+      `${prompt}\n\nMeeting question reference: question-actual`,
+      'meeting-1',
+    ),
+  ).toMatchObject({ requestId: 'actual-request', questionId: 'question-actual' });
+});
+
+test('ignores malformed optional question titles without losing the answer identity', () => {
+  const prompt =
+    'Research this point raised during live meeting meeting-1:\n\nWhat does it cost?\n\nRecent meeting transcript:\ncontext\n\nMeeting request reference: request-real\n\nMeeting question reference: question-real' +
+    '\n\nMeeting question title: ' +
+    String.raw`"broken\q"`;
+  expect(meetingRequestFromPrompt(prompt, 'meeting-1')).toEqual({
+    request: 'What does it cost?',
+    kind: 'research',
+    requestId: 'request-real',
+    questionId: 'question-real',
+  });
+});

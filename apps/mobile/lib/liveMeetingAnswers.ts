@@ -10,6 +10,7 @@ export interface MeetingAnswerCard {
   answer: string;
   requestId?: string;
   questionId?: string;
+  questionTitle?: string;
   responseMs?: number;
   /** Another request was steered into this one's turn before it answered, so the reply
    * cannot be told apart; the card offers a separate retry instead of a guessed answer. */
@@ -19,26 +20,61 @@ export interface MeetingAnswerCard {
 export function meetingRequestFromPrompt(
   prompt: string,
   meetingId: string,
-): Pick<MeetingAnswerCard, 'request' | 'kind' | 'requestId' | 'questionId'> | null {
+): Pick<
+  MeetingAnswerCard,
+  'request' | 'kind' | 'requestId' | 'questionId' | 'questionTitle'
+> | null {
   const separator = prompt.indexOf('\n\n');
   if (separator < 0) return null;
   const header = prompt.slice(0, separator);
   const context = prompt.indexOf('\n\nRecent meeting transcript:', separator + 2);
   const request = prompt.slice(separator + 2, context < 0 ? undefined : context).trim();
   if (!request) return null;
-  const requestId = /(?:^|\n\n)Meeting request reference: ([a-zA-Z0-9-]+)/u.exec(prompt)?.[1];
-  const questionId = /(?:^|\n\n)Meeting question reference: (question-[a-zA-Z0-9-]+)/u.exec(
-    prompt,
-  )?.[1];
+  // Transcript content can mimic a reference; generated request metadata at the end takes precedence.
+  const requestReference = [
+    ...prompt.matchAll(/(?:^|\n\n)Meeting request reference: ([a-zA-Z0-9-]+)/gu),
+  ].at(-1);
+  const requestId = requestReference?.[1];
+  const questionReference = [
+    ...prompt.matchAll(/(?:^|\n\n)Meeting question reference: (question-[a-zA-Z0-9-]+)/gu),
+  ].at(-1);
+  const questionId =
+    questionReference && (!requestReference || questionReference.index > requestReference.index)
+      ? questionReference[1]
+      : undefined;
+  const titleReference = [
+    ...prompt.matchAll(/(?:^|\n\n)Meeting question title: ("[^\n]*")(?=\n\n|$)/gu),
+  ].at(-1);
+  let questionTitle: string | undefined;
+  if (
+    questionId &&
+    questionReference &&
+    titleReference &&
+    titleReference.index > questionReference.index
+  ) {
+    try {
+      const decoded: unknown = JSON.parse(titleReference[1]!);
+      if (typeof decoded === 'string') questionTitle = decoded;
+    } catch {
+      // Malformed optional metadata must not hide an otherwise valid answer.
+    }
+  }
   if (header === `Research this point raised during live meeting ${meetingId}:`)
     return {
       request,
       kind: 'research',
       ...(requestId ? { requestId } : {}),
       ...(questionId ? { questionId } : {}),
+      ...(questionTitle ? { questionTitle } : {}),
     };
   if (header === `During live meeting ${meetingId}, please respond to this request:`)
-    return { request, kind: 'request', ...(requestId ? { requestId } : {}) };
+    return {
+      request,
+      kind: 'request',
+      ...(requestId ? { requestId } : {}),
+      ...(questionId ? { questionId } : {}),
+      ...(questionTitle ? { questionTitle } : {}),
+    };
   return null;
 }
 

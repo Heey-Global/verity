@@ -198,6 +198,8 @@ export default function MeetingScreen() {
               id: `voice-${Date.now()}-${current.length}`,
               request: event.request!,
               requestId: event.requestId,
+              ...(event.questionId ? { questionId: event.questionId } : {}),
+              ...(event.questionTitle ? { questionTitle: event.questionTitle } : {}),
               kind: event.kind ?? 'request',
               status: 'working',
               answer: '',
@@ -649,6 +651,7 @@ export default function MeetingScreen() {
     question: string,
     kind: 'research' | 'request' = 'research',
     questionId?: string,
+    questionTitle?: string,
   ) => {
     if (!sessionId || !meeting || !question.trim() || sendingInsight) return;
     if (meeting.serverId && meeting.serverId !== getActiveMeetingServerId()) {
@@ -670,6 +673,7 @@ export default function MeetingScreen() {
       request: question.trim(),
       requestId,
       ...(questionId ? { questionId } : {}),
+      ...(questionTitle ? { questionTitle } : {}),
       kind,
       status: 'working',
       answer: '',
@@ -683,8 +687,22 @@ export default function MeetingScreen() {
         ...(model ? { model } : {}),
         prompt:
           kind === 'research'
-            ? researchPrompt(meeting.id, question.trim(), meeting.transcript, requestId, questionId)
-            : meetingRequestPrompt(meeting.id, question.trim(), meeting.transcript, requestId),
+            ? researchPrompt(
+                meeting.id,
+                question.trim(),
+                meeting.transcript,
+                requestId,
+                questionId,
+                questionTitle,
+              )
+            : meetingRequestPrompt(
+                meeting.id,
+                question.trim(),
+                meeting.transcript,
+                requestId,
+                questionId,
+                questionTitle,
+              ),
         // Each request needs its own reply; steering would fold it into the running one.
         queueBehindActiveTurn: true,
       });
@@ -1065,7 +1083,7 @@ export default function MeetingScreen() {
           }
           working={card.status === 'working'}
           prominent
-          title={card.request}
+          title={card.questionTitle ?? card.request}
           onDismiss={() =>
             setDismissed((current) => [
               ...current,
@@ -1117,7 +1135,13 @@ export default function MeetingScreen() {
                       accessibilityLabel: 'Retry meeting request',
                       primary: true,
                       disabled: sendingInsight,
-                      onPress: () => void openResearch(card.request, card.kind, card.questionId),
+                      onPress: () =>
+                        void openResearch(
+                          card.request,
+                          card.kind,
+                          card.questionId,
+                          card.questionTitle,
+                        ),
                     },
                   ]
                 : []

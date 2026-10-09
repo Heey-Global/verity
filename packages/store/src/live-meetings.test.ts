@@ -328,3 +328,33 @@ it('reconciles only classified question evidence and preserves accepted identiti
     (await ctx.store.liveMeetings.insights('session-1', meeting.id))?.map(({ id }) => id).sort(),
   ).toEqual(['claim-price', 'question-delivery', 'question-sky']);
 });
+
+it('removes a periodic question finding published before classification while preserving other claims and contradictions', async () => {
+  const question = 'What does the plan cost.';
+  const claim = 'Growth was forty percent last quarter.';
+  await ctx.store.liveMeetings.putMeeting({ ...meeting, transcript: `${question} ${claim}` });
+  for (const [id, kind, evidenceA] of [
+    ['batch-question', 'research', question],
+    ['question-plan', 'research', question],
+    ['growth', 'research', claim],
+    ['conflict', 'contradiction', question],
+  ] as const) {
+    await ctx.store.liveMeetings.addInsight('session-1', {
+      id,
+      meetingId: meeting.id,
+      kind,
+      summary: evidenceA,
+      evidenceA,
+      evidenceB: null,
+      sourcePath: null,
+      createdAt: 1,
+    });
+  }
+  await ctx.store.liveMeetings.reconcileQuestions('session-1', meeting.id, 1, {
+    text: question,
+    acceptedIds: ['question-plan'],
+  });
+  expect(
+    (await ctx.store.liveMeetings.insights('session-1', meeting.id))?.map(({ id }) => id).sort(),
+  ).toEqual(['conflict', 'growth', 'question-plan']);
+});
