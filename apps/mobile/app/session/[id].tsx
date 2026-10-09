@@ -2453,6 +2453,7 @@ export function SessionChat({
   const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
   const [sessionMenuAnchor, setSessionMenuAnchor] = useState<AttachAnchor | null>(null);
   const sessionMenuRef = useRef<View>(null);
+  const openSessionMenu = useAttachmentMenuAnchor(sessionMenuRef, setSessionMenuAnchor);
   const [settingsProjects, setSettingsProjects] = useState<
     Awaited<ReturnType<VerityClient['listProjects']>>
   >([]);
@@ -3903,11 +3904,7 @@ export function SessionChat({
               label="Session menu"
               accessibilityLabel="Open session menu"
               onHint={showHeaderHint}
-              onPress={() =>
-                sessionMenuRef.current?.measureInWindow((x, y, width, height) =>
-                  setSessionMenuAnchor({ x, y, width, height }),
-                )
-              }
+              onPress={openSessionMenu}
             />
           </View>
           {projectId ? (
