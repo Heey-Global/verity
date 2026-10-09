@@ -159,11 +159,14 @@ export function createMcpGatewayToolExecutor(options: {
       toolName === 'verity_start_planning' ||
       toolName === 'verity_present_plan' ||
       toolName === 'verity_end_planning' ||
-      toolName === 'verity_tasks'
+      toolName === 'verity_tasks' ||
+      toolName === 'verity_app_help'
     ) {
-      // Not served from here. Both need the conductor and the route's session projection,
+      // Not served from here. Most need the conductor and the route's session projection,
       // neither of which exists in the composition that builds this executor, so `buildServer`
-      // intercepts them ahead of it — the same reason `requestApproval` is bound there. A call
+      // intercepts them ahead of it — the same reason `requestApproval` is bound there.
+      // `verity_app_help` needs neither, but is answered there next to the tasks tool so all
+      // session-scoped Verity tools share one authorization and invocation path. A call
       // reaching this branch means that seam is missing, which is a composition fault and not
       // something a retry fixes.
       throw new Error('control-plane session tools are unavailable');

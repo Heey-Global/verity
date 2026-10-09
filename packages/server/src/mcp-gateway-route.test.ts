@@ -117,6 +117,7 @@ function build(
                 'verity_present_plan',
                 'verity_end_planning',
                 'verity_tasks',
+                'verity_app_help',
                 'verity_http_request',
               ]
             : ['verity_http_request'],
@@ -490,6 +491,11 @@ it('keeps the session task list available while planning, unlike external tools'
     const tasks = await call('verity_tasks', { action: 'list' });
     expect(tasks.result.isError).toBeUndefined();
     expect(tasks.body).not.toContain('planning mode');
+    // Explaining the app is read-only and belongs to planning as much as to any turn;
+    // refusing it would leave the agent answering setup questions from memory.
+    const help = await call('verity_app_help', { topic: 'github' });
+    expect(help.result.isError).toBeUndefined();
+    expect(help.body).toContain('verity://settings/github');
     const external = await call('verity_http_request', {
       secretAlias: 'ATTENDEE_API_KEY',
       method: 'GET',
