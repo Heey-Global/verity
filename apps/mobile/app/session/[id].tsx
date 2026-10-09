@@ -1,3 +1,5 @@
+import { meetingSavedCard } from '../../lib/meetingSavedCard';
+import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
 import { TranscriptTimingContext } from '../../components/TranscriptRow';
 import { useSwitchFrameTiming } from '../../hooks/useSwitchFrameTiming';
 import {
@@ -6402,6 +6404,17 @@ function SessionFilesSheet({
 // transcript rows (which live in `data`, so the header sheet can scroll back to
 // them), false for messages rendered inside a collapsed sub-agent subtree — those
 // aren't rows we can jump to, so offering a bookmark there would be a dead anchor.
+function SavedMeetingNotice({ card }: { card: NonNullable<ReturnType<typeof meetingSavedCard>> }) {
+  const openFile = useContext(SessionFileOpenContext);
+  const target = sessionFileTargetFromLocalLink(card.link);
+  return (
+    <SavedMeetingCard
+      card={card}
+      onOpenLegacy={target && openFile ? () => openFile(target.path, target.root) : undefined}
+    />
+  );
+}
+
 function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
   // Collapsible rows keep local `expanded` state and expand to many screens of detail.
   // FlashList recycles a cell renderer instance across items of the same type, so that
@@ -6445,8 +6458,11 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
   switch (item.message.kind) {
     case 'user-text':
       return <UserBubble message={item.message} />;
-    case 'agent-text':
+    case 'agent-text': {
+      const saved = meetingSavedCard(item.message.text);
+      if (saved) return <SavedMeetingNotice card={saved} />;
       return <AgentBlock message={item.message} bookmarkable={bookmarkable} />;
+    }
     case 'tool-call':
       return <ToolCard key={item.message.id} message={item.message} />; // single tool not in a run
     case 'agent-event':

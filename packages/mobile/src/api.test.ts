@@ -4054,3 +4054,18 @@ it('sends correlation headers only for an explicit timed session request', async
   ).toEqual(['fetch-dispatch', 'fetch-return']);
   expect(headers['x-verity-switch-request']).not.toContain('private');
 });
+
+it('sends a selected title when starting an online meeting', async () => {
+  const { fetch, calls } = fakeFetch(json({ meetingId: 'meeting-1' }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.startOnlineMeeting(
+    'session-1',
+    'https://meet.google.com/abc-defg-hij',
+    true,
+    'Pricing sync',
+  );
+  expect(JSON.parse(calls[0]!.init!.body as string)).toMatchObject({
+    title: 'Pricing sync',
+    listenForVerity: true,
+  });
+});

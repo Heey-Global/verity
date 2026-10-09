@@ -305,6 +305,7 @@ import { registerMeetingTranscriptRoutes } from './meeting-transcript-routes.js'
 import { registerLiveMeetingRoutes } from './live-meeting-routes.js';
 import {
   liveMeetingSavedMessage,
+  liveMeetingAnswerCount,
   liveMeetingTitle,
   renderLiveMeetingMarkdown,
 } from './live-meeting-export.js';
@@ -2230,12 +2231,32 @@ async function fileLiveMeeting(input: {
     }
     {
       await appendMeetingIndex(meetingDir, relPath, title);
+      const events = await input.eventStore.getEvents(input.sessionId);
+      const savedLink = knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath;
+      const details = {
+        sessionId: input.sessionId,
+        meetingId: current.meeting.id,
+        durationMinutes: Math.max(
+          1,
+          Math.round(
+            ((current.meeting.endedAt ?? current.meeting.startedAt) - current.meeting.startedAt) /
+              60_000,
+          ),
+        ),
+        people: new Set((current.meeting.speakerTurns ?? []).map((turn) => turn.speaker)).size,
+        notes: current.notes.length,
+        answers: liveMeetingAnswerCount(events, current.meeting.id),
+      };
       const text = liveMeetingSavedMessage(
         knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath,
         title,
+        details,
       );
-      const announced = (await input.eventStore.getEvents(input.sessionId)).some(
-        (event) => event.t === 'notice' && event.text === text,
+      const announced = events.some(
+        (event) =>
+          event.t === 'notice' &&
+          event.text.startsWith('Meeting saved to the knowledge base: [') &&
+          event.text.split('\n')[0]?.endsWith(`](${savedLink})`),
       );
       if (announced) return;
       await emitNotice({
@@ -2243,10 +2264,7 @@ async function fileLiveMeeting(input: {
         bus: input.bus,
         sessionId: input.sessionId,
         role: 'agent',
-        text: liveMeetingSavedMessage(
-          knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath,
-          title,
-        ),
+        text,
       });
     }
   });

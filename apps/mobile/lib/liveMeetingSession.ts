@@ -639,6 +639,7 @@ export function startMeeting(
   sessionId: string,
   engine: STTEngineId = 'fluid-nemotron',
   expectedParticipants: number | null = null,
+  title?: string,
 ): Promise<MeetingRecord> {
   if (isDemoMode() || isEnteringDemoMode()) {
     return Promise.reject(
@@ -654,7 +655,7 @@ export function startMeeting(
       return meeting;
     });
   }
-  const started = startMeetingUnlocked(sessionId, engine, expectedParticipants);
+  const started = startMeetingUnlocked(sessionId, engine, expectedParticipants, title);
   startInFlight = started;
   const clear = () => {
     if (startInFlight === started) startInFlight = null;
@@ -667,6 +668,7 @@ async function startMeetingUnlocked(
   sessionId: string,
   engine: STTEngineId,
   expectedParticipants: number | null,
+  title?: string,
 ): Promise<MeetingRecord> {
   await Promise.all([...pendingSaveSettlements]);
   if (shutdownInFlight) await shutdownInFlight;
@@ -684,7 +686,9 @@ async function startMeetingUnlocked(
   if (!engines.some((candidate) => candidate.id === engine && candidate.available)) {
     throw new Error('The selected transcription engine is unavailable on this device.');
   }
-  const meeting = await createMeeting(sessionId, engine, expectedParticipants);
+  const meeting = await (title
+    ? createMeeting(sessionId, engine, expectedParticipants, title)
+    : createMeeting(sessionId, engine, expectedParticipants));
   active = meeting;
   resetSpeakerNameChecks();
   transcript = emptySTTTranscript;

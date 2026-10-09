@@ -1,7 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { renderLiveMeetingMarkdown } from './live-meeting-export.js';
+import {
+  renderLiveMeetingMarkdown,
+  liveMeetingSavedMessage,
+  liveMeetingTitle,
+  liveMeetingAnswerCount,
+} from './live-meeting-export.js';
 
 const meeting = {
   id: 'meeting-1',
@@ -100,4 +105,46 @@ describe('renderLiveMeetingMarkdown', () => {
       body('../../../apps/mobile/lib/liveMeetingSpeakers.ts'),
     );
   });
+});
+
+it('uses the chosen meeting title in the export and saved notice', () => {
+  const named = { ...meeting, title: 'Pricing sync' };
+  expect(liveMeetingTitle(named)).toBe('Pricing sync');
+  expect(renderLiveMeetingMarkdown({ meeting: named, notes: [], insights: [] })).toContain(
+    '# Pricing sync',
+  );
+  const details = {
+    sessionId: meeting.sessionId,
+    meetingId: meeting.id,
+    durationMinutes: 42,
+    people: 2,
+    notes: 0,
+  };
+  const notice = liveMeetingSavedMessage('/knowledge/meetings/pricing.md', named.title, details);
+  expect(JSON.parse(notice.split('<!-- verity-meeting: ')[1]!.split(' -->')[0]!)).toEqual(details);
+});
+
+it('counts completed answers without counting tool progress or duplicate question replies', () => {
+  const prompt =
+    'Research this point raised during live meeting meeting-1:\n\nWhat costs?\n\nMeeting request reference: request-1\n\nMeeting question reference: question-1';
+  expect(
+    liveMeetingAnswerCount(
+      [
+        { t: 'prompt', text: prompt },
+        { t: 'text', delta: 'Checking…' },
+        { t: 'tool_call' },
+        { t: 'result' },
+        { t: 'prompt', text: prompt },
+        { t: 'text', delta: '€10' },
+        { t: 'result' },
+        { t: 'prompt', text: prompt },
+        { t: 'text', delta: '€10 updated' },
+        { t: 'result' },
+        { t: 'prompt', text: prompt, steered: true },
+        { t: 'text', delta: 'Combined response' },
+        { t: 'result' },
+      ],
+      'meeting-1',
+    ),
+  ).toBe(1);
 });

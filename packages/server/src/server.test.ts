@@ -1421,6 +1421,7 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
     });
     const url = '/sessions/s1/live-meetings/live-1';
     const meeting = {
+      title: 'Pricing sync',
       engine: 'fluid-nemotron',
       startedAt: Date.UTC(2026, 9, 1, 9, 30),
       endedAt: Date.UTC(2026, 9, 1, 9, 45),
@@ -1463,6 +1464,19 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
         (await ctx.store.getEvents('s1')).filter((event) => event.t === 'notice');
       await vi.waitFor(async () => expect(await notices()).toHaveLength(1));
       const [notice] = await notices();
+      expect(notice?.t === 'notice' && notice.text).toContain('[Pricing sync]');
+      const details = JSON.parse(
+        (notice?.t === 'notice' ? notice.text : '')
+          .split('<!-- verity-meeting: ')[1]!
+          .split(' -->')[0]!,
+      );
+      expect(details).toMatchObject({
+        sessionId: 's1',
+        meetingId: 'live-1',
+        durationMinutes: 15,
+        people: 1,
+        answers: 0,
+      });
       const link = /\]\((\/knowledge\/sources\/meetings\/[^)]+\.md)\)/.exec(
         notice?.t === 'notice' ? notice.text : '',
       )?.[1];

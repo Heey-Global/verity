@@ -11,6 +11,7 @@ const meetingParams = sessionParams.extend({ meetingId: id });
 const noteParams = meetingParams.extend({ noteId: id });
 const commandParams = meetingParams.extend({ commandId: id });
 const meetingBody = z.object({
+  title: z.string().max(200).nullable().optional(),
   engine: z.enum(['apple-speech', 'apple-dictation', 'fluid-nemotron', 'fluid-parakeet']),
   startedAt: z.number().int().nonnegative(),
   endedAt: z.number().int().nonnegative().nullable(),

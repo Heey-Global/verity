@@ -1880,6 +1880,7 @@ export type IntegrationAccount = z.infer<typeof integrationAccountSchema>;
 export type IntegrationSource = z.infer<typeof integrationSourceSchema>;
 
 const liveMeetingSchema = z.object({
+  title: z.string().nullable().optional(),
   id: z.string(),
   sessionId: z.string(),
   engine: z.enum([
@@ -1971,13 +1972,14 @@ export class VerityClient {
     sessionId: string,
     meetingUrl: string,
     listenForVerity = true,
+    title?: string,
   ): Promise<{ meetingId: string }> {
     return z.object({ meetingId: z.string() }).parse(
       await (
         await this.request(`/sessions/${encodeURIComponent(sessionId)}/live-meetings/online`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ meetingUrl, listenForVerity }),
+          body: JSON.stringify({ meetingUrl, listenForVerity, title }),
         })
       ).json(),
     );

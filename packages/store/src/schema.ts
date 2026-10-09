@@ -1434,6 +1434,7 @@ export interface Database {
 }
 
 interface LiveMeetingsTable {
+  title: string | null;
   id: string;
   session_id: string;
   engine: string;

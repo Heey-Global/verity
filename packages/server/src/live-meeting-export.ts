@@ -198,7 +198,8 @@ function paragraph(text: string): string {
   return inline(text).replace(/^(#|>|[-*+](?=\s)|\d+[.)](?=\s))/, '\\$1');
 }
 
-export function liveMeetingTitle(meeting: Pick<Meeting, 'startedAt'>): string {
+export function liveMeetingTitle(meeting: Pick<Meeting, 'startedAt' | 'title'>): string {
+  if (meeting.title?.trim()) return inline(meeting.title);
   const started = new Date(meeting.startedAt).toISOString();
   return `Live meeting ${started.slice(0, 10)} ${started.slice(11, 16)} UTC`;
 }
@@ -281,6 +282,57 @@ export function renderLiveMeetingMarkdown(input: {
     .trimEnd()}\n`;
 }
 
-export function liveMeetingSavedMessage(link: string, title: string): string {
-  return `Meeting saved to the knowledge base: [${title}](${link})`;
+export function liveMeetingSavedMessage(
+  link: string,
+  title: string,
+  details?: {
+    sessionId: string;
+    meetingId: string;
+    durationMinutes: number;
+    people: number;
+    answers?: number;
+    notes: number;
+  },
+): string {
+  const notice = `Meeting saved to the knowledge base: [${title}](${link})`;
+  return details ? `${notice}\n<!-- verity-meeting: ${JSON.stringify(details)} -->` : notice;
+}
+
+/** Counts completed meeting replies, excluding progress before tools and steered requests. */
+export function liveMeetingAnswerCount(
+  events: readonly {
+    t: string;
+    text?: string | undefined;
+    delta?: string | undefined;
+    parentToolId?: unknown;
+    steered?: boolean | undefined;
+  }[],
+  meetingId: string,
+): number {
+  const ready = new Set<string>();
+  let current: string | null = null;
+  let text = '';
+  for (const event of events) {
+    if (event.t === 'prompt') {
+      const prompt = event.text ?? '';
+      const matches =
+        prompt.startsWith(`Research this point raised during live meeting ${meetingId}:\n\n`) ||
+        prompt.startsWith(`During live meeting ${meetingId}, please respond to this request:\n\n`);
+      if (event.steered && !matches) continue;
+      text = '';
+      const identity = [
+        ...prompt.matchAll(/(?:^|\n\n)Meeting (?:question|request) reference: ([a-zA-Z0-9-]+)/g),
+      ].at(-1)?.[1];
+      current = matches && !event.steered ? (identity ?? prompt.split('\n\n')[1] ?? null) : null;
+    } else if (event.t === 'text' && !event.parentToolId && current) {
+      text += event.delta ?? '';
+    } else if (event.t === 'tool_call' && !event.parentToolId) {
+      text = '';
+    } else if (event.t === 'result' || event.t === 'interrupted') {
+      if (current && text.trim()) ready.add(current);
+      current = null;
+      text = '';
+    }
+  }
+  return ready.size;
 }
