@@ -844,3 +844,70 @@ it('does not create a persisted meeting or start native capture in demo mode', a
   expect(liveMeetingSTT?.engines).not.toHaveBeenCalled();
   expect(liveMeetingSTT?.start).not.toHaveBeenCalled();
 });
+
+it('keeps speaker identity unchanged when saving a name fails', async () => {
+  await startMeeting('session-1');
+  try {
+    jest.mocked(saveSpeakerEdits).mockRejectedValueOnce(new Error('disk full'));
+    await expect(updateSpeakerEdits('meeting-1', { '0': 'Anna' }, [], {})).rejects.toThrow(
+      'disk full',
+    );
+    expect(currentMeeting()?.speakerNames?.['0']).toBeUndefined();
+  } finally {
+    await endMeeting();
+  }
+});
+
+it('checks a new meeting while the previous name request is still pending', async () => {
+  jest.useFakeTimers();
+  let finish!: (value: { name: string; quote: string }) => void;
+  try {
+    let onEvent!: (event: STTEvent) => void;
+    jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+      onEvent = listener;
+      return { remove: jest.fn() };
+    });
+    const checkMeetingSpeakerName = jest
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockResolvedValue({ name: 'Anna', quote: 'Hi, ich bin Anna.' });
+    jest
+      .mocked(createVerityClient)
+      .mockReturnValue({ checkMeetingSpeakerName } as unknown as NonNullable<
+        ReturnType<typeof createVerityClient>
+      >);
+    const introduce = () => {
+      onEvent({
+        kind: 'segment',
+        text: 'Hi, ich bin Anna.',
+        final: true,
+        start: 0,
+        end: 2,
+        runs: [{ text: 'Hi, ich bin Anna.', start: 0, end: 2 }],
+      });
+      onEvent({ kind: 'speaker', speaker: 0, start: 0, end: 2 });
+    };
+    await startMeeting('session-1');
+    introduce();
+    await jest.advanceTimersByTimeAsync(2_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(1);
+    await endMeeting();
+    await startMeeting('session-1');
+    introduce();
+    await jest.advanceTimersByTimeAsync(2_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(2);
+    finish({ name: 'Old name', quote: 'Old introduction' });
+    await jest.advanceTimersByTimeAsync(1);
+    expect(currentMeeting()?.speakerNameSuggestions).toEqual([
+      { speaker: 0, name: 'Anna', quote: 'Hi, ich bin Anna.' },
+    ]);
+  } finally {
+    await endMeeting();
+    jest.useRealTimers();
+  }
+});

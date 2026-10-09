@@ -139,7 +139,10 @@ export function speakerLines(
       );
       const around = new Set([...covered.keys(), ...neighbours.map((turn) => turn.who)]);
       // A voice heard only inside the word, with no one around it, is too little to go on.
-      speaker = (neighbours.length || crossing.size) && around.size === 1 ? [...around][0]! : null;
+      speaker =
+        duration <= 1 && (neighbours.length || crossing.size) && around.size === 1
+          ? [...around][0]!
+          : null;
     }
     const correction = corrections.findLast(
       (entry) => entry.start <= word.start && entry.end >= word.end,

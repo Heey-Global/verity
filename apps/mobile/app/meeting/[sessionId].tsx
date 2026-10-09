@@ -494,6 +494,7 @@ export default function MeetingScreen() {
       corrections: SpeakerCorrection[];
       merges: Record<string, number>;
     }>,
+    optimistic = true,
   ) => {
     if (
       !(meeting?.ownerToken || meeting?.engine === 'attendee') ||
@@ -501,17 +502,19 @@ export default function MeetingScreen() {
     )
       return false;
     const next = { ...speakerEditDraft.current, ...change };
-    speakerEditDraft.current = next;
-    setMeeting((current) =>
-      current?.id === next.meetingId
-        ? {
-            ...current,
-            speakerNames: next.names,
-            speakerCorrections: next.corrections,
-            speakerMerges: next.merges,
-          }
-        : current,
-    );
+    if (optimistic) speakerEditDraft.current = next;
+    const apply = () =>
+      setMeeting((current) =>
+        current?.id === next.meetingId
+          ? {
+              ...current,
+              speakerNames: next.names,
+              speakerCorrections: next.corrections,
+              speakerMerges: next.merges,
+            }
+          : current,
+      );
+    if (optimistic) apply();
     try {
       const write = speakerEditWrite.current
         .catch(() => undefined)
@@ -529,6 +532,10 @@ export default function MeetingScreen() {
         });
       speakerEditWrite.current = write;
       await write;
+      if (!optimistic) {
+        speakerEditDraft.current = next;
+        apply();
+      }
       setSyncError(true);
       return true;
     } catch (reason) {
@@ -952,7 +959,7 @@ export default function MeetingScreen() {
   const noticedCards = (): ReactNode[] => {
     // Only the recording device asks the model; a typed name always wins over a suggestion.
     const nameCards: ReactNode[] =
-      meeting?.state === 'active'
+      meeting?.state === 'active' && !!meeting.ownerToken
         ? (meeting.speakerNameSuggestions ?? [])
             .filter((suggestion) => meeting.speakerNames?.[suggestion.speaker] === undefined)
             .map((suggestion) => (
@@ -975,7 +982,7 @@ export default function MeetingScreen() {
                       if (names[suggestion.speaker] === undefined)
                         names[suggestion.speaker] = suggestion.name;
                       // Keep the card until the name is saved, so a failed save can be retried.
-                      void persistSpeakerEdits({ names }).then((saved) => {
+                      void persistSpeakerEdits({ names }, false).then((saved) => {
                         if (saved)
                           clearSpeakerNameSuggestion(meeting.id, suggestion.speaker, false);
                       });

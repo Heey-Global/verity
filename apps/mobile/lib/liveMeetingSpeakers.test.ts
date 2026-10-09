@@ -281,3 +281,12 @@ test('finds a long turn that started well before the word among many short ones'
     { speaker: 0, text: 'still', start: 95, end: 95.4 },
   ]);
 });
+
+test('does not attribute a whole phrase from a sliver crossing its edge', () => {
+  expect(
+    speakerLines(
+      [{ text: 'A whole phrase', start: 10, end: 15 }],
+      [{ speaker: 0, start: 9, end: 10.1 }],
+    ),
+  ).toEqual([{ speaker: null, text: 'A whole phrase', start: 10, end: 15 }]);
+});

@@ -157,10 +157,13 @@ const nameHistory = new Map<number, SpeakerNameHistory>();
 const rejectedSpeakers = new Set<number>();
 let nameCheckTimer: ReturnType<typeof setTimeout> | null = null;
 let nameCheckRunning = false;
+let nameCheckGeneration = 0;
 let nameChecksUnavailable = false;
 let lastNameScanAt = 0;
 
 function resetSpeakerNameChecks() {
+  nameCheckGeneration += 1;
+  nameCheckRunning = false;
   nameHistory.clear();
   rejectedSpeakers.clear();
   if (nameCheckTimer) clearTimeout(nameCheckTimer);
@@ -240,6 +243,7 @@ async function runSpeakerNameCheck(): Promise<void> {
     checks: (previous?.checks ?? 0) + 1,
     lastAt: Date.now(),
   });
+  const generation = nameCheckGeneration;
   nameCheckRunning = true;
   try {
     const result = await client.checkMeetingSpeakerName(meeting.sessionId, meeting.id, {
@@ -247,7 +251,14 @@ async function runSpeakerNameCheck(): Promise<void> {
       hints: [],
     });
     const name = result.name;
-    if (!name || !result.quote || active?.id !== meeting.id || active.state !== 'active') return;
+    if (
+      generation !== nameCheckGeneration ||
+      !name ||
+      !result.quote ||
+      active?.id !== meeting.id ||
+      active.state !== 'active'
+    )
+      return;
     if (active.speakerNames?.[check.speaker] !== undefined) return;
     if (rejectedSpeakers.has(check.speaker)) return;
     active = {
@@ -262,7 +273,7 @@ async function runSpeakerNameCheck(): Promise<void> {
     publish();
   } catch (error) {
     // A check answered after the next meeting started must not touch its state.
-    if (active?.id !== meeting.id) return;
+    if (generation !== nameCheckGeneration || active?.id !== meeting.id) return;
     const status = error instanceof VerityApiError ? error.status : null;
     // No model, an older server without the route, or no right to spend one: stop.
     if (status === 403 || status === 404 || status === 503) {
@@ -279,9 +290,9 @@ async function runSpeakerNameCheck(): Promise<void> {
       lastAt: Date.now(),
     });
   } finally {
-    nameCheckRunning = false;
+    if (generation === nameCheckGeneration) nameCheckRunning = false;
     // Another speaker may be waiting.
-    if (active?.id === meeting.id) scheduleSpeakerNameCheck();
+    if (generation === nameCheckGeneration && active?.id === meeting.id) scheduleSpeakerNameCheck();
   }
 }
 
@@ -577,6 +588,7 @@ export async function updateSpeakerEdits(
   corrections: SpeakerCorrection[],
   merges: Record<string, number>,
 ): Promise<void> {
+  await enqueueWrite(() => saveSpeakerEdits(meetingId, names, corrections, merges));
   if (active?.id === meetingId) {
     active = {
       ...active,
@@ -590,9 +602,6 @@ export async function updateSpeakerEdits(
       ),
     };
     publish();
-    await enqueueWrite(() => saveSpeakerEdits(meetingId, names, corrections, merges));
-  } else {
-    await saveSpeakerEdits(meetingId, names, corrections, merges);
   }
 }
 

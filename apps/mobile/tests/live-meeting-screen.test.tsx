@@ -492,6 +492,7 @@ it('names a speaker only after the suggestion is confirmed', async () => {
   fireEvent.press(screen.getByLabelText('Yes, Holger'));
   expect(await screen.findByText(/Could not save speaker correction/)).toBeOnTheScreen();
   expect(clearSpeakerNameSuggestion).not.toHaveBeenCalled();
+  expect(screen.getByLabelText('Yes, Holger')).toBeOnTheScreen();
   expect(updateSpeakerEdits).toHaveBeenCalledWith(meeting.id, { '0': 'Holger' }, [], {});
 
   fireEvent.press(screen.getByLabelText('Not Anna'));
