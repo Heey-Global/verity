@@ -208,8 +208,8 @@ export function PublicPreviewDiagnostics({
             <Text style={styles.linkText}>Record connection test</Text>
           </Pressable>
           <Text style={styles.reproHint}>
-            Records connection events and counters for up to two minutes. No addresses, credentials
-            or content are recorded.
+            Starts a fresh connection and records events and counters for up to two minutes.
+            Interrupts current remote requests. No addresses, credentials or content are recorded.
           </Text>
           <Pressable accessibilityRole="button" onPress={() => void copyCapture()}>
             <Text style={styles.linkText}>Copy connection recording</Text>

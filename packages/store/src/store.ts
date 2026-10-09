@@ -3096,6 +3096,25 @@ export class EventStore implements EventSink {
   }
 
   /**
+   * Record the starter project a fresh installation created for itself. Only the
+   * first call wins; the record keeps pointing at that project after it is
+   * deleted (projects are soft-deleted), so it is never recreated.
+   */
+  async recordStarterProject(projectId: string): Promise<boolean> {
+    const result = await this.db
+      .insertInto('starter_project')
+      .values({ singleton: true, project_id: projectId })
+      .onConflict((oc) => oc.column('singleton').doNothing())
+      .executeTakeFirst();
+    return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
+  }
+
+  async getStarterProjectId(): Promise<string | undefined> {
+    const row = await this.db.selectFrom('starter_project').select('project_id').executeTakeFirst();
+    return row?.project_id;
+  }
+
+  /**
    * Record that a server-authored automation already fired for this session. Returns
    * `true` only for the first caller that inserts the marker; concurrent/repeated
    * attempts for the same `(session, marker)` return `false`.

@@ -1244,6 +1244,12 @@ interface SecretProviderPermissionsTable {
   updated_at: ColumnType<Date, string | undefined, string>;
 }
 
+interface StarterProjectTable {
+  singleton: boolean;
+  project_id: string;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
 interface ControlPlaneGenerationTable {
   singleton: boolean;
   generation: number;
@@ -1376,6 +1382,7 @@ export interface Database {
   http_mcp_connections: HttpMcpConnectionsTable;
   project_mcp_bindings: ProjectMcpBindingsTable;
   control_plane_generation: ControlPlaneGenerationTable;
+  starter_project: StarterProjectTable;
   sessions: SessionsTable;
   session_slide_decks: SessionSlideDecksTable;
   project_google_connections: ProjectGoogleConnectionsTable;

@@ -1,6 +1,7 @@
 import type { ProjectGitHubIssues } from './project-github-issues.js';
 import { Conductor, type Backend, type ConductorDeps, type EventBus } from '@verity/session';
 import { renderAssignedTasksPrompt } from '@verity/events';
+import { welcomeSessionPrompt } from './welcome-session.js';
 import type { VeritySettingsPatch, EventStore, SealableSecretCipher } from '@verity/store';
 import type { FastifyBaseLogger, FastifyInstance, FastifyRequest } from 'fastify';
 import {
@@ -106,6 +107,8 @@ export interface ControlPlaneDeps {
   onUplinkCredentialsChanged?: ServerDeps['onUplinkCredentialsChanged'];
   /** Apply the premium feature switches after either of them changed. */
   onPremiumFeatureSwitchesChanged?: ServerDeps['onPremiumFeatureSwitchesChanged'];
+  /** Check live Drive ancestry before granting automatic document URL reads. */
+  googleDriveDocumentIsWithinProject?: ServerDeps['googleDriveDocumentIsWithinProject'];
   /** Invalidate cached access tokens after shared Google OAuth credentials change. */
   onGoogleCredentialsChanged?: ServerDeps['onGoogleCredentialsChanged'];
   /** Standing brokered-secret grants for a project (ADR 0011 D2). */
@@ -386,6 +389,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.onPremiumFeatureSwitchesChanged !== undefined
       ? { onPremiumFeatureSwitchesChanged: deps.onPremiumFeatureSwitchesChanged }
       : {}),
+    ...(deps.googleDriveDocumentIsWithinProject !== undefined
+      ? { googleDriveDocumentIsWithinProject: deps.googleDriveDocumentIsWithinProject }
+      : {}),
     ...(deps.onGoogleCredentialsChanged !== undefined
       ? { onGoogleCredentialsChanged: deps.onGoogleCredentialsChanged }
       : {}),
@@ -489,12 +495,17 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
           : {}),
         ...(deps.conductor?.sessionSystemPrompt === undefined
           ? {
-              sessionSystemPrompt: (session) =>
-                session.projectId === VERITY_CONTROL_PROJECT_ID ||
-                (session.projectId === null &&
-                  (session.name === VERITY_CONTROL_SESSION_NAME || session.name === 'Concierge'))
-                  ? VERITY_CONTROL_SYSTEM_PROMPT
-                  : '',
+              sessionSystemPrompt: async (session) => {
+                if (
+                  session.projectId === VERITY_CONTROL_PROJECT_ID ||
+                  (session.projectId === null &&
+                    (session.name === VERITY_CONTROL_SESSION_NAME || session.name === 'Concierge'))
+                ) {
+                  return VERITY_CONTROL_SYSTEM_PROMPT;
+                }
+                // The onboarding welcome session answers as a guide.
+                return welcomeSessionPrompt(deps.eventStore, session.sessionId);
+              },
             }
           : {}),
         ...(deps.conductor?.assignedTasksPrompt === undefined

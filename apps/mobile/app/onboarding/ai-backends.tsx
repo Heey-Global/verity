@@ -9,7 +9,8 @@ import { OpenCodeSetup } from '../../components/OpenCodeSetup';
 import { OnboardingStepScaffold } from '../../components/OnboardingStepScaffold';
 import { createVerityClient } from '../../lib/client';
 
-const NEXT_HREF = '/';
+// The starter screen opens the welcome session, or the home screen when there is none.
+const NEXT_HREF = '/onboarding/starter';
 const BACK = '/onboarding/master-password';
 const CURRENT_HREF = '/onboarding/ai-backends';
 
