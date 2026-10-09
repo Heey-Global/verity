@@ -1,4 +1,4 @@
-import { requireNativeModule } from 'expo-modules-core';
+import { requireOptionalNativeModule } from 'expo-modules-core';
 
 const events = new Set([
   'capture_started',
@@ -227,10 +227,10 @@ export type RemoteDataDiagnosticsExport =
 /** Report only fixed failure categories; rejected native data never reaches the clipboard. */
 export async function exportRemoteDataDiagnostics(): Promise<RemoteDataDiagnosticsExport> {
   try {
-    const native = requireNativeModule<{ exportDataDiagnostics?: () => Promise<unknown> }>(
+    const native = requireOptionalNativeModule<{ exportDataDiagnostics?: () => Promise<unknown> }>(
       'VerityRemoteControlTunnel',
     );
-    if (typeof native.exportDataDiagnostics !== 'function') return { status: 'unsupported' };
+    if (typeof native?.exportDataDiagnostics !== 'function') return { status: 'unsupported' };
     const raw = await native.exportDataDiagnostics();
     if (!Array.isArray(raw) || raw.length > 3) return { status: 'invalid' };
     if (raw.length === 0) return { status: 'empty' };

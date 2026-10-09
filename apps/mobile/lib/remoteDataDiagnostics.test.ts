@@ -5,9 +5,18 @@ const { exportRemoteDataDiagnostics: exportResult } =
   require('./remoteDataDiagnostics') as typeof import('./remoteDataDiagnostics');
 
 const mockExport = jest.fn();
+const mockNativeLookup = jest.fn(() => ({ exportDataDiagnostics: mockExport }));
 jest.mock('expo-modules-core', () => ({
-  requireNativeModule: () => ({ exportDataDiagnostics: mockExport }),
+  requireOptionalNativeModule: () => mockNativeLookup(),
 }));
+
+it.each([null, {}])(
+  'reports unsupported when the native exporter is absent: %j',
+  async (native) => {
+    mockNativeLookup.mockReturnValueOnce(native as ReturnType<typeof mockNativeLookup>);
+    expect(await exportResult()).toEqual({ status: 'unsupported' });
+  },
+);
 
 async function exportRemoteDataDiagnostics(): Promise<string | null> {
   const result = await exportResult();
