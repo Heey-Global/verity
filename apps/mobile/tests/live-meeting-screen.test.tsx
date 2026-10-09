@@ -1138,9 +1138,28 @@ it('shows an unsaved note and offers a retry after its write fails', async () =>
   expect(screen.getByTestId('unsaved-note')).toBeOnTheScreen();
   expect(screen.getByText('“Unsaved decision”')).toBeOnTheScreen();
 
+  let finishRetry!: () => void;
+  jest.mocked(saveNote).mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finishRetry = resolve;
+      }),
+  );
   fireEvent.press(screen.getByLabelText('Retry saving note'));
   await waitFor(() => expect(saveNote).toHaveBeenCalledTimes(2));
-  await waitFor(() => expect(screen.queryByTestId('unsaved-note')).toBeNull());
+  const next: MeetingRecord = { ...live, id: 'new-after-recovery', state: 'active', endedAt: null };
+  jest.mocked(startMeeting).mockResolvedValueOnce(next);
+  jest
+    .mocked(currentMeeting)
+    .mockImplementation(() => (jest.mocked(startMeeting).mock.calls.length > 1 ? next : live));
+  fireEvent.press(screen.getByLabelText('Start meeting'));
+  fireEvent.changeText(await noteInput(), 'New meeting note');
+  await act(async () => finishRetry());
+  expect(screen.getByLabelText('Add a meeting note')).toHaveDisplayValue('New meeting note');
+  expect(jest.mocked(saveNote).mock.calls.at(-1)?.[0]).toMatchObject({
+    meetingId: next.id,
+    text: 'New meeting note',
+  });
 });
 
 it('shows an autosaved draft after the meeting ends before Add note', async () => {

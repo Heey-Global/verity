@@ -282,6 +282,11 @@ export function renderLiveMeetingMarkdown(input: {
     .trimEnd()}\n`;
 }
 
+/** Preserve a chosen title as literal text inside a Markdown link label. */
+export function liveMeetingLinkLabel(title: string): string {
+  return inline(title).replace(/[\\[\]]/g, '\\$&');
+}
+
 export function liveMeetingSavedMessage(
   link: string,
   title: string,
@@ -294,7 +299,7 @@ export function liveMeetingSavedMessage(
     notes: number;
   },
 ): string {
-  const notice = `Meeting saved to the knowledge base: [${title}](${link})`;
+  const notice = `Meeting saved to the knowledge base: [${liveMeetingLinkLabel(title)}](${link})`;
   return details ? `${notice}\n<!-- verity-meeting: ${JSON.stringify(details)} -->` : notice;
 }
 

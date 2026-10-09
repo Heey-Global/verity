@@ -191,6 +191,7 @@ export default function MeetingScreen() {
       : null;
   const displayedMeetingId = useRef<string | null>(null);
   displayedMeetingId.current = meeting?.id ?? null;
+  if (meeting && meeting.id !== recoveryMeetingId.current) recoveryMeetingId.current = null;
   const transcriptList = useRef<FlatList<TranscriptRow>>(null);
   const transcriptAtEnd = useRef(true);
 
@@ -234,7 +235,8 @@ export default function MeetingScreen() {
       }
       void listNotes(meetingId)
         .then((saved) => {
-          if (displayedMeetingId.current !== meetingId) return;
+          if (displayedMeetingId.current !== meetingId && recoveryMeetingId.current !== meetingId)
+            return;
           setNotes((current) => {
             const merged = new Map(saved.map((note) => [note.id, note]));
             for (const note of current) if (note.meetingId === meetingId) merged.set(note.id, note);
@@ -844,7 +846,9 @@ export default function MeetingScreen() {
 
   const editNote = (value: string) => {
     // Keystrokes can arrive before React re-renders; the module draft is already current then.
-    const current = meeting ? (pendingDrafts.get(meeting.id) ?? draft) : null;
+    const current = meeting
+      ? (pendingDrafts.get(meeting.id) ?? (draft?.meetingId === meeting.id ? draft : null))
+      : null;
     if (!meeting || (meeting.state !== 'active' && !current)) return;
     const note = current ?? {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,

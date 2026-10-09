@@ -36,3 +36,14 @@ it('falls back safely when metadata is malformed', () => {
     ),
   ).toEqual({ title: 'Sync', link: '/knowledge/meetings/sync.md' });
 });
+
+it('displays escaped title punctuation without changing the saved destination', () => {
+  expect(
+    meetingSavedCard(
+      String.raw`Meeting saved to the knowledge base: [Sync\](https://example.com) \[Q1\] \\ files](/knowledge/meeting.md)`,
+    ),
+  ).toEqual({
+    title: String.raw`Sync](https://example.com) [Q1] \ files`,
+    link: '/knowledge/meeting.md',
+  });
+});

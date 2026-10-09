@@ -305,6 +305,7 @@ import { registerMeetingTranscriptRoutes } from './meeting-transcript-routes.js'
 import { registerLiveMeetingRoutes } from './live-meeting-routes.js';
 import {
   liveMeetingSavedMessage,
+  liveMeetingLinkLabel,
   liveMeetingAnswerCount,
   liveMeetingTitle,
   renderLiveMeetingMarkdown,
@@ -2132,7 +2133,7 @@ async function appendMeetingIndex(
   const update = previous
     .catch(() => undefined)
     .then(async () => {
-      const entry = `- [${title}](${basename(relPath)})\n`;
+      const entry = `- [${liveMeetingLinkLabel(title)}](${basename(relPath)})\n`;
       await updateMeetingIndexFile(indexAbs, (existing) => {
         let content = existing === '' ? '# Meetings\n\n' : existing;
         if (!content.endsWith('\n')) content += '\n';

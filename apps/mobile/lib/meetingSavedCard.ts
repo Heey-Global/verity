@@ -16,7 +16,7 @@ export function meetingSavedCard(text: string): SavedMeetingCard | null {
       text,
     );
   if (!match) return null;
-  const base = { title: match[1]!, link: match[2]! };
+  const base = { title: match[1]!.replace(/\\([\\[\]])/g, '$1'), link: match[2]! };
   if (!match[3]) return base;
   try {
     const value: unknown = JSON.parse(match[3]);

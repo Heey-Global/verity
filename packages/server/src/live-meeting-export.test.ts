@@ -5,6 +5,7 @@ import {
   renderLiveMeetingMarkdown,
   liveMeetingSavedMessage,
   liveMeetingTitle,
+  liveMeetingLinkLabel,
   liveMeetingAnswerCount,
 } from './live-meeting-export.js';
 
@@ -147,4 +148,13 @@ it('counts completed answers without counting tool progress or duplicate questio
       'meeting-1',
     ),
   ).toBe(1);
+});
+
+it('keeps title punctuation literal in saved links', () => {
+  const title = String.raw`Sync](https://example.com) [Q1] \ files`;
+  const label = String.raw`Sync\](https://example.com) \[Q1\] \\ files`;
+  expect(liveMeetingLinkLabel(title)).toBe(label);
+  expect(liveMeetingSavedMessage('/knowledge/meeting.md', title)).toBe(
+    `Meeting saved to the knowledge base: [${label}](/knowledge/meeting.md)`,
+  );
 });

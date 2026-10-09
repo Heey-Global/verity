@@ -1421,7 +1421,7 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
     });
     const url = '/sessions/s1/live-meetings/live-1';
     const meeting = {
-      title: 'Pricing sync',
+      title: 'Pricing [sync]',
       engine: 'fluid-nemotron',
       startedAt: Date.UTC(2026, 9, 1, 9, 30),
       endedAt: Date.UTC(2026, 9, 1, 9, 45),
@@ -1464,7 +1464,7 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
         (await ctx.store.getEvents('s1')).filter((event) => event.t === 'notice');
       await vi.waitFor(async () => expect(await notices()).toHaveLength(1));
       const [notice] = await notices();
-      expect(notice?.t === 'notice' && notice.text).toContain('[Pricing sync]');
+      expect(notice?.t === 'notice' && notice.text).toContain('[Pricing \\[sync\\]]');
       const details = JSON.parse(
         (notice?.t === 'notice' ? notice.text : '')
           .split('<!-- verity-meeting: ')[1]!
@@ -1491,7 +1491,7 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
       );
       expect(readFileSync(filed, 'utf8')).toContain('**Speaker 1** (00:04): We ship on Friday.');
       expect(readFileSync(join(knowledgeRoot, 'sources/meetings/index.md'), 'utf8')).toContain(
-        `(${link!.split('/').at(-1)})`,
+        `- [Pricing \\[sync\\]](${link!.split('/').at(-1)})`,
       );
 
       // Naming a speaker afterwards rewrites the same document without a second message.
