@@ -273,7 +273,13 @@ export function QuickCaptureCard({
               multiline
               editable={!saving}
               maxLength={2000}
-              placeholder={recording ? 'Listening…' : 'What needs doing?'}
+              placeholder={
+                voice.preparation
+                  ? 'Preparing microphone…'
+                  : recording
+                    ? 'Listening…'
+                    : 'What needs doing?'
+              }
               placeholderTextColor={theme.colors.textFaint}
               onChangeText={(value) => {
                 voice.onComposerEdit(value);
