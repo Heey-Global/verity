@@ -1144,7 +1144,16 @@ export function SessionChat({
   );
   // Live dictation writes recognized speech straight into the draft as it streams.
   const voiceAutoSendRef = useRef<(text: string) => Promise<boolean>>(async () => false);
-  const voice = useVoiceInput(draft, setDraft, (text) => voiceAutoSendRef.current(text));
+  const [voiceVisible, setVoiceVisible] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setVoiceVisible(true);
+      return () => setVoiceVisible(false);
+    }, []),
+  );
+  const voice = useVoiceInput(draft, setDraft, (text) => voiceAutoSendRef.current(text), {
+    visible: voiceVisible,
+  });
   // Branch switcher (#91): tap the top chip to switch this session's worktree to a
   // different branch — the chat (one persistent thread per session) stays put.
   const branches = useBranches(client, sessionId, loaded || !locallyCreated);
@@ -4650,6 +4659,7 @@ export function SessionChat({
         onStop={onStop}
         dead={dead}
         voiceState={voice.state}
+        voicePreparation={voice.preparation}
         voiceAutoMode={voice.autoMode}
         voiceCountdown={voice.countdown}
         onMic={voice.toggle}
@@ -9351,6 +9361,7 @@ function InputBar({
   activityAnimating,
   onStop,
   dead,
+  voicePreparation,
   voiceState,
   voiceAutoMode,
   voiceCountdown,
@@ -9396,6 +9407,7 @@ function InputBar({
   onStop: () => void;
   /** Session can't be resumed (worktree gone) — lock the input, no send/mic. */
   dead: boolean;
+  voicePreparation?: string | null;
   voiceState: VoiceState;
   voiceAutoMode: boolean;
   voiceCountdown: number | null;
@@ -9527,13 +9539,15 @@ function InputBar({
             placeholder={
               dead
                 ? 'This session can’t be resumed'
-                : voiceState === 'recording'
-                  ? 'Listening…'
-                  : hasPlan
-                    ? 'Reply to change the plan…'
-                    : planning
-                      ? 'Answer, or add what matters to you…'
-                      : 'Message this agent…'
+                : voicePreparation
+                  ? 'Preparing microphone…'
+                  : voiceState === 'recording'
+                    ? 'Listening…'
+                    : hasPlan
+                      ? 'Reply to change the plan…'
+                      : planning
+                        ? 'Answer, or add what matters to you…'
+                        : 'Message this agent…'
             }
             placeholderTextColor={theme.colors.textFaint}
             editable={!dead}
