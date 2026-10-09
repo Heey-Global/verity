@@ -40,6 +40,17 @@ describe('live smoke stderr', () => {
     ]);
   });
 
+  it('tolerates the transcript-tail model timing of newer adapters', () => {
+    // Verbatim from the sandbox live recreate smoke.
+    const tail =
+      '[session/models] sessionId=5a59a5c6-5990-4f8f-95ca-e4a2c976d27b phase=read-transcript-tail durationMs=3 totalMs=3 model=unknown permissionMode=unknown';
+    expect(unexpectedStderrLines(tail)).toEqual([]);
+    expect(unexpectedStderrLines(`${tail} token=secret`)).toEqual([`${tail} token=secret`]);
+    expect(unexpectedStderrLines(tail.replace('durationMs=3', 'durationMs=slow'))).toEqual([
+      tail.replace('durationMs=3', 'durationMs=slow'),
+    ]);
+  });
+
   it('still reports anything that is not that line', () => {
     // The point of the check: a crash, a warning, or a leaked credential in the
     // agent's stderr must fail the gate exactly as an empty-string assertion did.
