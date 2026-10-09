@@ -208,7 +208,7 @@ export class LiveMeetingStore {
       .where('meeting_id', '=', meetingId)
       .$if(questionsOnly, (query) => query.where('id', 'like', 'question-%'))
       .orderBy('created_at', 'desc')
-      .limit(questionsOnly ? 40 : 30)
+      .$if(!questionsOnly, (query) => query.limit(30))
       .execute();
     return rows.map((row) => ({
       id: row.id,

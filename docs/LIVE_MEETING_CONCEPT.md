@@ -309,7 +309,7 @@ local question heuristic; periodic analysis remains responsible for claims and c
 Checks retain the recent 2,000-character excerpt, including later answer text without final
 punctuation. A check emits at most four open questions; omission is not a resolution. Existing
 questions are retracted only when the model explicitly resolves them in the excerpt or their
-verbatim evidence disappears. Up to 40 known question identities are loaded independently of
+verbatim evidence disappears. Known question identities are loaded independently of
 claims; answer-only excerpts are checked while unresolved questions remain. Publication and retraction share the current meeting revision lock.
 Question cards keep their identity through research and answer. Closing a card hides it without
 cancelling the session turn. The newest answer expands automatically; older answers show their

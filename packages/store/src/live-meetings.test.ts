@@ -474,3 +474,31 @@ it('loads question identities independently of newer claims and enforces session
   expect(await ctx.store.liveMeetings.questions('session-1', meeting.id)).toEqual([question]);
   expect(await ctx.store.liveMeetings.questions('session-2', meeting.id)).toBeNull();
 });
+
+it('keeps older unresolved identities eligible beyond forty open questions', async () => {
+  const questions = Array.from({ length: 42 }, (_, index) => ({
+    id: `question-${index}`,
+    meetingId: meeting.id,
+    kind: 'research' as const,
+    summary: `What is item ${index}?`,
+    evidenceA: `What is item ${index}?`,
+    evidenceB: null,
+    sourcePath: null,
+    createdAt: index,
+  }));
+  const transcript = questions.map(({ evidenceA }) => evidenceA).join(' ');
+  await ctx.store.liveMeetings.putMeeting({ ...meeting, transcript });
+  for (const question of questions) await ctx.store.liveMeetings.addInsight('session-1', question);
+  const known = (await ctx.store.liveMeetings.questions('session-1', meeting.id))!;
+  expect(known.map(({ id }) => id)).toContain(questions[0]!.id);
+  expect(known).toHaveLength(questions.length);
+  await ctx.store.liveMeetings.reconcileQuestions('session-1', meeting.id, 1, {
+    text: 'Item zero costs ten euros.',
+    acceptedIds: [],
+    resolvedIds: [known.find(({ id }) => id === questions[0]!.id)!.id],
+    insights: [],
+  });
+  expect(
+    (await ctx.store.liveMeetings.questions('session-1', meeting.id))?.map(({ id }) => id),
+  ).not.toContain(questions[0]!.id);
+});
