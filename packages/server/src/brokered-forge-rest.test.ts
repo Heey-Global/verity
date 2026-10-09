@@ -261,3 +261,28 @@ it.each([
   );
   expect(grants).toEqual([expected]);
 });
+
+// A file named status must retain contents access rather than receive a status token.
+it('keeps content paths out of status-token selection', async () => {
+  const adapter = createGitHubForgeAdapter({
+    mint: async () => 'contents-token',
+    mintDiagnostic: async () => {
+      throw new Error('unexpected diagnostic mint');
+    },
+    transport: async () => {
+      throw new Error('unexpected transport');
+    },
+  });
+  await expect(
+    adapter.authorize(
+      {
+        hostname: 'api.github.com',
+        method: 'GET',
+        path: '/repos/acme/app/contents/commits/foo/status',
+      },
+      binding,
+      new Set<ForgeAction>(['git-read']),
+      AbortSignal.timeout(1000),
+    ),
+  ).resolves.toMatchObject({ action: 'git-read', authorization: 'Bearer contents-token' });
+});

@@ -757,9 +757,12 @@ export function createGitHubForgeAdapter(options: {
             )
             ? 'administration'
             : 'contents'
-          : !graph &&
+          : action === 'checks-read' &&
+              !graph &&
               request.hostname === 'api.github.com' &&
-              /\/commits\/[^/]+\/status(?:es)?$/.test(url.pathname)
+              /^\/commits\/[^/]+\/status(?:es)?$/.test(
+                url.pathname.slice(`/repos/${repoPath}`.length).toLowerCase(),
+              )
             ? 'statuses'
             : undefined;
       const token =
