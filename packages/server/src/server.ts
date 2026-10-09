@@ -2124,7 +2124,7 @@ async function withMeetingTranscriptCommitLock<T>(
   }
 }
 
-async function appendMeetingIndex(
+export async function appendMeetingIndex(
   meetingDir: string,
   relPath: string,
   title: string,
@@ -2311,7 +2311,7 @@ async function writeMeetingTranscript(input: {
   }
 }
 
-async function removeCancelledMeetingTranscript(input: {
+export async function removeCancelledMeetingTranscript(input: {
   meetingDir: string;
   relPath: string;
   title: string;
@@ -2322,7 +2322,7 @@ async function removeCancelledMeetingTranscript(input: {
   const update = previous
     .catch(() => undefined)
     .then(async () => {
-      const entry = `- [${input.title}](${basename(input.relPath)})\n`;
+      const entry = `- [${liveMeetingLinkLabel(input.title)}](${basename(input.relPath)})\n`;
       await updateMeetingIndexFile(indexAbs, (content) => content.replace(entry, ''));
     });
   meetingIndexUpdates.set(indexAbs, update);

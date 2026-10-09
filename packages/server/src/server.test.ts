@@ -81,6 +81,8 @@ import {
   redactScrollDiagnosticData,
   redactScrollDiagnosticEvent,
   sortModelIds,
+  appendMeetingIndex,
+  removeCancelledMeetingTranscript,
   startProjectRelayMigrationScheduler,
   type MeetingTranscriber,
   type MeetingTranscriptResult,
@@ -16032,4 +16034,22 @@ describe('PATCH /sessions/order', () => {
       await gated.close();
     }
   });
+});
+
+it('removes a cancelled transcript and its punctuated title from the meeting index', async () => {
+  const meetingDir = mkdtempSync(join(tmpdir(), 'verity-meeting-index-'));
+  const title = String.raw`Planning [Q1] \ review`;
+  try {
+    writeFileSync(join(meetingDir, 'removed.md'), '# Transcript');
+    await appendMeetingIndex(meetingDir, 'removed.md', title);
+    await appendMeetingIndex(meetingDir, 'kept.md', 'Another meeting');
+    expect(readFileSync(join(meetingDir, 'index.md'), 'utf8')).toContain('(removed.md)');
+    await removeCancelledMeetingTranscript({ meetingDir, relPath: 'removed.md', title });
+    expect(existsSync(join(meetingDir, 'removed.md'))).toBe(false);
+    const index = readFileSync(join(meetingDir, 'index.md'), 'utf8');
+    expect(index).not.toContain('(removed.md)');
+    expect(index).toContain('(kept.md)');
+  } finally {
+    rmSync(meetingDir, { recursive: true, force: true });
+  }
 });
