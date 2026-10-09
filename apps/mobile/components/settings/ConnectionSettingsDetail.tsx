@@ -9,7 +9,7 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { router } from 'expo-router';
-import { Pressable, Text, View } from 'react-native';
+import { Platform, Pressable, Text, View } from 'react-native';
 
 import { AgentLoginPanel } from '../../components/AgentLoginPanel';
 import { SecretStoreSection } from '../../components/settings/SecretStoreSection';
@@ -371,6 +371,13 @@ export function ConnectionSettingsDetail({
       ) : null}
       {section === 'transcription' ? (
         <SettingsListPanel>
+          {Platform.OS === 'ios' ? (
+            <SettingsNavRow
+              icon="mic"
+              title="Voice input vocabulary"
+              onPress={() => router.push('/settings/voice-input')}
+            />
+          ) : null}
           <SettingsNavRow
             icon="mic"
             title="Live transcription test"
