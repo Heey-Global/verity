@@ -1,13 +1,27 @@
 Object.defineProperty(globalThis, 'Response', { configurable: true, value: class TestResponse {} });
 Object.defineProperty(globalThis, 'Headers', { configurable: true, value: class TestHeaders {} });
 Object.defineProperty(globalThis, 'fetch', { configurable: true, value: jest.fn() });
-const { exportRemoteDataDiagnostics } =
+const { exportRemoteDataDiagnostics: exportResult } =
   require('./remoteDataDiagnostics') as typeof import('./remoteDataDiagnostics');
 
 const mockExport = jest.fn();
+const mockNativeLookup = jest.fn(() => ({ exportDataDiagnostics: mockExport }));
 jest.mock('expo-modules-core', () => ({
-  requireNativeModule: () => ({ exportDataDiagnostics: mockExport }),
+  requireOptionalNativeModule: () => mockNativeLookup(),
 }));
+
+it.each([null, {}])(
+  'reports unsupported when the native exporter is absent: %j',
+  async (native) => {
+    mockNativeLookup.mockReturnValueOnce(native as ReturnType<typeof mockNativeLookup>);
+    expect(await exportResult()).toEqual({ status: 'unsupported' });
+  },
+);
+
+async function exportRemoteDataDiagnostics(): Promise<string | null> {
+  const result = await exportResult();
+  return result.status === 'ready' ? result.recording : null;
+}
 
 async function acceptedDataDiagnostics(value: unknown): Promise<string | null> {
   mockExport.mockResolvedValue([value]);
@@ -201,4 +215,18 @@ it.each([
   Object.assign(data.events[1]!, { event, streamId: streamSnapshot().streamId });
   mockExport.mockResolvedValue([JSON.stringify(data)]);
   expect(JSON.parse((await exportRemoteDataDiagnostics())!)).toEqual([data]);
+});
+
+it.each([
+  [[], 'empty'],
+  ['private native log', 'invalid'],
+  [['{"ticket":"secret"}'], 'invalid'],
+])('distinguishes unavailable recordings from rejected data', async (raw, status) => {
+  mockExport.mockResolvedValue(raw);
+  expect(await exportResult()).toEqual({ status });
+});
+
+it('does not expose a native failure message in the export result', async () => {
+  mockExport.mockRejectedValue(new Error('https://private?ticket=secret'));
+  expect(await exportResult()).toEqual({ status: 'failed' });
 });

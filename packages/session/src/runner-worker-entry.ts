@@ -2,6 +2,7 @@ import { constants } from 'node:fs';
 import { open, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { attachmentUploadSchema } from '@verity/events';
+import { hydrateImageAttachments, imageReferenceSchema } from './image-references.js';
 import { z } from 'zod';
 import {
   isRunnerSupervisorBackend,
@@ -44,7 +45,10 @@ const startTurnRequestSchema = z
     worktree: boundedString(4096).refine((value) => value.startsWith('/')),
     cwd: boundedString(4096).refine((value) => value.startsWith('/')),
     prompt: boundedString(1024 * 1024),
-    attachments: z.array(attachmentUploadSchema).max(20).optional(),
+    attachments: z
+      .array(z.union([imageReferenceSchema, attachmentUploadSchema.options[1]]))
+      .max(20)
+      .optional(),
     model: boundedString(256).optional(),
     steerable: z.boolean(),
     permissionControl: z.boolean(),
@@ -104,7 +108,15 @@ const turnDir = process.env.VERITY_RUNNER_TURN_DIR;
 if (requestPath === undefined || turnDir === undefined) {
   throw new Error('runner worker requires request path and turn directory');
 }
-const request = await consumeStartRequest(requestPath);
+const wireRequest = await consumeStartRequest(requestPath);
+const request = {
+  ...wireRequest,
+  attachments: await hydrateImageAttachments(
+    wireRequest.cwd,
+    wireRequest.turnId,
+    wireRequest.attachments,
+  ),
+};
 if (!isRunnerSupervisorBackend(request.backend)) throw new Error('unsupported runner backend');
 // The ACP SDK logs malformed wire messages verbatim through the global console.
 // Those frames can contain prompts, tool inputs, or credentials. Keep diagnostics
@@ -195,7 +207,7 @@ const turn = await server.run(join(turnDir, 'events.jsonl'), {
   cwd: request.cwd,
   prompt: request.prompt,
   storeSessionId: request.sessionId,
-  // Inline image attachments ride the backend's prompt path as one image content
+  // Hydrated image attachments ride the backend's prompt path as one image content
   // block per upload. Omitted entirely when absent so an attachment-free turn is
   // unchanged.
   ...(request.attachments !== undefined ? { attachments: request.attachments } : {}),

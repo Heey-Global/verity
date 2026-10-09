@@ -1397,3 +1397,38 @@ describe('durable control journal crash recovery (ADR 0006 D5)', () => {
     }
   }, 20_000);
 });
+
+it('stages large mid-turn images outside the control frame and preserves retries', async () => {
+  const handlers = fakeHandlers();
+  const path = socketPath();
+  const server = await serveControl(path, handlers, { turnId: 'image-turn' });
+  const client = await connectControl(path, {
+    turnId: 'image-turn',
+    attachmentCwd: dir,
+    mapAttachmentPath: (path) => path.replace(dir, '/sandbox-worktree'),
+  });
+  try {
+    const message: SteerMessage = {
+      text: 'inspect',
+      attachments: [
+        {
+          kind: 'image',
+          mediaType: 'image/png',
+          data: Buffer.alloc(2 * 1024 * 1024, 7).toString('base64'),
+        },
+      ],
+    };
+    await expect(client.steer(message, { commandId: 'image-command' })).resolves.toBe(true);
+    await expect(client.steer(message, { commandId: 'image-command' })).resolves.toBe(true);
+    expect(handlers.steerSeen).toHaveLength(1);
+    expect(Buffer.byteLength(JSON.stringify(handlers.steerSeen))).toBeLessThan(2048);
+    const reference = handlers.steerSeen[0]?.attachments?.[0] as unknown as { filePath: string };
+    expect(reference.filePath).toMatch(/^\/sandbox-worktree\//);
+    expect(
+      (await readFile(reference.filePath.replace('/sandbox-worktree', dir))).toString('base64'),
+    ).toBe(message.attachments?.[0]?.data);
+  } finally {
+    client.close();
+    await server.close();
+  }
+});

@@ -25,6 +25,7 @@ import { fileVersion, FileWriteError, writeSessionText } from './session-file-wr
 import { renameWorktreeFile } from './rename-worktree-file.js';
 import { turnCore } from './session-request-core.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
+import { registerWelcomeRoutes } from './welcome-session.js';
 import { registerSessionOrderRoute } from './session-order-route.js';
 import { registerSessionListRoute } from './session-list-route.js';
 import { registerVerityControlSessionRoute } from './verity-control-session-route.js';
@@ -1496,6 +1497,12 @@ export interface ServerDeps {
    *  together with {@link ServerDeps.ghTokenMint}, the route is registered +
    *  pre-auth-allowlisted; otherwise no token-broker route is exposed. */
   ghTokenCapabilities?: GhTokenCapabilityRegistry | undefined;
+  /** Check live Drive ancestry before granting automatic document URL reads. */
+  googleDriveDocumentIsWithinProject?: (input: {
+    projectId: string;
+    sessionId: string;
+    url: string;
+  }) => Promise<boolean>;
   /**
    * The loopback MCP gateway's dependencies, minus its approval seam (ADR 0014 D1). When
    * set, `POST /internal/mcp` is registered + pre-auth-allowlisted; otherwise an ACP session
@@ -6219,12 +6226,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const session = await deps.eventStore.getSession(sessionId);
           const settings = await deps.eventStore.getProjectSettings(projectId);
           const globalSettings = await deps.eventStore.getVeritySettings();
-          return (
-            session?.projectId === projectId &&
-            (googleDriveRequestSchema.parse(request).action === 'read_document_url' ||
-              Boolean(settings?.googleDriveFolderId)) &&
-            hasGoogleDriveScopes(globalSettings?.googleGrantedScopes)
-          );
+          if (
+            session?.projectId !== projectId ||
+            !hasGoogleDriveScopes(globalSettings?.googleGrantedScopes)
+          )
+            return false;
+          const driveRequest = googleDriveRequestSchema.parse(request);
+          if (driveRequest.action === 'read_document_url')
+            return (
+              (await deps.googleDriveDocumentIsWithinProject?.({
+                projectId,
+                sessionId,
+                url: driveRequest.url,
+              })) ?? false
+            );
+          return Boolean(settings?.googleDriveFolderId);
         }
         if (
           toolName !== 'verity_google_slides' &&
@@ -9124,7 +9140,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
-  registerSessionCreateRoute(app, {
+  const sessionCreate = registerSessionCreateRoute(app, {
     eventStore: deps.eventStore,
     ...(deps.provisioner === undefined ? {} : { provisioner: deps.provisioner }),
     ...(deps.projectCloneRoot === undefined ? {} : { projectCloneRoot: deps.projectCloneRoot }),
@@ -9150,6 +9166,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     isSleepLifecycleState,
     publicProject: (project) => publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
     defaultModel: DEFAULT_MODEL,
+  });
+
+  // First-run welcome session in the starter project (see welcome-session.ts).
+  // Created through the same spawn path as POST /sessions; the session-route
+  // live hint does not fire for this URL, so it is sent here.
+  registerWelcomeRoutes(app, {
+    eventStore: deps.eventStore,
+    secretCipher: deps.secretCipher,
+    spawn: sessionCreate.spawn,
+    notifySessionCreated: (sessionId, projectId) =>
+      liveHub.notify({ sessionId, projectId, topics: ['session', 'status'] }),
   });
 
   // Steering (M3-3): trigger one operator turn on a session. We answer 202 the
