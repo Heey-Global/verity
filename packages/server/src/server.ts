@@ -1493,6 +1493,12 @@ export interface ServerDeps {
    *  together with {@link ServerDeps.ghTokenMint}, the route is registered +
    *  pre-auth-allowlisted; otherwise no token-broker route is exposed. */
   ghTokenCapabilities?: GhTokenCapabilityRegistry | undefined;
+  /** Check live Drive ancestry before granting automatic document URL reads. */
+  googleDriveDocumentIsWithinProject?: (input: {
+    projectId: string;
+    sessionId: string;
+    url: string;
+  }) => Promise<boolean>;
   /**
    * The loopback MCP gateway's dependencies, minus its approval seam (ADR 0014 D1). When
    * set, `POST /internal/mcp` is registered + pre-auth-allowlisted; otherwise an ACP session
@@ -6199,12 +6205,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           const session = await deps.eventStore.getSession(sessionId);
           const settings = await deps.eventStore.getProjectSettings(projectId);
           const globalSettings = await deps.eventStore.getVeritySettings();
-          return (
-            session?.projectId === projectId &&
-            (googleDriveRequestSchema.parse(request).action === 'read_document_url' ||
-              Boolean(settings?.googleDriveFolderId)) &&
-            hasGoogleDriveScopes(globalSettings?.googleGrantedScopes)
-          );
+          if (
+            session?.projectId !== projectId ||
+            !hasGoogleDriveScopes(globalSettings?.googleGrantedScopes)
+          )
+            return false;
+          const driveRequest = googleDriveRequestSchema.parse(request);
+          if (driveRequest.action === 'read_document_url')
+            return (
+              (await deps.googleDriveDocumentIsWithinProject?.({
+                projectId,
+                sessionId,
+                url: driveRequest.url,
+              })) ?? false
+            );
+          return Boolean(settings?.googleDriveFolderId);
         }
         if (
           toolName !== 'verity_google_slides' &&

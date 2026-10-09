@@ -4259,6 +4259,9 @@ export async function buildEmbeddedServer(
     ...(config.googleDriveClientId !== undefined
       ? { googleDriveClientId: config.googleDriveClientId }
       : {}),
+    googleDriveDocumentIsWithinProject: (
+      input: Parameters<typeof googleDriveTool.canReadDocumentWithoutApproval>[0],
+    ) => googleDriveTool.canReadDocumentWithoutApproval(input),
     onGoogleCredentialsChanged: () => googleAccessToken.invalidate(),
     secretCipher,
     persistAgentCredentials: async (patch, persist) => {
