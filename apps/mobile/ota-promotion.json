@@ -1,14 +1,15 @@
 {
   "schema": 1,
-  "version": "1.60.3",
-  "runtime": "1.60.0",
+  "version": "1.63.1",
+  "runtime": "1.63.0",
   "channel": "production",
-  "commit": "91e5b3c820ccb86504405d55f86415c6a477e239",
-  "tag": "mobile-v1.60.3",
-  "branch": "staging-mobile-v1.60.3-91e5b3c820ccb86504405d55f86415c6a477e239",
-  "baseline": "mobile-v1.60.2",
-  "group": "89272843-458d-44e7-84da-554ff4f61e9e",
+  "commit": "c68dec0678f52444f1bbf6ce6909a12d1869031e",
+  "tag": "mobile-v1.63.1",
+  "branch": "staging-mobile-v1.63.1-c68dec0678f52444f1bbf6ce6909a12d1869031e",
+  "baseline": "mobile-v1.63.0",
+  "group": "756c2b73-7edd-4649-bdf8-66b0b06eefb1",
   "notes": [
-    "save agent settings without shifting the screen (#1372)"
+    "skip unmounted issue refs during gesture hit testing (#1424)",
+    "add verity\\_app\\_help tool with shared app help catalog (#1415)"
   ]
 }
