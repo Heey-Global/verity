@@ -108,13 +108,17 @@ export function PublicPreviewDiagnostics({
   const copyCapture = async () => {
     try {
       const capture = await exportRemoteDataDiagnostics();
-      if (capture === null) {
-        setExportStatus(
-          'No connection recording available. Record a test with an updated app first.',
-        );
+      if (capture.status !== 'ready') {
+        const messages = {
+          unsupported: 'This app build does not support connection recording export.',
+          empty: 'No connection recording was retained. Use Record connection test to create one.',
+          invalid: 'The recording could not be copied because its format failed validation.',
+          failed: 'The app could not read the connection recording.',
+        };
+        setExportStatus(messages[capture.status]);
         return;
       }
-      await Clipboard.setStringAsync(capture);
+      await Clipboard.setStringAsync(capture.recording);
       setExportStatus('Connection recording copied.');
     } catch {
       setExportStatus('Could not copy the connection recording.');
