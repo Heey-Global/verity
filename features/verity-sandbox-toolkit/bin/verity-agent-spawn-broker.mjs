@@ -573,7 +573,7 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
   return {
     // First, so every fixed key below wins over anything a request supplied.
     ...runtimeContext,
-    PATH: source.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+    PATH: `/opt/verity/package-managers:${source.PATH ?? '/usr/local/bin:/usr/bin:/bin'}`,
     HOME: source.VERITY_AGENT_HOME ?? '/home/dev',
     USER: source.VERITY_AGENT_USER ?? 'dev',
     LOGNAME: source.VERITY_AGENT_USER ?? 'dev',

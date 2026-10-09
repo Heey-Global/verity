@@ -583,3 +583,5 @@ export {
   markSessionSwitch,
   type SwitchTiming,
 } from './sessionSwitchTiming.js';
+
+export { packageInstallSummary, packageInstallDecision } from './ui/packageInstallSummary.js';

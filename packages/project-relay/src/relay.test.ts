@@ -563,33 +563,40 @@ describe('broker relay', () => {
   // socket idle timer, the upstream timeout and the absolute deadline — fired long before
   // any card could be decided, and every brokered tool call reached the Sandbox as a relay
   // connection error instead of an answer.
-  it('holds a decision route open past the broker request profile', async () => {
-    let release!: () => void;
-    const decided = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const socketPath = await fakeBroker(async () => {
-      await decided;
-      return { status: 200, body: '{"jsonrpc":"2.0","id":1}' };
-    });
-    const relay = createBrokerRelayServer({
-      socketPath,
-      limits: { requestTimeoutMs: 40, idleTimeoutMs: 40, decisionTimeoutMs: 10_000 },
-    });
-    const port = await listenTcp(relay);
+  it.each([...BROKER_DECISION_ROUTES])(
+    'holds %s open past the broker request profile',
+    async (route) => {
+      let release!: () => void;
+      const decided = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const socketPath = await fakeBroker(async () => {
+        await decided;
+        return { status: 200, body: '{"jsonrpc":"2.0","id":1}' };
+      });
+      const relay = createBrokerRelayServer({
+        socketPath,
+        limits: { requestTimeoutMs: 40, idleTimeoutMs: 40, decisionTimeoutMs: 10_000 },
+      });
+      const port = await listenTcp(relay);
 
-    // This also pins the one assumption the split rests on: `server.requestTimeout` stays on
-    // the short profile because Node bounds only the RECEIPT of a request with it, never the
-    // wait for its response. Were that ever to change, this call comes back 408.
-    const answered = httpCall(port, { method: 'POST', path: '/internal/mcp', body: '{}' });
-    // Several broker profiles wide: on the old limits the socket is gone by now.
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    release();
+      // This also pins the one assumption the split rests on: `server.requestTimeout` stays on
+      // the short profile because Node bounds only the RECEIPT of a request with it, never the
+      // wait for its response. Were that ever to change, this call comes back 408.
+      const answered = httpCall(port, {
+        method: 'POST',
+        path: route.slice('POST '.length),
+        body: '{}',
+      });
+      // Several broker profiles wide: on the old limits the socket is gone by now.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      release();
 
-    const response = await answered;
-    expect(response.status).toBe(200);
-    expect(response.body).toContain('jsonrpc');
-  });
+      const response = await answered;
+      expect(response.status).toBe(200);
+      expect(response.body).toContain('jsonrpc');
+    },
+  );
 
   // A pending card must not cost the session its git-sign, which is what a shared in-flight
   // budget would do the moment a call started lasting minutes instead of milliseconds.

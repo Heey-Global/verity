@@ -100,6 +100,8 @@ import {
   listSessionsTitle,
   permissionInputText,
   knowledgePublishSummary,
+  packageInstallSummary,
+  packageInstallDecision,
   KNOWLEDGE_PUBLISH_EXPLANATION,
   printableFileHtml,
   sessionHandoffCaveats,
@@ -8491,6 +8493,8 @@ function PermissionPrompt({
   const isGmail = pending.tool === 'verity_gmail';
   const isCalendar = pending.tool === 'verity_google_calendar';
   const isKnowledge = pending.tool === 'verity_knowledge';
+  const packageInstall =
+    pending.tool === 'verity_package_install' ? packageInstallSummary(pending.input) : null;
   const planningTool = planningToolName(pending.tool);
   const isEndPlanning = planningTool === END_PLANNING_TOOL;
   const isPresentPlan = planningTool === 'verity_present_plan';
@@ -8566,6 +8570,7 @@ function PermissionPrompt({
   // which is all that is known when no summariser recognised the input.
   const cardTitle =
     [
+      packageInstall?.title ?? null,
       !isKnowledge
         ? null
         : knowledgeSummary?.replacesExisting
@@ -8608,7 +8613,11 @@ function PermissionPrompt({
     markSessionSwitch(allowTiming.current, 'allow-js-press-handler');
     onDecide(
       pending.toolUseId,
-      scope === undefined ? { behavior: 'allow' } : { behavior: 'allow', scope },
+      packageInstall !== null
+        ? packageInstallDecision(packageInstall.supported, 'primary')
+        : scope === undefined
+          ? { behavior: 'allow' }
+          : { behavior: 'allow', scope },
     );
   };
   return (
@@ -8618,14 +8627,19 @@ function PermissionPrompt({
       // tool") is read before the operator reaches the Allow/Deny buttons.
       accessibilityRole="alert"
       accessibilityLabel={
-        isKnowledge
-          ? `${cardTitle} ${KNOWLEDGE_PUBLISH_EXPLANATION}`
-          : `${cardTitle} Allow or deny.`
+        packageInstall !== null
+          ? `${cardTitle}. ${spellOutBidiControls(packageInstall.command)}. ${spellOutBidiControls(packageInstall.explanation)} ${packageInstall.denyLabel} or ${packageInstall.allowLabel}.`
+          : isKnowledge
+            ? `${cardTitle} ${KNOWLEDGE_PUBLISH_EXPLANATION}`
+            : `${cardTitle} Allow or deny.`
       }
     >
       <View style={styles.permissionHeader}>
         <View style={[styles.permissionDot, { backgroundColor: theme.colors.tone.attention }]} />
-        <Text style={styles.permissionTitle} numberOfLines={1}>
+        <Text
+          style={styles.permissionTitle}
+          numberOfLines={packageInstall === null ? 1 : undefined}
+        >
           {cardTitle}
         </Text>
         {/* Surface the backend's risk class (#149): `ask` is the escalated case that
@@ -8633,11 +8647,13 @@ function PermissionPrompt({
             transported. (`auto` is normally pre-approved upstream, so it's rare here —
             labelled plainly if it ever arrives.) */}
         <Text style={styles.permissionRisk}>
-          {approvedForDelivery
-            ? 'delivery pending'
-            : pending.riskClass === 'ask'
-              ? 'needs approval'
-              : pending.riskClass}
+          {packageInstall !== null
+            ? 'Safety'
+            : approvedForDelivery
+              ? 'delivery pending'
+              : pending.riskClass === 'ask'
+                ? 'needs approval'
+                : pending.riskClass}
         </Text>
       </View>
       {isPresentPlan ? (
@@ -8647,7 +8663,16 @@ function PermissionPrompt({
           </Text>
         </View>
       ) : null}
-      {knowledgeSummary !== null ? (
+      {packageInstall !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          <Text style={styles.permissionSubtitle} selectable>
+            {spellOutBidiControls(packageInstall.command)}
+          </Text>
+          <Text style={styles.permissionInstallExplanation}>
+            {spellOutBidiControls(packageInstall.explanation)}
+          </Text>
+        </View>
+      ) : knowledgeSummary !== null ? (
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionSubtitle} selectable>
             Source: {spellOutBidiControls(knowledgeSummary.source)}
@@ -8876,23 +8901,40 @@ function PermissionPrompt({
       ) : null}
       <View style={styles.permissionButtons}>
         <Pressable
-          onPress={() => active && onDecide(pending.toolUseId, { behavior: 'deny' })}
+          onPress={() =>
+            active &&
+            onDecide(
+              pending.toolUseId,
+              packageInstall !== null
+                ? packageInstallDecision(packageInstall.supported, 'secondary')
+                : { behavior: 'deny' },
+            )
+          }
           disabled={!active}
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
-          accessibilityLabel={`${approvedForDelivery ? 'Cancel' : 'Deny'} ${view.title}`}
+          accessibilityLabel={
+            packageInstall?.denyLabel ?? `${approvedForDelivery ? 'Cancel' : 'Deny'} ${view.title}`
+          }
           style={({ pressed }) => [
             styles.permissionButton,
-            styles.permissionDeny,
+            packageInstall?.supported ? styles.permissionNeutral : styles.permissionDeny,
             active ? null : styles.permissionButtonDisabled,
             pressed && active ? styles.permissionButtonPressed : null,
           ]}
         >
           {deciding ? (
-            <ActivityIndicator color={theme.colors.tone.danger} />
+            <ActivityIndicator
+              color={packageInstall?.supported ? theme.colors.text : theme.colors.tone.danger}
+            />
           ) : (
-            <Text style={[styles.permissionButtonLabel, { color: theme.colors.tone.danger }]}>
-              {approvedForDelivery ? 'Cancel' : 'Deny'}
+            <Text
+              style={[
+                styles.permissionButtonLabel,
+                { color: packageInstall?.supported ? theme.colors.text : theme.colors.tone.danger },
+              ]}
+            >
+              {packageInstall?.denyLabel ?? (approvedForDelivery ? 'Cancel' : 'Deny')}
             </Text>
           )}
         </Pressable>
@@ -8908,11 +8950,13 @@ function PermissionPrompt({
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
           accessibilityLabel={
-            isKnowledge
-              ? knowledgeSummary?.replacesExisting
-                ? 'Save changes to Global Knowledge'
-                : 'Publish to Global Knowledge'
-              : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${view.title}${isScopedSecretTool ? ' once' : ''}`
+            packageInstall !== null
+              ? packageInstall.allowLabel
+              : isKnowledge
+                ? knowledgeSummary?.replacesExisting
+                  ? 'Save changes to Global Knowledge'
+                  : 'Publish to Global Knowledge'
+                : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${view.title}${isScopedSecretTool ? ' once' : ''}`
           }
           style={({ pressed }) => [
             styles.permissionButton,
@@ -8925,15 +8969,17 @@ function PermissionPrompt({
             <ActivityIndicator color={theme.colors.onPrimary} />
           ) : (
             <Text style={[styles.permissionButtonLabel, styles.permissionAllowLabel]}>
-              {isKnowledge
-                ? knowledgeSummary?.replacesExisting
-                  ? 'Save changes'
-                  : 'Publish to Global'
-                : approvedForDelivery
-                  ? 'Retry delivery'
-                  : isScopedSecretTool
-                    ? 'Allow once'
-                    : 'Allow'}
+              {packageInstall !== null
+                ? packageInstall.allowLabel
+                : isKnowledge
+                  ? knowledgeSummary?.replacesExisting
+                    ? 'Save changes'
+                    : 'Publish to Global'
+                  : approvedForDelivery
+                    ? 'Retry delivery'
+                    : isScopedSecretTool
+                      ? 'Allow once'
+                      : 'Allow'}
             </Text>
           )}
         </Pressable>
@@ -11671,6 +11717,14 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
   },
   // Deny: an outlined (danger-toned) button — destructive, so not filled.
+  permissionNeutral: {
+    borderColor: theme.colors.border,
+    backgroundColor: 'transparent',
+  },
+  permissionInstallExplanation: {
+    color: theme.colors.text,
+    fontSize: theme.text.sm,
+  },
   permissionDeny: {
     borderColor: theme.colors.tone.danger,
     backgroundColor: 'transparent',

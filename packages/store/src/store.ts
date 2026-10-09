@@ -7225,6 +7225,29 @@ export class EventStore implements EventSink {
     return row ? this.projectSettingsRowToRecord(row) : undefined;
   }
 
+  /** Missing rows keep existing projects undecided until their first installation. */
+  async getPackageProtectionDecision(
+    projectId: string,
+  ): Promise<'protected' | 'skipped' | 'undecided'> {
+    const row = await this.db
+      .selectFrom('project_package_protection')
+      .select('decision')
+      .where('project_id', '=', projectId)
+      .executeTakeFirst();
+    return row?.decision ?? 'undecided';
+  }
+
+  async setPackageProtectionDecision(
+    projectId: string,
+    decision: 'protected' | 'skipped',
+  ): Promise<void> {
+    await this.db
+      .insertInto('project_package_protection')
+      .values({ project_id: projectId, decision })
+      .onConflict((conflict) => conflict.column('project_id').doUpdateSet({ decision }))
+      .execute();
+  }
+
   /** Like {@link getProjectSettings} but WITHOUT decrypting `doppler_token` —
    *  sealed-safe, for public read paths that strip it. See getVeritySettingsRaw. */
   async getProjectSettingsRaw(projectId: string): Promise<ProjectSettingsRecord | undefined> {

@@ -513,6 +513,15 @@ WRITTEN_PATHS+=("$REMOTE_HOME/.tmux.conf")
 # FEATURE_DIR is resolved at the top of this script.
 install -m 0755 "$FEATURE_DIR/bin/wt" /usr/local/bin/wt
 install -m 0755 "$FEATURE_DIR/bin/verity-agent-run" /usr/local/bin/verity-agent-run
+# Session PATH puts these shims before real package managers, including calls
+# made by project scripts. The real binaries remain available on the rest of PATH.
+install -d /opt/verity/package-managers /usr/local/lib/verity
+install -m 0644 "$FEATURE_DIR/bin/verity-package-policy.mjs" /usr/local/lib/verity/verity-package-policy.mjs
+install -m 0755 "$FEATURE_DIR/bin/verity-package-install.mjs" /usr/local/lib/verity/verity-package-install.mjs
+for PACKAGE_MANAGER in npm pnpm yarn bun pip uv; do
+  printf '#!/bin/sh\nexec node /usr/local/lib/verity/verity-package-install.mjs %s "$@"\n' "$PACKAGE_MANAGER" > "/opt/verity/package-managers/$PACKAGE_MANAGER"
+  chmod 0755 "/opt/verity/package-managers/$PACKAGE_MANAGER"
+done
 # The PATH a root-owned launcher sees: no nvm, no shell profile. Used both by the
 # supervisor block below, which must resolve every binary the broker execs by
 # absolute path, and by the opencode-acp wrapper after it.
