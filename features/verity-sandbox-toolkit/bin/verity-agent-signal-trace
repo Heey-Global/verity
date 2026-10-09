@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""Bounded Linux signal-delivery tracing for one same-UID agent process."""
+import argparse
+import ctypes
+import errno
+import json
+import os
+import signal
+import select
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+SEIZE, INTERRUPT, LISTEN = 0x4206, 0x4207, 0x4208
+CONT, DETACH, GETSIGINFO, GETEVENTMSG = 7, 17, 0x4202, 0x4201
+TRACECLONE, TRACEEXEC, EVENT_CLONE, EVENT_EXEC, EVENT_STOP = 8, 16, 3, 4, 128
+WALL = 0x40000000
+libc = ctypes.CDLL(None, use_errno=True)
+libc.ptrace.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
+libc.ptrace.restype = ctypes.c_long
+libc.send.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int]
+libc.send.restype = ctypes.c_ssize_t
+
+
+def ptrace(request, tid, data=0):
+    result = libc.ptrace(request, tid, None, data)
+    if result == -1:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+    return result
+
+
+def write_diagnostic(fd, text):
+    data = text.encode()
+    # Node stdio uses socketpairs. Per-send flags leave the adapter's shared
+    # descriptor status unchanged, even when the socket was created by root.
+    sent = libc.send(fd, data, len(data), socket.MSG_DONTWAIT | socket.MSG_NOSIGNAL)
+    if sent >= 0:
+        return sent == len(data)
+    if ctypes.get_errno() != errno.ENOTSOCK:
+        return False
+    # For ordinary pipes/files, dup() shares status flags with the adapter.
+    # Reopen our own fd to get independent flags; fail closed if unavailable.
+    handle = None
+    try:
+        handle = os.open('/proc/self/fd/%d' % fd,
+                         os.O_WRONLY | os.O_NONBLOCK | os.O_APPEND | os.O_CLOEXEC)
+        return os.write(handle, data) == len(data)
+    except OSError:
+        return False
+    finally:
+        if handle is not None:
+            os.close(handle)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument('--pid', type=int)
+    target.add_argument('--launch', nargs=argparse.REMAINDER)
+    parser.add_argument('--seconds', type=float, default=60)
+    parser.add_argument('--max-bytes', type=int, default=65536)
+    parser.add_argument('--ready-fd', type=int, help=argparse.SUPPRESS)
+    parser.add_argument('--gate-fd', type=int, help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if ((args.pid is not None and args.pid <= 1)
+            or not 0 < args.seconds <= 600
+            or not 1024 <= args.max_bytes <= 65536):
+        parser.error('pid must exceed 1; seconds must be in (0,600]; max-bytes in [1024,65536]')
+    if os.getuid() == 0:
+        parser.error('root-owned processes are outside the agent tracing scope')
+    if args.launch == []:
+        parser.error('--launch requires a command')
+    if args.launch:
+        # Exec the adapter in place: its PID, parent and process group stay intact.
+        # Only the diagnostic child gains ptrace permission, never another UID.
+        ready_read = ready_write = gate_read = gate_write = None
+        observer = None
+        try:
+            ready_read, ready_write = os.pipe()
+            gate_read, gate_write = os.pipe()
+            observer = subprocess.Popen(
+                [sys.executable, os.path.abspath(__file__), '--pid', str(os.getpid()),
+                 '--seconds', str(args.seconds), '--max-bytes', str(args.max_bytes),
+                 '--ready-fd', str(ready_write), '--gate-fd', str(gate_read)],
+                stdin=subprocess.DEVNULL, stdout=sys.stderr, stderr=sys.stderr,
+                pass_fds=(ready_write, gate_read), start_new_session=True,
+            )
+            os.close(ready_write)
+            ready_write = None
+            os.close(gate_read)
+            gate_read = None
+            if libc.prctl(0x59616d61, observer.pid, 0, 0, 0) != 0:  # PR_SET_PTRACER
+                raise OSError(ctypes.get_errno(), 'cannot authorize diagnostic child')
+            os.write(gate_write, b'1')
+            os.close(gate_write)
+            gate_write = None
+            readable, _, _ = select.select([ready_read], [], [], 5)
+            if not readable or os.read(ready_read, 1) != b'1':
+                raise RuntimeError('signal observer did not attach')
+        except (OSError, RuntimeError) as error:
+            if observer is not None:
+                observer.terminate()
+                try:
+                    observer.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    observer.kill()
+                    observer.wait()
+            write_diagnostic(2, json.dumps(dict(event='trace-failed', reason=str(error)[:256])) + '\n')
+        finally:
+            for fd in (ready_read, ready_write, gate_read, gate_write):
+                if fd is not None:
+                    os.close(fd)
+        os.execvp(args.launch[0], args.launch)
+    trace_error = None
+    tids, stopped = set(), set()
+    delivery_signals = {}
+    used = 0
+    output_available = True
+    cancelled = False
+    deadline = time.monotonic() + args.seconds
+
+    def cancel(_signum, _frame):
+        nonlocal cancelled
+        cancelled = True
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, cancel)
+
+    def emit(event, **fields):
+        nonlocal used, output_available
+        if not output_available:
+            return False
+        record = dict(event=event, pid=args.pid, observerPid=os.getpid(), ts=time.time(), **fields)
+        line = json.dumps(record) + '\n'
+        if used + len(line.encode()) > args.max_bytes:
+            return False
+        if not write_diagnostic(1, line):
+            output_available = False
+            return False
+        used += len(line.encode())
+        return True
+
+    try:
+        if args.gate_fd is not None:
+            if os.read(args.gate_fd, 1) != b'1':
+                raise RuntimeError('diagnostic launch was cancelled')
+            os.close(args.gate_fd)
+        if os.stat('/proc/%d' % args.pid).st_uid != os.getuid():
+            raise RuntimeError('run as the target process UID; elevated attachment is not supported')
+        # Trace every current thread; TRACECLONE covers threads created afterwards.
+        for name in os.listdir('/proc/%d/task' % args.pid):
+            tid = int(name)
+            try:
+                ptrace(SEIZE, tid, TRACECLONE | TRACEEXEC)
+                tids.add(tid)
+            except OSError as error:
+                if error.errno != errno.ESRCH:
+                    raise
+        if not tids:
+            raise RuntimeError('target exited before attachment')
+        if not emit('attached', threads=len(tids), seconds=args.seconds,
+                    processGroup=os.getpgid(args.pid), session=os.getsid(args.pid)):
+            cancelled = True
+        if args.ready_fd is not None:
+            os.write(args.ready_fd, b'1')
+            os.close(args.ready_fd)
+            args.ready_fd = None
+        while tids and not cancelled and time.monotonic() < deadline:
+            tid, status = os.waitpid(-1, os.WNOHANG | WALL)
+            if tid == 0:
+                time.sleep(0.01)
+                continue
+            if os.WIFEXITED(status) or os.WIFSIGNALED(status):
+                tids.discard(tid)
+                stopped.discard(tid)
+                if tid == args.pid:
+                    emit('exit', exitCode=os.WEXITSTATUS(status) if os.WIFEXITED(status) else None,
+                         signal=os.WTERMSIG(status) if os.WIFSIGNALED(status) else None)
+                continue
+            if not os.WIFSTOPPED(status):
+                continue
+            stopped.add(tid)
+            event = status >> 16
+            sig = os.WSTOPSIG(status)
+            if event == EVENT_CLONE:
+                clone_tid = ctypes.c_ulong()
+                ptrace(GETEVENTMSG, tid, ctypes.byref(clone_tid))
+                tids.add(clone_tid.value)
+                ptrace(CONT, tid)
+            elif event == EVENT_EXEC:
+                ptrace(CONT, tid)
+            elif event == EVENT_STOP:
+                # LISTEN preserves a real job-control stop until SIGCONT arrives.
+                ptrace(LISTEN if sig != signal.SIGTRAP else CONT, tid)
+            else:
+                # Cleanup must deliver this signal even if recording fails.
+                delivery_signals[tid] = sig
+                info = ctypes.create_string_buffer(128)
+                ptrace(GETSIGINFO, tid, ctypes.byref(info))
+                signo, _error, code = struct.unpack_from('iii', info.raw)
+                if signo == signal.SIGHUP:
+                    fields = dict(tid=tid, signal='SIGHUP', siCode=code)
+                    if code <= 0:  # SI_USER / SI_TKILL / SI_QUEUE carry sender identity.
+                        sender, uid = struct.unpack_from('iI', info.raw, 16)
+                        fields.update(senderPid=sender, senderUid=uid)
+                        if sender > 0:  # PID 0 is not a visible sender; getpgid(0) means self.
+                            try:
+                                fields.update(senderGroup=os.getpgid(sender),
+                                              senderSession=os.getsid(sender))
+                            except ProcessLookupError:
+                                pass
+                    if not emit('signal', **fields):
+                        cancelled = True
+                # The trace records delivery; it must never suppress the signal.
+                ptrace(CONT, tid, sig)
+            stopped.discard(tid)
+            delivery_signals.pop(tid, None)
+    except (OSError, RuntimeError) as error:
+        trace_error = error
+    finally:
+        # Interrupt only to detach. Never kill the target or use EXITKILL.
+        pending = set(tids)
+        for tid in list(pending):
+            try:
+                if tid in stopped:
+                    ptrace(DETACH, tid, delivery_signals.get(tid, 0))
+                    pending.remove(tid)
+                else:
+                    ptrace(INTERRUPT, tid)
+            except OSError as error:
+                if error.errno == errno.ESRCH:
+                    pending.remove(tid)
+                else:
+                    raise
+        cleanup_deadline = time.monotonic() + 5
+        while pending and time.monotonic() < cleanup_deadline:
+            tid, status = os.waitpid(-1, os.WNOHANG | WALL)
+            if tid == 0:
+                time.sleep(0.01)
+                continue
+            if tid not in pending:
+                continue
+            if os.WIFSTOPPED(status):
+                if status >> 16 == EVENT_CLONE:
+                    clone_tid = ctypes.c_ulong()
+                    ptrace(GETEVENTMSG, tid, ctypes.byref(clone_tid))
+                    pending.add(clone_tid.value)
+                # A delivery stop racing with timeout still needs its signal.
+                sig = os.WSTOPSIG(status) if status >> 16 == 0 else 0
+                ptrace(DETACH, tid, sig)
+            pending.remove(tid)
+        if pending:
+            raise RuntimeError('detach timed out for threads: %s' % sorted(pending))
+        emit('detached')
+    if trace_error is not None:
+        raise trace_error
+    return 0
+
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (OSError, RuntimeError) as error:
+        write_diagnostic(2, 'signal trace failed: %s\n' % str(error)[:256])
+        sys.exit(1)

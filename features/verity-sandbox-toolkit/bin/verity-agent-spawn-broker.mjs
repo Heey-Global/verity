@@ -919,6 +919,62 @@ export async function materializeKnowledgeIsolation(request, options, connectorU
   };
 }
 
+/** A root-issued lease cannot be supplied through the agent spawn protocol. */
+export async function agentSignalTraceSeconds(controlDir, request, now = Date.now()) {
+  if (
+    request.command !== 'codex-acp' ||
+    request.knowledgeIsolation ||
+    typeof request.sessionEnv?.VERITY_SESSION_ID !== 'string'
+  )
+    return undefined;
+  let handle;
+  try {
+    handle = await open(
+      join(controlDir, 'signal-trace.json'),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.uid !== 0 || (stat.mode & 0o022) !== 0 || stat.size > 4096)
+      return undefined;
+    const buffer = Buffer.alloc(4097);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > 4096) return undefined;
+    return validateAgentSignalTraceLease(
+      buffer.subarray(0, bytesRead).toString('utf8'),
+      request,
+      now,
+    );
+  } catch {
+    // Missing, malformed, or untrusted leases leave normal launches unchanged.
+    return undefined;
+  } finally {
+    await handle?.close();
+  }
+}
+
+export function validateAgentSignalTraceLease(text, request, now = Date.now()) {
+  if (request.command !== 'codex-acp' || request.knowledgeIsolation || text.length > 4096)
+    return undefined;
+  try {
+    const lease = JSON.parse(text);
+    if (
+      !isObject(lease) ||
+      Object.keys(lease).sort().join(',') !== 'expiresAt,sessionId' ||
+      typeof lease.sessionId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(lease.sessionId) ||
+      lease.sessionId !== request.sessionEnv?.VERITY_SESSION_ID ||
+      !Number.isSafeInteger(lease.expiresAt) ||
+      lease.expiresAt <= now ||
+      lease.expiresAt > now + 600_000
+    )
+      return undefined;
+    const seconds = Math.floor((lease.expiresAt - now) / 1000);
+    return seconds > 0 ? seconds : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function agentLaunchSpec(request, options) {
   const { uid, gid } = validateIdentity(options);
   const setprivPath = options.setprivPath ?? '/usr/bin/setpriv';
@@ -977,6 +1033,17 @@ export function agentLaunchSpec(request, options) {
             '--',
           ]
         : []),
+      ...(options.signalTraceSeconds === undefined ||
+      request.command !== 'codex-acp' ||
+      request.knowledgeIsolation
+        ? []
+        : [
+            '/usr/bin/python3',
+            '/usr/local/bin/verity-agent-signal-trace',
+            '--seconds',
+            String(options.signalTraceSeconds),
+            '--launch',
+          ]),
       agentPath,
       ...request.args,
     ],
@@ -2455,11 +2522,18 @@ export async function runAgentSpawnBroker(options = {}) {
             };
           }
           if (request.kind === 'trusted-cli') trustedCliFailurePhase = 'launch-spec';
+          if (request.kind === 'agent' && request.command === 'codex-acp') {
+            releaseCodexStartup = await acquireCodexStartup();
+          }
           const spec =
             request.kind === 'agent'
               ? agentLaunchSpec(
                   { ...request, args: materialized.args },
-                  { ...options, connectorUrl },
+                  {
+                    ...options,
+                    connectorUrl,
+                    signalTraceSeconds: await agentSignalTraceSeconds(controlDir, request),
+                  },
                 )
               : trustedCliLaunchSpec(
                   {
@@ -2472,9 +2546,6 @@ export async function runAgentSpawnBroker(options = {}) {
                   options,
                 );
           if (request.kind === 'trusted-cli') trustedCliFailurePhase = 'spawn';
-          if (request.kind === 'agent' && request.command === 'codex-acp') {
-            releaseCodexStartup = await acquireCodexStartup();
-          }
           child = spawnChild(spec.command, spec.args, spec.spawnOptions);
         } catch (error) {
           releaseCodexStartup();
