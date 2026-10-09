@@ -2188,3 +2188,47 @@ it('recovers a persisted unfinished note on a fresh offline entry without showin
   );
   await waitFor(() => expect(screen.queryByTestId('unsaved-note')).toBeNull());
 });
+
+it('counts the complete ended answer history across pages and keeps the count after dismissal', async () => {
+  const meeting: MeetingRecord = {
+    id: 'summary-six-answers',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: 1,
+    endedAt: 2,
+    state: 'ended',
+    transcript: '',
+    error: null,
+  };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  const events = Array.from({ length: 6 }, (_, index) => [
+    {
+      seq: index * 3 + 1,
+      event: {
+        t: 'prompt',
+        text: `During live meeting ${meeting.id}, please respond to this request:\n\nQuestion ${index}?\n\nRecent meeting transcript:\ntext`,
+      },
+    },
+    { seq: index * 3 + 2, event: { t: 'text', delta: `Answer ${index}.` } },
+    { seq: index * 3 + 3, event: { t: 'result' } },
+  ]).flat();
+  jest.mocked(createVerityClient).mockReturnValue({
+    getHistory: jest
+      .fn()
+      .mockImplementation(async (_sessionId, options) =>
+        options?.beforeSeq
+          ? { hasMore: false, events: events.slice(0, 3) }
+          : { hasMore: true, events: events.slice(3) },
+      ),
+    getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
+    getLiveMeetingInsights: jest.fn().mockResolvedValue([]),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  expect(await screen.findByLabelText('6 answers')).toBeOnTheScreen();
+  expect(screen.getByText('Answer 0.')).toBeOnTheScreen();
+  fireEvent.press(screen.getAllByLabelText('Dismiss meeting answer')[0]!);
+  expect(screen.getByLabelText('6 answers')).toBeOnTheScreen();
+});

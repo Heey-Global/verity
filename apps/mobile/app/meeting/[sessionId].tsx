@@ -345,14 +345,19 @@ export default function MeetingScreen() {
               let events = page.events;
               const cached =
                 answerEvents.current?.meetingId === shown ? answerEvents.current : null;
+              const summaryHistory =
+                meeting?.state === 'ended' ||
+                (meeting?.state === 'interrupted' && meeting.engine !== 'attendee');
               let pages = 1;
               while (
                 page.hasMore &&
-                pages < 10 &&
+                (summaryHistory || pages < 10) &&
                 events[0]?.seq > 0 &&
-                (cached
-                  ? events[0]!.seq > (cached.events.at(-1)?.seq ?? 0) + 1
-                  : distinctMeetingAnswers(meetingAnswerCards(events, shown)).length < 4)
+                (summaryHistory
+                  ? page.events[0]?.ts === undefined || page.events[0].ts >= meeting.startedAt
+                  : cached
+                    ? events[0]!.seq > (cached.events.at(-1)?.seq ?? 0) + 1
+                    : distinctMeetingAnswers(meetingAnswerCards(events, shown)).length < 4)
               ) {
                 page = await client.getHistory(sessionId, {
                   beforeSeq: events[0]!.seq,
@@ -370,7 +375,9 @@ export default function MeetingScreen() {
               );
               const firstSeq = Number(retained[0]?.id);
               const firstIndex = ordered.findIndex((entry) => entry.seq === firstSeq);
-              const kept = (firstIndex >= 0 ? ordered.slice(firstIndex) : ordered).slice(-4_000);
+              const kept = summaryHistory
+                ? ordered
+                : (firstIndex >= 0 ? ordered.slice(firstIndex) : ordered).slice(-4_000);
               if (mounted && displayedMeetingId.current === shown) {
                 answerEvents.current = { meetingId: shown, events: kept };
                 const historyCards = meetingAnswerCards(kept, shown);
@@ -420,7 +427,7 @@ export default function MeetingScreen() {
       mounted = false;
       detach();
     };
-  }, [sessionId, refresh, meeting?.id]);
+  }, [sessionId, refresh, meeting?.id, meeting?.state]);
 
   useEffect(() => {
     void refresh().catch((reason) => setError(String(reason)));
@@ -513,7 +520,7 @@ export default function MeetingScreen() {
       meeting?.speakerMerges,
     ],
   );
-  const visibleAnswers = useMemo(() => {
+  const allMeetingAnswers = useMemo(() => {
     const canonical = [
       ...answers,
       ...queuedAnswers.filter(
@@ -523,10 +530,18 @@ export default function MeetingScreen() {
     return distinctMeetingAnswers([
       ...canonical,
       ...localAnswers.filter((local) => !canonical.some((card) => sameMeetingRequest(card, local))),
-    ])
-      .filter((card) => !dismissed.includes(card.questionId ?? meetingQuestionKey(card.request)))
-      .slice(-4);
-  }, [answers, queuedAnswers, localAnswers, dismissed]);
+    ]);
+  }, [answers, queuedAnswers, localAnswers]);
+  const completedAnswerCount = allMeetingAnswers.filter((card) => card.status === 'ready').length;
+  const visibleAnswers = useMemo(() => {
+    const shown = allMeetingAnswers.filter(
+      (card) => !dismissed.includes(card.questionId ?? meetingQuestionKey(card.request)),
+    );
+    return meeting?.state === 'ended' ||
+      (meeting?.state === 'interrupted' && meeting.engine !== 'attendee')
+      ? shown
+      : shown.slice(-4);
+  }, [allMeetingAnswers, dismissed, meeting?.state, meeting?.engine]);
   const newestReady = visibleAnswers.findLast((card) => card.status === 'ready')?.id;
   const responseMs = visibleAnswers.find((card) => card.id === newestReady)?.responseMs;
   useEffect(() => {
@@ -1788,7 +1803,7 @@ export default function MeetingScreen() {
             values={[
               { label: 'min', value: minutes },
               { label: 'people', value: speakers.length },
-              { label: 'answers', value: visibleAnswers.length },
+              { label: 'answers', value: completedAnswerCount },
               { label: 'notes', value: finalizedNotes.length },
             ]}
           />

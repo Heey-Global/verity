@@ -2145,7 +2145,12 @@ export async function appendMeetingIndex(
       await updateMeetingIndexFile(indexAbs, (existing) => {
         let content = existing === '' ? '# Meetings\n\n' : existing;
         if (!content.endsWith('\n')) content += '\n';
-        return content.includes(entry) ? content : `${content}${entry}`;
+        const destination = `](${basename(relPath)})`;
+        const retained = content
+          .split('\n')
+          .filter((line) => !(line.startsWith('- [') && line.endsWith(destination)))
+          .join('\n');
+        return `${retained}${retained.endsWith('\n') ? '' : '\n'}${entry}`;
       });
     });
   meetingIndexUpdates.set(indexAbs, update);

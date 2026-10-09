@@ -329,9 +329,15 @@ export function liveMeetingAnswerCount(
   }[],
   meetingId: string,
 ): number {
-  const ready = new Set<string>();
-  let current: string | null = null;
-  let text = '';
+  type Answer = {
+    key: string;
+    questionId?: string;
+    answer: string;
+    ready: boolean;
+    combined: boolean;
+  };
+  const cards: Answer[] = [];
+  let current: Answer | null = null;
   for (const event of events) {
     if (event.t === 'prompt') {
       const prompt = event.text ?? '';
@@ -339,20 +345,61 @@ export function liveMeetingAnswerCount(
         prompt.startsWith(`Research this point raised during live meeting ${meetingId}:\n\n`) ||
         prompt.startsWith(`During live meeting ${meetingId}, please respond to this request:\n\n`);
       if (event.steered && !matches) continue;
-      text = '';
-      const identity = [
-        ...prompt.matchAll(/(?:^|\n\n)Meeting (?:question|request) reference: ([a-zA-Z0-9-]+)/g),
-      ].at(-1)?.[1];
-      current = matches && !event.steered ? (identity ?? prompt.split('\n\n')[1] ?? null) : null;
-    } else if (event.t === 'text' && !event.parentToolId && current) {
-      text += event.delta ?? '';
-    } else if (event.t === 'tool_call' && !event.parentToolId) {
-      text = '';
-    } else if (event.t === 'result' || event.t === 'interrupted') {
-      if (current && text.trim()) ready.add(current);
+      if (event.steered && current) {
+        current.combined = true;
+        current.ready = false;
+        current.answer = '';
+      }
+      const requestReference = [
+        ...prompt.matchAll(/(?:^|\n\n)Meeting request reference: ([a-zA-Z0-9-]+)/gu),
+      ].at(-1);
+      const questionReference = [
+        ...prompt.matchAll(/(?:^|\n\n)Meeting question reference: (question-[a-zA-Z0-9-]+)/gu),
+      ].at(-1);
+      const questionId =
+        questionReference && (!requestReference || questionReference.index > requestReference.index)
+          ? questionReference[1]
+          : undefined;
+      const separator = prompt.indexOf('\n\n');
+      const context = prompt.indexOf('\n\nRecent meeting transcript:', separator + 2);
+      const request = prompt.slice(separator + 2, context < 0 ? undefined : context).trim();
+      // Keep this normalization in step with mobile's meetingQuestionKey.
+      const key = request
+        .toLocaleLowerCase()
+        .replace(
+          /^(?:verity[,!:]?\s*)?(?:(?:recherchier(?:e)?(?:\s+mal)?|research|check|prüf(?:e)?)(?:\s+(?:mal|bitte|please))?[,!:]?\s+)/iu,
+          '',
+        )
+        .replace(/[^\p{L}\p{N}]/gu, '');
+      current =
+        matches && request
+          ? {
+              key,
+              ...(questionId ? { questionId } : {}),
+              answer: '',
+              ready: false,
+              combined: !!event.steered,
+            }
+          : null;
+      if (current) {
+        const index = cards.findIndex((item) =>
+          item.questionId && current!.questionId
+            ? item.questionId === current!.questionId
+            : item.key === current!.key,
+        );
+        if (index >= 0) cards.splice(index, 1);
+        cards.push(current);
+      }
+    } else if (event.t === 'text' && !event.parentToolId && current && !current.combined) {
+      current.answer = (current.answer + (event.delta ?? '')).slice(-20_000);
+    } else if (event.t === 'tool_call' && !event.parentToolId && current && !current.combined) {
+      current.answer = '';
+    } else if (event.t === 'result' && current && !current.combined) {
+      if (current.answer.trim()) current.ready = true;
+    } else if (event.t === 'interrupted' && current && !current.combined) {
+      current.ready = !!current.answer.trim();
       current = null;
-      text = '';
     }
   }
-  return ready.size;
+  return cards.filter((card) => card.ready && !card.combined).length;
 }

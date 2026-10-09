@@ -16053,3 +16053,19 @@ it('removes a cancelled transcript and its punctuated title from the meeting ind
     rmSync(meetingDir, { recursive: true, force: true });
   }
 });
+
+it('replaces a meeting index entry by transcript path when the title changes', async () => {
+  const meetingDir = mkdtempSync(join(tmpdir(), 'verity-meeting-index-title-'));
+  try {
+    await appendMeetingIndex(meetingDir, 'meeting.md', 'Original title');
+    await appendMeetingIndex(meetingDir, 'other.md', 'Other meeting');
+    await appendMeetingIndex(meetingDir, 'meeting.md', 'Updated [title]');
+    const index = readFileSync(join(meetingDir, 'index.md'), 'utf8');
+    expect(index.match(/\]\(meeting\.md\)/g)).toHaveLength(1);
+    expect(index).not.toContain('Original title');
+    expect(index).toContain('Updated');
+    expect(index).toContain('(other.md)');
+  } finally {
+    rmSync(meetingDir, { recursive: true, force: true });
+  }
+});

@@ -142,9 +142,6 @@ it('counts completed answers without counting tool progress or duplicate questio
         { t: 'prompt', text: prompt },
         { t: 'text', delta: '€10 updated' },
         { t: 'result' },
-        { t: 'prompt', text: prompt, steered: true },
-        { t: 'text', delta: 'Combined response' },
-        { t: 'result' },
       ],
       'meeting-1',
     ),
@@ -176,4 +173,36 @@ it('counts resolved people after speaker merges and manual corrections', () => {
       ],
     }),
   ).toBe(2);
+});
+
+it('counts repeated direct questions once across punctuation, prefixes and request IDs', () => {
+  const requests = ['What costs?', 'VERITY, research what costs!'];
+  const events = requests.flatMap((request, index) => [
+    {
+      t: 'prompt',
+      text: `During live meeting meeting-1, please respond to this request:\n\n${request}\n\nRecent meeting transcript:\ncontext\n\nMeeting request reference: request-${index}`,
+    },
+    { t: 'text', delta: '€10' },
+    { t: 'result' },
+  ]);
+  expect(liveMeetingAnswerCount(events, 'meeting-1')).toBe(1);
+});
+
+it('does not count combined or unfinished retries as completed answers', () => {
+  const prompt =
+    'During live meeting meeting-1, please respond to this request:\n\nWhat costs?\n\nRecent meeting transcript:\ncontext';
+  const answered = [{ t: 'prompt', text: prompt }, { t: 'text', delta: '€10' }, { t: 'result' }];
+  expect(liveMeetingAnswerCount(answered, 'meeting-1')).toBe(1);
+  expect(liveMeetingAnswerCount([...answered, { t: 'prompt', text: prompt }], 'meeting-1')).toBe(0);
+  expect(
+    liveMeetingAnswerCount(
+      [
+        { t: 'prompt', text: prompt },
+        { t: 'prompt', text: prompt, steered: true },
+        { t: 'text', delta: 'Combined' },
+        { t: 'result' },
+      ],
+      'meeting-1',
+    ),
+  ).toBe(0);
 });
