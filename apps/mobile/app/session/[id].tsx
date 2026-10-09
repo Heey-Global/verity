@@ -42,6 +42,7 @@ import {
   type SessionFileEntry,
   type SessionFileContent,
   type SessionFileRoot,
+  type AppLinkTarget,
   type SessionGoogleWorkspaceFile,
   type SessionPlanning,
   type ToolCallMessage,
@@ -80,6 +81,7 @@ import {
   partitionModels,
   publishSessionAutomationMutation,
   parseBranchIssue,
+  parseAppLink,
   parseInline,
   parseMarkdownBlocks,
   rateLimitNotice,
@@ -627,6 +629,13 @@ const KnowledgeSaveContext = createContext<{
 
 type OpenLocalFile = (path: string, root?: SessionFileRoot) => void;
 const SessionFileOpenContext = createContext<OpenLocalFile | null>(null);
+// An agent's `verity://` link resolved by `parseAppLink`. The screen owns the
+// navigation and the sheets, so it answers with the handler for a target, or null
+// when the target cannot be opened here; the renderer then shows the same
+// non-tappable reference styling as an unknown target instead of a link that
+// would do nothing.
+type OpenAppLink = (target: AppLinkTarget) => (() => void) | null;
+const AppLinkOpenContext = createContext<OpenAppLink | null>(null);
 const SessionFileImageSourceContext = createContext<
   ((path: string) => ImageSource | undefined) | null
 >(null);
@@ -2432,6 +2441,41 @@ export function SessionChat({
     setFilesInitialRoot(root);
     setFilesOpen(true);
   }, []);
+  // Project settings, the Preview sheet and the knowledge root need the session's
+  // project, like the header's Preview button; without one (not loaded yet, or a
+  // session outside a project) those targets are not openable.
+  const openAppLink = useCallback<OpenAppLink>(
+    (target) => {
+      switch (target.kind) {
+        case 'route':
+          return () => router.push(target.path);
+        case 'project-settings': {
+          if (!projectId) return null;
+          const pathname =
+            target.page === null
+              ? '/project/[id]/settings'
+              : (`/project/[id]/settings/${target.page}` as const);
+          return () => router.push({ pathname, params: { id: projectId } });
+        }
+        case 'new-project':
+          return () => router.push('/new-project');
+        case 'preview':
+          if (!projectId) return null;
+          return () => {
+            refreshStaticPreview();
+            setStaticPreviewOpen(true);
+          };
+        case 'files':
+          if (target.root === 'knowledge' && !projectId) return null;
+          return () => {
+            setFilesInitialPath(null);
+            setFilesInitialRoot(target.root);
+            setFilesOpen(true);
+          };
+      }
+    },
+    [projectId, refreshStaticPreview],
+  );
   // Index of a bookmarked message id in the current rows, or -1 if not loaded yet.
   const rowIndexOfMessage = useCallback(
     (messageId: string) =>
@@ -4291,106 +4335,110 @@ export function SessionChat({
         // viewport while older history is prepended and new text grows below it.
         <SessionActionsContext.Provider value={actions}>
           <SessionFileOpenContext.Provider value={openSessionFile}>
-            <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
-              <BookmarksContext.Provider value={bookmarks}>
-                <KnowledgeSaveContext.Provider
-                  value={
-                    projectId
-                      ? {
-                          save: async (messageId, text) => {
-                            await client.saveSessionKnowledge(sessionId, { messageId, text });
-                          },
-                        }
-                      : null
-                  }
-                >
-                  <FlashList
-                    onLoad={() => {
-                      markInitialListLoad(switchTiming);
-                      setLoadedListSessionId(sessionId);
-                    }}
-                    ref={listRef}
-                    data={data}
-                    keyExtractor={rowKey}
-                    renderItem={renderItem}
-                    getItemType={getItemType}
-                    // Render further beyond the viewport (default ~250px) so rows above are
-                    // MEASURED before a scroll-up reveals them — their height correction then
-                    // happens off-screen instead of jumping the visible offset (cause-2 fix).
-                    drawDistance={500}
-                    // Visual inversion: newest-first data flipped back the right way up.
-                    // Each row is counter-flipped in renderItem (styles.invertedItem).
-                    // FlashList consumes plain styles; Unistyles metadata loses the web flip.
-                    style={{
-                      transform: [{ scaleY: -1 }],
-                      marginLeft: embedded ? 0 : insets.left,
-                      marginRight: embedded ? 0 : insets.right,
-                    }}
-                    contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.lg }}
-                    onScroll={onListScroll}
-                    onContentSizeChange={onListContentSizeChange}
-                    onTouchEnd={clearSearchHighlightAfterTouch}
-                    scrollEventThrottle={64}
-                    // Only a real finger drag/fling summons the message-nav stack (see
-                    // revealNav) — programmatic/content-driven scrolls (session open, agent
-                    // streaming) fire none of these, so the stack never pops up on its own. The
-                    // hold-then-fade starts on motion END (drag lift / fling settle), so the
-                    // 1.8s is measured from the list coming to REST.
-                    onScrollBeginDrag={onListScrollBeginDrag}
-                    onMomentumScrollBegin={onListMomentumScrollBegin}
-                    onScrollEndDrag={onListScrollEndDrag}
-                    onMomentumScrollEnd={onListMomentumScrollEnd}
-                    onViewableItemsChanged={onViewableItemsChanged}
-                    viewabilityConfig={viewabilityConfig}
-                    // Paging is driven by our scroll/viewability callbacks (see
-                    // requestOlderHistory), which also own the settle window between
-                    // pages that the native edge callbacks have no notion of.
-                    //
-                    // The spinner belongs to the OLDEST end, which in the newest-first
-                    // list is the footer. It sits behind the viewport, so unlike the
-                    // former header spinner it cannot shift a single visible row.
-                    ListFooterComponent={
-                      <View style={[styles.olderSpinner, styles.invertedItem]}>
+            <AppLinkOpenContext.Provider value={openAppLink}>
+              <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
+                <BookmarksContext.Provider value={bookmarks}>
+                  <KnowledgeSaveContext.Provider
+                    value={
+                      projectId
+                        ? {
+                            save: async (messageId, text) => {
+                              await client.saveSessionKnowledge(sessionId, { messageId, text });
+                            },
+                          }
+                        : null
+                    }
+                  >
+                    <FlashList
+                      onLoad={() => {
+                        markInitialListLoad(switchTiming);
+                        setLoadedListSessionId(sessionId);
+                      }}
+                      ref={listRef}
+                      data={data}
+                      keyExtractor={rowKey}
+                      renderItem={renderItem}
+                      getItemType={getItemType}
+                      // Render further beyond the viewport (default ~250px) so rows above are
+                      // MEASURED before a scroll-up reveals them — their height correction then
+                      // happens off-screen instead of jumping the visible offset (cause-2 fix).
+                      drawDistance={500}
+                      // Visual inversion: newest-first data flipped back the right way up.
+                      // Each row is counter-flipped in renderItem (styles.invertedItem).
+                      // FlashList consumes plain styles; Unistyles metadata loses the web flip.
+                      style={{
+                        transform: [{ scaleY: -1 }],
+                        marginLeft: embedded ? 0 : insets.left,
+                        marginRight: embedded ? 0 : insets.right,
+                      }}
+                      contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.lg }}
+                      onScroll={onListScroll}
+                      onContentSizeChange={onListContentSizeChange}
+                      onTouchEnd={clearSearchHighlightAfterTouch}
+                      scrollEventThrottle={64}
+                      // Only a real finger drag/fling summons the message-nav stack (see
+                      // revealNav) — programmatic/content-driven scrolls (session open, agent
+                      // streaming) fire none of these, so the stack never pops up on its own. The
+                      // hold-then-fade starts on motion END (drag lift / fling settle), so the
+                      // 1.8s is measured from the list coming to REST.
+                      onScrollBeginDrag={onListScrollBeginDrag}
+                      onMomentumScrollBegin={onListMomentumScrollBegin}
+                      onScrollEndDrag={onListScrollEndDrag}
+                      onMomentumScrollEnd={onListMomentumScrollEnd}
+                      onViewableItemsChanged={onViewableItemsChanged}
+                      viewabilityConfig={viewabilityConfig}
+                      // Paging is driven by our scroll/viewability callbacks (see
+                      // requestOlderHistory), which also own the settle window between
+                      // pages that the native edge callbacks have no notion of.
+                      //
+                      // The spinner belongs to the OLDEST end, which in the newest-first
+                      // list is the footer. It sits behind the viewport, so unlike the
+                      // former header spinner it cannot shift a single visible row.
+                      ListFooterComponent={
+                        <View style={[styles.olderSpinner, styles.invertedItem]}>
+                          <ActivityIndicator
+                            color={theme.colors.textMuted}
+                            animating={loadingOlder}
+                            hidesWhenStopped={false}
+                            style={!loadingOlder ? styles.olderSpinnerHidden : undefined}
+                            accessibilityLabel="Loading older messages"
+                            accessibilityElementsHidden={!loadingOlder}
+                            importantForAccessibility={
+                              loadingOlder ? 'auto' : 'no-hide-descendants'
+                            }
+                          />
+                        </View>
+                      }
+                      maintainVisibleContentPosition={maintainVisibleContentPosition}
+                      // Drag down to dismiss the keyboard; keep taps working (e.g. tool cards).
+                      keyboardDismissMode="interactive"
+                      keyboardShouldPersistTaps="handled"
+                    />
+                    {/* Keep intermediate history pages hidden while resolving a jump, and
+                cover measurement correction while restoring a saved position. */}
+                    {restoring || pendingUserJump !== null || jumpTarget !== null ? (
+                      <View style={styles.restoreCover}>
                         <ActivityIndicator
                           color={theme.colors.textMuted}
-                          animating={loadingOlder}
-                          hidesWhenStopped={false}
-                          style={!loadingOlder ? styles.olderSpinnerHidden : undefined}
-                          accessibilityLabel="Loading older messages"
-                          accessibilityElementsHidden={!loadingOlder}
-                          importantForAccessibility={loadingOlder ? 'auto' : 'no-hide-descendants'}
+                          accessibilityLabel={
+                            pendingUserJump !== null || jumpTarget !== null
+                              ? 'Jumping to message or bookmark'
+                              : 'Restoring chat position'
+                          }
                         />
+                        {pendingUserJump !== null || jumpTarget !== null ? (
+                          <Text style={styles.emptySubtitle}>
+                            {pendingUserJump !== null
+                              ? 'Finding previous message or bookmark…'
+                              : 'Jumping to message or bookmark…'}
+                          </Text>
+                        ) : null}
                       </View>
-                    }
-                    maintainVisibleContentPosition={maintainVisibleContentPosition}
-                    // Drag down to dismiss the keyboard; keep taps working (e.g. tool cards).
-                    keyboardDismissMode="interactive"
-                    keyboardShouldPersistTaps="handled"
-                  />
-                  {/* Keep intermediate history pages hidden while resolving a jump, and
-                cover measurement correction while restoring a saved position. */}
-                  {restoring || pendingUserJump !== null || jumpTarget !== null ? (
-                    <View style={styles.restoreCover}>
-                      <ActivityIndicator
-                        color={theme.colors.textMuted}
-                        accessibilityLabel={
-                          pendingUserJump !== null || jumpTarget !== null
-                            ? 'Jumping to message or bookmark'
-                            : 'Restoring chat position'
-                        }
-                      />
-                      {pendingUserJump !== null || jumpTarget !== null ? (
-                        <Text style={styles.emptySubtitle}>
-                          {pendingUserJump !== null
-                            ? 'Finding previous message or bookmark…'
-                            : 'Jumping to message or bookmark…'}
-                        </Text>
-                      ) : null}
-                    </View>
-                  ) : null}
-                </KnowledgeSaveContext.Provider>
-              </BookmarksContext.Provider>
-            </SessionFileImageSourceContext.Provider>
+                    ) : null}
+                  </KnowledgeSaveContext.Provider>
+                </BookmarksContext.Provider>
+              </SessionFileImageSourceContext.Provider>
+            </AppLinkOpenContext.Provider>
           </SessionFileOpenContext.Provider>
         </SessionActionsContext.Provider>
       )}
@@ -4555,6 +4603,7 @@ export function SessionChat({
             <MarkdownText
               content={content}
               onOpenLocalFile={null}
+              onOpenAppLink={null}
               sessionFileImageSource={null}
               onOpenImage={() => undefined}
             />
@@ -6063,6 +6112,7 @@ function SessionFilesSheet({
                   <MarkdownLine
                     line={item.content}
                     onOpenLocalFile={null}
+                    onOpenAppLink={null}
                     sessionFileImageSource={null}
                     onOpenImage={() => {}}
                   />
@@ -6628,6 +6678,7 @@ function AgentMarkdown({
   const searchHighlightQuery = useContext(SearchHighlightContext);
   const blocks = useMemo(() => splitRichText(text), [text]);
   const openSessionFile = useContext(SessionFileOpenContext);
+  const openAppLink = useContext(AppLinkOpenContext);
   const sessionFileImageSource = useContext(SessionFileImageSourceContext);
   const [viewer, setViewer] = useState<{ source: ImageSource; label: string } | null>(null);
   const [imagePathViewer, setImagePathViewer] = useState<string | null>(null);
@@ -6733,6 +6784,7 @@ function AgentMarkdown({
                 key={i}
                 content={block.content}
                 onOpenLocalFile={openLocalFile}
+                onOpenAppLink={openAppLink}
                 sessionFileImageSource={sessionFileImageSource}
                 onOpenImage={(source, label) => setViewer({ source, label })}
               />
@@ -6908,11 +6960,13 @@ function MessageActionsMenu({
 function MarkdownText({
   content,
   onOpenLocalFile,
+  onOpenAppLink,
   sessionFileImageSource,
   onOpenImage,
 }: {
   content: string;
   onOpenLocalFile: OpenLocalFile | null;
+  onOpenAppLink: OpenAppLink | null;
   sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
   onOpenImage: (source: ImageSource, label: string) => void;
 }) {
@@ -6928,6 +6982,7 @@ function MarkdownText({
               key={`${i}-${j}`}
               line={line}
               onOpenLocalFile={onOpenLocalFile}
+              onOpenAppLink={onOpenAppLink}
               sessionFileImageSource={sessionFileImageSource}
               onOpenImage={onOpenImage}
             />
@@ -6949,7 +7004,7 @@ function MarkdownTable({ header, rows }: { header: string[]; rows: string[][] })
         {header.map((cell, i) => (
           <View key={i} style={styles.tableCell}>
             <SelectableMarkdownText textStyle={[styles.agentText, styles.tableHeaderText]}>
-              <Inline text={cell} onOpenLocalFile={null} />
+              <Inline text={cell} onOpenLocalFile={null} onOpenAppLink={null} />
             </SelectableMarkdownText>
           </View>
         ))}
@@ -6962,7 +7017,7 @@ function MarkdownTable({ header, rows }: { header: string[]; rows: string[][] })
           {row.map((cell, ci) => (
             <View key={ci} style={styles.tableCell}>
               <SelectableMarkdownText textStyle={styles.agentText}>
-                <Inline text={cell} onOpenLocalFile={null} />
+                <Inline text={cell} onOpenLocalFile={null} onOpenAppLink={null} />
               </SelectableMarkdownText>
             </View>
           ))}
@@ -6997,11 +7052,13 @@ function SelectableMarkdownText({
 function MarkdownLine({
   line,
   onOpenLocalFile,
+  onOpenAppLink,
   sessionFileImageSource,
   onOpenImage,
 }: {
   line: string;
   onOpenLocalFile: OpenLocalFile | null;
+  onOpenAppLink: OpenAppLink | null;
   sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
   onOpenImage: (source: ImageSource, label: string) => void;
 }) {
@@ -7010,7 +7067,11 @@ function MarkdownLine({
   if (heading) {
     return (
       <SelectableMarkdownText textStyle={[styles.agentText, styles.mdHeading]}>
-        <Inline text={heading[2] ?? ''} onOpenLocalFile={onOpenLocalFile} />
+        <Inline
+          text={heading[2] ?? ''}
+          onOpenLocalFile={onOpenLocalFile}
+          onOpenAppLink={onOpenAppLink}
+        />
       </SelectableMarkdownText>
     );
   }
@@ -7021,7 +7082,11 @@ function MarkdownLine({
         <Text style={styles.mdBullet}>•</Text>
         <View style={styles.mdTextSlot}>
           <SelectableMarkdownText textStyle={styles.agentText}>
-            <Inline text={bullet[1] ?? ''} onOpenLocalFile={onOpenLocalFile} />
+            <Inline
+              text={bullet[1] ?? ''}
+              onOpenLocalFile={onOpenLocalFile}
+              onOpenAppLink={onOpenAppLink}
+            />
           </SelectableMarkdownText>
           <LocalImageLinks
             links={imageLinks}
@@ -7039,7 +7104,11 @@ function MarkdownLine({
         <Text style={styles.mdBullet}>{ordered[1]}.</Text>
         <View style={styles.mdTextSlot}>
           <SelectableMarkdownText textStyle={styles.agentText}>
-            <Inline text={ordered[2] ?? ''} onOpenLocalFile={onOpenLocalFile} />
+            <Inline
+              text={ordered[2] ?? ''}
+              onOpenLocalFile={onOpenLocalFile}
+              onOpenAppLink={onOpenAppLink}
+            />
           </SelectableMarkdownText>
           <LocalImageLinks
             links={imageLinks}
@@ -7062,7 +7131,7 @@ function MarkdownLine({
   return (
     <View>
       <SelectableMarkdownText textStyle={styles.agentText}>
-        <Inline text={line} onOpenLocalFile={onOpenLocalFile} />
+        <Inline text={line} onOpenLocalFile={onOpenLocalFile} onOpenAppLink={onOpenAppLink} />
       </SelectableMarkdownText>
       <LocalImageLinks
         links={imageLinks}
@@ -7174,14 +7243,17 @@ function SessionFileImageViewer({
 }
 
 // Render inline **bold** / `code` / link spans (nested Text lays them out inline).
-// A link tap opens the URL in the system browser; selection still works via a
-// long-press on the surrounding selectable Text.
+// A link tap opens the URL in the system browser, a `verity://` link opens the
+// whitelisted screen or sheet in the app; selection still works via a long-press
+// on the surrounding selectable Text.
 function Inline({
   text,
   onOpenLocalFile,
+  onOpenAppLink,
 }: {
   text: string;
   onOpenLocalFile: OpenLocalFile | null;
+  onOpenAppLink: OpenAppLink | null;
 }) {
   const { theme } = useUnistyles();
   return (
@@ -7202,25 +7274,32 @@ function Inline({
           );
         }
         if (span.t === 'link') {
-          const local = span.external ? null : sessionFileTargetFromLocalLink(span.url);
+          const appLink = span.external ? null : parseAppLink(span.url);
+          const openApp =
+            appLink !== null && onOpenAppLink !== null ? onOpenAppLink(appLink) : null;
+          const local =
+            span.external || appLink !== null ? null : sessionFileTargetFromLocalLink(span.url);
           const canOpenLocal = local !== null && onOpenLocalFile !== null;
+          const asLink = span.external || openApp !== null;
           return (
             <Text
               key={i}
               style={[
-                span.external ? styles.mdLink : styles.mdReference,
-                { color: span.external ? theme.colors.primary : theme.colors.accent },
+                asLink ? styles.mdLink : styles.mdReference,
+                { color: asLink ? theme.colors.primary : theme.colors.accent },
               ]}
               // openURL rejects only if no handler can open it (no browser); swallow
               // so it never surfaces as an unhandled rejection (only http(s) reach here).
               onPress={
                 span.external
                   ? () => void Linking.openURL(span.url).catch(() => undefined)
-                  : canOpenLocal
-                    ? () => onOpenLocalFile(local.path, local.root)
-                    : undefined
+                  : openApp !== null
+                    ? openApp
+                    : canOpenLocal
+                      ? () => onOpenLocalFile(local.path, local.root)
+                      : undefined
               }
-              accessibilityRole={span.external || canOpenLocal ? 'link' : undefined}
+              accessibilityRole={asLink || canOpenLocal ? 'link' : undefined}
             >
               <HighlightedSearchText text={span.text} />
             </Text>
@@ -7668,6 +7747,7 @@ function PlanProposalCard({
           <MarkdownText
             content={markdown}
             onOpenLocalFile={null}
+            onOpenAppLink={null}
             sessionFileImageSource={null}
             onOpenImage={() => undefined}
           />
