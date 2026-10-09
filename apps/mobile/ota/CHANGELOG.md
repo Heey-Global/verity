@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.65.1](https://github.com/Heey-Global/verity/compare/mobile-v1.65.0...mobile-v1.65.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **mobile:** distinguish connection recording export failures ([#1446](https://github.com/Heey-Global/verity/issues/1446)) ([df98937](https://github.com/Heey-Global/verity/commit/df98937c01e522a0ef65e030e4955bd25fc25ed2))
+
 ## [1.64.1](https://github.com/Heey-Global/verity/compare/mobile-v1.64.0...mobile-v1.64.1) (2026-10-09)
 
 
