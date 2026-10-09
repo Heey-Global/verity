@@ -41,6 +41,25 @@ describe('app help catalog links', () => {
 // turns every answer that cites it into a 404 the agent hands to the user. The
 // check lives here because the catalog's own package compiles without Node types.
 describe('app help catalog docs', () => {
+  // CI skips every test job for a pull request that touches only docs/*, so a
+  // rename of a cited guide would never run the existence check below. The
+  // detector gives the cited guides their own arm; a guide added to the catalog
+  // without joining that arm reopens the gap.
+  it('routes every cited guide to the test job in CI', () => {
+    const workflow = readFileSync(
+      new URL('../../../../.github/workflows/ci.yml', import.meta.url),
+      'utf8',
+    );
+    const arm = /# Guides the app help catalog cites[^\n]*\n +([^\n)]+)\)\n +test=true/.exec(
+      workflow,
+    );
+    expect(arm, 'the help catalog arm is no longer where this test looks for it').not.toBeNull();
+    const routed = (arm?.[1] ?? '').split('|');
+    for (const topic of APP_HELP_TOPICS) {
+      if (topic.docsPath !== undefined) expect(routed, topic.id).toContain(topic.docsPath);
+    }
+  });
+
   it.each(APP_HELP_TOPICS.filter((topic) => topic.docsPath !== undefined))(
     '$id cites a file that exists in the repository',
     (topic) => {
