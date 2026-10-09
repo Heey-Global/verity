@@ -1,3 +1,4 @@
+import { AppState } from 'react-native';
 import {
   beginSessionSwitch,
   markSessionSwitch,
@@ -12,6 +13,7 @@ export function beginRowTouch(sessionId: string, nativeTimestamp?: number): void
   lastTouchedSessionId = sessionId;
   const trace = beginSessionSwitch(sessionId);
   markSessionSwitch(trace, 'js-touch-start', nativeTimestamp);
+  startStallSampling(trace);
 }
 
 export function rowPress(sessionId: string): void {
@@ -38,7 +40,9 @@ export type RenderWorkStage =
   | 'sidebar-row-body'
   | 'chat-body'
   | 'transcript-reconcile'
-  | 'list-item-elements';
+  | 'list-item-elements'
+  | 'transcript-row-body'
+  | 'markdown-body';
 const renderTotals = new WeakMap<
   SwitchTiming,
   Map<
@@ -105,4 +109,54 @@ export function beginRenderWork(
     total.duration.value = Math.round(total.milliseconds * 10) / 10;
     total.count.value = (total.count.value ?? 0) + 1;
   };
+}
+
+let stopSampling: (() => void) | undefined;
+/** Timer lateness includes JS scheduling and GC; it does not identify the blocking function. */
+export function startStallSampling(trace: SwitchTiming): void {
+  stopSampling?.();
+  if (AppState.currentState !== 'active') return;
+  let expected = performance.now() + 100;
+  let maximum = 0;
+  let samples = 0;
+  let entry: SwitchTiming['phases'][number] | undefined;
+  const stop = () => {
+    clearInterval(timer);
+    subscription.remove();
+    if (stopSampling === stop) stopSampling = undefined;
+  };
+  const timer = setInterval(() => {
+    const now = performance.now();
+    if (
+      sessionSwitchTiming(trace.sessionId) !== trace ||
+      listCompleted(trace) ||
+      now - trace.started >= 10_000
+    ) {
+      stop();
+      return;
+    }
+    maximum = Math.max(maximum, now - expected, 0);
+    expected = now + 100;
+    samples++;
+    if (!entry) {
+      const before = trace.phases.length;
+      markSessionSwitch(trace, 'js-timer-lag-max-ms', maximum);
+      if (trace.phases.length > before) entry = trace.phases.at(-1);
+    }
+    if (entry) entry.value = Math.round(maximum * 10) / 10;
+    if (samples >= 100) stop();
+  }, 100);
+  const subscription = AppState.addEventListener('change', (state) => {
+    if (state !== 'active') stop();
+  });
+  stopSampling = stop;
+}
+
+export function switchMeasurementOpen(trace: SwitchTiming | undefined): boolean {
+  return (
+    !!trace &&
+    sessionSwitchTiming(trace.sessionId) === trace &&
+    !listCompleted(trace) &&
+    performance.now() - trace.started < 10_000
+  );
 }
