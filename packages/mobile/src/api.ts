@@ -1043,6 +1043,17 @@ export const onboardingStatusSchema = z.object({
 });
 export type OnboardingStatus = z.infer<typeof onboardingStatusSchema>;
 
+/** `POST /onboarding/welcome`: the welcome session in the server's starter project.
+ *  `preparing` while the starter project's sandbox is still being set up (call again
+ *  to poll), `none` when the server has no starter project (an older installation,
+ *  or the operator deleted it), `failed` when the session could not be created. */
+export const welcomeSessionSchema = z.object({
+  state: z.enum(['ready', 'preparing', 'none', 'failed']),
+  sessionId: z.string().nullable(),
+  projectId: z.string().nullable(),
+});
+export type WelcomeSession = z.infer<typeof welcomeSessionSchema>;
+
 /** Result of `POST /github/app/validate` (#320, onboarding): a live check that the
  *  stored GitHub-App creds actually mint a token. `ok` gates the wizard's GitHub
  *  step. `accountLogin` is a SAFE confirmation handle on success; `error` is a
@@ -3152,6 +3163,12 @@ export class VerityClient {
   async getUplinkDiagnostics(): Promise<UplinkDiagnostics> {
     const res = await this.request('/api/uplink/diagnostics', { method: 'GET' });
     return uplinkDiagnosticsSchema.parse(await res.json());
+  }
+
+  /** Open (creating on first call) the onboarding welcome session. Idempotent. */
+  async openWelcomeSession(): Promise<WelcomeSession> {
+    const res = await this.request('/onboarding/welcome', { method: 'POST' });
+    return welcomeSessionSchema.parse(await res.json());
   }
 
   /** First-run onboarding gate (#320): whether setup is complete and, if not, the

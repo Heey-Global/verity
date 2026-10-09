@@ -1,6 +1,7 @@
 import type { ProjectGitHubIssues } from './project-github-issues.js';
 import { Conductor, type Backend, type ConductorDeps, type EventBus } from '@verity/session';
 import { renderAssignedTasksPrompt } from '@verity/events';
+import { welcomeSessionPrompt } from './welcome-session.js';
 import type { VeritySettingsPatch, EventStore, SealableSecretCipher } from '@verity/store';
 import type { FastifyBaseLogger, FastifyInstance, FastifyRequest } from 'fastify';
 import {
@@ -484,12 +485,17 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
           : {}),
         ...(deps.conductor?.sessionSystemPrompt === undefined
           ? {
-              sessionSystemPrompt: (session) =>
-                session.projectId === VERITY_CONTROL_PROJECT_ID ||
-                (session.projectId === null &&
-                  (session.name === VERITY_CONTROL_SESSION_NAME || session.name === 'Concierge'))
-                  ? VERITY_CONTROL_SYSTEM_PROMPT
-                  : '',
+              sessionSystemPrompt: async (session) => {
+                if (
+                  session.projectId === VERITY_CONTROL_PROJECT_ID ||
+                  (session.projectId === null &&
+                    (session.name === VERITY_CONTROL_SESSION_NAME || session.name === 'Concierge'))
+                ) {
+                  return VERITY_CONTROL_SYSTEM_PROMPT;
+                }
+                // The onboarding welcome session answers as a guide.
+                return welcomeSessionPrompt(deps.eventStore, session.sessionId);
+              },
             }
           : {}),
         ...(deps.conductor?.assignedTasksPrompt === undefined

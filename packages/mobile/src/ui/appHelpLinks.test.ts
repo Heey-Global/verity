@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { APP_HELP_TOPICS } from '@verity/events';
+import { APP_HELP_TOPICS, renderWelcomeOpener } from '@verity/events';
 import { describe, expect, it } from 'vitest';
 import { parseAppLink } from './appLink.js';
 
@@ -14,6 +14,20 @@ describe('app help catalog links', () => {
       expect(parseAppLink(topic.appLink ?? '')).not.toBeNull();
     },
   );
+
+  // The welcome message is the first chat a new user sees; a link in it that the
+  // app cannot open would render as dead text right there.
+  it('only puts links the app can open into the welcome message', () => {
+    const opener = renderWelcomeOpener({
+      aiProvider: false,
+      github: false,
+      doppler: false,
+      google: false,
+    });
+    const links = [...opener.matchAll(/\]\((verity:\/\/[^)]+)\)/g)].map((match) => match[1] ?? '');
+    expect(links.length).toBeGreaterThanOrEqual(5);
+    for (const link of links) expect(parseAppLink(link), link).not.toBeNull();
+  });
 
   // A connection added to the Connections screen without a catalog entry leaves
   // the agent unable to explain it. The routes are read from the screen itself,

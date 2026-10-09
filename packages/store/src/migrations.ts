@@ -4083,6 +4083,26 @@ const migrations: Record<string, Migration> = {
       await sql`alter table project_settings drop column allowed_agents`.execute(db);
     },
   },
+
+  '0148_starter_project': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The local project a fresh installation creates for its welcome session.
+      // Recorded by id because a slug match would also claim an operator's own
+      // project of the same name.
+      await db.schema
+        .createTable('starter_project')
+        .addColumn('singleton', 'boolean', (column) => column.primaryKey())
+        .addColumn('project_id', 'text', (column) =>
+          column.notNull().references('projects.id').onDelete('cascade'),
+        )
+        .addColumn('created_at', 'timestamptz', (column) => column.notNull().defaultTo(sql`now()`))
+        .addCheckConstraint('starter_project_singleton_check', sql`singleton = true`)
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.dropTable('starter_project').execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

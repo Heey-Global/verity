@@ -466,7 +466,12 @@ export {
 export { canCreatePublicPreviewTarget, type PublicPreviewTargetKind } from './publicPreview.js';
 export { secretUnlockedSchema, type SecretUnlocked } from './api.js';
 export { type PairedDevice, type PairingInvitation } from './api.js';
-export { onboardingStatusSchema, type OnboardingStatus } from './api.js';
+export {
+  onboardingStatusSchema,
+  welcomeSessionSchema,
+  type OnboardingStatus,
+  type WelcomeSession,
+} from './api.js';
 export { githubAppValidateSchema, type GithubAppValidateResult } from './api.js';
 export { dopplerValidateSchema, type DopplerValidateResult } from './api.js';
 export {
