@@ -1276,6 +1276,7 @@ export function buildRunnerConductorWiring(deps: {
               : backend.runnerSupervisorBackend === 'codex-acp'
                 ? new ServerCodexTranscript({ runtimeDir, transcript: deps.transcript })
                 : undefined,
+          mapAttachmentPath: sandboxPath,
           mapTurnOptions: (opts) => ({
             ...opts,
             worktree: sandboxPath(opts.worktree),

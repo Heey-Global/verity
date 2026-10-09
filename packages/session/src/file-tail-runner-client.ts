@@ -99,6 +99,8 @@ export interface FileTailRunnerClientDeps {
    * rides the file (S2.1a) regardless. Omit it to keep control in-process.
    */
   allocateControlSocket?: (turnId?: string) => string;
+  /** Translate staged image references into the worker filesystem namespace. */
+  mapAttachmentPath?: ((path: string) => string) | undefined;
   /** Stage 5c: launch the turn through an external supervisor. When present, this
    * replaces the in-process RunnerServer start; event tailing and control remain
    * exactly the same transport paths. */
@@ -162,6 +164,7 @@ class ReconnectingControlChannel {
     private readonly isSettled: () => boolean,
     private readonly verifiedProtocolVersion: number | undefined,
     private readonly attachmentCwd: string | undefined,
+    private readonly mapAttachmentPath: ((path: string) => string) | undefined,
     connectInitial: () => Promise<ControlSocketClient | undefined>,
   ) {
     this.initial = connectInitial()
@@ -186,6 +189,9 @@ class ReconnectingControlChannel {
     failed.close();
     this.reconnecting = connectControl(this.controlSocketPath, {
       turnId: this.turnId,
+      ...(this.mapAttachmentPath === undefined
+        ? {}
+        : { mapAttachmentPath: this.mapAttachmentPath }),
       ...(this.attachmentCwd !== undefined ? { attachmentCwd: this.attachmentCwd } : {}),
       controllerId: this.controllerId,
       ...(this.capability !== undefined ? { capability: this.capability } : {}),
@@ -476,6 +482,7 @@ export class FileTailRunnerClient implements RunnerClient {
             () => settled,
             RUNNER_FRAME_PROTOCOL_VERSION,
             opts.cwd,
+            this.deps.mapAttachmentPath,
             () =>
               serverStarted.then((t) =>
                 externalLaunch === undefined && t === undefined
@@ -483,6 +490,9 @@ export class FileTailRunnerClient implements RunnerClient {
                   : connectControl(controlSocketPath, {
                       turnId,
                       attachmentCwd: opts.cwd,
+                      ...(this.deps.mapAttachmentPath === undefined
+                        ? {}
+                        : { mapAttachmentPath: this.deps.mapAttachmentPath }),
                       controllerId,
                       ...(opts.startCommandId !== undefined
                         ? { capability: opts.startCommandId }
@@ -668,10 +678,14 @@ export class FileTailRunnerClient implements RunnerClient {
       () => settled,
       target.protocolVersion,
       target.attachmentCwd,
+      this.deps.mapAttachmentPath,
       () =>
         connectControl(controlSocketPath, {
           turnId,
           ...(target.attachmentCwd !== undefined ? { attachmentCwd: target.attachmentCwd } : {}),
+          ...(this.deps.mapAttachmentPath === undefined
+            ? {}
+            : { mapAttachmentPath: this.deps.mapAttachmentPath }),
           controllerId,
           ...(target.controlCapability !== undefined
             ? { capability: target.controlCapability }

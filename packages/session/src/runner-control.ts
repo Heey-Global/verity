@@ -981,6 +981,7 @@ export async function connectControl(
     attachTimeoutMs?: number;
     /** Shared worktree for staging image commands outside the control frame. */
     attachmentCwd?: string;
+    mapAttachmentPath?: ((path: string) => string) | undefined;
     capability?: string;
   } = {},
 ): Promise<ControlSocketClient> {
@@ -1175,11 +1176,12 @@ export async function connectControl(
         opts.attachmentCwd !== undefined && message.attachments?.length
           ? {
               ...message,
-              attachments: await stageImageAttachments(
-                opts.attachmentCwd,
-                turnId,
-                message.attachments,
-              ),
+              attachments: (
+                await stageImageAttachments(opts.attachmentCwd, turnId, message.attachments)
+              )?.map((reference) => ({
+                ...reference,
+                filePath: opts.mapAttachmentPath?.(reference.filePath) ?? reference.filePath,
+              })),
             }
           : message;
       const reply = await request({

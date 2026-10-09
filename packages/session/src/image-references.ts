@@ -9,7 +9,7 @@ import {
 } from '@verity/events';
 import { z } from 'zod';
 
-export const MAX_REFERENCED_IMAGE_BYTES = 7_500_000;
+const MAX_REFERENCED_IMAGE_BYTES = 7_500_000;
 export const imageReferenceSchema = z.strictObject({
   kind: z.literal('image'),
   mediaType: imageMediaTypeSchema,

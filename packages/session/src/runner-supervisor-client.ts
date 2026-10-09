@@ -156,6 +156,8 @@ export interface SupervisorRunnerClientOptions {
    * runtime dir MUST be this client's `runtimeDir` (the Server-readable host path).
    */
   transcript?: RunnerTranscriptSink | undefined;
+  /** Translate server attachment paths to the shared sandbox mount. */
+  mapAttachmentPath?: ((path: string) => string) | undefined;
   /** Translate server-side turn paths into the Sandbox namespace before launch. */
   mapTurnOptions?: ((opts: RunTurnOptions) => RunTurnOptions) | undefined;
   /** Decide a permission prompt from a standing grant before it becomes a card or a
@@ -847,6 +849,7 @@ export class SupervisorRunnerClient implements RunnerClient {
       allocateEventFile: (turnId) => artifact(turnId, 'events.jsonl'),
       allocateControlSocket: (turnId) => artifact(turnId, 'control.sock'),
       launchTurn: async (opts) => await this.launch(opts),
+      mapAttachmentPath: options.mapAttachmentPath,
       ...(options.autoApprovePermission === undefined
         ? {}
         : { autoApprovePermission: options.autoApprovePermission }),
@@ -862,7 +865,7 @@ export class SupervisorRunnerClient implements RunnerClient {
     // retires whatever it finds there, so a second attempt for the same turn id
     // cannot cut off a bearer that is still in use.
     const bearer: GatewayBearerBox = {};
-    const launchOpts: RunTurnOptions = Object.assign({}, mappedOpts, {
+    const launchOpts: RunTurnOptions = Object.assign({}, opts, {
       [GATEWAY_BEARER]: bearer,
     });
     if (sink === undefined) {
@@ -1012,6 +1015,8 @@ export class SupervisorRunnerClient implements RunnerClient {
   }
 
   private async launch(opts: RunTurnOptions & { turnId: string }): Promise<void> {
+    const attachmentCwd = opts.cwd;
+    opts = { ...opts, ...this.options.mapTurnOptions?.(opts) };
     if (opts.signal?.aborted === true) throw new Error('runner turn was cancelled before launch');
     if (opts.startCommandId === undefined || !SAFE_ID.test(opts.startCommandId)) {
       throw new Error('supervisor runner requires startCommandId');
@@ -1110,7 +1115,14 @@ export class SupervisorRunnerClient implements RunnerClient {
       cwd: opts.cwd,
       prompt: opts.prompt ?? '',
       ...(opts.attachments?.length
-        ? { attachments: await stageImageAttachments(opts.cwd, opts.turnId, opts.attachments) }
+        ? {
+            attachments: (
+              await stageImageAttachments(attachmentCwd, opts.turnId, opts.attachments)
+            )?.map((reference) => ({
+              ...reference,
+              filePath: this.options.mapAttachmentPath?.(reference.filePath) ?? reference.filePath,
+            })),
+          }
         : {}),
       ...(opts.model !== undefined ? { model: opts.model } : {}),
       steerable: opts.steerable === true,

@@ -1402,7 +1402,11 @@ it('stages large mid-turn images outside the control frame and preserves retries
   const handlers = fakeHandlers();
   const path = socketPath();
   const server = await serveControl(path, handlers, { turnId: 'image-turn' });
-  const client = await connectControl(path, { turnId: 'image-turn', attachmentCwd: dir });
+  const client = await connectControl(path, {
+    turnId: 'image-turn',
+    attachmentCwd: dir,
+    mapAttachmentPath: (path) => path.replace(dir, '/sandbox-worktree'),
+  });
   try {
     const message: SteerMessage = {
       text: 'inspect',
@@ -1419,9 +1423,10 @@ it('stages large mid-turn images outside the control frame and preserves retries
     expect(handlers.steerSeen).toHaveLength(1);
     expect(Buffer.byteLength(JSON.stringify(handlers.steerSeen))).toBeLessThan(2048);
     const reference = handlers.steerSeen[0]?.attachments?.[0] as unknown as { filePath: string };
-    expect((await readFile(reference.filePath)).toString('base64')).toBe(
-      message.attachments?.[0]?.data,
-    );
+    expect(reference.filePath).toMatch(/^\/sandbox-worktree\//);
+    expect(
+      (await readFile(reference.filePath.replace('/sandbox-worktree', dir))).toString('base64'),
+    ).toBe(message.attachments?.[0]?.data);
   } finally {
     client.close();
     await server.close();
