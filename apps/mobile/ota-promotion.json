@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "version": "1.60.3",
-  "runtime": "1.60.0",
+  "version": "1.64.1",
+  "runtime": "1.64.0",
   "channel": "production",
-  "commit": "91e5b3c820ccb86504405d55f86415c6a477e239",
-  "tag": "mobile-v1.60.3",
-  "branch": "staging-mobile-v1.60.3-91e5b3c820ccb86504405d55f86415c6a477e239",
-  "baseline": "mobile-v1.60.2",
-  "group": "89272843-458d-44e7-84da-554ff4f61e9e",
+  "commit": "c83bb7acc25a0042694a6f6be05fd05e4f618e9b",
+  "tag": "mobile-v1.64.1",
+  "branch": "staging-mobile-v1.64.1-c83bb7acc25a0042694a6f6be05fd05e4f618e9b",
+  "baseline": "mobile-v1.64.0",
+  "group": "e11ae69c-18a6-47fe-b17c-24ed02877325",
   "notes": [
-    "save agent settings without shifting the screen (#1372)"
+    "preserve session switch readiness diagnostics (#1438)"
   ]
 }
