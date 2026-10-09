@@ -348,7 +348,9 @@ export function reportDirectRouteFailure(url: string): void {
   if (key !== null) directRoute = { key, reachable: false, checkedAt: Date.now() };
 }
 
-async function stopNativeTunnel(cause: 'profile_changed' | 'probe_failure'): Promise<void> {
+async function stopNativeTunnel(
+  cause: 'profile_changed' | 'probe_failure' | 'replacement',
+): Promise<void> {
   const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
   if (typeof native.stopWithCause === 'function') await native.stopWithCause(cause);
   else await native.stop();
@@ -490,6 +492,9 @@ export async function testRemoteControlForUrl(
       if (typeof native.captureDataDiagnostics !== 'function') {
         return { ready: false, detail: 'update the app to record connection diagnostics' };
       }
+      // Arm on a fresh socket: recording an active tunnel misses its first sends.
+      await stopNativeTunnel('replacement');
+      active = null;
       if (!(await native.captureDataDiagnostics())) {
         return {
           ready: false,
