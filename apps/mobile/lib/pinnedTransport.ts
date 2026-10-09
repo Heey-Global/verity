@@ -405,6 +405,9 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
         ) {
           try {
             await admitDirect();
+            if (init.signal?.aborted) {
+              throw new DOMException('The operation was aborted.', 'AbortError');
+            }
             // A failed read has no uncertain mutation to replay. Keep the same
             // paired URL and pin when a reachable direct route can recover it.
             response = await requestNative(
