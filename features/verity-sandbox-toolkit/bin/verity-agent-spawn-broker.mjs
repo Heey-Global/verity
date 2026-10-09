@@ -1524,11 +1524,27 @@ const SCRIPT_SANDBOX_PROBE_TIMEOUT_MS = 10_000;
 export async function probeScriptSandbox(
   helperPath = DEFAULT_SCRIPT_SANDBOX_PATH,
   timeoutMs = SCRIPT_SANDBOX_PROBE_TIMEOUT_MS,
+  launchOptions,
 ) {
   return await new Promise((resolveProbe) => {
     let child;
     try {
-      child = spawn(helperPath, ['--probe'], {
+      const spec =
+        launchOptions === undefined
+          ? { command: helperPath, args: ['--probe'], spawnOptions: {} }
+          : trustedCliLaunchSpec(
+              {
+                kind: 'trusted-cli',
+                command: helperPath,
+                args: ['--probe'],
+                cwd: '/',
+                secrets: [],
+              },
+              launchOptions,
+            );
+      child = spawn(spec.command, spec.args, {
+        ...spec.spawnOptions,
+        detached: false,
         stdio: ['ignore', 'ignore', 'pipe'],
         timeout: timeoutMs,
       });
@@ -1610,10 +1626,14 @@ const TRUSTED_CLI_VALIDATION_CODES = new Map([
 
 function trustedCliFailureCode(phase, error) {
   if (phase === 'validation') {
-    return (
-      TRUSTED_CLI_VALIDATION_CODES.get(error instanceof Error ? error.message : '') ??
-      'validation_failed'
-    );
+    const rule = TRUSTED_CLI_VALIDATION_CODES.get(error instanceof Error ? error.message : '');
+    if (rule !== undefined) return rule;
+    // Filesystem exceptions carry paths in their messages; expose only the errno class.
+    const code = error && typeof error === 'object' ? error.code : undefined;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return 'validation_path_missing';
+    if (code === 'EACCES' || code === 'EPERM') return 'validation_path_permissions';
+    if (code === 'ELOOP') return 'validation_path_symlink_loop';
+    return 'validation_failed';
   }
   if (phase !== 'materialization') return `${phase.replace('-', '_')}_failed`;
   const code = error && typeof error === 'object' ? error.code : undefined;
@@ -2285,7 +2305,13 @@ export async function runAgentSpawnBroker(options = {}) {
   validateRunnerRuntimeStats(stats, options);
   const scriptIsolation =
     options.scriptIsolation ??
-    (await probeScriptSandbox(options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH));
+    // A root probe can fail user-namespace mapping even when the agent can
+    // enforce isolation. Probe with the same privilege drop as actual launches.
+    (await probeScriptSandbox(
+      options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH,
+      SCRIPT_SANDBOX_PROBE_TIMEOUT_MS,
+      options.enforceRoot === false ? undefined : options,
+    ));
   if (!scriptIsolation.available) {
     process.stderr.write(
       `verity-agent-spawn-broker: worktree entry scripts are disabled: ${scriptIsolation.reason ?? 'script sandbox unavailable'}\n`,

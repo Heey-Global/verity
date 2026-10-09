@@ -390,6 +390,9 @@ export type TrustedCliDispatchStage =
 export type TrustedCliBrokerFailurePhase =
   'validation' | 'materialization' | 'launch-spec' | 'spawn';
 export type TrustedCliBrokerFailureCode =
+  | 'validation_path_missing'
+  | 'validation_path_permissions'
+  | 'validation_path_symlink_loop'
   | 'validation_failed'
   | 'validation_invalid_request'
   | 'validation_argv_too_large'
@@ -524,6 +527,9 @@ export async function runSupervisorTrustedCli(
         'spawn',
       ];
       const codes: TrustedCliBrokerFailureCode[] = [
+        'validation_path_missing',
+        'validation_path_permissions',
+        'validation_path_symlink_loop',
         'validation_failed',
         'validation_invalid_request',
         'validation_argv_too_large',

@@ -11,6 +11,7 @@ export type ScriptSandboxProbe = { available: true } | { available: false; reaso
 export function probeScriptSandbox(
   helperPath?: string,
   timeoutMs?: number,
+  launchOptions?: AgentSpawnBrokerOptions,
 ): Promise<ScriptSandboxProbe>;
 export const SHARED_SESSION_ROOT: string;
 export const TRUSTED_CLI_ARGV_POLICY_SUFFIX: string;
