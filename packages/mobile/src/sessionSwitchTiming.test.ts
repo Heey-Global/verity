@@ -63,3 +63,14 @@ it('separates permission gestures from session loading without retaining approva
   expect(session.phases).toEqual([]);
   expect(exportSessionSwitchTimings().at(-1)?.kind).toBe('permission');
 });
+
+// Activity aggregation previously silently displaced the final readiness markers.
+it('reserves lifecycle capacity after metrics fill their bounded budget', () => {
+  const trace = beginSessionSwitch('full-metrics');
+  for (let i = 0; i < 100; i++) markSessionSwitch(trace, 'activity-test');
+  markSessionSwitch(trace, 'anchor-read-end');
+  markSessionSwitch(trace, 'transcript-ready-react-commit');
+  markSessionSwitch(trace, 'flash-list-on-load');
+  expect(trace.phases).toHaveLength(67);
+  expect(trace.phases.at(-1)?.phase).toBe('flash-list-on-load');
+});

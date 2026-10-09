@@ -5,7 +5,7 @@ The export identifies the running release, native build, stamped JavaScript comm
 OTA update ID and runtime/channel. Timings are held only in memory: export them
 before restarting the app. No new diagnostic network requests are sent.
 
-The buffer retains the last eight row gestures, at most 64 phases per gesture,
+The buffer retains the last eight row gestures, at most 64 lifecycle phases plus 64 aggregate/probe phases per gesture,
 and collects for at most 30 seconds. Each switch has an opaque `switchId`, a wall
 clock `at` for approximate correlation, and monotonic `elapsedMs` values. Session
 IDs, titles, URLs, message text, credentials and response bodies are excluded.
@@ -14,7 +14,10 @@ a replacement gesture, even when returning to the same session. Cancelled
 touches are recorded. A touch without `js-press-handler` may be a scroll or long
 press rather than a session selection. Keyboard/accessibility presses can begin
 with `js-press-handler` and have no touch phase. Collection limits can truncate
-long/repeated loads; absence of a phase alone does not prove a stage never ran.
+long/repeated loads; `droppedPhases` reports rejected entries. `readiness` states
+whether the list load notification was recorded, not whether a frame was visible.
+Aggregate metrics have an independent budget so they cannot displace lifecycle
+completion. Absence of a phase alone does not prove a stage never ran.
 
 ## Interpreting phases
 
@@ -116,8 +119,21 @@ explicit message jump. Only explicit jumps may legitimately request earlier page
 ### Thread scheduling probes
 
 `js-timer-lag-max-ms` records the maximum lateness of a 100 ms JavaScript timer
-from the row touch callback. It includes scheduling and garbage collection and
-does not identify the blocking function. `ui-frame-gap-max-ms` records maximum
+from the row touch callback. Each callback schedules a fresh one-shot timer;
+interval catch-up behavior cannot inflate a later sample. It includes timer
+scheduling and garbage collection and does not identify the blocking function or
+prove continuous JS blockage. Other JS work can execute while a timer is overdue.
+`js-timer-peak-deadline-ms` and `js-timer-peak-observed-ms` contain the peak interval
+endpoints in `value`, relative to switch start. Their `elapsedMs` remains the
+first insertion time because aggregates are updated in place.
+
+At list completion, `js-timer-pending-at-list-load-ms` records how overdue the
+pending timer is. It is not an observed timer callback and does not update the
+callback maximum. This distinguishes timer starvation from measured callbacks.
+Fetch-return and AsyncStorage promise continuation similarly include JS delivery
+latency; they cannot alone isolate network or native storage duration.
+
+ `ui-frame-gap-max-ms` records maximum
 Reanimated UI-thread frame callback spacing from chat mount; reporting crosses
 to JavaScript at most twice per second. Its phase timestamp is report delivery,
 not the time of the delayed frame. Neither probe proves native paint completion.
