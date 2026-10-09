@@ -9,7 +9,9 @@ it('keeps the listening wave still for Reduce Motion and reacts to preference ch
     .spyOn(AccessibilityInfo, 'addEventListener')
     .mockImplementation((_event, handler) => {
       changed = handler as unknown as (value: boolean) => void;
-      return { remove: jest.fn() } as ReturnType<typeof AccessibilityInfo.addEventListener>;
+      return { remove: jest.fn() } as unknown as ReturnType<
+        typeof AccessibilityInfo.addEventListener
+      >;
     });
   const start = jest.fn(),
     stop = jest.fn();
