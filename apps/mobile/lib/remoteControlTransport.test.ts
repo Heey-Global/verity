@@ -1092,6 +1092,20 @@ describe('remote diagnostics', () => {
     });
   });
 
+  it('makes no admission or probe requests without an enabled descriptor', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockAdmission.mockClear();
+    mockRequest.mockClear();
+    mockStart.mockClear();
+    mockProfile.mockReturnValue({ ...profile, remoteControl: undefined });
+    expect(transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
+    expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(0);
+    expect(mockAdmission).not.toHaveBeenCalled();
+    expect(mockRequest).not.toHaveBeenCalled();
+    expect(mockStart).not.toHaveBeenCalled();
+  });
+
   it('explains why Uplink was not attempted without a saved descriptor', () => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');

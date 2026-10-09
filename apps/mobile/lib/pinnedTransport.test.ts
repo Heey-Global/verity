@@ -4,6 +4,7 @@ let mockRequestV2Enabled = false;
 const mockUpload = jest.fn();
 const mockDownload = jest.fn();
 const mockCancelRequest = jest.fn();
+const mockRemoteAvailable = jest.fn();
 const mockRemotePort = jest.fn();
 const mockRemoteFailure = jest.fn();
 const mockReportDirectFailure = jest.fn();
@@ -14,6 +15,7 @@ const mockDirectKnownReachable = jest.fn();
 const mockRecoverRemoteRead = jest.fn();
 
 jest.mock('./remoteControlTransport', () => ({
+  remoteControlAvailableForUrl: (...args: unknown[]) => mockRemoteAvailable(...args),
   remoteControlPortForUrl: (...args: unknown[]) => mockRemotePort(...args),
   remoteControlFailureForUrl: (...args: unknown[]) => mockRemoteFailure(...args),
   reportDirectRouteSuccess: (...args: unknown[]) => mockReportDirectSuccess(...args),
@@ -76,6 +78,7 @@ describe('pinned native file transport', () => {
     mockUpload.mockReset();
     mockDownload.mockReset();
     mockCancelRequest.mockReset();
+    mockRemoteAvailable.mockReset().mockReturnValue(true);
     mockRemotePort.mockReset();
     mockRemoteFailure.mockReset().mockReturnValue(null);
     mockReportDirectFailure.mockReset();
@@ -84,6 +87,19 @@ describe('pinned native file transport', () => {
     mockDirectKnownReachable.mockReset().mockReturnValue(false);
     mockRecoverRemoteRead.mockReset().mockResolvedValue(0);
     mockReportDirectSuccess.mockReset();
+  });
+
+  // Sharing-only pairings must not fabricate a failed Uplink leg.
+  it('uses only direct Core when Remote Control is disabled', async () => {
+    mockRemoteAvailable.mockReturnValue(false);
+    mockRemoteFailure.mockReturnValue('routing (no remote descriptor saved)');
+    mockRequest.mockRejectedValue(new Error('Core unavailable'));
+    await expect(createPinnedFetch('pin', true)('https://core.example/api')).rejects.toThrow(
+      'Direct Core request failed:',
+    );
+    expect(mockRemotePort).not.toHaveBeenCalled();
+    expect(mockRemoteFailure).not.toHaveBeenCalled();
+    expect(mockDirectVerdict).not.toHaveBeenCalled();
   });
 
   it('streams a file-backed Blob through the native upload API', async () => {

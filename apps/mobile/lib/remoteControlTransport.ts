@@ -399,6 +399,13 @@ function keyFor(url: string): string | null {
   return `${profile.serverId}:${url}:${remote.installationId}:${remote.installationHandle}:${remote.uplinkOrigin}`;
 }
 
+/** A disabled descriptor removes Remote Control from selectable routes. */
+export function remoteControlAvailableForUrl(url: string): boolean {
+  const target = new URL(url);
+  if (target.protocol === 'wss:') target.protocol = 'https:';
+  return keyFor(target.origin) !== null;
+}
+
 /**
  * Return zero for a direct pinned connection. Admission failure never replays an
  * API request. `replayable` says the caller can repeat the request through
