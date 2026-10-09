@@ -439,6 +439,25 @@ function keyFor(url: string): string | null {
   return `${profile.serverId}:${url}:${remote.installationId}:${remote.installationHandle}:${remote.uplinkOrigin}`;
 }
 
+/** A disabled descriptor removes Remote Control from selectable routes. */
+export async function remoteControlAvailableForUrl(url: string): Promise<boolean> {
+  const target = new URL(url);
+  if (target.protocol === 'wss:') target.protocol = 'https:';
+  if (keyFor(target.origin) !== null) return true;
+  const cleanup = operation.then(async () => {
+    if (active === null || keyFor(target.origin) !== null) return;
+    active = null;
+    try {
+      await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').stop();
+    } catch {
+      // Direct Core requests remain usable if native cleanup fails.
+    }
+  });
+  operation = cleanup;
+  await cleanup;
+  return false;
+}
+
 /**
  * Return zero for a direct pinned connection. Admission failure never replays an
  * API request. `replayable` says the caller can repeat the request through

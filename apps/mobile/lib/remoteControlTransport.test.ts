@@ -143,7 +143,9 @@ describe('shared remote control transport', () => {
 
     // A revoked descriptor must stop the attachment before the next request.
     mockProfile.mockReturnValue({ ...profile, remoteControl: undefined });
-    expect(await remoteControlPortForUrl(`${coreUrl}/api/more`)).toBe(0);
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    expect(await transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
     expect(mockStop).toHaveBeenCalledTimes(1);
   });
 
@@ -1096,6 +1098,20 @@ describe('remote diagnostics', () => {
       ready: false,
       detail: 'probe (Remote Core probe failed.)',
     });
+  });
+
+  it('makes no admission or probe requests without an enabled descriptor', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockAdmission.mockClear();
+    mockRequest.mockClear();
+    mockStart.mockClear();
+    mockProfile.mockReturnValue({ ...profile, remoteControl: undefined });
+    expect(await transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
+    expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(0);
+    expect(mockAdmission).not.toHaveBeenCalled();
+    expect(mockRequest).not.toHaveBeenCalled();
+    expect(mockStart).not.toHaveBeenCalled();
   });
 
   it('explains why Uplink was not attempted without a saved descriptor', () => {
