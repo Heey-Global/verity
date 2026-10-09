@@ -419,3 +419,29 @@ it('preserves questions omitted by the output limit and retracts only explicit r
     (await ctx.store.liveMeetings.insights('session-1', meeting.id))?.map(({ id }) => id).sort(),
   ).toEqual(classified.acceptedIds);
 });
+
+it('resolves a known question even when its evidence precedes the current answer excerpt', async () => {
+  const question = {
+    id: 'question-price',
+    meetingId: meeting.id,
+    kind: 'research' as const,
+    summary: 'What is the price?',
+    evidenceA: 'What is the price?',
+    evidenceB: null,
+    sourcePath: null,
+    createdAt: 1,
+  };
+  const text = 'The price is ten euros.';
+  await ctx.store.liveMeetings.putMeeting({
+    ...meeting,
+    transcript: question.evidenceA + ' ' + 'Other discussion. '.repeat(200) + text,
+  });
+  await ctx.store.liveMeetings.addInsight('session-1', question);
+  await ctx.store.liveMeetings.reconcileQuestions('session-1', meeting.id, 1, {
+    text,
+    acceptedIds: [],
+    resolvedIds: [question.id],
+    insights: [],
+  });
+  expect(await ctx.store.liveMeetings.insights('session-1', meeting.id)).toEqual([]);
+});

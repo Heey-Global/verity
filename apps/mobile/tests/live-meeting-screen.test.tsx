@@ -1753,44 +1753,55 @@ it('replaces a question suggestion with a paraphrased spoken request using its s
   expect(screen.queryByLabelText('Research meeting question')).toBeNull();
 });
 
-it('limits history answers after merging repeated requests for the same question', async () => {
-  const meeting: MeetingRecord = {
-    id: 'meeting-history-limit',
-    sessionId: 'session-1',
-    serverId: null,
-    engine: 'apple-speech',
-    startedAt: 1,
-    endedAt: null,
-    state: 'active',
-    transcript: 'Meeting text.',
-    error: null,
-  };
-  jest.mocked(listMeetings).mockResolvedValue([meeting]);
-  const requests = [
-    'What is the price?',
-    'When is delivery?',
-    ...Array<string>(4).fill('Where is the venue?'),
-  ];
-  const events = requests.flatMap((question, index) => [
-    {
-      seq: index * 3 + 1,
-      event: {
-        t: 'prompt',
-        text: `Research this point raised during live meeting ${meeting.id}:\n\n${question}\n\nRecent meeting transcript:\n${meeting.transcript}`,
+it.each([false, true])(
+  'limits history answers after merging repeated requests across pages: %s',
+  async (paginate) => {
+    const meeting: MeetingRecord = {
+      id: 'meeting-history-limit',
+      sessionId: 'session-1',
+      serverId: null,
+      engine: 'apple-speech',
+      startedAt: 1,
+      endedAt: null,
+      state: 'active',
+      transcript: 'Meeting text.',
+      error: null,
+    };
+    jest.mocked(listMeetings).mockResolvedValue([meeting]);
+    const requests = [
+      'What is the price?',
+      'When is delivery?',
+      ...Array<string>(4).fill('Where is the venue?'),
+    ];
+    const events = requests.flatMap((question, index) => [
+      {
+        seq: index * 3 + 1,
+        event: {
+          t: 'prompt',
+          text: `Research this point raised during live meeting ${meeting.id}:\n\n${question}\n\nRecent meeting transcript:\n${meeting.transcript}`,
+        },
       },
-    },
-    { seq: index * 3 + 2, event: { t: 'text', delta: `Answer ${index}.` } },
-    { seq: index * 3 + 3, event: { t: 'result' } },
-  ]);
-  jest.mocked(createVerityClient).mockReturnValue({
-    getHistory: jest.fn().mockResolvedValue({ hasMore: false, events }),
-    getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
-    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
-    getLiveMeetingInsights: jest.fn().mockResolvedValue([]),
-  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
-  render(<MeetingScreen />);
-  expect(await screen.findByText('Where is the venue?')).toBeOnTheScreen();
-  expect(screen.getByText('What is the price?')).toBeOnTheScreen();
-  expect(screen.getByText('When is delivery?')).toBeOnTheScreen();
-  expect(screen.getAllByText('Where is the venue?')).toHaveLength(1);
-});
+      { seq: index * 3 + 2, event: { t: 'text', delta: `Answer ${index}.` } },
+      { seq: index * 3 + 3, event: { t: 'result' } },
+    ]);
+    jest.mocked(createVerityClient).mockReturnValue({
+      getHistory: jest
+        .fn()
+        .mockImplementation(async (_sessionId, options) =>
+          paginate
+            ? options?.beforeSeq
+              ? { hasMore: false, events: events.slice(0, 6) }
+              : { hasMore: true, events: events.slice(6) }
+            : { hasMore: false, events },
+        ),
+      getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
+      getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+      getLiveMeetingInsights: jest.fn().mockResolvedValue([]),
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    render(<MeetingScreen />);
+    expect(await screen.findByText('Where is the venue?')).toBeOnTheScreen();
+    expect(screen.getByText('What is the price?')).toBeOnTheScreen();
+    expect(screen.getByText('When is delivery?')).toBeOnTheScreen();
+    expect(screen.getAllByText('Where is the venue?')).toHaveLength(1);
+  },
+);

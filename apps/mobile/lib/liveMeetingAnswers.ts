@@ -1,4 +1,5 @@
 import type { SessionHistoryPage } from '@verity/mobile';
+import { meetingQuestionKey } from './liveMeetingInsights';
 
 type SessionEvent = SessionHistoryPage['events'][number];
 
@@ -114,6 +115,21 @@ export function meetingAnswerCards(events: SessionEvent[], meetingId: string): M
     }
   }
   return cards;
+}
+
+/** Retain the latest request for each question before applying display or history limits. */
+export function distinctMeetingAnswers(answers: MeetingAnswerCard[]): MeetingAnswerCard[] {
+  return answers.reduce<MeetingAnswerCard[]>((cards, card) => {
+    const key = card.questionId ?? meetingQuestionKey(card.request);
+    const index = cards.findIndex(
+      (item) =>
+        (item.questionId ?? meetingQuestionKey(item.request)) === key ||
+        meetingQuestionKey(item.request) === meetingQuestionKey(card.request),
+    );
+    if (index >= 0) cards.splice(index, 1);
+    cards.push(card);
+    return cards;
+  }, []);
 }
 
 export function unacknowledgedMeetingAnswers(

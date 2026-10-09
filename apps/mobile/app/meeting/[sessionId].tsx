@@ -52,6 +52,7 @@ import {
 } from '../../lib/liveMeetingInsights';
 import {
   meetingAnswerCards,
+  distinctMeetingAnswers,
   meetingAnswerSource,
   meetingRequestFromPrompt,
   sameMeetingRequest,
@@ -309,7 +310,7 @@ export default function MeetingScreen() {
                 events[0]?.seq > 0 &&
                 (cached
                   ? events[0]!.seq > (cached.events.at(-1)?.seq ?? 0) + 1
-                  : meetingAnswerCards(events, shown).length < 4)
+                  : distinctMeetingAnswers(meetingAnswerCards(events, shown)).length < 4)
               ) {
                 page = await client.getHistory(sessionId, {
                   beforeSeq: events[0]!.seq,
@@ -322,15 +323,12 @@ export default function MeetingScreen() {
               for (const entry of cached?.events ?? []) merged.set(entry.seq, entry);
               for (const entry of events) merged.set(entry.seq, entry);
               const ordered = [...merged.values()].sort((a, b) => a.seq - b.seq);
-              const promptIndexes = ordered.flatMap((entry, index) =>
-                entry.event.t === 'prompt' && meetingRequestFromPrompt(entry.event.text, shown)
-                  ? [index]
-                  : [],
+              const retained = distinctMeetingAnswers(meetingAnswerCards(ordered, shown)).slice(
+                -32,
               );
-              const kept =
-                promptIndexes.length > 32
-                  ? ordered.slice(promptIndexes.at(-32))
-                  : ordered.slice(-4_000);
+              const firstSeq = Number(retained[0]?.id);
+              const firstIndex = ordered.findIndex((entry) => entry.seq === firstSeq);
+              const kept = (firstIndex >= 0 ? ordered.slice(firstIndex) : ordered).slice(-4_000);
               if (mounted && displayedMeetingId.current === shown) {
                 answerEvents.current = { meetingId: shown, events: kept };
                 const historyCards = meetingAnswerCards(kept, shown);
@@ -477,21 +475,10 @@ export default function MeetingScreen() {
         (queued) => !answers.some((card) => sameMeetingRequest(card, queued)),
       ),
     ];
-    return [
+    return distinctMeetingAnswers([
       ...canonical,
       ...localAnswers.filter((local) => !canonical.some((card) => sameMeetingRequest(card, local))),
-    ]
-      .reduce<MeetingAnswerCard[]>((cards, card) => {
-        const key = card.questionId ?? meetingQuestionKey(card.request);
-        const index = cards.findIndex(
-          (item) =>
-            (item.questionId ?? meetingQuestionKey(item.request)) === key ||
-            meetingQuestionKey(item.request) === meetingQuestionKey(card.request),
-        );
-        if (index >= 0) cards.splice(index, 1);
-        cards.push(card);
-        return cards;
-      }, [])
+    ])
       .filter((card) => !dismissed.includes(card.questionId ?? meetingQuestionKey(card.request)))
       .slice(-4);
   }, [answers, queuedAnswers, localAnswers, dismissed]);

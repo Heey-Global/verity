@@ -152,7 +152,6 @@ export class LiveMeetingStore {
           (question) =>
             !meeting.transcript.includes(question.evidence_a) ||
             (classified !== undefined &&
-              classified.text.includes(question.evidence_a) &&
               classified.resolvedIds.includes(question.id) &&
               !classified.acceptedIds.includes(question.id)),
         )
