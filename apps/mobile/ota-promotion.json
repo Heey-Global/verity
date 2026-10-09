@@ -1,14 +1,15 @@
 {
   "schema": 1,
-  "version": "1.60.3",
-  "runtime": "1.60.0",
+  "version": "1.62.1",
+  "runtime": "1.62.0",
   "channel": "production",
-  "commit": "91e5b3c820ccb86504405d55f86415c6a477e239",
-  "tag": "mobile-v1.60.3",
-  "branch": "staging-mobile-v1.60.3-91e5b3c820ccb86504405d55f86415c6a477e239",
-  "baseline": "mobile-v1.60.2",
-  "group": "89272843-458d-44e7-84da-554ff4f61e9e",
+  "commit": "8d216e90025af96fd3d48e98356228bce3c86355",
+  "tag": "mobile-v1.62.1",
+  "branch": "staging-mobile-v1.62.1-8d216e90025af96fd3d48e98356228bce3c86355",
+  "baseline": "mobile-v1.62.0",
+  "group": "de1abe7a-6238-4f16-b082-f0d3b31429b4",
   "notes": [
-    "save agent settings without shifting the screen (#1372)"
+    "simplify PR waiting button and slow its indicator (#1399)",
+    "defer initial history paging and measure render work (#1397)"
   ]
 }
