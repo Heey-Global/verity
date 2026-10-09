@@ -1,6 +1,6 @@
 # Verity Server image — the standalone control-plane an operator installs to run
 # Verity on any host (ADR 0003, Phase A). The compiled Fastify server
-# (packages/server -> dist) and static browser client on a minimal Node 24 base, plus the `docker` CLI and
+# (packages/server -> dist) and static browser client on a minimal Node 26 base, plus the `docker` CLI and
 # `git` the runtime needs to clone repos and spawn sibling project containers.
 # The shared Expo client is exported for the browser and served under /app/.
 #
@@ -17,7 +17,7 @@
 # Stage 1: builder — compile the TypeScript monorepo.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS builder-deps
+FROM node:26.11.1-bookworm-slim@sha256:86f07bc9c5dce4578cf37e5a418b7bfc7f817cda25cde66e2b66e95ed86c4567 AS builder-deps
 
 WORKDIR /app
 
@@ -86,7 +86,7 @@ RUN CI=1 EXPO_NO_TELEMETRY=1 npm run build:web --workspace @verity/mobile-app --
 # runtime image stays lean. --include-workspace-root keeps root-level runtime
 # deps (there are none today, but it is correct if any are added).
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS deps
+FROM node:26.11.1-bookworm-slim@sha256:86f07bc9c5dce4578cf37e5a418b7bfc7f817cda25cde66e2b66e95ed86c4567 AS deps
 
 WORKDIR /app
 
@@ -115,7 +115,7 @@ RUN npm ci --omit=dev --ignore-scripts --workspace=@verity/server --include-work
 # the client binary from the static bundle and the buildx/compose CLI plugins
 # are needed — not dockerd/containerd.
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS docker-cli
+FROM node:26.11.1-bookworm-slim@sha256:86f07bc9c5dce4578cf37e5a418b7bfc7f817cda25cde66e2b66e95ed86c4567 AS docker-cli
 
 # The static CLI download version tracks Docker Engine (moby) releases, whose
 # GitHub tags are `docker-v<x.y.z>` — the extractVersion strips that prefix and
@@ -196,7 +196,7 @@ RUN set -eux; \
 # Stage 4: runtime — the shipped image.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS runtime
+FROM node:26.11.1-bookworm-slim@sha256:86f07bc9c5dce4578cf37e5a418b7bfc7f817cda25cde66e2b66e95ed86c4567 AS runtime
 
 # git: the provisioner clones project repos on the Server.
 # ca-certificates: TLS to github.com and Docker registries.

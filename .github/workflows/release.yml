@@ -125,7 +125,7 @@ jobs:
         continue-on-error: true
         timeout-minutes: 3
         with:
-          node-version: '24.21.0'
+          node-version: '26.11.1'
       - name: Classify native changes since the latest native release
         id: classify
         if: github.event_name == 'push' && inputs.train == 'mobile'
@@ -346,7 +346,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: github.event_name == 'push' && inputs.train == 'mobile'
         with:
-          node-version: '24.21.0'
+          node-version: '26.11.1'
 
       - name: Select release trains for this push
         id: release-trains
@@ -785,7 +785,7 @@ jobs:
           steps.release-website.outputs.prs_created == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.11.1'
 
       - name: Run checks for release PRs
         if: >-
@@ -905,7 +905,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.11.1'
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: native-staging-${{ env.MOBILE_TAG }}
@@ -1331,7 +1331,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.11.1'
 
       # Reuse the same trusted binaries and boundary ledger as both Server builds.
       # renovate: datasource=github-actions depName=actions/download-artifact
@@ -1512,7 +1512,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.11.1'
 
       # The compiler image is intentionally linux/amd64 but emits both target
       # binaries. Run it once here, then give both native image builds the exact
@@ -1613,7 +1613,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.11.1'
       - name: Stage multi-architecture relay and Matrix connector indexes
         id: stage
         run: |
@@ -1686,7 +1686,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.11.1'
 
       # renovate: datasource=github-actions depName=actions/download-artifact
       - name: Download trusted Server build context
@@ -1862,7 +1862,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.11.1'
 
       # The Server image is the runtime trust root. Assemble the ledger again in
       # this job's checkout so the Docker build context contains the same complete
@@ -2446,7 +2446,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.11.1'
 
       # Default ephemeral builder, on purpose — see the note on the setup-buildx
       # step in `publish-toolkit` above for why the release jobs do not use the
@@ -2927,7 +2927,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.11.1'
       - name: Publish multi-architecture Matrix connector index
         run: |
           set -euo pipefail
@@ -2995,7 +2995,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.11.1'
       - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
       - name: Open production approval for staged Server
         env:

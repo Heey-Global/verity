@@ -6896,7 +6896,7 @@ process.stdout.write(JSON.stringify({ secret: process.env.VERITY_BUILD_TEST_SECR
     const idx = args.indexOf('--additional-features');
     expect(idx).toBeGreaterThan(-1);
     expect(JSON.parse(args[idx + 1] ?? '{}')).toEqual({
-      'ghcr.io/devcontainers/features/node:1': { version: '24' },
+      'ghcr.io/devcontainers/features/node:1': { version: '26.11.1' },
       '/opt/verity-features/verity-sandbox-toolkit': { installRunnerSupervisor: true },
     });
   });
@@ -7027,7 +7027,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       const expectedHash = devcontainerContentHash(
         join(clonePath, '.devcontainer'),
         'ghcr.io/heey-global/dev-base:default',
-        `ghcr.io/devcontainers/features/node:1:${JSON.stringify({ version: '24' })}\n${toolkitFeature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
+        `ghcr.io/devcontainers/features/node:1:${JSON.stringify({ version: '26.11.1' })}\n${toolkitFeature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
       );
       const expectedTag = devcontainerImageTag('example-org', 'example-repo', expectedHash);
       expect(imageExists).toHaveBeenCalledWith(expectedTag);
@@ -7089,7 +7089,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       const expectedHash = devcontainerContentHash(
         join(clonePath, '.devcontainer'),
         'ghcr.io/heey-global/dev-base:default',
-        `ghcr.io/devcontainers/features/node:1:${JSON.stringify({ version: '24' })}\n${toolkitFeature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
+        `ghcr.io/devcontainers/features/node:1:${JSON.stringify({ version: '26.11.1' })}\n${toolkitFeature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
       );
       const expectedTag = devcontainerImageTag('example-org', 'example-repo', expectedHash);
       const created = dockerCalls.find((c) => c.method === 'createContainer');
@@ -8025,7 +8025,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       const expectedHash = devcontainerContentHash(
         join(clonePath, '.devcontainer'),
         'ghcr.io/heey-global/dev-base:default',
-        `ghcr.io/devcontainers/features/node:1:${JSON.stringify({ version: '24' })}\n${feature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
+        `ghcr.io/devcontainers/features/node:1:${JSON.stringify({ version: '26.11.1' })}\n${feature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
       );
       const expectedTag = devcontainerImageTag('example-org', 'example-repo', expectedHash);
       expect(imageExists).toHaveBeenCalledWith(expectedTag);
@@ -8072,7 +8072,7 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
         devcontainerContentHash(
           dir,
           base,
-          `ghcr.io/devcontainers/features/node:1:${JSON.stringify({ version: '24' })}\n${toolkitFeature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
+          `ghcr.io/devcontainers/features/node:1:${JSON.stringify({ version: '26.11.1' })}\n${toolkitFeature.identity}:${JSON.stringify({ installRunnerSupervisor: true })}`,
         ),
       );
       const imageExists = vi.fn(async (tag: string) => tag === staleTag);

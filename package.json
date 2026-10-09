@@ -7,7 +7,7 @@
   "packageManager": "npm@12.2.0",
   "description": "Open-core, self-hosted mobile control plane for steering coding agents across a development fleet",
   "engines": {
-    "node": "^24.19.0 || >=26.0.0",
+    "node": "^26.11.1",
     "npm": ">=11.15.0"
   },
   "workspaces": [
@@ -51,7 +51,7 @@
     "@eslint/js": "10.0.1",
     "@modelcontextprotocol/sdk": "1.32.1",
     "@openai/codex": "0.160.0",
-    "@types/node": "24.19.1",
+    "@types/node": "26.6.4",
     "@types/semver": "7.8.0",
     "@vitest/coverage-v8": "5.0.3",
     "esbuild": "0.28.2",

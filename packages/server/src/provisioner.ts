@@ -251,7 +251,7 @@ export const RUNNER_AGENT_GID = 1000;
 export const RUNNER_BROKER_CAPABILITIES = ['CHOWN', 'SETUID', 'SETGID', 'KILL', 'SETPCAP'] as const;
 
 const DEVCONTAINER_NODE_FEATURE_REF = 'ghcr.io/devcontainers/features/node:1';
-const DEVCONTAINER_NODE_FEATURE_OPTIONS = { version: '24' } as const;
+const DEVCONTAINER_NODE_FEATURE_OPTIONS = { version: '26.11.1' } as const;
 const DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS = { installRunnerSupervisor: true } as const;
 const DEVCONTAINER_TOOLKIT_ENTRYPOINT = ['/bin/sh', '-lc'];
 const DEVCONTAINER_POST_CREATE_READY_FILE = '/tmp/verity-post-create-complete';

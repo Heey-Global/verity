@@ -102,7 +102,7 @@ phone, signing in to your AI provider, and running your first session.
 ## Development
 
 Verity is an npm-workspaces monorepo built with TypeScript and requires Node.js
-24.19 or newer within the 24.x release line, or Node.js 26 or newer.
+26.11.1 or newer within the 26.x release line.
 
 ```sh
 git clone https://github.com/heey-global/verity.git
@@ -160,3 +160,13 @@ assets.
 The source code in this repository is licensed under the
 [Apache License 2.0](LICENSE). Third-party components remain subject to their
 respective licenses.
+
+### Node runtime migration
+
+Source installations require Node.js 26.11.1 or a later 26.x release. Run `nvm use`
+from the repository root before installing dependencies. CI, container images, and
+EAS builds pin the verified patch in `.nvmrc`; container users receive Node with
+the image and do not need to change the host runtime. Rebuild native npm addons
+with a clean `npm ci` after upgrading Node. To roll back a container deployment,
+restore its previous immutable Verity image digest; source installations must
+restore the matching previous repository revision and lockfile as well as Node.

@@ -5,7 +5,7 @@
 # --additional-features. Single source of truth, no drift between the baked base
 # and per-user builds (ADR migration #299, PR-A).
 #
-# Layout mirrors the legacy dev-server dev-base: node:24-bookworm runtime with
+# Layout mirrors the legacy dev-server dev-base: node:26.11.1-bookworm@sha256:f1233c415b41ffcf237c717b3dea92e9d4ea006e0e4c71edcb790605d74f5404 runtime with
 # Python 3.14 multi-stage-copied from python:3.14-bookworm (both debian-bookworm,
 # so OS-level shared libs match and Python's C extensions link without rebuild).
 #
@@ -22,7 +22,7 @@ FROM python:${PYTHON_VERSION} AS python-source
 # Renovate's stock docker manager (parses FROM natively) bumps tag+digest
 # together. Digest reused from the legacy dev-base pin.
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0
+FROM node:26.11.1-bookworm@sha256:f1233c415b41ffcf237c717b3dea92e9d4ea006e0e4c71edcb790605d74f5404
 
 # Build-time RUN shell with pipefail so `cmd1 | cmd2` failures aren't masked by
 # a successful cmd2 exit code. (Hadolint DL4006.)

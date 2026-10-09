@@ -2,7 +2,7 @@
 
 ## Repository
 
-Verity is an npm-workspaces monorepo using Node.js 24 or newer and TypeScript
+Verity is an npm-workspaces monorepo using Node.js 26.11.1 or newer within the 26.x release line and TypeScript
 with NodeNext module resolution.
 
 Run verification commands from the repository root. These are the full checks;
