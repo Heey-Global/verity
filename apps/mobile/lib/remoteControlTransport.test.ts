@@ -137,7 +137,9 @@ describe('shared remote control transport', () => {
 
     // A revoked descriptor must stop the attachment before the next request.
     mockProfile.mockReturnValue({ ...profile, remoteControl: undefined });
-    expect(await remoteControlPortForUrl(`${coreUrl}/api/more`)).toBe(0);
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    expect(await transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
     expect(mockStop).toHaveBeenCalledTimes(1);
   });
 
@@ -1099,7 +1101,7 @@ describe('remote diagnostics', () => {
     mockRequest.mockClear();
     mockStart.mockClear();
     mockProfile.mockReturnValue({ ...profile, remoteControl: undefined });
-    expect(transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
+    expect(await transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
     expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(0);
     expect(mockAdmission).not.toHaveBeenCalled();
     expect(mockRequest).not.toHaveBeenCalled();

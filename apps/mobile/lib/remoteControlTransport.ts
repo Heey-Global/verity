@@ -400,10 +400,22 @@ function keyFor(url: string): string | null {
 }
 
 /** A disabled descriptor removes Remote Control from selectable routes. */
-export function remoteControlAvailableForUrl(url: string): boolean {
+export async function remoteControlAvailableForUrl(url: string): Promise<boolean> {
   const target = new URL(url);
   if (target.protocol === 'wss:') target.protocol = 'https:';
-  return keyFor(target.origin) !== null;
+  if (keyFor(target.origin) !== null) return true;
+  const cleanup = operation.then(async () => {
+    if (active === null || keyFor(target.origin) !== null) return;
+    active = null;
+    try {
+      await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').stop();
+    } catch {
+      // Direct Core requests remain usable if native cleanup fails.
+    }
+  });
+  operation = cleanup;
+  await cleanup;
+  return false;
 }
 
 /**

@@ -76,7 +76,7 @@ export async function downloadPinnedFile(input: {
   useRemote?: boolean;
 }): Promise<string> {
   const port =
-    input.useRemote && remoteControlAvailableForUrl(input.url)
+    input.useRemote && (await remoteControlAvailableForUrl(input.url))
       ? await remoteControlPortForUrl(input.url)
       : 0;
   const response = await native().download(
@@ -176,7 +176,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
     if (input instanceof Request)
       throw new Error('Request objects are not supported by the pinned transport.');
     const url = String(input);
-    const remoteEnabled = useRemote && remoteControlAvailableForUrl(url);
+    const remoteEnabled = useRemote && (await remoteControlAvailableForUrl(url));
     const headers = Object.fromEntries(new Headers(init.headers).entries());
     const fileUri =
       typeof init.body === 'object' &&
@@ -470,7 +470,9 @@ export function createPinnedWebSocket(
   });
   void (async () => {
     const port =
-      useRemote && remoteControlAvailableForUrl(url) ? await remoteControlPortForUrl(url) : 0;
+      useRemote && (await remoteControlAvailableForUrl(url))
+        ? await remoteControlPortForUrl(url)
+        : 0;
     return native().openWebSocket(
       url,
       tlsPin,
