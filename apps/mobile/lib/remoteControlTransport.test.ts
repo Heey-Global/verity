@@ -21,6 +21,9 @@ const mockRequest = jest.fn();
 const mockCancelRequest = jest.fn();
 const mockLastStopReason = jest.fn();
 const mockDiagnosticSummary = jest.fn();
+const mockCaptureDiagnostics = jest.fn().mockResolvedValue(true);
+const mockClearPendingDiagnostics = jest.fn().mockResolvedValue(undefined);
+const mockRecordDiagnosticEvent = jest.fn().mockResolvedValue(undefined);
 // Undefined models a native build that only speaks SOCKS; tests opt into the fallback.
 let mockSetProxyMode: jest.Mock | undefined;
 
@@ -40,6 +43,9 @@ jest.mock('expo-modules-core', () => ({
           stop: mockStop,
           lastStopReason: mockLastStopReason,
           diagnosticSummary: mockDiagnosticSummary,
+          captureDataDiagnostics: mockCaptureDiagnostics,
+          clearPendingDataDiagnostics: mockClearPendingDiagnostics,
+          recordDataDiagnosticEvent: mockRecordDiagnosticEvent,
         },
 }));
 
@@ -1425,4 +1431,99 @@ describe('direct routing across background and diagnostics', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(4321);
   });
+});
+
+describe('opt-in DATA capture', () => {
+  it('records a selected test without replacing a live tunnel and clears pending capture', async () => {
+    jest.resetModules();
+    mockProfile.mockReturnValue(profile);
+    mockToken.mockReturnValue('auth');
+    mockAdmission.mockResolvedValue({
+      ticket: 'test-ticket',
+      sessionId: 'test-session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockResolvedValue(12345);
+    mockIsActive.mockResolvedValue(true);
+    mockCaptureDiagnostics.mockClear();
+    mockClearPendingDiagnostics.mockClear();
+    mockRecordDiagnosticEvent.mockClear();
+    mockRequest.mockImplementation(async (...args: unknown[]) =>
+      args[6] === 0 ? Promise.reject(new Error('offline')) : { status: 200 },
+    );
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    await transport.testRemoteControlForUrl(coreUrl);
+    expect(mockCaptureDiagnostics).not.toHaveBeenCalled();
+    expect(mockRecordDiagnosticEvent).not.toHaveBeenCalled();
+    mockStart.mockClear();
+    await transport.testRemoteControlForUrl(coreUrl, true);
+    expect(mockCaptureDiagnostics).toHaveBeenCalledTimes(1);
+    expect(mockStart).not.toHaveBeenCalled();
+    expect(mockRecordDiagnosticEvent.mock.calls.map((call: unknown[]) => call[0])).toEqual([
+      'probe_started',
+      'probe_succeeded',
+    ]);
+    expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(1);
+  });
+});
+
+it('keeps selected capture armed until an automatic stall replacement finishes', async () => {
+  jest.resetModules();
+  mockProfile.mockReturnValue(profile);
+  mockToken.mockReturnValue('auth');
+  mockAdmission.mockResolvedValue({
+    ticket: 'ticket',
+    sessionId: 'session',
+    finish: jest.fn(),
+    cancel: jest.fn(),
+  });
+  mockStart.mockReset().mockResolvedValueOnce(4321).mockResolvedValueOnce(4999);
+  mockIsActive.mockReset().mockResolvedValue(false);
+  mockLastStopReason.mockResolvedValue('stall: no reply on a stream within 10 s');
+  mockDiagnosticSummary.mockResolvedValue(null);
+  mockCaptureDiagnostics.mockClear();
+  mockClearPendingDiagnostics.mockClear();
+  mockRequest.mockImplementation(async (...args: unknown[]) => {
+    if (args[6] === 4321)
+      throw new Error('Pinned TLS transport failed [NSURLErrorDomain:-1005:NO_AUTH_CHALLENGE]');
+    return { status: 200 };
+  });
+  const transport =
+    require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  expect((await transport.testRemoteControlForUrl(coreUrl, true)).ready).toBe(true);
+  expect(mockStart).toHaveBeenCalledTimes(2);
+  expect(mockCaptureDiagnostics).toHaveBeenCalledTimes(1);
+  expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(1);
+  expect(mockClearPendingDiagnostics.mock.invocationCallOrder[0]).toBeGreaterThan(
+    mockStart.mock.invocationCallOrder[1]!,
+  );
+});
+
+it('arms capture before starting the selected replacement of an inactive tunnel', async () => {
+  jest.resetModules();
+  mockProfile.mockReturnValue(profile);
+  mockToken.mockReturnValue('auth');
+  mockAdmission.mockResolvedValue({
+    ticket: 'ticket',
+    sessionId: 'session',
+    finish: jest.fn(),
+    cancel: jest.fn(),
+  });
+  mockStart.mockReset().mockResolvedValue(4999);
+  mockIsActive.mockReset().mockResolvedValue(true);
+  mockRequest.mockImplementation(async () => ({ status: 200 }));
+  mockLastStopReason.mockResolvedValue(null);
+  const transport =
+    require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  await transport.testRemoteControlForUrl(coreUrl);
+  mockIsActive.mockResolvedValue(false);
+  mockCaptureDiagnostics.mockClear();
+  mockStart.mockClear();
+  expect((await transport.testRemoteControlForUrl(coreUrl, true)).ready).toBe(true);
+  expect(mockStart).toHaveBeenCalledTimes(1);
+  expect(mockCaptureDiagnostics.mock.invocationCallOrder[0]).toBeLessThan(
+    mockStart.mock.invocationCallOrder[0]!,
+  );
 });

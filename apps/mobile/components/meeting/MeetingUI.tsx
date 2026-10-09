@@ -3,6 +3,8 @@ import { ActivityIndicator, Linking, Pressable, Text, View } from 'react-native'
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { parseInline } from '@verity/mobile';
 
+import { Icon } from '../Icon';
+
 type Colors = ReturnType<typeof useUnistyles>['theme']['colors'];
 
 // Speakers keep one color for the whole meeting; accents appear only as rings and dots.
@@ -134,6 +136,8 @@ export function NoticedCard({
   working = false,
   actions = [],
   prominent = false,
+  onDismiss,
+  dismissLabel = 'Dismiss',
   children,
 }: {
   label: string;
@@ -147,8 +151,12 @@ export function NoticedCard({
   actions?: CardAction[];
   /** The title is the subject of the card, such as the question being researched. */
   prominent?: boolean;
+  /** Shows a close button in the header that removes the card. */
+  onDismiss?: () => void;
+  dismissLabel?: string;
   children?: ReactNode;
 }) {
+  const { theme } = useUnistyles();
   return (
     <View style={styles.card}>
       <View style={styles.cardHeader}>
@@ -156,6 +164,16 @@ export function NoticedCard({
         <Text style={[styles.cardLabel, { color: tone }]}>{label}</Text>
         {working ? <ActivityIndicator size="small" color={tone} /> : null}
         {time ? <Text style={styles.cardTime}>{time}</Text> : null}
+        {onDismiss ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={dismissLabel}
+            hitSlop={10}
+            onPress={onDismiss}
+          >
+            <Icon name="x" size={16} color={theme.colors.textMuted} />
+          </Pressable>
+        ) : null}
       </View>
       {quote ? <Text style={styles.cardQuote}>{quote}</Text> : null}
       <Text style={prominent ? styles.cardQuestion : styles.cardTitle}>{title}</Text>

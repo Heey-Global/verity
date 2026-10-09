@@ -4,11 +4,13 @@ import {
   type UplinkDiagnostics,
   type VerityClient,
 } from '@verity/mobile';
+import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Pressable, Text } from 'react-native';
 
 import { getServerProfile } from '../../lib/serverProfile';
+import { exportRemoteDataDiagnostics } from '../../lib/remoteDataDiagnostics';
 import {
   remoteControlFailureForUrl,
   testRemoteControlForUrl,
@@ -61,6 +63,7 @@ export function PublicPreviewDiagnostics({
   const [status, setStatus] = useState<UplinkDiagnostics | null>(null);
   const [statusError, setStatusError] = useState<'unsupported' | 'unavailable' | null>(null);
   const [checking, setChecking] = useState(false);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
   const refresh = useCallback(async () => {
     try {
@@ -81,12 +84,12 @@ export function PublicPreviewDiagnostics({
 
   const profile = getServerProfile();
   const route = profile?.remoteControl;
-  const runTest = async () => {
+  const runTest = async (capture = false) => {
     if (profile === null) return;
     setChecking(true);
     setTestResult(null);
     try {
-      const result = await testRemoteControlForUrl(profile.activeUrl);
+      const result = await testRemoteControlForUrl(profile.activeUrl, capture);
       setTestResult(
         result.ready
           ? 'Remote Control works: the iPhone reached Core through Uplink.'
@@ -99,6 +102,22 @@ export function PublicPreviewDiagnostics({
       setTestResult('Remote Control test failed before the connection could be checked.');
     } finally {
       setChecking(false);
+    }
+  };
+
+  const copyCapture = async () => {
+    try {
+      const capture = await exportRemoteDataDiagnostics();
+      if (capture === null) {
+        setExportStatus(
+          'No connection recording available. Record a test with an updated app first.',
+        );
+        return;
+      }
+      await Clipboard.setStringAsync(capture);
+      setExportStatus('Connection recording copied.');
+    } catch {
+      setExportStatus('Could not copy the connection recording.');
     }
   };
 
@@ -156,6 +175,26 @@ export function PublicPreviewDiagnostics({
           </Text>
         </Pressable>
       ) : null}
+      {profile && route ? (
+        <>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Record Remote Control connection test"
+            disabled={checking}
+            onPress={() => void runTest(true)}
+          >
+            <Text style={styles.linkText}>Record connection test</Text>
+          </Pressable>
+          <Text style={styles.reproHint}>
+            Records connection events and counters for up to two minutes. No addresses, credentials
+            or content are recorded.
+          </Text>
+          <Pressable accessibilityRole="button" onPress={() => void copyCapture()}>
+            <Text style={styles.linkText}>Copy connection recording</Text>
+          </Pressable>
+        </>
+      ) : null}
+      {exportStatus ? <Text style={styles.reproHint}>{exportStatus}</Text> : null}
       {testResult ? <Text style={styles.reproHint}>{testResult}</Text> : null}
       {status?.remoteStreams !== undefined ? (
         <Text style={styles.reproHint}>

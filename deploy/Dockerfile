@@ -230,37 +230,31 @@ RUN chmod 0755 /usr/local/bin/verity-transcribe-meeting
 # content-hash-cached derived image onto the mounted daemon. It drives the docker
 # CLI + buildx plugin copied above via DOCKER_HOST. Installed BEFORE `USER node`
 # so the global package lands in the image's root-owned prefix; pinned exactly.
-# Keep each global CLI in its own annotated RUN instruction. Renovate's regex
-# manager matches one dependency per instruction; combining these pins silently
-# hides every package after the first one from dependency updates.
-# renovate: datasource=npm depName=@devcontainers/cli
-RUN npm install -g @devcontainers/cli@0.89.0
-# renovate: datasource=npm depName=@anthropic-ai/claude-code
-RUN npm install -g @anthropic-ai/claude-code@2.1.289
-# renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-RUN npm install -g @agentclientprotocol/claude-agent-acp@0.85.1
+# Install shared CLI lockfiles with integrity checks, preserving global paths.
+COPY features/verity-sandbox-toolkit/npm /opt/verity-cli/npm
+COPY features/verity-sandbox-toolkit/bin/verity-cli-install.mjs /opt/verity-cli/bin/verity-cli-install.mjs
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs devcontainers
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs claude-code
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs claude-acp
 # Harden that install: upstream (through 0.66.0) builds tool-call titles out of
 # unvalidated model input, so one wrong-typed field throws, ends the agent
 # process, and — because loadSession replays history through the same renderer —
 # leaves the session unresumable for good. The sandbox toolkit's install.sh runs
-# the same script; it's copied on its own here so the pinned installs above keep
-# their cache layers. It no-ops on a fixed upstream and FAILS THE BUILD if it can
+# the same script; it's copied on its own here so both installation paths apply
+# the same adapter patches. It no-ops on a fixed upstream and FAILS THE BUILD if it can
 # no longer be applied, because a silently unhardened adapter is
 # indistinguishable from a hardened one until a session dies. See ADR 0012.
 COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-harden.mjs /tmp/verity-claude-acp-harden.mjs
 RUN node /tmp/verity-claude-acp-harden.mjs && rm /tmp/verity-claude-acp-harden.mjs
 COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-lifecycle.mjs /tmp/verity-claude-acp-lifecycle.mjs
 RUN node /tmp/verity-claude-acp-lifecycle.mjs && rm /tmp/verity-claude-acp-lifecycle.mjs
-# renovate: datasource=npm depName=@openai/codex
-RUN npm install -g @openai/codex@0.160.0
-# renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-RUN npm install -g @agentclientprotocol/codex-acp@2.1.1
-# renovate: datasource=npm depName=opencode-ai
-RUN npm install -g opencode-ai@1.18.34
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs codex
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs codex-acp
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs opencode
 # OpenCode ships no ACP adapter package: `opencode-acp` is a wrapper around its own
 # `opencode acp` subcommand, built by the script the sandbox toolkit uses for project
 # Sandboxes so the two cannot drift. Copied on its own, like the Claude hardening
-# scripts above, to keep the pinned installs' cache layers. The pin must match
+# scripts above, to keep the pinned installs' cache layers. The shared lockfile version must match
 # `OPENCODE_VERSION` in that Feature's install.sh — `scripts/agent-cli-pins.test.ts`
 # fails the build's own test suite when it does not.
 COPY features/verity-sandbox-toolkit/bin/verity-opencode-acp-install.sh /tmp/verity-opencode-acp-install.sh

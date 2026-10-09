@@ -26,7 +26,8 @@ export default function NewProjectScreen() {
   const resumeProjectId = Array.isArray(params.projectId) ? params.projectId[0] : params.projectId;
   const client = createVerityClient();
   useEffect(() => {
-    if (resumeProjectId) router.replace(`/project/${resumeProjectId}`);
+    if (resumeProjectId)
+      router.replace({ pathname: '/new', params: { projectId: resumeProjectId } });
   }, [resumeProjectId]);
   if (!client || !getVerityBaseUrl()) {
     return (
@@ -225,7 +226,9 @@ function NewProject({ client }: { client: VerityClient }) {
         <Pressable
           style={styles.create}
           accessibilityRole="button"
-          onPress={() => router.replace(`/project/${createdProject.id}`)}
+          onPress={() =>
+            router.replace({ pathname: '/new', params: { projectId: createdProject.id } })
+          }
         >
           <Text style={styles.createLabel}>Open project</Text>
         </Pressable>

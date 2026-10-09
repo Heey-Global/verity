@@ -20,6 +20,26 @@ describe('live STT transcript', () => {
     expect(final.segments).toHaveLength(1);
   });
 
+  // Apple can start a result with the punctuation closing the previous one; joined
+  // with a space it later surfaced as a line reading ". Das wäre ja super".
+  it('attaches leading punctuation of a result to the previous one', () => {
+    const first = applySTTEvent(emptySTTTranscript, {
+      kind: 'segment',
+      text: 'ob das alles erkennt',
+      final: true,
+      start: 0,
+      end: 2,
+    });
+    const second = applySTTEvent(first, {
+      kind: 'segment',
+      text: '. Das wäre super ',
+      final: true,
+      start: 2,
+      end: 4,
+    });
+    expect(transcriptText(second)).toBe('ob das alles erkennt. Das wäre super');
+  });
+
   it('replaces the running FluidAudio transcript with its final snapshot', () => {
     const running = applySTTEvent(emptySTTTranscript, {
       kind: 'snapshot',
