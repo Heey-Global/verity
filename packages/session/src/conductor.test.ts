@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -10242,3 +10242,47 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     expect(conductor.pendingPermissions('ghost')).toEqual([]);
   });
 });
+
+it.each(['existing', 'fresh'] as const)(
+  'preserves a successful %s turn when image cleanup fails',
+  async (mode) => {
+    const worktree = await mkdtemp(join(tmpdir(), 'verity-image-cleanup-error-'));
+    try {
+      await mkdir(join(worktree, '.verity-sessions'));
+      await symlink(worktree, join(worktree, '.verity-sessions', 'attachments'));
+      const sessionId = 'cleanup-success';
+      if (mode === 'existing') await ctx.store.createSession({ sessionId, worktree, model: 'm' });
+      const fake = scriptedBackend({ sessionId, model: 'm', text: 'done' });
+      const onTurnError = vi.fn();
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: fake.backend,
+        worktreeExists: async () => true,
+        onTurnError,
+      });
+      if (mode === 'existing') {
+        await expect(conductor.sendTurn(sessionId, 'go')).resolves.toMatchObject({ exitCode: 0 });
+        expect(await ctx.store.getSessionBackendState(sessionId, 'claude')).toMatchObject({
+          backendSessionId: sessionId,
+        });
+      } else {
+        await expect(conductor.startSession({ worktree, prompt: 'go' })).resolves.toMatchObject({
+          sessionId,
+        });
+      }
+      await vi.waitFor(() =>
+        expect(onTurnError).toHaveBeenCalledWith(
+          sessionId,
+          expect.objectContaining({ message: 'attachment directory is a symlink' }),
+        ),
+      );
+      await vi.waitFor(async () => expect(await ctx.store.listRunningTurns()).toHaveLength(0));
+      expect((await ctx.store.getEvents(sessionId)).filter((event) => event.t === 'error')).toEqual(
+        [],
+      );
+      await conductor.drainOnShutdown();
+    } finally {
+      await rm(worktree, { recursive: true, force: true });
+    }
+  },
+);

@@ -1437,7 +1437,9 @@ export class Conductor {
     handle.delegate = turn;
     try {
       const result = await turn.result;
-      await cleanupTurnImageAttachments(runOpts.cwd, turnId);
+      await cleanupTurnImageAttachments(runOpts.cwd, turnId).catch((error: unknown) => {
+        this.reportTurnError(sessionId, error);
+      });
       // `onSession` is the only bind a backend vouches for: it fires when the
       // conversation is actually open. `result.sessionId` is the fallback for a
       // backend that reveals its thread no earlier than the settle — but on a
@@ -4859,7 +4861,9 @@ export class Conductor {
         handle.cleanupImages = () => cleanupTurnImageAttachments(runOpts.cwd, turnId);
         try {
           const result = await turn.result;
-          await cleanupTurnImageAttachments(runOpts.cwd, turnId);
+          await cleanupTurnImageAttachments(runOpts.cwd, turnId).catch((error: unknown) => {
+            this.reportTurnError(boundId ?? opts.sessionId ?? result.sessionId ?? 'unbound', error);
+          });
           return result;
         } finally {
           await cleanup();
