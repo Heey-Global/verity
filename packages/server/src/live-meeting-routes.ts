@@ -342,6 +342,7 @@ export function registerLiveMeetingRoutes(
           const questionEvidence = new Set(
             knownQuestions.map((question) => question.evidenceA.trim().replace(/[.!?]+$/u, '')),
           );
+          let rejectedPublication = false;
           for (const candidate of result.insights) {
             if (controller.signal.aborted) return;
             if (!current.transcript.includes(candidate.evidenceA)) continue;
@@ -370,7 +371,7 @@ export function registerLiveMeetingRoutes(
                 `${meetingId}\0${candidate.kind}\0${candidate.evidenceA}\0${evidenceB ?? ''}${sourcePath ? `\0${sourcePath}` : ''}`,
               )
               .digest('hex');
-            await store.liveMeetings.addInsight(
+            const published = await store.liveMeetings.addInsight(
               current.sessionId,
               {
                 id,
@@ -385,9 +386,30 @@ export function registerLiveMeetingRoutes(
               false,
               current.revision,
             );
+            rejectedPublication ||= !published;
           }
           // Both writers reconcile so either completion order leaves one question suggestion.
           await store.liveMeetings.reconcileQuestions(current.sessionId, meetingId, undefined);
+          if (
+            rejectedPublication &&
+            (await store.liveMeetings.currentRevision(current.sessionId, meetingId)) !==
+              current.revision
+          ) {
+            const latest = (await store.liveMeetings.changes(current.sessionId, 0)).meetings.find(
+              (meeting) => meeting.id === meetingId,
+            );
+            // A rejected publication must not advance the successful-analysis watermark.
+            lastAnalyzed.delete(meetingId);
+            if (latest)
+              scheduleAnalysis(
+                current.sessionId,
+                meetingId,
+                latest.revision,
+                latest.transcript,
+                latest.state === 'ended' || latest.state === 'interrupted',
+              );
+            return;
+          }
           if (current.terminal) await fileFinished(current.sessionId, meetingId);
           lastAnalyzed.set(meetingId, {
             length: current.transcript.length,

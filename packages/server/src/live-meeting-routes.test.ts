@@ -909,7 +909,12 @@ it('reconciles a question published at a newer revision before batch insertion',
     }),
   );
   const onFinished = vi.fn().mockResolvedValue(undefined);
-  registerLiveMeetingRoutes(checked, ctx.store, { query, delayMs: 1, onFinished });
+  registerLiveMeetingRoutes(checked, ctx.store, {
+    query,
+    delayMs: 1,
+    minIntervalMs: 1,
+    onFinished,
+  });
   try {
     await ctx.store.liveMeetings.putMeeting({
       id: 'meeting-1',
@@ -959,7 +964,7 @@ it('reconciles a question published at a newer revision before batch insertion',
           question + ' We need these figures before approving the plan and making a decision.',
       },
     });
-    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(2));
     expect(insertion).toHaveBeenCalled();
     insertion.mockRestore();
@@ -1042,3 +1047,41 @@ it.each(['http', 'controller'] as const)(
     }
   },
 );
+
+it('reanalyzes a short transcript update while an earlier batch query is pending', async () => {
+  const checked = Fastify();
+  let finish!: (value: string) => void;
+  const result = JSON.stringify({
+    insights: [{ kind: 'research', summary: 'Verify the date.', evidenceA: 'Delivery is Friday.' }],
+  });
+  const query = vi
+    .fn()
+    .mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockResolvedValue(result);
+  registerLiveMeetingRoutes(checked, ctx.store, { query, delayMs: 1, minIntervalMs: 1 });
+  const transcript =
+    'Delivery is Friday. We discussed the schedule in detail and need to verify the date before proceeding with the project.';
+  try {
+    await checked.inject({ method: 'PUT', url, payload: { ...meeting, transcript } });
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, revision: 2, transcript: transcript + ' Okay.' },
+    });
+    finish(result);
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(2));
+    await vi.waitFor(async () =>
+      expect(await ctx.store.liveMeetings.insights('session-1', 'meeting-1')).toEqual([
+        expect.objectContaining({ summary: 'Verify the date.' }),
+      ]),
+    );
+  } finally {
+    await checked.close();
+  }
+});
