@@ -327,3 +327,36 @@ it('checks an answer-only excerpt for persisted open questions without looping',
   expect(s.query).toHaveBeenCalledTimes(1);
   s.controller.close();
 });
+
+it('publishes valid question evidence while speech is appended during classification', async () => {
+  vi.useFakeTimers();
+  let finish!: (text: string) => void;
+  const s = setup(
+    vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<string>((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockResolvedValue(JSON.stringify({ questions: [] })),
+  );
+  const text = 'Was kostet. Der Plan?';
+  s.controller.ingest(meeting(text));
+  await vi.advanceTimersByTimeAsync(20);
+  s.controller.ingest(meeting(text + ' Wir besprechen weiterhin die Optionen.', 2));
+  finish(JSON.stringify({ questions: [{ question: 'Was kostet der Plan?', quote: text }] }));
+  await vi.advanceTimersByTimeAsync(1);
+  expect(s.reconcileQuestions).toHaveBeenCalledWith(
+    'session',
+    'meeting',
+    2,
+    expect.objectContaining({
+      insights: [expect.objectContaining({ evidenceA: text, summary: 'Was kostet der Plan?' })],
+    }),
+  );
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(s.query).toHaveBeenCalledTimes(2);
+  s.controller.close();
+});

@@ -124,7 +124,11 @@ export function meetingQuestionChecks(options: {
       ].join('\n\n');
       const queryAt = Date.now();
       const raw = await options.query(meeting.sessionId, prompt, controller.signal);
-      if (closed || controller.signal.aborted || checkWindow(state.meeting.transcript) !== text)
+      if (
+        closed ||
+        controller.signal.aborted ||
+        !state.meeting.transcript.startsWith(meeting.transcript)
+      )
         return;
       if (!raw || raw.length > 100_000) throw new Error('Invalid question check response');
       const { questions, resolvedIds } = resultSchema.parse(
@@ -155,7 +159,7 @@ export function meetingQuestionChecks(options: {
         });
       }
       const current = state.meeting;
-      if (checkWindow(current.transcript) !== text) return;
+      if (!current.transcript.startsWith(meeting.transcript)) return;
       const reconciled = await options.store.liveMeetings.reconcileQuestions(
         current.sessionId,
         current.id,
