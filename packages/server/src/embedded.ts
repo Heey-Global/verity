@@ -1,4 +1,5 @@
 import { listProjectGitHubIssues } from './project-github-issues.js';
+import { ensureStarterProject } from './welcome-session.js';
 import { createGhcrForgeAdapter } from './brokered-forge-ghcr.js';
 import { loadForgePackageMap } from './brokered-forge-package-map.js';
 import { createBrokeredForgeProxy } from './brokered-http-tool.js';
@@ -5166,6 +5167,16 @@ export async function buildEmbeddedServer(
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
   app.addHook('onClose', () => managedDevServerManager?.close());
   void listenerDiscovery?.reconcile();
+  // A fresh installation provisions its starter project now, so the sandbox image
+  // is pulled while the operator is still onboarding (see welcome-session.ts).
+  const starterProvisioner = provisioner;
+  if (starterProvisioner !== undefined) {
+    void ensureStarterProject({
+      store: eventStore,
+      provision: (projectId) => starterProvisioner.provision(projectId),
+      log: app.log,
+    });
+  }
   app.addHook('onClose', () => claudeCredentialSync.close());
   let preserveProjectRelaysOnClose = false;
   app.addHook('onClose', () =>

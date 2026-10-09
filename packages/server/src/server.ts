@@ -25,6 +25,7 @@ import { fileVersion, FileWriteError, writeSessionText } from './session-file-wr
 import { renameWorktreeFile } from './rename-worktree-file.js';
 import { turnCore } from './session-request-core.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
+import { registerWelcomeRoutes } from './welcome-session.js';
 import { registerSessionOrderRoute } from './session-order-route.js';
 import { registerSessionListRoute } from './session-list-route.js';
 import { registerVerityControlSessionRoute } from './verity-control-session-route.js';
@@ -9119,7 +9120,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
-  registerSessionCreateRoute(app, {
+  const sessionCreate = registerSessionCreateRoute(app, {
     eventStore: deps.eventStore,
     ...(deps.provisioner === undefined ? {} : { provisioner: deps.provisioner }),
     ...(deps.projectCloneRoot === undefined ? {} : { projectCloneRoot: deps.projectCloneRoot }),
@@ -9145,6 +9146,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     isSleepLifecycleState,
     publicProject: (project) => publicProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
     defaultModel: DEFAULT_MODEL,
+  });
+
+  // First-run welcome session in the starter project (see welcome-session.ts).
+  // Created through the same spawn path as POST /sessions; the session-route
+  // live hint does not fire for this URL, so it is sent here.
+  registerWelcomeRoutes(app, {
+    eventStore: deps.eventStore,
+    secretCipher: deps.secretCipher,
+    spawn: sessionCreate.spawn,
+    notifySessionCreated: (sessionId, projectId) =>
+      liveHub.notify({ sessionId, projectId, topics: ['session', 'status'] }),
   });
 
   // Steering (M3-3): trigger one operator turn on a session. We answer 202 the
