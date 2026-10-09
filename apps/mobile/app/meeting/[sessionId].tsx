@@ -1455,8 +1455,8 @@ export default function MeetingScreen() {
                 />
                 <Text style={styles.hint}>
                   {attendeeConfigured
-                    ? 'Attendee joins and transcribes while the app is closed. Requires premium Uplink / Online Sharing.'
-                    : 'Set up online meetings: configure Attendee and enable premium Uplink / Online Sharing.'}
+                    ? 'Attendee joins and transcribes while the app is closed. Requires Verity Premium Online sharing.'
+                    : 'Set up online meetings: configure Attendee and enable Verity Premium Online sharing.'}
                 </Text>
                 {!attendeeConfigured ? (
                   <Pressable
@@ -1466,6 +1466,12 @@ export default function MeetingScreen() {
                     <Text style={styles.link}>Set up Attendee</Text>
                   </Pressable>
                 ) : null}
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => router.push('/settings/premium')}
+                >
+                  <Text style={styles.link}>Verity Premium</Text>
+                </Pressable>
               </>
             ) : null}
           </View>

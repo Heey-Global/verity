@@ -120,7 +120,8 @@ import {
   PreviewShareManager,
   sweepOrphanedPreviewShares,
 } from './preview-share-manager.js';
-import { UplinkControlClient } from './uplink-control-client.js';
+import { UplinkControlClient, premiumFeatureSwitches } from './uplink-control-client.js';
+import { applyPremiumFeatureSwitches } from './premium-feature-switches.js';
 import {
   createRemoteConnectorPool,
   remoteDataUrlForControl,
@@ -603,6 +604,7 @@ import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
+import type { VeritySettingsRecord } from '@verity/store';
 
 export interface EmbeddedServerConfig {
   /** TLS termination for a direct Server. Managed mode terminates at its Gateway. */
@@ -4229,6 +4231,7 @@ export async function buildEmbeddedServer(
         uplinkControl?.isAvailable() === true,
         Boolean(settings?.uplinkSubscriptionKey?.trim()),
         uplinkControl?.diagnostics(),
+        settings === undefined || premiumFeatureSwitches(settings).sharing,
       );
     },
     ...(previewShareManager !== undefined ? { previewShareManager } : {}),
@@ -4247,6 +4250,12 @@ export async function buildEmbeddedServer(
       : {}),
     ...(uplinkControl !== undefined
       ? { onUplinkCredentialsChanged: () => uplinkControl.refreshCredentials() }
+      : {}),
+    ...(uplinkControl !== undefined
+      ? {
+          onPremiumFeatureSwitchesChanged: (settings: VeritySettingsRecord) =>
+            applyPremiumFeatureSwitches(settings, uplinkControl, previewShareManager),
+        }
       : {}),
     ...(uplinkControl ? { attendeeEdge: uplinkControl } : {}),
     onOpenCodeSettingsChanged: async (settings) => {

@@ -120,12 +120,40 @@ export type RemoteControlDescriptor =
       readonly capabilities: readonly ['remote-control-v1'];
     };
 
+/** Operator switches for the paid features, read from the settings row. A
+ * feature is used only when the Uplink grants it AND its switch is on. */
+export interface PremiumFeatureSwitches {
+  sharing: boolean;
+  remoteAccess: boolean;
+}
+
+export interface PremiumFeatureState {
+  /** The Uplink included the feature in the current lease. */
+  granted: boolean;
+  /** The operator left the feature switched on. */
+  enabled: boolean;
+  /** `granted && enabled` — what actually works right now. */
+  effective: boolean;
+}
+
 export interface UplinkDiagnostics {
   control: 'connected' | 'connecting' | 'reconnecting' | 'rejected' | 'disabled';
   sharing: 'ready' | 'unavailable';
   remoteControl: 'ready' | 'unavailable';
   reason?: 'unknown_key' | 'revoked' | 'expired';
   lastCloseCode?: number;
+  /** Per-feature grant/switch/effective breakdown. Always present from the
+   * client; optional in the type so hand-built fixtures stay valid. */
+  features?: { sharing: PremiumFeatureState; remoteAccess: PremiumFeatureState };
+}
+
+export function premiumFeatureSwitches(
+  settings: Pick<VeritySettingsRecord, 'premiumSharingEnabled' | 'premiumRemoteAccessEnabled'>,
+): PremiumFeatureSwitches {
+  return {
+    sharing: settings.premiumSharingEnabled !== false,
+    remoteAccess: settings.premiumRemoteAccessEnabled !== false,
+  };
 }
 
 /** Long-lived fail-closed client for the paid Uplink control plane. Credentials
@@ -142,6 +170,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private renewalTimer: NodeJS.Timeout | undefined;
   private webhookNegotiated = false;
   private features = new Set<string>();
+  // Last switches read from the settings row (connect) or pushed by a settings
+  // write (applyFeatureSwitches). Default on: a server that has never seen the
+  // switches behaves exactly as before they existed.
+  private switches: PremiumFeatureSwitches = { sharing: true, remoteAccess: true };
   private remoteNegotiated = false;
   private lastRemoteDescriptorState: string | undefined;
   private remoteInstallation:
@@ -197,7 +229,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
 
   /** Called after a settings write so a new/replaced key takes effect now rather
    * than waiting for an unrelated network reconnect. */
-  refreshCredentials(): void {
+  refreshCredentials(notifyFeatureLoss = true): void {
     this.lastReject = undefined;
     this.lastCloseCode = undefined;
     this.retryMs = 1_000;
@@ -205,17 +237,42 @@ export class UplinkControlClient implements PreviewEdgeControl {
     this.generation += 1;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = undefined;
-    this.clearAuthority('Uplink credentials changed');
+    this.clearAuthority('Uplink credentials changed', notifyFeatureLoss);
     if (this.renewalTimer) clearTimeout(this.renewalTimer);
     this.renewalTimer = undefined;
+    if (!notifyFeatureLoss) {
+      this.closeAndReconnect(4000, 'feature switches changed');
+      return;
+    }
     this.socket?.close(4000, 'credentials changed');
     if (!this.socket) this.scheduleReconnect(0);
   }
 
   isAvailable(): boolean {
     return (
-      this.welcomed && this.socket?.readyState === WebSocket.OPEN && this.features.has('sharing')
+      this.welcomed &&
+      this.socket?.readyState === WebSocket.OPEN &&
+      this.features.has('sharing') &&
+      this.switches.sharing
     );
+  }
+
+  /** Apply local policy immediately, then renegotiate remote capabilities.
+   * Renegotiating remote access must not revoke unrelated public links. */
+  applyFeatureSwitches(next: PremiumFeatureSwitches): void {
+    const previous = this.switches;
+    this.switches = { ...next };
+    if (previous.remoteAccess && !next.remoteAccess) {
+      this.clearRemoteSessions('remote access switched off in settings');
+    }
+    if (previous.sharing !== next.sharing || previous.remoteAccess !== next.remoteAccess) {
+      this.options.log?.info({ switches: this.switches }, 'premium feature switches applied');
+      if (previous.remoteAccess !== next.remoteAccess) this.refreshCredentials(false);
+    }
+  }
+
+  featureSwitches(): PremiumFeatureSwitches {
+    return { ...this.switches };
   }
 
   diagnostics(): UplinkDiagnostics {
@@ -230,10 +287,24 @@ export class UplinkControlClient implements PreviewEdgeControl {
             ? 'connecting'
             : 'reconnecting';
     const reason = this.lastReject?.reason;
+    const sharingGranted = connected && this.features.has('sharing');
+    const remoteGranted = connected && this.features.has('remote-control');
     return {
       control,
       sharing: this.isAvailable() ? 'ready' : 'unavailable',
       remoteControl: this.remoteControlDescriptor().enabled ? 'ready' : 'unavailable',
+      features: {
+        sharing: {
+          granted: sharingGranted,
+          enabled: this.switches.sharing,
+          effective: sharingGranted && this.switches.sharing,
+        },
+        remoteAccess: {
+          granted: remoteGranted,
+          enabled: this.switches.remoteAccess,
+          effective: this.remoteControlDescriptor().enabled,
+        },
+      },
       ...(reason === 'unknown_key' || reason === 'revoked' || reason === 'expired'
         ? { reason }
         : {}),
@@ -247,22 +318,25 @@ export class UplinkControlClient implements PreviewEdgeControl {
     const state =
       this.options.offerRemoteControl !== true || this.options.reserveRemoteConnector === undefined
         ? 'connector_disabled'
-        : !this.welcomed || this.socket?.readyState !== WebSocket.OPEN
-          ? 'control_unavailable'
-          : this.remoteInstallation === undefined
-            ? 'installation_unavailable'
-            : !this.remoteNegotiated
-              ? 'capability_not_negotiated'
-              : !this.features.has('remote-control')
-                ? 'feature_not_granted'
-                : 'available';
+        : !this.switches.remoteAccess
+          ? 'switched_off'
+          : !this.welcomed || this.socket?.readyState !== WebSocket.OPEN
+            ? 'control_unavailable'
+            : this.remoteInstallation === undefined
+              ? 'installation_unavailable'
+              : !this.remoteNegotiated
+                ? 'capability_not_negotiated'
+                : !this.features.has('remote-control')
+                  ? 'feature_not_granted'
+                  : 'available';
     if (state !== this.lastRemoteDescriptorState) {
       this.lastRemoteDescriptorState = state;
       this.options.log?.info({ stage: 'descriptor', state }, 'remote control availability changed');
     }
     if (
       this.options.offerRemoteControl !== true ||
-      this.options.reserveRemoteConnector === undefined
+      this.options.reserveRemoteConnector === undefined ||
+      !this.switches.remoteAccess
     ) {
       return { version: 1, enabled: false, reason: 'disabled' };
     }
@@ -376,6 +450,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       return;
     }
     if (this.stopped || generation !== this.generation || this.socket) return;
+    if (settings !== undefined) this.switches = premiumFeatureSwitches(settings);
     const key: string | undefined = settings?.uplinkSubscriptionKey?.trim();
     if (!key) {
       this.clearAuthority('Uplink subscription key is not configured');
@@ -427,7 +502,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
               }
             : {}),
           serverVersion: this.options.serverVersion,
-          ...(this.options.offerRemoteControl === true
+          ...(this.options.offerRemoteControl === true && this.switches.remoteAccess
             ? {
                 capabilities: [REMOTE_CAPABILITY, 'webhook-v1'],
                 channels: ['http', 'ws', REMOTE_CHANNEL],
@@ -637,8 +712,12 @@ export class UplinkControlClient implements PreviewEdgeControl {
           installationHandle === undefined ? undefined : { installationId, installationHandle };
         this.welcomed = true;
         this.startHeartbeat();
-        if (!this.features.has('sharing')) {
-          await this.disableFeaturesOnce('Uplink did not grant public preview entitlement');
+        if (!this.features.has('sharing') || !this.switches.sharing) {
+          await this.disableFeaturesOnce(
+            this.switches.sharing
+              ? 'Uplink did not grant public preview entitlement'
+              : 'online sharing switched off in settings',
+          );
         }
         const pendingRemovals = await this.options.store.listPendingUplinkShareRemovals();
         if (!currentWelcome()) return;
@@ -722,6 +801,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       if (!this.remoteNegotiated || !this.features.has('remote-control')) {
         throw new Error('unnegotiated remote control request');
       }
+
       if (
         Buffer.byteLength(raw, 'utf8') > MAX_REMOTE_SESSION_FRAME_BYTES ||
         !validRemoteSessionRequest(frame)
@@ -929,6 +1009,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
       }
     };
     if (this.remoteSessions.has(request.sessionId)) return;
+    // The capability stays negotiated so switching back on needs no reconnect;
+    // while the switch is off every admission is refused here.
+    if (!this.switches.remoteAccess) return refuse('unavailable');
     if (this.remoteSessions.size >= MAX_REMOTE_RESERVATIONS) return refuse('limit_reached');
     if (!this.options.reserveRemoteConnector || request.decisionExpiresAt <= Date.now()) {
       return refuse('unavailable');
@@ -1176,7 +1259,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
   }
 
   private async flushOrphanShares(): Promise<void> {
-    if (!this.isAvailable()) return;
+    // Revocation must remain available even when creating new shares is disabled.
+    if (!this.controlReady || this.socket?.readyState !== WebSocket.OPEN) return;
     for (const shareId of [...this.orphanShareIds]) {
       try {
         await this.remove(shareId);

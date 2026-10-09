@@ -276,6 +276,26 @@ describe('EventStore — secret encryption at rest (ADR 0002 D3)', () => {
     });
   });
 
+  it('defaults both premium feature switches to on and round-trips each one alone', async () => {
+    // A fresh row must not switch anything off: servers that shared or accepted
+    // remote control before the switches existed keep doing so after upgrade.
+    await store.updateVeritySettings({ uplinkInstallationId: 'installation-fixture' });
+    await expect(store.getVeritySettings()).resolves.toMatchObject({
+      premiumSharingEnabled: true,
+      premiumRemoteAccessEnabled: true,
+    });
+    await store.updateVeritySettings({ premiumRemoteAccessEnabled: false });
+    await expect(store.getVeritySettings()).resolves.toMatchObject({
+      premiumSharingEnabled: true,
+      premiumRemoteAccessEnabled: false,
+    });
+    await store.updateVeritySettings({ premiumSharingEnabled: false });
+    await expect(store.getVeritySettings()).resolves.toMatchObject({
+      premiumSharingEnabled: false,
+      premiumRemoteAccessEnabled: false,
+    });
+  });
+
   it('encrypts the minted Doppler token at rest but keeps the binding plaintext (#320)', async () => {
     const projectId = randomUUID();
     await store.upsertProject({

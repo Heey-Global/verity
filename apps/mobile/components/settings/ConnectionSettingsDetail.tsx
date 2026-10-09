@@ -14,7 +14,6 @@ import { Platform, Pressable, Text, View } from 'react-native';
 import { AgentLoginPanel } from '../../components/AgentLoginPanel';
 import { SecretStoreSection } from '../../components/settings/SecretStoreSection';
 import { ProviderUsagePanel } from '../../components/settings/ProviderUsagePanel';
-import { PublicPreviewDiagnostics } from '../../components/settings/PublicPreviewDiagnostics';
 import {
   SecretPasteField,
   SettingsDisclosure,
@@ -43,7 +42,7 @@ import { useSettingsFields } from '../../lib/useSettingsFields';
 // Module-level: these arrays' identity drives the field hooks, and they are the
 // complete list of keys a save from this screen may contain.
 const TEXT_FIELDS = ['transcribeBaseUrl', 'transcribeModel'] as const;
-const SECRET_FIELDS = ['uplinkSubscriptionKey', 'transcribeApiKey', 'dopplerServiceToken'] as const;
+const SECRET_FIELDS = ['transcribeApiKey', 'dopplerServiceToken'] as const;
 
 /**
  * Which login the `?agentLogin=` deep link should open on arrival, if any.
@@ -66,7 +65,7 @@ export function ConnectionSettingsDetail({
 }: {
   client: VerityClient;
   agentLogin?: string | string[];
-  section: 'claude' | 'codex' | 'secret' | 'transcription' | 'doppler' | 'remote';
+  section: 'claude' | 'codex' | 'secret' | 'transcription' | 'doppler';
 }) {
   const reload = useLoadVeritySettings(client);
   const { settings, secretStatus } = useVeritySettings();
@@ -93,7 +92,6 @@ export function ConnectionSettingsDetail({
           secret: 'Secret store',
           transcription: 'Meeting transcription',
           doppler: 'Doppler',
-          remote: 'Remote access',
         }[section]
       }
       detail
@@ -301,7 +299,7 @@ export function ConnectionSettingsDetail({
         </SettingsGroup>
       ) : null}
 
-      {managed && (section === 'doppler' || section === 'remote') ? (
+      {managed && section === 'doppler' ? (
         <SettingsGroup title="Connection">
           {section === 'doppler' ? (
             <SettingsDisclosure
@@ -331,44 +329,9 @@ export function ConnectionSettingsDetail({
               ) : null}
             </SettingsDisclosure>
           ) : null}
-
-          {section === 'remote' ? (
-            <SettingsDisclosure
-              onCollapse={() => {
-                text.commit();
-                secrets.commit();
-              }}
-              title="Remote access"
-              icon="globe"
-              summary={settings?.uplinkSubscriptionKeyConfigured ? 'Configured' : 'Optional'}
-            >
-              <Text style={styles.reproSubtitle}>
-                Subscription key for paid public links through Verity Uplink. Stored encrypted and
-                never shown again.
-              </Text>
-              <SecretPasteField
-                label="Verity subscription key"
-                placeholder="Paste subscription key…"
-                value={secrets.values.uplinkSubscriptionKey}
-                onChangeText={(value) => secrets.set('uplinkSubscriptionKey', value)}
-                configured={settings?.uplinkSubscriptionKeyConfigured ?? false}
-                editable={writable}
-                onBlur={secrets.commit}
-              />
-              {!writable ? (
-                <Text style={styles.reproHint}>Unlock the secret store to change this.</Text>
-              ) : null}
-            </SettingsDisclosure>
-          ) : null}
         </SettingsGroup>
       ) : null}
 
-      {section === 'remote' ? (
-        <PublicPreviewDiagnostics
-          client={client}
-          keyConfigured={settings?.uplinkSubscriptionKeyConfigured}
-        />
-      ) : null}
       {section === 'transcription' ? (
         <SettingsListPanel>
           {Platform.OS === 'ios' ? (

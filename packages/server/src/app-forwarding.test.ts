@@ -119,9 +119,15 @@ describe('buildControlPlane dependency forwarding', () => {
       isAvailable: vi.fn(() => true),
     } as unknown as NonNullable<ServerDeps['previewShareManager']>;
     const onUplinkCredentialsChanged = vi.fn();
-    const got = forward({ previewShareManager, onUplinkCredentialsChanged });
+    const onPremiumFeatureSwitchesChanged = vi.fn();
+    const got = forward({
+      previewShareManager,
+      onUplinkCredentialsChanged,
+      onPremiumFeatureSwitchesChanged,
+    });
     expect(got.previewShareManager).toBe(previewShareManager);
     expect(got.onUplinkCredentialsChanged).toBe(onUplinkCredentialsChanged);
+    expect(got.onPremiumFeatureSwitchesChanged).toBe(onPremiumFeatureSwitchesChanged);
   });
 
   it('omits an absent dep instead of forwarding an explicit undefined', () => {
@@ -131,5 +137,6 @@ describe('buildControlPlane dependency forwarding', () => {
     expect('reconcileProjectState' in got).toBe(false);
     expect('previewShareManager' in got).toBe(false);
     expect('onUplinkCredentialsChanged' in got).toBe(false);
+    expect('onPremiumFeatureSwitchesChanged' in got).toBe(false);
   });
 });

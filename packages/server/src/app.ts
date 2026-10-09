@@ -104,6 +104,8 @@ export interface ControlPlaneDeps {
   runtimeDiagnostics?: ServerDeps['runtimeDiagnostics'];
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: ServerDeps['onUplinkCredentialsChanged'];
+  /** Apply the premium feature switches after either of them changed. */
+  onPremiumFeatureSwitchesChanged?: ServerDeps['onPremiumFeatureSwitchesChanged'];
   /** Invalidate cached access tokens after shared Google OAuth credentials change. */
   onGoogleCredentialsChanged?: ServerDeps['onGoogleCredentialsChanged'];
   /** Standing brokered-secret grants for a project (ADR 0011 D2). */
@@ -380,6 +382,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.uplinkDiagnostics !== undefined ? { uplinkDiagnostics: deps.uplinkDiagnostics } : {}),
     ...(deps.onUplinkCredentialsChanged !== undefined
       ? { onUplinkCredentialsChanged: deps.onUplinkCredentialsChanged }
+      : {}),
+    ...(deps.onPremiumFeatureSwitchesChanged !== undefined
+      ? { onPremiumFeatureSwitchesChanged: deps.onPremiumFeatureSwitchesChanged }
       : {}),
     ...(deps.onGoogleCredentialsChanged !== undefined
       ? { onGoogleCredentialsChanged: deps.onGoogleCredentialsChanged }

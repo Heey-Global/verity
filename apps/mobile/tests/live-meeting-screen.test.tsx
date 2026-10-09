@@ -1436,11 +1436,13 @@ it('explains online setup and opens services when Attendee is not configured', a
   fireEvent.press(await screen.findByText(/Online meeting/));
   expect(
     screen.getByText(
-      'Set up online meetings: configure Attendee and enable premium Uplink / Online Sharing.',
+      'Set up online meetings: configure Attendee and enable Verity Premium Online sharing.',
     ),
   ).toBeTruthy();
   fireEvent.press(screen.getByText('Set up Attendee'));
   expect(router.push).toHaveBeenCalledWith('/settings/services');
+  fireEvent.press(screen.getByText('Verity Premium'));
+  expect(router.push).toHaveBeenCalledWith('/settings/premium');
   fireEvent.press(screen.getByLabelText('Start meeting'));
   expect(startMeeting).not.toHaveBeenCalled();
 });

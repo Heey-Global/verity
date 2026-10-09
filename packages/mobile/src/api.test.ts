@@ -4035,3 +4035,33 @@ it('sends correlation headers only for an explicit timed session request', async
   ).toEqual(['fetch-dispatch', 'fetch-return']);
   expect(headers['x-verity-switch-request']).not.toContain('private');
 });
+
+describe('premium feature contracts', () => {
+  it('retains separate entitlement, preference and effective states', async () => {
+    const { uplinkDiagnosticsSchema } = await import('./api.js');
+    const features = {
+      sharing: { granted: true, enabled: false, effective: false },
+      remoteAccess: { granted: false, enabled: true, effective: false },
+    };
+    expect(
+      uplinkDiagnosticsSchema.parse({
+        control: 'connected',
+        sharing: 'unavailable',
+        remoteControl: 'unavailable',
+        features,
+      }).features,
+    ).toEqual(features);
+    expect(
+      uplinkDiagnosticsSchema.parse({
+        control: 'connected',
+        sharing: 'ready',
+        remoteControl: 'unavailable',
+      }).features,
+    ).toBeUndefined();
+  });
+  it('accepts a locally disabled sharing capability', async () => {
+    const { fetch } = fakeFetchSequence(json({ publicSharing: 'disabled' }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getPreviewCapabilities()).toEqual({ publicSharing: 'disabled' });
+  });
+});
