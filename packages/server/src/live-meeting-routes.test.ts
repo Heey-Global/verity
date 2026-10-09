@@ -900,6 +900,77 @@ it('does not duplicate an already classified question lacking question punctuati
   }
 });
 
+it('reconciles a question published at a newer revision before batch insertion', async () => {
+  const checked = Fastify();
+  const question = 'What does the plan cost.';
+  const query = vi.fn().mockResolvedValue(
+    JSON.stringify({
+      insights: [{ kind: 'research', summary: 'Check the plan price.', evidenceA: question }],
+    }),
+  );
+  const onFinished = vi.fn().mockResolvedValue(undefined);
+  registerLiveMeetingRoutes(checked, ctx.store, { query, delayMs: 1, onFinished });
+  try {
+    await ctx.store.liveMeetings.putMeeting({
+      id: 'meeting-1',
+      sessionId: 'session-1',
+      ...meeting,
+      ownerTokenHash: createHash('sha256').update(ownerToken).digest('hex'),
+      state: 'active',
+      transcript:
+        question + ' We need these figures before approving the plan and making a decision.',
+    });
+    const addInsight = ctx.store.liveMeetings.addInsight.bind(ctx.store.liveMeetings);
+    const insertion = vi
+      .spyOn(ctx.store.liveMeetings, 'addInsight')
+      .mockImplementationOnce(async (...args) => {
+        await ctx.store.liveMeetings.putMeeting({
+          id: 'meeting-1',
+          sessionId: 'session-1',
+          ...meeting,
+          ownerTokenHash: createHash('sha256').update(ownerToken).digest('hex'),
+          revision: 3,
+          state: 'ended',
+          endedAt: 1000,
+          transcript:
+            question + ' We need these figures before approving the plan and making a decision.',
+        });
+        await addInsight('session-1', {
+          id: 'question-plan',
+          meetingId: 'meeting-1',
+          kind: 'research',
+          summary: 'What does the plan cost?',
+          evidenceA: question,
+          evidenceB: null,
+          sourcePath: null,
+          createdAt: 1,
+        });
+        return addInsight(...args);
+      });
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: {
+        ...meeting,
+        revision: 2,
+        state: 'ended',
+        endedAt: 1000,
+        transcript:
+          question + ' We need these figures before approving the plan and making a decision.',
+      },
+    });
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(2));
+    expect(insertion).toHaveBeenCalled();
+    insertion.mockRestore();
+    expect(
+      (await ctx.store.liveMeetings.insights('session-1', 'meeting-1'))?.map(({ id }) => id),
+    ).toEqual(['question-plan']);
+  } finally {
+    await checked.close();
+  }
+});
+
 it.each(['http', 'controller'] as const)(
   'binds a paraphrased spoken request only to a question in its own meeting: %s',
   async (path) => {

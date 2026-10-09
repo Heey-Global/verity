@@ -91,7 +91,7 @@ export class LiveMeetingStore {
   async reconcileQuestions(
     sessionId: string,
     meetingId: string,
-    revision: number,
+    revision: number | undefined,
     classified?: {
       text: string;
       acceptedIds: readonly string[];
@@ -107,7 +107,12 @@ export class LiveMeetingStore {
         .where('session_id', '=', sessionId)
         .forUpdate()
         .executeTakeFirst();
-      if (!meeting || Number(meeting.revision) !== revision) return false;
+      if (
+        !meeting ||
+        (revision !== undefined && Number(meeting.revision) !== revision) ||
+        (classified !== undefined && revision === undefined)
+      )
+        return false;
       // Publish and retract under the same revision lock so corrections cannot expose stale evidence.
       for (const insight of classified?.insights ?? []) {
         if (

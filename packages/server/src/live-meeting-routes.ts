@@ -382,11 +382,7 @@ export function registerLiveMeetingRoutes(
             });
           }
           // Both writers reconcile so either completion order leaves one question suggestion.
-          await store.liveMeetings.reconcileQuestions(
-            current.sessionId,
-            meetingId,
-            current.revision,
-          );
+          await store.liveMeetings.reconcileQuestions(current.sessionId, meetingId, undefined);
           if (current.terminal) await fileFinished(current.sessionId, meetingId);
           lastAnalyzed.set(meetingId, {
             length: current.transcript.length,
