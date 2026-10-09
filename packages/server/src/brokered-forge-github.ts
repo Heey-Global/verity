@@ -752,7 +752,9 @@ export function createGitHubForgeAdapter(options: {
       // Optional diagnostic grants must never affect ordinary project-token issuance.
       const diagnosticPermission =
         action === 'repository-rules-read'
-          ? url.pathname.includes('/protection')
+          ? /^\/branches\/[^/]+\/protection(?:\/|$)/.test(
+              url.pathname.slice(`/repos/${repoPath}`.length).toLowerCase(),
+            )
             ? 'administration'
             : 'contents'
           : !graph &&

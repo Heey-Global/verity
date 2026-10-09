@@ -233,3 +233,31 @@ describe('isolated diagnostic credentials', () => {
     expect(permissions).toHaveLength(before);
   });
 });
+
+// Repository and branch names must not select a stronger diagnostic permission.
+it.each([
+  ['protection', '/rulesets', 'contents'],
+  ['app', '/rules/branches/protection-fix', 'contents'],
+  ['protection', '/branches/main/protection', 'administration'],
+])('selects the endpoint grant for %s%s', async (repo, suffix, expected) => {
+  const grants: string[] = [];
+  const adapter = createGitHubForgeAdapter({
+    mint: async () => {
+      throw new Error('unexpected ordinary mint');
+    },
+    mintDiagnostic: async (_binding, permission) => {
+      grants.push(permission);
+      return 'diagnostic-token';
+    },
+    transport: async () => {
+      throw new Error('unexpected transport');
+    },
+  });
+  await adapter.authorize(
+    { hostname: 'api.github.com', method: 'GET', path: `/repos/acme/${repo}${suffix}` },
+    { ...binding, repo },
+    new Set<ForgeAction>(['repository-rules-read']),
+    AbortSignal.timeout(1000),
+  );
+  expect(grants).toEqual([expected]);
+});
