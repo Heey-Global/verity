@@ -1883,11 +1883,30 @@ export async function materializeTrustedCliEntryScript(request, options) {
     );
     const snapshot = join(snapshotRoot, relativeScript);
     const snapshotScriptDir = snapshot.slice(0, snapshot.lastIndexOf('/'));
-    await mkdir(snapshotScriptDir, { recursive: true, mode: 0o755 });
+    // The broker starts with umask 0077. mkdir's mode alone leaves root-owned
+    // snapshot directories at 0700, hiding the approved entry after setpriv.
+    const makeSnapshotDirectory = async (path) => {
+      await mkdir(snapshotRoot, { mode: 0o755 }).catch((error) => {
+        if (error.code !== 'EEXIST') throw error;
+      });
+      await chmod(snapshotRoot, 0o755);
+      let current = snapshotRoot;
+      for (const component of path
+        .slice(snapshotRoot.length + 1)
+        .split('/')
+        .filter(Boolean)) {
+        current = join(current, component);
+        await mkdir(current, { mode: 0o755 }).catch((error) => {
+          if (error.code !== 'EEXIST') throw error;
+        });
+        await chmod(current, 0o755);
+      }
+    };
+    await makeSnapshotDirectory(snapshotScriptDir);
     const relativeCwd = request.cwd.slice(request.entryScript.worktreeRoot.length + 1);
     const snapshotCwd = join(snapshotRoot, relativeCwd);
     if (request.entryScript.loading === 'isolated') {
-      await mkdir(snapshotCwd, { recursive: true, mode: 0o755 });
+      await makeSnapshotDirectory(snapshotCwd);
     }
     await writeFile(snapshot, bytes, { mode: 0o444, flag: 'wx' });
     await chmod(snapshot, 0o444);
