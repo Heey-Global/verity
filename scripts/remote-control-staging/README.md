@@ -169,13 +169,14 @@ an explicit failure record. Run from a trusted copy of this script:
 
 ```sh
 python3 scripts/remote-control-staging/sample-core-tcp.py \
-  --container verity-core --output core-tcp.jsonl --seconds 120
+  --container verity-core --output core-tcp.jsonl --seconds 120 --interval 5
 ```
 
 Replace `verity-core` with the actual Core container name. Start the sampler
 before the device test and verify a timestamped `sample` record exists first.
 It samples established outbound TCP port 443 sockets in that exact container
-network namespace at most once per second for up to 120 seconds. Each command
+network namespace for up to 120 seconds. `--interval` accepts 1, 2, 5 or 10
+seconds (default 1); use 5 seconds for coordinated low-overhead captures. Each command
 has a two-second timeout; startup and the final in-progress iteration can add
 bounded overhead. A changed container identity, start time, or PID incarnation
 aborts collection. A restart while a command is running is also checked after

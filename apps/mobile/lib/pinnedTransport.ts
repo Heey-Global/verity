@@ -5,6 +5,7 @@ import {
   lastDirectRefusal,
   pendingDirectVerdict,
   recoverRemoteControlRead,
+  remoteControlAvailableForUrl,
   remoteControlFailureForUrl,
   remoteControlPortForUrl,
   reportDirectRouteFailure,
@@ -121,7 +122,10 @@ export async function downloadPinnedFile(input: {
   useRemote?: boolean;
   signal?: AbortSignal;
 }): Promise<string> {
-  const port = input.useRemote ? await remoteControlPortForUrl(input.url) : 0;
+  const port =
+    input.useRemote && (await remoteControlAvailableForUrl(input.url))
+      ? await remoteControlPortForUrl(input.url)
+      : 0;
   const release = port === 0 ? await admitBackground(input.url, input.signal) : undefined;
   try {
     const response = await native().download(
@@ -235,6 +239,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
     if (input instanceof Request)
       throw new Error('Request objects are not supported by the pinned transport.');
     const url = String(input);
+    const remoteEnabled = useRemote && (await remoteControlAvailableForUrl(url));
     const headers = Object.fromEntries(new Headers(init.headers).entries());
     // Older native bridges forward every header, so only send lane metadata to
     // builds that strip it before creating the network request.
@@ -270,14 +275,14 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       markSwitchTransportRequest(diagnosticRequestId, 'body-encoded');
       const replayable =
         !fileUri && (init.method ?? 'GET').toUpperCase() === 'GET' && encodedBody === null;
-      let port = useRemote ? await remoteControlPortForUrl(url, replayable) : 0;
+      let port = remoteEnabled ? await remoteControlPortForUrl(url, replayable) : 0;
       markSwitchTransportRequest(diagnosticRequestId, 'route-ready', port > 0 ? 1 : 0);
       if (init.signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError');
       }
       // Admission can outlast the route probe and its pending registry entry.
       // Keep that verdict so a queued cold read retains cancellation and recovery.
-      let verdict = useRemote && replayable && port === 0 ? pendingDirectVerdict(url) : null;
+      let verdict = remoteEnabled && replayable && port === 0 ? pendingDirectVerdict(url) : null;
       let queuedVerdict: string | undefined;
       void verdict?.then(
         (outcome) => {
@@ -303,6 +308,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       let settled = false;
       let cancelledBy: 'verdict' | 'grace' | null = null;
       let grace: ReturnType<typeof setTimeout> | undefined;
+
       if (verdict !== null) {
         void verdict.then(
           (outcome) => {
@@ -348,7 +354,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
               port,
             );
         settled = true;
-        if (useRemote && port === 0 && !init.signal?.aborted) reportDirectRouteSuccess(url);
+        if (remoteEnabled && port === 0 && !init.signal?.aborted) reportDirectRouteSuccess(url);
       } catch (error) {
         settled = true;
         let directFailed = port === 0;
@@ -420,14 +426,14 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
             directFailed = true;
           }
         }
-        if (useRemote && directFailed && !init.signal?.aborted) reportDirectRouteFailure(url);
+        if (remoteEnabled && directFailed && !init.signal?.aborted) reportDirectRouteFailure(url);
         let remoteAttempted = false;
         let remoteReason: string | null = null;
         if (
           !recovered &&
           verdict !== null &&
           port === 0 &&
-          useRemote &&
+          remoteEnabled &&
           directFailed &&
           replayable &&
           !init.signal?.aborted
@@ -474,7 +480,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           }
         }
         if (!recovered) {
-          const skipped = port === 0 && useRemote ? remoteControlFailureForUrl(url) : null;
+          const skipped = port === 0 && remoteEnabled ? remoteControlFailureForUrl(url) : null;
           const route =
             port > 0
               ? replayable
@@ -572,7 +578,10 @@ export function createPinnedWebSocket(
     if (event.type === 'close') subscription.remove();
   });
   void (async () => {
-    const port = useRemote ? await remoteControlPortForUrl(url) : 0;
+    const port =
+      useRemote && (await remoteControlAvailableForUrl(url))
+        ? await remoteControlPortForUrl(url)
+        : 0;
     return native().openWebSocket(
       url,
       tlsPin,

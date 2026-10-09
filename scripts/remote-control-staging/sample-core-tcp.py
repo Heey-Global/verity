@@ -52,6 +52,8 @@ def main():
     parser.add_argument("--container", required=True)
     parser.add_argument("--output", required=True, help="new JSONL output file (mode 0600)")
     parser.add_argument("--seconds", type=int, default=120, choices=range(1, 121), metavar="1..120")
+    parser.add_argument("--interval", type=int, default=1, choices=(1, 2, 5, 10),
+                        help="sampling interval in seconds (default: 1)")
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", args.container):
         parser.error("invalid container name or ID")
@@ -66,7 +68,7 @@ def main():
             sink.flush()
         try:
             initial = identity(args.container)
-            emit({"event": "start", "containerId": initial[0], "seconds": args.seconds,
+            emit({"event": "start", "containerId": initial[0], "seconds": args.seconds, "intervalSeconds": args.interval,
                   "scope": "established destination TCP port 443; all matching sockets"})
             deadline = time.monotonic() + args.seconds
             count = 0
@@ -80,7 +82,7 @@ def main():
                     raise RuntimeError("container_or_pid_changed")
                 emit({"event": "sample", "index": count, "tcp": raw})
                 count += 1
-                time.sleep(max(0, min(deadline - time.monotonic(), tick + 1 - time.monotonic())))
+                time.sleep(max(0, min(deadline - time.monotonic(), tick + args.interval - time.monotonic())))
             emit({"event": "end", "samples": count})
         except (RuntimeError, OSError, ValueError) as error:
             # Never print Docker output, arbitrary OS errors, or host paths.
