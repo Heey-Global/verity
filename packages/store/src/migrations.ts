@@ -4083,6 +4083,16 @@ const migrations: Record<string, Migration> = {
       await sql`alter table project_settings drop column allowed_agents`.execute(db);
     },
   },
+  '0148_resolved_meeting_questions': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meeting_insights add column resolved boolean not null default false`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meeting_insights drop column resolved`.execute(db);
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

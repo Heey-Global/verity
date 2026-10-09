@@ -1910,3 +1910,51 @@ it('keeps a pending question whose wording matches an answer for a different que
   expect(await screen.findByText('An earlier price.')).toBeOnTheScreen();
   expect(screen.getByLabelText('Research meeting question')).toBeOnTheScreen();
 });
+
+it('resets answer dismissal when switching to another meeting with the same request', async () => {
+  let meeting: MeetingRecord = {
+    id: 'meeting-first',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: 1,
+    endedAt: null,
+    state: 'active',
+    transcript: 'Check the price.',
+    error: null,
+  };
+  let notify!: (meeting: MeetingRecord | null) => void;
+  jest.mocked(currentMeeting).mockImplementation(() => meeting);
+  jest.mocked(listMeetings).mockImplementation(async () => [meeting]);
+  jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+    notify = listener;
+    listener(meeting);
+    return jest.fn();
+  });
+  jest.mocked(createVerityClient).mockReturnValue({
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+    getHistory: jest.fn().mockImplementation(async () => ({
+      hasMore: false,
+      events: [
+        {
+          seq: 1,
+          event: {
+            t: 'prompt',
+            text: `Research this point raised during live meeting ${meeting.id}:\n\nCheck the price.\n\nRecent meeting transcript:\n${meeting.transcript}`,
+          },
+        },
+        { seq: 2, event: { t: 'text', delta: '- Price is ten.' } },
+        { seq: 3, event: { t: 'result' } },
+      ],
+    })),
+    getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
+    getLiveMeetingInsights: jest.fn().mockResolvedValue([]),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Price is ten.')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Dismiss meeting answer'));
+  expect(screen.queryByText('Price is ten.')).toBeNull();
+  meeting = { ...meeting, id: 'meeting-second' };
+  await act(async () => notify(meeting));
+  expect(await screen.findByText('Price is ten.')).toBeOnTheScreen();
+});

@@ -464,6 +464,7 @@ it('loads question identities independently of newer claims and enforces session
     await ctx.store.liveMeetings.addInsight('session-1', {
       ...question,
       id: `claim-${index}`,
+      evidenceA: `Claim number ${index}.`,
       summary: 'A claim',
       createdAt: index + 2,
     });
@@ -528,6 +529,40 @@ it('rejects stale batch publication after a question is resolved at a newer revi
     resolvedIds: [question.id],
     insights: [],
   });
+  expect(
+    await ctx.store.liveMeetings.addInsight(
+      'session-1',
+      { ...question, id: 'batch-price' },
+      false,
+      1,
+    ),
+  ).toBe(false);
+  expect(await ctx.store.liveMeetings.insights('session-1', meeting.id)).toEqual([]);
+});
+
+it('suppresses batch evidence published after resolution at the same revision', async () => {
+  const question = {
+    id: 'question-price',
+    meetingId: meeting.id,
+    kind: 'research' as const,
+    summary: 'What is the price?',
+    evidenceA: 'What is the price.',
+    evidenceB: null,
+    sourcePath: null,
+    createdAt: 1,
+  };
+  await ctx.store.liveMeetings.putMeeting({
+    ...meeting,
+    transcript: question.evidenceA + ' Ten euros.',
+  });
+  await ctx.store.liveMeetings.addInsight('session-1', question);
+  await ctx.store.liveMeetings.reconcileQuestions('session-1', meeting.id, 1, {
+    text: 'Ten euros.',
+    acceptedIds: [],
+    resolvedIds: [question.id],
+    insights: [],
+  });
+  expect(await ctx.store.liveMeetings.questions('session-1', meeting.id)).toEqual([]);
   expect(
     await ctx.store.liveMeetings.addInsight(
       'session-1',

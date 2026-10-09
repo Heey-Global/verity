@@ -401,6 +401,7 @@ export default function MeetingScreen() {
     setNotes([]);
     setInsights([]);
     setAnswers([]);
+    setDismissed([]);
     setQueuedAnswers([]);
     setLocalAnswers([]);
     setExpandedAnswer(null);

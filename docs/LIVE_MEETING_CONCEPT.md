@@ -400,3 +400,5 @@ reported SDK support is not a completed Verity integration.
 
 The existing completed-file upload and transcription workflow is reusable reference code, not
 an already durable live-meeting service. It must not be presented as implementing this concept.
+
+Resolved question evidence is retained internally and excluded from visible insights, preventing late periodic analysis from recreating an answered question. Periodic insights are published under the meeting revision lock.

@@ -70,6 +70,17 @@ export class LiveMeetingStore {
         (revision !== undefined && Number(meeting.revision) !== revision)
       )
         return false;
+      if (insight.kind === 'research' && !insight.id.startsWith('question-')) {
+        const questions = await trx
+          .selectFrom('live_meeting_insights')
+          .select('evidence_a')
+          .where('meeting_id', '=', insight.meetingId)
+          .where('id', 'like', 'question-%')
+          .execute();
+        const key = (text: string) => text.trim().replace(/[.!?]+$/u, '');
+        if (questions.some((question) => key(question.evidence_a) === key(insight.evidenceA)))
+          return false;
+      }
       await trx
         .insertInto('live_meeting_insights')
         .values({
@@ -149,6 +160,7 @@ export class LiveMeetingStore {
               .doUpdateSet({
                 summary: insight.summary,
                 evidence_a: insight.evidenceA,
+                resolved: false,
               })
               .where('live_meeting_insights.meeting_id', '=', meetingId),
           )
@@ -160,14 +172,23 @@ export class LiveMeetingStore {
         .where('meeting_id', '=', meetingId)
         .execute();
       const questions = insights.filter(({ id }) => id.startsWith('question-'));
-      const removed = questions
+      const resolved = questions
         .filter(
           (question) =>
-            !meeting.transcript.includes(question.evidence_a) ||
-            (classified !== undefined &&
-              classified.resolvedIds.includes(question.id) &&
-              !classified.acceptedIds.includes(question.id)),
+            classified?.resolvedIds.includes(question.id) &&
+            !classified.acceptedIds.includes(question.id),
         )
+        .map(({ id }) => id);
+      if (resolved.length)
+        await trx
+          .updateTable('live_meeting_insights')
+          .set({ resolved: true })
+          .where('meeting_id', '=', meetingId)
+          .where('id', 'in', resolved)
+          .execute();
+      // Keep resolved evidence so a later batch at the same revision cannot recreate the suggestion.
+      const removed = questions
+        .filter((question) => !meeting.transcript.includes(question.evidence_a))
         .map(({ id }) => id);
       const evidenceKey = (text: string) => text.trim().replace(/[.!?]+$/u, '');
       const acceptedEvidence = new Set(
@@ -217,6 +238,7 @@ export class LiveMeetingStore {
       .selectFrom('live_meeting_insights')
       .selectAll()
       .where('meeting_id', '=', meetingId)
+      .where('resolved', '=', false)
       .$if(questionsOnly, (query) => query.where('id', 'like', 'question-%'))
       .orderBy('created_at', 'desc')
       .$if(!questionsOnly, (query) => query.limit(30))
