@@ -7,6 +7,7 @@ import {
   mkdtemp,
   readdir,
   realpath,
+  stat,
   rm,
   symlink,
   writeFile,
@@ -16,6 +17,7 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  materializeTrustedCliEntryScript,
   probeScriptSandbox as probeFromBroker,
   runAgentSpawnBroker,
   trustedCliLaunchSpec,
@@ -647,4 +649,51 @@ describe('Server pre-approval refusal', () => {
       await expect(preflight(call(entryScriptRequest))).resolves.toBeUndefined();
     }
   });
+});
+
+describe('Trusted CLI snapshot permissions', () => {
+  it.each(['isolated', 'dynamic'] as const)(
+    'makes nested %s snapshots traversable under the production umask',
+    async (loading) => {
+      const worktree = join(root, 'worktree');
+      const path = join(worktree, 'scripts', 'nested', 'check.cjs');
+      await mkdir(join(worktree, 'scripts', 'nested'), { recursive: true });
+      const bytes = 'console.log("entry-ran");';
+      await writeFile(path, bytes);
+      const previous = process.umask(0o077);
+      let staged;
+      try {
+        staged = await materializeTrustedCliEntryScript(
+          {
+            args: [path],
+            cwd: join(worktree, 'other', 'cwd'),
+            entryScript: {
+              path,
+              projectPath: 'scripts/nested/check.cjs',
+              worktreeRoot: worktree,
+              loading,
+              sha256: createHash('sha256').update(bytes).digest('hex'),
+            },
+          },
+          { trustedCliEntryScriptDir: join(root, 'snapshots') },
+        );
+      } finally {
+        process.umask(previous);
+      }
+      try {
+        const snapshotRoot = staged.entrySandbox!.root;
+        for (const relative of [
+          '',
+          'scripts',
+          'scripts/nested',
+          ...(loading === 'isolated' ? ['other', 'other/cwd'] : []),
+        ]) {
+          expect((await stat(join(snapshotRoot, relative))).mode & 0o777).toBe(0o755);
+        }
+        expect((await stat(staged.args[0]!)).mode & 0o777).toBe(0o444);
+      } finally {
+        await staged.cleanup();
+      }
+    },
+  );
 });
