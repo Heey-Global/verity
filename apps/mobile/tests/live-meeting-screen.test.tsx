@@ -527,12 +527,31 @@ it('clears a confirmed name suggestion once the name is saved', async () => {
     ],
   };
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  let finish!: () => void;
+  jest.mocked(updateSpeakerEdits).mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Yes, Holger'));
+  await waitFor(() => expect(updateSpeakerEdits).toHaveBeenCalledTimes(1));
+  fireEvent.press(screen.getByLabelText('Yes, Anna'));
+  expect(updateSpeakerEdits).toHaveBeenCalledTimes(1);
+  await act(async () => finish());
   await waitFor(() =>
     expect(clearSpeakerNameSuggestion).toHaveBeenCalledWith(meeting.id, 0, false),
   );
-  expect(updateSpeakerEdits).toHaveBeenCalledWith(meeting.id, { '0': 'Holger' }, [], {});
+  fireEvent.press(screen.getByLabelText('Yes, Anna'));
+  await waitFor(() =>
+    expect(updateSpeakerEdits).toHaveBeenLastCalledWith(
+      meeting.id,
+      { '0': 'Holger', '1': 'Anna' },
+      [],
+      {},
+    ),
+  );
 });
 
 it('renames a speaker across the current meeting', async () => {

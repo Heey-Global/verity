@@ -169,6 +169,8 @@ export default function MeetingScreen() {
     merges: Record<string, number>;
   } | null>(null);
   const speakerEditWrite = useRef<Promise<void>>(Promise.resolve());
+  const speakerEditBusy = useRef(false);
+  const [speakerEditPending, setSpeakerEditPending] = useState(false);
   if (speakerEditDraft.current?.meetingId !== meeting?.id || meeting?.engine === 'attendee')
     speakerEditDraft.current = meeting
       ? {
@@ -501,6 +503,14 @@ export default function MeetingScreen() {
       speakerEditDraft.current?.meetingId !== meeting.id
     )
       return false;
+    if (speakerEditBusy.current) {
+      setError('Wait for the current speaker change to finish saving.');
+      return false;
+    }
+    if (!optimistic) {
+      speakerEditBusy.current = true;
+      setSpeakerEditPending(true);
+    }
     const next = { ...speakerEditDraft.current, ...change };
     if (optimistic) speakerEditDraft.current = next;
     const apply = () =>
@@ -541,6 +551,11 @@ export default function MeetingScreen() {
     } catch (reason) {
       setError(`Could not save speaker correction: ${String(reason)}`);
       return false;
+    } finally {
+      if (!optimistic) {
+        speakerEditBusy.current = false;
+        setSpeakerEditPending(false);
+      }
     }
   };
 
@@ -974,6 +989,7 @@ export default function MeetingScreen() {
                 actions={[
                   {
                     label: `Yes, ${suggestion.name}`,
+                    disabled: speakerEditPending,
                     primary: true,
                     onPress: () => {
                       const names = {
