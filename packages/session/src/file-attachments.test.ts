@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { constants, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtemp, open, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -159,4 +160,30 @@ describe('staged image transport', () => {
     await symlink(cwd, join(cwd, '.verity-sessions', 'attachments', 'turn-other'));
     await expect(stageImageAttachments(cwd, 'other', [image])).rejects.toThrow();
   });
+});
+
+it('rejects FIFO retry targets without waiting for a writer', async () => {
+  const image: AttachmentUpload = { kind: 'image', mediaType: 'image/png', data: b64('original') };
+  const refs = await stageImageAttachments(cwd, 'fifo-turn', [image]);
+  const path = refs?.[0]?.filePath ?? '';
+  await rm(path);
+  execFileSync('mkfifo', [path]);
+  const attempt = stageImageAttachments(cwd, 'fifo-turn', [image]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await expect(
+      Promise.race([
+        attempt,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('FIFO staging blocked')), 2000);
+        }),
+      ]),
+    ).rejects.toThrow('staged image content changed');
+  } finally {
+    clearTimeout(timer);
+    // Release a blocked reader when the regression is deliberately reintroduced.
+    const writer = await open(path, constants.O_RDWR | constants.O_NONBLOCK);
+    await attempt.catch(() => undefined);
+    await writer.close();
+  }
 });

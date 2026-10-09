@@ -214,7 +214,10 @@ export async function stageImageAttachments(
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
         if ((await lstat(path)).isSymbolicLink())
           throw new Error('attachment file is a symlink', { cause: error });
-        const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+        const file = await open(
+          path,
+          constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+        );
         try {
           const stats = await file.stat();
           if (
