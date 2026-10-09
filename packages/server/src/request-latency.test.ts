@@ -226,3 +226,34 @@ describe('slow backend read diagnostics', () => {
     }
   });
 });
+
+it('binds the same opaque correlation to handler arrival and completion logs', async () => {
+  const lines: string[] = [];
+  const app = Fastify({ logger: { stream: { write: (line: string) => lines.push(line) } } });
+  registerRequestLatencyDiagnostics(app);
+  app.get('/sessions/:id/events', async () => ({ events: [], hasMore: false }));
+  try {
+    await app.inject({
+      url: '/sessions/private-target/events',
+      headers: {
+        'x-verity-switch-request': 'opaque-request-1',
+        'x-verity-switch-kind': 'events',
+      },
+    });
+    const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    const arrival = records.find((record) => record.msg === 'session switch handler received');
+    expect(arrival).toMatchObject({
+      diagnosticRequestId: 'opaque-request-1',
+      kind: 'events',
+      receivedAt: expect.any(Number),
+    });
+    expect(JSON.stringify(arrival)).not.toContain('private-target');
+    expect(
+      records.find((record) => record.msg === 'session switch handler completed'),
+    ).toMatchObject({
+      diagnosticRequestId: 'opaque-request-1',
+    });
+  } finally {
+    await app.close();
+  }
+});

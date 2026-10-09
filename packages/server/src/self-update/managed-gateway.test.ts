@@ -680,3 +680,43 @@ describe('managed gateway foundation', () => {
     await expect(get(runtime.publicPort, '/healthz')).rejects.toBeDefined();
   });
 });
+
+it('records correlated proxy lifecycle without raw route data', async () => {
+  const target = await backend('diagnostic');
+  closers.push(() => target.close());
+  const log = vi.fn();
+  const runtime = await startManagedGateway({
+    publicPort: 0,
+    internalPort: 0,
+    backend: { host: '127.0.0.1', publicPort: target.port, internalPort: target.port },
+    allowedBackendHosts: ['127.0.0.1'],
+    log,
+  });
+  closers.push(() => runtime.close());
+  await get(runtime.publicPort, '/sessions/private/events?cursor=secret', {
+    'x-verity-switch-request': 'switch-1',
+    'x-verity-switch-kind': 'events',
+  });
+  expect(log).toHaveBeenCalledWith(
+    expect.objectContaining({
+      event: 'session-switch-http',
+      diagnosticRequestId: 'switch-1',
+      kind: 'events',
+      outcome: 'finished',
+      statusCode: 200,
+      httpVersion: '1.1',
+      upstreamReusedSocket: expect.any(Number),
+      socketAssignedMs: expect.any(Number),
+      upstreamResponseMs: expect.any(Number),
+      upstreamEndMs: expect.any(Number),
+      downstreamCompletedMs: expect.any(Number),
+    }),
+  );
+  expect(JSON.stringify(log.mock.calls)).not.toMatch(/private|secret/);
+  log.mockClear();
+  await get(runtime.publicPort, '/sessions/private/events', {
+    'x-verity-switch-request': 'invalid/token',
+    'x-verity-switch-kind': 'events',
+  });
+  expect(log).not.toHaveBeenCalled();
+});

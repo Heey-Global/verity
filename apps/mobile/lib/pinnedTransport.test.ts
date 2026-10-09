@@ -1,3 +1,9 @@
+import {
+  beginSessionSwitch,
+  beginSwitchTransportRequest,
+  exportSessionSwitchTimings,
+} from '@verity/mobile';
+
 const mockSocketListener = jest.fn();
 const mockOpenWebSocket = jest.fn().mockResolvedValue('socket-1');
 const mockAddSocketListener = jest.fn(
@@ -9,6 +15,7 @@ const mockAddSocketListener = jest.fn(
 const mockRequest = jest.fn();
 const mockRequestV2 = jest.fn();
 let mockRequestV2Enabled = false;
+let mockNativeTimings: (() => unknown) | undefined;
 const mockUpload = jest.fn();
 const mockDownload = jest.fn();
 const mockCancelRequest = jest.fn();
@@ -35,6 +42,9 @@ jest.mock('./remoteControlTransport', () => ({
 jest.mock('expo-modules-core', () => ({
   requireNativeModule: () => ({
     request: mockRequest,
+    get exportTransportTimings() {
+      return mockNativeTimings;
+    },
     get requestV2() {
       return mockRequestV2Enabled ? mockRequestV2 : undefined;
     },
@@ -64,8 +74,9 @@ Object.defineProperty(globalThis, 'Response', {
 Object.defineProperty(globalThis, 'Headers', {
   configurable: true,
   value: class TestHeaders {
+    constructor(private readonly values: Record<string, string> = {}) {}
     entries(): IterableIterator<[string, string]> {
-      return new Map<string, string>().entries();
+      return new Map(Object.entries(this.values)).entries();
     }
   },
 });
@@ -74,7 +85,12 @@ Object.defineProperty(globalThis, 'fetch', {
   value: jest.fn(),
 });
 
-import { createPinnedFetch, downloadPinnedFile, createPinnedWebSocket } from './pinnedTransport';
+import {
+  createPinnedFetch,
+  downloadPinnedFile,
+  createPinnedWebSocket,
+  exportPinnedTransportTimings,
+} from './pinnedTransport';
 
 describe('pinned native file transport', () => {
   beforeEach(() => {
@@ -785,4 +801,54 @@ it('forwards native policy close codes to the live connection', async () => {
   mockSocketListener({ id: 'socket-1', type: 'close', code: 1008 });
   expect(closed).toHaveBeenCalledWith(expect.objectContaining({ code: 1008 }));
   socket.close();
+});
+
+it('exports bounded native metrics without leaking unknown fields or requiring a new native build', () => {
+  mockNativeTimings = undefined;
+  expect(exportPinnedTransportTimings()).toEqual({ available: false, records: [], omitted: 0 });
+  mockNativeTimings = () => ({
+    omitted: 7,
+    records: Array.from({ length: 40 }, (_, i) => ({
+      requestId: `opaque-${i}`,
+      metricsAvailable: true,
+      url: 'secret-url',
+      nativeResumeMs: 4,
+      route: 'direct',
+      transactions: Array.from({ length: 10 }, () => ({
+        protocol: 'h2',
+        reusedConnection: true,
+        requestStartMs: 5,
+        headers: 'secret',
+      })),
+    })),
+  });
+  const result = exportPinnedTransportTimings();
+  expect(result.records).toHaveLength(32);
+  expect(result.records[0]?.transactions).toHaveLength(4);
+  expect(result.omitted).toBe(7);
+  expect(JSON.stringify(result)).not.toContain('secret');
+  mockNativeTimings = undefined;
+});
+
+it('correlates pinned dispatch and native return with the originating switch', async () => {
+  const trace = beginSessionSwitch('private-pinned-target');
+  const requestId = beginSwitchTransportRequest(trace, 'events')!;
+  mockRequest.mockResolvedValue({ status: 200, headers: {}, bodyBase64: 'e30=' });
+  await createPinnedFetch(`sha256-${'a'.repeat(43)}`)(
+    'https://verity.example/sessions/private/events',
+    {
+      headers: { 'x-verity-switch-request': requestId },
+    },
+  );
+  const request = exportSessionSwitchTimings().at(-1)!.transportRequests[0]!;
+  expect(request.phases.map((p) => p.phase)).toEqual([
+    'fetch-dispatch',
+    'pinned-entry',
+    'body-encoded',
+    'route-ready',
+    'native-dispatch',
+    'native-return',
+  ]);
+  expect(request.phases.at(-1)?.value).toEqual(expect.any(Number));
+  expect(JSON.stringify(request)).not.toContain('private');
 });
