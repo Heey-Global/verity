@@ -8,6 +8,14 @@ if [[ "$(uname -s)" != Darwin ]]; then
 fi
 platform="${1:-macos}"
 [[ "$platform" == macos || "$platform" == ios ]] || { echo 'usage: run-apple.sh [macos|ios]' >&2; exit 2; }
+# Exercise negotiation against both fixture protocols, including the H1 fallback.
+protocol="${2:-}"
+if [[ -z "$protocol" ]]; then
+  "$0" "$platform" h1
+  "$0" "$platform" h2
+  exit 0
+fi
+[[ "$protocol" == h1 || "$protocol" == h2 ]] || { echo 'Expected h1 or h2 fixture protocol.' >&2; exit 2; }
 tmp="$(mktemp -d)"
 fixture_pid=''
 simulator_udid=''
@@ -36,7 +44,7 @@ openssl x509 -req -in "$tmp/leaf.csr" -CA "$tmp/ca.pem" -CAkey "$tmp/ca-key.pem"
   -set_serial 1 -out "$tmp/leaf.pem" -days 1 -extfile "$tmp/leaf.ext"
 cat "$tmp/leaf.pem" "$tmp/ca.pem" >"$tmp/cert.pem"
 pin="sha256-$(openssl pkey -in "$tmp/key.pem" -pubout -outform DER | tail -c 65 | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')"
-node scripts/remote-control-tunnel/mock.mjs "$tmp/key.pem" "$tmp/cert.pem" >"$tmp/fixture.json" 2>"$tmp/fixture.log" &
+node scripts/remote-control-tunnel/mock.mjs "$tmp/key.pem" "$tmp/cert.pem" "$protocol" >"$tmp/fixture.json" 2>"$tmp/fixture.log" &
 fixture_pid=$!
 for _ in {1..100}; do
   [[ -s "$tmp/fixture.json" ]] && break
@@ -48,7 +56,7 @@ outer_url="wss://127.0.0.1:${relay_port}/tunnel"
 sources=(apps/mobile/native/RemoteDataDiagnostics.swift apps/mobile/native/RemoteAppTunnel.swift apps/mobile/native/RemoteSmokeTunnel.swift apps/mobile/native/CertificatePinDelegate.swift apps/mobile/native/PinnedHTTPSessionPool.swift scripts/remote-control-tunnel/NativeTunnel.swift scripts/remote-control-tunnel/Smoke.swift)
 if [[ "$platform" == macos ]]; then
   xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macosx14.0" "${sources[@]}" -o "$tmp/smoke"
-  "$tmp/smoke" "$outer_url" "$pin" "$pin"
+  "$tmp/smoke" "$outer_url" "$pin" "$pin" "$protocol" "https://127.0.0.1:$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["corePort"])' "$tmp/fixture.json")/"
   exit 0
 fi
 app_plist="${VERITY_SMOKE_APP_PLIST:-}"
@@ -101,6 +109,8 @@ mkdir -p "$(dirname "$result")"
 SIMCTL_CHILD_VERITY_TUNNEL_URL="$outer_url" \
 SIMCTL_CHILD_VERITY_TUNNEL_OUTER_PIN="$pin" \
 SIMCTL_CHILD_VERITY_TUNNEL_CORE_PIN="$pin" \
+SIMCTL_CHILD_VERITY_TUNNEL_PROTOCOL="$protocol" \
+SIMCTL_CHILD_VERITY_TUNNEL_DIRECT_URL="https://127.0.0.1:$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["corePort"])' "$tmp/fixture.json")/" \
 SIMCTL_CHILD_VERITY_TUNNEL_RESULT="$result" \
   xcrun simctl launch "$simulator_udid" app.verity.remote-tunnel-spike
 for _ in {1..180}; do
