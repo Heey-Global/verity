@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.31.0](https://github.com/Heey-Global/verity/compare/v4.30.0...v4.31.0) (2026-10-09)
+
+
+### Features
+
+* **mobile:** use SpeechTranscriber with local vocabulary correction ([#1393](https://github.com/Heey-Global/verity/issues/1393)) ([e28551c](https://github.com/Heey-Global/verity/commit/e28551cf683597cf363104cf542f2e3f5d25433e))
+
+
+### Bug Fixes
+
+* **mobile:** resume OTA planning after native staging publication ([#1392](https://github.com/Heey-Global/verity/issues/1392)) ([6f40f41](https://github.com/Heey-Global/verity/commit/6f40f41687ecff2c03dd2f36b866769050820541))
+
 ## [4.30.0](https://github.com/Heey-Global/verity/compare/v4.29.0...v4.30.0) (2026-10-08)
 
 
