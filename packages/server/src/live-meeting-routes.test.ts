@@ -763,22 +763,21 @@ it('keeps explicit questions out of periodic claim cards even when model output 
   }
 });
 
-it('retracts a published question after appended speech answers it', async () => {
+it('retracts a published question when an answer follows an intervening sentence', async () => {
   const checked = Fastify();
-  const query = vi
-    .fn()
-    .mockResolvedValueOnce(
-      JSON.stringify({
-        questions: [{ question: 'Was kostet der Plan?', quote: 'Was kostet der Plan?' }],
-      }),
-    )
-    .mockResolvedValueOnce(JSON.stringify({ questions: [] }));
+  const query = vi.fn().mockImplementation(async (_session: string, prompt: string) =>
+    JSON.stringify({
+      questions: prompt.includes('Er kostet zehn Euro.')
+        ? []
+        : [{ question: 'Was kostet der Plan?', quote: 'Was kostet der Plan?' }],
+    }),
+  );
   registerLiveMeetingRoutes(checked, ctx.store, { query, delayMs: 60_000 });
   try {
     await checked.inject({
       method: 'PUT',
       url,
-      payload: { ...meeting, transcript: 'Was kostet der Plan?' },
+      payload: { ...meeting, transcript: 'Was kostet der Plan? Moment, ich prüfe das.' },
     });
     await vi.waitFor(
       async () =>
@@ -788,7 +787,11 @@ it('retracts a published question after appended speech answers it', async () =>
     await checked.inject({
       method: 'PUT',
       url,
-      payload: { ...meeting, revision: 2, transcript: 'Was kostet der Plan? Er kostet zehn Euro.' },
+      payload: {
+        ...meeting,
+        revision: 2,
+        transcript: 'Was kostet der Plan? Moment, ich prüfe das. Er kostet zehn Euro.',
+      },
     });
     await vi.waitFor(
       async () =>
@@ -796,6 +799,7 @@ it('retracts a published question after appended speech answers it', async () =>
       { timeout: 5000 },
     );
     expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[1]?.[1]).toContain('Er kostet zehn Euro.');
   } finally {
     await checked.close();
   }

@@ -27,7 +27,7 @@ export function questionWindow(transcript: string): string | null {
   );
   if (last < 0) return null;
   const first = sentences[Math.max(0, last - 3)]!;
-  const end = sentences[Math.min(sentences.length - 1, last + 1)]!;
+  const end = sentences[Math.min(sentences.length - 1, last + 3)]!;
   return recent.slice(first.index, end.index + end[0].length).trim();
 }
 

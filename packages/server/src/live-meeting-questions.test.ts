@@ -64,8 +64,17 @@ it('checks questions without a question mark and ignores incomplete or ordinary 
   expect(questionWindow('Wie viel kostet der Plan.')).toContain('Wie viel');
   expect(questionWindow('Wie viel kostet')).toBeNull();
   expect(questionWindow('Ein normaler Satz.')).toBeNull();
-  const initial = questionWindow('Was kostet der Plan? Danke.');
-  expect(questionWindow('Was kostet der Plan? Danke. Wir besprechen etwas anderes.')).toBe(initial);
+  const initial = questionWindow(
+    'Was kostet der Plan? Danke. Wir besprechen etwas anderes. Ein letzter Satz.',
+  );
+  expect(
+    questionWindow(
+      'Was kostet der Plan? Danke. Wir besprechen etwas anderes. Ein letzter Satz. Jetzt weiter.',
+    ),
+  ).toBe(initial);
+  expect(questionWindow('What does it cost? Let me check. It costs ten euros.')).toContain(
+    'It costs ten euros.',
+  );
 });
 it('reuses a known identity for a paraphrase and refuses invented evidence', async () => {
   vi.useFakeTimers();
