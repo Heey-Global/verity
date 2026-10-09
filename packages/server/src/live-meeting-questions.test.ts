@@ -240,3 +240,29 @@ it('includes answers after more than three intervening sentences', () => {
     'What is the price? One moment. I will check. Please wait. Almost there. The price is ten euros.';
   expect(questionWindow(text)).toBe(text);
 });
+
+it('rechecks an open question when an answer arrives without final punctuation', async () => {
+  vi.useFakeTimers();
+  const query = vi
+    .fn()
+    .mockResolvedValueOnce(
+      JSON.stringify({
+        questions: [{ question: 'What is the price?', quote: 'What is the price?' }],
+      }),
+    )
+    .mockResolvedValueOnce(JSON.stringify({ questions: [] }));
+  const s = setup(query);
+  s.controller.ingest(meeting('What is the price?'));
+  await vi.advanceTimersByTimeAsync(20);
+  const text = 'What is the price? It costs ten euros';
+  s.controller.ingest({ ...meeting(text, 2), state: 'ended', endedAt: 2 });
+  await vi.advanceTimersByTimeAsync(20);
+  expect(query).toHaveBeenCalledTimes(2);
+  expect(query.mock.calls[1]?.[1]).toContain('It costs ten euros');
+  expect(s.reconcileQuestions).toHaveBeenLastCalledWith('session', 'meeting', 2, {
+    text,
+    acceptedIds: [],
+    insights: [],
+  });
+  s.controller.close();
+});
