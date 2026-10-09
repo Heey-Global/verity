@@ -23,14 +23,12 @@ function setup(
   ),
 ) {
   const insights = vi.fn().mockResolvedValue([]);
-  const addInsight = vi.fn().mockResolvedValue(true);
   const onError = vi.fn();
   const reconcileQuestions = vi.fn().mockResolvedValue(true);
   const controller = meetingQuestionChecks({
     store: {
       liveMeetings: {
         insights,
-        addInsight,
         reconcileQuestions,
       },
     } as unknown as EventStore,
@@ -38,7 +36,7 @@ function setup(
     delayMs: 10,
     onError,
   });
-  return { controller, query, insights, addInsight, onError, reconcileQuestions };
+  return { controller, query, insights, onError, reconcileQuestions };
 }
 it('settles a burst and joins recognition fragments with verified evidence', async () => {
   vi.useFakeTimers();
@@ -47,14 +45,19 @@ it('settles a burst and joins recognition fragments with verified evidence', asy
   s.controller.ingest(meeting('Was kostet. Der Plan?', 2));
   await vi.advanceTimersByTimeAsync(20);
   expect(s.query).toHaveBeenCalledTimes(1);
-  expect(s.addInsight).toHaveBeenCalledWith(
+  expect(s.reconcileQuestions).toHaveBeenCalledWith(
     'session',
+    'meeting',
+    2,
     expect.objectContaining({
-      summary: 'Was kostet der Plan?',
-      evidenceA: 'Was kostet. Der Plan?',
-      id: expect.stringMatching(/^question-/),
+      insights: [
+        expect.objectContaining({
+          summary: 'Was kostet der Plan?',
+          evidenceA: 'Was kostet. Der Plan?',
+          id: expect.stringMatching(/^question-/),
+        }),
+      ],
     }),
-    true,
   );
   s.controller.ingest(meeting('Was kostet. Der Plan?', 3));
   await vi.advanceTimersByTimeAsync(60_000);
@@ -72,7 +75,7 @@ it('checks questions without a question mark and ignores incomplete or ordinary 
     questionWindow(
       'Was kostet der Plan? Danke. Wir besprechen etwas anderes. Ein letzter Satz. Jetzt weiter.',
     ),
-  ).toBe(initial);
+  ).not.toBe(initial);
   expect(questionWindow('What does it cost? Let me check. It costs ten euros.')).toContain(
     'It costs ten euros.',
   );
@@ -96,11 +99,11 @@ it('reuses a known identity for a paraphrase and refuses invented evidence', asy
   s.insights.mockResolvedValue([{ id: 'question-known', summary: 'Was kostet der Plan?' }]);
   s.controller.ingest(meeting('Was kostet. Der Plan?'));
   await vi.advanceTimersByTimeAsync(20);
-  expect(s.addInsight).toHaveBeenCalledTimes(1);
-  expect(s.addInsight).toHaveBeenCalledWith(
+  expect(s.reconcileQuestions).toHaveBeenCalledWith(
     'session',
-    expect.objectContaining({ id: 'question-known' }),
-    true,
+    'meeting',
+    1,
+    expect.objectContaining({ insights: [expect.objectContaining({ id: 'question-known' })] }),
   );
   s.controller.close();
 });
@@ -124,7 +127,7 @@ it('discards an in-flight result after transcription was corrected', async () =>
     }),
   );
   await vi.advanceTimersByTimeAsync(1);
-  expect(s.addInsight).not.toHaveBeenCalled();
+  expect(s.reconcileQuestions).not.toHaveBeenCalled();
   s.controller.close();
 });
 it('limits persistent failures and stops all work on close', async () => {
@@ -159,7 +162,7 @@ it('does not publish a late result after shutdown', async () => {
     }),
   );
   await vi.advanceTimersByTimeAsync(1);
-  expect(s.addInsight).not.toHaveBeenCalled();
+  expect(s.reconcileQuestions).not.toHaveBeenCalled();
 });
 
 it('bounds concurrent checks across meetings and resumes queued work', async () => {
@@ -212,12 +215,13 @@ it('reconciles classification against the current revision when its window is un
   const text = 'Was kostet der Plan? Danke. Ein weiterer Satz. Noch ein Satz.';
   s.controller.ingest(meeting(text));
   await vi.advanceTimersByTimeAsync(20);
-  s.controller.ingest(meeting(text + ' Weiter geht es.', 2));
+  s.controller.ingest(meeting(text, 2));
   finish(JSON.stringify({ questions: [] }));
   await vi.advanceTimersByTimeAsync(1);
   expect(s.reconcileQuestions).toHaveBeenCalledWith('session', 'meeting', 2, {
     text,
     acceptedIds: [],
+    insights: [],
   });
   s.controller.close();
 });
@@ -229,4 +233,10 @@ it('retries classification when the database rejects its revision', async () => 
   await vi.advanceTimersByTimeAsync(5020);
   expect(s.query).toHaveBeenCalledTimes(2);
   s.controller.close();
+});
+
+it('includes answers after more than three intervening sentences', () => {
+  const text =
+    'What is the price? One moment. I will check. Please wait. Almost there. The price is ten euros.';
+  expect(questionWindow(text)).toBe(text);
 });

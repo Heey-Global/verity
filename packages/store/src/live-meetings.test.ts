@@ -358,3 +358,30 @@ it('removes a periodic question finding published before classification while pr
     (await ctx.store.liveMeetings.insights('session-1', meeting.id))?.map(({ id }) => id).sort(),
   ).toEqual(['conflict', 'growth', 'question-plan']);
 });
+
+it('rejects stale question publication without replacing valid evidence', async () => {
+  await ctx.store.liveMeetings.putMeeting({
+    ...meeting,
+    revision: 2,
+    transcript: 'What is the price? What is the corrected price?',
+  });
+  const insight = {
+    id: 'question-price',
+    meetingId: meeting.id,
+    kind: 'research' as const,
+    summary: 'Corrected price',
+    evidenceA: 'What is the corrected price?',
+    evidenceB: null,
+    sourcePath: null,
+    createdAt: 1,
+  };
+  await ctx.store.liveMeetings.addInsight('session-1', insight);
+  expect(
+    await ctx.store.liveMeetings.reconcileQuestions('session-1', meeting.id, 1, {
+      text: 'What is the price?',
+      acceptedIds: [insight.id],
+      insights: [{ ...insight, evidenceA: 'What is the price?' }],
+    }),
+  ).toBe(false);
+  expect(await ctx.store.liveMeetings.insights('session-1', meeting.id)).toEqual([insight]);
+});

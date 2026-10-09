@@ -92,7 +92,11 @@ export class LiveMeetingStore {
     sessionId: string,
     meetingId: string,
     revision: number,
-    classified?: { text: string; acceptedIds: readonly string[] },
+    classified?: {
+      text: string;
+      acceptedIds: readonly string[];
+      insights?: readonly LiveMeetingInsight[];
+    },
   ): Promise<boolean> {
     return this.db.transaction().execute(async (trx) => {
       const meeting = await trx
@@ -103,6 +107,39 @@ export class LiveMeetingStore {
         .forUpdate()
         .executeTakeFirst();
       if (!meeting || Number(meeting.revision) !== revision) return false;
+      // Publish and retract under the same revision lock so corrections cannot expose stale evidence.
+      for (const insight of classified?.insights ?? []) {
+        if (
+          insight.meetingId !== meetingId ||
+          !insight.id.startsWith('question-') ||
+          !meeting.transcript.includes(insight.evidenceA)
+        )
+          return false;
+      }
+      for (const insight of classified?.insights ?? []) {
+        await trx
+          .insertInto('live_meeting_insights')
+          .values({
+            id: insight.id,
+            meeting_id: meetingId,
+            kind: insight.kind,
+            summary: insight.summary,
+            evidence_a: insight.evidenceA,
+            evidence_b: insight.evidenceB,
+            source_path: insight.sourcePath,
+            created_at: insight.createdAt,
+          })
+          .onConflict((conflict) =>
+            conflict
+              .column('id')
+              .doUpdateSet({
+                summary: insight.summary,
+                evidence_a: insight.evidenceA,
+              })
+              .where('live_meeting_insights.meeting_id', '=', meetingId),
+          )
+          .execute();
+      }
       const insights = await trx
         .selectFrom('live_meeting_insights')
         .select(['id', 'kind', 'evidence_a'])

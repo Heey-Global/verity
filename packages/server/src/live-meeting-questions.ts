@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import type { LiveMeetingSyncRecord, EventStore } from '@verity/store';
+import type { LiveMeetingSyncRecord, LiveMeetingInsight, EventStore } from '@verity/store';
 import type { MeetingInsightQuery } from './live-meeting-routes.js';
 
 const resultSchema = z.object({
@@ -27,7 +27,7 @@ export function questionWindow(transcript: string): string | null {
   );
   if (last < 0) return null;
   const first = sentences[Math.max(0, last - 3)]!;
-  const end = sentences[Math.min(sentences.length - 1, last + 3)]!;
+  const end = sentences.at(-1)!;
   return recent.slice(first.index, end.index + end[0].length).trim();
 }
 
@@ -85,11 +85,12 @@ export function meetingQuestionChecks(options: {
     timeout.unref();
     try {
       if (!text || text === state.checked) {
-        await options.store.liveMeetings.reconcileQuestions(
+        const reconciled = await options.store.liveMeetings.reconcileQuestions(
           meeting.sessionId,
           meeting.id,
           meeting.revision,
         );
+        if (reconciled === false) throw new Error('Meeting revision changed during reconciliation');
         if (!closed) {
           state.reconciled = meeting.transcript;
           state.checked = text;
@@ -127,6 +128,7 @@ export function meetingQuestionChecks(options: {
         JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1)),
       );
       const acceptedIds: string[] = [];
+      const accepted: LiveMeetingInsight[] = [];
       for (const question of questions) {
         if (!text.includes(question.quote)) continue;
         const existing = known.find(
@@ -138,20 +140,16 @@ export function meetingQuestionChecks(options: {
             .update(`${meeting.id}\0${key(question.question)}`)
             .digest('hex')}`;
         acceptedIds.push(id);
-        await options.store.liveMeetings.addInsight(
-          meeting.sessionId,
-          {
-            id,
-            meetingId: meeting.id,
-            kind: 'research',
-            summary: question.question,
-            evidenceA: question.quote,
-            evidenceB: null,
-            sourcePath: null,
-            createdAt: Date.now(),
-          },
-          true,
-        );
+        accepted.push({
+          id,
+          meetingId: meeting.id,
+          kind: 'research',
+          summary: question.question,
+          evidenceA: question.quote,
+          evidenceB: null,
+          sourcePath: null,
+          createdAt: Date.now(),
+        });
       }
       const current = state.meeting;
       if ((questionWindow(current.transcript) ?? '') !== text) return;
@@ -159,9 +157,11 @@ export function meetingQuestionChecks(options: {
         current.sessionId,
         current.id,
         current.revision,
-        questions.every((question) => text.includes(question.quote))
-          ? { text, acceptedIds }
-          : undefined,
+        {
+          text: questions.every((question) => text.includes(question.quote)) ? text : '',
+          acceptedIds,
+          insights: accepted,
+        },
       );
       // A concurrent revision must not turn a rejected classification into a checked window.
       if (reconciled === false) throw new Error('Meeting revision changed during reconciliation');
