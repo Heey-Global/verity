@@ -40,6 +40,20 @@ describe('live smoke stderr', () => {
     ]);
   });
 
+  it('tolerates bounded transcript-tail model diagnostics', () => {
+    const timing =
+      '[session/models] sessionId=ff033dc2-f910-4b20-95cb-a21c87a5dfc0 phase=read-transcript-tail durationMs=7 totalMs=7 model=unknown permissionMode=unknown';
+    expect(unexpectedStderrLines(timing)).toEqual([]);
+    for (const invalid of [
+      `${timing} token=secret`,
+      timing.replace('durationMs=7', 'durationMs=fast'),
+      timing.replace('phase=read-transcript-tail', 'phase=error'),
+      timing.replace('permissionMode=unknown', 'permissionMode=unknown/path?key=secret'),
+    ]) {
+      expect(unexpectedStderrLines(invalid)).toEqual([invalid]);
+    }
+  });
+
   it('still reports anything that is not that line', () => {
     // The point of the check: a crash, a warning, or a leaked credential in the
     // agent's stderr must fail the gate exactly as an empty-string assertion did.
