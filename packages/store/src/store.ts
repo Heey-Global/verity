@@ -183,7 +183,6 @@ export function isSessionLinkProject(
   project: Pick<ProjectRecord, 'kind' | 'state' | 'hiddenAt'>,
 ): boolean {
   return (
-    project.kind !== 'control_plane' &&
     project.hiddenAt === null &&
     (project.state === 'active' || project.state === 'sleeping' || project.state === 'waking')
   );
