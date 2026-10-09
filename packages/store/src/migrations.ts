@@ -4112,7 +4112,7 @@ const migrations: Record<string, Migration> = {
       await sql`alter table live_meeting_insights drop column resolved`.execute(db);
     },
   },
-  '0149_live_meeting_titles': {
+  '0150_live_meeting_titles': {
     async up(db: Kysely<unknown>): Promise<void> {
       await sql`alter table live_meetings add column title text`.execute(db);
     },
