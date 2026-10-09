@@ -270,6 +270,14 @@ COPY features/verity-sandbox-toolkit /opt/verity-features/verity-sandbox-toolkit
 # sidecar. Keep its root-owned launch surface identical to project Sandboxes;
 # Compose selects it with an explicit entrypoint, while the Server still runs as
 # the unprivileged `node` user below.
+ARG TARGETARCH
+# The Control runner bypasses the Feature installer, so install its script
+# isolation helper explicitly from the same checksum-verified release artifacts.
+RUN set -eu; \
+    case "$TARGETARCH" in amd64|arm64) ;; *) echo "unsupported script sandbox architecture: $TARGETARCH" >&2; exit 1 ;; esac; \
+    cd /opt/verity-features/verity-sandbox-toolkit/prebuilt; \
+    grep "  linux-$TARGETARCH/verity-script-sandbox$" sha256sums.txt | sha256sum --check --strict; \
+    install -m 0755 "linux-$TARGETARCH/verity-script-sandbox" /usr/local/bin/verity-script-sandbox
 RUN install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs /usr/local/bin/verity-runner-supervisor \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-supervisor-start /usr/local/bin/verity-runner-supervisor-start \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-stack-start /usr/local/bin/verity-runner-stack-start \
