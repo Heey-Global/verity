@@ -109,6 +109,8 @@ import {
   recentSessionMessagesRequestSchema,
   publishSessionProgressRequestSchema,
   tasksRequestSchema,
+  answerAppHelp,
+  appHelpRequestSchema,
   aggregateUsage,
   appendExternalPromptData,
   attachmentUploadSchema,
@@ -5948,9 +5950,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // Gateway capabilities run outside the backend's read-only sandbox.
         // Neither a standing grant nor a new approval may reopen them while planning.
         // The task list is Verity's own record of the session, not an external effect,
-        // and recording the agreed steps belongs to planning.
+        // and recording the agreed steps belongs to planning. App help only reads the
+        // static catalog, and explaining Verity is as much a part of planning.
         if (
           toolName !== 'verity_tasks' &&
+          toolName !== 'verity_app_help' &&
           ((await deps.eventStore.getSession(sessionId))?.planning === 'active' ||
             conductor.isPlanningTurn?.(sessionId))
         ) {
@@ -6142,8 +6146,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         invocationId,
       }) => {
         // The tasks tool writes only to the calling session's own list and cannot
-        // delete, so it runs without a card like the planning tools do.
-        if (toolName === 'verity_list_linked_sessions' || toolName === 'verity_tasks') {
+        // delete, so it runs without a card like the planning tools do. App help
+        // reads a static catalog and touches no data at all.
+        if (
+          toolName === 'verity_list_linked_sessions' ||
+          toolName === 'verity_tasks' ||
+          toolName === 'verity_app_help'
+        ) {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;
         }
@@ -6305,6 +6314,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             planning: 'implemented',
             note: 'The user approved. End your turn now; Verity starts the implementation as a new turn.',
           };
+        }
+        if (input.toolName === 'verity_app_help') {
+          return answerAppHelp(appHelpRequestSchema.parse(input.request));
         }
         if (input.toolName === 'verity_tasks') {
           const session = await deps.eventStore.getSession(input.sessionId);

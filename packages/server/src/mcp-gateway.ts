@@ -33,6 +33,8 @@ import {
   publishSessionProgressRequestSchema,
   TASKS_TOOL_DESCRIPTION,
   tasksRequestSchema,
+  APP_HELP_TOOL_DESCRIPTION,
+  appHelpRequestSchema,
 } from '@verity/events';
 import {
   TrustedCliDispatchError,
@@ -282,6 +284,7 @@ const TOOL_SCHEMAS = {
   verity_present_plan: z.object({ plan: z.string().trim().min(1).max(50_000) }).strict(),
   verity_end_planning: z.object({ action: z.enum(['implement', 'discard']).optional() }).strict(),
   verity_tasks: tasksRequestSchema,
+  verity_app_help: appHelpRequestSchema,
   verity_google_slides: z
     .object({
       action: z.enum(['inspect_deck', 'read_slide', 'edit', 'thumbnail', 'insert_image']),
@@ -405,6 +408,7 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_end_planning:
     'Implement the latest submitted plan when the user explicitly tells you to go ahead in the chat. Their message is the approval, so there is no second confirmation. End your turn immediately; implementation starts in a new turn. Use action discard to ask once to leave planning without implementing, including before a plan exists.',
   verity_tasks: TASKS_TOOL_DESCRIPTION,
+  verity_app_help: APP_HELP_TOOL_DESCRIPTION,
   verity_google_slides:
     'Read or edit the native Google Slides deck currently assigned to this session. Use inspect_deck first; read_slide needs slideId; edit accepts any structurally valid Google Slides batchUpdate request and requires revisionId for offset- or state-dependent writes; thumbnail is returned only when explicitly requested; insert_image accepts a Verity session attachmentId, a public HTTP(S) imageUrl, or an imagePath relative to this session worktree.',
   verity_google_docs:
