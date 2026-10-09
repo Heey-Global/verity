@@ -5,6 +5,14 @@ export function githubRestAction(method: string, suffix: string): ForgeAction | 
   const read = method === 'GET' || method === 'HEAD';
   if (read) {
     if (
+      /^\/branches\/[^/]+\/protection(?:\/(?:required_status_checks|enforce_admins|required_pull_request_reviews|restrictions))?$/.test(
+        suffix,
+      ) ||
+      /^\/rulesets(?:\/\d+)?$/.test(suffix) ||
+      /^\/rules\/branches\/[^/]+$/.test(suffix)
+    )
+      return 'repository-rules-read';
+    if (
       suffix === '' ||
       /^\/(branches|commits|compare)(\/[^/]+)?$/.test(suffix) ||
       /^\/contents(?:\/[^/]+)*$/.test(suffix) ||

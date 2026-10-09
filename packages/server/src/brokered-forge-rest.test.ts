@@ -5,6 +5,12 @@ describe('repository workflow API policy', () => {
   it.each([
     ['GET', '/commits/abc/check-runs', 'checks-read'],
     ['GET', '/commits/abc/status', 'checks-read'],
+    ['GET', '/commits/abc/statuses', 'checks-read'],
+    ['GET', '/branches/main/protection', 'repository-rules-read'],
+    ['HEAD', '/branches/main/protection/required_status_checks', 'repository-rules-read'],
+    ['GET', '/rulesets', 'repository-rules-read'],
+    ['GET', '/rulesets/123', 'repository-rules-read'],
+    ['GET', '/rules/branches/main', 'repository-rules-read'],
     ['GET', '/contents/releases/server-production.json', 'git-read'],
     ['POST', '/git/refs', 'git-write'],
     ['PATCH', '/git/refs/heads/automation/promote', 'git-write'],
@@ -25,6 +31,10 @@ describe('repository workflow API policy', () => {
     async (method, path, action) => {
       let mints = 0;
       const adapter = createGitHubForgeAdapter({
+        mintDiagnostic: async () => {
+          mints++;
+          return 'diagnostic-token';
+        },
         mint: async () => {
           mints++;
           return 'server-token';
@@ -122,5 +132,104 @@ describe('repository workflow API policy', () => {
         await expect(result).resolves.toMatchObject({ action: 'git-write' });
       else await expect(result).rejects.toThrow();
     }
+  });
+});
+
+// A diagnostic grant must never become authority to relax merge requirements.
+describe('repository rules mutations', () => {
+  it.each(['POST', 'PUT', 'PATCH', 'DELETE'])('rejects %s before minting', async (method) => {
+    let mints = 0;
+    const adapter = createGitHubForgeAdapter({
+      mint: async () => {
+        mints++;
+        return 'token';
+      },
+      transport: async () => {
+        throw new Error('unexpected');
+      },
+    });
+    for (const suffix of [
+      '/branches/main/protection',
+      '/rulesets',
+      '/rulesets/123',
+      '/rules/branches/main',
+    ]) {
+      await expect(
+        adapter.authorize(
+          { hostname: 'api.github.com', method, path: '/repos/acme/app' + suffix },
+          binding,
+          new Set<ForgeAction>(['repository-rules-read']),
+          AbortSignal.timeout(1000),
+        ),
+      ).rejects.toThrow();
+    }
+    expect(mints).toBe(0);
+  });
+});
+
+// Missing optional grants must not disable the project's normal Git credentials.
+describe('isolated diagnostic credentials', () => {
+  it('selects minimal diagnostic grants and keeps Git usable after denied issuance', async () => {
+    const permissions: string[] = [];
+    let ordinaryMints = 0;
+    const adapter = createGitHubForgeAdapter({
+      mint: async () => {
+        ordinaryMints++;
+        return 'ordinary-token';
+      },
+      mintDiagnostic: async (_binding, permission) => {
+        permissions.push(permission);
+        return undefined;
+      },
+      transport: async () => {
+        throw new Error('unexpected');
+      },
+    });
+    const actions = new Set<ForgeAction>(['checks-read', 'repository-rules-read', 'git-read']);
+    for (const suffix of [
+      '/commits/abc/status',
+      '/commits/abc/statuses',
+      '/branches/main/protection',
+      '/rulesets',
+      '/rules/branches/main',
+    ]) {
+      await expect(
+        adapter.authorize(
+          { hostname: 'api.github.com', method: 'GET', path: '/repos/acme/app' + suffix },
+          binding,
+          actions,
+          AbortSignal.timeout(1000),
+        ),
+      ).rejects.toThrow();
+    }
+    expect(permissions).toEqual(['statuses', 'statuses', 'administration', 'contents', 'contents']);
+    expect(ordinaryMints).toBe(0);
+    await expect(
+      adapter.authorize(
+        {
+          hostname: 'github.com',
+          method: 'GET',
+          path: '/acme/app.git/info/refs?service=git-upload-pack',
+        },
+        binding,
+        actions,
+        AbortSignal.timeout(1000),
+      ),
+    ).resolves.toMatchObject({ action: 'git-read' });
+    expect(ordinaryMints).toBe(1);
+    const before = permissions.length;
+    await expect(
+      adapter.authorize(
+        {
+          hostname: 'api.github.com',
+          method: 'GET',
+          path: '/repos/acme/other/branches/main/protection',
+        },
+        binding,
+        actions,
+        AbortSignal.timeout(1000),
+      ),
+    ).rejects.toThrow();
+    expect(permissions).toHaveLength(before);
   });
 });
