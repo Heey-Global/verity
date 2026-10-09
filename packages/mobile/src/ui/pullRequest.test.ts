@@ -135,8 +135,8 @@ describe('pullRequestMergeButton', () => {
     ).toEqual({ kind: 'merge', label: 'Merge' });
   });
 
-  it('shows check progress while CI runs, and a plain wait before any check reports', () => {
-    expect(pullRequestMergeButton(pr(), idle)).toEqual({ kind: 'waiting', label: 'CI 1/3' });
+  it('names the running phase without repeating the count, and a plain wait before any check reports', () => {
+    expect(pullRequestMergeButton(pr(), idle)).toEqual({ kind: 'waiting', label: 'Running…' });
     const none = { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 };
     expect(pullRequestMergeButton(pr({ pipeline: 'pending', checks: none }), idle)).toEqual({
       kind: 'waiting',

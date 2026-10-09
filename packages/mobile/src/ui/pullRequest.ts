@@ -119,12 +119,9 @@ export function pullRequestMergeButton(
     return blocked('ci_failed');
   }
   if (pr.pipeline === 'pending' || pr.pipeline === 'running') {
-    return pr.checks.total === 0
-      ? { kind: 'waiting', label: 'Waiting…' }
-      : {
-          kind: 'waiting',
-          label: `CI ${String(pr.checks.completed)}/${String(pr.checks.total)}`,
-        };
+    // The count already sits in the status line beside the button, so the button
+    // only names the phase instead of repeating it.
+    return { kind: 'waiting', label: pr.checks.total === 0 ? 'Waiting…' : 'Running…' };
   }
   // GitHub's own merge verdict outranks a CI status it could not report: a repository
   // without checks still merges. Anything short of that with no status is a status to
