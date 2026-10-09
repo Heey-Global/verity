@@ -2,11 +2,13 @@ import type { SessionHistoryPage } from '@verity/mobile';
 import {
   compactMeetingAnswer,
   meetingAnswerCards,
+  distinctMeetingAnswers,
   meetingAnswerSource,
   meetingAnswerTruncated,
   meetingRequestFromPrompt,
   sameMeetingRequest,
   unacknowledgedMeetingAnswers,
+  type MeetingAnswerCard,
 } from './liveMeetingAnswers';
 
 test('matches a meeting request to its own streamed answer across ordinary session turns', () => {
@@ -247,4 +249,34 @@ test('ignores malformed optional question titles without losing the answer ident
     requestId: 'request-real',
     questionId: 'question-real',
   });
+});
+
+test('preserves distinct question identities for identical spoken request wording', () => {
+  const cards: MeetingAnswerCard[] = [
+    {
+      id: 'first',
+      questionId: 'question-price',
+      request: 'check that',
+      questionTitle: 'What is the price?',
+      kind: 'research',
+      status: 'ready',
+      answer: 'Ten euros.',
+    },
+    {
+      id: 'second',
+      questionId: 'question-delivery',
+      request: 'check that',
+      questionTitle: 'When is delivery?',
+      kind: 'research',
+      status: 'ready',
+      answer: 'Tuesday.',
+    },
+  ];
+  expect(distinctMeetingAnswers(cards)).toEqual(cards);
+  expect(
+    distinctMeetingAnswers([
+      ...cards,
+      { ...cards[0]!, id: 'retry', request: 'research its cost' },
+    ]).map(({ id }) => id),
+  ).toEqual(['second', 'retry']);
 });

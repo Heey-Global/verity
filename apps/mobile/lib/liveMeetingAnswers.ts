@@ -120,11 +120,10 @@ export function meetingAnswerCards(events: SessionEvent[], meetingId: string): M
 /** Retain the latest request for each question before applying display or history limits. */
 export function distinctMeetingAnswers(answers: MeetingAnswerCard[]): MeetingAnswerCard[] {
   return answers.reduce<MeetingAnswerCard[]>((cards, card) => {
-    const key = card.questionId ?? meetingQuestionKey(card.request);
-    const index = cards.findIndex(
-      (item) =>
-        (item.questionId ?? meetingQuestionKey(item.request)) === key ||
-        meetingQuestionKey(item.request) === meetingQuestionKey(card.request),
+    const index = cards.findIndex((item) =>
+      item.questionId && card.questionId
+        ? item.questionId === card.questionId
+        : meetingQuestionKey(item.request) === meetingQuestionKey(card.request),
     );
     if (index >= 0) cards.splice(index, 1);
     cards.push(card);
