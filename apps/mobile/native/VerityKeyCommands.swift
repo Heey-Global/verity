@@ -72,8 +72,8 @@ class VerityKeyCommandsView: ExpoView {
       UIKeyCommand(input: "0", modifierFlags: .command, action: #selector(zoomReset)),
       UIKeyCommand(input: "f", modifierFlags: .command, action: #selector(searchContext)),
       UIKeyCommand(input: "f", modifierFlags: [.command, .shift], action: #selector(searchGlobal)),
-      UIKeyCommand(input: "<", modifierFlags: .command, action: #selector(toggleVoice)),
-      UIKeyCommand(input: "y", modifierFlags: .command, action: #selector(captureTask)),
+      UIKeyCommand(input: "y", modifierFlags: .control, action: #selector(toggleVoice)),
+      UIKeyCommand(input: "x", modifierFlags: .control, action: #selector(captureTask)),
       UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(closeSearch)),
     ]
     for command in commands {
