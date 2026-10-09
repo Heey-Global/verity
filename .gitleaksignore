@@ -172,6 +172,6 @@ afdd6b2463a82e17e1f853efdc219ea3a3821300:scripts/enrollment-proof/wire-fixtures.
 afdd6b2463a82e17e1f853efdc219ea3a3821300:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2628
 afdd6b2463a82e17e1f853efdc219ea3a3821300:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2638
 
-# Storage key name in the voice vocabulary module, not a credential: matched by
-# the generic-api-key rule. Only this commit and line are suppressed.
+# Exact historical false positive: the public AsyncStorage vocabulary namespace,
+# not a credential. New values and finding locations remain scanned.
 80a5cd36450a6019a725dbd3acd16fa7f601da70:apps/mobile/lib/voiceVocabulary.ts:generic-api-key:12

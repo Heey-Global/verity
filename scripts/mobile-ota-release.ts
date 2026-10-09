@@ -671,7 +671,18 @@ function stage(runtime: string, version: string) {
   const bodyFile = `${process.env.RUNNER_TEMP}/mobile-ota-pr.md`;
   writeFileSync(bodyFile, body);
   let number = open[0]?.number;
-  if (number) gh('pr', 'edit', String(number), '--title', title, '--body-file', bodyFile);
+  if (number)
+    gh(
+      'pr',
+      'edit',
+      String(number),
+      '--title',
+      title,
+      '--body-file',
+      bodyFile,
+      '--add-label',
+      'production',
+    );
   else
     number = Number(
       gh(
@@ -685,6 +696,8 @@ function stage(runtime: string, version: string) {
         title,
         '--body-file',
         bodyFile,
+        '--label',
+        'production',
       )
         .split('/')
         .at(-1),

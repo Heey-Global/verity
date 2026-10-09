@@ -329,7 +329,17 @@ export function propose(inputPath = process.argv[3] ?? '') {
     `Promotes the verified Staging candidate ${candidate.version} to production.\n\nSource: ${candidate.source}\n\n${changelog}\n\nMerging approves the exact recorded artifacts in ${manifest}. Test Staging before merging. The release remains a prerelease until production publication finishes.\n`,
   );
   if (pulls.length)
-    gh('pr', 'edit', String(pulls[0]!.number), '--title', title, '--body-file', bodyFile);
+    gh(
+      'pr',
+      'edit',
+      String(pulls[0]!.number),
+      '--title',
+      title,
+      '--body-file',
+      bodyFile,
+      '--add-label',
+      'production',
+    );
   else
     gh(
       'pr',
@@ -342,6 +352,8 @@ export function propose(inputPath = process.argv[3] ?? '') {
       title,
       '--body-file',
       bodyFile,
+      '--label',
+      'production',
     );
   const current = api<{ object: { sha: string } }>(`repos/${repository}/git/ref/heads/${branch}`)
     .object.sha;

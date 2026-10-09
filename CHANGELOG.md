@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.30.0](https://github.com/Heey-Global/verity/compare/v4.29.0...v4.30.0) (2026-10-08)
+
+
+### Features
+
+* **session:** persist agent exit details and redacted stderr on crash ([#1375](https://github.com/Heey-Global/verity/issues/1375)) ([a7e7efc](https://github.com/Heey-Global/verity/commit/a7e7efcbcb8cac943a143fa139409a2a426c6f37))
+
+
+### Bug Fixes
+
+* **deps:** configure Dependabot security update titles ([#1373](https://github.com/Heey-Global/verity/issues/1373)) ([6832b82](https://github.com/Heey-Global/verity/commit/6832b825b0f024ed441a8f1effc5affc7906c2cb))
+* **mobile:** backport safe Expo query serialization ([#1388](https://github.com/Heey-Global/verity/issues/1388)) ([b1de937](https://github.com/Heey-Global/verity/commit/b1de937f738f91dd4e88e9d91f3c53ca19beeb0f))
+* **mobile:** decouple staging OTA from production delivery ([#1385](https://github.com/Heey-Global/verity/issues/1385)) ([c7f663d](https://github.com/Heey-Global/verity/commit/c7f663df20fd9d3643956193d91b21eead5b90b0))
+* **preview:** include logo in server runtime image ([#1376](https://github.com/Heey-Global/verity/issues/1376)) ([9d21441](https://github.com/Heey-Global/verity/commit/9d21441dfed2acbba3d392313084c4799acd36bf))
+* **tasks:** require projects and retire General ([#1383](https://github.com/Heey-Global/verity/issues/1383)) ([b502c48](https://github.com/Heey-Global/verity/commit/b502c486d70dd15000af06076106fa4825f82c59))
+
 ## [4.29.0](https://github.com/Heey-Global/verity/compare/v4.28.1...v4.29.0) (2026-10-08)
 
 
