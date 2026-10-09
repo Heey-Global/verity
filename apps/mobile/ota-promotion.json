@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "version": "1.65.1",
+  "version": "1.65.2",
   "runtime": "1.65.0",
   "channel": "production",
-  "commit": "34dec2427d3794405ceb78c48233fcf37b5ba2cb",
-  "tag": "mobile-v1.65.1",
-  "branch": "staging-mobile-v1.65.1-34dec2427d3794405ceb78c48233fcf37b5ba2cb",
-  "baseline": "mobile-v1.65.0",
-  "group": "e106bff6-bbc1-4670-800e-a6e82bd8e5d0",
+  "commit": "23d5e12f7c593f78026c74300ca8684bf1920cb5",
+  "tag": "mobile-v1.65.2",
+  "branch": "staging-mobile-v1.65.2-23d5e12f7c593f78026c74300ca8684bf1920cb5",
+  "baseline": "mobile-v1.65.1",
+  "group": "355eb134-8797-4e60-a2ef-d73972efc3ce",
   "notes": [
-    "distinguish connection recording export failures (#1446)"
+    "record connection tests from a fresh tunnel (#1449)"
   ]
 }
