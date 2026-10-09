@@ -7,7 +7,6 @@ import {
   DOCS_BASE_URL,
   answerAppHelp,
   appHelpRequestSchema,
-  renderWelcomeGuidePrompt,
 } from './app-help.js';
 
 describe('APP_HELP_TOPICS', () => {
@@ -63,6 +62,8 @@ describe('answerAppHelp', () => {
     ['Where are my secrets stored, and what if I lose the master password?', 'secrets-storage'],
     ['How can I share the web app the agent started?', 'preview-and-sharing'],
     ['Can agents read my Gmail?', 'google'],
+    ['I forgot my password', 'secrets-storage'],
+    ['Where do I put an API key for my app?', 'doppler'],
   ])('ranks the matching topic first for %j', (query, id) => {
     const answer = answerAppHelp({ query });
     expect('entries' in answer && answer.entries[0]?.id).toBe(id);
@@ -91,10 +92,21 @@ describe('answerAppHelp', () => {
     for (const [query, id] of [
       ['Can I use my iPad too?', 'devices'],
       ['Can agents read WhatsApp?', 'matrix'],
+      // A bare "docs" keyword once tied any documentation question to Google.
+      ['Where are the docs for Doppler?', 'doppler'],
     ]) {
       const answer = answerAppHelp({ query });
       expect('entries' in answer && answer.entries.map((entry) => entry.id), query).toEqual([id]);
     }
+  });
+
+  // A bare "stored" keyword handed the master-password entry and its link to a
+  // question about meeting transcripts.
+  it('keeps the secrets entry out of storage questions about other things', () => {
+    const answer = answerAppHelp({ query: 'Where are my meeting transcripts stored?' });
+    const ids = 'entries' in answer ? answer.entries.map((entry) => entry.id) : [];
+    expect(ids).toContain('live-meeting');
+    expect(ids).not.toContain('secrets-storage');
   });
 
   // "project" is in most settings questions; as a keyword it pulled the
@@ -123,13 +135,5 @@ describe('prompts', () => {
   it('names the tool and forbids invented links', () => {
     expect(APP_HELP_SYSTEM_PROMPT).toContain(APP_HELP_TOOL);
     expect(APP_HELP_SYSTEM_PROMPT).toContain('never invent');
-  });
-
-  it('gives the welcome guide every in-app link of the catalog', () => {
-    const prompt = renderWelcomeGuidePrompt();
-    for (const topic of APP_HELP_TOPICS) {
-      if (topic.appLink !== undefined) expect(prompt).toContain(topic.appLink);
-    }
-    expect(prompt).toContain('GitHub, Doppler, Google');
   });
 });

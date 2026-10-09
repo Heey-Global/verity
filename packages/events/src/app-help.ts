@@ -2,11 +2,10 @@ import { z } from 'zod';
 
 /**
  * The curated help catalog about using the Verity app itself: what a feature
- * does, what it needs, where it is configured. One source is meant to feed the
- * agent's `verity_app_help` tool now, and later the onboarding welcome
- * session's guide prompt ({@link renderWelcomeGuidePrompt}, not yet attached
- * to any session) and the app's own hint sheets, so an answer in the chat and
- * a hint in the app cannot drift apart.
+ * does, what it needs, where it is configured. It feeds the agent's
+ * `verity_app_help` tool, and is meant to feed the onboarding welcome session
+ * and the app's own hint sheets later, so an answer in the chat and a hint in
+ * the app cannot drift apart.
  *
  * `appLink` is an in-app `verity://` link the mobile transcript opens directly
  * (resolved by `parseAppLink` in `@verity/mobile`); a guard there fails when a
@@ -149,9 +148,9 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
       'calendar',
       'contacts',
       'workspace',
-      'docs',
-      'sheets',
-      'slides',
+      'google docs',
+      'google sheets',
+      'google slides',
     ],
   },
   {
@@ -172,7 +171,8 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
       'Connect Doppler to give projects access to secrets such as API keys. A project selects its Doppler project and config. Agents then use a secret by name for an HTTP request or a CLI command after your approval; the value is never shown to them.',
     appLink: 'verity://settings/services/doppler',
     docsPath: 'docs/connections.md',
-    keywords: ['secret', 'api key', 'password', 'token', 'credentials', 'env'],
+    // Not "password": that word mostly means the master password, see secrets-storage.
+    keywords: ['secret', 'api key', 'token', 'credentials', 'env'],
   },
   {
     id: 'matrix',
@@ -289,16 +289,24 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     appLink: 'verity://settings/secret-store',
     docsPath: 'docs/getting-started.md',
     keywords: [
+      // Phrases only: bare "stored", "restart" or "lose" occur in questions about
+      // transcripts, dev servers or files, and pulled this entry in beside them.
       'secret store',
       'master password',
       'encryption',
+      'encrypted',
       'unlock',
-      'restart',
-      'security',
+      'restart the server',
+      'server restart',
+      'secret stored',
+      'key stored',
+      'password stored',
       'forgot password',
-      'stored',
+      'forgot my password',
       'lost password',
-      'lose',
+      'lost my password',
+      'lose password',
+      'lose my password',
       'reset password',
     ],
   },
@@ -469,32 +477,3 @@ export const APP_HELP_TOOL_DESCRIPTION = `Look up how to use the Verity app itse
 export const APP_HELP_SYSTEM_PROMPT = `# App help (Verity)
 
 When the user asks how Verity itself works, where a setting is, or how to connect a service, call \`${APP_HELP_TOOL}\` instead of answering from memory. Pass on its \`appLink\` as a Markdown link, for example [Open GitHub settings](verity://settings/github); the app opens it directly. Use only \`verity://\` links the tool returned and never invent one. Add \`docsUrl\` only when the user wants more detail. If the catalog does not cover the question, say so.`;
-
-/** Topics the welcome session presents up front; the rest stays reachable by asking. */
-const WELCOME_CHECKLIST_TOPICS = ['github', 'doppler', 'google'] as const;
-
-/**
- * The system prompt section of the onboarding welcome session. It is appended
- * to the regular turn prompt, so it only adds the guide role and the link
- * table; tool contracts stay where they are.
- */
-export function renderWelcomeGuidePrompt(): string {
-  const table = APP_HELP_TOPICS.filter((topic) => topic.appLink !== undefined)
-    .map((topic) => `- ${topic.title}: ${topic.appLink}`)
-    .join('\n');
-  const checklist = WELCOME_CHECKLIST_TOPICS.map(
-    (id) => APP_HELP_TOPICS.find((topic) => topic.id === id)?.title ?? id,
-  ).join(', ');
-  return `# Verity Guide (welcome session)
-
-This session is the user's introduction to Verity. They have just finished setup and already read a short welcome message with a status checklist and a topic menu. Do not repeat that message.
-
-- Answer questions about using Verity briefly: two to five sentences or a few bullets, then stop.
-- Link instead of describing paths. Use the in-app links below as Markdown links; for anything not listed, call \`${APP_HELP_TOOL}\`.
-- End an answer with at most one \`verity:choices\` block offering the most useful next topics, only when a choice helps.
-- Up front, only ${checklist} are worth suggesting besides the AI provider. Mention other connections only when asked, with one sentence and the Connections link.
-- If the user wants to try a first task, help them do it here: this is a disposable starter project.
-
-In-app links:
-${table}`;
-}

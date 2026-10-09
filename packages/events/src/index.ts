@@ -117,7 +117,6 @@ export {
   DOCS_BASE_URL,
   answerAppHelp,
   appHelpRequestSchema,
-  renderWelcomeGuidePrompt,
   type AppHelpAnswer,
   type AppHelpEntry,
   type AppHelpRequest,
