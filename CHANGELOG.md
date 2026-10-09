@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.32.0](https://github.com/Heey-Global/verity/compare/v4.31.0...v4.32.0) (2026-10-09)
+
+
+### Features
+
+* **mobile:** add bounded DATA lifecycle recordings ([#1408](https://github.com/Heey-Global/verity/issues/1408)) ([ae8fcc2](https://github.com/Heey-Global/verity/commit/ae8fcc2a090e7d12554f4aaabb4bfff87a2e3db4))
+
+
+### Bug Fixes
+
+* **mobile:** attribute live meeting speakers per word and suggest names from introductions ([#1395](https://github.com/Heey-Global/verity/issues/1395)) ([3593a03](https://github.com/Heey-Global/verity/commit/3593a0391c1703b441cba3da60aacddb475f7d67))
+* **mobile:** plan OTA releases while native runtime builds ([#1404](https://github.com/Heey-Global/verity/issues/1404)) ([b9427cb](https://github.com/Heey-Global/verity/commit/b9427cb3193fb5384b42d2865bf2b9ca1ba386e1))
+* **mobile:** simplify PR waiting button and slow its indicator ([#1399](https://github.com/Heey-Global/verity/issues/1399)) ([458b29a](https://github.com/Heey-Global/verity/commit/458b29aa5ab06b375d2c33d7a410f1a7b51c9788))
+
 ## [4.31.0](https://github.com/Heey-Global/verity/compare/v4.30.0...v4.31.0) (2026-10-09)
 
 
