@@ -1,3 +1,5 @@
+import { TranscriptTimingContext } from '../../components/TranscriptRow';
+import { useSwitchFrameTiming } from '../../hooks/useSwitchFrameTiming';
 import {
   beginRenderWork,
   markFirstSessionRender,
@@ -674,6 +676,7 @@ export function SessionChat({
   const switchTiming = useMemo(() => sessionSwitchTiming(sessionId), [sessionId]);
   const [loadedListSessionId, setLoadedListSessionId] = useState<string | null>(null);
   const initialListLoaded = loadedListSessionId === sessionId;
+  useSwitchFrameTiming(switchTiming, initialListLoaded);
   useEffect(() => {
     markSessionSwitch(switchTiming, 'session-screen-react-commit');
     return () => markSessionSwitch(switchTiming, 'session-screen-cleanup');
@@ -3588,7 +3591,12 @@ export function SessionChat({
       const isLatestTranscriptRow =
         latestTranscriptRowKey !== null && key === latestTranscriptRowKey;
       const rendered = (
-        <TranscriptRow item={item} isLatest={isLatestTranscriptRow} renderContent={renderRow} />
+        <TranscriptRow
+          sessionId={sessionId}
+          item={item}
+          isLatest={isLatestTranscriptRow}
+          renderContent={renderRow}
+        />
       );
       // Counter-flip each row so the inverted list reads the right way up.
       finishItemWork();
@@ -6970,8 +6978,12 @@ function MarkdownText({
   sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
   onOpenImage: (source: ImageSource, label: string) => void;
 }) {
+  const finishMarkdownWork = beginRenderWork(
+    'markdown-body',
+    useContext(TranscriptTimingContext) ?? '',
+  );
   const blocks = useMemo(() => parseMarkdownBlocks(content), [content]);
-  return (
+  const rendered = (
     <View>
       {blocks.map((block, i) =>
         block.type === 'table' ? (
@@ -6991,6 +7003,8 @@ function MarkdownText({
       )}
     </View>
   );
+  finishMarkdownWork();
+  return rendered;
 }
 
 // A markdown table (GitHub-flavored: a header row, a `|---|` separator, body

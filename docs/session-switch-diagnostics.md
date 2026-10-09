@@ -112,3 +112,19 @@ restoration is unchanged: anchors outside the loaded tail fall back to latest. V
 follow-up `events-request-start` should follow `flash-list-on-load`, and scrolling
 backwards should continue loading history. Also verify a deep saved anchor and an
 explicit message jump. Only explicit jumps may legitimately request earlier pages.
+
+### Thread scheduling probes
+
+`js-timer-lag-max-ms` records the maximum lateness of a 100 ms JavaScript timer
+from the row touch callback. It includes scheduling and garbage collection and
+does not identify the blocking function. `ui-frame-gap-max-ms` records maximum
+Reanimated UI-thread frame callback spacing from chat mount; reporting crosses
+to JavaScript at most twice per second. Its phase timestamp is report delivery,
+not the time of the delayed frame. Neither probe proves native paint completion.
+Both stop after initial list completion, supersession, backgrounding or ten
+seconds. Backgrounding ends collection rather than counting the suspended time.
+The UI probe cannot cover the interval before the chat mounts.
+
+`render-transcript-row-body` measures the synchronous row content factory;
+`render-markdown-body` includes Markdown parsing and element creation. Descendant
+components and native text layout remain outside these body measurements.
