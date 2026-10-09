@@ -1,13 +1,18 @@
 Object.defineProperty(globalThis, 'Response', { configurable: true, value: class TestResponse {} });
 Object.defineProperty(globalThis, 'Headers', { configurable: true, value: class TestHeaders {} });
 Object.defineProperty(globalThis, 'fetch', { configurable: true, value: jest.fn() });
-const { acceptedDataDiagnostics, exportRemoteDataDiagnostics } =
+const { exportRemoteDataDiagnostics } =
   require('./remoteDataDiagnostics') as typeof import('./remoteDataDiagnostics');
 
 const mockExport = jest.fn();
 jest.mock('expo-modules-core', () => ({
   requireNativeModule: () => ({ exportDataDiagnostics: mockExport }),
 }));
+
+async function acceptedDataDiagnostics(value: unknown): Promise<string | null> {
+  mockExport.mockResolvedValue([value]);
+  return exportRemoteDataDiagnostics();
+}
 
 function snapshot() {
   return {
@@ -44,11 +49,13 @@ it('exports only bounded DATA generations with capture gaps intact', async () =>
 
 it.each(['url', 'ticket', 'reason', 'headers', 'payload', 'userInfo'])(
   'rejects injected %s fields',
-  (key) => {
-    expect(acceptedDataDiagnostics(JSON.stringify({ ...snapshot(), [key]: 'private' }))).toBeNull();
+  async (key) => {
+    expect(
+      await acceptedDataDiagnostics(JSON.stringify({ ...snapshot(), [key]: 'private' })),
+    ).toBeNull();
     const data = snapshot();
     Object.assign(data.events[1]!, { [key]: 'private' });
-    expect(acceptedDataDiagnostics(JSON.stringify(data))).toBeNull();
+    expect(await acceptedDataDiagnostics(JSON.stringify(data))).toBeNull();
   },
 );
 
@@ -58,8 +65,8 @@ it.each([
   { clockOffsetKnown: true },
   { channel: 'CONTROL' },
   { events: Array.from({ length: 129 }, () => snapshot().events[0]) },
-])('rejects malformed envelopes %j', (patch) => {
-  expect(acceptedDataDiagnostics(JSON.stringify({ ...snapshot(), ...patch }))).toBeNull();
+])('rejects malformed envelopes %j', async (patch) => {
+  expect(await acceptedDataDiagnostics(JSON.stringify({ ...snapshot(), ...patch }))).toBeNull();
 });
 
 it.each([
@@ -72,16 +79,16 @@ it.each([
   { event: 'private-reason' },
   { utc: 'not-a-date' },
   { path: 'private-network-name' },
-])('rejects malformed events %j', (patch) => {
+])('rejects malformed events %j', async (patch) => {
   const data = snapshot();
   Object.assign(data.events[1]!, patch);
-  expect(acceptedDataDiagnostics(JSON.stringify(data))).toBeNull();
+  expect(await acceptedDataDiagnostics(JSON.stringify(data))).toBeNull();
 });
 
-it('allows wall-clock reversal while preserving monotonic local ordering', () => {
+it('allows wall-clock reversal while preserving monotonic local ordering', async () => {
   const data = snapshot();
   data.events[1]!.utc = '2026-10-08T15:23:10.000Z';
-  expect(acceptedDataDiagnostics(JSON.stringify(data))).not.toBeNull();
+  expect(await acceptedDataDiagnostics(JSON.stringify(data))).not.toBeNull();
 });
 
 it('rejects a partially unsafe export instead of silently dropping evidence', async () => {
@@ -90,7 +97,7 @@ it('rejects a partially unsafe export instead of silently dropping evidence', as
 });
 
 it('does not accept oversized exports or unrestricted native text', async () => {
-  expect(acceptedDataDiagnostics(' '.repeat(65_537))).toBeNull();
+  expect(await acceptedDataDiagnostics(' '.repeat(65_537))).toBeNull();
   mockExport.mockResolvedValue('private native log');
   expect(await exportRemoteDataDiagnostics()).toBeNull();
 });

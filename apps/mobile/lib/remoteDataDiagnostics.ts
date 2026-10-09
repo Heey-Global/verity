@@ -78,7 +78,7 @@ function integer(value: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): boolea
 }
 
 /** Reject unknown fields instead of copying untrusted native diagnostics into an export. */
-export function acceptedDataDiagnostics(value: unknown): string | null {
+function acceptedDataDiagnostics(value: unknown): string | null {
   if (typeof value !== 'string' || value.length > 65_536) return null;
   let snapshot: unknown;
   try {
