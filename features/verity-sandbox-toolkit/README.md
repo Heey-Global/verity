@@ -221,3 +221,24 @@ Wire them in a consuming `devcontainer.json`:
   "postStartCommand": "/path/to/features/verity-sandbox-toolkit/lifecycle/post-start.sh",
 }
 ```
+
+### Locked CLI dependencies
+
+The Server image and this Feature install the CLI bundles in `npm/` with
+`npm ci`. Each CLI has its own manifest and lockfile, including integrity hashes
+for its transitive and platform-specific dependencies. The package trees remain
+separate under `$(npm root -g)/.verity-cli/`; links expose the usual global
+package paths and executables. Adapter patches and CLI discovery use those same
+paths. Install scripts remain enabled for these explicitly selected tools.
+
+Renovate's npm manager updates each manifest and lockfile. The existing agent
+CLI group also updates the Feature version defaults; repository guards reject
+versions that drift between the defaults and the lockfiles. To change a default
+manually, update its bundle lockfile and the Feature defaults together.
+
+Exact version overrides remain supported. An override different from the
+committed default resolves a new lockfile at build time before running `npm ci`.
+Its resolved dependency tree is therefore not reproducible from the committed
+lockfile. Prefer updating the committed bundle for reproducible deployments.
+Installation fails on missing locks, integrity failures or unsupported versions
+rather than falling back to an unlocked installation.

@@ -2,6 +2,12 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react-nativ
 
 const mockTestRemoteControl = jest.fn();
 const mockGetServerProfile = jest.fn();
+const mockExportData = jest.fn();
+const mockCopy = jest.fn();
+jest.mock('../../lib/remoteDataDiagnostics', () => ({
+  exportRemoteDataDiagnostics: () => mockExportData(),
+}));
+jest.mock('expo-clipboard', () => ({ setStringAsync: (...args: unknown[]) => mockCopy(...args) }));
 
 jest.mock('expo-router', () => ({ useFocusEffect: jest.fn() }));
 jest.mock('../../lib/serverProfile', () => ({
@@ -119,4 +125,47 @@ it('offers the tunnel test when Core settings and status are unavailable', async
   await waitFor(() =>
     expect(screen.getByText('Remote Control failed at probe timed out.')).toBeOnTheScreen(),
   );
+});
+
+it('records only the explicitly selected connection test and copies the safe native export', async () => {
+  mockGetServerProfile.mockReturnValue({
+    activeUrl: 'https://verity.example',
+    remoteControl: { installationHandle: 'saved' },
+  });
+  mockTestRemoteControl.mockClear().mockResolvedValue({ ready: true, detail: 'ready' });
+  mockExportData.mockResolvedValue('[{"version":1}]');
+  mockCopy.mockResolvedValue(undefined);
+  render(
+    <PublicPreviewDiagnostics
+      client={{ getUplinkDiagnostics: jest.fn().mockResolvedValue(null) } as never}
+      keyConfigured
+    />,
+  );
+  fireEvent.press(screen.getByRole('button', { name: 'Record Remote Control connection test' }));
+  await waitFor(() =>
+    expect(mockTestRemoteControl).toHaveBeenCalledWith('https://verity.example', true),
+  );
+  fireEvent.press(screen.getByText('Copy connection recording'));
+  await waitFor(() => expect(mockCopy).toHaveBeenCalledWith('[{"version":1}]'));
+  expect(screen.getByText('Connection recording copied.')).toBeOnTheScreen();
+});
+
+it('does not copy when a safe recording is unavailable', async () => {
+  mockGetServerProfile.mockReturnValue({
+    activeUrl: 'https://verity.example',
+    remoteControl: { installationHandle: 'saved' },
+  });
+  mockExportData.mockResolvedValue(null);
+  mockCopy.mockClear();
+  render(
+    <PublicPreviewDiagnostics
+      client={{ getUplinkDiagnostics: jest.fn().mockResolvedValue(null) } as never}
+      keyConfigured
+    />,
+  );
+  fireEvent.press(screen.getByText('Copy connection recording'));
+  await waitFor(() =>
+    expect(screen.getByText(/No connection recording available/u)).toBeOnTheScreen(),
+  );
+  expect(mockCopy).not.toHaveBeenCalled();
 });

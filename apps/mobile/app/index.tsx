@@ -1,5 +1,11 @@
+import { beginClientActivity } from '../lib/sessionSwitchTiming';
 import { useSessionRowCallbacks } from '../hooks/useSessionRowCallbacks';
-import { beginRowTouch, markFirstSessionRender, rowPress } from '../lib/sessionSwitchTiming';
+import {
+  beginRenderWork,
+  beginRowTouch,
+  markFirstSessionRender,
+  rowPress,
+} from '../lib/sessionSwitchTiming';
 import { cancelSessionSwitch, markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { isLinkableSession } from '../lib/sessionLinks';
 import { subscribeLiveRefresh } from '../lib/liveConnection';
@@ -180,6 +186,7 @@ function SessionList({ client }: { client: VerityClient }) {
   }>();
   const [selectedId, setSelectedId] = useState<string | null>(selected ?? null);
   if (selectedId) markFirstSessionRender(selectedId, 'selection-home-render-entry');
+  const finishHomeWork = beginRenderWork('home-body', selectedId ?? undefined);
   const lastSelectedParamRef = useRef(selected);
   const incomingSelectedRef = useRef<string | null>(null);
   // A session started inline from the sidebar "+" (wide layout): we preselect it
@@ -918,6 +925,7 @@ function SessionList({ client }: { client: VerityClient }) {
     </View>
   );
 
+  finishHomeWork();
   if (!wide) return master;
 
   return (
@@ -1023,24 +1031,33 @@ function useProjects(client: VerityClient) {
           projectIds,
           localResults,
         );
-        const now = Date.now();
-        setPreviewUrls(
-          mergeSessionPreviewUrls(publicPreviewLinksRef.current, localPreviewLinksRef.current, now),
-        );
-        setPublicPreviews(publicPreviewSessionIds(publicPreviewLinksRef.current, now));
-        const pending = new Map(
-          [...pendingProjectMutations.current].filter(
-            ([, entry]) => entry.generation >= generation,
-          ),
-        );
-        const seen = new Set(nextProjects.map((project) => project.id));
-        setProjects([
-          ...nextProjects.map((project) => pending.get(project.id)?.project ?? project),
-          ...[...pending.values()]
-            .map(({ project }) => project)
-            .filter((project) => !seen.has(project.id)),
-        ]);
-        pendingProjectMutations.current.clear();
+        const finishPublish = beginClientActivity('project-list-publish');
+        try {
+          const now = Date.now();
+          setPreviewUrls(
+            mergeSessionPreviewUrls(
+              publicPreviewLinksRef.current,
+              localPreviewLinksRef.current,
+              now,
+            ),
+          );
+          setPublicPreviews(publicPreviewSessionIds(publicPreviewLinksRef.current, now));
+          const pending = new Map(
+            [...pendingProjectMutations.current].filter(
+              ([, entry]) => entry.generation >= generation,
+            ),
+          );
+          const seen = new Set(nextProjects.map((project) => project.id));
+          setProjects([
+            ...nextProjects.map((project) => pending.get(project.id)?.project ?? project),
+            ...[...pending.values()]
+              .map(({ project }) => project)
+              .filter((project) => !seen.has(project.id)),
+          ]);
+          pendingProjectMutations.current.clear();
+        } finally {
+          finishPublish();
+        }
         setError(undefined); // recovered — clear any stale banner
       } catch (caught) {
         if (generation !== loadGeneration.current) return;
@@ -1261,6 +1278,7 @@ function ProjectGroup({
   updatingProjectIds?: ReadonlySet<string>;
   repairingProjectIds?: ReadonlySet<string>;
 }) {
+  const finishGroupWork = beginRenderWork('sidebar-group-body');
   const { theme } = useUnistyles();
   const {
     slotRef,
@@ -1320,6 +1338,7 @@ function ProjectGroup({
   const onHeaderLayout = (event: LayoutChangeEvent) => {
     if (!floating) reorder.reportCompactHeight(group.id, pitch(event.nativeEvent.layout.height));
   };
+  finishGroupWork();
   return (
     <Reanimated.View ref={slotRef} collapsable={false}>
       <Reanimated.View
@@ -1536,7 +1555,7 @@ function ProjectGroup({
                   reorder={reorder}
                   enabled={sessionReordering && !collapsed}
                 >
-                  {(handle) => (
+                  {(handle, issue, markers) => (
                     <Fragment>
                       {/* Quiet inset hairline between sessions (never above the first — the
                   project header already draws its own bottom border). Inset to start
@@ -1547,6 +1566,8 @@ function ProjectGroup({
                       <SessionRow
                         session={session}
                         dragHandleRef={handle}
+                        dragIssueRef={issue}
+                        dragMarkersRef={markers}
                         reorderable={sessionReordering}
                         interactionsLocked={reordering}
                         {...rowCallbacks.get(session.sessionId)!}
@@ -1865,6 +1886,8 @@ const SessionRow = memo(function SessionRow({
   selected,
   renaming,
   dragHandleRef,
+  dragIssueRef,
+  dragMarkersRef,
   reorderable = false,
   interactionsLocked = false,
   floating = false,
@@ -1889,12 +1912,15 @@ const SessionRow = memo(function SessionRow({
   selected?: boolean;
   renaming?: boolean;
   dragHandleRef?: RefCallback<View>;
+  dragIssueRef?: RefCallback<View>;
+  dragMarkersRef?: RefCallback<View>;
   reorderable?: boolean;
   interactionsLocked?: boolean;
   floating?: boolean;
   onMoveUp?: (() => void) | undefined;
   onMoveDown?: (() => void) | undefined;
 }) {
+  const finishRowWork = beginRenderWork('sidebar-row-body');
   const { theme } = useUnistyles();
   const [hovered, setHovered] = useState(false);
   useEffect(() => {
@@ -1952,7 +1978,7 @@ const SessionRow = memo(function SessionRow({
     // Pressable: in the narrow layout that Pressable is cloned by `<Link asChild>`,
     // which drops its `style` — so a flex-row set there silently falls back to a
     // column and stacks the dot ABOVE the name. A plain child View keeps its style.
-    <View style={styles.rowInner}>
+    <View ref={dragHandleRef} collapsable={false} style={styles.rowInner}>
       {/* Accent wash overlay (behind the content) that fades out when the rename
           sheet closes. pointerEvents none so it never intercepts row taps. */}
       <Animated.View pointerEvents="none" style={[styles.renamingWash, { opacity: wash }]} />
@@ -1969,7 +1995,7 @@ const SessionRow = memo(function SessionRow({
           marker column at the right end. */}
       <View style={[styles.titleBlock, styles.sessionTitleBlock]}>
         <View style={styles.sessionLine}>
-          <View ref={dragHandleRef} collapsable={false} style={styles.sessionDragHandle}>
+          <View style={styles.sessionDragHandle}>
             <Text style={styles.sessionTitle} numberOfLines={1}>
               {label}
             </Text>
@@ -2010,7 +2036,7 @@ const SessionRow = memo(function SessionRow({
               <Text style={styles.rowSub} accessible={false} importantForAccessibility="no">
                 ·
               </Text>
-              <SessionIssueRef branch={session.branch} repo={repo} />
+              <SessionIssueRef branch={session.branch} repo={repo} dragExcludedRef={dragIssueRef} />
               <AttentionMarkers flags={markers} size={13} inline />
             </View>
           ) : null}
@@ -2018,11 +2044,17 @@ const SessionRow = memo(function SessionRow({
       </View>
       {/* Favorite, automation and sharing: icon + short bar on the trailing edge,
           so the leading edge stays with the working/unread dot. */}
-      <SessionMarkerColumn
-        markers={edgeMarkers}
-        previewUrl={previewUrl ?? null}
-        onOpenLinks={interactionsLocked ? undefined : onOpenLinks}
-      />
+      <View
+        ref={dragMarkersRef}
+        collapsable={false}
+        style={{ alignSelf: 'stretch', justifyContent: 'center' }}
+      >
+        <SessionMarkerColumn
+          markers={edgeMarkers}
+          previewUrl={previewUrl ?? null}
+          onOpenLinks={interactionsLocked ? undefined : onOpenLinks}
+        />
+      </View>
     </View>
   );
 
@@ -2054,6 +2086,7 @@ const SessionRow = memo(function SessionRow({
     </SwipeableSessionRow>
   );
 
+  finishRowWork();
   if (onSelect) {
     return swipeable(
       <Pressable

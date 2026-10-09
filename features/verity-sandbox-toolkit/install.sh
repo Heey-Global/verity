@@ -36,9 +36,9 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.289}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.291}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.85.1}"
+CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.86.0}"
 # renovate: datasource=github-releases depName=cli/cli
 GH_VERSION="${GHVERSION:-2.100.0}"
 # renovate: datasource=github-releases depName=DopplerHQ/cli
@@ -46,7 +46,7 @@ DOPPLER_VERSION="${DOPPLERVERSION:-3.76.6}"
 # renovate: datasource=github-releases depName=gitleaks/gitleaks
 GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
 # renovate: datasource=npm depName=@openai/codex
-CODEX_VERSION="${CODEXVERSION:-0.160.0}"
+CODEX_VERSION="${CODEXVERSION:-0.160.1}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 CODEX_ACP_VERSION="${CODEXACPVERSION:-2.1.1}"
 # renovate: datasource=npm depName=opencode-ai
@@ -295,7 +295,7 @@ fi
 if [ "$INSTALL_CLAUDE" = "true" ]; then
   if command -v npm >/dev/null 2>&1; then
     echo ">> verity-sandbox-toolkit: installing @anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
-    npm install -g --ignore-scripts=false "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+    node "$FEATURE_DIR/bin/verity-cli-install.mjs" claude-code "$CLAUDE_CODE_VERSION"
   else
     echo "!! verity-sandbox-toolkit: installClaude=true but npm not on PATH — skipping claude-code." >&2
     echo "!!                 Add the node Feature (installsAfter) or a node base image." >&2
@@ -307,7 +307,7 @@ fi
 if [ "$INSTALL_CLAUDE_ACP" = "true" ]; then
   if command -v npm >/dev/null 2>&1; then
     echo ">> verity-sandbox-toolkit: installing @agentclientprotocol/claude-agent-acp@$CLAUDE_ACP_VERSION"
-    npm install -g --ignore-scripts=false "@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_VERSION}"
+    node "$FEATURE_DIR/bin/verity-cli-install.mjs" claude-acp "$CLAUDE_ACP_VERSION"
     # Upstream (through 0.66.0) renders tool-call titles from unvalidated model
     # input; one wrong-typed field throws, kills the agent process, and — since
     # loadSession replays history through the same renderer — bricks the session
@@ -352,18 +352,18 @@ fi
 if command -v npm >/dev/null 2>&1; then
   if [ "$INSTALL_CODEX" = "true" ]; then
     echo ">> verity-sandbox-toolkit: installing @openai/codex@$CODEX_VERSION"
-    npm install -g --ignore-scripts=false "@openai/codex@${CODEX_VERSION}"
+    node "$FEATURE_DIR/bin/verity-cli-install.mjs" codex "$CODEX_VERSION"
   fi
   # ACP is a separately pinned transport adapter. It ships its own @openai/codex
   # dependency, so the spawn broker pins CODEX_PATH to the root-owned binary
   # installed above — otherwise two Codex versions run in the same image.
   if [ "$INSTALL_CODEX_ACP" = "true" ]; then
     echo ">> verity-sandbox-toolkit: installing @agentclientprotocol/codex-acp@$CODEX_ACP_VERSION"
-    npm install -g --ignore-scripts=false "@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}"
+    node "$FEATURE_DIR/bin/verity-cli-install.mjs" codex-acp "$CODEX_ACP_VERSION"
   fi
   if [ "$INSTALL_OPENCODE" = "true" ]; then
     echo ">> verity-sandbox-toolkit: installing opencode-ai@$OPENCODE_VERSION"
-    npm install -g --ignore-scripts=false "opencode-ai@${OPENCODE_VERSION}"
+    node "$FEATURE_DIR/bin/verity-cli-install.mjs" opencode "$OPENCODE_VERSION"
     # opencode's updater can target a user-writable dir (unlike the root-owned
     # npm global), so root-ownership alone doesn't stop it. Pin it off via its
     # own config file — persists across both consume paths, chowned to the user

@@ -78,6 +78,15 @@ export {
   type AgentEventTone,
 } from './ui/agentEvent.js';
 export {
+  APP_LINK_PROJECT_SETTINGS_PAGES,
+  APP_LINK_SCHEME,
+  APP_LINK_SETTINGS_ROUTES,
+  parseAppLink,
+  type AppLinkProjectSettingsPage,
+  type AppLinkSettingsRoute,
+  type AppLinkTarget,
+} from './ui/appLink.js';
+export {
   markdownSectionTitle,
   isSessionImageFilePath,
   parseInline,

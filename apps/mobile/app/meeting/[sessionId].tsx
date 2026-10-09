@@ -20,6 +20,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { LiveMeetingInsight, SessionHistoryPage } from '@verity/mobile';
 
 import {
+  clearSpeakerNameSuggestion,
   currentMeeting,
   endMeeting,
   pauseMeeting,
@@ -59,9 +60,8 @@ import {
   unacknowledgedMeetingAnswers,
 } from '../../lib/liveMeetingAnswers';
 import {
+  meetingTranscriptRows,
   resolvedSpeaker,
-  speakerLines,
-  reconcileTimedTranscript,
   type SpeakerLine,
 } from '../../lib/liveMeetingSpeakers';
 import { Icon } from '../../components/Icon';
@@ -74,7 +74,7 @@ import {
   speakerTone,
 } from '../../components/meeting/MeetingUI';
 
-type TranscriptRow = SpeakerLine | { text: string };
+type TranscriptRow = SpeakerLine | { text: string; pending?: boolean };
 
 const pendingDrafts = new Map<string, MeetingNote>();
 const pendingNoteErrors = new Map<string, string>();
@@ -169,6 +169,8 @@ export default function MeetingScreen() {
     merges: Record<string, number>;
   } | null>(null);
   const speakerEditWrite = useRef<Promise<void>>(Promise.resolve());
+  const speakerEditBusy = useRef(false);
+  const [speakerEditPending, setSpeakerEditPending] = useState(false);
   if (speakerEditDraft.current?.meetingId !== meeting?.id || meeting?.engine === 'attendee')
     speakerEditDraft.current = meeting
       ? {
@@ -451,31 +453,22 @@ export default function MeetingScreen() {
       .catch((reason) => setError(String(reason)));
   }, []);
 
-  const chunks = useMemo(() => {
-    if (meeting?.timedWords?.length) {
-      const aligned = reconcileTimedTranscript(meeting.transcript, meeting.timedWords);
-      if (!aligned) return [{ text: meeting.transcript }];
-      const lines: TranscriptRow[] = speakerLines(
-        aligned.words,
-        meeting.speakerTurns ?? [],
-        meeting.speakerCorrections ?? [],
-        meeting.speakerMerges ?? {},
-      );
-      if (aligned.tail) lines.push({ text: `Speaker pending: ${aligned.tail}` });
-      return lines;
-    }
-    const text = meeting?.transcript ?? '';
-    const result: TranscriptRow[] = [];
-    for (let start = 0; start < text.length; start += 900)
-      result.push({ text: text.slice(start, start + 900) });
-    return result;
-  }, [
-    meeting?.transcript,
-    meeting?.timedWords,
-    meeting?.speakerTurns,
-    meeting?.speakerCorrections,
-    meeting?.speakerMerges,
-  ]);
+  const chunks = useMemo<TranscriptRow[]>(
+    () => (meeting ? meetingTranscriptRows(meeting) : []),
+    // Recomputed only when the transcript or its attribution changes, not on every tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      meeting?.transcript,
+      meeting?.timedWords,
+      meeting?.speakerTurns,
+      meeting?.tentativeSpeakerTurns,
+      meeting?.speakerHorizon,
+      meeting?.speakerStatus,
+      meeting?.state,
+      meeting?.speakerCorrections,
+      meeting?.speakerMerges,
+    ],
+  );
   const suggestedQuestion = useMemo(
     () => latestResearchQuestion(meeting?.transcript ?? ''),
     [meeting?.transcript],
@@ -503,24 +496,35 @@ export default function MeetingScreen() {
       corrections: SpeakerCorrection[];
       merges: Record<string, number>;
     }>,
+    optimistic = true,
   ) => {
     if (
       !(meeting?.ownerToken || meeting?.engine === 'attendee') ||
       speakerEditDraft.current?.meetingId !== meeting.id
     )
-      return;
+      return false;
+    if (speakerEditBusy.current) {
+      setError('Wait for the current speaker change to finish saving.');
+      return false;
+    }
+    if (!optimistic) {
+      speakerEditBusy.current = true;
+      setSpeakerEditPending(true);
+    }
     const next = { ...speakerEditDraft.current, ...change };
-    speakerEditDraft.current = next;
-    setMeeting((current) =>
-      current?.id === next.meetingId
-        ? {
-            ...current,
-            speakerNames: next.names,
-            speakerCorrections: next.corrections,
-            speakerMerges: next.merges,
-          }
-        : current,
-    );
+    if (optimistic) speakerEditDraft.current = next;
+    const apply = () =>
+      setMeeting((current) =>
+        current?.id === next.meetingId
+          ? {
+              ...current,
+              speakerNames: next.names,
+              speakerCorrections: next.corrections,
+              speakerMerges: next.merges,
+            }
+          : current,
+      );
+    if (optimistic) apply();
     try {
       const write = speakerEditWrite.current
         .catch(() => undefined)
@@ -538,9 +542,20 @@ export default function MeetingScreen() {
         });
       speakerEditWrite.current = write;
       await write;
+      if (!optimistic) {
+        speakerEditDraft.current = next;
+        apply();
+      }
       setSyncError(true);
+      return true;
     } catch (reason) {
       setError(`Could not save speaker correction: ${String(reason)}`);
+      return false;
+    } finally {
+      if (!optimistic) {
+        speakerEditBusy.current = false;
+        setSpeakerEditPending(false);
+      }
     }
   };
 
@@ -957,6 +972,42 @@ export default function MeetingScreen() {
   };
 
   const noticedCards = (): ReactNode[] => {
+    // Only the recording device asks the model; a typed name always wins over a suggestion.
+    const nameCards: ReactNode[] =
+      meeting?.state === 'active' && !!meeting.ownerToken
+        ? (meeting.speakerNameSuggestions ?? [])
+            .filter((suggestion) => meeting.speakerNames?.[suggestion.speaker] === undefined)
+            .map((suggestion) => (
+              <NoticedCard
+                key={`name-${String(suggestion.speaker)}`}
+                label="NAME SUGGESTION"
+                tone={speakerTone(theme.colors, suggestion.speaker)}
+                quote={`“${suggestion.quote}”`}
+                title={`${speakerLabel(suggestion.speaker)} is ${suggestion.name}?`}
+                onDismiss={() => clearSpeakerNameSuggestion(meeting.id, suggestion.speaker, true)}
+                dismissLabel={`Not ${suggestion.name}`}
+                actions={[
+                  {
+                    label: `Yes, ${suggestion.name}`,
+                    disabled: speakerEditPending,
+                    primary: true,
+                    onPress: () => {
+                      const names = {
+                        ...(speakerEditDraft.current?.names ?? meeting.speakerNames ?? {}),
+                      };
+                      if (names[suggestion.speaker] === undefined)
+                        names[suggestion.speaker] = suggestion.name;
+                      // Keep the card until the name is saved, so a failed save can be retried.
+                      void persistSpeakerEdits({ names }, false).then((saved) => {
+                        if (saved)
+                          clearSpeakerNameSuggestion(meeting.id, suggestion.speaker, false);
+                      });
+                    },
+                  },
+                ]}
+              />
+            ))
+        : [];
     const cards: ReactNode[] = visibleAnswers.map((card) => {
       const source = card.status === 'ready' ? meetingAnswerSource(card.answer) : null;
       const note = card.status === 'ready' ? asNote(card.answer) : null;
@@ -1105,7 +1156,7 @@ export default function MeetingScreen() {
           ]}
         />,
       );
-    return cards;
+    return [...nameCards, ...cards];
   };
 
   const statusLines = (
@@ -1281,7 +1332,7 @@ export default function MeetingScreen() {
           keyExtractor={(_, index) => String(index)}
           contentContainerStyle={styles.transcriptContent}
           renderItem={({ item }) =>
-            'start' in item ? (
+            'start' in item && !item.pending ? (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Correct speaker for ${item.text}`}
@@ -1293,7 +1344,10 @@ export default function MeetingScreen() {
                 </Text>
               </Pressable>
             ) : (
-              <Text style={styles.transcriptText}>{item.text}</Text>
+              // Not yet attributed: shown without a speaker until the diarizer catches up.
+              <Text style={[styles.transcriptText, item.pending && styles.transcriptPending]}>
+                {item.text}
+              </Text>
             )
           }
           ListEmptyComponent={<Text style={styles.hint}>Recognized speech will appear here.</Text>}
@@ -2155,4 +2209,5 @@ const styles = StyleSheet.create((theme) => ({
   sheetTitle: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '700' },
   transcriptContent: { gap: theme.spacing.md, paddingBottom: theme.spacing.xl },
   transcriptText: { color: theme.colors.text, fontSize: theme.text.md, lineHeight: 24 },
+  transcriptPending: { color: theme.colors.textMuted },
 }));

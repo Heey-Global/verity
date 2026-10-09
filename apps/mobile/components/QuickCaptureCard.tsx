@@ -20,6 +20,7 @@ import {
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon } from './Icon';
+import { KeyCommands } from './KeyCommands';
 import { useVoiceInput } from '../hooks/useVoiceInput';
 import { pickFiles, pickImagesFromLibrary } from '../lib/attachments';
 import {
@@ -220,216 +221,240 @@ export function QuickCaptureCard({
   };
   return (
     <Modal transparent animationType="slide" onRequestClose={dismiss}>
-      <KeyboardAvoidingView behavior="padding" style={styles.backdrop}>
-        <View style={styles.card}>
-          <View {...pan.panHandlers} style={styles.grabArea}>
-            <View style={styles.grabber} />
-          </View>
-          <View style={styles.head}>
-            {recording ? (
-              <>
-                <View style={styles.recDot} />
-                <Text style={styles.recLabel}>Recording</Text>
-                <LevelBars level={voice.level} color={theme.colors.tone.danger} />
-              </>
-            ) : (
-              <Text style={styles.headLabel}>{saving ? 'Saving…' : 'New task'}</Text>
-            )}
-            <View style={styles.headSpacer} />
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Discard capture"
-              hitSlop={10}
-              onPress={dismiss}
-              style={({ pressed }) => [styles.close, pressed ? styles.pressed : null]}
-            >
-              <Icon name="x" size={18} color={theme.colors.textMuted} />
-            </Pressable>
-          </View>
-          {voice.error ? (
-            <Text accessibilityRole="alert" style={styles.error}>
-              {voice.error}
-            </Text>
-          ) : null}
-          <TextInput
-            accessibilityLabel="Task text"
-            value={text}
-            multiline
-            editable={!saving}
-            maxLength={2000}
-            placeholder={recording ? 'Listening…' : 'What needs doing?'}
-            placeholderTextColor={theme.colors.textFaint}
-            onChangeText={(value) => {
-              voice.onComposerEdit(value);
-              setText(value);
-            }}
-            style={styles.input}
-          />
-          {voice.onDevice === false ? (
-            <Text style={styles.hint}>Speech recognition uses your device’s network service.</Text>
-          ) : null}
-          {screenshot ? (
-            <View style={styles.suggest}>
-              <View style={styles.suggestThumb}>
-                {preview ? (
-                  <Image source={{ uri: preview }} style={styles.suggestImage} />
-                ) : (
-                  <Icon name="image" size={18} color={theme.colors.textMuted} />
-                )}
-              </View>
-              <View style={styles.suggestBody}>
-                <Text style={styles.suggestTitle}>Screenshot from just now</Text>
-                <Text style={styles.hint}>Attach it to this task?</Text>
-              </View>
+      {/* Native modals have their own responder chain; keep cancellation reachable here. */}
+      <KeyCommands
+        style={{ flex: 1 }}
+        onZoom={() => {}}
+        onVoice={(action) => {
+          if (action === 'task') dismiss();
+        }}
+      >
+        <KeyboardAvoidingView behavior="padding" style={styles.backdrop}>
+          <View style={styles.card}>
+            <View {...pan.panHandlers} style={styles.grabArea}>
+              <View style={styles.grabber} />
+            </View>
+            <View style={styles.head}>
+              {recording ? (
+                <>
+                  <View style={styles.recDot} />
+                  <Text style={styles.recLabel}>Recording</Text>
+                  <LevelBars level={voice.level} color={theme.colors.tone.danger} />
+                </>
+              ) : (
+                <Text style={styles.headLabel}>{saving ? 'Saving…' : 'New task'}</Text>
+              )}
+              <View style={styles.headSpacer} />
               <Pressable
                 accessibilityRole="button"
-                onPress={() => {
-                  void readTaskScreenshot(screenshot)
-                    .then((items) => {
-                      setUploads((previous) => [...previous, ...items]);
-                      setScreenshot(null);
-                    })
-                    .catch((error) =>
-                      Alert.alert(
-                        'Could not attach screenshot',
-                        error instanceof Error ? error.message : 'Try the photo picker',
-                      ),
-                    );
-                }}
-                style={({ pressed }) => [styles.attach, pressed ? styles.pressed : null]}
+                accessibilityLabel="Discard capture"
+                hitSlop={10}
+                onPress={dismiss}
+                style={({ pressed }) => [styles.close, pressed ? styles.pressed : null]}
               >
-                <Text style={styles.attachLabel}>+ Attach</Text>
+                <Icon name="x" size={18} color={theme.colors.textMuted} />
               </Pressable>
             </View>
-          ) : null}
-          {askAccess && !screenshot ? (
-            <View style={styles.perm}>
-              <View style={styles.permIcon}>
-                <Icon name="image" size={16} color={theme.colors.textMuted} />
-              </View>
-              <View style={styles.suggestBody}>
-                <Text style={styles.suggestTitle}>Attach screenshots in one tap</Text>
-                <Text style={styles.hint}>
-                  Verity needs photo access to offer the screenshot you just took.
-                </Text>
-              </View>
-              <View style={styles.permActions}>
+            {voice.preparation ? (
+              <Text>
+                {voice.preparation === 'downloading'
+                  ? 'Downloading speech recognition model…'
+                  : 'Preparing voice input…'}
+              </Text>
+            ) : null}
+            {voice.error ? (
+              <Text accessibilityRole="alert" style={styles.error}>
+                {voice.error}
+              </Text>
+            ) : null}
+            <TextInput
+              accessibilityLabel="Task text"
+              value={text}
+              multiline
+              editable={!saving}
+              maxLength={2000}
+              placeholder={
+                voice.preparation
+                  ? 'Preparing microphone…'
+                  : recording
+                    ? 'Listening…'
+                    : 'What needs doing?'
+              }
+              placeholderTextColor={theme.colors.textFaint}
+              onChangeText={(value) => {
+                voice.onComposerEdit(value);
+                setText(value);
+              }}
+              style={styles.input}
+            />
+            {voice.onDevice === false ? (
+              <Text style={styles.hint}>
+                Speech recognition uses your device’s network service.
+              </Text>
+            ) : null}
+            {screenshot ? (
+              <View style={styles.suggest}>
+                <View style={styles.suggestThumb}>
+                  {preview ? (
+                    <Image source={{ uri: preview }} style={styles.suggestImage} />
+                  ) : (
+                    <Icon name="image" size={18} color={theme.colors.textMuted} />
+                  )}
+                </View>
+                <View style={styles.suggestBody}>
+                  <Text style={styles.suggestTitle}>Screenshot from just now</Text>
+                  <Text style={styles.hint}>Attach it to this task?</Text>
+                </View>
                 <Pressable
                   accessibilityRole="button"
                   onPress={() => {
-                    setAskAccess(false);
-                    void enableTaskScreenshotSuggestions()
-                      .then(() => lookForScreenshot.current(() => true))
-                      .catch(() => undefined);
+                    void readTaskScreenshot(screenshot)
+                      .then((items) => {
+                        setUploads((previous) => [...previous, ...items]);
+                        setScreenshot(null);
+                      })
+                      .catch((error) =>
+                        Alert.alert(
+                          'Could not attach screenshot',
+                          error instanceof Error ? error.message : 'Try the photo picker',
+                        ),
+                      );
                   }}
                   style={({ pressed }) => [styles.attach, pressed ? styles.pressed : null]}
                 >
-                  <Text style={styles.attachLabel}>Allow</Text>
-                </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  hitSlop={6}
-                  onPress={() => {
-                    setAskAccess(false);
-                    void saveTaskPreferences({ screenshotPromptDismissed: true });
-                  }}
-                >
-                  <Text style={styles.hint}>Not now</Text>
+                  <Text style={styles.attachLabel}>+ Attach</Text>
                 </Pressable>
               </View>
-            </View>
-          ) : null}
-          {uploads.length ? (
-            <ScrollView horizontal contentContainerStyle={styles.thumbs}>
-              {uploads.map((upload, index) => (
-                <Pressable
-                  key={index}
-                  accessibilityLabel={`Remove attachment ${String(index + 1)}`}
-                  onPress={() => {
-                    setUploads((items) => items.filter((_, i) => i !== index));
-                  }}
-                  style={styles.thumb}
-                >
-                  {upload.kind === 'image' ? (
-                    <Image
-                      source={{ uri: `data:${upload.mediaType};base64,${upload.data}` }}
-                      style={styles.thumbImage}
-                    />
-                  ) : (
-                    <View style={styles.thumbFile}>
-                      <Icon name="file" size={18} color={theme.colors.textMuted} />
-                      <Text style={styles.thumbName} numberOfLines={2}>
-                        {upload.fileName}
-                      </Text>
+            ) : null}
+            {askAccess && !screenshot ? (
+              <View style={styles.perm}>
+                <View style={styles.permIcon}>
+                  <Icon name="image" size={16} color={theme.colors.textMuted} />
+                </View>
+                <View style={styles.suggestBody}>
+                  <Text style={styles.suggestTitle}>Attach screenshots in one tap</Text>
+                  <Text style={styles.hint}>
+                    Verity needs photo access to offer the screenshot you just took.
+                  </Text>
+                </View>
+                <View style={styles.permActions}>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setAskAccess(false);
+                      void enableTaskScreenshotSuggestions()
+                        .then(() => lookForScreenshot.current(() => true))
+                        .catch(() => undefined);
+                    }}
+                    style={({ pressed }) => [styles.attach, pressed ? styles.pressed : null]}
+                  >
+                    <Text style={styles.attachLabel}>Allow</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    hitSlop={6}
+                    onPress={() => {
+                      setAskAccess(false);
+                      void saveTaskPreferences({ screenshotPromptDismissed: true });
+                    }}
+                  >
+                    <Text style={styles.hint}>Not now</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : null}
+            {uploads.length ? (
+              <ScrollView horizontal contentContainerStyle={styles.thumbs}>
+                {uploads.map((upload, index) => (
+                  <Pressable
+                    key={index}
+                    accessibilityLabel={`Remove attachment ${String(index + 1)}`}
+                    onPress={() => {
+                      setUploads((items) => items.filter((_, i) => i !== index));
+                    }}
+                    style={styles.thumb}
+                  >
+                    {upload.kind === 'image' ? (
+                      <Image
+                        source={{ uri: `data:${upload.mediaType};base64,${upload.data}` }}
+                        style={styles.thumbImage}
+                      />
+                    ) : (
+                      <View style={styles.thumbFile}>
+                        <Icon name="file" size={18} color={theme.colors.textMuted} />
+                        <Text style={styles.thumbName} numberOfLines={2}>
+                          {upload.fileName}
+                        </Text>
+                      </View>
+                    )}
+                    <View style={styles.thumbRemove}>
+                      <Icon name="x" size={11} color="#fff" />
                     </View>
-                  )}
-                  <View style={styles.thumbRemove}>
-                    <Icon name="x" size={11} color="#fff" />
-                  </View>
-                </Pressable>
-              ))}
-            </ScrollView>
-          ) : null}
-          {/* One layout throughout: the project is picked here while or after
+                  </Pressable>
+                ))}
+              </ScrollView>
+            ) : null}
+            {/* One layout throughout: the project is picked here while or after
               speaking, and only the footer's main button changes. Nothing is
               saved until the operator taps Save. */}
-          {projectId === null ? (
-            <Text style={styles.hint}>
-              {projects.length === 0
-                ? 'Create a project to save this task.'
-                : 'Choose a project to save this task.'}
-            </Text>
-          ) : null}
-          <View style={styles.chips}>
-            {chips.map(chip)}
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => setOther(!other)}
-              style={({ pressed }) => [styles.chip, pressed ? styles.pressed : null]}
-            >
-              <Text style={[styles.chipLabel, styles.chipLabelMuted]}>Other…</Text>
-            </Pressable>
+            {projectId === null ? (
+              <Text style={styles.hint}>
+                {projects.length === 0
+                  ? 'Create a project to save this task.'
+                  : 'Choose a project to save this task.'}
+              </Text>
+            ) : null}
+            <View style={styles.chips}>
+              {chips.map(chip)}
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setOther(!other)}
+                style={({ pressed }) => [styles.chip, pressed ? styles.pressed : null]}
+              >
+                <Text style={[styles.chipLabel, styles.chipLabelMuted]}>Other…</Text>
+              </Pressable>
+            </View>
+            {other ? (
+              <ScrollView style={styles.otherList}>
+                {projects.map((project) => (
+                  <Pressable
+                    key={project.id}
+                    style={({ pressed }) => [styles.otherRow, pressed ? styles.pressed : null]}
+                    onPress={() => {
+                      selectProject(project.id);
+                      setOther(false);
+                    }}
+                  >
+                    <Text style={styles.chipLabel}>{projectDisplayName(project)}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            ) : null}
+            <View style={styles.footer}>
+              <AttachButton onPick={pick} />
+              <Text style={[styles.hint, styles.footerHint]} numberOfLines={1}>
+                {saving ? 'Finishing…' : recording ? 'Save ends recording' : ''}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                disabled={!text.trim() || saving || projectId === null}
+                onPress={() => void save()}
+                style={({ pressed }) => [
+                  styles.save,
+                  !text.trim() || saving ? styles.saveDisabled : null,
+                  pressed ? styles.pressed : null,
+                ]}
+              >
+                {saving ? (
+                  <ActivityIndicator color={theme.colors.onPrimary} />
+                ) : (
+                  <Text style={styles.saveLabel}>Save</Text>
+                )}
+              </Pressable>
+            </View>
           </View>
-          {other ? (
-            <ScrollView style={styles.otherList}>
-              {projects.map((project) => (
-                <Pressable
-                  key={project.id}
-                  style={({ pressed }) => [styles.otherRow, pressed ? styles.pressed : null]}
-                  onPress={() => {
-                    selectProject(project.id);
-                    setOther(false);
-                  }}
-                >
-                  <Text style={styles.chipLabel}>{projectDisplayName(project)}</Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-          ) : null}
-          <View style={styles.footer}>
-            <AttachButton onPick={pick} />
-            <Text style={[styles.hint, styles.footerHint]} numberOfLines={1}>
-              {saving ? 'Finishing…' : recording ? 'Save ends recording' : ''}
-            </Text>
-            <Pressable
-              accessibilityRole="button"
-              disabled={!text.trim() || saving || projectId === null}
-              onPress={() => void save()}
-              style={({ pressed }) => [
-                styles.save,
-                !text.trim() || saving ? styles.saveDisabled : null,
-                pressed ? styles.pressed : null,
-              ]}
-            >
-              {saving ? (
-                <ActivityIndicator color={theme.colors.onPrimary} />
-              ) : (
-                <Text style={styles.saveLabel}>Save</Text>
-              )}
-            </Pressable>
-          </View>
-        </View>
-      </KeyboardAvoidingView>
+        </KeyboardAvoidingView>
+      </KeyCommands>
     </Modal>
   );
 }

@@ -516,13 +516,10 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: node scripts/release-lifecycle.mjs '${{ inputs.train }}' '${{ github.sha }}'
 
-      # GitHub's Releases API creates a missing tag as part of the release. If
-      # a delayed run targets a release commit behind HEAD and workflow files
-      # changed in between, that implicit ref creation requires workflows:write
-      # — a permission GITHUB_TOKEN cannot receive. Create only that recovery
-      # tag as an ordinary Git ref first; Release Please then attaches the
-      # release to the existing, verified tag. On-time release runs retain the
-      # normal draft-without-a-tag lifecycle.
+      # The dispatcher now registers tags before entering the train queue.
+      # Keep this fail-closed check for releases stranded before that registrar
+      # and the strict workflow-merge barrier were deployed: a historical
+      # workflow tree cannot always be tagged by GITHUB_TOKEN afterwards.
       - name: Require tags for delayed release commits
         if: (github.event_name == 'push' || inputs.reconcile) && steps.lifecycle.outputs.mode == 'release'
         env:
@@ -1006,6 +1003,13 @@ jobs:
           else
             publish_staging_release
           fi
+
+      # Merges received while this runtime was unpublished skipped OTA planning.
+      # Release publication has no push event to resume them automatically.
+      - name: Resume Staging OTA planning on the published runtime
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run mobile-ota.yml --ref main
 
   publish-website:
     # The Verity product website rides its own release train, so this job is

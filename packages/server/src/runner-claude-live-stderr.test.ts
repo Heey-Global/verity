@@ -40,17 +40,24 @@ describe('live smoke stderr', () => {
     ]);
   });
 
-  it('tolerates the bounded transcript-tail diagnostic from the recreate smoke', () => {
+  it('tolerates bounded transcript-tail model diagnostics', () => {
     const line =
       '[session/models] sessionId=session-1 phase=read-transcript-tail durationMs=5 totalMs=5 model=unknown permissionMode=unknown';
     expect(unexpectedStderrLines(`${line}\n`)).toEqual([]);
+    expect(
+      unexpectedStderrLines(
+        line
+          .replace('model=unknown', 'model=claude-sonnet-4')
+          .replace('permissionMode=unknown', 'permissionMode=default'),
+      ),
+    ).toEqual([]);
     // Broad namespace filters silently swallow failures or appended credentials.
     for (const unexpected of [
       `${line} token=secret`,
       line.replace('durationMs=5', 'durationMs=fast'),
       line.replace('phase=read-transcript-tail', 'phase=error'),
       line.replace('model=unknown', 'model=https://example.com/key'),
-      line.replace('permissionMode=unknown', 'permissionMode=secret'),
+      line.replace('permissionMode=unknown', 'permissionMode=unknown/path?key=secret'),
     ]) {
       expect(unexpectedStderrLines(unexpected)).toEqual([unexpected]);
     }

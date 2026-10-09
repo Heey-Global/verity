@@ -108,6 +108,7 @@ export const gatewayToolNameSchema = z.enum([
   'verity_present_plan',
   'verity_end_planning',
   'verity_tasks',
+  'verity_app_help',
   'verity_google_slides',
   'verity_google_docs',
   'verity_knowledge',

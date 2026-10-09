@@ -405,7 +405,7 @@ function DevicesView({ client }: { client: VerityClient }) {
                   <Pressable
                     onPress={() => createInvitation()}
                     disabled={working}
-                    style={working ? styles.buttonDisabled : null}
+                    style={working ? styles.buttonDisabled : undefined}
                     accessibilityRole="button"
                     accessibilityState={{ disabled: working }}
                     accessibilityLabel="Create a new pairing link"

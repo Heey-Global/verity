@@ -1228,11 +1228,11 @@ export async function runAcpTurn(
       exitDetails !== undefined &&
       (exitDetails.code !== 0 || exitDetails.signal !== null || turnActive)
         ? {
+            ...(opts.model === undefined ? {} : { model: opts.model.slice(0, 200) }),
             exitCode: exitDetails.code,
             signal: exitDetails.signal,
             turnActive,
             stderrTail: redactProcessStderr(child.stderr(), opts.env ?? process.env).slice(-65_536),
-            ...(opts.model === undefined ? {} : { model: opts.model.slice(0, 200) }),
           }
         : {};
     // The ACP analogue of Codex's `thread.started` gate. `session/prompt` is

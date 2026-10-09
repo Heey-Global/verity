@@ -1,3 +1,4 @@
+import { agentEventSchema } from '@verity/events';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { createHash, randomBytes } from 'node:crypto';
 import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -381,6 +382,8 @@ describe('AcpCodexBackend', () => {
       expect(diagnostic).toHaveProperty('stderrTail', expect.stringContaining('last failure'));
       expect(result.exitCode).toBe(1);
       const persisted = append.mock.calls.findLast(([, event]) => event.t === 'diagnostic')?.[1];
+      // Older frame readers hash schema output, so new diagnostics must keep its field order.
+      expect(JSON.stringify(persisted)).toBe(JSON.stringify(agentEventSchema.parse(persisted)));
       expect(JSON.stringify(persisted)).not.toContain(secret);
       expect(JSON.stringify(persisted)).not.toContain(opaque);
       expect(JSON.stringify(persisted)).not.toContain('private-setting');

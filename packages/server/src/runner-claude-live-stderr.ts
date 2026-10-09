@@ -27,7 +27,7 @@ const ADAPTER_LOAD_LINE =
 const ADAPTER_MODELS_LINE =
   /^\[session\/models\] sessionId=[\w.-]+ phase=read-transcript durationMs=\d+ totalMs=\d+ messages=\d+ model=[\w.-]+$/u;
 const ADAPTER_MODELS_TAIL_LINE =
-  /^\[session\/models\] sessionId=[\w.-]+ phase=read-transcript-tail durationMs=\d+ totalMs=\d+ model=unknown permissionMode=unknown$/u;
+  /^\[session\/models\] sessionId=[\w.-]+ phase=read-transcript-tail durationMs=\d+ totalMs=\d+ model=[\w.-]+ permissionMode=[\w.-]+$/u;
 const ADAPTER_REPLAY_LINE =
   /^\[session\/replay\] sessionId=[\w.-]+ phase=(?:read durationMs=\d+|publish durationMs=\d+ totalMs=\d+) messages=\d+$/u;
 

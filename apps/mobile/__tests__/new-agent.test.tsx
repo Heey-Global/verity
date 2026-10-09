@@ -98,6 +98,56 @@ beforeEach(() => {
 });
 
 describe('NewAgentScreen', () => {
+  it('keeps the opened chat pending during provisioning and retries the same session id', async () => {
+    const createSession = jest
+      .fn()
+      .mockResolvedValueOnce({
+        awaitingProvisioning: true,
+        project: { ...project(), state: 'cloning' },
+      })
+      .mockResolvedValue({ sessionId: 's/1' });
+    const getProject = jest
+      .fn()
+      .mockResolvedValueOnce({ project: { ...project(), state: 'cloning' } })
+      .mockResolvedValue({ project: project() });
+    const client = makeClient({ createSession, getProject });
+    mockWidth = 390;
+    mockParams = { projectId: 'p/1' };
+    mockCreateVerityClient.mockReturnValue(client);
+
+    render(<NewAgentScreen />);
+    const id = launchedSessionId();
+    const pending = pendingSession(id);
+    expect(mockSessionChat).toHaveBeenCalled();
+    await waitFor(() => expect(getProject).toHaveBeenCalledWith('p/1'));
+    expect(createSession).toHaveBeenCalledTimes(1);
+    expect(pendingSession(id)).toBe(pending);
+    await expect(pending).resolves.toBeUndefined();
+    expect(createSession).toHaveBeenCalledTimes(2);
+    expect(createSession.mock.calls[0]).toEqual(createSession.mock.calls[1]);
+    expect(client.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it('reports provisioning failure in the opened chat without retrying session creation', async () => {
+    const createSession = jest
+      .fn()
+      .mockResolvedValue({ awaitingProvisioning: true, project: project() });
+    mockWidth = 390;
+    mockParams = { projectId: 'p/1' };
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        createSession,
+        getProject: jest.fn().mockResolvedValue({
+          project: { ...project(), state: 'failed', provisionError: 'Build failed' },
+        }),
+      }),
+    );
+
+    render(<NewAgentScreen />);
+    await expect(pendingSession(launchedSessionId())).rejects.toThrow('Build failed');
+    expect(createSession).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves a configured OpenCode model for session creation and the prepared turn', async () => {
     const client = makeClient();
     mockParams = {

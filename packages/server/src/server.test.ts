@@ -10610,6 +10610,10 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
     );
     branchSvc.switchable.mockResolvedValue([]);
     const app = buildLocal();
+    const warn = vi.fn();
+    app.addHook('onRequest', async (request) => {
+      request.log.warn = warn;
+    });
 
     branchSvc.hasProjectChanges.mockResolvedValue(false);
     const local = await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
@@ -10619,9 +10623,28 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
       localMerge: { base: 'trunk', hasChanges: false },
     });
     expect(branchSvc.hasProjectChanges).toHaveBeenCalledWith(process.cwd(), 'trunk');
+    expect(branchSvc.current).toHaveBeenCalledWith('/clones/__local__-notes', process.cwd());
     branchSvc.hasProjectChanges.mockResolvedValue(true);
     const changed = await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
     expect(changed.json().localMerge.hasChanges).toBe(true);
+    const gitError = Object.assign(new Error('git failed'), {
+      stderr: 'fatal: detected dubious ownership',
+    });
+    branchSvc.hasProjectChanges.mockRejectedValueOnce(gitError);
+    await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: 'file changes', stderr: gitError.stderr }),
+      'verity: local project save status unavailable',
+    );
+    branchSvc.current.mockImplementation(async (wt: string) => {
+      if (wt === '/clones/__local__-notes') throw gitError;
+      return 'feat/notes';
+    });
+    await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: 'base branch', stderr: gitError.stderr }),
+      'verity: local project save status unavailable',
+    );
     await app.close();
 
     // Same session without a configured clone root: nothing to merge into locally.
