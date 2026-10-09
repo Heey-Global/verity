@@ -2224,6 +2224,7 @@ it('counts the complete ended answer history across pages and keeps the count af
           : { hasMore: true, events: events.slice(3) },
       ),
     getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
     getLiveMeetingInsights: jest.fn().mockResolvedValue([]),
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   render(<MeetingScreen />);
