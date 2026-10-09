@@ -2172,14 +2172,12 @@ it('recovers a persisted unfinished note on a fresh offline entry without showin
     error: null,
   };
   jest.mocked(listMeetings).mockResolvedValue([old]);
-  jest
-    .mocked(loadDraftNote)
-    .mockResolvedValueOnce({
-      id: 'persisted-note',
-      meetingId: old.id,
-      atSeconds: 1,
-      text: 'Finish this offline note',
-    });
+  jest.mocked(loadDraftNote).mockResolvedValueOnce({
+    id: 'persisted-note',
+    meetingId: old.id,
+    atSeconds: 1,
+    text: 'Finish this offline note',
+  });
   render(<MeetingScreen />);
   expect(await screen.findByText('“Finish this offline note”')).toBeOnTheScreen();
   expect(screen.getByText('New meeting')).toBeOnTheScreen();
