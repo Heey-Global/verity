@@ -221,8 +221,9 @@ export interface GitBranchService {
   }>;
   /** The branch currently checked out in the worktree. When the worktree is
    * detached at a previewed `origin/<branch>` tip, resolves to that branch name
-   * (not git's bare "HEAD"); falls back to a short SHA for any other detached HEAD. */
-  current(worktreePath: string): Promise<string>;
+   * (not git's bare "HEAD"); falls back to a short SHA for any other detached HEAD.
+   * Supply the owning session worktree when reading a project base in its sandbox. */
+  current(worktreePath: string, sessionWorktreePath?: string): Promise<string>;
   /**
    * The branches this session has worked on, worktree HEAD first, then the others
    * most-recently-active first. Sourced from the worktree's OWN HEAD reflog (each
@@ -480,7 +481,14 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       .map((l) => l.replace(/^origin\//, ''));
   }
 
-  async function current(worktreePath: string): Promise<string> {
+  async function current(worktreePath: string, sessionWorktreePath?: string): Promise<string> {
+    // The base checkout has no session record; route its read through the owning session.
+    if (sessionWorktreePath !== undefined && opts.withGit) {
+      const { withGit, ...scopedOptions } = opts;
+      return withGit(sessionWorktreePath, (scopedGit) =>
+        createGitBranchService({ ...scopedOptions, git: scopedGit }).current(worktreePath),
+      );
+    }
     const out = (await git(['-C', worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'])).trim();
     if (out !== 'HEAD') return out; // a normal (attached) branch
     // Detached HEAD (e.g. a #122 preview checkout of `origin/<branch>`): show the
