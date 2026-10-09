@@ -40,15 +40,18 @@ describe('live smoke stderr', () => {
     ]);
   });
 
-  it('tolerates the transcript-tail model timing of newer adapters', () => {
-    // Verbatim from the sandbox live recreate smoke.
-    const tail =
-      '[session/models] sessionId=5a59a5c6-5990-4f8f-95ca-e4a2c976d27b phase=read-transcript-tail durationMs=3 totalMs=3 model=unknown permissionMode=unknown';
-    expect(unexpectedStderrLines(tail)).toEqual([]);
-    expect(unexpectedStderrLines(`${tail} token=secret`)).toEqual([`${tail} token=secret`]);
-    expect(unexpectedStderrLines(tail.replace('durationMs=3', 'durationMs=slow'))).toEqual([
-      tail.replace('durationMs=3', 'durationMs=slow'),
-    ]);
+  it('tolerates bounded transcript-tail model diagnostics', () => {
+    const timing =
+      '[session/models] sessionId=ff033dc2-f910-4b20-95cb-a21c87a5dfc0 phase=read-transcript-tail durationMs=7 totalMs=7 model=unknown permissionMode=unknown';
+    expect(unexpectedStderrLines(timing)).toEqual([]);
+    for (const invalid of [
+      `${timing} token=secret`,
+      timing.replace('durationMs=7', 'durationMs=fast'),
+      timing.replace('phase=read-transcript-tail', 'phase=error'),
+      timing.replace('permissionMode=unknown', 'permissionMode=unknown/path?key=secret'),
+    ]) {
+      expect(unexpectedStderrLines(invalid)).toEqual([invalid]);
+    }
   });
 
   it('still reports anything that is not that line', () => {

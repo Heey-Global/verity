@@ -9419,14 +9419,37 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // that merging into the project's base branch is possible here at all, and what
       // that base is called. File changes determine strip visibility; the merge
       // endpoint still re-checks every precondition when Save is tapped.
+      const warnLocalSaveRead = (operation: string, error: unknown): void => {
+        request.log.warn(
+          {
+            sessionId: id,
+            worktree: session.worktree,
+            operation,
+            err: error,
+            stderr:
+              error !== null && typeof error === 'object' && 'stderr' in error
+                ? String(error.stderr)
+                : undefined,
+          },
+          'verity: local project save status unavailable',
+        );
+      };
       const localBase = await localMergeTarget(session)
         .then(async (target) =>
-          target === undefined ? null : await branches.current(target.basePath).catch(() => null),
+          target === undefined ? null : await branches.current(target.basePath, session.worktree),
         )
-        .catch(() => null);
+        .catch((error: unknown) => {
+          warnLocalSaveRead('base branch', error);
+          return null;
+        });
       const hasChanges =
         localBase !== null
-          ? await branches.hasProjectChanges(session.worktree, localBase).catch(() => false)
+          ? await branches
+              .hasProjectChanges(session.worktree, localBase)
+              .catch((error: unknown) => {
+                warnLocalSaveRead('file changes', error);
+                return false;
+              })
           : false;
       return {
         current,
