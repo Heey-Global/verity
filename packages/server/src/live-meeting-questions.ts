@@ -30,6 +30,10 @@ export function questionWindow(transcript: string): string | null {
   return recent.trim();
 }
 
+// An existing question can be answered after its original evidence leaves the recent excerpt.
+const checkWindow = (transcript: string) =>
+  questionWindow(transcript) ?? transcript.slice(-2000).trim();
+
 export function meetingQuestionChecks(options: {
   store: EventStore;
   query: MeetingInsightQuery | undefined;
@@ -53,7 +57,7 @@ export function meetingQuestionChecks(options: {
   let running = 0;
   const schedule = (state: State, delay = options.delayMs ?? 1500) => {
     if (closed || state.timer || state.running || !options.query) return;
-    const text = questionWindow(state.meeting.transcript) ?? '';
+    const text = checkWindow(state.meeting.transcript);
     if (
       (text === state.checked && state.meeting.transcript === state.reconciled) ||
       (state.attempts.get(text) ?? 0) >= 3
@@ -71,7 +75,7 @@ export function meetingQuestionChecks(options: {
       return;
     }
     const meeting = state.meeting;
-    const text = questionWindow(meeting.transcript) ?? '';
+    const text = checkWindow(meeting.transcript);
     if (!options.query || closed) return;
     state.running = true;
     running += 1;
@@ -83,7 +87,15 @@ export function meetingQuestionChecks(options: {
     const timeout = setTimeout(() => controller.abort(), 20_000);
     timeout.unref();
     try {
-      if (!text || text === state.checked) {
+      const known =
+        (await options.store.liveMeetings.questions(meeting.sessionId, meeting.id)) ?? [];
+      if (closed || controller.signal.aborted) return;
+      if (
+        !text ||
+        text === state.checked ||
+        (!questionWindow(meeting.transcript) &&
+          !known.some((question) => meeting.transcript.includes(question.evidenceA)))
+      ) {
         const reconciled = await options.store.liveMeetings.reconcileQuestions(
           meeting.sessionId,
           meeting.id,
@@ -98,11 +110,6 @@ export function meetingQuestionChecks(options: {
         }
         return;
       }
-      const known = (
-        (await options.store.liveMeetings.insights(meeting.sessionId, meeting.id)) ?? []
-      )
-        .filter((insight) => insight.id.startsWith('question-'))
-        .slice(0, 40);
       if (closed || controller.signal.aborted) return;
       const prompt = [
         'Extract complete, actionable open questions from this recent live meeting excerpt, in its language.',
@@ -117,11 +124,7 @@ export function meetingQuestionChecks(options: {
       ].join('\n\n');
       const queryAt = Date.now();
       const raw = await options.query(meeting.sessionId, prompt, controller.signal);
-      if (
-        closed ||
-        controller.signal.aborted ||
-        (questionWindow(state.meeting.transcript) ?? '') !== text
-      )
+      if (closed || controller.signal.aborted || checkWindow(state.meeting.transcript) !== text)
         return;
       if (!raw || raw.length > 100_000) throw new Error('Invalid question check response');
       const { questions, resolvedIds } = resultSchema.parse(
@@ -152,7 +155,7 @@ export function meetingQuestionChecks(options: {
         });
       }
       const current = state.meeting;
-      if ((questionWindow(current.transcript) ?? '') !== text) return;
+      if (checkWindow(current.transcript) !== text) return;
       const reconciled = await options.store.liveMeetings.reconcileQuestions(
         current.sessionId,
         current.id,
@@ -204,7 +207,7 @@ export function meetingQuestionChecks(options: {
         states.set(meeting.id, state);
       } else {
         const changed =
-          questionWindow(state.meeting.transcript) !== questionWindow(meeting.transcript) ||
+          checkWindow(state.meeting.transcript) !== checkWindow(meeting.transcript) ||
           !meeting.transcript.startsWith(state.meeting.transcript);
         if (changed && state.timer) {
           clearTimeout(state.timer);

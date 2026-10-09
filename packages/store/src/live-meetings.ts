@@ -183,7 +183,19 @@ export class LiveMeetingStore {
     });
   }
 
+  async questions(sessionId: string, meetingId: string): Promise<LiveMeetingInsight[] | null> {
+    return this.readInsights(sessionId, meetingId, true);
+  }
+
   async insights(sessionId: string, meetingId: string): Promise<LiveMeetingInsight[] | null> {
+    return this.readInsights(sessionId, meetingId, false);
+  }
+
+  private async readInsights(
+    sessionId: string,
+    meetingId: string,
+    questionsOnly: boolean,
+  ): Promise<LiveMeetingInsight[] | null> {
     const meeting = await this.db
       .selectFrom('live_meetings')
       .select('session_id')
@@ -194,8 +206,9 @@ export class LiveMeetingStore {
       .selectFrom('live_meeting_insights')
       .selectAll()
       .where('meeting_id', '=', meetingId)
+      .$if(questionsOnly, (query) => query.where('id', 'like', 'question-%'))
       .orderBy('created_at', 'desc')
-      .limit(30)
+      .limit(questionsOnly ? 40 : 30)
       .execute();
     return rows.map((row) => ({
       id: row.id,

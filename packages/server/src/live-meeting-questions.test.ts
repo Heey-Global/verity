@@ -28,7 +28,7 @@ function setup(
   const controller = meetingQuestionChecks({
     store: {
       liveMeetings: {
-        insights,
+        questions: insights,
         reconcileQuestions,
       },
     } as unknown as EventStore,
@@ -299,5 +299,31 @@ it('retains earlier question evidence when a later topic precedes its answer', a
       insights: [expect.objectContaining({ evidenceA: 'When is delivery?' })],
     }),
   );
+  s.controller.close();
+});
+
+it('checks an answer-only excerpt for persisted open questions without looping', async () => {
+  vi.useFakeTimers();
+  const s = setup(
+    vi.fn().mockResolvedValue(JSON.stringify({ questions: [], resolvedIds: ['question-price'] })),
+  );
+  s.insights.mockResolvedValue([
+    { id: 'question-price', summary: 'What is the price?', evidenceA: 'What is the price?' },
+  ]);
+  const transcript =
+    'What is the price? ' + 'Unrelated discussion. '.repeat(150) + 'The price is ten euros';
+  expect(questionWindow(transcript)).toBeNull();
+  s.controller.ingest(meeting(transcript));
+  await vi.advanceTimersByTimeAsync(20);
+  expect(s.query).toHaveBeenCalledTimes(1);
+  expect(s.query.mock.calls[0]?.[1]).toContain('The price is ten euros');
+  expect(s.reconcileQuestions).toHaveBeenCalledWith(
+    'session',
+    'meeting',
+    1,
+    expect.objectContaining({ resolvedIds: ['question-price'] }),
+  );
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(s.query).toHaveBeenCalledTimes(1);
   s.controller.close();
 });

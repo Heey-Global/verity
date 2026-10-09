@@ -337,9 +337,8 @@ export function registerLiveMeetingRoutes(
           if (!raw) throw new Error('Meeting analysis returned no result');
           if (raw.length > 1_000_000) throw new Error('Meeting analysis response exceeds limit');
           const result = analysisResult.parse(JSON.parse(raw));
-          const knownQuestions = (
-            (await store.liveMeetings.insights(current.sessionId, meetingId)) ?? []
-          ).filter((insight) => insight.id.startsWith('question-'));
+          const knownQuestions =
+            (await store.liveMeetings.questions(current.sessionId, meetingId)) ?? [];
           const questionEvidence = new Set(
             knownQuestions.map((question) => question.evidenceA.trim().replace(/[.!?]+$/u, '')),
           );
@@ -490,11 +489,7 @@ export function registerLiveMeetingRoutes(
 
   // Keyed by session, not the caller-chosen meeting id, so varying the id cannot fan out calls.
   const knownQuestionsForRequest = async (sessionId: string, meetingId?: string) =>
-    meetingId
-      ? ((await store.liveMeetings.insights(sessionId, meetingId)) ?? []).filter(({ id }) =>
-          id.startsWith('question-'),
-        )
-      : [];
+    meetingId ? ((await store.liveMeetings.questions(sessionId, meetingId)) ?? []) : [];
   const addressedInFlight = new Set<string>();
   app.post('/sessions/:id/live-meetings/:meetingId/addressed', async (request, reply) => {
     const { id: sessionId, meetingId } = meetingParams.parse(request.params);

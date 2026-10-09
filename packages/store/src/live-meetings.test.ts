@@ -445,3 +445,32 @@ it('resolves a known question even when its evidence precedes the current answer
   });
   expect(await ctx.store.liveMeetings.insights('session-1', meeting.id)).toEqual([]);
 });
+
+it('loads question identities independently of newer claims and enforces session ownership', async () => {
+  await ctx.store.liveMeetings.putMeeting(meeting);
+  const question = {
+    id: 'question-price',
+    meetingId: meeting.id,
+    kind: 'research' as const,
+    summary: 'What is the price?',
+    evidenceA: 'What is the price?',
+    evidenceB: null,
+    sourcePath: null,
+    createdAt: 1,
+  };
+  await ctx.store.liveMeetings.addInsight('session-1', question);
+  for (let index = 0; index < 31; index++)
+    await ctx.store.liveMeetings.addInsight('session-1', {
+      ...question,
+      id: `claim-${index}`,
+      summary: 'A claim',
+      createdAt: index + 2,
+    });
+  expect(
+    (await ctx.store.liveMeetings.insights('session-1', meeting.id))?.some(
+      ({ id }) => id === question.id,
+    ),
+  ).toBe(false);
+  expect(await ctx.store.liveMeetings.questions('session-1', meeting.id)).toEqual([question]);
+  expect(await ctx.store.liveMeetings.questions('session-2', meeting.id)).toBeNull();
+});
