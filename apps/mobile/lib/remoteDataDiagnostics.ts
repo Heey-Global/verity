@@ -64,6 +64,7 @@ const snapshotKeys = new Set([
   'clockOffsetKnown',
   'startedLate',
   'delegateAvailable',
+  'captureLimitMs',
   'expired',
   'dropped',
   'events',
@@ -99,6 +100,7 @@ export function acceptedDataDiagnostics(value: unknown): string | null {
     typeof snapshot.startedLate !== 'boolean' ||
     typeof snapshot.delegateAvailable !== 'boolean' ||
     typeof snapshot.expired !== 'boolean' ||
+    !integer(snapshot.captureLimitMs, 0, 120_000) ||
     !integer(snapshot.dropped) ||
     !Array.isArray(snapshot.events) ||
     snapshot.events.length > 128
@@ -110,7 +112,7 @@ export function acceptedDataDiagnostics(value: unknown): string | null {
     if (!record(entry) || Object.keys(entry).some((key) => !eventKeys.has(key))) return null;
     if (
       !integer(entry.sequence, sequence + 1) ||
-      !integer(entry.elapsedMs, elapsed, 120_000) ||
+      !integer(entry.elapsedMs, elapsed, snapshot.captureLimitMs as number) ||
       typeof entry.utc !== 'string' ||
       !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(entry.utc) ||
       !Number.isFinite(Date.parse(entry.utc)) ||

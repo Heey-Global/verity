@@ -2,9 +2,9 @@
 
 The mobile Connection diagnostics panel offers **Record connection test** and
 **Copy connection recording**. Recording is opt-in for the current DATA socket
-or, if none is live, the next attachment used by that test. It never replaces a
+or, if none is live, the next attachment used by that test, including any automatic stall replacement. It never replaces a
 live tunnel to obtain a recording. Ordinary tests and traffic do not enable it.
-After 120 seconds, recording and the network-path observer stop without stopping
+All generations in one test share the original 120-second deadline. After that deadline, recording and the network-path observer stop without stopping
 the transport. A recorded socket cannot be rearmed after its window ends; use a
 fresh attachment for a new recording. The native module keeps at most three
 recorded socket generations in memory, including failed starts and stopped
@@ -20,6 +20,7 @@ Each snapshot includes:
   exact unchanged UTF-8 session ID; omitted if attachment never supplied one.
 - `clockOffsetKnown: false`: UTC is not sufficient to order events across hosts.
 - `startedLate`, `delegateAvailable`, `expired`, `dropped`: explicit capture gaps.
+- `captureLimitMs`: the recording time available to this generation, at most 120000 ms.
 - `events`: at most 128 entries, preserving the beginning of the event sequence.
 
 Each event contains `sequence`, UTC `utc`, monotonic local `elapsedMs`, and a

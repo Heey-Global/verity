@@ -1,5 +1,32 @@
 import Foundation
 
+// Intent belongs to one selected test, not its first socket. A replacement
+// must inherit the deadline rather than consume or renew the selection.
+final class RemoteDataCaptureWindow {
+  private let clock: () -> TimeInterval
+  private let lock = NSLock()
+  private var deadline: TimeInterval?
+  init(clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+    self.clock = clock
+  }
+  func begin() {
+    lock.lock(); defer { lock.unlock() }
+    deadline = clock() + RemoteDataDiagnostics.duration
+  }
+  func begin(existingIsActive: Bool, captureExisting: () -> Bool) -> Bool {
+    begin()
+    guard existingIsActive else { return true }
+    let captured = captureExisting()
+    if !captured { clear() }
+    return captured
+  }
+  var remaining: TimeInterval {
+    lock.lock(); defer { lock.unlock() }
+    return max(0, min(RemoteDataDiagnostics.duration, (deadline ?? clock()) - clock()))
+  }
+  func clear() { lock.lock(); deadline = nil; lock.unlock() }
+}
+
 // A single socket generation, retained after teardown. No peer-controlled text
 // is accepted by the event schema, including NSError descriptions and userInfo.
 final class RemoteDataDiagnostics: @unchecked Sendable {
@@ -42,6 +69,7 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
     let clockOffsetKnown = false
     let startedLate: Bool
     let delegateAvailable: Bool
+    let captureLimitMs: Int
     let expired: Bool
     let dropped: Int
     let events: [Entry]
@@ -58,6 +86,7 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
   private var startedLate = false
   private var delegateAvailable = false
   private var disabled = false
+  private var captureDuration = RemoteDataDiagnostics.duration
   static let capacity = 128
   static let duration: TimeInterval = 120
 
@@ -75,13 +104,14 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
   }
 
   @discardableResult
-  func enable(startedLate: Bool, delegateAvailable: Bool) -> Bool {
+  func enable(startedLate: Bool, delegateAvailable: Bool, duration: TimeInterval = RemoteDataDiagnostics.duration) -> Bool {
     lock.lock()
     if let start {
-      let available = !disabled && clock() - start <= Self.duration
+      let available = !disabled && clock() - start <= captureDuration
       lock.unlock()
       return available
     }
+    captureDuration = max(0, min(Self.duration, duration))
     start = clock()
     self.startedLate = startedLate
     self.delegateAvailable = delegateAvailable
@@ -98,7 +128,7 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
     lock.lock(); defer { lock.unlock() }
     guard let start, !disabled else { return }
     let elapsed = max(0, clock() - start)
-    guard elapsed <= Self.duration else { return }
+    guard elapsed <= captureDuration else { return }
     sequence += 1
     let value = error.map { $0 as NSError }
     let domains: Set<String> = ["NSURLErrorDomain", "kCFErrorDomainCFNetwork",
@@ -120,7 +150,8 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
     guard let start else { return nil }
     let snapshot = Snapshot(generation: generation, sessionHash: sessionHash,
       startedLate: startedLate, delegateAvailable: delegateAvailable,
-      expired: clock() - start > Self.duration, dropped: dropped, events: entries)
+      captureLimitMs: Int(captureDuration * 1000),
+      expired: clock() - start > captureDuration, dropped: dropped, events: entries)
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     guard let data = try? encoder.encode(snapshot) else { return nil }

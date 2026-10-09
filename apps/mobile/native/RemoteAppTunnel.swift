@@ -334,9 +334,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
   }
 
   @discardableResult
-  func enableDataDiagnostics() -> Bool {
+  func enableDataDiagnostics(duration: TimeInterval = RemoteDataDiagnostics.duration) -> Bool {
     let enabled = lock.withLock {
-      dataDiagnostics.enable(startedLate: diagnosticsStarted, delegateAvailable: ownsOuterSession)
+      dataDiagnostics.enable(startedLate: diagnosticsStarted, delegateAvailable: ownsOuterSession, duration: duration)
     }
     guard enabled else { return false }
     let monitor = lock.withLock { () -> NWPathMonitor? in
@@ -357,7 +357,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       self?.dataDiagnostics.record(.networkPath, path: status)
     }
     monitor.start(queue: DispatchQueue(label: "verity.data.diagnostics"))
-    DispatchQueue.global().asyncAfter(deadline: .now() + RemoteDataDiagnostics.duration) { [weak self] in
+    DispatchQueue.global().asyncAfter(deadline: .now() + max(0, min(RemoteDataDiagnostics.duration, duration))) { [weak self] in
       self?.disableDataDiagnostics()
     }
     return true

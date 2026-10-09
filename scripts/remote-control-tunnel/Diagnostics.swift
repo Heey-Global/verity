@@ -46,6 +46,31 @@ struct DiagnosticsTest {
     let before = next.export()
     next.record(.socketClose, closeCode: 1000)
     precondition(next.export() == before)
+    // Exhaustion and stall replacements inherit a single test window.
+    time = 1000
+    let window = RemoteDataCaptureWindow(clock: { time })
+    precondition(window.remaining == 0)
+    precondition(window.begin(existingIsActive: false) {
+      preconditionFailure("An exhausted tunnel must not consume the selected capture")
+    })
+    let firstAttempt = RemoteDataDiagnostics(clock: { time })
+    firstAttempt.enable(startedLate: false, delegateAvailable: true, duration: window.remaining)
+    time += 10
+    let stallReplacement = RemoteDataDiagnostics(clock: { time })
+    stallReplacement.enable(startedLate: false, delegateAvailable: true, duration: window.remaining)
+    let replacement = try JSONSerialization.jsonObject(with: Data(stallReplacement.export()!.utf8)) as! [String: Any]
+    precondition(replacement["captureLimitMs"] as? Int == 110_000)
+    precondition(firstAttempt.generation != stallReplacement.generation)
+    time += 111
+    precondition(window.remaining == 0)
+    for attempt in [firstAttempt, stallReplacement] {
+      let state = try JSONSerialization.jsonObject(with: Data(attempt.export()!.utf8)) as! [String: Any]
+      precondition(state["expired"] as? Bool == true)
+    }
+    window.clear()
+    precondition(window.remaining == 0)
+    precondition(!window.begin(existingIsActive: true) { false })
+    precondition(window.remaining == 0)
     print("DATA diagnostic recorder tests passed")
   }
 }

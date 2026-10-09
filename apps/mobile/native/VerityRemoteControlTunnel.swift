@@ -5,12 +5,13 @@ class VerityRemoteControlTunnel: Module {
   private var tunnel: AnyObject?
   private var retired: [AnyObject] = []
   private var lastStartFailure: String?
-  private var captureNextAttempt = false
+  private let captureWindow = RemoteDataCaptureWindow()
   private var diagnosticRecords: [RemoteDataDiagnostics] = []
 
   @available(iOS 17.0, macOS 14.0, *)
   private func capture(_ tunnel: RemoteAppTunnel) -> Bool {
-    guard tunnel.enableDataDiagnostics() else { return false }
+    let remaining = captureWindow.remaining
+    guard remaining > 0, tunnel.enableDataDiagnostics(duration: remaining) else { return false }
     if !diagnosticRecords.contains(where: { $0 === tunnel.dataDiagnostics }) {
       diagnosticRecords.append(tunnel.dataDiagnostics)
       if diagnosticRecords.count > 3 { diagnosticRecords.removeFirst() }
@@ -57,8 +58,9 @@ class VerityRemoteControlTunnel: Module {
       }
       let tunnel = try RemoteAppTunnel(dataURL: dataURL, coreURL: coreURL)
       self.tunnel = tunnel
-      if self.captureNextAttempt { _ = self.capture(tunnel) }
-      self.captureNextAttempt = false
+      // Keep the selected test's intent through automatic stall replacements;
+      // each generation gets only the time remaining in the original window.
+      _ = self.capture(tunnel)
       self.lastStartFailure = nil
       do { return try await tunnel.start(ticket: ticket, sessionId: sessionId) }
       catch {
@@ -82,17 +84,17 @@ class VerityRemoteControlTunnel: Module {
 
     AsyncFunction("captureDataDiagnostics") { () -> Bool in
       guard #available(iOS 17.0, macOS 14.0, *) else { return false }
-      if let tunnel = self.tunnel as? RemoteAppTunnel, !tunnel.isStopped {
+      let tunnel = self.tunnel as? RemoteAppTunnel
+      return self.captureWindow.begin(existingIsActive: tunnel?.isActive == true) {
+        guard let tunnel else { return false }
         return self.capture(tunnel)
       }
-      self.captureNextAttempt = true
-      return true
     }
 
-    AsyncFunction("clearPendingDataDiagnostics") { self.captureNextAttempt = false }
+    AsyncFunction("clearPendingDataDiagnostics") { self.captureWindow.clear() }
 
     AsyncFunction("disableDataDiagnostics") {
-      self.captureNextAttempt = false
+      self.captureWindow.clear()
       guard #available(iOS 17.0, macOS 14.0, *) else { return }
       (self.tunnel as? RemoteAppTunnel)?.disableDataDiagnostics()
       for record in self.diagnosticRecords { record.disable() }

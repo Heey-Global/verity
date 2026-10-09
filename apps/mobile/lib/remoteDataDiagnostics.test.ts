@@ -18,6 +18,7 @@ function snapshot() {
     clockOffsetKnown: false,
     startedLate: false,
     delegateAvailable: true,
+    captureLimitMs: 120_000,
     expired: false,
     dropped: 0,
     events: [
