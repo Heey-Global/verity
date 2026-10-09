@@ -1805,3 +1805,108 @@ it.each([false, true])(
     expect(screen.getAllByText('Where is the venue?')).toHaveLength(1);
   },
 );
+
+it.each(['requested', 'dismissed'])(
+  'applies the suggestion limit after excluding %s questions',
+  async (hidden) => {
+    const meeting: MeetingRecord = {
+      id: 'meeting-suggestion-limit',
+      sessionId: 'session-1',
+      serverId: null,
+      engine: 'apple-speech',
+      startedAt: 1,
+      endedAt: null,
+      state: 'active',
+      transcript: 'Meeting text.',
+      error: null,
+    };
+    jest.mocked(listMeetings).mockResolvedValue([meeting]);
+    const insights = Array.from({ length: 5 }, (_, index) => ({
+      id: `question-${index}`,
+      meetingId: meeting.id,
+      kind: 'research',
+      summary: `Question ${index}?`,
+      evidenceA: `Question ${index}?`,
+      evidenceB: null,
+      sourcePath: null,
+      createdAt: index,
+    }));
+    const events =
+      hidden === 'requested'
+        ? insights.slice(0, 4).flatMap((insight, index) => [
+            {
+              seq: index * 3 + 1,
+              event: {
+                t: 'prompt',
+                text: `Research this point raised during live meeting ${meeting.id}:\n\n${insight.summary}\n\nRecent meeting transcript:\n${meeting.transcript}\n\nMeeting question reference: ${insight.id}`,
+              },
+            },
+            { seq: index * 3 + 2, event: { t: 'text', delta: 'An answer.' } },
+            { seq: index * 3 + 3, event: { t: 'result' } },
+          ])
+        : [];
+    jest.mocked(createVerityClient).mockReturnValue({
+      getHistory: jest.fn().mockResolvedValue({ hasMore: false, events }),
+      getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
+      getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+      getLiveMeetingInsights: jest.fn().mockResolvedValue(insights),
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    render(<MeetingScreen />);
+    if (hidden === 'dismissed') {
+      await screen.findByText('Question 0?');
+      for (let index = 0; index < 4; index++)
+        fireEvent.press(screen.getAllByLabelText('Dismiss meeting question')[0]!);
+    }
+    expect(await screen.findByText('Question 4?')).toBeOnTheScreen();
+    expect(screen.getAllByLabelText('Research meeting question')).toHaveLength(1);
+  },
+);
+
+it('keeps a pending question whose wording matches an answer for a different question identity', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-distinct-pending',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: 1,
+    endedAt: null,
+    state: 'active',
+    transcript: 'Meeting text.',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  const question = 'What is the price?';
+  jest.mocked(createVerityClient).mockReturnValue({
+    getHistory: jest.fn().mockResolvedValue({
+      hasMore: false,
+      events: [
+        {
+          seq: 1,
+          event: {
+            t: 'prompt',
+            text: `Research this point raised during live meeting ${meeting.id}:\n\n${question}\n\nRecent meeting transcript:\n${meeting.transcript}\n\nMeeting question reference: question-other`,
+          },
+        },
+        { seq: 2, event: { t: 'text', delta: 'An earlier price.' } },
+        { seq: 3, event: { t: 'result' } },
+      ],
+    }),
+    getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+    getLiveMeetingInsights: jest.fn().mockResolvedValue([
+      {
+        id: 'question-pending',
+        meetingId: meeting.id,
+        kind: 'research',
+        summary: question,
+        evidenceA: question,
+        evidenceB: null,
+        sourcePath: null,
+        createdAt: 1,
+      },
+    ]),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('An earlier price.')).toBeOnTheScreen();
+  expect(screen.getByLabelText('Research meeting question')).toBeOnTheScreen();
+});

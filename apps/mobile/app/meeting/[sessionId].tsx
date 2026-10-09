@@ -1142,12 +1142,13 @@ export default function MeetingScreen() {
     });
     // A suggestion that was sent becomes its answer card rather than staying beside it.
     const requested = (text: string, questionId?: string) =>
-      [...answers, ...queuedAnswers, ...localAnswers].some(
-        (card) =>
-          (questionId && card.questionId === questionId) ||
-          meetingQuestionKey(card.request) === meetingQuestionKey(text),
+      [...answers, ...queuedAnswers, ...localAnswers].some((card) =>
+        questionId && card.questionId
+          ? card.questionId === questionId
+          : meetingQuestionKey(card.request) === meetingQuestionKey(text),
       );
-    for (const insight of insights.slice(0, 4)) {
+    let shownInsights = 0;
+    for (const insight of insights) {
       if (dismissed.includes(insight.id) || dismissed.includes(meetingQuestionKey(insight.summary)))
         continue;
       const contradiction = insight.kind === 'contradiction';
@@ -1156,11 +1157,14 @@ export default function MeetingScreen() {
         : insight.id.startsWith('question-')
           ? insight.summary
           : insight.evidenceA;
+      const questionId = insight.id.startsWith('question-') ? insight.id : undefined;
       if (
         (contradiction || insight.kind === 'research') &&
-        (requested(researchText, insight.id) || requested(insight.evidenceA))
+        (requested(researchText, questionId) || requested(insight.evidenceA, questionId))
       )
         continue;
+      if (shownInsights >= 4) break;
+      shownInsights += 1;
       const note = asNote(insight.summary);
       cards.push(
         <NoticedCard
