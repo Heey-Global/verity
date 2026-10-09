@@ -1,10 +1,13 @@
 import { createServer, request } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { createProjectEgressCa, issueGatewayServerCertificate } from '../claude-egress-ca.js';
 import { once } from 'node:events';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { verifyManagedBrowserOrigin } from '../managed-browser-origin.js';
 import {
   closeManagedGatewayUpstreamSocket,
   startManagedGateway,
@@ -97,8 +100,12 @@ async function gateway(
 describe('managed gateway foundation', () => {
   it('replaces a spoofed managed-client header with a signed socket identity', async () => {
     let forwarded: string | string[] | undefined;
+    let forwardedOrigin: string | string[] | undefined;
+    let backendHost: string | undefined;
     const server = createServer((request, response) => {
       forwarded = request.headers['x-verity-managed-client'];
+      forwardedOrigin = request.headers['x-verity-managed-browser-origin'];
+      backendHost = request.headers.host;
       response.end('ok');
     });
     server.listen(0, '127.0.0.1');
@@ -114,9 +121,68 @@ describe('managed gateway foundation', () => {
     });
     closers.push(() => runtime.close());
 
-    await get(runtime.publicPort, '/', { 'x-verity-managed-client': 'spoofed' });
+    await get(runtime.publicPort, '/', {
+      host: 'core.local:9443',
+      'x-verity-managed-client': 'spoofed',
+      'x-verity-managed-browser-origin': 'spoofed',
+      'x-forwarded-host': 'evil.local',
+      'x-forwarded-proto': 'https',
+    });
+    expect(backendHost).toBe(`127.0.0.1:${String(port)}`);
+    expect(
+      verifyManagedBrowserOrigin(Buffer.alloc(32, 7), forwardedOrigin, { method: 'GET', url: '/' }),
+    ).toBe('http://core.local:9443');
     expect(forwarded).toEqual(expect.stringMatching(/^\d+\.[^.]+\.[A-Za-z0-9_-]+$/));
     expect(forwarded).not.toBe('spoofed');
+  });
+
+  it('signs the HTTPS public origin before rewriting the backend Host', async () => {
+    const secret = Buffer.alloc(32, 9);
+    let forwarded: string | string[] | undefined;
+    const server = createServer((request, response) => {
+      forwarded = request.headers['x-verity-managed-browser-origin'];
+      response.end('ok');
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const port = (server.address() as { port: number }).port;
+    closers.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const ca = await createProjectEgressCa({ commonName: 'Managed browser origin test CA' });
+    const certificate = await issueGatewayServerCertificate(ca, { serverName: 'core.local' });
+    const runtime = await startManagedGateway({
+      publicPort: 0,
+      internalPort: 0,
+      backend: { host: '127.0.0.1', publicPort: port, internalPort: port },
+      allowedBackendHosts: ['127.0.0.1'],
+      clientIdentitySecret: secret,
+      tls: { key: certificate.keyPem, cert: certificate.certPem },
+    });
+    closers.push(() => runtime.close());
+    await new Promise<void>((resolve, reject) => {
+      httpsRequest(
+        {
+          host: '127.0.0.1',
+          port: runtime.publicPort,
+          ca: ca.caCertPem,
+          servername: 'core.local',
+          path: '/secret/init/browser',
+          method: 'POST',
+          headers: { host: 'core.local:9443', 'x-forwarded-proto': 'http' },
+        },
+        (response) => {
+          response.resume();
+          response.once('end', resolve);
+        },
+      )
+        .once('error', reject)
+        .end();
+    });
+    expect(
+      verifyManagedBrowserOrigin(secret, forwarded, {
+        method: 'POST',
+        url: '/secret/init/browser',
+      }),
+    ).toBe('https://core.local:9443');
   });
 
   it('replaces a spoofed managed-client header on WebSocket upgrades', async () => {
@@ -613,4 +679,44 @@ describe('managed gateway foundation', () => {
     await runtime.close();
     await expect(get(runtime.publicPort, '/healthz')).rejects.toBeDefined();
   });
+});
+
+it('records correlated proxy lifecycle without raw route data', async () => {
+  const target = await backend('diagnostic');
+  closers.push(() => target.close());
+  const log = vi.fn();
+  const runtime = await startManagedGateway({
+    publicPort: 0,
+    internalPort: 0,
+    backend: { host: '127.0.0.1', publicPort: target.port, internalPort: target.port },
+    allowedBackendHosts: ['127.0.0.1'],
+    log,
+  });
+  closers.push(() => runtime.close());
+  await get(runtime.publicPort, '/sessions/private/events?cursor=secret', {
+    'x-verity-switch-request': 'switch-1',
+    'x-verity-switch-kind': 'events',
+  });
+  expect(log).toHaveBeenCalledWith(
+    expect.objectContaining({
+      event: 'session-switch-http',
+      diagnosticRequestId: 'switch-1',
+      kind: 'events',
+      outcome: 'finished',
+      statusCode: 200,
+      httpVersion: '1.1',
+      upstreamReusedSocket: expect.any(Number),
+      socketAssignedMs: expect.any(Number),
+      upstreamResponseMs: expect.any(Number),
+      upstreamEndMs: expect.any(Number),
+      downstreamCompletedMs: expect.any(Number),
+    }),
+  );
+  expect(JSON.stringify(log.mock.calls)).not.toMatch(/private|secret/);
+  log.mockClear();
+  await get(runtime.publicPort, '/sessions/private/events', {
+    'x-verity-switch-request': 'invalid/token',
+    'x-verity-switch-kind': 'events',
+  });
+  expect(log).not.toHaveBeenCalled();
 });

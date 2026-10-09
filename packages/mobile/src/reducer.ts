@@ -1,3 +1,4 @@
+import type { SessionDevServer } from './api.js';
 import type {
   AgentEvent,
   AgentStatus,
@@ -9,7 +10,7 @@ import type {
   AgentTextMessage,
   ChoicesMessage,
   DependencyStatusMessage,
-  AgentLoopProposalMessage,
+  AutomationProposalMessage,
   Message,
   PendingPermission,
   ToolCallMessage,
@@ -24,6 +25,7 @@ export interface SessionState {
   model: string | undefined;
   status: AgentStatus | undefined;
   messages: Message[];
+  devServers?: SessionDevServer[];
   /** Live cumulative token usage across the session's completed turns (§13a). */
   usage: UsageTotals;
   /** Tools the session's turns requested but were denied (§5b). Each entry may
@@ -141,9 +143,12 @@ function samePublishedMessage(left: Message, right: Message): boolean {
  * denied-tool list folded off `result` #26.)
  */
 export class SessionReducer {
+  private _devServers: SessionDevServer[] | undefined;
   private _sessionId: string | undefined;
   private _model: string | undefined;
   private _status: AgentStatus | undefined;
+  private _activitySeq = 0;
+  private _settledSeq = 0;
   private readonly _messages: Message[] = [];
   private readonly messageSnapshots = new WeakMap<Message, Message>();
   private publishedMessages: Message[] | undefined;
@@ -208,6 +213,16 @@ export class SessionReducer {
    * asymmetric rollout) falls back to the previous `seq`-as-time proxy.
    */
   apply(seq: number, event: AgentEvent, ts: number = seq): void {
+    if (
+      event.t === 'prompt' ||
+      event.t === 'session' ||
+      event.t === 'task' ||
+      event.t === 'result' ||
+      event.t === 'interrupted' ||
+      event.t === 'status'
+    ) {
+      this._activitySeq = seq;
+    }
     // The Skill→body correlation survives ONLY the [Skill `tool_call`] →
     // [`tool_result`] → [`skill`] sequence: any other event invalidates a pending
     // body so a stale one can't capture a later synthetic turn (a new turn, an
@@ -217,17 +232,22 @@ export class SessionReducer {
       this._pendingSkillToolId = null;
     }
     switch (event.t) {
+      case 'dev_servers_changed':
+        this._devServers = event.devServers;
+        break;
       case 'session':
         this._sessionId = event.id;
         this._model = event.model;
         // A fresh-session bind is the start of its first turn (#79); a new turn
         // can't carry a stale permission prompt from a prior one (#149).
         this._pendingPermission = undefined;
+        this._status = 'running';
         this._running = true;
         this._openTasks.clear(); // a fresh turn starts with no outstanding tasks
         break;
       case 'status':
         this._status = event.state;
+        if (event.state === 'running') this._running = true;
         this.removeDependencyStatus();
         if (event.state === 'awaiting_dependency' && event.message !== undefined) {
           const message: DependencyStatusMessage = {
@@ -249,6 +269,7 @@ export class SessionReducer {
         // missed a `task ended` (a dropped/streamed-past event): the set never drained,
         // so the turn-end status was ignored and the indicator hung forever.
         if (event.state === 'completed' || event.state === 'crashed') {
+          this._settledSeq = seq;
           this.active = null; // turn end closes the open streaming block (mirror `result`)
           this._running = false;
           this._openTasks.clear(); // the turn ended; its background tasks are over
@@ -286,8 +307,10 @@ export class SessionReducer {
         // belonged to is over once a fresh prompt is dispatched.
         this.active = null;
         this._pendingPermission = undefined;
+        this._status = 'running';
         this._running = true;
-        this._openTasks.clear(); // a fresh turn starts with no outstanding tasks
+        // Steering belongs to the current turn and must retain its background work.
+        if (!event.steered) this._openTasks.clear();
         const msg: UserTextMessage = {
           kind: 'user-text',
           id: `user-${String(seq)}`,
@@ -351,6 +374,7 @@ export class SessionReducer {
         // `result` once the task finishes. Only clear `running` when nothing is
         // outstanding, so the screen doesn't flip to "stopped" mid-turn (#79).
         if (this._openTasks.size === 0) {
+          this._settledSeq = seq;
           this._running = false;
           // The turn truly ended — settle Skill cards kept pulsing during the review.
           this.settleOpenSkillTools(ts);
@@ -365,8 +389,10 @@ export class SessionReducer {
         // set so an intra-turn `result` doesn't clear `running` (see the `result`
         // case). Not a transcript row and not a streaming boundary — leave `active`
         // untouched so it doesn't fragment an open text/thinking block.
-        if (event.phase === 'started') this._openTasks.add(event.id);
-        else if (event.phase === 'ended') this._openTasks.delete(event.id);
+        if (event.phase === 'started') {
+          this._openTasks.add(event.id);
+          this._running = true;
+        } else if (event.phase === 'ended') this._openTasks.delete(event.id);
         break;
       case 'rate_limit': {
         // Track the latest provider rate-limit status as session state (the screen
@@ -422,11 +448,11 @@ export class SessionReducer {
         this.appendMessage(msg);
         break;
       }
-      case 'agent_loop_proposal': {
+      case 'automation_proposal': {
         this.active = null;
-        const msg: AgentLoopProposalMessage = {
-          kind: 'agent-loop-proposal',
-          id: `agent-loop-proposal-${String(seq)}`,
+        const msg: AutomationProposalMessage = {
+          kind: 'automation-proposal',
+          id: `automation-proposal-${String(seq)}`,
           createdAt: ts,
           proposal: event.proposal,
         };
@@ -434,6 +460,7 @@ export class SessionReducer {
         break;
       }
       case 'interrupted':
+        this._settledSeq = seq;
         // The operator stopped the turn (#79): a terminal marker that ENDS the
         // turn. Render as an `agent-event` row, clear the running flag, settle any
         // pulsing Skill card, and drop any unanswered permission prompt — the turn
@@ -442,6 +469,11 @@ export class SessionReducer {
         this.settleOpenSkillTools(ts);
         this._pendingPermission = undefined;
         this.emitAgentEvent(seq, ts, event);
+        break;
+      case 'tasks_updated':
+        // The operator's own panel edits are visible where they were made; only
+        // what the agent did to the list is worth a line in the transcript.
+        if (event.origin === 'agent') this.emitAgentEvent(seq, ts, event);
         break;
       case 'merged':
         // The operator merged the session's PR: a transcript-only "Merged PR #N"
@@ -744,6 +776,19 @@ export class SessionReducer {
     return this._running;
   }
 
+  /** Lifecycle watermark: transcript and administrative updates do not restart work. */
+  get activitySeq(): number {
+    return this._activitySeq;
+  }
+
+  get settledSeq(): number {
+    return this._settledSeq;
+  }
+
+  get hasOpenTasks(): boolean {
+    return this._openTasks.size > 0;
+  }
+
   clearRateLimit(): void {
     this._rejectedRateLimits.clear();
     this._rateLimit = undefined;
@@ -782,6 +827,7 @@ export class SessionReducer {
       model: this._model,
       status: this._status,
       messages: this.messages as Message[],
+      ...(this._devServers !== undefined ? { devServers: this._devServers } : {}),
       usage: { ...this._usage },
       permissionDenials: [...this._permissionDenials],
       rateLimit: this._rateLimit ? { ...this._rateLimit } : undefined,

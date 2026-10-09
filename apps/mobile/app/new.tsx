@@ -1,6 +1,6 @@
 // New-session entry: open the chat for a brand-new session immediately and create
 // it in the background. Plain plus-clicks stay LLM-idle; prepared prompts from
-// explicit flows (Agent Loop setup, issues, tasks) are sent as the first turn.
+// explicit flows (issues, tasks) are sent as the first turn.
 //
 // The create itself is slow — the server refreshes the base branch from origin and
 // adds a git worktree — so this screen no longer waits for it. It mints the session

@@ -7,8 +7,8 @@ export {
   brokeredGrantChannelSchema,
   choicesOptionSchema,
   choicesPayloadSchema,
-  agentLoopProposalSchema,
-  agentLoopScheduleSchema,
+  automationProposalSchema,
+  automationScheduleSchema,
   fileMediaTypeSchema,
   imageMediaTypeSchema,
   isAgentEvent,
@@ -22,7 +22,8 @@ export {
 } from './events.js';
 export type {
   AgentEvent,
-  AgentLoopProposal,
+  AutomationProposal,
+  AutomationSchedule,
   AgentEventType,
   AgentStatus,
   Attachment,
@@ -48,10 +49,23 @@ export {
   type ParsedChoices,
 } from './choices.js';
 export {
-  AGENT_LOOP_PROPOSAL_SYSTEM_PROMPT,
-  parseAgentLoopProposal,
-  type ParsedAgentLoopProposal,
-} from './agent-loop.js';
+  AUTOMATION_SYSTEM_PROMPT,
+  parseAutomationProposal,
+  type ParsedAutomationProposal,
+} from './automation.js';
+export {
+  END_PLANNING_TOOL,
+  DISMISSED_PLAN_SYSTEM_PROMPT,
+  parsePlanningProposal,
+  IMPLEMENT_PLAN_DISPLAY,
+  IMPLEMENT_PLAN_PROMPT,
+  PLANNING_ACTIVE_SYSTEM_PROMPT,
+  PLANNING_SYSTEM_PROMPT,
+  PRESENT_PLAN_TOOL,
+  START_PLANNING_TOOL,
+  planningToolName,
+  type PlanningToolName,
+} from './planning.js';
 export { DELEGATION_SYSTEM_PROMPT } from './delegation.js';
 export { AUTONOMY_RESUME_SYSTEM_PROMPT, AUTONOMY_SYSTEM_PROMPT } from './autonomy.js';
 export { BREVITY_SYSTEM_PROMPT } from './brevity.js';
@@ -95,6 +109,31 @@ export {
   publishSessionProgressRequestSchema,
   sessionProgressRequestSchema,
 } from './session-observation-tool.js';
+export {
+  APP_HELP_SYSTEM_PROMPT,
+  APP_HELP_TOOL,
+  APP_HELP_TOOL_DESCRIPTION,
+  APP_HELP_TOPICS,
+  DOCS_BASE_URL,
+  answerAppHelp,
+  appHelpRequestSchema,
+  type AppHelpAnswer,
+  type AppHelpEntry,
+  type AppHelpRequest,
+  type AppHelpTopic,
+} from './app-help.js';
+export {
+  ASSIGNED_TASKS_PROMPT_MAX,
+  TASKS_ADD_MAX,
+  TASKS_RESUME_SYSTEM_PROMPT,
+  TASKS_SYSTEM_PROMPT,
+  TASKS_TOOL,
+  TASKS_TOOL_DESCRIPTION,
+  renderAssignedTasksPrompt,
+  tasksRequestSchema,
+  type AssignedTaskSummary,
+  type TasksRequest,
+} from './tasks-tool.js';
 export { SESSION_PROJECTION_EVENT_TYPES, sessionProjectionEvents } from './projection.js';
 export {
   aggregateUsage,
@@ -123,3 +162,37 @@ export {
   KNOWLEDGE_TOOL_DESCRIPTION,
   KNOWLEDGE_CONTEXT_INSTRUCTIONS,
 } from './knowledge-tool.js';
+
+export { selectedOpenCodeModels } from './opencode-model-selection.js';
+
+export { fileOperationRequestSchema } from './file-operations.js';
+
+export {
+  LIVE_ALERT_KINDS,
+  LIVE_ALERT_MAX_CHOICES,
+  LIVE_ENDED_REASONS,
+  LIVE_HINT_TOPICS,
+  LIVE_MAX_SESSION_SUBSCRIPTIONS,
+  LIVE_PING_INTERVAL_MS,
+  LIVE_PONG_TIMEOUT_MS,
+  LIVE_PROTOCOL_VERSION,
+  LIVE_TICKET_PROTOCOL_PREFIX,
+  decodeLiveClientFrame,
+  decodeLiveServerFrame,
+  liveAlertSchema,
+  liveClientFrameSchema,
+  liveHintSchema,
+  liveServerFrameSchema,
+  liveResourceSchema,
+  type LiveResource,
+  type LiveAlert,
+  type LiveAlertKind,
+  type LiveClientFrame,
+  type LiveDecodeResult,
+  type LiveEndedReason,
+  type LiveHint,
+  type LiveHintTopic,
+  type LiveServerFrame,
+} from './live.js';
+
+export { liveResourceInterval } from './live-resources.js';

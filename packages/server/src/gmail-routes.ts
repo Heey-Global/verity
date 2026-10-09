@@ -1,3 +1,4 @@
+import { googleAppClient } from './google-app-client.js';
 import rateLimitPlugin from '@fastify/rate-limit';
 import {
   SealedError,
@@ -43,6 +44,7 @@ type GmailRouteStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySetti
 interface GmailRouteDeps {
   eventStore: GmailRouteStore;
   googleClientId?: string;
+  stagingGoogleClientId?: string;
   secretCipher?: SealableSecretCipher;
   fetch?: GoogleFetch;
   onCredentialsChanged?: () => void;
@@ -95,7 +97,8 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
       async (request, reply) => {
         if (deps.secretCipher?.isSealed() === true) throw new SealedError();
         const body = connectBody.parse(request.body);
-        const clientId = deps.googleClientId ?? '';
+        const clientId =
+          googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ?? '';
         if (!clientId) {
           reply.code(400);
           return { error: 'Google is not configured on this server' };
@@ -176,7 +179,12 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
       return {
         enabled: connection !== undefined,
         connected,
-        clientId: deps.googleClientId ?? current?.googleDriveClientId ?? null,
+        clientId:
+          googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ??
+          (request.headers['x-verity-app-variant'] === undefined
+            ? current?.googleDriveClientId
+            : null) ??
+          null,
         accountEmail: connection === undefined ? null : (current?.googleDriveAccountEmail ?? null),
       };
     });
@@ -201,7 +209,11 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
       return {
         enabled: true as const,
         connected: true as const,
-        clientId: deps.googleClientId ?? current.googleDriveClientId,
+        clientId:
+          googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ??
+          (request.headers['x-verity-app-variant'] === undefined
+            ? current.googleDriveClientId
+            : null),
         accountEmail: current.googleDriveAccountEmail,
       };
     });
@@ -213,6 +225,13 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
         return { error: `session ${id} not found` };
       }
       await deps.eventStore.disableSessionGmail(id);
+      // Older clients must not report a successful logout while project access remains.
+      if ((await deps.eventStore.getSessionGmailConnection(id)) !== undefined) {
+        return reply.code(409).send({
+          error:
+            'Google access is enabled for this project. Manage it in project settings with an updated app.',
+        });
+      }
       reply.code(204);
     });
   });

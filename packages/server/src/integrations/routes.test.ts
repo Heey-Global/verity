@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
@@ -7,6 +7,7 @@ import { strToU8, zipSync } from 'fflate';
 import { z } from 'zod';
 import { createTestDb, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import { readMatrixDiagnosticSnapshot } from '../matrix-diagnostic-snapshot.js';
 import { registerIntegrationRoutes } from './routes.js';
 
 let ctx: TestDb;
@@ -305,4 +306,520 @@ it('stores Matrix configuration globally, redacts its settings response, and lim
   });
   expect(worker.json()).toEqual({ config: payload });
   await app.close();
+});
+
+it('imports orphan edits once and clears previous failure evidence with a new worker snapshot', async () => {
+  const app = Fastify();
+  const token = 'a-secret-long-enough-for-the-worker-route';
+  registerIntegrationRoutes(app, {
+    store: ctx.store.integrations,
+    connectorToken: token,
+    dataRoot: root,
+  });
+  const headers = { authorization: `Bearer ${token}` };
+  const id = `@diagnostics-${randomUUID()}:example.test`;
+  const sourceId = '!diagnostics:example.test';
+  const payload = {
+    id,
+    endpoint: 'https://matrix.example.test',
+    displayName: 'Matrix',
+    status: 'online',
+  };
+  const url = '/internal/integrations/matrix/account';
+  await app.inject({ method: 'POST', url, headers, payload });
+  await ctx.store.integrations.discoverSource({ accountId: id, sourceId, displayName: 'Room' });
+  const projectId = randomUUID();
+  await ctx.store.upsertProject({
+    id: projectId,
+    owner: 'example',
+    repo: 'diagnostics-test',
+    containerName: `diagnostics-${projectId}`,
+    state: 'absent',
+  });
+  await ctx.store.integrations.setSourceBinding(id, sourceId, projectId);
+  const orphanEdit = {
+    accountId: id,
+    sourceId,
+    eventId: '$edit',
+    targetEventId: '$missing',
+    kind: 'edit',
+    sender: '@sender:example.test',
+    occurredAt: new Date().toISOString(),
+    body: 'private message',
+  };
+  const imported = await app.inject({
+    method: 'POST',
+    url: '/internal/integrations/matrix/event',
+    headers,
+    payload: orphanEdit,
+  });
+  expect(imported.statusCode).toBe(200);
+  expect(imported.json()).toEqual({ accepted: true });
+  expect(await ctx.store.integrations.getEvent(id, sourceId, orphanEdit.targetEventId)).toBeNull();
+  expect(await ctx.store.integrations.getEvent(id, sourceId, orphanEdit.eventId)).toMatchObject({
+    kind: 'edit',
+    targetEventId: orphanEdit.targetEventId,
+  });
+  const retry = await app.inject({
+    method: 'POST',
+    url: '/internal/integrations/matrix/event',
+    headers,
+    payload: orphanEdit,
+  });
+  expect(retry.statusCode).toBe(200);
+  expect(retry.json()).toEqual({ accepted: false });
+  const snapshot = await readMatrixDiagnosticSnapshot(
+    ctx.store.integrations,
+    async () => {},
+    projectId,
+    { accountId: id, sourceId, eventId: orphanEdit.eventId },
+  );
+  expect(snapshot.event).toMatchObject({ stored: true, kind: 'edit' });
+  const matrixRoot = join(root, 'knowledge', projectId, 'sources', 'documents', 'matrix');
+  const [roomDir] = await readdir(matrixRoot);
+  const [dayFile] = await readdir(join(matrixRoot, roomDir!));
+  const chat = await readFile(join(matrixRoot, roomDir!, dayFile!), 'utf8');
+  expect(chat.split(orphanEdit.body)).toHaveLength(2);
+  const chatFile = join(matrixRoot, roomDir!, dayFile!);
+  const laterEdit = {
+    ...orphanEdit,
+    eventId: '$later-edit',
+    body: 'updated replacement',
+    occurredAt: new Date(Date.now() + 86_400_000).toISOString(),
+  };
+  expect(
+    (
+      await app.inject({
+        method: 'POST',
+        url: '/internal/integrations/matrix/event',
+        headers,
+        payload: laterEdit,
+      })
+    ).statusCode,
+  ).toBe(200);
+  const updatedChat = await readFile(chatFile, 'utf8');
+  expect(updatedChat).toContain(laterEdit.body);
+  expect(updatedChat).not.toContain(orphanEdit.body);
+  expect(
+    (
+      await app.inject({
+        method: 'POST',
+        url: '/internal/integrations/matrix/event',
+        headers,
+        payload: {
+          ...laterEdit,
+          eventId: '$delete-original',
+          kind: 'redaction',
+          body: null,
+          occurredAt: new Date(Date.now() + 172_800_000).toISOString(),
+        },
+      })
+    ).statusCode,
+  ).toBe(200);
+  const deletedChat = await readFile(chatFile, 'utf8');
+  expect(deletedChat).not.toContain(laterEdit.body);
+  expect(deletedChat).not.toContain(orphanEdit.body);
+  for (const originalKind of ['text', 'attachment']) {
+    // Late originals must replace the inferred timestamp rather than collide with a fake receipt.
+    const lateOriginal = {
+      ...orphanEdit,
+      eventId: `$late-original-${originalKind}`,
+      targetEventId: null,
+      kind: 'message',
+      occurredAt: new Date(Date.now() + 259_200_000).toISOString(),
+      body: 'original text',
+    };
+    const earlyEdit = {
+      ...orphanEdit,
+      eventId: `$early-edit-${originalKind}`,
+      targetEventId: lateOriginal.eventId,
+      body: 'replacement before original',
+      occurredAt: new Date(Date.now() + 345_600_000).toISOString(),
+    };
+    const sendEvent = (payload: typeof orphanEdit | typeof lateOriginal) =>
+      app.inject({
+        method: 'POST',
+        url: '/internal/integrations/matrix/event',
+        headers,
+        payload,
+      });
+    expect((await sendEvent(earlyEdit)).statusCode).toBe(200);
+    const earlyDayFile = join(matrixRoot, roomDir!, `${earlyEdit.occurredAt.slice(0, 10)}.md`);
+    expect(await readFile(earlyDayFile, 'utf8')).toContain(earlyEdit.body);
+    const originalResponse =
+      originalKind === 'text'
+        ? await sendEvent(lateOriginal)
+        : await app.inject({
+            method: 'POST',
+            url: '/internal/integrations/matrix/attachment',
+            headers,
+            payload: {
+              event: lateOriginal,
+              fileName: 'notes.txt',
+              data: Buffer.from('attachment content').toString('base64'),
+            },
+          });
+    expect(originalResponse.statusCode).toBe(200);
+    expect(await ctx.store.integrations.getEvent(id, sourceId, lateOriginal.eventId)).toMatchObject(
+      {
+        kind: 'message',
+        occurredAt: new Date(lateOriginal.occurredAt),
+      },
+    );
+    await expect(readFile(earlyDayFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    const originalDayFile = join(
+      matrixRoot,
+      roomDir!,
+      `${lateOriginal.occurredAt.slice(0, 10)}.md`,
+    );
+    const originalDay = await readFile(originalDayFile, 'utf8');
+    expect(originalDay).toContain(lateOriginal.occurredAt);
+    expect(originalDay).toContain(earlyEdit.body);
+    expect(originalDay).not.toContain(lateOriginal.body);
+  }
+  const diagnostic = {
+    sourceId,
+    eventId: '$failed',
+    occurredAt: new Date().toISOString(),
+    lastAttemptAt: new Date().toISOString(),
+    attempts: 2,
+    httpStatus: 422,
+    code: 'target_message_not_found',
+  };
+  expect(
+    (
+      await app.inject({
+        method: 'POST',
+        url,
+        headers,
+        payload: { ...payload, importDiagnostics: [{ ...diagnostic, error: 'private message' }] },
+      })
+    ).statusCode,
+  ).toBe(400);
+  expect(
+    (
+      await app.inject({
+        method: 'POST',
+        url,
+        headers,
+        payload: { ...payload, importDiagnostics: [diagnostic], importFailureCount: 21 },
+      })
+    ).statusCode,
+  ).toBe(200);
+  const read = async () =>
+    (await ctx.store.integrations.listSources()).find((item) => item.accountId === id)
+      ?.importDiagnostics;
+  expect(await read()).toEqual([diagnostic]);
+  expect(
+    (await ctx.store.integrations.listSources()).find((item) => item.accountId === id)
+      ?.importDiagnosticsTruncated,
+  ).toBe(true);
+  expect(
+    (await ctx.store.integrations.listSources()).find((item) => item.accountId === id)
+      ?.importDiagnosticsReportedAt,
+  ).toBeInstanceOf(Date);
+  await app.inject({ method: 'POST', url, headers, payload });
+  expect(await read()).toEqual([diagnostic]);
+  expect(
+    (await app.inject({ method: 'POST', url, payload: { ...payload, importDiagnostics: [] } }))
+      .statusCode,
+  ).toBe(401);
+  expect(await read()).toEqual([diagnostic]);
+  await app.inject({
+    method: 'POST',
+    url,
+    headers,
+    payload: { ...payload, importDiagnostics: [] },
+  });
+  expect(await read()).toEqual([]);
+  expect(
+    (await ctx.store.integrations.listSources()).find((item) => item.accountId === id)
+      ?.importDiagnosticsTruncated,
+  ).toBe(false);
+  await app.close();
+});
+
+it('persists early redactions across retries and applies them to late text and attachments', async () => {
+  const accountId = `@deferred-${randomUUID()}:example.test`;
+  const sourceId = '!deferred:example.test';
+  const projectId = randomUUID();
+  const store = ctx.store.integrations;
+  await store.upsertAccount({
+    id: accountId,
+    provider: 'matrix',
+    endpoint: 'https://example.test',
+    displayName: 'Matrix',
+    status: 'online',
+  });
+  await ctx.store.upsertProject({
+    id: projectId,
+    owner: 'example',
+    repo: 'deferred',
+    containerName: `deferred-${projectId}`,
+    state: 'absent',
+  });
+  await store.discoverSource({ accountId, sourceId, displayName: 'Deferred room' });
+  await store.setSourceBinding(accountId, sourceId, projectId);
+  const token = 'a-secret-long-enough-for-the-worker-route';
+  const createApp = () => {
+    const app = Fastify();
+    registerIntegrationRoutes(app, { store, dataRoot: root, connectorToken: token });
+    return app;
+  };
+  let app = createApp();
+  const headers = { authorization: `Bearer ${token}` };
+  const occurredAt = new Date(Date.now() + 10_000).toISOString();
+  const base = { accountId, sourceId, sender: '@sender:example.test', occurredAt };
+  const send = (payload: object) =>
+    app.inject({
+      method: 'POST',
+      url: '/internal/integrations/matrix/event',
+      headers,
+      payload,
+    });
+  const redaction = {
+    ...base,
+    eventId: '$early-delete',
+    targetEventId: '$late-text',
+    kind: 'redaction',
+    body: null,
+    occurredAt: new Date(Date.now() + 86_400_000).toISOString(),
+  };
+  try {
+    expect((await send(redaction)).json()).toEqual({ accepted: true });
+    expect(await store.getEvent(accountId, sourceId, redaction.eventId)).toMatchObject({
+      kind: 'redaction',
+      targetEventId: '$late-text',
+      body: null,
+    });
+    await app.close();
+    app = createApp();
+    expect((await send(redaction)).json()).toEqual({ accepted: false });
+    expect(await store.listChangesForTargets(accountId, sourceId, ['$late-text'])).toHaveLength(1);
+    const message = {
+      ...base,
+      eventId: '$late-text',
+      targetEventId: null,
+      kind: 'message',
+      body: 'Deleted private text',
+    };
+    expect((await send(message)).json()).toEqual({ accepted: true });
+    expect((await send(message)).json()).toEqual({ accepted: false });
+    expect(await store.getEvent(accountId, sourceId, message.eventId)).not.toBeNull();
+    const { projectChatDay } = await import('./knowledge-projection.js');
+    const binding = (await store.listSources(projectId))[0]!;
+    const relative = await projectChatDay(store, root, {
+      accountId,
+      sourceId,
+      projectId,
+      displayName: binding.displayName,
+      activatedAt: binding.activatedAt!,
+      day: occurredAt.slice(0, 10),
+    });
+    const knowledgeRoot = join(root, 'knowledge', projectId);
+    const text = await readFile(join(knowledgeRoot, relative), 'utf8');
+    expect(text).toContain('[Message deleted]');
+    expect(text).not.toContain(message.body);
+    expect(text.match(/## /gu)).toHaveLength(1);
+    expect(
+      (
+        await send({ ...redaction, eventId: '$early-file-delete', targetEventId: '$late-file' })
+      ).json(),
+    ).toEqual({ accepted: true });
+    const attachment = {
+      event: {
+        ...base,
+        eventId: '$late-file',
+        targetEventId: null,
+        kind: 'message',
+        body: 'Attachment',
+      },
+      fileName: 'secret.txt',
+      data: Buffer.from('Deleted attachment contents').toString('base64'),
+    };
+    for (const accepted of [true, false]) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/internal/integrations/matrix/attachment',
+        headers,
+        payload: attachment,
+      });
+      expect(response.statusCode).toBe(200);
+      const result = response.json<{ accepted: boolean; path: string }>();
+      expect(result.accepted).toBe(accepted);
+      await expect(readFile(join(knowledgeRoot, result.path))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await expect(
+        readFile(join(knowledgeRoot, '.text', `${result.path}.md`)),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+    expect(await store.getEvent(accountId, sourceId, '$late-file')).not.toBeNull();
+    const projected = await readFile(join(knowledgeRoot, relative), 'utf8');
+    expect(projected.match(/\[Message deleted\]/gu)).toHaveLength(2);
+    expect(projected).not.toContain('Attachment:');
+    // The target can be projected after lookup but before the redaction obtains its source lock.
+    const ingest = store.ingestEvent.bind(store);
+    const spy = vi.spyOn(store, 'ingestEvent').mockImplementation(async (input) => {
+      if (input.eventId === '$racing-delete') {
+        expect(
+          (await send({ ...message, eventId: '$racing-text', body: 'Racing private text' }))
+            .statusCode,
+        ).toBe(200);
+      }
+      return ingest(input);
+    });
+    try {
+      expect(
+        (
+          await send({ ...redaction, eventId: '$racing-delete', targetEventId: '$racing-text' })
+        ).json(),
+      ).toEqual({ accepted: true });
+      const raced = await readFile(join(knowledgeRoot, relative), 'utf8');
+      expect(raced).not.toContain('Racing private text');
+      expect(raced.match(/\[Message deleted\]/gu)).toHaveLength(3);
+    } finally {
+      spy.mockRestore();
+    }
+  } finally {
+    await app.close();
+  }
+});
+
+it('hides explicitly left rooms while preserving bindings, history and worker outbox retention', async () => {
+  const store = ctx.store.integrations;
+  const accountId = `@left-${randomUUID()}:example.test`;
+  const sourceId = '!left:example.test';
+  const projectId = randomUUID();
+  await store.upsertAccount({
+    id: accountId,
+    provider: 'matrix',
+    endpoint: 'https://example.test',
+    displayName: 'Matrix',
+    status: 'online',
+  });
+  await ctx.store.upsertProject({
+    id: projectId,
+    owner: 'example',
+    repo: 'left',
+    containerName: `left-${projectId}`,
+    state: 'absent',
+  });
+  await store.discoverSource({ accountId, sourceId, displayName: 'Room' });
+  const binding = await store.setSourceBinding(accountId, sourceId, projectId);
+  const event = {
+    accountId,
+    sourceId,
+    eventId: '$retained',
+    targetEventId: null,
+    kind: 'message' as const,
+    sender: '@sender:example.test',
+    occurredAt: new Date(Date.now() + 10_000),
+    body: 'Retained history',
+  };
+  await store.ingestEvent(event);
+  const token = 'a-secret-long-enough-for-the-worker-route';
+  const app = Fastify();
+  registerIntegrationRoutes(app, { store, dataRoot: root, connectorToken: token });
+  const headers = { authorization: `Bearer ${token}` };
+  const url = '/internal/integrations/matrix/source/left';
+  const payload = { accountId, sourceId };
+  const workerRooms = async () =>
+    (
+      await app.inject({
+        method: 'GET',
+        url: `/internal/integrations/matrix/bindings?accountId=${encodeURIComponent(accountId)}`,
+        headers,
+      })
+    ).json<{
+      sources: { sourceId: string; status: string; projectId: string; activatedAt: string }[];
+    }>().sources;
+  try {
+    expect((await app.inject({ method: 'POST', url, payload })).statusCode).toBe(401);
+    expect((await store.listSources(projectId)).map((item) => item.sourceId)).toContain(sourceId);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect((await app.inject({ method: 'POST', url, headers, payload })).statusCode).toBe(200);
+    }
+    expect(await store.listSources(projectId)).toEqual([]);
+    expect((await store.listSources()).some((item) => item.sourceId === sourceId)).toBe(false);
+    // An absent worker binding deletes its outbox entries; left bindings must stay present.
+    expect(await workerRooms()).toEqual([
+      expect.objectContaining({
+        sourceId,
+        status: 'left',
+        projectId,
+        activatedAt: binding!.activatedAt!.toISOString(),
+      }),
+    ]);
+    expect(await store.getEvent(accountId, sourceId, event.eventId)).toMatchObject({
+      eventId: event.eventId,
+      body: event.body,
+    });
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/internal/integrations/matrix/event',
+          headers,
+          payload: { ...event, occurredAt: event.occurredAt.toISOString(), eventId: '$pending' },
+        })
+      ).statusCode,
+    ).toBe(409);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/internal/integrations/matrix/source',
+          headers,
+          payload: { ...payload, displayName: 'Invited again' },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect((await store.listSources(projectId))[0]).toMatchObject({
+      status: 'paused',
+      projectId,
+      activatedAt: binding!.activatedAt,
+    });
+    expect(await store.getEvent(accountId, sourceId, event.eventId)).not.toBeNull();
+    await store.setSourcePaused(accountId, sourceId, false);
+    const { projectChatDay } = await import('./knowledge-projection.js');
+    const relative = await projectChatDay(store, root, {
+      accountId,
+      sourceId,
+      projectId,
+      displayName: 'Room',
+      activatedAt: binding!.activatedAt!,
+      day: event.occurredAt.toISOString().slice(0, 10),
+    });
+    // Leave reporting must not strand an accepted deletion before Knowledge projection finishes.
+    const ingest = store.ingestEvent.bind(store);
+    const spy = vi.spyOn(store, 'ingestEvent').mockImplementation(async (input) => {
+      const result = await ingest(input);
+      await store.markSourceLeft(accountId, sourceId);
+      return result;
+    });
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/internal/integrations/matrix/event',
+        headers,
+        payload: {
+          ...event,
+          occurredAt: event.occurredAt.toISOString(),
+          eventId: '$leave-delete',
+          targetEventId: event.eventId,
+          kind: 'redaction',
+          body: null,
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      const text = await readFile(join(root, 'knowledge', projectId, relative), 'utf8');
+      expect(text).toContain('[Message deleted]');
+      expect(text).not.toContain(event.body);
+    } finally {
+      spy.mockRestore();
+    }
+  } finally {
+    await app.close();
+  }
 });

@@ -51,6 +51,7 @@ const startTurnRequestSchema = z
     appendSystemPrompt: boundedString(1024 * 1024).optional(),
     resumeSessionId: boundedString(256).optional(),
     permissionMode: boundedString(128).optional(),
+    planning: z.literal(true).optional(),
     allowedTools: z.array(boundedString(4096)).max(256).optional(),
     disallowedTools: z.array(boundedString(4096)).max(256).optional(),
     toolless: z.boolean().optional(),
@@ -63,6 +64,7 @@ const startTurnRequestSchema = z
       .strictObject({
         VERITY_SESSION_BACKEND: boundedString(256).optional(),
         VERITY_SESSION_MODEL: boundedString(256).optional(),
+        VERITY_SESSION_ID: boundedString(256).optional(),
       })
       .optional(),
   })
@@ -143,7 +145,7 @@ if (request.sessionEnv !== undefined) {
     entries.length > 8 ||
     entries.some(
       ([key, value]) =>
-        !['VERITY_SESSION_BACKEND', 'VERITY_SESSION_MODEL'].includes(key) ||
+        !['VERITY_SESSION_BACKEND', 'VERITY_SESSION_MODEL', 'VERITY_SESSION_ID'].includes(key) ||
         typeof value !== 'string' ||
         value.length > 256,
     )
@@ -205,6 +207,7 @@ const turn = await server.run(join(turnDir, 'events.jsonl'), {
     : {}),
   ...(request.resumeSessionId !== undefined ? { resumeSessionId: request.resumeSessionId } : {}),
   ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
+  ...(request.planning === true ? { planning: true } : {}),
   ...(request.allowedTools !== undefined ? { allowedTools: request.allowedTools } : {}),
   ...(request.disallowedTools !== undefined ? { disallowedTools: request.disallowedTools } : {}),
   ...(request.toolless === true ? { toolless: true } : {}),

@@ -20,7 +20,9 @@ function labels(rows: AttachMenuRow[]): string[] {
 
 describe('attachMenuRows', () => {
   it('separates content imports from connected services', () => {
-    expect(labels(attachMenuRows(handlers, { meetingAudioEnabled: true }))).toEqual([
+    expect(
+      labels(attachMenuRows(handlers, { meetingAudioEnabled: true, googleConnected: true })),
+    ).toEqual([
       'Take photo',
       'Choose photo',
       'Choose file',
@@ -34,14 +36,16 @@ describe('attachMenuRows', () => {
       'Google Contacts',
     ]);
     expect(
-      attachMenuRows(handlers, { meetingAudioEnabled: true }).find(
+      attachMenuRows(handlers, { meetingAudioEnabled: true, googleConnected: true }).find(
         (row) => 'label' in row && row.label === 'Gmail',
       ),
     ).toMatchObject({ icon: 'mail', detail: 'Read & draft' });
   });
 
   it('drops the meeting row when the flag is off', () => {
-    expect(labels(attachMenuRows(handlers, { meetingAudioEnabled: false }))).toEqual([
+    expect(
+      labels(attachMenuRows(handlers, { meetingAudioEnabled: false, googleConnected: true })),
+    ).toEqual([
       'Take photo',
       'Choose photo',
       'Choose file',
@@ -54,7 +58,7 @@ describe('attachMenuRows', () => {
   });
 
   it('routes the meeting-audio row to the upload handler', () => {
-    const row = attachMenuRows(handlers, { meetingAudioEnabled: true }).find(
+    const row = attachMenuRows(handlers, { meetingAudioEnabled: true, googleConnected: true }).find(
       (candidate): candidate is Extract<AttachMenuRow, { label: string }> =>
         'label' in candidate && candidate.label === 'Transcribe audio file',
     );
@@ -64,7 +68,7 @@ describe('attachMenuRows', () => {
   });
 
   it('routes Calendar separately from Gmail', () => {
-    const row = attachMenuRows(handlers).find(
+    const row = attachMenuRows(handlers, { googleConnected: true }).find(
       (candidate): candidate is Extract<AttachMenuRow, { label: string }> =>
         'label' in candidate && candidate.label === 'Google Calendar',
     );
@@ -77,4 +81,13 @@ describe('attachMenuRows', () => {
     expect(MEETING_AUDIO_ENABLED).toBe(true);
     expect(labels(attachMenuRows(handlers))).toContain('Transcribe audio file');
   });
+});
+
+it('hides all Google shortcuts without a central account, including while loading', () => {
+  expect(labels(attachMenuRows(handlers, { meetingAudioEnabled: false }))).toEqual([
+    'Take photo',
+    'Choose photo',
+    'Choose file',
+  ]);
+  expect(labels(attachMenuRows(handlers, { googleConnected: false }))).not.toContain('[Connect]');
 });

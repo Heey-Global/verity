@@ -1,3 +1,4 @@
+import { beginSessionSwitch } from '@verity/mobile';
 import type { SessionModelState, VerityClient } from '@verity/mobile';
 import { act, renderHook } from '@testing-library/react-native';
 import { AppState, type AppStateStatus } from 'react-native';
@@ -10,6 +11,8 @@ interface MockModel {
   stop: jest.Mock;
   pause: jest.Mock;
   resume: jest.Mock;
+  setView: jest.Mock;
+  refreshActivity: jest.Mock;
 }
 const mockModels: MockModel[] = [];
 jest.mock('@verity/mobile', () => ({
@@ -22,12 +25,27 @@ jest.mock('@verity/mobile', () => ({
       stop: jest.fn(),
       pause: jest.fn(),
       resume: jest.fn(),
+      setView: jest.fn(),
+      refreshActivity: jest.fn(),
     };
     mockModels.push(model);
     return model;
   }),
 }));
-jest.mock('../lib/socket', () => ({ createWebSocket: jest.fn() }));
+const mockHintListeners: ((hints: { sessionId: string; topics: string[] }[]) => void)[] = [];
+jest.mock('../lib/liveConnection', () => ({
+  liveConnectionFor: jest.fn(() => ({})),
+  useLiveHints: (_baseUrl: string, listener: (hints: unknown[]) => void) => {
+    mockHintListeners.push(listener);
+  },
+  subscribeLiveRefresh: () => () => {},
+}));
+jest.mock('expo-router', () => ({
+  useFocusEffect: (callback: () => (() => void) | undefined) => {
+    const React = require('react') as typeof import('react');
+    React.useEffect(() => callback(), [callback]);
+  },
+}));
 
 function emit(model: MockModel, name: string): void {
   model.state = { ...model.state, name, loaded: true };
@@ -88,6 +106,7 @@ describe('useSession frame publication', () => {
       return session;
     });
     const model = mockModels[0]!;
+    act(() => emit(model, 'loaded'));
     const before = rendered.length;
     act(() => {
       emit(model, 'a');
@@ -106,9 +125,40 @@ describe('useSession frame publication', () => {
     hook.unmount();
   });
 
+  it('publishes loaded history without waiting for an animation frame', () => {
+    const trace = beginSessionSwitch('s1');
+    const hook = renderHook(() => useSession(client, 's1', 'http://host'));
+    const model = mockModels[0]!;
+    act(() => model.onChange({ ...model.state, loaded: true }));
+    expect(hook.result.current.loaded).toBe(true);
+    expect(frames.size).toBe(0);
+    expect(trace.phases.map((p) => p.phase)).toEqual([
+      'loaded-model-state-publish',
+      'loaded-model-state-react-dispatch',
+    ]);
+    act(() => model.onChange({ ...model.state, loaded: true }));
+    paint();
+    expect(trace.phases).toHaveLength(2);
+    hook.unmount();
+  });
+
+  it('cancels an older queued snapshot when loaded history arrives', () => {
+    const hook = renderHook(() => useSession(client, 's1', 'http://host'));
+    const model = mockModels[0]!;
+    act(() => model.onChange({ ...model.state, name: 'queued' }));
+    expect(frames.size).toBe(1);
+    act(() => emit(model, 'history'));
+    expect(frames.size).toBe(0);
+    expect(hook.result.current.name).toBe('history');
+    paint();
+    expect(hook.result.current.name).toBe('history');
+    hook.unmount();
+  });
+
   it('cancels pending publication and ignores late model callbacks on unmount', () => {
     const hook = renderHook(() => useSession(client, 's1', 'http://host'));
     const model = mockModels[0]!;
+    act(() => emit(model, 'loaded'));
     act(() => emit(model, 'pending'));
     expect(frames.size).toBe(1);
     hook.unmount();
@@ -121,6 +171,7 @@ describe('useSession frame publication', () => {
   it('flushes the latest snapshot before native animation frames stop in background', () => {
     const hook = renderHook(() => useSession(client, 's1', 'http://host'));
     const model = mockModels[0]!;
+    act(() => emit(model, 'loaded'));
     act(() => emit(model, 'tail'));
     act(() => appListeners.forEach((listener) => listener('background')));
     expect(hook.result.current.name).toBe('tail');
@@ -139,6 +190,7 @@ describe('useSession frame publication', () => {
       },
     );
     const old = mockModels[0]!;
+    act(() => emit(old, 'loaded'));
     act(() => emit(old, 'old tail'));
     hook.rerender({ id: 's2' });
     expect(frames.size).toBe(0);
@@ -148,6 +200,25 @@ describe('useSession frame publication', () => {
     act(() => emit(current, 'new tail'));
     paint();
     expect(hook.result.current.name).toBe('new tail');
+    hook.unmount();
+  });
+
+  it('marks the session as viewed while focused, so its own notifications stay quiet', () => {
+    const hook = renderHook(() => useSession(client, 's1', 'http://host'));
+    const model = mockModels[0]!;
+    expect(model.setView).toHaveBeenLastCalledWith(true);
+    hook.unmount();
+    expect(model.setView).toHaveBeenLastCalledWith(false);
+  });
+
+  it('refreshes the activity snapshot when a hint says it changed, not for every event', () => {
+    mockHintListeners.length = 0;
+    const hook = renderHook(() => useSession(client, 's1', 'http://host'));
+    const model = mockModels[0]!;
+    act(() => mockHintListeners.at(-1)?.([{ sessionId: 's1', topics: ['events'] }]));
+    expect(model.refreshActivity).not.toHaveBeenCalled();
+    act(() => mockHintListeners.at(-1)?.([{ sessionId: 's1', topics: ['events', 'status'] }]));
+    expect(model.refreshActivity).toHaveBeenCalledTimes(1);
     hook.unmount();
   });
 });

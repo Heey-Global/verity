@@ -5,6 +5,7 @@ import { router } from 'expo-router';
 import MeetingScreen from '../app/meeting/[sessionId]';
 import { createVerityClient, getActiveMeetingServerId } from '../lib/client';
 import {
+  clearSpeakerNameSuggestion,
   currentMeeting,
   endMeeting,
   pauseMeeting,
@@ -59,6 +60,7 @@ jest.mock('../lib/liveMeetingSession', () => ({
   pauseMeeting: jest.fn().mockResolvedValue(undefined),
   resumeMeeting: jest.fn().mockResolvedValue(undefined),
   updateSpeakerEdits: jest.fn().mockResolvedValue(undefined),
+  clearSpeakerNameSuggestion: jest.fn(),
 }));
 jest.mock('../lib/liveMeetingStore', () => ({
   listMeetings: jest.fn().mockResolvedValue([]),
@@ -196,8 +198,11 @@ it('keeps research and fact checks in the meeting while sending turns to its ses
       'session-1',
       expect.objectContaining({ prompt: expect.stringContaining('Is the release still Friday?') }),
     );
-    expect(screen.getByText('VERITY IS WORKING')).toBeOnTheScreen();
+    expect(screen.getByText('RESEARCHING')).toBeOnTheScreen();
   });
+  // The suggestion turns into its research card instead of staying beside it.
+  expect(screen.queryByLabelText('Research meeting question')).toBeNull();
+  expect(screen.queryByText(/Project knowledge and the web/)).toBeNull();
   expect(router.push).not.toHaveBeenCalled();
   fireEvent.press(screen.getByLabelText('Check meeting claim'));
   await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(2));
@@ -239,7 +244,7 @@ it('shows the compact session answer in the meeting after reopening it', async (
         : {
             hasMore: true,
             events: [
-              { seq: 8, event: { t: 'text', delta: 'The roadmap confirms Tuesday.' } },
+              { seq: 8, event: { t: 'text', delta: '- The roadmap confirms **Tuesday**.' } },
               { seq: 9, event: { t: 'result' } },
             ],
           },
@@ -255,8 +260,11 @@ it('shows the compact session answer in the meeting after reopening it', async (
     }),
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   render(<MeetingScreen />);
-  expect(await screen.findByText('ANSWER READY')).toBeOnTheScreen();
+  expect(await screen.findByText('ANSWER')).toBeOnTheScreen();
+  // Markdown renders as a bullet with bold text, never as raw markers.
   expect(screen.getByText('The roadmap confirms Tuesday.')).toBeOnTheScreen();
+  expect(screen.getByText('•')).toBeOnTheScreen();
+  expect(screen.queryByText(/\*\*/)).toBeNull();
   expect(screen.getByText('What changed?')).toBeOnTheScreen();
   expect(router.push).not.toHaveBeenCalled();
   fireEvent.press(screen.getByLabelText('Open answer in chat'));
@@ -302,7 +310,7 @@ it('shows a spoken request as working without leaving the meeting', async () => 
     }),
   );
   expect(screen.getByText('check the deadline')).toBeOnTheScreen();
-  expect(screen.getByText('VERITY IS WORKING')).toBeOnTheScreen();
+  expect(screen.getByText('RESEARCHING')).toBeOnTheScreen();
   expect(router.push).not.toHaveBeenCalled();
 });
 
@@ -351,7 +359,41 @@ it('keeps the unfinished transcript visible after timed words', async () => {
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Open full transcript'));
   expect(screen.getByText('Speaker 1: Hello,')).toBeOnTheScreen();
-  expect(screen.getByText('Speaker pending: from the meeting')).toBeOnTheScreen();
+  expect(screen.getByText('from the meeting')).toBeOnTheScreen();
+});
+
+// Words the diarizer had not reached yet were labelled Unknown speaker for about a
+// second; open turns now attribute them live and the rest wait without a label.
+it('attributes live words from open diarizer turns and leaves unreached words pending', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-pending',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hello there. Still talking',
+    error: null,
+    speakerStatus: 'ready',
+    speakerTurns: [{ speaker: 0, start: 0, end: 0.6 }],
+    tentativeSpeakerTurns: [{ speaker: 1, start: 0.8, end: 1.4 }],
+    speakerHorizon: 1.5,
+    timedWords: [
+      { text: 'Hello', start: 0, end: 0.4 },
+      { text: 'there.', start: 0.9, end: 1.3 },
+      { text: 'Still', start: 2, end: 2.3 },
+      { text: 'talking', start: 2.4, end: 2.8 },
+    ],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('Open full transcript'));
+  expect(screen.getByText('Speaker 1: Hello')).toBeOnTheScreen();
+  expect(screen.getByText('Speaker 2: there.')).toBeOnTheScreen();
+  expect(screen.getByText('Still talking')).toBeOnTheScreen();
+  expect(screen.queryByText(/Unknown speaker/)).toBeNull();
 });
 
 it('shows the transcript once when its text no longer matches the timed words', async () => {
@@ -413,6 +455,103 @@ it('saves a correction for one speaker segment without changing the other', asyn
     ),
   );
   alert.mockRestore();
+});
+
+it('names a speaker only after the suggestion is confirmed', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-suggest',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hallo, ich bin Holger. Hi',
+    error: null,
+    ownerToken: 'owner',
+    speakerTurns: [
+      { speaker: 0, start: 0, end: 2 },
+      { speaker: 1, start: 3, end: 4 },
+    ],
+    timedWords: [
+      { text: 'Hallo, ich bin Holger.', start: 0, end: 2 },
+      { text: 'Hi', start: 3, end: 3.5 },
+    ],
+    speakerNameSuggestions: [
+      { speaker: 0, name: 'Holger', quote: 'Hallo, ich bin Holger.' },
+      { speaker: 1, name: 'Anna', quote: 'Hi' },
+    ],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Speaker 1 is Holger?')).toBeOnTheScreen();
+  expect(updateSpeakerEdits).not.toHaveBeenCalled();
+  // A failed save keeps the suggestion in the recording, so it is offered again.
+  jest.mocked(updateSpeakerEdits).mockRejectedValueOnce(new Error('disk full'));
+  fireEvent.press(screen.getByLabelText('Yes, Holger'));
+  expect(await screen.findByText(/Could not save speaker correction/)).toBeOnTheScreen();
+  expect(clearSpeakerNameSuggestion).not.toHaveBeenCalled();
+  expect(screen.getByLabelText('Yes, Holger')).toBeOnTheScreen();
+  expect(updateSpeakerEdits).toHaveBeenCalledWith(meeting.id, { '0': 'Holger' }, [], {});
+
+  fireEvent.press(screen.getByLabelText('Not Anna'));
+  expect(clearSpeakerNameSuggestion).toHaveBeenCalledWith(meeting.id, 1, true);
+  expect(updateSpeakerEdits).toHaveBeenCalledTimes(1);
+});
+
+it('clears a confirmed name suggestion once the name is saved', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-suggest',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hallo, ich bin Holger. Hi',
+    error: null,
+    ownerToken: 'owner',
+    speakerTurns: [
+      { speaker: 0, start: 0, end: 2 },
+      { speaker: 1, start: 3, end: 4 },
+    ],
+    timedWords: [
+      { text: 'Hallo, ich bin Holger.', start: 0, end: 2 },
+      { text: 'Hi', start: 3, end: 3.5 },
+    ],
+    speakerNameSuggestions: [
+      { speaker: 0, name: 'Holger', quote: 'Hallo, ich bin Holger.' },
+      { speaker: 1, name: 'Anna', quote: 'Hi' },
+    ],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  let finish!: () => void;
+  jest.mocked(updateSpeakerEdits).mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('Yes, Holger'));
+  await waitFor(() => expect(updateSpeakerEdits).toHaveBeenCalledTimes(1));
+  fireEvent.press(screen.getByLabelText('Yes, Anna'));
+  expect(updateSpeakerEdits).toHaveBeenCalledTimes(1);
+  await act(async () => finish());
+  await waitFor(() =>
+    expect(clearSpeakerNameSuggestion).toHaveBeenCalledWith(meeting.id, 0, false),
+  );
+  fireEvent.press(screen.getByLabelText('Yes, Anna'));
+  await waitFor(() =>
+    expect(updateSpeakerEdits).toHaveBeenLastCalledWith(
+      meeting.id,
+      { '0': 'Holger', '1': 'Anna' },
+      [],
+      {},
+    ),
+  );
 });
 
 it('renames a speaker across the current meeting', async () => {
@@ -607,7 +746,7 @@ it('shows a spoken request failure without interrupting the meeting', async () =
     return jest.fn();
   });
   render(<MeetingScreen />);
-  expect(await screen.findByText(/● Transcribing/)).toBeOnTheScreen();
+  expect(await screen.findByLabelText('Pause meeting')).toBeOnTheScreen();
   act(() =>
     notify({
       meetingId: meeting.id,
@@ -617,7 +756,7 @@ it('shows a spoken request failure without interrupting the meeting', async () =
     }),
   );
   expect(screen.getByText('Voice request could not be sent: offline')).toBeOnTheScreen();
-  expect(screen.getByText(/● Transcribing/)).toBeOnTheScreen();
+  expect(screen.getByLabelText('Pause meeting')).toBeOnTheScreen();
 });
 
 it('starts a direct meeting request and stays put when the server rejects it', async () => {
@@ -654,6 +793,43 @@ it('starts a direct meeting request and stays put when the server rejects it', a
   );
   expect(router.push).not.toHaveBeenCalled();
   expect(input).toHaveDisplayValue('What do you think?');
+});
+
+it('preserves a new question typed while the previous request is sending', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-pending-request',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: '',
+    error: null,
+  };
+  let resolveSend!: () => void;
+  const sendTurn = jest.fn().mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        resolveSend = resolve;
+      }),
+  );
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
+  jest.mocked(createVerityClient).mockReturnValue({
+    sendTurn,
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('Ask Verity'));
+  const input = screen.getByLabelText('Ask Verity about this meeting');
+  fireEvent.changeText(input, 'First question');
+  fireEvent.press(screen.getByLabelText('Ask Verity in meeting'));
+  await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(1));
+  fireEvent.changeText(input, 'Next question');
+  await act(async () => resolveSend());
+  expect(input).toHaveDisplayValue('Next question');
 });
 
 it.each([
@@ -871,7 +1047,7 @@ it('shows an unsaved note and offers a retry after its write fails', async () =>
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Start meeting'));
   fireEvent.changeText(await noteInput(), 'Unsaved decision');
-  await screen.findByText('● Recording · note not saved');
+  await screen.findByText('Note not saved yet. Use retry in the note field.');
   expect(screen.getByLabelText('Retry saving note')).toBeOnTheScreen();
 
   fireEvent.press(screen.getByLabelText('End meeting'));
@@ -882,14 +1058,13 @@ it('shows an unsaved note and offers a retry after its write fails', async () =>
   expect(screen.getByLabelText('Speech recognition')).toBeOnTheScreen();
   expect(screen.getByLabelText('Start meeting')).toBeOnTheScreen();
   expect(screen.queryByLabelText('Open full transcript')).toBeNull();
-  expect(screen.queryByLabelText('Retry saving note')).toBeNull();
-  expect(screen.getByText(/A note from the last meeting is not saved yet/)).toBeOnTheScreen();
-  fireEvent.press(screen.getByText('Cancel'));
+  // The unsaved note is shown with its own retry, not a hint to cancel back to it.
+  expect(screen.getByTestId('unsaved-note')).toBeOnTheScreen();
+  expect(screen.getByText('“Unsaved decision”')).toBeOnTheScreen();
 
   fireEvent.press(screen.getByLabelText('Retry saving note'));
   await waitFor(() => expect(saveNote).toHaveBeenCalledTimes(2));
-  await screen.findByText('Ended · server sync pending');
-  expect(screen.getByText(/Unsaved decision/)).toBeOnTheScreen();
+  await waitFor(() => expect(screen.queryByTestId('unsaved-note')).toBeNull());
 });
 
 it('shows an autosaved draft after the meeting ends before Add note', async () => {
@@ -943,7 +1118,7 @@ it('retries a failed save even when the edited draft contains only spaces', asyn
   fireEvent.changeText(await noteInput(), '   ');
   fireEvent.press(await screen.findByLabelText('Retry saving note'));
   await waitFor(() => expect(saveNote).toHaveBeenCalledTimes(2));
-  await screen.findByText(/Transcribing/);
+  await waitFor(() => expect(screen.queryByText(/Note not saved/)).toBeNull());
 });
 
 it('keeps a new note when an older notes read finishes afterward', async () => {
@@ -1089,7 +1264,9 @@ it('shows a late note-save failure after the meeting screen is reopened', async 
   await act(async () => {
     rejectSave(new Error('disk full'));
   });
-  expect(await screen.findByText('● Recording · note not saved')).toBeOnTheScreen();
+  expect(
+    await screen.findByText('Note not saved yet. Use retry in the note field.'),
+  ).toBeOnTheScreen();
   expect(screen.getByLabelText('Retry saving note')).toBeOnTheScreen();
 });
 
@@ -1252,6 +1429,96 @@ it('stamps notes with the time of day rather than the meeting timer', async () =
   });
   expect(await screen.findByTestId('meeting-note')).toHaveTextContent(`${expected} Budget`);
   expect(expected).not.toBe('01:30');
+});
+
+it('explains online setup and opens services when Attendee is not configured', async () => {
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByText(/Online meeting/));
+  expect(
+    screen.getByText(
+      'Set up online meetings: configure Attendee and enable premium Uplink / Online Sharing.',
+    ),
+  ).toBeTruthy();
+  fireEvent.press(screen.getByText('Set up Attendee'));
+  expect(router.push).toHaveBeenCalledWith('/settings/services');
+  fireEvent.press(screen.getByLabelText('Start meeting'));
+  expect(startMeeting).not.toHaveBeenCalled();
+});
+
+it('allows cancellation of an interrupted online bot start', async () => {
+  const remote: MeetingRecord = {
+    id: 'online-pending',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'attendee',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'interrupted',
+    captureStatus: 'preparing',
+    transcript: '',
+    error: 'Recovering bot creation',
+  };
+  const stopOnlineMeeting = jest.fn().mockResolvedValue({ accepted: true });
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
+  jest
+    .mocked(createVerityClient)
+    .mockReturnValue({ stopOnlineMeeting } as unknown as NonNullable<
+      ReturnType<typeof createVerityClient>
+    >);
+  jest.mocked(listMeetings).mockResolvedValue([remote]);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('End meeting'));
+  await waitFor(() => expect(stopOnlineMeeting).toHaveBeenCalledWith('session-1', remote.id));
+});
+
+it('renames an online speaker using synchronized names without replacing other edits', async () => {
+  const prompt = jest.spyOn(Alert, 'prompt').mockImplementation(() => undefined);
+  const meeting: MeetingRecord = {
+    id: 'online-names',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'attendee',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: 'Hello',
+    error: null,
+    speakerNames: { '0': 'Alice', '1': 'Bob' },
+    speakerTurns: [{ speaker: 0, start: 0, end: 1 }],
+    timedWords: [{ text: 'Hello', start: 0, end: 0.5 }],
+  };
+  const editOnlineMeetingSpeakers = jest.fn().mockResolvedValue({ accepted: true });
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
+  jest
+    .mocked(createVerityClient)
+    .mockReturnValue({ editOnlineMeetingSpeakers } as unknown as NonNullable<
+      ReturnType<typeof createVerityClient>
+    >);
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  let publish!: (meeting: MeetingRecord | null) => void;
+  jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+    publish = listener;
+    return jest.fn();
+  });
+  render(<MeetingScreen />);
+  await screen.findByLabelText('Rename Alice');
+  act(() =>
+    publish({
+      ...meeting,
+      speakerNames: { '0': 'Alice', '1': 'Remote Bob' },
+      speakerCorrections: [{ start: 0, end: 0.5, speaker: 1 }],
+      speakerMerges: { '2': 1 },
+    }),
+  );
+  fireEvent.press(screen.getByLabelText('Rename Alice'));
+  const reply = prompt.mock.calls.at(-1)?.[2];
+  if (typeof reply === 'function') act(() => reply('Anna'));
+  await waitFor(() =>
+    expect(editOnlineMeetingSpeakers).toHaveBeenCalledWith('session-1', meeting.id, {
+      speakerNames: { '0': 'Anna', '1': 'Remote Bob' },
+    }),
+  );
+  prompt.mockRestore();
 });
 
 it('saves a noticed point as a note and hides a dismissed question', async () => {

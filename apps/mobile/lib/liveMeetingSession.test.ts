@@ -1,3 +1,5 @@
+import { VerityApiError } from '@verity/mobile';
+import { isDemoMode, isEnteringDemoMode } from './demoMode';
 import { liveMeetingSTT, type STTEvent } from './liveMeetingSTT';
 import { createVerityClient } from './client';
 import { waitFor } from '@testing-library/react-native';
@@ -9,7 +11,9 @@ import {
   setMeetingState,
 } from './liveMeetingStore';
 import {
+  clearSpeakerNameSuggestion,
   currentMeeting,
+  hasActiveMeetingCapture,
   endMeeting,
   pauseMeeting,
   resumeMeeting,
@@ -94,6 +98,148 @@ it('keeps a renamed speaker when another live speaker update arrives', async () 
   onEvent({ kind: 'speaker', speaker: 0, start: 1, end: 2 });
   expect(currentMeeting()?.speakerNames).toEqual({ '0': 'Anna' });
   await endMeeting();
+});
+
+// A whole Apple phrase stored as one timed word spanned its pauses and lost its
+// speaker; the runs must become per-word timings, and open turns stay in memory only.
+it('records Apple runs as word timings and keeps open diarizer turns unsaved', async () => {
+  let onEvent!: (event: STTEvent) => void;
+  jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+    onEvent = listener;
+    return { remove: jest.fn() };
+  });
+  await startMeeting('session-1');
+  onEvent({
+    kind: 'segment',
+    text: 'Hallo zusammen',
+    final: true,
+    start: 0,
+    end: 3,
+    runs: [
+      { text: 'Hallo', start: 0.1, end: 0.5 },
+      { text: ' ' },
+      { text: 'zusammen', start: 2, end: 2.6 },
+    ],
+  });
+  expect(currentMeeting()?.timedWords).toEqual([
+    { text: 'Hallo', start: 0.1, end: 0.5 },
+    { text: 'zusammen', start: 2, end: 2.6 },
+  ]);
+  onEvent({
+    kind: 'speaker-tentative',
+    turns: [
+      { speaker: 1, start: 2, end: 2.7 },
+      { speaker: 9, start: 2, end: 2.7 },
+    ],
+    through: 3.1,
+  });
+  expect(currentMeeting()?.tentativeSpeakerTurns).toEqual([{ speaker: 1, start: 2, end: 2.7 }]);
+  expect(currentMeeting()?.speakerHorizon).toBe(3.1);
+  expect(currentMeeting()?.activeSpeaker).toBe(1);
+  expect(saveSpeakerTurns).not.toHaveBeenCalled();
+  await endMeeting();
+});
+
+// A name the model hears is only a suggestion: it must never replace a name the
+// operator typed, and a rejected one must not come back.
+it('suggests a speaker name from an introduction without overwriting a typed name', async () => {
+  jest.useFakeTimers();
+  try {
+    let onEvent!: (event: STTEvent) => void;
+    jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+      onEvent = listener;
+      return { remove: jest.fn() };
+    });
+    const checkMeetingSpeakerName = jest
+      .fn()
+      .mockResolvedValue({ name: 'Holger', quote: 'Hallo, ich bin Holger.' });
+    jest.mocked(createVerityClient).mockReturnValue({
+      checkMeetingSpeakerName,
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    await startMeeting('session-1');
+    const introduce = (start: number, speaker: number) => {
+      onEvent({
+        kind: 'segment',
+        text: 'Hallo, ich bin Holger.',
+        final: true,
+        start,
+        end: start + 2,
+        runs: [{ text: 'Hallo, ich bin Holger.', start, end: start + 2 }],
+      });
+      onEvent({ kind: 'speaker', speaker, start, end: start + 2 });
+    };
+    introduce(0, 0);
+    await jest.advanceTimersByTimeAsync(2_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledWith('session-1', 'meeting-1', {
+      text: 'Hallo, ich bin Holger.',
+      hints: [],
+    });
+    expect(currentMeeting()?.speakerNameSuggestions).toEqual([
+      { speaker: 0, name: 'Holger', quote: 'Hallo, ich bin Holger.' },
+    ]);
+    // After a rejection the operator names that speaker; it is not asked about again.
+    clearSpeakerNameSuggestion('meeting-1', 0, true);
+    expect(currentMeeting()?.speakerNameSuggestions).toEqual([]);
+    introduce(20, 0);
+    await jest.advanceTimersByTimeAsync(12_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(1);
+
+    await updateSpeakerEdits('meeting-1', { '1': 'Anna' }, [], {});
+    introduce(40, 1);
+    await jest.advanceTimersByTimeAsync(12_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(1);
+    // An unnamed new speaker is still checked.
+    introduce(60, 2);
+    await jest.advanceTimersByTimeAsync(12_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(2);
+    expect(currentMeeting()?.speakerNames).toEqual({ '1': 'Anna' });
+    await endMeeting();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+// A model that keeps failing must not be asked about the same speaker every ten
+// seconds for the whole meeting; a server without the route stops checks entirely.
+it('spends the name check budget on failures and stops on a missing route', async () => {
+  jest.useFakeTimers();
+  try {
+    let onEvent!: (event: STTEvent) => void;
+    jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+      onEvent = listener;
+      return { remove: jest.fn() };
+    });
+    const checkMeetingSpeakerName = jest
+      .fn()
+      .mockRejectedValue(new VerityApiError(502, 'speaker name check failed'));
+    jest.mocked(createVerityClient).mockReturnValue({
+      checkMeetingSpeakerName,
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    await startMeeting('session-1');
+    const introduce = (start: number, speaker: number) => {
+      onEvent({
+        kind: 'segment',
+        text: 'I am here.',
+        final: true,
+        start,
+        end: start + 1,
+        runs: [{ text: 'I am here.', start, end: start + 1 }],
+      });
+      onEvent({ kind: 'speaker', speaker, start, end: start + 1 });
+    };
+    introduce(0, 0);
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(3);
+    checkMeetingSpeakerName.mockRejectedValue(new VerityApiError(404, 'not found'));
+    introduce(100, 1);
+    await jest.advanceTimersByTimeAsync(60_000);
+    introduce(200, 2);
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(4);
+    await endMeeting();
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 // Stands in for the server's model: treats "Verity, <request>." as addressed to it.
@@ -659,5 +805,109 @@ it('does not leave "sending" on screen when capture pauses between two requests'
   } finally {
     unsubscribe();
     await endMeeting();
+  }
+});
+
+jest.mock('./demoMode', () => ({
+  isDemoMode: jest.fn().mockReturnValue(false),
+  isEnteringDemoMode: jest.fn().mockReturnValue(false),
+}));
+afterEach(() => jest.mocked(isDemoMode).mockReturnValue(false));
+
+it('reports pending starts and active capture until the meeting ends', async () => {
+  const pending = startMeeting('session-1');
+  expect(hasActiveMeetingCapture()).toBe(true);
+  try {
+    await pending;
+    expect(hasActiveMeetingCapture()).toBe(true);
+  } finally {
+    await endMeeting();
+  }
+  expect(hasActiveMeetingCapture()).toBe(false);
+});
+
+it('does not start native capture during an asynchronous demo transition', async () => {
+  jest.mocked(isEnteringDemoMode).mockReturnValue(true);
+  try {
+    await expect(startMeeting('session-1')).rejects.toThrow('Exit the demo');
+    expect(createMeeting).not.toHaveBeenCalled();
+    expect(liveMeetingSTT?.start).not.toHaveBeenCalled();
+  } finally {
+    jest.mocked(isEnteringDemoMode).mockReturnValue(false);
+  }
+});
+
+it('does not create a persisted meeting or start native capture in demo mode', async () => {
+  jest.mocked(isDemoMode).mockReturnValue(true);
+  await expect(startMeeting('demo-session')).rejects.toThrow('Exit the demo');
+  expect(createMeeting).not.toHaveBeenCalled();
+  expect(liveMeetingSTT?.engines).not.toHaveBeenCalled();
+  expect(liveMeetingSTT?.start).not.toHaveBeenCalled();
+});
+
+it('keeps speaker identity unchanged when saving a name fails', async () => {
+  await startMeeting('session-1');
+  try {
+    jest.mocked(saveSpeakerEdits).mockRejectedValueOnce(new Error('disk full'));
+    await expect(updateSpeakerEdits('meeting-1', { '0': 'Anna' }, [], {})).rejects.toThrow(
+      'disk full',
+    );
+    expect(currentMeeting()?.speakerNames?.['0']).toBeUndefined();
+  } finally {
+    await endMeeting();
+  }
+});
+
+it('checks a new meeting while the previous name request is still pending', async () => {
+  jest.useFakeTimers();
+  let finish!: (value: { name: string; quote: string }) => void;
+  try {
+    let onEvent!: (event: STTEvent) => void;
+    jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+      onEvent = listener;
+      return { remove: jest.fn() };
+    });
+    const checkMeetingSpeakerName = jest
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockResolvedValue({ name: 'Anna', quote: 'Hi, ich bin Anna.' });
+    jest
+      .mocked(createVerityClient)
+      .mockReturnValue({ checkMeetingSpeakerName } as unknown as NonNullable<
+        ReturnType<typeof createVerityClient>
+      >);
+    const introduce = () => {
+      onEvent({
+        kind: 'segment',
+        text: 'Hi, ich bin Anna.',
+        final: true,
+        start: 0,
+        end: 2,
+        runs: [{ text: 'Hi, ich bin Anna.', start: 0, end: 2 }],
+      });
+      onEvent({ kind: 'speaker', speaker: 0, start: 0, end: 2 });
+    };
+    await startMeeting('session-1');
+    introduce();
+    await jest.advanceTimersByTimeAsync(2_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(1);
+    await endMeeting();
+    await startMeeting('session-1');
+    introduce();
+    await jest.advanceTimersByTimeAsync(2_000);
+    expect(checkMeetingSpeakerName).toHaveBeenCalledTimes(2);
+    finish({ name: 'Old name', quote: 'Old introduction' });
+    await jest.advanceTimersByTimeAsync(1);
+    expect(currentMeeting()?.speakerNameSuggestions).toEqual([
+      { speaker: 0, name: 'Anna', quote: 'Hi, ich bin Anna.' },
+    ]);
+  } finally {
+    await endMeeting();
+    jest.useRealTimers();
   }
 });

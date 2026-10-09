@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
 // GitHub authorization entry point shared by onboarding and Settings. The user
 // sees one action; the GitHub App manifest remains an implementation detail on
 // the server. After the browser round-trip, the caller replaces this panel with
@@ -18,7 +19,6 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { getVerityBaseUrl } from '../lib/client';
 
-const POLL_INTERVAL_MS = 3000;
 const PREPARE_TIMEOUT_MS = 15000;
 const GITHUB_CALLBACK_URL = 'https://verity.build/github/app/callback';
 // Shortest round-trip we are willing to read as a human closing the sheet. A
@@ -170,10 +170,10 @@ export function GithubConnectPanel({
 
   useEffect(() => {
     if (!waiting) return;
-    const id = setInterval(check, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
+    check();
+    return subscribeLiveRefresh(client, check, (path) => path === '/onboarding/status');
     // `check` only closes over stable client/refs and intentionally should not
-    // restart the interval on every render.
+    // restart the subscription on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [waiting, client]);
 

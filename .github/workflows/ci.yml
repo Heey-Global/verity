@@ -51,6 +51,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-tag-barrier:
+    # Require this check with strict up-to-date branches on main. A green check
+    # against an older base cannot authorize a merge past a new release commit.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+      - name: Protect untagged releases from workflow changes
+        if: github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${PR_BASE:-$(git rev-parse origin/main)}"
+          # Include deletions and rename sources; otherwise moving a workflow
+          # could pass the barrier while removing the permitted workflow tree.
+          if ! git diff --quiet --no-renames "$base" HEAD -- .github/workflows; then
+            node scripts/release-tag-registration.mjs check "$base"
+          fi
+
   changes:
     runs-on: ubuntu-24.04
     # `actions: read` is for the base commit's own CI verdict, which the
@@ -113,7 +147,7 @@ jobs:
           fi
 
           run_all() {
-            lint=true; typecheck=true; test=true; contract_test=true; coverage=true
+            lint=true; typecheck=true; test=true; contract_test=true
             installer=true; mobile=true; mobile_app=true; server_image=true; agent_seed_drift=true
           }
 
@@ -163,7 +197,7 @@ jobs:
                   website:docs/website/CHANGELOG.md|website:docs/website/version.txt|website:.release-please-manifest.website.json)
                     :
                     ;;
-                  mobile-ota:apps/mobile/ota-promotion.json)
+                  mobile-ota:apps/mobile/ota-promotion.json|mobile-ota:apps/mobile/ota/version.txt|mobile-ota:apps/mobile/ota/CHANGELOG.md|mobile-ota:.release-please-manifest.mobile-ota.json)
                     :
                     ;;
                   *)
@@ -179,24 +213,16 @@ jobs:
               full)
                 ;;
               backend)
-                # A generated backend release PR changes only version metadata.
-                # Let the release-only verifier below inherit the green base. If
-                # that proof fails, leave it unscoped so normal path routing runs.
                 release_scoped=false
                 ;;
               mobile)
-                # mobile-app builds @verity/mobile before checking the Expo app.
                 mobile_app=true
                 release_scoped=true
                 ;;
               website)
-                # The website has no gated CI job. public-snapshot and ci-checks
-                # are unconditional, and release.yml owns its image build.
                 release_scoped=true
                 ;;
               mobile-ota)
-                # The promotion workflow validates and applies this approval
-                # record; no application or backend source changed here.
                 release_scoped=true
                 ;;
               *)
@@ -382,9 +408,7 @@ jobs:
                   typecheck=true
                   test=true
                   ;;
-                # Swift sources and their native TLS harness are compiled by
-                # verity-mobile-native-verify on macOS. Root TypeScript, backend,
-                # image and Jest jobs cannot exercise them.
+                # Native Swift inputs are verified separately on macOS.
                 apps/mobile/native/*|scripts/ios-pinned-tls-smoke.sh|scripts/ios-pinned-tls-smoke.swift)
                   :
                   ;;
@@ -407,6 +431,7 @@ jobs:
                   server_image=true
                   ;;
                 packages/mobile/*)
+                  case $file in */src/api.ts) contract_test=true;; esac
                   lint=true
                   typecheck=true
                   mobile=true
@@ -441,7 +466,7 @@ jobs:
                   ;;
                 # The workflow contract suite validates this approval boundary.
                 # Its merge is intentionally also routed to the normal app checks.
-                apps/mobile/ota-promotion.json)
+                apps/mobile/ota-promotion.json|apps/mobile/ota/*|apps/mobile/version.txt)
                   lint=true
                   typecheck=true
                   contract_test=true
@@ -533,10 +558,15 @@ jobs:
                 docs/runbooks/*)
                   test=true
                   ;;
-                # Prose. Nothing builds it, `.prettierignore` excludes it from the
-                # formatter, and no test reads what the arm above leaves — asserted
-                # in scripts/ci-workflow.test.ts rather than trusted, since this arm
-                # is the only thing between this directory and the full suite.
+                # Guides the app help catalog cites; a suite checks they exist.
+                docs/attendee-live-meetings.md|docs/connections.md|docs/file-connections.md|docs/getting-started.md|docs/google-calendar.md|docs/knowledge.md|docs/matrix-knowledge-connector.md)
+                  test=true
+                  ;;
+                # Mobile auth callback authorization is covered by a root test.
+                docs/website/site/apple-app-site-association.json)
+                  test=true
+                  ;;
+                # Prose stays inert only when no suite reads it, checked by ci-workflow.test.ts.
                 docs/*)
                   ;;
                 # Everything this table does not name. Matching nothing used to
@@ -1150,6 +1180,16 @@ jobs:
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Check out the immutable OTA candidate for mobile verification
+        if: startsWith(github.head_ref, 'automation/promote-mobile-ota-') || startsWith(github.ref, 'refs/heads/automation/promote-mobile-ota-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$(node -e 'const c = require("./apps/mobile/ota-promotion.json"); if (!/^[a-f0-9]{40}$/.test(c.commit)) throw new Error("Invalid candidate source"); process.stdout.write(c.commit)')"
+          git merge-base --is-ancestor "$source" HEAD
+          git checkout --detach "$source"
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -1736,7 +1776,7 @@ jobs:
           set -euo pipefail
           feature=features/verity-sandbox-toolkit/agent-seed
           status=0
-          for rel in README.md hooks/pre-push hooks/pre-commit bin/gh bin/git bin/verity-code-review bin/verity-secret-scan bin/verity-git-sign code-review-prompt.md; do
+          for rel in README.md hooks/pre-push hooks/pre-commit bin/gh bin/git bin/verity-code-review bin/verity-review-base.sh bin/verity-secret-scan bin/verity-git-sign bin/verity-dev-server code-review-prompt.md; do
             if cmp -s "agent-seed/$rel" "$feature/$rel"; then
               echo "OK: $rel matches agent-seed/ source"
             else

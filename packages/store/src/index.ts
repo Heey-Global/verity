@@ -25,6 +25,8 @@ export {
 } from './db.js';
 export {
   IntegrationStore,
+  integrationImportCodes,
+  type IntegrationImportDiagnostic,
   type IntegrationAccount,
   type IntegrationSource,
   type IntegrationEvent,
@@ -36,9 +38,9 @@ export {
 // harness reaches it through `@verity/store/testing`.
 export {
   EventStore,
-  AgentLoopNotReadyError,
-  agentLoopConfigFingerprint,
+  SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS,
   type EventSink,
+  type PlanningConsent,
   RUNNER_FRAME_PROTOCOL_VERSION,
   type RunnerFrameIngest,
   type RunnerFrameIngestResult,
@@ -47,6 +49,7 @@ export {
   type SessionProjectionFacts,
   type SessionEventStats,
   type SessionRecord,
+  type SessionPlanning,
   type SessionSlideDeckRecord,
   type SessionWorkspaceFileRecord,
   type SessionGmailConnection,
@@ -62,6 +65,9 @@ export {
   type VeritySettingsPatch,
   type VeritySettingsRecord,
   type ProjectSettingsPatch,
+  type ProjectAgent,
+  PROJECT_AGENTS,
+  ProjectDefaultModelNotAllowedError,
   type ProjectSettingsRecord,
   type HttpMcpConnectionRecord,
   type ProjectMcpBindingRecord,
@@ -88,18 +94,49 @@ export {
   isSessionLinkProject,
   isInstallationPlaceholder,
   ProjectIdentityClaimConflict,
-  type AgentLoopRecord,
-  type AgentLoopStatus,
-  type AgentLoopCreateInput,
-  type AgentLoopPatch,
-  type AgentLoopRunRecord,
-  type AgentLoopRunOutcome,
+  type SessionAutomationRecord,
+  type SessionAutomationStatus,
+  type SessionAutomationInput,
+  SessionAutomationWorkspaceChangedError,
+  type SessionAutomationOutcome,
   type SecretKeyMetaRecord,
   type AuthTokenRecord,
   type DevicePushTokenRecord,
   type PushReceiptRecord,
 } from './store.js';
 export { TranscriptStore } from './transcript.js';
+export {
+  ManagedDevServerStore,
+  ManagedDevServerConflictError,
+  ManagedDevServerInputError,
+  ManagedDevServerPortsFullError,
+  managedDevServerNameKey,
+  normalizeManagedDevServerWorkdir,
+  type ManagedDevServerRecord,
+  type ManagedDevServerInstanceRecord,
+  type ManagedDevServerDesired,
+  type ManagedDevServerState,
+  type ManagedDevServerInstancePatch,
+} from './managed-dev-servers.js';
+export {
+  TaskStore,
+  TaskNotFoundError,
+  TaskRevisionConflictError,
+  TaskInputError,
+  TASK_STATUSES,
+  OPEN_TASK_STATUSES,
+  TASK_TITLE_MAX,
+  TASK_DETAIL_MAX,
+  TASK_RESULT_MAX,
+  TASK_ATTACHMENTS_MAX,
+  type TaskRecord,
+  type TaskInput,
+  type TaskPatch,
+  type TaskListFilter,
+  type TaskAttachment,
+  type TaskOrigin,
+  type TaskStatus,
+} from './tasks.js';
 export {
   LiveMeetingStore,
   type LiveMeetingSyncRecord,
@@ -147,8 +184,7 @@ export type {
   DevicePushTokensTable,
   ProjectsTable,
   SessionBackendStateTable,
-  AgentLoopsTable,
-  AgentLoopRunsTable,
+  SessionAutomationsTable,
   SecretRunGrantsTable,
   SecretApprovalsTable,
   SecretRevocationsTable,
@@ -161,3 +197,5 @@ export type {
 export * from './knowledge.js';
 
 export * from './knowledge-sources.js';
+
+export { redactSecrets, redactProcessStderr } from './redact.js';

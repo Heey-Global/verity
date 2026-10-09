@@ -8,6 +8,7 @@ import {
   type AttentionInput,
   type AttentionKind,
 } from './attention.js';
+import { pullRequestMergeButton } from './pullRequest.js';
 
 const ZERO_USAGE = {
   inputTokens: 0,
@@ -186,25 +187,40 @@ describe('sessionAttention', () => {
     expect(attentionCount(sessions)).toBe(1);
   });
 
-  it('emits no flag for a non-dirty merge state', () => {
+  it('does not report a conflict for a non-dirty merge state', () => {
     // `behind`/`blocked`/`unstable` are ordinary states the pipeline + mergeable
     // tri-state already describe; only `dirty` means an actual conflict.
     for (const mergeState of ['behind', 'blocked', 'unstable', 'draft', 'clean'] as const) {
       expect(
-        sessionAttention({ status: 'idle', pr: openPr({ pipeline: 'unknown', mergeState }) }),
-      ).toEqual([]);
+        sessionAttention({
+          status: 'idle',
+          pr: openPr({ pipeline: 'unknown', mergeable: null, mergeState }),
+        }).map((flag) => flag.kind),
+      ).toEqual(['pr_unknown']);
     }
   });
 
-  it('emits no PR flag when checks passed but mergeability is still unknown (null)', () => {
-    // GitHub returns mergeable=null for a few seconds after a push. This must NOT
-    // read as merge_blocked (red, blocking) — the row would flash red the moment a
-    // fix goes green. No flag until the next poll resolves it to ready/blocked.
+  it('blocks an unreported-CI PR that GitHub confirms cannot merge', () => {
+    expect(
+      sessionAttention({
+        status: 'idle',
+        pr: openPr({ pipeline: 'unknown', mergeable: false }),
+      }).map((f) => f.kind),
+    ).toEqual(['merge_blocked']);
+  });
+
+  it('marks checks-passed-but-mergeability-unknown as a non-blocking merge_checking', () => {
+    // GitHub returns mergeable=null for a while after a push. It must NOT read as
+    // merge_blocked (red, blocking) — the row would flash red the moment a fix goes
+    // green — but it must not drop the PR marker either, which made the row's green
+    // check vanish while github.com showed "Checking for the ability to merge".
     const flags = sessionAttention({
       status: 'idle',
       pr: openPr({ mergeable: null, pipeline: 'success' }),
     });
-    expect(flags).toEqual([]);
+    expect(flags.map((f) => f.kind)).toEqual(['merge_checking']);
+    // Not `done`: green is reserved for a PR the merge button can actually merge.
+    expect(flags[0]).toMatchObject({ tone: 'idle', blocking: false });
   });
 
   it('does not surface an unknown-mergeability PR in the attention queue', () => {
@@ -217,16 +233,20 @@ describe('sessionAttention', () => {
     expect(attentionCount(sessions)).toBe(1);
   });
 
-  it('marks an open PR with checks still running as ci_running (non-blocking, attention)', () => {
+  it('marks an open PR with checks still running as ci_running (non-blocking, idle)', () => {
     for (const pipeline of ['pending', 'running'] as const) {
       const flags = sessionAttention({ status: 'idle', pr: openPr({ pipeline }) });
       expect(flags.map((f) => f.kind)).toEqual(['ci_running']);
-      expect(flags[0]).toMatchObject({ tone: 'attention', blocking: false });
+      expect(flags[0]).toMatchObject({ tone: 'idle', blocking: false });
     }
   });
 
-  it('emits no PR flag for an unknown pipeline or a non-open PR', () => {
-    expect(sessionAttention({ status: 'idle', pr: openPr({ pipeline: 'unknown' }) })).toEqual([]);
+  it('keeps an unknown open PR visible without claiming CI or merge readiness', () => {
+    expect(
+      sessionAttention({ status: 'idle', pr: openPr({ pipeline: 'unknown', mergeable: null }) }),
+    ).toEqual([
+      { kind: 'pr_unknown', tone: 'attention', label: 'PR status unavailable', blocking: false },
+    ]);
     const merged = openPr({ phase: 'merged', mergeable: false, pipeline: 'success' });
     expect(sessionAttention({ status: 'idle', pr: merged })).toEqual([]);
   });
@@ -347,7 +367,9 @@ describe('sandbox_disconnected (server-reported)', () => {
       'ci_failed',
       'merge_blocked',
       'merge_ready',
+      'merge_checking',
       'ci_running',
+      'pr_unknown',
       'unread',
     ];
     const everyKind: AttentionInput[] = [
@@ -358,7 +380,9 @@ describe('sandbox_disconnected (server-reported)', () => {
       { status: 'idle', pr: openPr({ pipeline: 'failure' }) },
       { status: 'idle', pr: openPr({ pipeline: 'success', mergeable: true }) },
       { status: 'idle', pr: openPr({ pipeline: 'success', mergeable: false }) },
+      { status: 'idle', pr: openPr({ pipeline: 'success', mergeable: null }) },
       { status: 'idle', pr: openPr({ pipeline: 'running' }) },
+      { status: 'idle', pr: openPr({ pipeline: 'unknown' }) },
       { status: 'idle', unread: true },
     ];
     for (const input of everyKind)
@@ -374,4 +398,32 @@ describe('sandbox_disconnected (server-reported)', () => {
     expect(attentionQueue(sessions).map((s) => s.sessionId)).toEqual(['b', 'a', 'c']);
     expect(attentionCount(sessions)).toBe(1);
   });
+});
+
+describe('parity with the PR bar merge button', () => {
+  // The list marker and the PR bar's button judge the same PR in two places. When they
+  // drifted, a row promised a merge (green ✓) that the bar's button refused, or showed
+  // a red ✕ beside a live Merge button.
+  const pipelines = ['unknown', 'pending', 'running', 'success', 'failure'] as const;
+  const mergeables = [true, false, null] as const;
+  const mergeStates = [undefined, 'clean', 'dirty', 'unstable', 'blocked', 'unknown'] as const;
+  for (const pipeline of pipelines)
+    for (const mergeable of mergeables)
+      for (const mergeState of mergeStates) {
+        const pr: SessionPr = {
+          phase: 'open',
+          pipeline,
+          mergeable,
+          ...(mergeState ? { mergeState } : {}),
+        };
+        it(`agrees for ${pipeline} / mergeable ${String(mergeable)} / ${String(mergeState)}`, () => {
+          const flag = markerAttention({ status: 'idle', pr })[0];
+          const button = pullRequestMergeButton(
+            { ...pr, checks: { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 } },
+            { merging: false, mergeRejected: false },
+          );
+          expect(flag?.kind === 'merge_ready').toBe(button.kind === 'merge');
+          expect(flag?.tone === 'danger').toBe(button.kind === 'blocked');
+        });
+      }
 });

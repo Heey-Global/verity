@@ -14,18 +14,18 @@
 # no server installed that fallback still works unchanged, which is what keeps a
 # plain checkout on a laptop running with nothing to set up.
 
-# The same mutable channel tag `DEFAULT_SANDBOX_IMAGE_TAG` resolves to in
-# packages/server/src/main.ts, so this project keeps tracking the fleet image
-# rather than pinning itself to one build of it. Deliberately not digest-pinned:
-# a pin here would mean this repo's sandbox silently stops following the image
-# every other project gets. What triggers a rebuild is Verity's own resolved base
-# ref changing — `devcontainerContentHash` mixes that in, not this line — so a
-# fleet rollout invalidates the cached layer and the FROM below then resolves to
-# the image that rollout published.
+# Inside Verity the Server always sets this ARG, to the sandbox image it pins to
+# its own release (`pinDevcontainerBaseImage` in
+# packages/server/src/devcontainer-build-boundary.ts writes it into the build's
+# private copy of devcontainer.json). It has to be that exact image: the update
+# checker measures this layer's inherited base against it, and a layer built on
+# anything else comes back "behind" after every recreate — which once had the
+# reconciler rebuilding the project container, and every session in it,
+# once a minute. So keep the ARG's name; a guard test reads this file.
 #
-# The ARG exists so `verity-sandbox.yml` can point this layer at the image it
-# just built, instead of at the published one — that job is the only place the
-# base and this layer are proved to work together before either is published.
+# The `:latest` default only serves builds that pass nothing, such as a laptop
+# running the devcontainer directly. `verity-sandbox.yml` passes the image it just
+# built, the only place this layer and an unpublished base are proved together.
 ARG VERITY_SANDBOX_IMAGE=ghcr.io/heey-global/verity/verity-sandbox:latest
 FROM ${VERITY_SANDBOX_IMAGE}
 

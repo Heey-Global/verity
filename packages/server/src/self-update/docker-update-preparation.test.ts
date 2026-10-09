@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -9,7 +9,11 @@ import {
   dockerUpdatePreparation,
   type UpdatePreparationDocker,
 } from './docker-update-preparation.js';
-import { initializeManagedDeployment } from './managed-deployment.js';
+import {
+  initializeManagedDeployment,
+  migrateManagedHostDiagnostics,
+  readManagedDeployment,
+} from './managed-deployment.js';
 import type { UpdatePreparationDeps } from './update-preparation.js';
 import { resumeUpdatePreparation } from './update-preparation.js';
 import type { UpdateJournal } from './update-journal.js';
@@ -158,6 +162,149 @@ function inspectFromSpec(spec: ContainerSpec, status: string): ContainerInspect 
 }
 
 describe('Docker update preparation', () => {
+  it('preserves an existing sealed diagnostic path when the exporter path changes', async () => {
+    const { root, journal } = await setup();
+    await migrateManagedHostDiagnostics({
+      root,
+      deploymentId: 'deployment-1',
+      image: oldImage,
+      hostPath: '/sealed/host-diagnostics',
+    });
+    const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'host-diagnostic-relocated-'));
+    const docker = fakeDocker();
+    const log = vi.fn();
+    const now = new Date().toISOString();
+    try {
+      await writeFile(
+        join(hostRuntimeDir, 'diagnostics.json'),
+        JSON.stringify({
+          version: 1,
+          hostPath: '/relocated/host-diagnostics',
+          snapshot: {
+            schemaVersion: 1,
+            observedAt: now,
+            since: now,
+            until: now,
+            sources: { kernel: 'available', runtime: 'available' },
+            truncated: false,
+          },
+        }),
+      );
+      const actions = await dockerUpdatePreparation({
+        managedRoot: root,
+        docker,
+        environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+        verifyImage: async () => undefined,
+        hostRuntimeDir,
+        log,
+      });
+      await actions.prepareStandby!(journal);
+      await actions.ensureStandby(journal);
+      expect(docker.createContainer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          binds: expect.arrayContaining([
+            '/sealed/host-diagnostics:/run/verity-host-diagnostics:ro',
+          ]),
+        }),
+      );
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('retaining the existing mount'));
+    } finally {
+      await rm(hostRuntimeDir, { recursive: true, force: true });
+    }
+  });
+  it.each(['unsupported', 'invalid', 'stale'] as const)(
+    'defers the diagnostic bind for %s host evidence without blocking standby creation',
+    async (state) => {
+      const { root, journal } = await setup();
+      const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'host-diagnostic-unavailable-'));
+      const docker = fakeDocker();
+      const log = vi.fn();
+      try {
+        if (state !== 'unsupported') {
+          const old = new Date(Date.now() - 600_000).toISOString();
+          await writeFile(
+            join(hostRuntimeDir, 'diagnostics.json'),
+            state === 'invalid'
+              ? '{'
+              : JSON.stringify({
+                  version: 1,
+                  hostPath: '/var/lib/verity/host-diagnostics',
+                  snapshot: {
+                    schemaVersion: 1,
+                    observedAt: old,
+                    since: old,
+                    until: old,
+                    sources: { kernel: 'available', runtime: 'available' },
+                    truncated: false,
+                  },
+                }),
+          );
+        }
+        const actions = await dockerUpdatePreparation({
+          managedRoot: root,
+          docker,
+          environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+          verifyImage: async () => undefined,
+          hostRuntimeDir,
+          log,
+        });
+        await actions.prepareStandby!(journal);
+        await actions.ensureStandby(journal);
+        expect(log).toHaveBeenCalledWith(expect.stringContaining(`Host diagnostics ${state}`));
+        const deployment = await readManagedDeployment(root);
+        if (!deployment.managed) throw new Error(deployment.reason);
+        expect(
+          deployment.spec.mounts.some((mount) => mount.target === '/run/verity-host-diagnostics'),
+        ).toBe(false);
+      } finally {
+        await rm(hostRuntimeDir, { recursive: true, force: true });
+      }
+    },
+  );
+  it('migrates an exported custom path on retry and builds the standby with the read-only bind', async () => {
+    const { root, journal } = await setup();
+    const hostRuntimeDir = await mkdtemp(join(tmpdir(), 'host-diagnostic-preparation-'));
+    const docker = fakeDocker();
+    const now = new Date().toISOString();
+    try {
+      await writeFile(
+        join(hostRuntimeDir, 'diagnostics.json'),
+        JSON.stringify({
+          version: 1,
+          hostPath: '/custom/host-diagnostics',
+          snapshot: {
+            schemaVersion: 1,
+            observedAt: now,
+            since: now,
+            until: now,
+            sources: { kernel: 'available', runtime: 'available' },
+            truncated: false,
+          },
+        }),
+      );
+      const actions = await dockerUpdatePreparation({
+        managedRoot: root,
+        docker,
+        environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+        verifyImage: async () => undefined,
+        hostRuntimeDir,
+      });
+      await actions.prepareStandby!(journal);
+      const migrated = await readManagedDeployment(root);
+      await actions.prepareStandby!(journal);
+      expect(await readManagedDeployment(root)).toEqual(migrated);
+      await actions.ensureStandby(journal);
+      expect(docker.createContainer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          binds: expect.arrayContaining([
+            '/custom/host-diagnostics:/run/verity-host-diagnostics:ro',
+          ]),
+        }),
+      );
+    } finally {
+      await rm(hostRuntimeDir, { recursive: true, force: true });
+    }
+  });
   it('drives the durable journal through real Docker actions to a promotable standby', async () => {
     const { root } = await setup();
     const docker = fakeDocker();

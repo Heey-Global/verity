@@ -7,6 +7,7 @@ import type { SignedReleaseChannel } from './self-update/release-channel.js';
 
 const mocks = vi.hoisted(() => ({
   exec: vi.fn(),
+  verifyImage: vi.fn(),
   admit: vi.fn(),
   request: vi.fn(),
   deployment: vi.fn(),
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   local: vi.fn(),
   events: [] as string[],
 }));
+vi.mock('./self-update/server-image-verify.js', () => ({ verifyServerImage: mocks.verifyImage }));
 vi.mock('node:child_process', async () => {
   const { promisify } = await import('node:util');
   return { execFile: Object.assign(vi.fn(), { [promisify.custom]: mocks.exec }) };
@@ -125,6 +127,9 @@ beforeEach(async () => {
     mocks.events.push('request');
     return { phase: 'requested' };
   });
+  mocks.verifyImage.mockImplementation(async () => {
+    mocks.events.push('verify-image');
+  });
   mocks.exec.mockImplementation(async (_file: string, argv: string[]) => {
     expect(argv[0]).toBe('--host=unix:///var/run/docker.sock');
     const command = argv.slice(1);
@@ -172,9 +177,27 @@ afterEach(async () => {
 });
 
 describe('bridge recovery host command', () => {
+  it('refuses target image execution and admission when its image signature fails', async () => {
+    mocks.verifyImage.mockRejectedValueOnce(
+      new Error('Server image signature verification failed'),
+    );
+    await expect(runBridgeRecoveryCommand(apply())).rejects.toThrow(
+      'signature verification failed',
+    );
+    expect(mocks.events).not.toContain('pull');
+    expect(mocks.events).not.toContain('probe');
+    expect(mocks.admit).not.toHaveBeenCalled();
+    expect(mocks.request).not.toHaveBeenCalled();
+  });
   it('defaults to a checked plan without admitting or requesting an update', async () => {
     await runBridgeRecoveryCommand(args);
-    expect(mocks.events).toEqual(['verify:0.15.2', 'verify:0.16.0', 'pull', 'probe']);
+    expect(mocks.events).toEqual([
+      'verify:0.15.2',
+      'verify:0.16.0',
+      'verify-image',
+      'pull',
+      'probe',
+    ]);
     expect(mocks.admit).not.toHaveBeenCalled();
     expect(mocks.request).not.toHaveBeenCalled();
   });
@@ -184,6 +207,7 @@ describe('bridge recovery host command', () => {
     expect(mocks.events).toEqual([
       'verify:0.15.2',
       'verify:0.16.0',
+      'verify-image',
       'pull',
       'probe',
       'admit',

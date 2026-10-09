@@ -1,7 +1,6 @@
 import type { ProjectRecord } from '@verity/store';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ProjectRuntime } from './project-runtime.js';
 import {
   PROJECT_SANDBOX_IDLE_TIMEOUT_MS,
   projectHasPersistentSandboxActivity,
@@ -188,47 +187,39 @@ describe('persistent Sandbox activity', () => {
       projectHasPersistentSandboxActivity({
         project: project('p1'),
         listShares: async () => [{ state: 'active' } as never],
-        listDevServers: async () => [],
       }),
     ).resolves.toBe(true);
   });
 
-  it('keeps a project awake while any configured dev server is running', async () => {
-    const runtime = {
-      devServerStatus: vi.fn(async () => ({ running: true })),
-    } as unknown as ProjectRuntime;
+  it('keeps a project awake for an active local share without consulting public storage', async () => {
+    const listShares = vi.fn(async () => []);
     await expect(
       projectHasPersistentSandboxActivity({
         project: project('p1'),
-        listShares: async () => [],
-        listDevServers: async () => [
-          {
-            id: 'dev-1',
-            command: 'npm run dev',
-            url: null,
-            workdir: null,
-            hostPort: null,
-            containerPort: null,
-          } as never,
-        ],
-        runtime,
+        listShares,
+        hasLocalShares: () => true,
       }),
     ).resolves.toBe(true);
+    expect(listShares).not.toHaveBeenCalled();
   });
 
-  it('fails closed when dev-server state cannot be read', async () => {
-    const runtime = {
-      devServerStatus: vi.fn(async () => {
-        throw new Error('Docker unavailable');
-      }),
-    } as unknown as ProjectRuntime;
+  it('releases the activity lease after all shares are inactive', async () => {
     await expect(
       projectHasPersistentSandboxActivity({
         project: project('p1'),
-        listShares: async () => [],
-        listDevServers: async () => [{ id: 'dev-1' } as never],
-        runtime,
+        listShares: async () => [{ state: 'expired' } as never, { state: 'revoked' } as never],
+        hasLocalShares: () => false,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe(false);
   });
+});
+
+it('lets a stopped managed server sleep while its public link stays valid', async () => {
+  await expect(
+    projectHasPersistentSandboxActivity({
+      project: project('p1'),
+      listShares: async () => [{ state: 'active', managedInstanceId: 'instance-1' } as never],
+      hasLocalShares: () => false,
+    }),
+  ).resolves.toBe(false);
 });

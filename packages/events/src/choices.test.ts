@@ -46,6 +46,34 @@ describe('parseChoicesBlock', () => {
     expect(parseChoicesBlock(input)).toEqual({ text: input });
   });
 
+  it('recovers a trailing quick-action list without its closing tag', () => {
+    // Claude can finish the turn without closing the tag, leaving every chip as prose.
+    const input =
+      'Ready.\n\n<quick-actions>\n• Es hakt wieder, Uhrzeit: ...\n• #1001 ist grün und gemerged\n';
+    expect(parseChoicesBlock(input)).toEqual({
+      text: 'Ready.',
+      choices: {
+        options: [
+          { label: 'Es hakt wieder, Uhrzeit: ...' },
+          { label: '#1001 ist grün und gemerged' },
+        ],
+      },
+    });
+  });
+
+  it('preserves an unclosed quick-action list followed by ordinary prose', () => {
+    const input = 'Ready.\n<quick-actions>\n• First\n• Second\nMore explanation.';
+    expect(parseChoicesBlock(input)).toEqual({ text: input });
+  });
+
+  it('honors a trailing unclosed list after an earlier completed list', () => {
+    const input =
+      '<quick-actions>\n• Earlier A\n• Earlier B\n</quick-actions>\n\nChoose now.\n<quick-actions>\n• Latest A\n• Latest B';
+    expect(parseChoicesBlock(input).choices).toEqual({
+      options: [{ label: 'Latest A' }, { label: 'Latest B' }],
+    });
+  });
+
   it('preserves question, recommended, and multiSelect fields', () => {
     const input = fence(
       '{"question":"Pick","options":[{"label":"A","recommended":true},{"label":"B"}],"multiSelect":true}',

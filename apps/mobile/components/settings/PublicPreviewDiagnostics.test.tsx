@@ -2,6 +2,12 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react-nativ
 
 const mockTestRemoteControl = jest.fn();
 const mockGetServerProfile = jest.fn();
+const mockExportData = jest.fn();
+const mockCopy = jest.fn();
+jest.mock('../../lib/remoteDataDiagnostics', () => ({
+  exportRemoteDataDiagnostics: () => mockExportData(),
+}));
+jest.mock('expo-clipboard', () => ({ setStringAsync: (...args: unknown[]) => mockCopy(...args) }));
 
 jest.mock('expo-router', () => ({ useFocusEffect: jest.fn() }));
 jest.mock('../../lib/serverProfile', () => ({
@@ -87,14 +93,14 @@ it("shows Core's side of each tunnel stream beside the phone test result", async
   await waitFor(() =>
     expect(
       screen.getByText(
-        /abcdef01: from phone 1911 B, to Core 1911 B, Core answered after 53 ms, from Core 3080 B, to phone 3080 B in 3 frames \(2 from phone\), open, 31\.1 s/u,
+        /abcdef01: from phone 1911 B, to Core 1911 B, Core answered after 53 ms, from Core 3080 B, accepted by Core transport 3080 B in 3 attempted frames \(2 from phone\), open, 31\.1 s/u,
       ),
     ).toBeOnTheScreen(),
   );
   // A Core without frame counts renders the line as before.
   expect(
     screen.getByText(
-      /abcdef02: .*Core never answered, from Core 0 B, to phone 0 B, open, 30\.8 s/u,
+      /abcdef02: .*Core never answered, from Core 0 B, accepted by Core transport 0 B, open, 30\.8 s/u,
     ),
   ).toBeOnTheScreen();
 });
@@ -119,4 +125,89 @@ it('offers the tunnel test when Core settings and status are unavailable', async
   await waitFor(() =>
     expect(screen.getByText('Remote Control failed at probe timed out.')).toBeOnTheScreen(),
   );
+});
+
+it('records only the explicitly selected connection test and copies the safe native export', async () => {
+  mockGetServerProfile.mockReturnValue({
+    activeUrl: 'https://verity.example',
+    remoteControl: { installationHandle: 'saved' },
+  });
+  mockTestRemoteControl.mockClear().mockResolvedValue({ ready: true, detail: 'ready' });
+  mockExportData.mockResolvedValue({ status: 'ready', recording: '[{"version":1}]' });
+  mockCopy.mockResolvedValue(undefined);
+  render(
+    <PublicPreviewDiagnostics
+      client={{ getUplinkDiagnostics: jest.fn().mockResolvedValue(null) } as never}
+      keyConfigured
+    />,
+  );
+  fireEvent.press(screen.getByRole('button', { name: 'Record Remote Control connection test' }));
+  await waitFor(() =>
+    expect(mockTestRemoteControl).toHaveBeenCalledWith('https://verity.example', true),
+  );
+  fireEvent.press(screen.getByText('Copy connection recording'));
+  await waitFor(() => expect(mockCopy).toHaveBeenCalledWith('[{"version":1}]'));
+  expect(screen.getByText('Connection recording copied.')).toBeOnTheScreen();
+});
+
+it('does not copy when a safe recording is unavailable', async () => {
+  mockGetServerProfile.mockReturnValue({
+    activeUrl: 'https://verity.example',
+    remoteControl: { installationHandle: 'saved' },
+  });
+  mockExportData.mockResolvedValue({ status: 'empty' });
+  mockCopy.mockClear();
+  render(
+    <PublicPreviewDiagnostics
+      client={{ getUplinkDiagnostics: jest.fn().mockResolvedValue(null) } as never}
+      keyConfigured
+    />,
+  );
+  fireEvent.press(screen.getByText('Copy connection recording'));
+  await waitFor(() =>
+    expect(screen.getByText(/No connection recording was retained/u)).toBeOnTheScreen(),
+  );
+  expect(mockCopy).not.toHaveBeenCalled();
+});
+
+it('copies retained stream diagnostics after leaving and reopening settings without rerunning the test', async () => {
+  mockGetServerProfile.mockReturnValue({
+    activeUrl: 'https://verity.example',
+    remoteControl: { installationHandle: 'saved' },
+  });
+  mockTestRemoteControl.mockClear().mockResolvedValue({ ready: false, detail: 'probe timed out' });
+  const retained = '[{"version":1,"streams":[{"streamId":"0123456789ABCDEF0123456789ABCDEF"}]}]';
+  mockExportData.mockResolvedValue({ status: 'ready', recording: retained });
+  mockCopy.mockClear().mockResolvedValue(undefined);
+  const client = { getUplinkDiagnostics: jest.fn().mockResolvedValue(null) } as never;
+  const first = render(<PublicPreviewDiagnostics client={client} keyConfigured />);
+  fireEvent.press(screen.getByRole('button', { name: 'Record Remote Control connection test' }));
+  await waitFor(() =>
+    expect(screen.getByText('Remote Control failed at probe timed out.')).toBeOnTheScreen(),
+  );
+  first.unmount();
+  render(<PublicPreviewDiagnostics client={client} keyConfigured />);
+  expect(screen.queryByText('Remote Control failed at probe timed out.')).toBeNull();
+  fireEvent.press(screen.getByText('Copy connection recording'));
+  await waitFor(() => expect(mockCopy).toHaveBeenCalledWith(retained));
+  expect(mockTestRemoteControl).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  ['unsupported', 'This app build does not support connection recording export.'],
+  ['invalid', 'The recording could not be copied because its format failed validation.'],
+  ['failed', 'The app could not read the connection recording.'],
+])('reports %s export failures without copying rejected data', async (status, message) => {
+  mockGetServerProfile.mockReturnValue({ activeUrl: 'https://verity.example', remoteControl: {} });
+  mockExportData.mockResolvedValue({ status });
+  mockCopy.mockClear();
+  render(
+    <PublicPreviewDiagnostics
+      client={{ getUplinkDiagnostics: jest.fn().mockResolvedValue(null) } as never}
+      keyConfigured
+    />,
+  );
+  fireEvent.press(screen.getByText('Copy connection recording'));
+  await waitFor(() => expect(screen.getByText(message)).toBeOnTheScreen());
+  expect(mockCopy).not.toHaveBeenCalled();
 });

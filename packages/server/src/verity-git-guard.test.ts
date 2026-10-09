@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -81,6 +81,14 @@ afterEach(() => {
   if (base) rmSync(base, { recursive: true, force: true });
 });
 
+it('ships the guarded Git wrapper unchanged in the toolkit', () => {
+  const shipped = join(
+    dirname(fileURLToPath(import.meta.url)),
+    '../../../features/verity-sandbox-toolkit/agent-seed/bin/git',
+  );
+  expect(readFileSync(shipped, 'utf8')).toBe(readFileSync(WRAPPER, 'utf8'));
+});
+
 describe('agent-seed/bin/git guard (self-remove of session worktree)', () => {
   it('is transparent for non-worktree commands (status)', async () => {
     const { code } = await runWrapper(['status', '--short', '--branch'], main);
@@ -120,6 +128,26 @@ describe('agent-seed/bin/git guard (self-remove of session worktree)', () => {
     );
     expect(code).toBe(1);
     expect(existsSync(join(main, '.verity-sessions/agent-test'))).toBe(true);
+  });
+
+  it.each(['prune', 'unlock', 'move', 'repair'])(
+    'blocks shared worktree administration: %s',
+    async (action) => {
+      const { code, stderr } = await runWrapper(['-C', main, 'worktree', action], base);
+      expect(code).toBe(1);
+      expect(stderr).toContain('verity git guard: refusing');
+    },
+  );
+
+  it('preserves an invisible live session index when prune is requested', async () => {
+    const admin = join(main, '.git', 'worktrees', 'agent-test');
+    writeFileSync(join(admin, 'gitdir'), '/invisible-host/session/.git\n');
+    const { code } = await runWrapper(['worktree', 'prune', '--expire', 'now'], main);
+    expect(code).toBe(1);
+    expect(existsSync(join(admin, 'index'))).toBe(true);
+    // Verify the fixture exposes the incident instead of relying on Git expiry defaults.
+    await realGit(main, 'worktree', 'prune', '--expire', 'now');
+    expect(existsSync(admin)).toBe(false);
   });
 
   it('allows removing a normal (non-session) worktree', async () => {

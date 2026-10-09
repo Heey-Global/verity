@@ -2,7 +2,7 @@ import type { SessionSummary } from './api.js';
 
 /**
  * Unread tracking for the session list (#387). The server carries a monotonic
- * `eventCount` per session plus a server-persisted "last seen" mark
+ * agent-text `eventCount` per session plus a server-persisted "last seen" mark
  * (`lastSeenEventCount`, the count when the operator last OPENED the session); a
  * session is unread when its event count has moved past that mark. The mark lives
  * on the server (no per-device scoping), so clearing an unread dot on one device

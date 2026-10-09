@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { DeletedProjectError, isLocalProject } from './store.js';
+import { DeletedProjectError, isLocalProject, PROJECT_AGENTS } from './store.js';
 import { createTestDb, truncateAll, type TestDb } from './testing.js';
 
 let ctx: TestDb;
@@ -859,6 +859,7 @@ describe('EventStore — projects', () => {
       defaultModel: 'claude-sonnet-4-6',
       googleDriveFolderId: ' drive-folder-1 ',
       googleDriveFolderName: ' Product docs ',
+      googleDriveAccessMode: 'read-only',
     });
 
     expect(created).toMatchObject({
@@ -869,6 +870,7 @@ describe('EventStore — projects', () => {
       defaultModel: 'claude-sonnet-4-6',
       googleDriveFolderId: 'drive-folder-1',
       googleDriveFolderName: 'Product docs',
+      googleDriveAccessMode: 'read-only',
     });
     expect(created?.createdAt).toBeInstanceOf(Date);
     expect(created?.updatedAt).toBeInstanceOf(Date);
@@ -881,11 +883,59 @@ describe('EventStore — projects', () => {
       defaultModel: null,
       googleDriveFolderId: 'drive-folder-1',
       googleDriveFolderName: 'Product docs',
+      googleDriveAccessMode: 'read-only',
     });
     expect(await ctx.store.getProjectSettings(projectId)).toMatchObject({
       projectId,
       defaultModel: null,
     });
+  });
+
+  it('stores allowed agents in canonical order and treats an empty or full list as unrestricted', async () => {
+    const projectId = sampleProject.id();
+    await ctx.store.upsertProject({
+      id: projectId,
+      owner: 'heey-global',
+      repo: 'verity-agents',
+      containerName: 'dev-heey-global-verity-agents',
+      state: 'active',
+    });
+
+    expect(await ctx.store.getProjectSettings(projectId)).toBeUndefined();
+    const restricted = await ctx.store.updateProjectSettings(projectId, {
+      allowedAgents: ['opencode', 'claude'],
+    });
+    expect(restricted?.allowedAgents).toEqual(['claude', 'opencode']);
+    // Unrelated patches must not widen the restriction back to every agent.
+    const untouched = await ctx.store.updateProjectSettings(projectId, { defaultBranch: 'main' });
+    expect(untouched?.allowedAgents).toEqual(['claude', 'opencode']);
+
+    const full = await ctx.store.updateProjectSettings(projectId, {
+      allowedAgents: [...PROJECT_AGENTS],
+    });
+    expect(full?.allowedAgents).toBeNull();
+    await ctx.store.updateProjectSettings(projectId, { allowedAgents: ['codex'] });
+    const cleared = await ctx.store.updateProjectSettings(projectId, { allowedAgents: [] });
+    expect(cleared?.allowedAgents).toBeNull();
+  });
+
+  it('serializes concurrent default and allowed agent patches', async () => {
+    const projectId = sampleProject.id();
+    await ctx.store.upsertProject({
+      id: projectId,
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state: 'active',
+    });
+    const results = await Promise.allSettled([
+      ctx.store.updateProjectSettings(projectId, { defaultModel: 'claude-sonnet-5-5' }),
+      ctx.store.updateProjectSettings(projectId, { allowedAgents: ['codex'] }),
+    ]);
+    expect(results[1]?.status).toBe('fulfilled');
+    const settings = await ctx.store.getProjectSettings(projectId);
+    // Each patch is valid against the old row, but their combined result must stay eligible.
+    expect(settings).toMatchObject({ allowedAgents: ['codex'], defaultModel: null });
   });
 
   it('project settings return undefined for an unknown project and cascade when the project is deleted', async () => {
@@ -1396,6 +1446,26 @@ describe('EventStore — projects', () => {
         }),
       ).resolves.toBe(false);
       expect(await ctx.store.getProject(added)).toBeDefined();
+    });
+
+    it('preserves Google grants when a local project tries to adopt their placeholder', async () => {
+      const configured = randomUUID();
+      await ctx.store.upsertProject({
+        id: configured,
+        owner: 'heey-global',
+        repo: 'google-placeholder',
+        containerName: 'verity-google-placeholder',
+        state: 'absent',
+      });
+      await ctx.store.enableProjectGoogleConnection(configured, 'gmail', 'me@example.test');
+      const id = await createLocal();
+      // Adoption cascades the placeholder away, silently deleting its access configuration.
+      await expect(
+        ctx.store.reserveProjectIdentity(id, { owner: 'heey-global', repo: 'google-placeholder' }),
+      ).resolves.toBe(false);
+      expect(await ctx.store.getProjectGoogleConnection(configured, 'gmail')).toMatchObject({
+        accountEmail: 'me@example.test',
+      });
     });
 
     it('refuses to adopt a sync placeholder with dependent configuration', async () => {

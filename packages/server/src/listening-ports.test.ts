@@ -29,6 +29,29 @@ describe('listening port discovery', () => {
     for (const server of servers.splice(0)) server.close();
   });
 
+  it.skipIf(!existsSync('/proc/net/tcp'))(
+    'excludes marked relay helpers from actual process discovery',
+    async () => {
+      const child = execFile(
+        process.execPath,
+        [
+          '-e',
+          "require('net').createServer().listen(0,'0.0.0.0',function(){console.log(this.address().port)})",
+        ],
+        { env: { ...process.env, VERITY_PREVIEW_FORWARDER: '5173' } },
+      );
+      children.push(child);
+      const port = await new Promise<number>((resolve) =>
+        child.stdout!.once('data', (data) => resolve(Number(String(data).trim()))),
+      );
+      const { stdout } = await execFileAsync('sh', ['-c', LISTENING_PORTS_SCRIPT]);
+      expect(stdout).toContain(`F\t${child.pid}\t5173`);
+      expect(parseListeningProcesses(stdout).some((listener) => listener.port === port)).toBe(
+        false,
+      );
+    },
+  );
+
   // Runs the shipped script against a real listener: a script that stops emitting
   // one of its sections, or a parser that drifts from its layout, would otherwise
   // leave the sheet silently empty while every fixture test stays green.
@@ -199,4 +222,43 @@ describe('listening port discovery', () => {
     expect(devServerName('python3 -m http.server 8000')).toBe('Python HTTP');
     expect(devServerName('/usr/local/bin/caddy run')).toBe('caddy');
   });
+});
+
+it('attributes by inherited session metadata even after cwd changes', () => {
+  const listener = {
+    port: 5173,
+    bind: 'any' as const,
+    pid: 42,
+    cwd: '/tmp',
+    command: 'vite',
+    sessionId: 'session-a',
+  };
+  expect(sessionDevServers([listener], '/work/session-a', 'session-a')).toMatchObject([
+    { port: 5173, name: 'Vite' },
+  ]);
+  expect(sessionDevServers([listener], '/tmp', 'session-b')).toEqual([]);
+});
+
+it('joins environment and announcement metadata only to verified sockets', () => {
+  const output =
+    '#tcp\n 0: 00000000:1435 00000000:0000 0A 0:0 0:0 0 1000 0 456\n#fd\n/proc/42/fd:\nlrwx -> socket:[456]\n#proc\nP\t42\t/tmp\tnode vite\nE\t42\tsession-a\n#announce\n' +
+    JSON.stringify({ port: 5173, name: 'Dashboard', pid: 42, sessionId: 'session-a' }) +
+    '\n' +
+    JSON.stringify({ port: 9999, name: 'Missing', pid: 42 });
+  expect(parseListeningProcesses(output)).toMatchObject([
+    { port: 5173, sessionId: 'session-a', announcedName: 'Dashboard' },
+  ]);
+  expect(parseListeningProcesses(output)).toHaveLength(1);
+});
+
+// The supervisor recognises a managed server only by this tag; losing it in the
+// parser would leave every managed server stuck in "starting".
+it('carries the managed instance tag from the process environment to the listener', () => {
+  const output =
+    '#tcp\n 0: 00000000:A028 00000000:0000 0A 0:0 0:0 0 1000 0 456\n#fd\n/proc/42/fd:\nlrwx -> socket:[456]\n#proc\nP\t42\t/work/s1\tnode server.mjs\nI\t42\tinstance-1\nE\t42\tsession-a\n#announce\n';
+  const [listener] = parseListeningProcesses(output);
+  expect(listener).toMatchObject({ port: 41000, instanceId: 'instance-1', sessionId: 'session-a' });
+  expect(sessionDevServers([listener!], '/work/s1', 'session-a')).toMatchObject([
+    { port: 41000, managedInstanceId: 'instance-1' },
+  ]);
 });

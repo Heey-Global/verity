@@ -125,6 +125,16 @@ describe('parseInline', () => {
     ]);
   });
 
+  // The in-app link feature depends on the tokenizer keeping an unknown scheme as
+  // a non-external link span; dropping it to plain text would silently disable it.
+  it('keeps a verity:// target as a non-external link span for the renderer to resolve', () => {
+    expect(parseInline('Open [Connections](verity://settings/services) now.')).toEqual([
+      { t: 'plain', text: 'Open ' },
+      { t: 'link', text: 'Connections', url: 'verity://settings/services', external: false },
+      { t: 'plain', text: ' now.' },
+    ]);
+  });
+
   it('parses a markdown image as a link without leaving its ! in the prose', () => {
     // Agents are told to embed images as `![alt](path)`; the `!` rendered as a
     // stray glyph in front of the label.

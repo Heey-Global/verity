@@ -6,10 +6,21 @@
     "types": ["node"]
   },
   "references": [
-    { "path": "../events" },
-    { "path": "../secret-contracts" },
-    { "path": "../store" },
-    { "path": "../session" }
+    {
+      "path": "../events"
+    },
+    {
+      "path": "../secret-contracts"
+    },
+    {
+      "path": "../store"
+    },
+    {
+      "path": "../session"
+    },
+    {
+      "path": "../preview-tunnel"
+    }
   ],
   "include": ["src/**/*.ts"]
 }

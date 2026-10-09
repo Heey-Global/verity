@@ -176,6 +176,10 @@ ordinary completion (`attention.ts:73` even relabels `awaiting_input` itself as 
   Persist a dedupe marker per `(session, PR number, head SHA)` only after at least one Expo
   ticket is accepted; failed/no-device sends remain eligible for a later poll.
 
+> **Superseded in part by [ADR 0026](0026-app-wide-live-connection.md):** presence now
+> comes from the app-wide live connection, and suppression and routing are per user
+> (the turn's initiator) instead of session-wide across devices.
+
 **Suppression.** Send a notification only when **no foreground viewer** is attached to the
 session. The mechanism needs care: the event bus (`packages/session/src/bus.ts`) exposes
 only `publish`/`subscribe` — there is **no** subscriber-count API today. A raw "bus subscriber

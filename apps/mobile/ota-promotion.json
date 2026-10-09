@@ -1,16 +1,14 @@
 {
   "schema": 1,
-  "version": "1.50.1",
-  "runtime": "1.50.0",
-  "channel": "testflight",
-  "commit": "2830dabfb05425236e2c989d0897b210ffdcd079",
-  "tag": "mobile-v1.50.1",
-  "branch": "staging-mobile-v1.50.1-2830dabfb05425236e2c989d0897b210ffdcd079",
-  "baseline": "mobile-v1.50.0",
-  "group": "86d69b61-a610-4d23-970c-53b45cfdd6e2",
+  "version": "1.65.1",
+  "runtime": "1.65.0",
+  "channel": "production",
+  "commit": "34dec2427d3794405ceb78c48233fcf37b5ba2cb",
+  "tag": "mobile-v1.65.1",
+  "branch": "staging-mobile-v1.65.1-34dec2427d3794405ceb78c48233fcf37b5ba2cb",
+  "baseline": "mobile-v1.65.0",
+  "group": "e106bff6-bbc1-4670-800e-a6e82bd8e5d0",
   "notes": [
-    "present usage limits without crash diagnostics (#1005)",
-    "use six-digit PINs for every share duration (#1004)",
-    "show reusable premium notice for preview sharing (#1003)"
+    "distinguish connection recording export failures (#1446)"
   ]
 }

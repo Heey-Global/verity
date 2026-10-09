@@ -2,8 +2,8 @@
 // session list's subtle stand-in for a "Running" label, echoing the magenta
 // progress bar in the session view. Pure presentation: the caller decides WHEN an
 // agent is running (status === 'running'); unmounting it removes the signal. Its
-// opacity is driven by the SHARED pulse clock, so it breathes in lock-step with the
-// running-CI icons on the right of the row.
+// opacity is driven by the SHARED pulse clock, so every working dot on screen
+// breathes in lock-step.
 import { Animated } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 import { useSyncedPulse } from '../lib/pulse';

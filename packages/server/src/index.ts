@@ -83,11 +83,17 @@ export {
 } from './claude-egress-identity.js';
 export {
   createPushFirePoints,
-  createPushForegroundPresence,
   type PushFirePoints,
   type PushFirePointOptions,
-  type PushForegroundPresence,
 } from './push-fire-points.js';
+export {
+  createPushRouter,
+  type PushPresence,
+  type PushRouter,
+  type PushRouterOptions,
+  type PushRouteOutcome,
+  type SessionNotification,
+} from './push-router.js';
 export {
   createExpoPushTransport,
   createPushSender,

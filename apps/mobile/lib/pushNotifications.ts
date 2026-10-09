@@ -50,7 +50,7 @@ type ExpoActions = Parameters<typeof Notifications.setNotificationCategoryAsync>
  *  destructive approval (`authenticationRequired`) both foregrounds the app and
  *  forces a device unlock so it can never be granted silently from the lock screen
  *  (ADR 0008 §11); every other action runs in the background without a prompt. */
-function toExpoActions(spec: PushCategorySpec): ExpoActions {
+export function toExpoActions(spec: PushCategorySpec): ExpoActions {
   return spec.actions.map((action) => ({
     identifier: action.identifier,
     buttonTitle: action.buttonTitle,
@@ -194,6 +194,28 @@ export function createPushOutboxForClient(
     newId: () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
     now: () => Date.now(),
   });
+}
+
+/** The push kinds that block the agent on the operator. */
+const REACTION_PUSH_KINDS: ReadonlySet<string> = new Set(['permission', 'question']);
+
+/**
+ * How a push that arrives while the app is in the foreground is presented. Without
+ * a handler iOS drops every such push silently, so a permission prompt for a
+ * session other than the one on screen (the server sends no push for a session
+ * that is open) went unnoticed until the operator happened to look. Only the
+ * pushes the agent is blocked on surface; informational ones stay quiet in the
+ * foreground as before.
+ */
+export function foregroundPushBehavior(data: unknown): Notifications.NotificationBehavior {
+  const payload = parsePushPayload(data);
+  const surface = payload !== null && REACTION_PUSH_KINDS.has(payload.kind);
+  return {
+    shouldShowBanner: surface,
+    shouldShowList: surface,
+    shouldPlaySound: surface,
+    shouldSetBadge: false,
+  };
 }
 
 /**

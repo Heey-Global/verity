@@ -188,6 +188,7 @@ echo '--- clean install: verify first-run state'
     dopplerConfigured: false,
     claudeConfigured: false,
     codexConfigured: false,
+    opencodeConfigured: false,
     complete: false,
     nextStep: "master-password",
   };

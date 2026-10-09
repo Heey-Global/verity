@@ -1,25 +1,51 @@
-# Verity runner — install guide
+# Verity deployment guide
 
-The **Verity runner image** is the single container an operator installs to run
-the Verity control-plane on any Docker host. It is **API-only**: the compiled
-Fastify server plus the `docker` CLI and `git` it needs to clone repos and spawn
-project containers. The [Expo mobile app](../apps/mobile) is the client — you
-configure everything (master password, GitHub App credentials, projects) from
-there.
+This guide is for whoever runs the Linux host that Verity is installed on. It
+covers what the installer sets up, how to configure, secure, and size the
+installation, and where its data lives. If you are installing Verity for the
+first time, start with the [getting started guide](../docs/getting-started.md)
+instead; it covers the whole path to a first session, including the setup in
+the app.
 
-The published image is produced by `.github/workflows/release.yml` after its
-release-please PR is deliberately merged. It is tagged with a v-prefixed shared
-SemVer version (`v3.28.0` format), an immutable `sha-<short>` rollback tag, and
-the mutable `latest` channel tag.
+The **Verity Server image** is the single container the installer runs on a
+Docker host. It is API-only: the compiled server plus the `docker` CLI and
+`git` it needs to clone repositories and start project containers. It also
+serves the browser app. Everything else, such as the master password, AI
+provider logins, GitHub, and projects, is configured from the app. The image is
+published by the release workflow with a SemVer tag (`v3.28.0` format), an
+immutable `sha-<short>` rollback tag, and the mutable `latest` channel tag; the
+`verity-sandbox` image and `verity-sandbox-toolkit` artifact follow the same
+policy. The packaging is described in
+[ADR 0003](../docs/adr/0003-runner-image-and-deployable-packaging.md).
 
-The same tag policy applies to the `verity-sandbox` image and
-`verity-sandbox-toolkit` OCI artifact: each publish keeps a stable SemVer tag and
-updates the mutable `latest` channel tag.
+## Contents
 
-This packaging is **ADR 0003 — Verity Runner Image & Deployable Packaging**,
-Phase A (the ADR lands with PR #303).
+- [Prerequisites](#prerequisites)
+- [Quick start](#quick-start)
+- [First-run setup](#first-run-setup)
+  - [Browser access](#browser-access)
+  - [Pair another device](#pair-another-device)
+  - [Master password](#master-password)
+  - [Upgrade notes](#upgrade-notes)
+- [Updates and recovery](#updates-and-recovery)
+- [Docker socket security note](#docker-socket-security-note)
+- [Hardening an internet-reachable host](#hardening-an-internet-reachable-host)
+- [Claude egress credential boundary](#claude-egress-credential-boundary)
+- [Project-relay readiness check](#project-relay-readiness-check)
+- [Resource guardrails](#resource-guardrails)
+- [How sandboxes get project data](#how-sandboxes-get-project-data-named-volume-no-host-paths)
+- [Data & persistence](#data--persistence)
+- [Ports & environment reference](#ports--environment-reference)
 
 ## Prerequisites
+
+For one active project sandbox, plan for **16 GiB of RAM and 4 CPU cores**.
+This is a sizing recommendation, not a tested minimum. The default per-sandbox
+limits are 6 GiB of RAM and a CPU quota of 4 cores, shared against the host's
+available CPU capacity rather than reserved cores. The Server, PostgreSQL,
+other services, and the host also need memory. For smaller hosts, lower the
+[resource limits](#resource-guardrails); allow additional capacity for multiple
+active sandboxes.
 
 - A Docker host with **Docker 25.0+** (the provisioner mounts per-project subdirs
   of a named volume into sibling sandboxes via `volume-subpath`) and the **Compose v2
@@ -53,13 +79,32 @@ For a fresh managed installation, the recommended path is:
 curl -fsSL https://verity.build/install.sh | bash
 ```
 
-The public bootstrap pulls the official release, resolves it to an immutable
-digest, copies the release-matched deployment bundle into a fresh root-owned
+The public bootstrap temporarily downloads cosign v3.1.3 for the host's
+architecture and validates it against an embedded SHA-256 checksum. It pulls
+the official release, resolves it to an immutable digest, verifies its signature
+against the official GitHub release workflow identity, and copies the release-matched deployment bundle into a fresh root-owned
 directory, and runs the guarded installer below. The temporary bundle is removed
 afterwards; durable deployment identity remains under `/etc/verity`. It requires
 Docker 25+, Compose v2, and root access through either the current account or
 `sudo`. The privileged installer deliberately uses the root Docker daemon;
 Rootless Docker is not accepted as a source for code that will execute as root.
+
+Cosign is removed on exit and is not installed on the host. A download,
+checksum, or signature verification failure stops the bootstrap before image
+code executes or deployment files are extracted. Recovery also verifies the
+existing Server image before using it as a helper. Unsigned historical images
+cannot be recovered through this bootstrap; there is no verification bypass.
+Network access to GitHub releases, the registry, and Sigstore trust services is
+required. The bootstrap script itself remains the initial trust anchor.
+
+App updates receive the verifier with a normal confirmed Server update. Once
+installed, the networked Server checks the target image signature before
+submitting an update to the network-isolated Updater. Direct and bridge recovery
+commands also check the target signature before executing target-image probes.
+When run on the host, recovery commands temporarily download and checksum
+cosign if the bundled binary is unavailable; no host package installation is needed.
+The existing signed release-channel checks remain in place; the update that
+first introduces this verifier still uses the preceding release's update logic.
 
 Every run starts with an aggregated host preflight and reports all missing
 requirements before pulling an image or changing installation state. To run only
@@ -117,36 +162,72 @@ doppler run --project verity --config onboarding -- \
 The `verity-data` volume is created and initialized by Docker on first start — no
 host directory to prepare.
 
-## First-run setup (in the app)
+## First-run setup
 
-The installer creates a stable local TLS/server identity and a short-lived pairing
-capability under `/etc/verity`. On first run, in the mobile app:
+The installer creates a stable TLS and server identity plus a pairing link
+that is valid for 15 minutes, both under `/etc/verity`, and prints the link as
+a QR code and as a `verity://pair?` line. The
+[getting started guide](../docs/getting-started.md) walks through the setup in
+the app step by step. In short:
 
-1. Choose one of the detected IP addresses, or enter a DNS name, when prompted by
-   `verity-install`. Then scan its QR code in the app, or copy the complete pairing
-   code printed below it and choose **Paste pairing code instead**. The app verifies
-   both the pinned TLS certificate and the stable signed server identity.
-2. **Set or unlock the master password.** This derives the at-rest encryption key for DB
-   secrets (ADR 0002 D3). The secret store starts sealed until you do this — the
-   server logs `secret store is UNINITIALIZED and SEALED` on boot, which is
-   expected.
-3. **Enter your GitHub App credentials** (App ID, private key) and signing key.
-   These are encrypted and stored in the DB — no host-mounted `.pem`.
-4. **Add a project** by naming its repo. Verity clones it into the clone-root and
-   runs a container from the standard base image; the agent is ready.
+1. **Pair the first device.** Scan the QR code in the iPhone or iPad app, or
+   paste the `verity://pair?` line into the app or into the browser app (see
+   below). The client verifies the pinned TLS certificate and the signed server
+   identity. When `verity-install` asks for the address, choose one your
+   devices can reach, or set `VERITY_PAIRING_HOST` for automation. Automatic
+   address detection excludes interfaces named `docker0`, `docker1`, and so
+   on, `br-*`, and `veth*` when the host has working `ip` tooling; private LAN
+   and Tailscale addresses remain eligible.
+2. **Set the master password.** It derives the at-rest encryption key for the
+   secrets stored in the database (ADR 0002 D3). Until it is set the store is
+   sealed; the server logs `secret store is UNINITIALIZED and SEALED` on boot,
+   which is expected.
+3. **Connect one AI provider**: a Claude or Codex subscription login, or an
+   OpenAI-compatible endpoint for OpenCode. Claude and Codex credentials stay
+   on the Server and are brokered to project sandboxes; an OpenCode API key is
+   not covered by that boundary.
+4. **Add a project.** An empty project needs nothing else. A GitHub repository
+   needs the GitHub connection, which can be added at any time under
+   Settings → Connections.
+
+To get a new pairing link after the first one expires, run the installer again
+and choose "Repair this installation".
+
+### Browser access
+
+The Server image includes the browser build of the app and serves it at
+`https://<host>:8082/app/` (the API port, `VERITY_API_HOST_PORT`). The Server
+presents its self-signed certificate, so the browser shows a certificate
+warning on first use. Unlike the native app, a browser cannot check that
+certificate against the pin in the pairing link. A user who accepts the
+warning on an untrusted network hands an interceptor the pairing capability
+and the master password typed on that page, which yields a durable paired
+session rather than a one-time exposure, so the first browser sign-in belongs
+on a trusted network or VPN.
+Sign-in on the "Connect this browser" page accepts the
+installer's `verity://pair?` line or a pairing link created from an already
+paired device, then creates or asks for the master password and issues a
+private session cookie for that browser. A browser can therefore be the first paired client.
+Browsers sign out and create invitations for further browsers under
+Settings → Devices.
 
 ### Pair another device
 
-After the first device is set up, open **Settings → Paired devices → Pair another
+After the first device is set up, open **Settings → Devices → Pair another
 device**. Verity creates a five-minute, one-use invitation. Scan its QR code on a
-phone or tablet, or copy and paste the pairing link into the iPad app running on a
-Mac. Each device receives its own bearer token and can be removed independently
-from the same screen. The master password is never included in the invitation.
+phone or tablet, or copy the pairing link and paste it into the iPad app running
+on a Mac or into the browser app's "Connect this browser" page. Each device
+receives its own bearer token and can be removed independently from the same
+screen. The master password is never included in the invitation.
+
+### Master password
 
 The master password is the only way to unlock the secret store — there is no
 env-key/headless auto-unlock. On restart the store comes up sealed and is
 unlocked from the app; run the first-time onboarding on a trusted network until
 the password is set.
+
+### Upgrade notes
 
 > **Upgrading from an old `VERITY_SECRET_KEY` deployment:** that env-key mode has
 > been removed. A store whose secrets were encrypted under `VERITY_SECRET_KEY`
@@ -163,280 +244,43 @@ the password is set.
 > upgrade. The new server deliberately does not restore legacy TCP access during
 > rollout.
 
-## Migrate to managed Server updates
+## Updates and recovery
 
-The default quick start remains host-managed. To adopt an existing official,
-digest-pinned deployment for app-initiated Server updates, run the installer:
+A paired installation updates from the Verity app; the host-side `--update`
+path of the installer is fenced off after pairing. The promoted Server comes up
+unlocked, except after a cold start such as a host reboot, which needs one
+unlock in the app. An update that cannot complete is designed to roll back to
+the previous generation; the app then reports it as `rolled-back` or `failed`,
+and the cases that need a hand are described in the guide linked below.
 
-```sh
-sudo deploy/bin/verity-install
-```
-
-It resolves the current release, generates a stable deployment identity and a
-random control token in a root-owned `0600` file, persists both under `/etc/verity`,
-and hands over to the guarded migration described below. `--check` runs the
-preflight and prints what it would install without touching the deployment.
-
-Because it persists every decision, later recovery runs take no arguments; see
-[the companion handoff recovery path](#after-an-update-companion-handoff).
-When an interactive run detects an existing installation, it offers three explicit
-paths: repair the current release without changing data, update an installation that
-has not paired its first device yet, or completely replace it. A paired deployment
-updates from the Verity app; the host-side `--update` path is fenced off after pairing.
-
-When a paired installation cannot reach a newer schema through the update channel,
-use the [verified schema-bridge recovery procedure](../docs/runbooks/server-0.15-schema-bridge.md).
-`deploy/bin/verity-recover-bridge` checks signed intermediate-release evidence and
-submits an explicitly approved recovery operation to the existing Updater.
-
-To discard an installation and all of its data, run:
+Running the installer again on an existing host is safe. Interactively it
+offers to repair the current release without changing data, to update an
+installation that has not paired its first device yet, or to replace it
+completely. The public bootstrap and a repository checkout run the same
+installer:
 
 ```sh
-sudo deploy/bin/verity-install --reinstall
+curl -fsSL https://verity.build/install.sh | bash   # repair, or print a new pairing link
+sudo deploy/bin/verity-install                       # the same, from a checkout
 ```
 
-The installer requires the exact phrase `DELETE VERITY` before removing containers,
-volumes, network, database, projects, sessions, stored secrets, pairing identity, and
-installer state. Automation can make the same destructive choice explicitly with
-`--reinstall --yes`. After cleanup, the command immediately performs a fresh install.
-
-The Runner supervisor is always enabled because Claude is ACP-only. Its capability is
-sealed into the deployment spec; installations previously sealed without it must be
-reinstalled before they can be updated.
-
-To assemble the same inputs by hand, create the identity and the token yourself and
-call the guarded migration directly:
+To discard an installation **and all of its data**, pass `--reinstall`. The
+installer asks for the exact phrase `DELETE VERITY` on the terminal before
+removing containers, volumes, the network, the database, projects, sessions,
+stored secrets, the pairing identity, and the installer state, then performs
+a fresh install:
 
 ```sh
-sudo install -d -m 0700 -o root -g root /etc/verity
-sudo sh -c "umask 077; dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n' > /etc/verity/updater-token"
-export VERITY_SERVER_IMAGE=ghcr.io/heey-global/verity/verity-server@sha256:<digest>
-export VERITY_MANAGED_DEPLOYMENT_ID=<stable-installation-id>
-export VERITY_UPDATER_TOKEN_HOST_PATH=/etc/verity/updater-token
-sudo --preserve-env=VERITY_SERVER_IMAGE,VERITY_MANAGED_DEPLOYMENT_ID,VERITY_UPDATER_TOKEN_HOST_PATH,COMPOSE_PROJECT_NAME \
-  ./deploy/bin/verity-compose managed-up
+curl -fsSL https://verity.build/install.sh | bash -s -- --reinstall
 ```
 
-`managed-up` first runs the idempotent bootstrap, which accepts only the official
-digest-pinned image and seals the complete Server deployment authority. It changes
-container ownership only after that succeeds: Compose then owns the Gateway,
-Updater, PostgreSQL, and support services, while the Updater alone owns the
-managed Server container. If input validation or bootstrap fails, the existing
-legacy Server remains running. Keep all three exported values stable for later
-host-side Gateway/Updater upgrades; changing the deployment ID is rejected.
-The migration command is intentionally privileged so it can validate and bind-mount
-the root-owned control token without making that token readable by the invoking user.
+Automation can make the same destructive choice explicitly with
+`--reinstall --yes`.
 
-After the first app-initiated update, the active Server container has an immutable
-generation-qualified name such as `verity-managed-server-g4`. The managed Gateway
-persists that selected backend on its private control volume, so restarting the
-Compose-owned Gateway does not route back to the bootstrap container. During an
-update the Gateway enters maintenance while the old Server stops and the new
-generation acquires the database fence and becomes ready. The previous container is
-kept stopped through the observation window for rollback, then removed. Existing
-project Runners continue independently.
-
-The promoted Server comes up **unlocked**. The outgoing Server seals the master key
-to an ephemeral public key that only the incoming one holds, so an update you asked
-for once does not end at a password prompt. A cold start is the exception — a host
-reboot, or a promotion whose handoff had no one left to ask because the process
-holding the key was already gone — and then the store is sealed and needs one unlock
-in the app. That is the single manual cost of a restart, and it is not a sign that
-the update failed.
-
-Custom images and custom orchestrators are intentionally not adopted and continue
-to report Server self-update as unsupported.
-
-### After an update: companion handoff
-
-A self-update first replaces the Server, then uses the same journal to replace
-the installed companions. The old Updater moves both Gateways first and starts a
-one-shot helper from the exact sealed target digest. The helper copies the seed
-to a digest-addressed sibling directory, validates its stamp and complete
-required file set, then atomically advances `.current`. Existing sandboxes retain
-their prior complete read-only mount; sandboxes created afterwards resolve the
-new complete tree. Only after that succeeds does the helper replace the Updater;
-the successor reconciles the managed Control Plane Runner and marks the operation
-complete. An interrupted or invalid copy never changes `.current`, and the same
-journal phase retries deterministically.
-
-`verity-install` remains the topology recovery path. Seed recovery for an
-interrupted managed update belongs to the Updater: it resumes the persisted
-`reconciling-companions` journal and reruns the target-digest helper. Re-running
-the installer is safe and derives the digest from the active managed Server, but
-a normal app-initiated update does not require it:
-
-```sh
-sudo deploy/bin/verity-install
-```
-
-It reads the digest off the running managed Server, reuses the persisted identity,
-token and project name, and repairs the bootstrap topology. If it finds two Server
-containers it stops and tells you to wait because a cutover is mid-flight.
-
-On a host installed before this script existed there is no state file, so it adopts
-the Compose project off the containers that are running. If none of them carries a
-Compose project label — a stack brought up by hand, say — it refuses rather than
-defaulting to `verity`, because guessing wrong stands a second Postgres, Gateway and
-Updater up beside the running ones. Pass `--project <name>` in that case; it is
-persisted and reused from then on, so it is checked against the shape Compose
-accepts — lowercase letters, digits, dashes and underscores, starting with a letter
-or a digit — before anything is written down.
-
-The rest of this section is what it does, for a host where you would rather drive it
-by hand. First read the digest back off the running container. The generation suffix
-changes with every update, so derive it rather than typing it:
-
-```sh
-server="$(docker ps --filter name=verity-managed-server --format '{{.Names}}')"
-export VERITY_SERVER_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$server")"
-export VERITY_UPDATER_TOKEN_HOST_PATH=/etc/verity/updater-token
-printf 'container: %s\nimage:     %s\n' "$server" "$VERITY_SERVER_IMAGE"
-```
-
-Check both printed lines before going on — that is what the second block is
-separate for. `container:` must name exactly one `verity-managed-server-g<N>`,
-and `image:` must be a `@sha256:` digest. Two container names mean an update is
-mid-flight; `docker inspect` then fails and leaves the image empty, so wait for
-the cutover to finish and run the block again. An empty or non-digest image must
-never reach the migration.
-
-Then re-run the migration, with the deployment identity it was installed under:
-
-```sh
-export VERITY_MANAGED_DEPLOYMENT_ID=<the same stable-installation-id as before>
-sudo --preserve-env=VERITY_SERVER_IMAGE,VERITY_MANAGED_DEPLOYMENT_ID,VERITY_UPDATER_TOKEN_HOST_PATH,COMPOSE_PROJECT_NAME \
-  ./deploy/bin/verity-compose managed-up
-```
-
-Re-running it is safe by construction: on a deployment that is already sealed the
-bootstrap returns the existing authority instead of re-sealing, so it cannot pull
-the Server back to the older digest, while Compose recreates the Gateway and the
-Updater. The Compose seed service is initial-bootstrap-only once managed identity
-exists, so it cannot race the Updater or move `.current` backwards. Persist the
-new value wherever you keep the others. In a normal managed update no manual seed
-repair is required: `completed` guarantees that the selected seed and companions
-converged on the target release.
-
-### When an update fails
-
-A failed update is built to end where it started, without host intervention. Every
-step is journalled before it runs, so an Updater that dies resumes rather than
-stalls, and a candidate that never becomes ready, a database that disappears
-mid-cutover, or a route switch that cannot complete all end in a rollback onto the
-previous container, the previous route and the previous control-plane generation.
-The app reports the operation as `rolled-back` or `failed`, and the deployment keeps
-serving throughout except for the maintenance window.
-
-When it does not resolve itself, check in this order:
-
-```sh
-# The previous generation is kept stopped through the observation window; a
-# rollback returns to it rather than rebuilding.
-docker ps -a --filter name=verity-managed-server
-
-# The Updater names the phase it stopped in.
-docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.managed.yml \
-  --profile managed logs --tail=200 verity-updater
-
-# A rollback parked mid-flight is finished by the Updater's own crash recovery on
-# its next start, so restarting that one container is the first thing to try.
-docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.managed.yml \
-  --profile managed restart verity-updater
-```
-
-The one thing a rollback cannot do without is PostgreSQL: the returning Server
-reclaims the control-plane generation from the database, so an update that fails
-while the database is away parks until the database is back and then completes.
-Restoring the database is the whole of that recovery — there is no separate repair
-step, and no state to unwind by hand.
-
-### When the Updater is crash-looping
-
-The Updater refuses to adopt a Server that is not the one the sealed spec
-describes, and on a difference it cannot tolerate it exits. Its restart policy
-brings it back, it reaches the same verdict, and it exits again. The symptom is a
-`verity-updater` container restarting every few seconds with the same line in its
-logs — most often one of these two:
-
-```text
-managed Server container conflicts with the sealed deployment spec
-managed Server environment source is missing: <NAME>
-```
-
-A **value** that has merely changed is no longer fatal: a running Server is kept
-on the environment it was created with, and `GET /v1/reconcile` on the Updater's
-control socket reports the sealed names that disagree. What still stops the
-Updater is a **structural** difference — another image, mounts, user, groups,
-network, capabilities, host ceilings, or a variable in the container that neither
-the spec nor the image accounts for — and an unresolvable environment source with
-no running Server to fall back on.
-
-There is a repair, and it is deliberately blunt. The one operation that rebuilds
-the Server from the current environment is the cutover, and a crash-looping
-Updater is exactly what makes the cutover unreachable; removing the container
-hands the Updater the create path instead, which builds the Server from the
-sealed spec as it does on a first install.
-
-Remove **the container the Gateway is routing to**, and only that one. Several
-`verity-managed-server*` containers can exist at once — a retained previous
-generation, a candidate from an abandoned attempt — and removing an inactive one
-changes nothing while leaving the crash loop in place. Listing by name does not
-tell you which is which; the Gateway does:
-
-```sh
-# 1. The backend the Gateway has selected. This is the authoritative answer.
-docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.managed.yml \
-  --profile managed exec verity-managed-gateway cat /run/verity-gateway/backend.json
-# => {"host":"verity-managed-server-g4","publicPort":8082,"internalPort":8083}
-#
-# No such file means no update has ever completed and the backend is still the
-# bootstrap container, verity-managed-server.
-
-# 2. Cross-check what exists, so the name from step 1 is one of them.
-docker ps -a --filter name=verity-managed-server
-
-# 3. Remove exactly the host from step 1. Named volumes are NOT touched:
-#    verity-data, where all durable state lives, survives untouched.
-docker rm -f verity-managed-server-g4
-
-# 4. Restart the Updater. Finding no container on that name, it creates one from
-#    the sealed spec and the current environment, and starts it.
-docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.managed.yml \
-  --profile managed restart verity-updater
-```
-
-State the cost plainly before running it: this is **one hard control-plane
-restart with no drain**. Every in-flight agent session is lost, and any request in
-progress fails. That is the right trade for a host that is otherwise bricked — the
-control plane is already not serving updates and cannot repair itself — and the
-wrong one for anything less. If the Updater is running, do not use this.
-
-If the Updater still exits after the container is gone, the refusal is not about
-the container: read its log again. An authority that cannot be read, a deployment
-ID that does not match the seal, or two containers on one name are separate
-faults, and each says so by name.
-
-### The control-plane generation
-
-Exactly one Server is the control plane, and PostgreSQL records which. Compose
-sets `VERITY_CONTROL_PLANE_HOLDER_ID` for you; the managed Server inherits it,
-because it replaces the Compose-owned container in the same slot. The value names
-that slot, so keep it stable. A dedicated PostgreSQL session lock — not the name
-— proves that exactly one Server process is active.
-
-A second Server connected to the same database refuses to start, and says so:
-
-```text
-verity: refusing to start — another Server holds the PostgreSQL control-plane process lock
-```
-
-That is the fence working: two Servers writing to one database is the failure it
-exists to prevent. Find and stop the other Server. The lock belongs to one live
-PostgreSQL connection rather than to a table row, so PostgreSQL releases it
-automatically if the Server is killed or disconnected. The replacement then
-forward-fences any stale active generation before it starts schedulers or opens
-listeners; no timeout or force switch is involved.
+Adopting a hand-built deployment for managed updates, what the companion
+handoff does, and what to check when an update fails or the Updater is
+crash-looping are covered in
+[Server updates and recovery](../docs/operations/server-updates-and-recovery.md).
 
 ## Docker socket security note
 
@@ -476,24 +320,31 @@ users.
 The reference deployment is designed for a trusted network segment. Everything
 below is what changes when the host is reachable from the public internet.
 
-**The API port (8082) is the defensible surface.** Transport is TLS terminated
-in-process with a certificate the app pins, every route not on the explicit
-pre-auth list requires a per-device bearer token, and `/secret/unlock` and
-`/secret/init` are throttled. A direct server also refuses to boot without
-pairing material, so the first-run window in which no master password exists
-cannot be claimed by an unauthenticated caller. Exposing 8082 is survivable —
-but fewer reachable ports is still fewer, so prefer a VPN (WireGuard,
-Tailscale) or a host firewall that admits only your devices' addresses when
-your setup allows it.
+**The API port (8082) uses TLS and device authentication.** The mobile app pins
+the server certificate, and API routes outside the explicit pre-authentication
+list require a per-device bearer token after pairing. `/secret/unlock` and
+`/secret/init` are throttled. A direct server refuses to boot without pairing
+material. See [SECURITY.md](../SECURITY.md) for the security model and known
+limitations.
 
-**The Dev Server ranges must not be public.** Host ports `3000–3099` and
-`8000–8099` publish project Dev Servers as raw, unauthenticated HTTP — no
-bearer, no TLS. Anything an agent starts there is reachable by whoever can
-reach the port, and agents act on repository content you may not fully trust.
-On an internet-facing host, keep both ranges firewalled to your own clients or
-VPN; do not follow the remote-preview note in
-[Ports & environment reference](#ports--environment-reference) with a
-public-internet allow rule.
+The reference Compose deployment publishes port 8082 on all host interfaces.
+Prefer access limited to your devices through a trusted network or VPN such as
+WireGuard or Tailscale. Using a VPN to connect does not itself restrict access
+through other host interfaces.
+
+**Docker-published ports can bypass ufw rules.** Docker forwards incoming traffic
+to containers before the usual ufw input rules apply. An active ufw firewall
+therefore does not establish that port 8082 is blocked. Use network filtering
+that covers Docker's published ports and verify access from both an allowed
+client and a network that should be denied. See Docker's
+[firewall documentation](https://docs.docker.com/engine/network/packet-filtering-firewalls/#docker-and-ufw).
+
+**The local preview range must not be public.** Host ports `8100–8119`
+(default `VERITY_LOCAL_PREVIEW_PORT_RANGE`) serve local HTTP and WebSocket previews
+without authentication or TLS. Allow this range only from trusted LAN clients or
+your VPN. Docker-published ports need filtering that covers Docker forwarding;
+ordinary ufw input rules alone do not establish that the range is restricted.
+Public previews use the authenticated Uplink edge instead.
 
 **Do not expose anything else.** PostgreSQL and the Claude/Codex egress
 gateways (9443/9444) are intentionally unpublished; nothing outside the Compose
@@ -700,11 +551,12 @@ VERITY_SANDBOX_MEMORY=6g
 VERITY_SANDBOX_SWAP=0
 VERITY_SANDBOX_CPUS=4
 VERITY_SANDBOX_CPU_SHARES=512
+VERITY_SANDBOX_PIDS_LIMIT=4096
 ```
 
-Active project Sandboxes sleep after 30 minutes without a running turn, Agent
-Loop, dev server, or public preview. New turns and Agent Loops wake them
-automatically. This is a product lifecycle rule rather than a deployment setting.
+Active project Sandboxes sleep after 30 minutes without a running turn,
+automation check, dev server, or public preview. New turns and automations wake
+them automatically. This is a product lifecycle rule rather than a deployment setting.
 
 Sleep decides how many sandboxes are resident at all; the limits below govern the
 ones that are awake. The two are complementary, and neither replaces the other —
@@ -767,10 +619,60 @@ Under gVisor, the default project runtime, the ceiling is hit harder than it
 looks. The whole Sandbox is one gVisor Sentry process, and its guest memory is a
 shared-memory file charged to the container. gVisor has no OOM killer of its
 own, so there is no runaway process inside the guest for the kernel to pick:
-it kills the Sentry, and every session of the project goes down together.
-Keeping a margin below the limit does not help, because nothing inside the guest
-ever uses that margin. That is why the default is 6 GiB rather than 4 GiB: the
-ceiling has to fit every turn the project runs at once, not a single process.
+it kills the Sentry, and every session of the project goes down together. The
+guest cannot even be asked to behave: the cgroup limits gVisor exposes inside the
+Sandbox are unenforced, and its platform processes are created to die together
+with the Sentry, so any OOM kill in the container's cgroup ends the whole
+Sandbox. That is why the default is 6 GiB rather than 4 GiB: the ceiling has to
+fit every turn the project runs at once, not a single process.
+
+Because nothing in the runtime uses the margin below the limit, the Sandbox
+toolkit runs a memory guard (`verity-memory-guard`) that stands in for the
+missing guest OOM killer, the way earlyoom or kubelet eviction act before the
+kernel does. Started by the root stack pass next to the spawn broker, it polls
+the cgroup's usage every 500 ms and, once usage reaches the ceiling minus a
+reserve, freezes and then SIGKILLs the agent-owned process tree that holds the
+most memory. A tree is ranked by the memory of all its processes, because a
+worker pool respawns a single killed worker. Under a Claude or Codex session the guard
+narrows from the agent CLI to the command it ran — the tool shell with `npm
+test`, the test runner and its workers — and, when several commands run at once,
+to the largest of them. The CLI itself goes only when its own memory is most of
+its tree and that tree holds at least the reserve, so an ordinary idle CLI is
+never killed for cache pressure. For adapters that run commands directly,
+what they start is a command like any other. The ACP adapter the broker started is never a candidate; one orphaned to init by a
+broker restart counts as a detached tree. A process tree detached under init (a
+backgrounded dev server or database) is a candidate of its own. If usage is
+still above the threshold once the cooldown after a kill has passed, the guard
+assumes the rest is page cache, tmpfs or steady load that another kill would not
+cure, logs `suspended`, and kills nothing more until usage drops below the
+threshold or grows by another quarter of the reserve (closer to the ceiling, by
+half the remaining room), so it never works through the sessions one by one. The
+reserve is a fifth of the ceiling, at least 1 GiB and at most half the ceiling,
+because the guest cannot see the Sentry's own memory; at the 6 GiB default the
+guard acts at about 4.8 GiB. Usage includes the guest page cache and tmpfs,
+which live in the same host-charged memory file and therefore count against the
+ceiling too. The victim's command ends with exit 137 and no kernel message, the
+session that ran it sees that failure, and the other sessions of the project
+keep running. Infrastructure is never a candidate: only processes of the agent
+identity qualify, never root or the Runner identity, and nothing under 64 MiB.
+Every kill is recorded in `/run/verity-runner-broker/memory-guard.log` inside
+the Sandbox with the usage, the victim's command and the session worktree it ran
+in.
+
+The guard is a mitigation, not an isolation boundary. An allocation burst
+between two polls can still reach the host limit, and growth in the Sentry's own
+memory is invisible from inside. If a project still loses its Sandbox that way,
+`VERITY_SANDBOX_SWAP` below is the next lever: it turns the remaining cases into
+a slow build instead of a dead project. Three container environment variables
+tune the guard for a project whose devcontainer sets them:
+`VERITY_MEMORY_GUARD=0` disables it, `VERITY_MEMORY_GUARD_RESERVE_BYTES`
+replaces the reserve with an explicit byte count below the ceiling, and
+`VERITY_MEMORY_GUARD_INTERVAL_MS` changes the poll interval (100 to 60000 ms;
+anything else keeps 500). A Sandbox without a readable finite memory limit runs
+no guard, and neither does a runc Sandbox: there the kernel already kills one
+process at the ceiling and the container survives, so a guard would only kill
+builds a reserve early. The guard recognizes gVisor by the kernel version it
+reports.
 
 The 6 GiB default assumes a host with room for it. Unlike the CPU ceiling it is
 not capped to the host, so on a small machine (8 GiB or less) set
@@ -799,7 +701,34 @@ The CPU ceiling is capped at the host's CPU count, because Docker refuses to
 create a container that asks for more. On a 2-core host the default of 4 therefore
 gives each sandbox both cores.
 
-Memory, swap, and CPU ceilings are applied when a sandbox container is
+`VERITY_SANDBOX_PIDS_LIMIT` defaults to 4096 and remains configurable. With
+runsc (gVisor), the host PID cgroup counts Sentry and platform threads, rather
+than only guest processes. A small limit can therefore be exhausted by routine
+builds even when few guest processes are visible. [gVisor issue #2490](https://github.com/google/gvisor/issues/2490)
+describes Sentry termination with `failed to create new OS thread` / `newosproc`
+when the host PID limit is exhausted. Keep this limit generous; the sandbox
+memory ceiling remains unchanged. Runtime diagnostics report current PID usage
+and flag usage at or above 80% of a finite limit. A sample taken after restart
+does not establish PID usage before the crash; host runtime logs are needed to
+confirm the cause.
+
+Managed deployments treat an env-source `VERITY_SANDBOX_PIDS_LIMIT=512` as a
+legacy bootstrap default and pass an empty value to new Servers, which use the
+current default of 4096. The Updater logs when it ignores this pin. This also
+applies to older sealed deployments without editing the host `.env`. Other
+values and file-backed sources remain configurable. To deliberately retain 512,
+set `VERITY_SANDBOX_PIDS_LIMIT_ALLOW_LEGACY=1` in the host `.env` and recreate the
+Updater through installation Repair so it receives that input; the opt-in works
+even with an older sealed deployment. Unmanaged Servers retain their configured
+value.
+
+Applying the migration requires an Updater version containing it and a guarded
+Server replacement. Existing project sandboxes must also be recreated after
+active work finishes; restarting an existing container does not change its PID
+limit. A running Server with the old pin remains available; reconciliation
+reports environment drift until replacement.
+
+Memory, swap, CPU, and PID ceilings are applied when a sandbox container is
 **created**. An existing sandbox keeps the limits it was created with until it
 is next provisioned, repaired, or updated to a new image. To apply new limits to
 a specific project now, recreate its sandbox.
@@ -907,19 +836,45 @@ Verity's own secrets are additionally encrypted at rest.
 
 ## Ports & environment reference
 
-Verity reserves host ports `3000–3099` and `8000–8099` for project Dev Servers.
-The global database-backed registry assigns the lowest free port across both ranges
-and all projects; ports are not caller-selectable. Deleting a Dev Server or project
-releases its lease for reuse. Ensure both ranges are available on the Docker host
-and allowed by any host firewall when remote preview access is required — but
-only for clients you trust: these ports serve project Dev Servers without TLS or
-authentication, so on an internet-reachable host keep them restricted to your
-VPN or client addresses (see
-[Hardening an internet-reachable host](#hardening-an-internet-reachable-host)).
+Verity reserves one contiguous host range for local previews, default `8100–8119`.
+Set `VERITY_LOCAL_PREVIEW_PORT_RANGE=8100-8119` in the deployment environment to
+change it (1–200 nonprivileged ports, excluding the API ports). The same range is
+published on the legacy Server or managed Gateway and used internally by the
+Server. Changing it requires restarting the ingress container; creating or
+revoking a share never recreates the project sandbox. Ports are assigned only
+while shares are active. A full range produces an explicit capacity error.
+
+Managed self-updates reconcile the Gateway's local preview listener range and
+publish missing host ports even when the Gateway image already matches the target.
+The migration uses the running managed Server's range and reconciles existing
+preview bindings, including legacy loopback bindings. Preview ports default to all
+host interfaces for LAN and VPN access. Set `VERITY_LOCAL_PREVIEW_BIND_ADDRESS`
+to an explicit host IP to restrict access (bracket IPv6 addresses, for example `[::1]`); Compose and managed updates use the same
+setting. Local previews are unauthenticated: public interfaces require appropriate
+host firewall restrictions. API port bindings remain unchanged.
+A failed replacement restarts the previous Gateway.
+This requires an Updater with companion reconciliation; deployments predating
+that mechanism still require the documented managed-bootstrap migration.
+Self-update changes the runtime container configuration, not the host's installed
+Compose files. Before manually recreating the Gateway with Compose, update those
+files to the current release so the recreation retains the preview configuration.
+
+Local previews are open HTTP, including REST APIs and WebSockets. Restrict the
+range to trusted clients or VPN addresses; it must never be exposed directly to
+the public internet. A network firewall may also need updating when the range
+changes. Docker's optional `userland-proxy: false` setting can reduce the process
+overhead of published ports; its actual memory cost depends on the Docker
+configuration and should be measured on the host.
+
+Start an HTTP/WebSocket service yourself or ask the agent to start it, then open
+the detected listener in the session Preview sheet. Local access uses the Verity
+ingress range. Services listen inside the sandbox; the connector forwards requests
+from the allocated preview port to the service.
 
 | Variable                              | Default                                                              | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `VERITY_API_HOST_PORT`                | `8082`                                                               | Host port published to the mobile app. Container `PORT` remains `8082`.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `VERITY_LOCAL_PREVIEW_PORT_RANGE`     | `8100-8119`                                                          | Identical host/container range for open local HTTP and WebSocket previews. Restrict to trusted LAN/VPN clients; changing it requires restarting the ingress container.                                                                                                                                                                                                                                                                                                                                          |
 | `PORT`                                | `8082`                                                               | API listen port.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `VERITY_DOCKER_BASE_URL`              | `unix:///var/run/docker.sock`                                        | Docker access (mounted socket, or proxy URL).                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `VERITY_DOCKER_SOCKET_PATH`           | `/var/run/docker.sock`                                               | Host socket path mounted into the runner for the default raw-socket mode.                                                                                                                                                                                                                                                                                                                                                                                                                                       |

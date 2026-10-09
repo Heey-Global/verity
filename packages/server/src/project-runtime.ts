@@ -62,7 +62,7 @@ export interface ProjectRuntimeHealth {
 }
 
 export interface ProjectRuntime {
-  runAgentLoopScript?(
+  runAutomationScript?(
     project: ProjectRecord,
     settings: ProjectEnvironmentSettings,
     input: { workdir: string; script: string; timeoutMs: number; maxOutputBytes: number },
@@ -130,6 +130,26 @@ function dockerHostHealthCheckUrl(value: string, dockerBaseUrl: string | undefin
   return url;
 }
 
+/** The state retains the relay port so active connectors survive helper restarts. */
+export const PREVIEW_FORWARDER_SCRIPT = `
+const fs=require('node:fs'),net=require('node:net'),cp=require('node:child_process');
+const address=process.argv[2]||'127.0.0.1';const port=Number(process.argv[1]),dir=process.env.VERITY_PREVIEW_FORWARDER_STATE_DIR||'/tmp/verity-preview-forwarders';
+fs.mkdirSync(dir,{recursive:true});const path=dir+'/'+port+'.json';let previous;
+function ownsListener(pid,relay){
+  try{
+    const env=fs.readFileSync('/proc/'+pid+'/environ','utf8').split('\\0');
+    if(!env.includes('VERITY_PREVIEW_FORWARDER='+port))return false;
+    const inodes=new Set(fs.readdirSync('/proc/'+pid+'/fd').flatMap(f=>{try{return [fs.readlinkSync('/proc/'+pid+'/fd/'+f).match(/^socket:\\[(\\d+)\\]$/)?.[1]]}catch{return []}}));
+    return fs.readFileSync('/proc/net/tcp','utf8').split('\\n').some(line=>{const f=line.trim().split(/\\s+/);return f[3]==='0A'&&parseInt(f[1]?.split(':')[1],16)===relay&&inodes.has(f[9])});
+  }catch{return false}
+}
+try{previous=JSON.parse(fs.readFileSync(path,'utf8'));if(Number.isInteger(previous.port)&&previous.port>0&&previous.port<65536&&ownsListener(previous.pid,previous.port)){const env=fs.readFileSync('/proc/'+previous.pid+'/environ','utf8').split('\\0');if(env.includes('VERITY_PREVIEW_FORWARDER_ADDRESS='+address)){console.log(previous.port);process.exit(0)}process.kill(previous.pid);previous=undefined;}}catch{}
+const relay=Number.isInteger(previous?.port)&&previous.port>0&&previous.port<65536?previous.port:0;
+const code=\`const net=require('node:net'),fs=require('node:fs');const port=Number(process.env.VERITY_PREVIEW_FORWARDER),relay=Number(process.env.VERITY_PREVIEW_FORWARDER_PORT);const server=net.createServer(client=>{const target=net.connect({host:process.env.VERITY_PREVIEW_FORWARDER_ADDRESS,port});client.pipe(target);target.pipe(client);client.on('error',()=>target.destroy());target.on('error',()=>client.destroy());client.on('close',()=>target.destroy());target.on('close',()=>client.destroy())});server.on('error',()=>process.exit(1));server.listen(relay,'0.0.0.0',()=>{process.send({port:server.address().port});process.disconnect()});setInterval(()=>{try{const present=['/proc/net/tcp','/proc/net/tcp6'].some(p=>fs.readFileSync(p,'utf8').split('\\\\n').some(l=>{const f=l.trim().split(/\\\\s+/);return f[3]==='0A'&&parseInt(f[1]?.split(':')[1],16)===port}));if(!present)process.exit(0)}catch{}},2000).unref();\`;
+const child=cp.spawn(process.execPath,['-e',code],{detached:true,env:{...process.env,VERITY_PREVIEW_FORWARDER:String(port),VERITY_PREVIEW_FORWARDER_PORT:String(relay),VERITY_PREVIEW_FORWARDER_ADDRESS:address},stdio:['ignore','ignore','ignore','ipc']});
+child.on('message',value=>{fs.writeFileSync(path,JSON.stringify({pid:child.pid,port:value.port}),{mode:0o600});console.log(value.port);child.unref()});child.on('error',()=>process.exit(1));child.on('exit',()=>process.exit(1));setTimeout(()=>process.exit(1),4000).unref();
+`;
+
 const defaultRunner: RuntimeRunner = async (command, args, opts) => {
   const { stdout, stderr } = await execFileAsync(command, [...args], {
     env: opts?.env,
@@ -141,6 +161,7 @@ const defaultRunner: RuntimeRunner = async (command, args, opts) => {
 };
 
 export interface DockerProjectRuntimeOptions {
+  resolveUser?: (project: ProjectRecord) => Promise<string | undefined>;
   dockerCommand?: string | undefined;
   dockerBaseUrl?: string | undefined;
   containerProjectRoot?: string | undefined;
@@ -159,17 +180,17 @@ export class DockerProjectRuntime implements ProjectRuntime {
     this.healthFetch = opts.healthFetch ?? fetch;
   }
 
-  async runAgentLoopScript(
+  async runAutomationScript(
     project: ProjectRecord,
     settings: ProjectEnvironmentSettings,
     input: { workdir: string; script: string; timeoutMs: number; maxOutputBytes: number },
   ): Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }> {
-    // Loop output is persisted in run history and may be sent to an agent. Do not
-    // expose Verity-managed credentials to the script: explicitly blank both the
-    // token and its ref, including values inherited from the container itself.
-    const loopSettings = projectSettingsEnv({ ...settings });
+    // An automation's check script is agent-authored and runs unattended. Do not
+    // expose Verity-managed credentials to it: explicitly blank both the token
+    // and its ref, including values inherited from the container itself.
+    const scriptSettings = projectSettingsEnv({ ...settings });
     const passthrough = dockerEnvPassthrough({
-      ...loopSettings,
+      ...scriptSettings,
       DOPPLER_TOKEN: '',
       VERITY_DOPPLER_TOKEN_REF: '',
     });
@@ -279,10 +300,166 @@ export class DockerProjectRuntime implements ProjectRuntime {
     return this.devServerStatus(project, settings);
   }
 
+  /**
+   * Starts a managed dev server instance (concept 2.6). Runs as the agent's exec
+   * user, resolves the subdirectory with symlinks against the session worktree
+   * and refuses one that escapes it, then launches from the resolved directory.
+   * Every process inherits `VERITY_DEV_SERVER_INSTANCE`, which is how the
+   * supervisor finds the instance again after it forks or daemonizes.
+   */
+  async startManagedServer(
+    project: ProjectRecord,
+    input: {
+      instanceId: string;
+      command: string;
+      worktree: string;
+      workdir: string;
+      env: Record<string, string>;
+    },
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const passthrough = dockerEnvPassthrough({
+      ...input.env,
+      VERITY_DEV_SERVER_INSTANCE: input.instanceId,
+    });
+    try {
+      await this.runner(
+        this.opts.dockerCommand ?? 'docker',
+        [
+          'exec',
+          ...(await this.userArgs(project)),
+          ...passthrough.args,
+          project.containerName,
+          'sh',
+          '-c',
+          managedStartScript(project, input.instanceId),
+          'verity-managed-start',
+          input.worktree,
+          input.workdir,
+          input.command,
+        ],
+        { env: { ...this.dockerEnv(), ...passthrough.env }, timeoutMs: 15_000, maxBuffer: 65536 },
+      );
+      return { ok: true };
+    } catch (error) {
+      const failure = error as { code?: unknown; stderr?: unknown };
+      const reason =
+        failure.code === 3
+          ? 'The subdirectory does not exist in this session'
+          : failure.code === 4
+            ? 'The subdirectory leaves the session worktree'
+            : String(failure.stderr ?? (error instanceof Error ? error.message : error))
+                .trim()
+                .slice(0, 300) || 'Could not start the server';
+      return { ok: false, reason };
+    }
+  }
+
+  /** Ends every process tagged with the instance: TERM, up to five seconds, then KILL.
+   *  Untagged processes are never touched, even on the instance's port. */
+  async stopManagedServer(project: ProjectRecord, instanceId: string): Promise<void> {
+    await this.runner(
+      this.opts.dockerCommand ?? 'docker',
+      [
+        'exec',
+        ...(await this.userArgs(project)),
+        project.containerName,
+        'sh',
+        '-c',
+        managedStopScript(),
+        'verity-managed-stop',
+        instanceId,
+      ],
+      { env: this.dockerEnv(), timeoutMs: 20_000, maxBuffer: 65536 },
+    );
+  }
+
+  /** Whether any tagged process is alive, and the launcher's exit code once it ended. */
+  async managedServerStatus(
+    project: ProjectRecord,
+    instanceId: string,
+  ): Promise<{ alive: boolean; exitCode: number | null }> {
+    const result = await this.runner(
+      this.opts.dockerCommand ?? 'docker',
+      [
+        'exec',
+        ...(await this.userArgs(project)),
+        project.containerName,
+        'sh',
+        '-c',
+        managedStatusScript(project, instanceId),
+        'verity-managed-status',
+        instanceId,
+      ],
+      { env: this.dockerEnv(), timeoutMs: 10_000, maxBuffer: 65536 },
+    );
+    return parseManagedStatus(result?.stdout ?? '');
+  }
+
+  async managedServerLogs(
+    project: ProjectRecord,
+    instanceId: string,
+    lines = 300,
+  ): Promise<string> {
+    const result = await this.runner(
+      this.opts.dockerCommand ?? 'docker',
+      [
+        'exec',
+        ...(await this.userArgs(project)),
+        project.containerName,
+        'sh',
+        '-c',
+        `f=${shellQuote(managedFile(project, instanceId, 'log'))}; [ -f "$f" ] && tail -n ${String(Math.max(1, Math.min(lines, 2000)))} "$f" || true`,
+      ],
+      { env: this.dockerEnv(), timeoutMs: 10_000, maxBuffer: 1024 * 1024 },
+    );
+    return result?.stdout ?? '';
+  }
+
+  private async userArgs(project: ProjectRecord): Promise<string[]> {
+    const user = await this.opts.resolveUser?.(project);
+    return user ? ['--user', user] : [];
+  }
+
+  /** A separate high port avoids colliding with the original loopback socket. */
+  async ensurePreviewTarget(project: ProjectRecord, port: number): Promise<number> {
+    const listener = (await this.listListeningProcesses(project)).find(
+      (value) => value.port === port,
+    );
+    if (!listener) throw new Error('the preview target stopped listening');
+    if (listener.bind !== 'loopback') return port;
+    // Inline execution supports existing sandbox images before their seed refresh.
+    const script = PREVIEW_FORWARDER_SCRIPT;
+    const result = await this.runner(
+      this.opts.dockerCommand ?? 'docker',
+      [
+        'exec',
+        ...(await this.userArgs(project)),
+        project.containerName,
+        'node',
+        '-e',
+        script,
+        String(port),
+        listener.loopbackAddress ?? '127.0.0.1',
+      ],
+      { env: this.dockerEnv(), timeoutMs: 5000, maxBuffer: 4096 },
+    );
+    const targetPort = Number(result?.stdout.trim());
+    if (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535)
+      throw new Error('could not start the loopback preview forwarder');
+    return targetPort;
+  }
+
   async listListeningProcesses(project: ProjectRecord): Promise<ListeningProcess[]> {
     const result = await this.runner(
       this.opts.dockerCommand ?? 'docker',
-      ['exec', project.containerName, 'sh', '-c', LISTENING_PORTS_SCRIPT],
+      [
+        'exec',
+        ...(await this.userArgs(project)),
+        project.containerName,
+        'sh',
+        '-c',
+        LISTENING_PORTS_SCRIPT,
+      ],
       { env: this.dockerEnv(), timeoutMs: 10_000, maxBuffer: 4 * 1024 * 1024 },
     );
     const processes = parseListeningProcesses(result?.stdout ?? '');
@@ -450,6 +627,79 @@ function rebaseProjectWorkdir(
   const relative = posix.relative(containerProjectRoot, configuredWorkdir);
   const isInsideProject = relative === '' || (!relative.startsWith('../') && relative !== '..');
   return isInsideProject ? posix.join(activeProjectRoot, relative) : configuredWorkdir;
+}
+
+function managedFile(project: ProjectRecord, instanceId: string, kind: 'log' | 'exit'): string {
+  const safe = instanceId.replace(/[^A-Za-z0-9_.-]+/g, '_');
+  return `/tmp/verity-managed-${project.id.replace(/[^A-Za-z0-9_.-]+/g, '_')}/${safe}.${kind}`;
+}
+
+/** Arguments: $1 worktree, $2 subdirectory, $3 command. Exit 3: missing
+ *  directory, 4: escapes the worktree. The launcher records the command's exit
+ *  code so a crash can be reported with it. */
+export function managedStartScript(project: ProjectRecord, instanceId: string): string {
+  const log = shellQuote(managedFile(project, instanceId, 'log'));
+  const exit = shellQuote(managedFile(project, instanceId, 'exit'));
+  return [
+    'set -u',
+    // Check the directory already opened by cd, then launch from that handle.
+    // Reopening a resolved path after checking it allows a symlink swap to escape.
+    'cd -P -- "$1" 2>/dev/null || exit 3',
+    'root=$(pwd -P) || exit 3',
+    'cd -P -- "$2" 2>/dev/null || exit 3',
+    'target=$(pwd -P) || exit 3',
+    'case "$target/" in "$root"/*) ;; *) exit 4 ;; esac',
+    `mkdir -p "$(dirname ${log})"`,
+    `rm -f ${exit}`,
+    'command -v setsid >/dev/null 2>&1 || { echo "setsid is required" >&2; exit 1; }',
+    // Appending lets the status check trim the log in place without a gap.
+    `: > ${log}`,
+    `setsid sh -c 'sh -lc "$1"; echo $? > "$2"' verity-managed "$3" ${exit} </dev/null >>${log} 2>&1 &`,
+    'exit 0',
+  ].join('\n');
+}
+
+function taggedPidsScript(): string[] {
+  return [
+    'tagged() { for d in /proc/[0-9]*; do',
+    '  tr "\\0" "\\n" < "$d/environ" 2>/dev/null | grep -Fqx "VERITY_DEV_SERVER_INSTANCE=$1" && echo "${d#/proc/}"',
+    'done; }',
+  ];
+}
+
+/** Argument: $1 instance id. */
+function managedStopScript(): string {
+  return [
+    ...taggedPidsScript(),
+    'pids=$(tagged "$1")',
+    '[ -z "$pids" ] && exit 0',
+    'kill -TERM $pids 2>/dev/null || true',
+    'for _ in 1 2 3 4 5; do sleep 1; pids=$(tagged "$1"); [ -z "$pids" ] && exit 0; done',
+    'kill -KILL $pids 2>/dev/null || true',
+    'exit 0',
+  ].join('\n');
+}
+
+/** Argument: $1 instance id. Prints `alive` when a tagged process exists, then
+ *  `exit <code>` once the launcher recorded one. */
+function managedStatusScript(project: ProjectRecord, instanceId: string): string {
+  const exit = shellQuote(managedFile(project, instanceId, 'exit'));
+  const log = shellQuote(managedFile(project, instanceId, 'log'));
+  return [
+    ...taggedPidsScript(),
+    // Keep the log bounded: past 2 MB, keep its last megabyte.
+    `if [ -f ${log} ] && [ "$(wc -c < ${log})" -gt 2097152 ]; then tail -c 1048576 ${log} > ${log}.tmp && cat ${log}.tmp > ${log}; rm -f ${log}.tmp; fi`,
+    '[ -n "$(tagged "$1")" ] && echo alive',
+    `[ -s ${exit} ] && printf 'exit %s\\n' "$(cat ${exit})"`,
+    'exit 0',
+  ].join('\n');
+}
+
+function parseManagedStatus(output: string): { alive: boolean; exitCode: number | null } {
+  const lines = output.split('\n').map((line) => line.trim());
+  const exit = lines.find((line) => line.startsWith('exit '));
+  const code = exit === undefined ? Number.NaN : Number(exit.slice(5));
+  return { alive: lines.includes('alive'), exitCode: Number.isInteger(code) ? code : null };
 }
 
 function runtimeDir(project: ProjectRecord): string {

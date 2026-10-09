@@ -1,4 +1,13 @@
 import {
+  markSessionSwitch,
+  beginSwitchTransportRequest,
+  markSwitchTransportRequest,
+  sessionSwitchTiming,
+  type SwitchTiming,
+} from './sessionSwitchTiming.js';
+import { taskSchema, type Task, type TaskCapture, type TaskPatch } from './tasks.js';
+import { liveResourceInterval, type LiveResource, selectedOpenCodeModels } from '@verity/events';
+import {
   agentEventSchema,
   attachmentSchema,
   attachmentUploadSchema,
@@ -7,6 +16,22 @@ import {
   usageSchema,
 } from '@verity/events';
 import { z } from 'zod';
+
+const projectGitHubIssuesSchema = z.object({
+  connected: z.boolean(),
+  viewerLogin: z.string().nullable(),
+  issues: z.array(
+    z.object({
+      number: z.number().int().positive(),
+      title: z.string(),
+      url: z.string().url(),
+      labels: z.array(z.string()),
+      assignees: z.array(z.string()),
+    }),
+  ),
+});
+export type ProjectGitHubIssues = z.infer<typeof projectGitHubIssuesSchema>;
+export type ProjectGitHubIssue = ProjectGitHubIssues['issues'][number];
 
 export type { Attachment, AttachmentUpload } from '@verity/events';
 
@@ -32,6 +57,31 @@ const mergeStateSchema = z
   .enum(['clean', 'dirty', 'blocked', 'behind', 'unstable', 'draft', 'unknown'])
   .optional()
   .catch(undefined);
+
+const pullRequestSchema = z
+  .object({
+    number: z.number().int().positive(),
+    title: z.string(),
+    url: z.string(),
+    phase: z.enum(['open', 'merged', 'closed']),
+    updatedAt: z.string().optional(),
+    headSha: z.string().optional(),
+    pipeline: z.enum(['pending', 'running', 'success', 'failure', 'unknown']),
+    checks: z.object({
+      completed: z.number().int().nonnegative(),
+      total: z.number().int().nonnegative(),
+      successful: z.number().int().nonnegative(),
+      failed: z.number().int().nonnegative(),
+      pending: z.number().int().nonnegative(),
+    }),
+    // Tri-state; see sessionPrSchema.mergeable. null = unknown, not "blocked".
+    mergeable: z.boolean().nullable().catch(null),
+    // See sessionPrSchema.mergeState — `'dirty'` drives the conflict UI.
+    mergeState: mergeStateSchema,
+    // The PR's base branch, so the conflict line can name it ("conflicts with main").
+    baseRef: z.string().min(1).optional(),
+  })
+  .nullable();
 
 const sessionPrSchema = z.object({
   phase: z.enum(['open', 'merged', 'closed']),
@@ -86,54 +136,76 @@ export const attentionSignalSchema = z.object({
 });
 export type AttentionSignal = z.infer<typeof attentionSignalSchema>;
 
-export const sessionSummarySchema = z.object({
-  sessionId: z.string().min(1),
-  worktree: z.string(),
-  model: z.string(),
-  /** Operator-assigned display name; `null` until set at spawn or via rename. */
-  name: z.string().nullable(),
-  /** Project binding for multi-repo fleet sessions (#174). Older servers omit it. */
-  projectId: z.string().nullable().optional(),
-  /** Agent Loop sessions are visually distinct and pinned below normal sessions. */
-  kind: z.enum(['normal', 'agent_loop']).optional(),
-  status: sessionStatusSchema,
-  /** Tool-use ids currently waiting for permission. Optional for compatibility
-   * with older servers. */
-  pendingPermissions: z.array(z.string().min(1)).optional(),
-  /** True only when awaiting_input is caused by those permissions. */
-  permissionAwaitingInput: z.literal(true).optional(),
-  usage: usageTotalsSchema,
-  /** Latest rate-limit state for this session. Optional for rollout with
-   * older servers and absent until a runtime emits one. */
-  rateLimit: rateLimitStateSchema.optional(),
-  /** Latest rate-limit states by provider/window. Optional for older servers. */
-  rateLimits: z.array(rateLimitStateSchema).optional(),
-  /** False once the session's worktree is gone (cleaned up after its PR merged):
-   * a steering turn would 410. The UI disables the input + flags the session.
-   * OPTIONAL on the wire for forward-compat: an app newer than the server (no
-   * `resumable` yet) must not hard-fail the list parse — a missing value reads as
-   * "resumable" (the safe default: don't block sending on absent metadata). */
-  resumable: z.boolean().optional(),
-  /** Compact PR status for this session's current branch (#387), so the overview can
-   * mark merge-ready / merge-blocked / CI-failed sessions without a per-session branch fetch. `null` =
-   * looked up, no open PR; ABSENT = older server OR GitHub not configured (no
-   * token/remote) — both render as "no PR marker". */
-  pr: sessionPrSchema.nullable().optional(),
-  /** Total persisted events (#387) — a monotonic activity counter the overview
-   * compares against a per-device "last seen" mark for the unread dot. OPTIONAL on
-   * the wire: an OLDER server omits it on the list, and absent simply reads as "no
-   * unread signal" (never a false unread). The detail endpoint always sends it. */
-  eventCount: z.number().int().nonnegative().optional(),
-  /** Operator's "last seen" mark for the unread dot (#387): the `eventCount` at the
-   * last open, persisted server-side so the dot syncs across devices. A session is
-   * unread when `eventCount > lastSeenEventCount`. `null` = never opened (→ not
-   * unread); ABSENT = older server with no synced mark (→ not unread either). */
-  lastSeenEventCount: z.number().int().nonnegative().nullable().optional(),
-  /** Conditions about THIS session, e.g. a sandbox that lost its connection to
-   * the server (`sandbox_disconnected`). Absent from a healthy session and from
-   * any older server, both of which read as "nothing to report". */
-  attention: z.array(attentionSignalSchema).optional(),
-});
+export const sessionSummarySchema = z
+  .object({
+    sessionId: z.string().min(1),
+    worktree: z.string(),
+    model: z.string(),
+    /** Operator-assigned display name; `null` until set at spawn or via rename. */
+    name: z.string().nullable(),
+    /** Project binding for multi-repo fleet sessions (#174). Older servers omit it. */
+    projectId: z.string().nullable().optional(),
+    /** Operator-marked favorite, highlighted in the session list. ABSENT means not a
+     * favorite — servers omit it for unmarked sessions, and older servers never send it. */
+    favorite: z.boolean().optional(),
+    status: sessionStatusSchema,
+    /** Tool-use ids currently waiting for permission. Optional for compatibility
+     * with older servers. */
+    pendingPermissions: z.array(z.string().min(1)).optional(),
+    /** True only when awaiting_input is caused by those permissions. */
+    permissionAwaitingInput: z.literal(true).optional(),
+    usage: usageTotalsSchema,
+    /** Latest rate-limit state for this session. Optional for rollout with
+     * older servers and absent until a runtime emits one. */
+    rateLimit: rateLimitStateSchema.optional(),
+    /** Latest rate-limit states by provider/window. Optional for older servers. */
+    rateLimits: z.array(rateLimitStateSchema).optional(),
+    /** False once the session's worktree is gone (cleaned up after its PR merged):
+     * a steering turn would 410. The UI disables the input + flags the session.
+     * OPTIONAL on the wire for forward-compat: an app newer than the server (no
+     * `resumable` yet) must not hard-fail the list parse — a missing value reads as
+     * "resumable" (the safe default: don't block sending on absent metadata). */
+    resumable: z.boolean().optional(),
+    /** Compact PR status for this session's current branch (#387), so the overview can
+     * mark merge-ready / merge-blocked / CI-failed sessions without a per-session branch fetch. `null` =
+     * looked up, no open PR; ABSENT = older server OR GitHub not configured (no
+     * token/remote) — both render as "no PR marker". */
+    pr: sessionPrSchema.nullable().optional(),
+    /** Full cached status for immediate PR-bar display; absent on older servers. */
+    pullRequest: pullRequestSchema.optional(),
+    /** The worktree's current branch, so the overview can show the session's issue
+     * (`<type>/<issue>-<slug>`). ABSENT on an older server, while the server's label
+     * is cold, or once the worktree is gone — all read as "no issue". */
+    branch: z.string().optional(),
+    /** Nonempty agent-text events — the overview compares this
+     * against the server-persisted "last seen" mark for the unread dot. OPTIONAL on
+     * the wire: an OLDER server omits it on the list, and absent simply reads as "no
+     * unread signal" (never a false unread). The detail endpoint always sends it. */
+    eventCount: z.number().int().nonnegative().optional(),
+    /** Active subagents can keep working while the main agent awaits input. */
+    backgroundWorking: z.boolean().optional(),
+    /** Version associated with this count; forward it unchanged when marking seen. */
+    eventCountVersion: z.string().optional(),
+    agentTextCounterVersion: z.literal('agent-text-v2').optional(),
+    /** Operator's "last seen" mark for the unread dot (#387): the `eventCount` at the
+     * last open, persisted server-side so the dot syncs across devices. A session is
+     * unread when `eventCount > lastSeenEventCount`. `null` = never opened (→ not
+     * unread); ABSENT = older server with no synced mark (→ not unread either). */
+    lastSeenEventCount: z.number().int().nonnegative().nullable().optional(),
+    /** Conditions about THIS session, e.g. a sandbox that lost its connection to
+     * the server (`sandbox_disconnected`). Absent from a healthy session and from
+     * any older server, both of which read as "nothing to report". */
+    attention: z.array(attentionSignalSchema).optional(),
+    /** Position within a manually ordered project; absent on older servers. */
+    linked: z.boolean().optional(),
+    sortOrder: z.number().int().nonnegative().nullable().optional(),
+    /** The session's recurring automation, if it has one. */
+    automation: z.object({ status: z.enum(['enabled', 'paused']) }).optional(),
+  })
+  .overwrite((session) => ({
+    ...session,
+    eventCountVersion: session.agentTextCounterVersion ?? session.eventCountVersion,
+  }));
 export type SessionSummary = z.infer<typeof sessionSummarySchema>;
 
 /**
@@ -145,15 +217,22 @@ export type SessionSummary = z.infer<typeof sessionSummarySchema>;
  * signals, which is also what a healthy newer server reports.
  */
 export const sessionListEnvelopeSchema = z.union([
-  z
-    .array(sessionSummarySchema)
-    .transform((sessions) => ({ sessions, attention: [] as AttentionSignal[] })),
+  z.array(sessionSummarySchema).transform((sessions) => ({
+    sessions,
+    attention: [] as AttentionSignal[],
+    sessionReordering: false,
+  })),
   z
     .object({
       sessions: z.array(sessionSummarySchema),
       attention: z.array(attentionSignalSchema).optional(),
+      sessionReordering: z.boolean().optional(),
     })
-    .transform(({ sessions, attention }) => ({ sessions, attention: attention ?? [] })),
+    .transform(({ sessions, attention, sessionReordering }) => ({
+      sessions,
+      attention: attention ?? [],
+      sessionReordering: sessionReordering === true,
+    })),
 ]);
 export type SessionListEnvelope = z.infer<typeof sessionListEnvelopeSchema>;
 
@@ -185,7 +264,18 @@ const queuedItemSchema = z.union([
 ]);
 export type QueuedItem = z.infer<typeof queuedItemSchema>;
 
-export const sessionDetailSchema = sessionSummarySchema.extend({
+/** Planning mode (`active`), or how the last planning round ended. A value this
+ * build does not know reads as absent rather than failing the whole response. */
+const sessionPlanningSchema = z
+  .enum(['active', 'implemented', 'discarded'])
+  .optional()
+  .catch(undefined);
+export type SessionPlanning = NonNullable<z.infer<typeof sessionPlanningSchema>>;
+
+export const sessionDetailSchema = sessionSummarySchema.safeExtend({
+  planning: sessionPlanningSchema,
+  planningRevision: z.number().int().nonnegative().optional(),
+  planningPlan: z.string().nullable().optional(),
   eventCount: z.number().int().nonnegative(),
   /** True while a turn is in flight (the agent is working). OPTIONAL on the wire
    * for forward-compat with an older server; absent → not busy. */
@@ -198,6 +288,8 @@ export type SessionDetail = z.infer<typeof sessionDetailSchema>;
 /** Live activity of a session (from `GET /sessions/:id/activity`): in-flight +
  * queued state, polled for the working indicator and persistent waiting bubbles. */
 export const sessionActivitySchema = z.object({
+  /** Active work, independently of whether the session remains cancellable. */
+  activityAnimating: z.boolean().optional(),
   busy: z.boolean(),
   queued: z.array(queuedItemSchema),
   /** Tool-use ids currently parked on a server-side permission decision. Optional
@@ -226,6 +318,12 @@ export const sessionActivitySchema = z.object({
    * OPTIONAL on the wire (absent on an older server) — the header then keeps its
    * load-once value; `null` means explicitly unnamed. */
   name: z.string().nullable().optional(),
+  /** Planning mode, polled so the planning bar follows an agent that starts
+   * planning mid-turn. Absent on an older server and for a session that never
+   * planned. */
+  planning: sessionPlanningSchema,
+  planningRevision: z.number().int().nonnegative().optional(),
+  planningPlan: z.string().nullable().optional(),
 });
 export type SessionActivity = z.infer<typeof sessionActivitySchema>;
 
@@ -348,6 +446,10 @@ const linkedProjectSchema = z.object({
 });
 export type LinkedProject = z.infer<typeof linkedProjectSchema>;
 
+/** The agents a project can allow, in picker order. */
+export const PROJECT_AGENTS = ['claude', 'codex', 'opencode'] as const;
+export type ProjectAgent = (typeof PROJECT_AGENTS)[number];
+
 export const projectSettingsSchema = z.object({
   projectId: z.string().min(1),
   // Broker-only Doppler mapping. Credentials remain central and never appear in
@@ -362,12 +464,17 @@ export const projectSettingsSchema = z.object({
   memory: z.string().nullable().optional(),
   googleDriveFolderId: z.string().nullable().optional(),
   googleDriveFolderName: z.string().nullable().optional(),
+  googleDriveAccessMode: z.enum(['read-only', 'read-write']).optional(),
+  // Agents sessions in this project may use; null (or absent on an older server)
+  // allows every connected agent.
+  allowedAgents: z.array(z.enum(PROJECT_AGENTS)).nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type ProjectSettings = z.infer<typeof projectSettingsSchema>;
 
-type ProjectSettingsKey = 'defaultBranch' | 'defaultModel' | 'memory';
+type ProjectSettingsKey =
+  'defaultBranch' | 'defaultModel' | 'memory' | 'googleDriveAccessMode' | 'allowedAgents';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettings[K] | undefined;
@@ -376,106 +483,76 @@ export type ProjectSettingsPatch = {
   dopplerConfig?: string | null | undefined;
 };
 
-// Agent Loops — recurring script-first automations (ADR 0008). Structured schedule
-// (never a raw cron string) so the mobile UI edits fields, not expressions.
-export const agentLoopScheduleSchema = z.discriminatedUnion('kind', [
+// Session automations (ADR 0008): one recurring prompt per session, created
+// from an agent's proposal after the operator confirms it.
+export const automationScheduleSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('interval'), everyMinutes: z.number() }),
-  z.object({ kind: z.literal('daily'), hour: z.number(), minute: z.number() }),
+  z.object({
+    kind: z.literal('daily'),
+    hour: z.number(),
+    minute: z.number(),
+    timeZone: z.string().optional(),
+  }),
   z.object({
     kind: z.literal('weekly'),
     weekday: z.number(),
     hour: z.number(),
     minute: z.number(),
+    timeZone: z.string().optional(),
   }),
 ]);
-export type AgentLoopSchedule = z.infer<typeof agentLoopScheduleSchema>;
+export type AutomationSchedule = z.infer<typeof automationScheduleSchema>;
 
-export const agentLoopSchema = z.object({
+export const sessionAutomationSchema = z.object({
   id: z.string(),
-  projectId: z.string(),
+  sessionId: z.string(),
   name: z.string(),
-  status: z.enum(['draft', 'enabled', 'paused']),
-  schedule: agentLoopScheduleSchema.nullable(),
+  status: z.enum(['enabled', 'paused']),
+  schedule: automationScheduleSchema,
+  prompt: z.string(),
   script: z.string().nullable(),
-  reactionPrompt: z.string().nullable(),
-  reactionModel: z.string().nullable(),
-  sessionId: z.string().nullable(),
-  testedScriptFingerprint: z.string().nullable(),
+  model: z.string().nullable(),
   consecutiveErrorCount: z.number(),
   lastRunAt: z.string().nullable(),
   lastOutcome: z.enum(['ok', 'acted', 'error', 'skipped']).nullable(),
+  lastDetail: z.string().nullable(),
   nextRunAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
-export type AgentLoop = z.infer<typeof agentLoopSchema>;
+export type SessionAutomation = z.infer<typeof sessionAutomationSchema>;
 
-/** Stable identity for the complete user-confirmed Agent Loop config. */
-export function agentLoopConfigFingerprint(config: {
+/** What the operator confirms: the agent's proposal, verbatim. */
+export interface SessionAutomationRequest {
   name: string;
-  script: string | null;
-  schedule: AgentLoopSchedule | null;
-  reactionPrompt?: string | null;
-  reactionModel?: string | null;
-}): string {
-  return JSON.stringify({
-    name: config.name,
-    script: config.script,
-    schedule: config.schedule,
-    reactionPrompt: config.reactionPrompt ?? null,
-    reactionModel: config.reactionModel ?? null,
-  });
+  schedule: AutomationSchedule;
+  prompt: string;
+  script?: string;
+  model?: string | null;
 }
 
-export const agentLoopRunSchema = z.object({
-  id: z.string(),
-  loopId: z.string(),
-  startedAt: z.string(),
-  finishedAt: z.string().nullable(),
-  outcome: z.enum(['ok', 'acted', 'error', 'skipped']),
-  exitCode: z.number().nullable(),
-  detail: z.string().nullable(),
-  sessionId: z.string().nullable(),
-  isTest: z.boolean(),
+const sessionAutomationResponseSchema = z.object({ automation: sessionAutomationSchema });
+const optionalSessionAutomationResponseSchema = z.object({
+  automation: sessionAutomationSchema.nullable(),
 });
-export type AgentLoopRun = z.infer<typeof agentLoopRunSchema>;
 
-export interface AgentLoopCreateRequest {
+export interface DevServer {
+  id: string;
+  projectId: string;
+  sourceKey: string | null;
   name: string;
-  schedule?: AgentLoopSchedule | null;
-  script?: string | null;
-  reactionPrompt?: string | null;
-  reactionModel?: string | null;
+  command: string | null;
+  url: string | null;
+  workdir: string | null;
+  hostPort: string | null;
+  containerPort: string | null;
+  previewSessionId: string | null;
+  autoStart: boolean;
+  running: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
 }
-
-export type AgentLoopPatchRequest = Partial<AgentLoopCreateRequest> & {
-  status?: 'draft' | 'enabled' | 'paused';
-};
-
-const agentLoopResponseSchema = z.object({ loop: agentLoopSchema });
-const agentLoopsResponseSchema = z.object({ loops: z.array(agentLoopSchema) });
-
-// Dev servers — one-or-more named preview processes per project.
-const devServerSchema = z.object({
-  id: z.string(),
-  projectId: z.string(),
-  sourceKey: z.string().nullable().default(null),
-  name: z.string(),
-  command: z.string().nullable(),
-  url: z.string().nullable(),
-  workdir: z.string().nullable(),
-  hostPort: z.string().nullable(),
-  containerPort: z.string().nullable(),
-  /** Session whose worktree this server previews; null = the main checkout.
-   *  Defaulted for servers predating the preview feature. */
-  previewSessionId: z.string().nullable().default(null),
-  autoStart: z.boolean().default(false),
-  running: z.boolean().default(false),
-  sortOrder: z.number(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-});
-export type DevServer = z.infer<typeof devServerSchema>;
 
 export interface DevServerCreateRequest {
   sourceKey?: string | null;
@@ -490,6 +567,7 @@ export interface DevServerCreateRequest {
 export type DevServerPatchRequest = Omit<DevServerCreateRequest, 'sourceKey'>;
 
 const publicPreviewShareSchema = z.object({
+  managedInstanceId: z.string().nullable().optional(),
   pinLocked: z.boolean().optional(),
   id: z.string(),
   projectId: z.string(),
@@ -513,6 +591,17 @@ export interface PublicPreviewShareCreateRequest {
   ttlSeconds: number;
 }
 
+const localPreviewShareSchema = z.object({
+  id: z.string(),
+  url: z.string().url(),
+  projectId: z.string(),
+  sessionId: z.string(),
+  targetPort: z.number().int().nullable(),
+  staticPath: z.string().nullable(),
+  expiresAt: z.coerce.date(),
+});
+export type LocalPreviewShare = z.infer<typeof localPreviewShareSchema>;
+
 const sessionDevServerSchema = z.object({
   port: z.number().int(),
   /** False when the server listens on localhost only, which a public link cannot reach. */
@@ -521,58 +610,70 @@ const sessionDevServerSchema = z.object({
   name: z.string(),
   command: z.string(),
   workdir: z.string(),
+  scope: z.enum(['session', 'project']).optional(),
+  sessionId: z.string().optional(),
+  /** Set when the listener belongs to a managed dev server instance. */
+  managedInstanceId: z.string().optional(),
 });
 export type SessionDevServer = z.infer<typeof sessionDevServerSchema>;
+
+const managedDevServerSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  command: z.string(),
+  workdir: z.string(),
+  approved: z.boolean(),
+  /** Present on Cores with the Local and Shared online switches. */
+  accessSwitches: z.boolean().optional(),
+  instance: z
+    .object({
+      id: z.string(),
+      sessionId: z.string(),
+      state: z.enum(['stopped', 'starting', 'running', 'crashed']),
+      desired: z.enum(['running', 'stopped']),
+      detail: z.string().nullable(),
+      url: z.string().url().nullable(),
+      localShareId: z.string().nullable().optional(),
+      /** Internal; a share target only, never shown. */
+      sandboxPort: z.number().int(),
+      awaitingApproval: z.boolean(),
+      /** The Local switch. Absent from Cores before the access switches; derived then. */
+      localOn: z.boolean().optional(),
+      restartToApply: z.boolean(),
+      startedAt: z.string().nullable(),
+    })
+    .nullable(),
+  elsewhere: z.array(
+    z.object({ instanceId: z.string(), sessionId: z.string(), sessionName: z.string().nullable() }),
+  ),
+});
+/** A dev server the agent set up and Verity runs (concept 2.6). */
+export type ManagedDevServer = z.infer<typeof managedDevServerSchema>;
 
 const publicPreviewShareResponseSchema = z.object({ share: publicPreviewShareSchema });
 const publicPreviewSharesResponseSchema = z.object({
   shares: z.array(publicPreviewShareSchema),
 });
 
-export interface DetectedDevServerSetupRequest {
-  fingerprint: string;
-  confirmWarnings?: boolean;
-  devServers: Array<{
-    sourceKey: string;
+export interface DevServerSuggestion {
+  key: string;
+  name: string;
+  command: string;
+  workdir: string | null;
+  containerPort: string | null;
+  confidence: 'high' | 'medium' | 'low';
+  evidence: string;
+  status: 'new' | 'changed' | 'configured' | 'missing';
+  alreadyConfigured: boolean;
+  existingDevServerId: string | null;
+  existingConfig: {
     name: string;
-    command: string;
+    command: string | null;
     workdir: string | null;
     containerPort: string | null;
-  }>;
+  } | null;
 }
 
-const devServerSuggestionSchema = z.object({
-  key: z.string(),
-  name: z.string(),
-  command: z.string(),
-  workdir: z.string().nullable(),
-  containerPort: z.string().nullable(),
-  confidence: z.enum(['high', 'medium', 'low']),
-  evidence: z.string(),
-  status: z.enum(['new', 'changed', 'configured', 'missing']).default('new'),
-  alreadyConfigured: z.boolean(),
-  existingDevServerId: z.string().nullable(),
-  existingConfig: z
-    .object({
-      name: z.string(),
-      command: z.string().nullable(),
-      workdir: z.string().nullable(),
-      containerPort: z.string().nullable(),
-    })
-    .nullable()
-    .default(null),
-});
-export type DevServerSuggestion = z.infer<typeof devServerSuggestionSchema>;
-
-const devServerResponseSchema = z.object({ devServer: devServerSchema });
-const devServersResponseSchema = z.object({ devServers: z.array(devServerSchema) });
-const devServerSuggestionsResponseSchema = z.object({
-  fingerprint: z.string().optional(),
-  detectedAt: z.string().optional(),
-  reviewedFingerprint: z.string().nullable().optional(),
-  reviewedAt: z.string().nullable().optional(),
-  suggestions: z.array(devServerSuggestionSchema),
-});
 export interface DevServerDetection {
   fingerprint: string | null;
   detectedAt: string | null;
@@ -580,35 +681,12 @@ export interface DevServerDetection {
   reviewedAt: string | null;
   suggestions: DevServerSuggestion[];
 }
-const devServerDetectionStateSchema = z.object({
-  fingerprint: z.string(),
-  detectedAt: z.string(),
-  reviewedFingerprint: z.string().nullable(),
-  reviewedAt: z.string().nullable(),
-});
-export type DevServerDetectionState = z.infer<typeof devServerDetectionStateSchema>;
-const agentLoopRunsResponseSchema = z.object({ runs: z.array(agentLoopRunSchema) });
-const agentLoopTestResponseSchema = z.object({
-  result: z.object({
-    outcome: z.enum(['ok', 'acted', 'error']),
-    exitCode: z.number().nullable(),
-    detail: z.string().nullable(),
-    sessionId: z.string().nullable(),
-  }),
-  loop: agentLoopSchema,
-});
-export type AgentLoopTestResult = z.infer<typeof agentLoopTestResponseSchema>;
-const agentLoopRunResponseSchema = z.object({
-  result: z.object({
-    outcome: z.enum(['ok', 'acted', 'error', 'skipped']),
-    exitCode: z.number().nullable(),
-    detail: z.string().nullable(),
-    sessionId: z.string().nullable(),
-  }),
-  run: agentLoopRunSchema,
-  loop: agentLoopSchema,
-});
-export type AgentLoopRunResult = z.infer<typeof agentLoopRunResponseSchema>;
+export interface DevServerDetectionState {
+  fingerprint: string;
+  detectedAt: string;
+  reviewedFingerprint: string | null;
+  reviewedAt: string | null;
+}
 
 export const veritySettingsSchema = z.object({
   gitUserName: z.string().nullable(),
@@ -641,6 +719,9 @@ export const veritySettingsSchema = z.object({
   transcribeExternalConfigured: z.boolean().default(false),
   claudeCodeOauthCredentialsConfigured: z.boolean(),
   codexAuthJsonConfigured: z.boolean(),
+  // Absent from servers older than the plan labels.
+  claudeSubscriptionPlan: z.string().nullable().optional(),
+  codexSubscriptionPlan: z.string().nullable().optional(),
   opencodeBaseUrl: z.string().nullable().optional(),
   opencodeModels: z.string().nullable().optional(),
   opencodeDisabledModels: z.string().nullable().optional(),
@@ -748,6 +829,8 @@ export type MeetingTranscriptionBackendStatus = z.infer<
 
 // ── Google Drive sources (ADR 0009) ──────────────────────────────────────────
 export const driveFileSchema = z.object({
+  version: z.string().optional(),
+  trashed: z.boolean().optional(),
   id: z.string(),
   name: z.string(),
   mimeType: z.string(),
@@ -957,7 +1040,8 @@ export const onboardingStatusSchema = z.object({
   claudeConfigured: z.boolean(),
   codexConfigured: z.boolean(),
   complete: z.boolean(),
-  nextStep: z.enum(['master-password', 'github', 'first-project']).nullable(),
+  opencodeConfigured: z.boolean().optional(),
+  nextStep: z.enum(['master-password', 'github', 'first-project', 'ai-backends']).nullable(),
 });
 export type OnboardingStatus = z.infer<typeof onboardingStatusSchema>;
 
@@ -1100,21 +1184,11 @@ export const projectRuntimeHealthSchema = z.object({
 });
 export type ProjectRuntimeHealth = z.infer<typeof projectRuntimeHealthSchema>;
 
-const projectRuntimeResponseSchema = z.object({ runtime: projectRuntimeStartedSchema });
-const projectRuntimeLogsResponseSchema = z.object({ logs: projectRuntimeLogsSchema });
-const projectRuntimeHealthResponseSchema = z.object({ health: projectRuntimeHealthSchema });
-// Declared after projectRuntimeStartedSchema (const, no hoisting): the preview
-// switch restarts a running server and then carries its runtime in the response.
-const devServerPreviewResponseSchema = z.object({
-  devServer: devServerSchema,
-  runtime: projectRuntimeStartedSchema.optional(),
-});
-export type DevServerPreviewResult = z.infer<typeof devServerPreviewResponseSchema>;
-const conciergeTokenRefreshResponseSchema = z.object({
+const verityControlTokenRefreshResponseSchema = z.object({
   projectId: z.string().min(1),
   refreshedAt: z.string(),
 });
-export type ConciergeTokenRefresh = z.infer<typeof conciergeTokenRefreshResponseSchema>;
+export type VerityControlTokenRefresh = z.infer<typeof verityControlTokenRefreshResponseSchema>;
 
 /** One persisted event tagged with its monotonic seq (matches the WS frame), plus
  * its real persist time `ts` (the store row's `created_at`, epoch milliseconds —
@@ -1264,31 +1338,7 @@ export const branchListSchema = z.object({
   // = looked up, no open PR; ABSENT = the server is older OR GitHub isn't configured
   // (no token/remote) — both render as "no PR chip", independent of the issue chip.
   currentPr: z.number().int().positive().nullable().optional(),
-  pullRequest: z
-    .object({
-      number: z.number().int().positive(),
-      title: z.string(),
-      url: z.string(),
-      phase: z.enum(['open', 'merged', 'closed']),
-      updatedAt: z.string().optional(),
-      headSha: z.string().optional(),
-      pipeline: z.enum(['pending', 'running', 'success', 'failure', 'unknown']),
-      checks: z.object({
-        completed: z.number().int().nonnegative(),
-        total: z.number().int().nonnegative(),
-        successful: z.number().int().nonnegative(),
-        failed: z.number().int().nonnegative(),
-        pending: z.number().int().nonnegative(),
-      }),
-      // Tri-state; see sessionPrSchema.mergeable. null = unknown, not "blocked".
-      mergeable: z.boolean().nullable().catch(null),
-      // See sessionPrSchema.mergeState — `'dirty'` drives the conflict UI.
-      mergeState: mergeStateSchema,
-      // The PR's base branch, so the conflict line can name it ("conflicts with main").
-      baseRef: z.string().min(1).optional(),
-    })
-    .nullable()
-    .optional(),
+  pullRequest: pullRequestSchema.optional(),
   // The project repo's GitHub `owner`/`repo` (#161), from the server's `origin`-remote
   // parse — lets the header build tappable Issue/PR chip URLs. Both OPTIONAL: ABSENT =
   // older server OR no GitHub remote, in which case the chips stay non-tappable rather
@@ -1299,7 +1349,7 @@ export const branchListSchema = z.object({
   // Present ONLY for a project without a GitHub repository, where there is no pull
   // request to merge: `base` names the branch this session's work can be merged into
   // locally. ABSENT = merging goes through the PR strip (or the server is older).
-  localMerge: z.object({ base: z.string().min(1) }).optional(),
+  localMerge: z.object({ base: z.string().min(1), hasChanges: z.boolean().optional() }).optional(),
 });
 export type BranchList = z.infer<typeof branchListSchema>;
 
@@ -1321,6 +1371,8 @@ export const modelListSchema = z.object({
   modelOrder: z.array(z.string().min(1)).optional(),
   moreModels: z.array(z.string().min(1)).optional(),
   default: z.string().min(1).optional(),
+  /** Present when the list was narrowed to a project that excludes some agents. */
+  allowedAgents: z.array(z.enum(PROJECT_AGENTS)).optional(),
 });
 export type ModelList = z.infer<typeof modelListSchema>;
 
@@ -1347,6 +1399,9 @@ export const sessionDirectorySchema = z.object({
 export type SessionDirectory = z.infer<typeof sessionDirectorySchema>;
 
 export const sessionFileContentSchema = z.object({
+  warning: z.string().optional(),
+  version: z.string().optional(),
+  editable: z.boolean().optional(),
   path: z.string(),
   content: z.string(),
   size: z.number().int().nonnegative(),
@@ -1388,6 +1443,12 @@ const sessionRenamedSchema = z.object({
   name: z.string().nullable(),
 });
 export type SessionRenamed = z.infer<typeof sessionRenamedSchema>;
+
+const sessionFavoriteSchema = z.object({
+  sessionId: z.string().min(1),
+  favorite: z.boolean(),
+});
+export type SessionFavorite = z.infer<typeof sessionFavoriteSchema>;
 
 const sessionModelSwitchedSchema = z.object({
   sessionId: z.string().min(1),
@@ -1478,6 +1539,9 @@ export interface TurnRequest {
    * re-flushed from the push outbox after the app was suspended before the 202, so
    * the server dedupes the replay instead of dispatching a second turn. */
   clientReplyId?: string;
+  /** Wait for the active turn instead of steering into it, so this prompt gets its
+   * own reply. Older servers ignore it and steer as before. */
+  queueBehindActiveTurn?: boolean;
 }
 
 export interface MeetingTranscriptUpload {
@@ -1563,8 +1627,11 @@ export function isDevicePairingRequiredError(error: unknown): error is VerityApi
 }
 
 export interface VerityClientOptions {
+  appVariant?: 'production' | 'staging';
   /** Base URL of the control-plane server, no trailing slash (e.g. via Tailscale). */
   baseUrl: string;
+  /** Saved direct endpoint used for LAN previews, even when API traffic uses Uplink. */
+  localPreviewBaseUrl?: string | null;
   /** Fetch implementation; defaults to the global `fetch` (tests inject a fake). */
   fetch?: typeof fetch;
   /** Fetch implementation used only for native file-backed Blob uploads. Expo apps
@@ -1773,6 +1840,29 @@ const integrationAccountSchema = z.object({
   status: z.string(),
   lastError: z.string().nullable(),
 });
+const matrixImportDiagnosticSchema = z.object({
+  sourceId: z.string(),
+  eventId: z.string(),
+  occurredAt: z.string(),
+  lastAttemptAt: z.string(),
+  attempts: z.number().int().min(1),
+  httpStatus: z.number().int().min(100).max(599).nullable(),
+  code: z.enum([
+    'invalid_request',
+    'target_message_not_found',
+    'knowledge_storage_unavailable',
+    'source_unavailable',
+    'event_predates_activation',
+    'source_binding_changed',
+    'invalid_attachment_encoding',
+    'empty_attachment',
+    'attachment_too_large',
+    'unauthorized_connector',
+    'import_failed',
+    'transport_error',
+    'media_download_failed',
+  ]),
+});
 const integrationSourceSchema = z.object({
   accountId: z.string(),
   sourceId: z.string(),
@@ -1783,6 +1873,8 @@ const integrationSourceSchema = z.object({
   activatedAt: z.string().nullable(),
   lastIngestedAt: z.string().nullable(),
   lastError: z.string().nullable(),
+  importDiagnostics: z.array(matrixImportDiagnosticSchema).default([]),
+  importDiagnosticsTruncated: z.boolean().default(false),
 });
 export type IntegrationAccount = z.infer<typeof integrationAccountSchema>;
 export type IntegrationSource = z.infer<typeof integrationSourceSchema>;
@@ -1790,7 +1882,13 @@ export type IntegrationSource = z.infer<typeof integrationSourceSchema>;
 const liveMeetingSchema = z.object({
   id: z.string(),
   sessionId: z.string(),
-  engine: z.enum(['apple-speech', 'apple-dictation', 'fluid-nemotron', 'fluid-parakeet']),
+  engine: z.enum([
+    'apple-speech',
+    'apple-dictation',
+    'fluid-nemotron',
+    'fluid-parakeet',
+    'attendee',
+  ]),
   startedAt: z.number(),
   endedAt: z.number().nullable(),
   state: z.enum(['active', 'interrupted', 'ended']),
@@ -1852,6 +1950,75 @@ export type LiveMeetingCommand = z.infer<typeof liveMeetingCommandSchema>;
 export type LiveMeetingInsight = z.infer<typeof liveMeetingInsightSchema>;
 
 export class VerityClient {
+  async getAttendeeSettings(): Promise<{ configured: boolean }> {
+    return z
+      .object({ configured: z.boolean() })
+      .parse(await (await this.request('/settings/attendee', { method: 'GET' })).json());
+  }
+  async saveAttendeeSettings(
+    config: { apiKey: string; webhookSecret: string } | null,
+  ): Promise<void> {
+    await this.request('/settings/attendee', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+  }
+  async testAttendee(): Promise<void> {
+    await this.request('/settings/attendee/test', { method: 'POST' });
+  }
+  async startOnlineMeeting(
+    sessionId: string,
+    meetingUrl: string,
+    listenForVerity = true,
+  ): Promise<{ meetingId: string }> {
+    return z.object({ meetingId: z.string() }).parse(
+      await (
+        await this.request(`/sessions/${encodeURIComponent(sessionId)}/live-meetings/online`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ meetingUrl, listenForVerity }),
+        })
+      ).json(),
+    );
+  }
+  async stopOnlineMeeting(sessionId: string, meetingId: string): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/stop`,
+      { method: 'POST' },
+    );
+  }
+  async editOnlineMeetingSpeakers(
+    sessionId: string,
+    meetingId: string,
+    edits: {
+      speakerNames?: Record<string, string>;
+      speakerCorrections?: Array<{ start: number; end: number; speaker: number | null }>;
+      speakerMerges?: Record<string, number>;
+    },
+  ): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/speakers`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(edits),
+      },
+    );
+  }
+  private readonly observedReads = new Map<string, LiveResource>();
+  private readonly readListeners = new Set<(resource: LiveResource) => void>();
+
+  liveBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  observeReads(listener: (resource: LiveResource) => void): () => void {
+    this.readListeners.add(listener);
+    for (const resource of this.observedReads.values()) listener(resource);
+    return () => this.readListeners.delete(listener);
+  }
+
   async getLiveMeetingInsights(
     sessionId: string,
     meetingId: string,
@@ -1897,6 +2064,26 @@ export class VerityClient {
         requests: z.array(z.object({ kind: z.enum(['research', 'opinion']), request: z.string() })),
       })
       .parse(await res.json()).requests;
+  }
+
+  /** Asks the server's model whether these words of one speaker introduce them by name.
+   * The name is only a suggestion: the app asks the operator before using it. */
+  async checkMeetingSpeakerName(
+    sessionId: string,
+    meetingId: string,
+    body: { text: string; hints: string[] },
+  ): Promise<{ name: string | null; quote?: string | undefined }> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/speaker-name`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    return z
+      .object({ name: z.string().nullable(), quote: z.string().optional() })
+      .parse(await res.json());
   }
 
   async putLiveMeeting(meeting: LiveMeeting & { ownerToken: string }): Promise<void> {
@@ -2050,7 +2237,9 @@ export class VerityClient {
       body: JSON.stringify({ accountId, sourceId }),
     });
   }
+  private readonly appVariant: 'production' | 'staging' | undefined;
   private readonly baseUrl: string;
+  private readonly localPreviewBaseUrl: string | null;
   private readonly fetchImpl: typeof fetch;
   private readonly uploadFetchImpl: typeof fetch;
   private readonly allowBackgroundUpload: boolean;
@@ -2058,7 +2247,10 @@ export class VerityClient {
   private readonly onUnauthorized: (() => void) | undefined;
 
   constructor(opts: VerityClientOptions) {
+    this.appVariant = opts.appVariant;
     this.baseUrl = opts.baseUrl.replace(/\/$/, '');
+    this.localPreviewBaseUrl =
+      opts.localPreviewBaseUrl === undefined ? this.baseUrl : opts.localPreviewBaseUrl;
     this.fetchImpl = opts.fetch ?? fetch;
     this.uploadFetchImpl = opts.uploadFetch ?? this.fetchImpl;
     this.allowBackgroundUpload = opts.allowBackgroundUpload ?? true;
@@ -2313,6 +2505,15 @@ export class VerityClient {
     return z.array(sessionSummarySchema).parse(await res.json());
   }
 
+  async reorderSessions(projectId: string | null, ids: string[]): Promise<string[]> {
+    const res = await this.request('/sessions/order', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId, ids }),
+    });
+    return z.object({ ids: z.array(z.string()) }).parse(await res.json()).ids;
+  }
+
   async listSessionLinks(id: string): Promise<
     Array<{
       sessionId: string;
@@ -2467,6 +2668,13 @@ export class VerityClient {
   }
 
   /** GitHub-App installation repositories available to add as Verity projects. */
+  async listProjectGitHubIssues(projectId: string): Promise<ProjectGitHubIssues> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/github/issues`, {
+      method: 'GET',
+    });
+    return projectGitHubIssuesSchema.parse(await res.json());
+  }
+
   async listAvailableRepositories(): Promise<ProjectRecord[]> {
     try {
       const res = await this.request('/github/repositories', { method: 'GET' });
@@ -2483,6 +2691,20 @@ export class VerityClient {
   }
 
   /** Availability of an official server release plus the live update operation. */
+  async getServerUpdateChannel(): Promise<'stable' | 'staging'> {
+    const res = await this.request('/server/update-channel', { method: 'GET' });
+    return z.object({ channel: z.enum(['stable', 'staging']) }).parse(await res.json()).channel;
+  }
+
+  async setServerUpdateChannel(channel: 'stable' | 'staging'): Promise<'stable' | 'staging'> {
+    const res = await this.request('/server/update-channel', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channel }),
+    });
+    return z.object({ channel: z.enum(['stable', 'staging']) }).parse(await res.json()).channel;
+  }
+
   async getServerUpdates(): Promise<ServerUpdateStatus> {
     const res = await this.request('/server/updates', { method: 'GET' });
     const body: unknown = await res.json();
@@ -2616,6 +2838,70 @@ export class VerityClient {
     await this.request('/google-drive/disconnect', { method: 'POST' });
   }
 
+  async getConnectionUsage(): Promise<
+    Record<
+      'github' | 'claude' | 'codex' | 'opencode' | 'google' | 'matrix' | 'doppler' | 'mcp',
+      number
+    >
+  > {
+    const response = await this.request('/connections/usage', { method: 'GET' });
+    return z
+      .object({
+        github: z.number().int().nonnegative(),
+        claude: z.number().int().nonnegative(),
+        codex: z.number().int().nonnegative(),
+        opencode: z.number().int().nonnegative(),
+        google: z.number().int().nonnegative(),
+        matrix: z.number().int().nonnegative(),
+        doppler: z.number().int().nonnegative(),
+        mcp: z.number().int().nonnegative(),
+      })
+      .parse(await response.json());
+  }
+
+  async getGoogleConnection() {
+    const res = await this.request('/google/connection', { method: 'GET' });
+    return z
+      .object({
+        connected: z.boolean(),
+        accountEmail: z.string().nullable(),
+        scopes: z.array(z.string()),
+        projects: z.array(z.object({ id: z.string(), name: z.string() })),
+      })
+      .parse(await res.json());
+  }
+
+  async getProjectGoogleConnection(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<GmailSessionConnection & { legacySessionCount: number }> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/google/${service}`, {
+      method: 'GET',
+    });
+    return gmailSessionConnectionSchema
+      .extend({ legacySessionCount: z.number().int().nonnegative() })
+      .parse(await res.json());
+  }
+
+  async enableProjectGoogleConnection(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<GmailSessionConnection> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/google/${service}`, {
+      method: 'PUT',
+    });
+    return gmailSessionConnectionSchema.parse(await res.json());
+  }
+
+  async disableProjectGoogleConnection(
+    projectId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+  ): Promise<void> {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/google/${service}`, {
+      method: 'DELETE',
+    });
+  }
+
   async getSessionGmailConnection(sessionId: string): Promise<GmailSessionConnection> {
     const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, {
       method: 'GET',
@@ -2715,13 +3001,14 @@ export class VerityClient {
   async connectProjectGoogleDriveFolder(
     projectId: string,
     fileId: string,
+    accessMode: 'read-only' | 'read-write' = 'read-only',
   ): Promise<{ id: string; name: string }> {
     const res = await this.request(
       `/projects/${encodeURIComponent(projectId)}/google-drive/folder`,
       {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fileId }),
+        body: JSON.stringify({ fileId, accessMode }),
       },
     );
     return z
@@ -2874,7 +3161,28 @@ export class VerityClient {
    *  launch before the operator has unlocked/created the master password. */
   async fetchOnboardingStatus(): Promise<OnboardingStatus> {
     const res = await this.request('/onboarding/status', { method: 'GET' });
-    return onboardingStatusSchema.parse(await res.json());
+    const status = onboardingStatusSchema.parse(await res.json());
+    // Older servers omit OpenCode from onboarding status. Preserve an already
+    // usable OpenCode-only installation when opening it with a newer app.
+    if (
+      status.opencodeConfigured === undefined &&
+      status.masterPasswordSet &&
+      !status.sealed &&
+      !status.claudeConfigured &&
+      !status.codexConfigured
+    ) {
+      try {
+        const settings = await this.getVeritySettings();
+        status.opencodeConfigured = Boolean(
+          settings?.opencodeApiKeyConfigured &&
+          settings.opencodeBaseUrl?.trim() &&
+          selectedOpenCodeModels(settings).length > 0,
+        );
+      } catch {
+        // A redacted or unauthorized status must continue through device unlock.
+      }
+    }
+    return status;
   }
 
   /** Challenge the stable server identity through the already pinned transport. */
@@ -3179,60 +3487,6 @@ export class VerityClient {
       .bindings;
   }
 
-  async startDevServer(devServerId: string): Promise<ProjectRuntimeStarted> {
-    const res = await this.request(`/dev-servers/${encodeURIComponent(devServerId)}/runtime`, {
-      method: 'POST',
-    });
-    return projectRuntimeResponseSchema.parse(await res.json()).runtime;
-  }
-
-  async getDevServerStatus(devServerId: string): Promise<ProjectRuntimeStarted> {
-    const res = await this.request(`/dev-servers/${encodeURIComponent(devServerId)}/runtime`, {
-      method: 'GET',
-    });
-    return projectRuntimeResponseSchema.parse(await res.json()).runtime;
-  }
-
-  async stopDevServer(devServerId: string): Promise<ProjectRuntimeStarted> {
-    const res = await this.request(`/dev-servers/${encodeURIComponent(devServerId)}/runtime/stop`, {
-      method: 'POST',
-    });
-    return projectRuntimeResponseSchema.parse(await res.json()).runtime;
-  }
-
-  /** Point the dev server at a session's worktree (preview before merge), or
-   *  back at the main checkout (`sessionId: null`). A running server is
-   *  restarted in the new checkout; the response then carries its runtime. */
-  async setDevServerPreviewSession(
-    devServerId: string,
-    sessionId: string | null,
-  ): Promise<DevServerPreviewResult> {
-    const res = await this.request(
-      `/dev-servers/${encodeURIComponent(devServerId)}/preview-session`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sessionId }),
-      },
-    );
-    return devServerPreviewResponseSchema.parse(await res.json());
-  }
-
-  async getDevServerLogs(devServerId: string): Promise<ProjectRuntimeLogs> {
-    const res = await this.request(`/dev-servers/${encodeURIComponent(devServerId)}/runtime/logs`, {
-      method: 'GET',
-    });
-    return projectRuntimeLogsResponseSchema.parse(await res.json()).logs;
-  }
-
-  async getDevServerHealth(devServerId: string): Promise<ProjectRuntimeHealth> {
-    const res = await this.request(
-      `/dev-servers/${encodeURIComponent(devServerId)}/runtime/health`,
-      { method: 'GET' },
-    );
-    return projectRuntimeHealthResponseSchema.parse(await res.json()).health;
-  }
-
   async createProject(body: CreateProjectRequest): Promise<ProjectRecord> {
     const res = await this.request('/projects', {
       method: 'POST',
@@ -3303,71 +3557,240 @@ export class VerityClient {
     );
   }
 
-  // ─── Agent Loops (ADR 0008) ────────────────────────────────────────────────
+  // ─── Session automations (ADR 0008) ────────────────────────────────────────
 
-  async listAgentLoops(projectId: string): Promise<AgentLoop[]> {
-    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/agent-loops`, {
+  async getSessionAutomation(sessionId: string): Promise<SessionAutomation | null> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/automation`, {
       method: 'GET',
     });
-    return agentLoopsResponseSchema.parse(await res.json()).loops;
+    return optionalSessionAutomationResponseSchema.parse(await res.json()).automation;
   }
 
-  async getAgentLoop(loopId: string): Promise<AgentLoop> {
-    const res = await this.request(`/agent-loops/${encodeURIComponent(loopId)}`, {
-      method: 'GET',
+  /** Create or replace the session's automation. A proposal with a check script
+   * is run once first; a failing check is refused with its reason. */
+  async saveSessionAutomation(
+    sessionId: string,
+    body: SessionAutomationRequest,
+  ): Promise<SessionAutomation> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/automation`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...body,
+        schedule:
+          body.schedule.kind === 'interval'
+            ? body.schedule
+            : {
+                ...body.schedule,
+                timeZone:
+                  body.schedule.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
+              },
+      }),
     });
-    return agentLoopResponseSchema.parse(await res.json()).loop;
+    return sessionAutomationResponseSchema.parse(await res.json()).automation;
   }
 
-  async createAgentLoop(projectId: string, body: AgentLoopCreateRequest): Promise<AgentLoop> {
-    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/agent-loops`, {
+  async setSessionAutomationStatus(
+    sessionId: string,
+    status: SessionAutomation['status'],
+  ): Promise<SessionAutomation> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/automation`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    return sessionAutomationResponseSchema.parse(await res.json()).automation;
+  }
+
+  async deleteSessionAutomation(sessionId: string): Promise<void> {
+    await this.request(`/sessions/${encodeURIComponent(sessionId)}/automation`, {
+      method: 'DELETE',
+    });
+  }
+
+  private resolveLocalPreview(share: LocalPreviewShare): LocalPreviewShare {
+    const url = new URL(share.url);
+    if (
+      (url.hostname === 'localhost' || url.hostname === '127.0.0.1') &&
+      this.localPreviewBaseUrl
+    ) {
+      url.hostname = new URL(this.localPreviewBaseUrl).hostname;
+    }
+    return { ...share, url: url.toString() };
+  }
+
+  async getPreviewCapabilities(): Promise<{
+    publicSharing: 'available' | 'premium-required' | 'unavailable';
+  }> {
+    const res = await this.request('/preview-capabilities', { method: 'GET' });
+    return z
+      .object({ publicSharing: z.enum(['available', 'premium-required', 'unavailable']) })
+      .parse(await res.json());
+  }
+
+  async createSessionLocalPreviewShare(
+    sessionId: string,
+    body: { targetPort?: number; staticPath?: string; ttlSeconds?: number },
+  ): Promise<LocalPreviewShare> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/local-shares`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
-    return agentLoopResponseSchema.parse(await res.json()).loop;
+    return this.resolveLocalPreview(
+      z.object({ share: localPreviewShareSchema }).parse(await res.json()).share,
+    );
   }
 
-  async updateAgentLoop(loopId: string, patch: AgentLoopPatchRequest): Promise<AgentLoop> {
-    const res = await this.request(`/agent-loops/${encodeURIComponent(loopId)}`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(patch),
-    });
-    return agentLoopResponseSchema.parse(await res.json()).loop;
-  }
-
-  async ensureAgentLoopSession(loopId: string): Promise<AgentLoop> {
-    const res = await this.request(`/agent-loops/${encodeURIComponent(loopId)}/session`, {
-      method: 'POST',
-    });
-    return agentLoopResponseSchema.parse(await res.json()).loop;
-  }
-
-  async testAgentLoop(loopId: string): Promise<AgentLoopTestResult> {
-    const res = await this.request(`/agent-loops/${encodeURIComponent(loopId)}/test`, {
-      method: 'POST',
-    });
-    return agentLoopTestResponseSchema.parse(await res.json());
-  }
-
-  async runAgentLoop(loopId: string): Promise<AgentLoopRunResult> {
-    const res = await this.request(`/agent-loops/${encodeURIComponent(loopId)}/run`, {
-      method: 'POST',
-    });
-    return agentLoopRunResponseSchema.parse(await res.json());
-  }
-
-  async deleteAgentLoop(loopId: string, opts: { deleteSession?: boolean } = {}): Promise<void> {
-    const query = opts.deleteSession ? '?deleteSession=true' : '';
-    await this.request(`/agent-loops/${encodeURIComponent(loopId)}${query}`, { method: 'DELETE' });
-  }
-
-  async listDevServers(projectId: string): Promise<DevServer[]> {
-    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/dev-servers`, {
+  async listSessionLocalPreviewShares(sessionId: string): Promise<LocalPreviewShare[]> {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/local-shares`, {
       method: 'GET',
     });
-    return devServersResponseSchema.parse(await res.json()).devServers;
+    return z
+      .object({ shares: z.array(localPreviewShareSchema) })
+      .parse(await res.json())
+      .shares.map((share) => this.resolveLocalPreview(share));
+  }
+
+  async listProjectLocalPreviewShares(projectId: string): Promise<LocalPreviewShare[]> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/local-shares`, {
+      method: 'GET',
+    });
+    return z
+      .object({ shares: z.array(localPreviewShareSchema) })
+      .parse(await res.json())
+      .shares.map((share) => this.resolveLocalPreview(share));
+  }
+
+  private resolveManaged(server: ManagedDevServer): ManagedDevServer {
+    const url = server.instance?.url;
+    if (!server.instance || !url) return server;
+    return {
+      ...server,
+      instance: {
+        ...server.instance,
+        url: this.resolveLocalPreview({ id: server.id, url } as LocalPreviewShare).url,
+      },
+    };
+  }
+
+  async listManagedDevServers(sessionId: string): Promise<ManagedDevServer[] | null> {
+    let res: Response;
+    try {
+      res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers`, {
+        method: 'GET',
+      });
+    } catch (err) {
+      // An older Core has no such route, and one without Docker answers 503; the
+      // sheet then shows detected servers only.
+      if (
+        err instanceof VerityApiError &&
+        ((err.status === 404 && err.message === 'Not Found') || err.status === 503)
+      )
+        return null;
+      throw err;
+    }
+    return z
+      .object({ servers: z.array(managedDevServerSchema) })
+      .parse(await res.json())
+      .servers.map((server) => this.resolveManaged(server));
+  }
+
+  async controlManagedDevServer(
+    sessionId: string,
+    serverId: string,
+    action: 'start' | 'stop' | 'restart',
+    options: { local?: boolean; onlyIfUnshared?: boolean } = {},
+  ): Promise<ManagedDevServer> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers/${encodeURIComponent(serverId)}/${action}`,
+      options.local === undefined && options.onlyIfUnshared === undefined
+        ? { method: 'POST' }
+        : {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(options),
+          },
+    );
+    return this.resolveManaged(
+      z.object({ server: managedDevServerSchema }).parse(await res.json()).server,
+    );
+  }
+
+  /** The Local switch: on starts and publishes, off ends local access and stops
+   *  the server when no public link is left. */
+  async setManagedDevServerLocal(
+    sessionId: string,
+    serverId: string,
+    on: boolean,
+  ): Promise<ManagedDevServer> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers/${encodeURIComponent(serverId)}/local`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ on }),
+      },
+    );
+    return this.resolveManaged(
+      z.object({ server: managedDevServerSchema }).parse(await res.json()).server,
+    );
+  }
+
+  /** Approves exactly the command and subdirectory the operator was shown. */
+  async approveManagedDevServer(
+    sessionId: string,
+    serverId: string,
+    seen: { command: string; workdir: string },
+    options: { local?: boolean } = {},
+  ): Promise<ManagedDevServer[]> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers/${encodeURIComponent(serverId)}/approve`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(
+          options.local === undefined ? seen : { ...seen, local: options.local },
+        ),
+      },
+    );
+    return z
+      .object({ servers: z.array(managedDevServerSchema) })
+      .parse(await res.json())
+      .servers.map((server) => this.resolveManaged(server));
+  }
+
+  async managedDevServerLogs(sessionId: string, serverId: string): Promise<string> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers/${encodeURIComponent(serverId)}/logs`,
+      { method: 'GET' },
+    );
+    return z.object({ logs: z.string() }).parse(await res.json()).logs;
+  }
+
+  async deleteManagedDevServer(sessionId: string, serverId: string): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers/${encodeURIComponent(serverId)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  async stopManagedDevServerInstance(
+    sessionId: string,
+    instanceId: string,
+  ): Promise<ManagedDevServer[]> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/managed-dev-server-instances/${encodeURIComponent(instanceId)}/stop`,
+      { method: 'POST' },
+    );
+    return z
+      .object({ servers: z.array(managedDevServerSchema) })
+      .parse(await res.json())
+      .servers.map((server) => this.resolveManaged(server));
+  }
+
+  async stopLocalPreviewShare(shareId: string): Promise<void> {
+    await this.request(`/local-shares/${encodeURIComponent(shareId)}`, { method: 'DELETE' });
   }
 
   async listPublicPreviewShares(projectId: string): Promise<PublicPreviewShare[]> {
@@ -3375,21 +3798,6 @@ export class VerityClient {
       method: 'GET',
     });
     return publicPreviewSharesResponseSchema.parse(await res.json()).shares;
-  }
-
-  async createPublicPreviewShare(
-    devServerId: string,
-    body: PublicPreviewShareCreateRequest,
-  ): Promise<PublicPreviewShare> {
-    const res = await this.request(
-      `/dev-servers/${encodeURIComponent(devServerId)}/public-shares`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      },
-    );
-    return publicPreviewShareResponseSchema.parse(await res.json()).share;
   }
 
   async stopPublicPreviewShare(shareId: string): Promise<void> {
@@ -3468,7 +3876,7 @@ export class VerityClient {
 
   async createSessionPortPreviewShare(
     sessionId: string,
-    body: PublicPreviewShareCreateRequest & { targetPort: number },
+    body: PublicPreviewShareCreateRequest & { targetPort: number; managedInstanceId?: string },
   ): Promise<PublicPreviewShare> {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/public-port-shares`,
@@ -3479,88 +3887,6 @@ export class VerityClient {
       },
     );
     return publicPreviewShareResponseSchema.parse(await res.json()).share;
-  }
-
-  async detectDevServers(projectId: string): Promise<DevServerSuggestion[]> {
-    return (await this.getDevServerDetection(projectId)).suggestions;
-  }
-
-  async getDevServerDetection(projectId: string): Promise<DevServerDetection> {
-    const res = await this.request(
-      `/projects/${encodeURIComponent(projectId)}/dev-server-suggestions`,
-      { method: 'GET' },
-    );
-    const parsed = devServerSuggestionsResponseSchema.parse(await res.json());
-    return {
-      fingerprint: parsed.fingerprint ?? null,
-      detectedAt: parsed.detectedAt ?? null,
-      reviewedFingerprint: parsed.reviewedFingerprint ?? null,
-      reviewedAt: parsed.reviewedAt ?? null,
-      suggestions: parsed.suggestions,
-    };
-  }
-
-  async reviewDevServerDetection(
-    projectId: string,
-    fingerprint: string,
-  ): Promise<DevServerDetectionState> {
-    const res = await this.request(
-      `/projects/${encodeURIComponent(projectId)}/dev-server-suggestions/reviewed`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fingerprint }),
-      },
-    );
-    return z.object({ detection: devServerDetectionStateSchema }).parse(await res.json()).detection;
-  }
-
-  async getDevServer(devServerId: string): Promise<DevServer> {
-    const res = await this.request(`/dev-servers/${encodeURIComponent(devServerId)}`, {
-      method: 'GET',
-    });
-    return devServerResponseSchema.parse(await res.json()).devServer;
-  }
-
-  async createDevServer(projectId: string, body: DevServerCreateRequest = {}): Promise<DevServer> {
-    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/dev-servers`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return devServerResponseSchema.parse(await res.json()).devServer;
-  }
-
-  async setupDetectedDevServers(
-    projectId: string,
-    body: DetectedDevServerSetupRequest,
-  ): Promise<ProjectRecord> {
-    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/setup-dev-servers`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return z.object({ project: projectRecordSchema }).parse(await res.json()).project;
-  }
-
-  async updateDevServer(devServerId: string, patch: DevServerPatchRequest): Promise<DevServer> {
-    const res = await this.request(`/dev-servers/${encodeURIComponent(devServerId)}`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(patch),
-    });
-    return devServerResponseSchema.parse(await res.json()).devServer;
-  }
-
-  async deleteDevServer(devServerId: string): Promise<void> {
-    await this.request(`/dev-servers/${encodeURIComponent(devServerId)}`, { method: 'DELETE' });
-  }
-
-  async listAgentLoopRuns(loopId: string): Promise<AgentLoopRun[]> {
-    const res = await this.request(`/agent-loops/${encodeURIComponent(loopId)}/runs`, {
-      method: 'GET',
-    });
-    return agentLoopRunsResponseSchema.parse(await res.json()).runs;
   }
 
   async repairProject(id: string, opts: ProjectProvisionOptions = {}): Promise<ProjectRecord> {
@@ -3576,11 +3902,14 @@ export class VerityClient {
     return z.object({ project: projectRecordSchema }).parse(await res.json()).project;
   }
 
-  async refreshProjectToken(id: string): Promise<ConciergeTokenRefresh> {
-    const res = await this.request(`/concierge/projects/${encodeURIComponent(id)}/refresh-token`, {
-      method: 'POST',
-    });
-    return conciergeTokenRefreshResponseSchema.parse(await res.json());
+  async refreshProjectToken(id: string): Promise<VerityControlTokenRefresh> {
+    const res = await this.request(
+      `/verity-control/projects/${encodeURIComponent(id)}/refresh-token`,
+      {
+        method: 'POST',
+      },
+    );
+    return verityControlTokenRefreshResponseSchema.parse(await res.json());
   }
 
   async recreateProjectContainer(
@@ -3598,7 +3927,7 @@ export class VerityClient {
     if (opts.confirmWarnings === true) body.confirmWarnings = true;
     if (opts.forceRebuild === true) body.forceRebuild = true;
     const res = await this.request(
-      `/concierge/projects/${encodeURIComponent(id)}/recreate-container`,
+      `/verity-control/projects/${encodeURIComponent(id)}/recreate-container`,
       {
         method: 'POST',
         ...(Object.keys(body).length > 0
@@ -3612,20 +3941,36 @@ export class VerityClient {
     return z.object({ project: projectRecordSchema }).parse(await res.json()).project;
   }
 
-  async openConciergeSession(): Promise<SessionCreated> {
-    const res = await this.request('/concierge/session', { method: 'POST' });
+  async openVerityControlSession(): Promise<SessionCreated> {
+    const res = await this.request('/verity-control/session', { method: 'POST' });
     return sessionCreatedSchema.parse(await res.json());
   }
 
-  async getSession(id: string): Promise<SessionDetail> {
-    const res = await this.request(`/sessions/${encodeURIComponent(id)}`, { method: 'GET' });
-    return sessionDetailSchema.parse(await res.json());
+  async getSession(
+    id: string,
+    timingContext?: { trace: SwitchTiming | undefined },
+  ): Promise<SessionDetail> {
+    const timing = timingContext ? timingContext.trace : sessionSwitchTiming(id);
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(id)}`,
+      { method: 'GET' },
+      this.fetchImpl,
+      { trace: timing },
+    );
+    markSessionSwitch(timing, 'session-body-read-start');
+    const body = await res.text();
+    markSessionSwitch(timing, 'session-body-read-end');
+    const json: unknown = JSON.parse(body);
+    markSessionSwitch(timing, 'session-json-parse-end');
+    const detail = sessionDetailSchema.parse(json);
+    markSessionSwitch(timing, 'session-schema-end');
+    return detail;
   }
 
-  async createStreamTicket(id: string): Promise<StreamTicket> {
-    const res = await this.request(`/sessions/${encodeURIComponent(id)}/stream-ticket`, {
-      method: 'POST',
-    });
+  /** A one-use ticket for the app-wide live connection (`WS /live`), carried as
+   * a WebSocket subprotocol so it never appears in a URL. */
+  async createLiveTicket(): Promise<StreamTicket> {
+    const res = await this.request('/live/ticket', { method: 'POST' });
     return streamTicketSchema.parse(await res.json());
   }
 
@@ -3644,8 +3989,9 @@ export class VerityClient {
    * from its tail and to load older turns on scroll-up. */
   async getHistory(
     id: string,
-    opts: { beforeSeq?: number; limit?: number } = {},
+    opts: { beforeSeq?: number; limit?: number; timing?: SwitchTiming | undefined } = {},
   ): Promise<SessionHistoryPage> {
+    const timing = Object.hasOwn(opts, 'timing') ? opts.timing : sessionSwitchTiming(id);
     const params = new URLSearchParams();
     if (opts.beforeSeq !== undefined) params.set('beforeSeq', String(opts.beforeSeq));
     if (opts.limit !== undefined) params.set('limit', String(opts.limit));
@@ -3653,8 +3999,17 @@ export class VerityClient {
     const res = await this.request(
       `/sessions/${encodeURIComponent(id)}/events${qs ? `?${qs}` : ''}`,
       { method: 'GET' },
+      this.fetchImpl,
+      { trace: timing },
     );
-    return sessionHistorySchema.parse(await res.json());
+    markSessionSwitch(timing, 'events-body-read-start');
+    const body = await res.text();
+    markSessionSwitch(timing, 'events-body-read-end');
+    const json: unknown = JSON.parse(body);
+    markSessionSwitch(timing, 'events-json-parse-end');
+    const page = sessionHistorySchema.parse(json);
+    markSessionSwitch(timing, 'events-schema-end', page.events.length);
+    return page;
   }
 
   /** Fire-and-forget mobile scroll diagnostics. The app catches/reporting failures;
@@ -3831,6 +4186,24 @@ export class VerityClient {
     return sessionMovedSchema.parse(await response.json());
   }
 
+  /** End planning mode: `implement` starts the implementation of the latest plan as
+   * a new turn, `discard` leaves it unimplemented. 409 when the session is no
+   * longer planning (another device or the agent's approved request decided). */
+  async decidePlanning(
+    id: string,
+    action: 'implement' | 'discard',
+    planningRevision?: number,
+  ): Promise<{ planning: SessionPlanning }> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/planning`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action, planningRevision }),
+    });
+    return z
+      .object({ planning: z.enum(['active', 'implemented', 'discarded']) })
+      .parse(await res.json());
+  }
+
   async renameSession(id: string, name: string | null): Promise<SessionRenamed> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}`, {
       method: 'PATCH',
@@ -3838,6 +4211,17 @@ export class VerityClient {
       body: JSON.stringify({ name }),
     });
     return sessionRenamedSchema.parse(await res.json());
+  }
+
+  /** Mark or unmark a session as a favorite; the mark is stored server-side so it
+   * syncs across devices. */
+  async setSessionFavorite(id: string, favorite: boolean): Promise<SessionFavorite> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ favorite }),
+    });
+    return sessionFavoriteSchema.parse(await res.json());
   }
 
   /** Switch the engine/model a session uses (the operator's pick is persisted, not a
@@ -3875,12 +4259,17 @@ export class VerityClient {
    * `eventCount` observed when the operator opened it. Persisted server-side and
    * monotonic, so clearing the dot on one device clears it on every device. Returns a
    * lightweight ack with the resolved mark; the synced value itself arrives on the
-   * next `GET /sessions`. 404 (unknown session) throws a {@link VerityApiError}. */
-  async setSessionSeen(id: string, eventCount: number): Promise<SessionSeen> {
+   * next `GET /sessions`. 404 (unknown session) and 409 (incompatible or stale count)
+   * throw a {@link VerityApiError}. */
+  async setSessionSeen(
+    id: string,
+    eventCount: number,
+    counterVersion?: string,
+  ): Promise<SessionSeen> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/seen`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ eventCount }),
+      body: JSON.stringify({ eventCount, counterVersion }),
     });
     return sessionSeenSchema.parse(await res.json());
   }
@@ -3899,8 +4288,10 @@ export class VerityClient {
 
   /** The routable models for the new-session picker (#143): the Claude ids plus any
    * OpenCode provider-qualified ids the server enumerates, and the spawn default. */
-  async listModels(): Promise<ModelList> {
-    const res = await this.request('/models', { method: 'GET' });
+  async listModels(projectId?: string): Promise<ModelList> {
+    // A project narrows the list to its allowed agents and resolves its default.
+    const query = projectId === undefined ? '' : `?projectId=${encodeURIComponent(projectId)}`;
+    const res = await this.request(`/models${query}`, { method: 'GET' });
     return modelListSchema.parse(await res.json());
   }
 
@@ -3951,6 +4342,41 @@ export class VerityClient {
       `/sessions/${encodeURIComponent(id)}/files/content?path=${encodeURIComponent(path)}${rootQuery}`,
       { method: 'GET' },
     );
+    return sessionFileContentSchema.parse(await res.json());
+  }
+
+  async listSessionFileVersions(id: string, root: SessionFileRoot, path: string) {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(id)}/files/history?root=${root}&path=${encodeURIComponent(path)}`,
+      { method: 'GET' },
+    );
+    return z
+      .object({
+        versions: z.array(z.object({ id: z.string(), createdAt: z.string(), kind: z.string() })),
+      })
+      .parse(await res.json()).versions;
+  }
+
+  async readSessionFileVersion(id: string, root: SessionFileRoot, path: string, version: string) {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(id)}/files/history?root=${root}&path=${encodeURIComponent(path)}&version=${encodeURIComponent(version)}`,
+      { method: 'GET' },
+    );
+    return z.object({ content: z.string() }).parse(await res.json()).content;
+  }
+
+  async saveSessionFileContent(
+    id: string,
+    root: SessionFileRoot,
+    path: string,
+    content: string,
+    expectedVersion: string | null,
+  ): Promise<SessionFileContent> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/files/content`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ root, path, content, expectedVersion }),
+    });
     return sessionFileContentSchema.parse(await res.json());
   }
 
@@ -4024,6 +4450,25 @@ export class VerityClient {
     return (await res.json()) as { path: string; root: SessionFileRoot };
   }
 
+  /** Give a file a new name in the same folder of the same root. The server
+   * refuses with 409 rather than replace a file that already has that name; an
+   * older server answers a worktree rename with 400. */
+  async renameSessionFile(id: string, root: SessionFileRoot, path: string, newName: string) {
+    const slash = path.lastIndexOf('/');
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/files/move`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        root,
+        path,
+        toRoot: root,
+        toPath: slash === -1 ? '' : path.slice(0, slash),
+        toFileName: newName,
+      }),
+    });
+    return (await res.json()) as { path: string; root: SessionFileRoot };
+  }
+
   /** Switch the session worktree's branch, keeping the chat (#91). Returns the
    * branch now checked out. Non-2xx (busy/dirty/in-use/name-exists → 409, no
    * such branch → 404, invalid name → 400, unconfigured → 503) throws a
@@ -4075,7 +4520,14 @@ export class VerityClient {
     id: string,
     toolUseId: string,
     decision: PermissionDecision,
+    timingContext?: { trace: SwitchTiming | undefined },
   ): Promise<PermissionDecided> {
+    const timing = timingContext
+      ? timingContext.trace
+      : decision.behavior === 'allow'
+        ? sessionSwitchTiming(id, 'permission')
+        : undefined;
+    markSessionSwitch(timing, 'allow-request-start');
     const res = await this.request(
       `/sessions/${encodeURIComponent(id)}/permissions/${encodeURIComponent(toolUseId)}`,
       {
@@ -4084,26 +4536,112 @@ export class VerityClient {
         body: JSON.stringify(decision),
       },
     );
-    return permissionDecidedSchema.parse(await res.json());
+    markSessionSwitch(timing, 'allow-fetch-return', res.status);
+    const result = permissionDecidedSchema.parse(await res.json());
+    markSessionSwitch(timing, 'allow-response-processed');
+    return result;
+  }
+
+  async listTasks(): Promise<Task[]> {
+    const res = await this.request('/tasks', { method: 'GET' });
+    return z.object({ tasks: z.array(taskSchema) }).parse(await res.json()).tasks;
+  }
+
+  async saveTask(id: string, body: TaskCapture): Promise<Task> {
+    const res = await this.request(`/tasks/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return z.object({ task: taskSchema }).parse(await res.json()).task;
+  }
+
+  async updateTask(id: string, body: TaskPatch): Promise<Task> {
+    const res = await this.request(`/tasks/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return z.object({ task: taskSchema }).parse(await res.json()).task;
+  }
+
+  async deleteTask(id: string): Promise<void> {
+    await this.request(`/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  async readTaskAttachment(id: string, hash: string): Promise<ArrayBuffer> {
+    const res = await this.request(
+      `/tasks/${encodeURIComponent(id)}/attachments/${encodeURIComponent(hash)}`,
+      { method: 'GET' },
+    );
+    return res.arrayBuffer();
   }
 
   private async request(
     path: string,
     init: RequestInit,
     fetchImpl: typeof fetch = this.fetchImpl,
+    timingOverride?: { trace: SwitchTiming | undefined },
   ): Promise<Response> {
     // Attach the per-device bearer token (audit C1) when we have one. Callers
     // pass plain-object headers, so a record spread is safe; an explicit
     // Authorization in `init` (none today) would win by being spread last.
+    if (this.appVariant !== undefined)
+      init = {
+        ...init,
+        headers: {
+          ...(init.headers as Record<string, string>),
+          'x-verity-app-variant': this.appVariant,
+        },
+      };
     const token = this.getToken();
     const sentToken = token != null && token.length > 0;
     if (sentToken) {
       init = {
         ...init,
-        headers: { authorization: `Bearer ${token}`, ...(init.headers as Record<string, string>) },
+        headers: {
+          authorization: `Bearer ${token}`,
+          ...(init.headers as Record<string, string>),
+        },
       };
     }
-    const res = await fetchImpl(`${this.baseUrl}${path}`, init);
+    if ((init.method ?? 'GET') === 'GET' && liveResourceInterval(path) !== undefined) {
+      const url = new URL(path, 'http://verity.invalid');
+      url.searchParams.delete('force');
+      url.searchParams.delete('after');
+      const resource: LiveResource = { path: url.pathname + url.search };
+      const ownerToken = (init.headers as Record<string, string> | undefined)?.[
+        'x-meeting-owner-token'
+      ];
+      if (ownerToken) resource.ownerToken = ownerToken;
+      this.observedReads.set(url.pathname, resource);
+      if (this.observedReads.size > 64)
+        this.observedReads.delete(this.observedReads.keys().next().value!);
+      for (const listener of this.readListeners) listener(resource);
+    }
+    const timing = timingOverride?.trace;
+    const timingKind = path.includes('/events') ? 'events' : 'session';
+    markSessionSwitch(timing, `${timingKind}-request-start`);
+    const diagnosticRequestId = beginSwitchTransportRequest(timing, timingKind);
+    if (diagnosticRequestId) {
+      init = {
+        ...init,
+        headers: {
+          ...(init.headers as Record<string, string>),
+          'x-verity-switch-request': diagnosticRequestId,
+          'x-verity-switch-kind': timingKind,
+        },
+      };
+    }
+    let res: Response;
+    try {
+      res = await fetchImpl(`${this.baseUrl}${path}`, init);
+      markSwitchTransportRequest(diagnosticRequestId, 'fetch-return', res.status);
+    } catch (error) {
+      markSwitchTransportRequest(diagnosticRequestId, 'fetch-error');
+      throw error;
+    }
+    markSessionSwitch(timing, `${timingKind}-fetch-return`, res.status);
     if (!res.ok) {
       // A 401 on a GATED route AFTER we sent a token means that token is
       // expired/revoked → tell the app to drop it and re-authenticate. Only fire

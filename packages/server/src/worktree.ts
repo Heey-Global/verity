@@ -316,6 +316,7 @@ function rebuildWorktreeAdminDir(repoDir: string, worktreePath: string): boolean
   if (!existsSync(gitFile) || lstatSync(gitFile).isDirectory()) return false;
   const adminName = adminNameFor(worktreePath, gitFile);
   if (adminName === undefined) return false;
+  excludeWorktreeSidecar(repoDir);
   const worktreesDir = join(repoDir, '.git', 'worktrees');
   const adminDir = join(worktreesDir, adminName);
   // Belt and braces around {@link isAdminName}: whatever the name looked like,
@@ -324,6 +325,11 @@ function rebuildWorktreeAdminDir(repoDir: string, worktreePath: string): boolean
   const headFile = join(adminDir, 'HEAD');
 
   if (existsSync(headFile)) {
+    // A foreign mount namespace cannot see this checkout. A lock protects the
+    // index and operation state from its automatic or explicit pruning.
+    if (!existsSync(join(adminDir, 'locked'))) {
+      writeFileSync(join(adminDir, 'locked'), 'Verity session: managed by server\n');
+    }
     // Healthy: keep the sidecar current so a later prune stays recoverable.
     refreshWorktreeSidecar(repoDir, worktreePath, adminName, headFile);
     return false;
@@ -365,7 +371,30 @@ function rebuildWorktreeAdminDir(repoDir: string, worktreePath: string): boolean
     else for (const file of [...written, join(adminDir, 'index')]) rmSync(file, { force: true });
     return false;
   }
+  writeFileSync(join(adminDir, 'locked'), 'Verity session: managed by server\n');
   return true;
+}
+
+function excludeWorktreeSidecar(repoDir: string): void {
+  // Session bookkeeping must not become pending project work in repositories
+  // that have never added Verity-specific rules to their tracked .gitignore.
+  const infoDir = join(repoDir, '.git', 'info');
+  const file = join(infoDir, 'exclude');
+  try {
+    const existing = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    const lines = new Set(existing.split(/\r?\n/u));
+    const missing = [`/${WORKTREE_SIDECAR}`, `/${WORKTREE_SIDECAR}.tmp`].filter(
+      (pattern) => !lines.has(pattern),
+    );
+    if (missing.length === 0) return;
+    mkdirSync(infoDir, { recursive: true });
+    writeFileSync(
+      file,
+      `${existing}${existing.length > 0 && !existing.endsWith('\n') ? '\n' : ''}${missing.join('\n')}\n`,
+    );
+  } catch {
+    // An unwritable local exclude must not prevent worktree recovery.
+  }
 }
 
 /**
@@ -1092,6 +1121,11 @@ export function createGitWorktreeProvisioner(opts: GitWorktreeOptions): Worktree
       }
       await git(['-C', opts.repoDir, 'worktree', 'add', worktreePath, '-b', branch, base]);
       relativizeWorktreeGitdir(opts.repoDir, worktreePath, worktreeName);
+      // Protect the registration before dependency preparation can take time.
+      const adminDir = join(opts.repoDir, '.git', 'worktrees', worktreeName);
+      if (existsSync(adminDir)) {
+        writeFileSync(join(adminDir, 'locked'), 'Verity session: managed by server\n');
+      }
       // Give the worktree its own first-party workspace symlinks so cross-package
       // resolution stays isolated to this checkout instead of leaking to the
       // source repo's `packages/*` (whatever branch it's on).

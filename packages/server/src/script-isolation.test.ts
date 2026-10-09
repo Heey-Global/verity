@@ -1,13 +1,27 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  realpath,
+  stat,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  materializeTrustedCliEntryScript,
   probeScriptSandbox as probeFromBroker,
   runAgentSpawnBroker,
+  trustedCliLaunchSpec,
+  validateTrustedCliExecutable,
 } from '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
 import {
   handleSupervisorRequest,
@@ -105,6 +119,37 @@ describe('script sandbox probe', () => {
       await expect(probeFromSupervisor(helper)).resolves.toEqual({ available: true });
     },
   );
+
+  it('probes with the trusted CLI privilege drop and preserves failed verdicts', async () => {
+    const helper = await unavailableHelper();
+    const setprivPath = join(root, 'setpriv');
+    const captured = join(root, 'probe-argv.json');
+    await writeFile(
+      setprivPath,
+      `#!${process.execPath}
+import('node:fs').then(({ writeFileSync }) => {
+  writeFileSync(${JSON.stringify(captured)}, JSON.stringify(process.argv.slice(2)));
+  process.stderr.write('probe remains unavailable\\n');
+  process.exitCode = 126;
+});
+`,
+      { mode: 0o755 },
+    );
+    const options = { agentUid: 1000, agentGid: 1000, setprivPath };
+    // A root-only probe silently disables scripts that would run as the agent.
+    await expect(probeFromBroker(helper, 1000, options)).resolves.toEqual({
+      available: false,
+      reason: 'probe remains unavailable',
+    });
+    const { readFile } = await import('node:fs/promises');
+    const actual = JSON.parse(await readFile(captured, 'utf8')) as string[];
+    expect(actual).toEqual(
+      trustedCliLaunchSpec(
+        { kind: 'trusted-cli', command: helper, args: ['--probe'], cwd: '/', secrets: [] },
+        options,
+      ).args,
+    );
+  });
 
   it('reports an unavailable isolation helper with its reason', async () => {
     const helper = await unavailableHelper();
@@ -229,9 +274,13 @@ describe('Runner start without script isolation', () => {
 });
 
 describe('spawn broker entry scripts', () => {
-  async function scriptFixture() {
-    const worktree = join(root, 'worktree');
-    await mkdir(worktree);
+  // Session worktrees are nested in the broker's configured root, as
+  // `/work/.verity-sessions/<agent>` is in a project Sandbox. A flat fixture
+  // whose cwd IS the root passes whether the broker measures the project path
+  // from the session or from the root, and so hides the wrong one.
+  async function scriptFixture(loading: 'isolated' | 'dynamic' = 'isolated') {
+    const worktree = join(root, '.verity-sessions', 'agent-1');
+    await mkdir(worktree, { recursive: true });
     // Readable to the script only if the helper is NOT confining it to its snapshot.
     await writeFile(join(worktree, 'mutable-dependency'), 'unconfined read\n');
     const script = join(worktree, 'deploy.sh');
@@ -251,9 +300,9 @@ describe('spawn broker entry scripts', () => {
         command: ['/bin/sh', script],
         entryScript: {
           path: script,
-          projectPath: 'worktree/deploy.sh',
+          projectPath: 'deploy.sh',
           sha256: createHash('sha256').update(contents).digest('hex'),
-          loading: 'isolated' as const,
+          loading,
         },
       },
     };
@@ -356,6 +405,163 @@ describe('spawn broker entry scripts', () => {
     },
   );
 
+  it('measures an entry script from its session worktree, not the configured root', async () => {
+    // Reports isolation and runs nothing: the broker's own path handling is under test.
+    const helper = join(root, 'verity-script-sandbox-noop');
+    await writeFile(helper, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const spawned: string[][] = [];
+    const broker = await startBroker(helper, spawned);
+    // The client blanks the secrets it sent once a request settles.
+    const secrets = () => [
+      { secretAlias: 'DEPLOY_TOKEN', env: 'DEPLOY_TOKEN', secret: 'canary-value' },
+    ];
+    try {
+      const { request, worktree } = await scriptFixture('dynamic');
+      // Root-relative is what the agent cannot know: it names the session directory.
+      const rootRelativeRequest = {
+        ...request,
+        secrets: secrets(),
+        entryScript: { ...request.entryScript, projectPath: '.verity-sessions/agent-1/deploy.sh' },
+      };
+      const rootRelative = await runTrustedCliViaBroker(rootRelativeRequest, {
+        runtimeDir: root,
+        brokerSocket: broker.socketPath,
+      }).then(
+        () => undefined,
+        (error: Error & { trustedCliFailure?: unknown }) => error,
+      );
+      expect(rootRelative?.trustedCliFailure).toMatchObject({
+        phase: 'validation',
+        code: 'validation_entry_project_path_mismatch',
+      });
+
+      const result = await runTrustedCliViaBroker(
+        { ...request, secrets: secrets() },
+        { runtimeDir: root, brokerSocket: broker.socketPath },
+      );
+      expect(result).toMatchObject({ exitCode: 0 });
+      // A dynamic script reads live files of its own session, never a sibling's.
+      const argv = spawned[0]!;
+      expect(argv[argv.indexOf('--dynamic-root') + 1]).toBe(await realpath(worktree));
+    } finally {
+      await broker.close();
+    }
+  });
+
+  it('accepts a dynamic Node entry script with file secrets and check arguments', async (context) => {
+    let node;
+    for (const candidate of ['/usr/local/bin/node', '/usr/bin/node', process.execPath]) {
+      if (
+        await validateTrustedCliExecutable(candidate).then(
+          () => true,
+          () => false,
+        )
+      ) {
+        node = candidate;
+        break;
+      }
+    }
+    if (node === undefined) {
+      context.skip('No immutable system Node executable is installed');
+      return;
+    }
+    const helper = join(root, 'verity-script-sandbox-noop');
+    await writeFile(helper, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const spawned: string[][] = [];
+    const broker = await startBroker(helper, spawned);
+    try {
+      const { request, worktree } = await scriptFixture('dynamic');
+      await chmod(request.entryScript.path, 0o600);
+      const result = await runTrustedCliViaBroker(
+        {
+          ...request,
+          command: [node, request.entryScript.path, 'check', 'production'],
+          secrets: [
+            ...request.secrets,
+            {
+              secretAlias: 'ASC_KEY_P8',
+              env: 'EXPO_ASC_API_KEY_PATH',
+              secret: Buffer.from('file-secret-canary').toString('base64'),
+              injection: 'file',
+              encoding: 'base64',
+            },
+          ],
+        },
+        { runtimeDir: root, brokerSocket: broker.socketPath },
+      );
+      expect(result).toMatchObject({ exitCode: 0 });
+      const argv = spawned[0]!;
+      expect(argv[argv.indexOf('--dynamic-root') + 1]).toBe(await realpath(worktree));
+      expect(argv.slice(-2)).toEqual(['check', 'production']);
+      await expect(readdir(join(root, 'secrets'))).resolves.toEqual([]);
+      await expect(readdir(join(root, 'entry-scripts'))).resolves.toEqual([]);
+    } finally {
+      await broker.close();
+    }
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    'classifies an unreadable approved script before staging secrets',
+    async () => {
+      const helper = join(root, 'verity-script-sandbox-noop');
+      await writeFile(helper, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      const spawned: string[][] = [];
+      const broker = await startBroker(helper, spawned);
+      try {
+        const { request } = await scriptFixture('dynamic');
+        await chmod(request.entryScript.path, 0o000);
+        const refused = await runTrustedCliViaBroker(request, {
+          runtimeDir: root,
+          brokerSocket: broker.socketPath,
+        }).catch((error: Error & { trustedCliFailure?: unknown }) => error);
+        expect(
+          (refused as Error & { trustedCliFailure?: unknown }).trustedCliFailure,
+        ).toMatchObject({
+          phase: 'validation',
+          code: 'validation_path_permissions',
+        });
+        expect(spawned).toEqual([]);
+        await expect(readdir(join(root, 'secrets')).catch(() => [])).resolves.toEqual([]);
+        await expect(readdir(join(root, 'entry-scripts')).catch(() => [])).resolves.toEqual([]);
+      } finally {
+        await broker.close();
+      }
+    },
+  );
+
+  it.each(['missing', 'symlink-loop'] as const)(
+    'classifies a %s executable without exposing filesystem exception text',
+    async (failure) => {
+      const helper = join(root, 'verity-script-sandbox-noop');
+      await writeFile(helper, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      const spawned: string[][] = [];
+      const broker = await startBroker(helper, spawned);
+      try {
+        const { request } = await scriptFixture('dynamic');
+        const executable = join(root, 'private-executable-path');
+        if (failure === 'symlink-loop') await symlink(executable, executable);
+        const refused = await runTrustedCliViaBroker(
+          { ...request, command: [executable, request.entryScript.path, 'check', 'production'] },
+          { runtimeDir: root, brokerSocket: broker.socketPath },
+        ).catch((error: Error & { trustedCliFailure?: unknown }) => error);
+        expect(
+          (refused as Error & { trustedCliFailure?: unknown }).trustedCliFailure,
+        ).toMatchObject({
+          phase: 'validation',
+          code: failure === 'missing' ? 'validation_path_missing' : 'validation_path_symlink_loop',
+        });
+        expect(
+          JSON.stringify((refused as Error & { trustedCliFailure?: unknown }).trustedCliFailure),
+        ).not.toContain(executable);
+        expect(spawned).toEqual([]);
+        await expect(readdir(join(root, 'secrets')).catch(() => [])).resolves.toEqual([]);
+        await expect(readdir(join(root, 'entry-scripts')).catch(() => [])).resolves.toEqual([]);
+      } finally {
+        await broker.close();
+      }
+    },
+  );
+
   it('relays the refusal to the Server as a named, non-started dispatch failure', async () => {
     const socketDir = join(root, 'project');
     await mkdir(socketDir);
@@ -443,4 +649,51 @@ describe('Server pre-approval refusal', () => {
       await expect(preflight(call(entryScriptRequest))).resolves.toBeUndefined();
     }
   });
+});
+
+describe('Trusted CLI snapshot permissions', () => {
+  it.each(['isolated', 'dynamic'] as const)(
+    'makes nested %s snapshots traversable under the production umask',
+    async (loading) => {
+      const worktree = join(root, 'worktree');
+      const path = join(worktree, 'scripts', 'nested', 'check.cjs');
+      await mkdir(join(worktree, 'scripts', 'nested'), { recursive: true });
+      const bytes = 'console.log("entry-ran");';
+      await writeFile(path, bytes);
+      const previous = process.umask(0o077);
+      let staged;
+      try {
+        staged = await materializeTrustedCliEntryScript(
+          {
+            args: [path],
+            cwd: join(worktree, 'other', 'cwd'),
+            entryScript: {
+              path,
+              projectPath: 'scripts/nested/check.cjs',
+              worktreeRoot: worktree,
+              loading,
+              sha256: createHash('sha256').update(bytes).digest('hex'),
+            },
+          },
+          { trustedCliEntryScriptDir: join(root, 'snapshots') },
+        );
+      } finally {
+        process.umask(previous);
+      }
+      try {
+        const snapshotRoot = staged.entrySandbox!.root;
+        for (const relative of [
+          '',
+          'scripts',
+          'scripts/nested',
+          ...(loading === 'isolated' ? ['other', 'other/cwd'] : []),
+        ]) {
+          expect((await stat(join(snapshotRoot, relative))).mode & 0o777).toBe(0o755);
+        }
+        expect((await stat(staged.args[0]!)).mode & 0o777).toBe(0o444);
+      } finally {
+        await staged.cleanup();
+      }
+    },
+  );
 });

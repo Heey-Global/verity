@@ -2,8 +2,33 @@ import type { Kysely } from 'kysely';
 import type { Database } from './schema.js';
 import { type SecretCipher, createPassthroughCipher } from './crypto.js';
 
+export const integrationImportCodes = [
+  'invalid_request',
+  'target_message_not_found',
+  'knowledge_storage_unavailable',
+  'source_unavailable',
+  'event_predates_activation',
+  'source_binding_changed',
+  'invalid_attachment_encoding',
+  'empty_attachment',
+  'attachment_too_large',
+  'unauthorized_connector',
+  'import_failed',
+  'transport_error',
+  'media_download_failed',
+] as const;
+export interface IntegrationImportDiagnostic {
+  sourceId: string;
+  eventId: string;
+  occurredAt: string;
+  lastAttemptAt: string;
+  attempts: number;
+  httpStatus: number | null;
+  code: (typeof integrationImportCodes)[number];
+}
+
 export type IntegrationProvider = 'matrix';
-export type IntegrationSourceStatus = 'pending' | 'active' | 'paused';
+export type IntegrationSourceStatus = 'pending' | 'active' | 'paused' | 'left';
 export type IntegrationEventKind = 'message' | 'edit' | 'redaction';
 
 export interface IntegrationAccount {
@@ -16,6 +41,9 @@ export interface IntegrationAccount {
 }
 
 export interface IntegrationSource {
+  importDiagnostics: IntegrationImportDiagnostic[];
+  importDiagnosticsTruncated: boolean;
+  importDiagnosticsReportedAt: Date | null;
   accountId: string;
   sourceId: string;
   displayName: string;
@@ -147,6 +175,43 @@ export class IntegrationStore {
       .execute();
   }
 
+  async replaceImportDiagnostics(
+    accountId: string,
+    diagnostics: IntegrationImportDiagnostic[],
+    failureCount = diagnostics.length,
+  ): Promise<void> {
+    await this.db.transaction().execute(async (tx) => {
+      const sources = await tx
+        .selectFrom('integration_sources')
+        .select(['source_id', 'project_id', 'activated_at'])
+        .where('account_id', '=', accountId)
+        .orderBy('source_id')
+        .forUpdate()
+        .execute();
+      for (const source of sources) {
+        const connected = source.project_id !== null && source.activated_at !== null;
+        // A delayed worker snapshot must not resurrect evidence from an earlier room binding.
+        const current = connected
+          ? diagnostics.filter(
+              (item) =>
+                item.sourceId === source.source_id &&
+                new Date(item.occurredAt) >= source.activated_at!,
+            )
+          : [];
+        await tx
+          .updateTable('integration_sources')
+          .set({
+            import_diagnostics: JSON.stringify(current),
+            import_diagnostics_truncated: connected && failureCount > diagnostics.length,
+            import_diagnostics_reported_at: connected ? new Date() : null,
+          })
+          .where('account_id', '=', accountId)
+          .where('source_id', '=', source.source_id)
+          .execute();
+      }
+    });
+  }
+
   async listAccounts(): Promise<IntegrationAccount[]> {
     const rows = await this.db.selectFrom('integration_accounts').selectAll().execute();
     return rows.map((row) => ({
@@ -187,8 +252,29 @@ export class IntegrationStore {
       .execute();
   }
 
-  async listSources(projectId?: string): Promise<IntegrationSource[]> {
+  async rediscoverSource(accountId: string, sourceId: string): Promise<void> {
+    await this.db
+      .updateTable('integration_sources')
+      .set({ status: 'paused' })
+      .where('account_id', '=', accountId)
+      .where('source_id', '=', sourceId)
+      .where('status', '=', 'left')
+      .execute();
+  }
+
+  async markSourceLeft(accountId: string, sourceId: string): Promise<void> {
+    // Keep the binding and event rows: deleting the source would cascade into imported history.
+    await this.db
+      .updateTable('integration_sources')
+      .set({ status: 'left' })
+      .where('account_id', '=', accountId)
+      .where('source_id', '=', sourceId)
+      .execute();
+  }
+
+  async listSources(projectId?: string, includeLeft = false): Promise<IntegrationSource[]> {
     let query = this.db.selectFrom('integration_sources').selectAll();
+    if (!includeLeft) query = query.where('status', '!=', 'left');
     if (projectId) query = query.where('project_id', '=', projectId);
     const rows = await query.orderBy('display_name').execute();
     return rows.map((row) => ({
@@ -197,10 +283,15 @@ export class IntegrationStore {
       displayName: row.display_name,
       inviter: row.inviter,
       projectId: row.project_id,
-      status: (row.project_id ? row.status : 'pending') as IntegrationSourceStatus,
+      status: (row.status === 'left' || row.project_id
+        ? row.status
+        : 'pending') as IntegrationSourceStatus,
       activatedAt: row.activated_at,
       lastIngestedAt: row.last_ingested_at,
       lastError: row.last_error,
+      importDiagnostics: row.import_diagnostics,
+      importDiagnosticsTruncated: row.import_diagnostics_truncated,
+      importDiagnosticsReportedAt: row.import_diagnostics_reported_at,
     }));
   }
 
@@ -236,6 +327,13 @@ export class IntegrationStore {
           status: projectId ? 'active' : 'pending',
           activated_at: projectId ? (current.activated_at ?? new Date()) : null,
           last_error: null,
+          ...(current.project_id !== projectId
+            ? {
+                import_diagnostics: '[]',
+                import_diagnostics_truncated: false,
+                import_diagnostics_reported_at: null,
+              }
+            : {}),
         })
         .where('account_id', '=', accountId)
         .where('source_id', '=', sourceId)
@@ -253,6 +351,9 @@ export class IntegrationStore {
           activatedAt: row.activated_at,
           lastIngestedAt: row.last_ingested_at,
           lastError: row.last_error,
+          importDiagnostics: row.import_diagnostics,
+          importDiagnosticsTruncated: row.import_diagnostics_truncated,
+          importDiagnosticsReportedAt: row.import_diagnostics_reported_at,
         }
       : null;
   }
@@ -270,7 +371,14 @@ export class IntegrationStore {
   async deleteSource(accountId: string, sourceId: string): Promise<boolean> {
     const row = await this.db
       .updateTable('integration_sources')
-      .set({ project_id: null, status: 'pending', activated_at: null })
+      .set({
+        project_id: null,
+        status: 'pending',
+        activated_at: null,
+        import_diagnostics: '[]',
+        import_diagnostics_truncated: false,
+        import_diagnostics_reported_at: null,
+      })
       .where('account_id', '=', accountId)
       .where('source_id', '=', sourceId)
       .where('project_id', 'is not', null)

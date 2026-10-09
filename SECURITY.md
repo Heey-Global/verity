@@ -35,8 +35,9 @@ Release notes identify required coordinated upgrades.
   operations provide bounded, approval-visible access where a backend supports
   the attested tool channel.
 - Images and artifacts are selected by digest in production paths. The release
-  workflow currently signs the Server image; signature coverage for every other
-  published image remains an open release-readiness gate.
+  workflow signs the Server, Sandbox, project-relay, and toolkit artifacts.
+  Signature coverage for the remaining published images stays an open
+  release-readiness gate.
 - The secret store is encrypted at rest and starts sealed after a cold restart.
 
 The detailed architecture and decisions live in
@@ -56,6 +57,17 @@ which ref produced the artifact — nothing else is accepted as a Verity release
 You need [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
 for both checks, plus [oras](https://oras.land/docs/installation) and `jq` for
 the channel document.
+
+The public bootstrap automatically checks the Server image signature before
+executing image code or extracting the deployment bundle, including recovery
+helpers. It downloads a pinned cosign binary temporarily and checks its embedded
+SHA-256 checksum first; cosign does not need to be installed on the host.
+The networked Server also verifies target image signatures before handing app
+updates to the network-isolated Updater. Direct and bridge recovery commands
+verify target images before executing their probes. These checks complement
+the signed release-channel verification; they do not authenticate the bootstrap
+script itself. Existing installations acquire the new verifier through a
+confirmed update using their previous release's verification logic.
 
 ### The Server image
 
@@ -91,6 +103,12 @@ cosign verify-blob \
   payload.json
 ```
 
+For the Staging channel, use a separate output directory and the same verification:
+
+```sh
+oras pull ghcr.io/heey-global/verity/verity-server:channel-staging-amd64 -o staging-channel
+```
+
 The payload is carried as opaque base64 because the signature covers exact
 bytes: re-serializing the JSON anywhere along the way invalidates it.
 
@@ -120,12 +138,27 @@ The matching `verity-server-vX.Y.Z.intoto.jsonl` GitHub release asset is the
 signed in-toto envelope exported from that OCI attestation. Its subject digest
 must equal the `serverImage` digest in `payload.json`.
 
+### Supporting artifact signatures
+
+The release workflow signs and immediately verifies the digest of the Sandbox
+image (both repository names), the project-relay image, and the sandbox-toolkit
+OCI Feature. They use the same keyless release-workflow identity and issuer as
+the Server. Apply the Server verification command above to the artifact's own
+repository and digest; toolkit signatures cover the OCI Feature artifact rather
+than a runnable container image.
+
+This applies to releases published with this workflow; historical artifacts are
+not automatically signed retroactively. Runtime enforcement for supporting
+artifacts remains a separate rollout step. A signature proves the release
+publisher's identity and artifact integrity, not that agent code is safe.
+
 ### What is not signed yet
 
-Signature and provenance coverage stops at those Server artifacts. The Sandbox, project-relay,
-preview, and toolkit images are published unsigned today; the website image
-carries builder-generated provenance and an SBOM but no cosign signature. That
-gap is the open release-readiness gate the security model above names.
+Preview, matrix-connector, and website images remain outside this cosign signing
+coverage. The website image carries builder-generated provenance and an SBOM
+but no cosign signature. SLSA provenance coverage described above remains
+Server-specific; signing supporting artifacts does not add provenance
+attestations for them. These gaps remain open release-readiness gates.
 
 ## Known limitations
 

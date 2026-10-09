@@ -1,0 +1,8 @@
+{
+  "name": "verity-cli-claude-acp",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.86.0"
+  }
+}

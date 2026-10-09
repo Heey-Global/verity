@@ -25,6 +25,7 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
   private let webSocketsLock = NSLock()
   private var requests: [String: PinnedHTTPRequest] = [:]
   private let httpPool = PinnedHTTPSessionPool()
+  private let transportTimings = PinnedTransportTimingRegistry()
   private let requestsLock = NSLock()
   // How URLSession speaks to the loopback tunnel. Both dialects carry the same
   // pinned TLS bytes; the app switches when one of them fails the Core probe on
@@ -78,10 +79,11 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
   }
 
   private func performRequest(
-    id: String, request: URLRequest, tlsPin: String, proxyPort: Int, upload: URL? = nil
+    id: String, request: URLRequest, tlsPin: String, proxyPort: Int, upload: URL? = nil, timing: PinnedTransportTiming? = nil
   ) async throws -> (Data, HTTPURLResponse) {
     guard let origin = request.url else { throw PinnedTransportError.invalidURL }
     let delegate = try CertificatePinDelegate(pin: tlsPin, origin: origin)
+    delegate.transportTiming = timing
     let lease = try httpPool.acquire(
       origin: origin, pin: tlsPin, proxyPort: proxyPort, proxyMode: currentProxyMode())
     defer { lease.release() }
@@ -91,6 +93,7 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
       result = try await withCheckedThrowingContinuation {
         (continuation: CheckedContinuation<(Data, URLResponse), Error>) in
         let completion: @Sendable (Data?, URLResponse?, Error?) -> Void = { data, response, error in
+          timing?.completed(error: error)
           self.finishRequest(id, request: record)
           if let error { continuation.resume(throwing: error) }
           else if let response { continuation.resume(returning: (data ?? Data(), response)) }
@@ -105,6 +108,7 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
         task.delegate = delegate
         record.install(task)
         self.storeRequest(record, id: id)
+        timing?.resumed()
         task.resume()
       }
     } catch {
@@ -122,6 +126,9 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
     requestId: String, url: String, method: String, headers: [String: String], bodyBase64: String?,
     tlsPin: String, proxyPort: Int, preferText: Bool
   ) async throws -> [String: Any] {
+    let timing = PinnedTransportTiming(
+      headers: headers, proxyPort: proxyPort, proxyMode: currentProxyMode())
+    if let timing { transportTimings.retain(timing) }
     guard let target = URL(string: url), target.scheme == "https", target.user == nil, target.password == nil else {
       throw PinnedTransportError.invalidURL
     }
@@ -133,8 +140,14 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
       request.httpBody = body
     }
     let (data, response) = try await performRequest(
-      id: requestId, request: request, tlsPin: tlsPin, proxyPort: proxyPort)
-    return pinnedHTTPResponse(data: data, response: response, preferText: preferText)
+      id: requestId, request: request, tlsPin: tlsPin, proxyPort: proxyPort, timing: timing)
+    var result = pinnedHTTPResponse(data: data, response: response, preferText: preferText)
+    // Never wait for metrics: the bounded export includes a later delegate callback.
+    if let timing {
+      timing.responseReady()
+      result["transportTiming"] = timing.snapshot()
+    }
+    return result
   }
 
   private func socket(
@@ -179,6 +192,8 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
       self.webSocketsLock.unlock()
       sockets.forEach { $0.0.invalidateAndCancel() }
     }
+
+    Function("exportTransportTimings") { self.transportTimings.snapshot() }
 
     AsyncFunction("request") {
       (requestId: String, url: String, method: String, headers: [String: String], bodyBase64: String?, tlsPin: String, proxyPort: Int) async throws
@@ -279,8 +294,8 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
       let id = UUID().uuidString
       let delegate = try CertificatePinDelegate(pin: tlsPin, origin: target)
       delegate.onOpen = { [weak self] in self?.sendEvent("onWebSocketEvent", ["id": id, "type": "open"]) }
-      delegate.onClose = { [weak self] reason in
-        self?.sendEvent("onWebSocketEvent", ["id": id, "type": "close", "data": reason ?? ""])
+      delegate.onClose = { [weak self] code, reason in
+        self?.sendEvent("onWebSocketEvent", ["id": id, "type": "close", "code": code, "data": reason ?? ""])
         self?.removeSocket(id)?.0.finishTasksAndInvalidate()
       }
       let session = URLSession(configuration: try self.configuration(proxyPort: proxyPort), delegate: delegate, delegateQueue: nil)
@@ -299,6 +314,13 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
         self?.receiveNextWebSocketMessage(id: id)
       }
       return id
+    }
+
+    // The live connection talks back (subscriptions, foreground state, pings).
+    // A failed send surfaces through the receive loop, which closes the socket.
+    AsyncFunction("sendWebSocket") { (id: String, text: String) in
+      guard let (_, task, _) = self.socket(id) else { return }
+      task.send(.string(text)) { _ in }
     }
 
     AsyncFunction("closeWebSocket") { (id: String) in
@@ -327,7 +349,7 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
         guard let self, let (session, _, _) = self.removeSocket(id) else { return }
         session.finishTasksAndInvalidate()
         self.sendEvent("onWebSocketEvent", ["id": id, "type": "error", "data": error.localizedDescription])
-        self.sendEvent("onWebSocketEvent", ["id": id, "type": "close", "data": error.localizedDescription])
+        self.sendEvent("onWebSocketEvent", ["id": id, "type": "close", "code": task.closeCode.rawValue, "data": error.localizedDescription])
       }
     }
   }

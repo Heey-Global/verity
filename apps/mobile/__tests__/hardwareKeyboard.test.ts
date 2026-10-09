@@ -103,22 +103,19 @@ describe('composer Return handling', () => {
   // composer ignores it. These scan the real handler and the real prop wiring — the two
   // places where a plausible-looking edit silently kills the Return key again.
   const source = readFileSync(join(__dirname, '..', 'app', 'session', '[id].tsx'), 'utf8');
-  const start = source.indexOf('const onComposerKeyPress = useCallback(');
-  const end = source.indexOf('\n  );', start);
-  const handler = start >= 0 && end > start ? source.slice(start, end) : '';
-
-  it('has a Return key handler in the composer', () => {
-    // Guards the two tests below: a renamed or restructured callback would otherwise
-    // leave them asserting about an empty string, which passes the `not` case.
-    expect(handler).not.toBe('');
-    expect(handler).toContain("'Enter'");
-  });
-
-  it('gates Return-to-send on the live keyboard height, not on observed hardware', () => {
-    expect(handler).toMatch(/shouldSubmitOnReturn\(\s*keyboardHeight\s*\)/);
-    // `hardwareKeyboardDetection() !== 'hardware'` reads like the same check but is
-    // never satisfied on a Mac, where no keyboard-show event is ever emitted.
-    expect(handler).not.toContain('hardwareKeyboardDetection');
+  it('uses native Return handling with the live keyboard height', () => {
+    const input = source.match(/<PromptComposerInput\b[\s\S]*?\/>/);
+    expect(input).not.toBeNull();
+    expect(input?.[0]).toMatch(/submitOnReturn=\{shouldSubmitOnReturn\(keyboardHeight\)\}/);
+    expect(input?.[0]).toContain('onSend={onSend}');
+    expect(input?.[0]).toContain('onChangeText={onChangeText}');
+    // RN keypress has no modifiers: restoring it submits Shift+Enter too.
+    const webHandler = source.match(/const onComposerKeyPress = useCallback\([\s\S]*?\n  \);/);
+    expect(webHandler).not.toBeNull();
+    expect(webHandler?.[0]).toMatch(
+      /if \(Platform\.OS === 'web' && !dead && shouldSendWebKey\(event\.nativeEvent\)\)/,
+    );
+    expect(source).not.toContain('suppressReturnChangeRef');
   });
 
   it('feeds the composer the height from the live keyboard event', () => {

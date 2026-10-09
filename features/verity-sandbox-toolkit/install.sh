@@ -36,9 +36,9 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.284}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.291}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.84.0}"
+CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.86.0}"
 # renovate: datasource=github-releases depName=cli/cli
 GH_VERSION="${GHVERSION:-2.100.0}"
 # renovate: datasource=github-releases depName=DopplerHQ/cli
@@ -46,11 +46,11 @@ DOPPLER_VERSION="${DOPPLERVERSION:-3.76.6}"
 # renovate: datasource=github-releases depName=gitleaks/gitleaks
 GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
 # renovate: datasource=npm depName=@openai/codex
-CODEX_VERSION="${CODEXVERSION:-0.159.2}"
+CODEX_VERSION="${CODEXVERSION:-0.160.1}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-CODEX_ACP_VERSION="${CODEXACPVERSION:-2.0.0}"
+CODEX_ACP_VERSION="${CODEXACPVERSION:-2.1.1}"
 # renovate: datasource=npm depName=opencode-ai
-OPENCODE_VERSION="${OPENCODEVERSION:-1.18.33}"
+OPENCODE_VERSION="${OPENCODEVERSION:-1.18.34}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
@@ -179,7 +179,7 @@ esac
 # See the env and securityOpt comments in packages/server/src/provisioner.ts.
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  APT_PACKAGES=(tmux git curl ca-certificates less ripgrep gnupg wget jq openssh-client openssl util-linux)
+  APT_PACKAGES=(python3 tmux git curl ca-certificates less ripgrep gnupg wget jq openssh-client openssl util-linux)
   apt-get update
   apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"
   rm -rf /var/lib/apt/lists/*
@@ -295,7 +295,7 @@ fi
 if [ "$INSTALL_CLAUDE" = "true" ]; then
   if command -v npm >/dev/null 2>&1; then
     echo ">> verity-sandbox-toolkit: installing @anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
-    npm install -g --ignore-scripts=false "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+    node "$FEATURE_DIR/bin/verity-cli-install.mjs" claude-code "$CLAUDE_CODE_VERSION"
   else
     echo "!! verity-sandbox-toolkit: installClaude=true but npm not on PATH — skipping claude-code." >&2
     echo "!!                 Add the node Feature (installsAfter) or a node base image." >&2
@@ -307,7 +307,7 @@ fi
 if [ "$INSTALL_CLAUDE_ACP" = "true" ]; then
   if command -v npm >/dev/null 2>&1; then
     echo ">> verity-sandbox-toolkit: installing @agentclientprotocol/claude-agent-acp@$CLAUDE_ACP_VERSION"
-    npm install -g --ignore-scripts=false "@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_VERSION}"
+    node "$FEATURE_DIR/bin/verity-cli-install.mjs" claude-acp "$CLAUDE_ACP_VERSION"
     # Upstream (through 0.66.0) renders tool-call titles from unvalidated model
     # input; one wrong-typed field throws, kills the agent process, and — since
     # loadSession replays history through the same renderer — bricks the session
@@ -352,18 +352,18 @@ fi
 if command -v npm >/dev/null 2>&1; then
   if [ "$INSTALL_CODEX" = "true" ]; then
     echo ">> verity-sandbox-toolkit: installing @openai/codex@$CODEX_VERSION"
-    npm install -g --ignore-scripts=false "@openai/codex@${CODEX_VERSION}"
+    node "$FEATURE_DIR/bin/verity-cli-install.mjs" codex "$CODEX_VERSION"
   fi
   # ACP is a separately pinned transport adapter. It ships its own @openai/codex
   # dependency, so the spawn broker pins CODEX_PATH to the root-owned binary
   # installed above — otherwise two Codex versions run in the same image.
   if [ "$INSTALL_CODEX_ACP" = "true" ]; then
     echo ">> verity-sandbox-toolkit: installing @agentclientprotocol/codex-acp@$CODEX_ACP_VERSION"
-    npm install -g --ignore-scripts=false "@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}"
+    node "$FEATURE_DIR/bin/verity-cli-install.mjs" codex-acp "$CODEX_ACP_VERSION"
   fi
   if [ "$INSTALL_OPENCODE" = "true" ]; then
     echo ">> verity-sandbox-toolkit: installing opencode-ai@$OPENCODE_VERSION"
-    npm install -g --ignore-scripts=false "opencode-ai@${OPENCODE_VERSION}"
+    node "$FEATURE_DIR/bin/verity-cli-install.mjs" opencode "$OPENCODE_VERSION"
     # opencode's updater can target a user-writable dir (unlike the root-owned
     # npm global), so root-ownership alone doesn't stop it. Pin it off via its
     # own config file — persists across both consume paths, chowned to the user
@@ -546,12 +546,16 @@ if [ "$INSTALL_RUNNER_SUPERVISOR" = 'true' ]; then
     /usr/local/bin/verity-node-modules-install
   install -m 0755 "$FEATURE_DIR/bin/verity-runner-worker.mjs" \
     /usr/local/bin/verity-runner-worker
+  install -m 0755 "$FEATURE_DIR/bin/verity-agent-signal-trace" \
+    /usr/local/bin/verity-agent-signal-trace
   install -m 0755 "$FEATURE_DIR/bin/verity-agent-spawn-broker.mjs" \
     /usr/local/bin/verity-agent-spawn-broker
   install -m 0755 "$FEATURE_DIR/bin/verity-egress-connector.mjs" \
     /usr/local/bin/verity-egress-connector
   install -m 0755 "$FEATURE_DIR/bin/verity-egress-connector-start" \
     /usr/local/bin/verity-egress-connector-start
+  install -m 0755 "$FEATURE_DIR/bin/verity-memory-guard.mjs" \
+    /usr/local/bin/verity-memory-guard
   # Every binary above starts with `#!/usr/bin/env node`, and the server runs
   # lifecycle commands with a deliberately fixed PATH so they cannot depend on a
   # shell profile. A devcontainer image normally keeps node under nvm, which that
@@ -627,11 +631,21 @@ install -m 0755 "$FEATURE_DIR/agent-seed/hooks/pre-push" "$HOOKS_PATH/pre-push"
 # so the policy exists once.
 install -m 0755 "$FEATURE_DIR/agent-seed/hooks/pre-commit" "$HOOKS_PATH/pre-commit"
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/gh" /opt/agent-seed/bin/gh
+# Preserve an installed ORAS binary before adding the broker-aware wrapper.
+if [ -x /usr/local/bin/oras ] && [ ! -L /usr/local/bin/oras ]; then
+  mkdir -p /usr/local/lib/verity
+  mv /usr/local/bin/oras /usr/local/lib/verity/oras-real
+fi
+install -m 0755 "$FEATURE_DIR/agent-seed/bin/oras" /opt/agent-seed/bin/oras
+ln -sf /opt/agent-seed/bin/oras /usr/local/bin/oras
+
 # git wrapper: refuses `git worktree remove` on a Verity session worktree (a
 # session must not delete the tree it runs in). Transparent for every other git
 # invocation, so baking it first on PATH is inert on all other operations.
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/git" /opt/agent-seed/bin/git
+install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-dev-server" /opt/agent-seed/bin/verity-dev-server
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-code-review" /opt/agent-seed/bin/verity-code-review
+install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-review-base.sh" /opt/agent-seed/bin/verity-review-base.sh
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed/bin/verity-secret-scan
 # Commit-signing broker wrapper (audit H1). git is pointed at it via GIT_CONFIG_*
 # env only in broker mode; without the broker env it is transparently ssh-keygen,
@@ -639,7 +653,7 @@ install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-git-sign" /opt/agent-seed/bin/verity-git-sign
 # GitHub-token broker client + git credential helper (security review). They
 # redeem the container capability for a fresh repo-scoped token on demand; inert
-# without the broker env (VERITY_GH_TOKEN_URL + capability file), so baking them
+# without the broker env (VERITY_FORGE_PROXY_URL + capability file), so baking them
 # here is harmless on non-broker deployments.
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-gh-token" /opt/agent-seed/bin/verity-gh-token
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-gh-cred" /opt/agent-seed/bin/verity-gh-cred
@@ -650,6 +664,7 @@ install -m 0644 "$FEATURE_DIR/agent-seed/code-review-prompt.md" /opt/agent-seed/
 # GitHub token in the sandbox.
 ln -sf /opt/agent-seed/bin/gh /usr/local/bin/gh
 # Put the marker tool on PATH so `verity-code-review mark` works from any cwd.
+ln -sf /opt/agent-seed/bin/verity-dev-server /usr/local/bin/verity-dev-server
 ln -sf /opt/agent-seed/bin/verity-code-review /usr/local/bin/verity-code-review
 # Same for the secret scanner, so it can be run by hand ("is this branch clean?")
 # and so the hooks resolve it through PATH even under a custom hooks path.
@@ -691,5 +706,5 @@ fi
 
 echo ">> verity-sandbox-toolkit: install complete."
 echo ">>   config dir (runtime): $CLAUDE_CONFIG_DIR_VALUE"
-echo ">>   gh auth (runtime):     token broker (VERITY_GH_TOKEN_URL + capability)"
+echo ">>   gh auth (runtime):     forge proxy (VERITY_FORGE_PROXY_URL + capability)"
 echo ">>   TZ:                    $TZ_VALUE"

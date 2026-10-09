@@ -7,6 +7,7 @@ import type { VerityClient } from '@verity/mobile';
 import { Alert, Platform } from 'react-native';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
+import { isDemoMode } from './demoMode';
 
 // Dismisses any lingering auth session view when the app is re-focused. Safe to
 // call at module load; a no-op on native but recommended by expo-auth-session.
@@ -151,6 +152,8 @@ function explainGoogleAccess(service: string, purpose: string): Promise<boolean>
 }
 
 async function runGoogleAuth(clientId: string, scopes: string[]): Promise<GoogleDriveAuthResult> {
+  if (isDemoMode())
+    throw new Error('Google sign-in requires your own Verity server. Exit the demo to connect.');
   const redirectUri = googleDriveRedirectUri(clientId);
   const request = new AuthSession.AuthRequest({
     clientId,

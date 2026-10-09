@@ -67,9 +67,9 @@ function fixture(failPatch = false) {
 }
 
 describe('EAS archive preparation', () => {
-  it('patches the isolated install before building the shared workspace', () => {
+  it.each(['true', '1'])('patches the isolated install with EAS_BUILD=%s', (eas) => {
     const f = fixture();
-    expect(f.run('true').status).toBe(0);
+    expect(f.run(eas).status).toBe(0);
     const lines = f.trace();
     expect(lines).toHaveLength(2);
     expect(lines[0]).toBe(`patch:${f.root}`);
@@ -98,7 +98,7 @@ describe('EAS archive preparation', () => {
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(prepared);
   });
 
-  it.each(['development', 'preview', 'production', 'simulator'])(
+  it.each(['development', 'preview', 'simulator'])(
     'preserves the manifest for the %s profile',
     (profile) => {
       const f = fixture();
@@ -139,7 +139,7 @@ describe('EAS archive preparation', () => {
     );
     const options = {
       cwd: f.root,
-      env: { ...process.env, EAS_BUILD: 'true', TRACE: join(f.root, 'trace') },
+      env: { ...process.env, EAS_BUILD: '1', TRACE: join(f.root, 'trace') },
       encoding: 'utf8' as const,
     };
     const lock = spawnSync(
@@ -170,15 +170,15 @@ describe('EAS archive preparation', () => {
     expect(f.trace()).toEqual([`patch:${f.root}`]);
   });
 
-  it('refuses compilation if the install lifecycle was skipped', () => {
+  it.each(['true', '1', ''])('refuses unprepared compilation with EAS_BUILD=%s', (eas) => {
     const f = fixture();
     const app = JSON.parse(readFileSync('apps/mobile/package.json', 'utf8'));
     expect(app.scripts['eas-build-post-install']).toBe(`${app.scripts.postinstall} --verify`);
-    expect(f.run('true', true).status).not.toBe(0);
+    expect(f.run(eas, true).status).not.toBe(0);
     expect(f.run('true').status).toBe(0);
-    expect(f.run('true', true).status).toBe(0);
+    expect(f.run(eas, true).status).toBe(0);
     writeFileSync(join(f.root, '.verity-eas-prepared'), '/another/build/');
-    expect(f.run('true', true).status).not.toBe(0);
+    expect(f.run(eas, true).status).not.toBe(0);
     expect(readFileSync('.easignore', 'utf8').split('\n')).toContain('.verity-eas-prepared');
   });
 
@@ -189,8 +189,8 @@ describe('EAS archive preparation', () => {
   });
 
   it('keeps the cache bounded and enables Clang module reuse within toolchain and policy', () => {
-    const workflow = parse(readFileSync('.github/workflows/release.yml', 'utf8'));
-    const steps = workflow.jobs['publish-mobile-native'].steps as {
+    const workflow = parse(readFileSync('.github/workflows/mobile-native-build.yml', 'utf8'));
+    const steps = workflow.jobs.build.steps as {
       id?: string;
       name?: string;
       run: string;

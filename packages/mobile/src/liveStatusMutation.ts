@@ -1,14 +1,14 @@
 import type {
-  AgentLoop,
   DevServer,
   ProjectRecord,
   ServerUpdateStatus,
+  SessionAutomation,
   SessionStatus,
 } from './api.js';
 
 type ProjectListener = (project: ProjectRecord) => void;
 type ServerUpdateListener = (status: ServerUpdateStatus) => void;
-type AgentLoopListener = (loop: AgentLoop) => void;
+type SessionAutomationListener = (sessionId: string, automation: SessionAutomation | null) => void;
 export type DevServerStatusMutation = Pick<DevServer, 'id' | 'projectId'> &
   Partial<Pick<DevServer, 'previewSessionId' | 'running'>> & { devServer?: DevServer };
 type DevServerListener = (mutation: DevServerStatusMutation) => void;
@@ -16,7 +16,7 @@ type SessionStatusListener = (sessionId: string, status: SessionStatus) => void;
 
 const projectListeners = new Set<ProjectListener>();
 const serverUpdateListeners = new Set<ServerUpdateListener>();
-const agentLoopListeners = new Set<AgentLoopListener>();
+const sessionAutomationListeners = new Set<SessionAutomationListener>();
 const devServerListeners = new Set<DevServerListener>();
 const sessionStatusListeners = new Set<SessionStatusListener>();
 
@@ -38,13 +38,20 @@ export function subscribeServerUpdateStatusMutations(listener: ServerUpdateListe
   return () => serverUpdateListeners.delete(listener);
 }
 
-export function publishAgentLoopMutation(loop: AgentLoop): void {
-  for (const listener of agentLoopListeners) listener(loop);
+/** A session's automation changed locally (`null` once deleted), so the
+ * overview can update its marker before the next list poll. */
+export function publishSessionAutomationMutation(
+  sessionId: string,
+  automation: SessionAutomation | null,
+): void {
+  for (const listener of sessionAutomationListeners) listener(sessionId, automation);
 }
 
-export function subscribeAgentLoopMutations(listener: AgentLoopListener): () => void {
-  agentLoopListeners.add(listener);
-  return () => agentLoopListeners.delete(listener);
+export function subscribeSessionAutomationMutations(
+  listener: SessionAutomationListener,
+): () => void {
+  sessionAutomationListeners.add(listener);
+  return () => sessionAutomationListeners.delete(listener);
 }
 
 export function publishDevServerStatusMutation(mutation: DevServerStatusMutation): void {

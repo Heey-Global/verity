@@ -98,7 +98,11 @@ const SPAWNABLE_AGENT_COMMANDS = new Set(['claude-agent-acp', 'codex-acp', 'open
  * turn runs on, so an in-Sandbox helper such as `verity-code-review` starts its
  * isolated reviewer on the same one instead of guessing from the environment.
  */
-const SESSION_RUNTIME_ENV_KEYS = ['VERITY_SESSION_BACKEND', 'VERITY_SESSION_MODEL'];
+const SESSION_RUNTIME_ENV_KEYS = [
+  'VERITY_SESSION_BACKEND',
+  'VERITY_SESSION_MODEL',
+  'VERITY_SESSION_ID',
+];
 const MAX_SESSION_ENV_VALUE_BYTES = 256;
 /**
  * Every neighbouring bound here is a size cap, but a value bound for a child's
@@ -120,6 +124,7 @@ const SESSION_ENV_VALUE_SHAPES = {
   // it is only length- and control-character-checked. Consumers must quote it:
   // it is an environment value, never a fragment of a command line.
   VERITY_SESSION_MODEL: undefined,
+  VERITY_SESSION_ID: undefined,
 };
 function hasControlCharacter(value) {
   for (let index = 0; index < value.length; index += 1) {
@@ -414,11 +419,13 @@ async function validateSpawnRequest(raw, options) {
       if (digest !== raw.entryScript.sha256) {
         throw new Error('trusted CLI entry script content hash changed after approval');
       }
-      const worktreeRoot = [...worktreeRoots]
-        .sort((left, right) => right.length - left.length)
-        .find((root) => withinAgentWorktreeRoots(canonical, [root]));
-      if (worktreeRoot === undefined) throw new Error('trusted CLI entry script has no worktree');
-      if (!withinAgentWorktreeRoots(cwd, [worktreeRoot])) {
+      // The turn's cwd is its session worktree, which is usually NESTED in a
+      // configured root (`/work/.verity-sessions/<agent>`). Measuring from the
+      // configured root would demand a session-specific project path the agent
+      // cannot know and no grant could carry across sessions, and would hand a
+      // dynamic script every sibling session as its tree.
+      const worktreeRoot = cwd;
+      if (!withinAgentWorktreeRoots(canonical, [worktreeRoot])) {
         throw new Error('trusted CLI cwd and entry script must share one worktree root');
       }
       const projectPath = canonical.slice(worktreeRoot.length + 1);
@@ -583,6 +590,10 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
     // approval and their allowance. Session links are the only agent-to-agent
     // channel. Never accept this value from a request.
     ...(isClaude ? { CLAUDE_CODE_HARBOR_KITE: '0' } : {}),
+    // The Claude CLI offers its task-list tools (TaskCreate/TaskUpdate, which the
+    // ACP adapter reports as a plan) only to models on its own allowlist. Newer
+    // models silently lose them, and the app never receives a checklist.
+    ...(isClaude ? { CLAUDE_CODE_ENABLE_TODO_TOOLS: '1' } : {}),
     // ADR 0006 D10: derive auth only from one validated local connector URL.
     // Never copy an inherited OAuth/API token; the placeholder is fixed here.
     ...connectorEnv,
@@ -635,13 +646,16 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
         }
       : {}),
     ...copy('IS_SANDBOX'),
+    ...copy('VERITY_FORGE_MODE'),
+    ...copy('VERITY_FORGE_PROXY_URL'),
+    ...copy('VERITY_FORGE_PROXY_CA_FILE'),
+    ...copy('GIT_TERMINAL_PROMPT'),
     ...copy('GIT_CONFIG_COUNT'),
     ...Object.fromEntries(
       Object.entries(source).filter(([name]) => /^GIT_CONFIG_(KEY|VALUE)_\d+$/u.test(name)),
     ),
     ...copy('VERITY_SIGNING_URL'),
     ...copy('VERITY_SIGNING_TOKEN_FILE'),
-    ...copy('VERITY_GH_TOKEN_URL'),
     ...copy('VERITY_GH_BROKER_CAPABILITY_FILE'),
     ...copy('VERITY_PROJECT_MEMORY_URL'),
   };
@@ -905,6 +919,62 @@ export async function materializeKnowledgeIsolation(request, options, connectorU
   };
 }
 
+/** A root-issued lease cannot be supplied through the agent spawn protocol. */
+export async function agentSignalTraceSeconds(controlDir, request, now = Date.now()) {
+  if (
+    request.command !== 'codex-acp' ||
+    request.knowledgeIsolation ||
+    typeof request.sessionEnv?.VERITY_SESSION_ID !== 'string'
+  )
+    return undefined;
+  let handle;
+  try {
+    handle = await open(
+      join(controlDir, 'signal-trace.json'),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.uid !== 0 || (stat.mode & 0o022) !== 0 || stat.size > 4096)
+      return undefined;
+    const buffer = Buffer.alloc(4097);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > 4096) return undefined;
+    return validateAgentSignalTraceLease(
+      buffer.subarray(0, bytesRead).toString('utf8'),
+      request,
+      now,
+    );
+  } catch {
+    // Missing, malformed, or untrusted leases leave normal launches unchanged.
+    return undefined;
+  } finally {
+    await handle?.close();
+  }
+}
+
+export function validateAgentSignalTraceLease(text, request, now = Date.now()) {
+  if (request.command !== 'codex-acp' || request.knowledgeIsolation || text.length > 4096)
+    return undefined;
+  try {
+    const lease = JSON.parse(text);
+    if (
+      !isObject(lease) ||
+      Object.keys(lease).sort().join(',') !== 'expiresAt,sessionId' ||
+      typeof lease.sessionId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(lease.sessionId) ||
+      lease.sessionId !== request.sessionEnv?.VERITY_SESSION_ID ||
+      !Number.isSafeInteger(lease.expiresAt) ||
+      lease.expiresAt <= now ||
+      lease.expiresAt > now + 600_000
+    )
+      return undefined;
+    const seconds = Math.floor((lease.expiresAt - now) / 1000);
+    return seconds > 0 ? seconds : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function agentLaunchSpec(request, options) {
   const { uid, gid } = validateIdentity(options);
   const setprivPath = options.setprivPath ?? '/usr/bin/setpriv';
@@ -963,6 +1033,17 @@ export function agentLaunchSpec(request, options) {
             '--',
           ]
         : []),
+      ...(options.signalTraceSeconds === undefined ||
+      request.command !== 'codex-acp' ||
+      request.knowledgeIsolation
+        ? []
+        : [
+            '/usr/bin/python3',
+            '/usr/local/bin/verity-agent-signal-trace',
+            '--seconds',
+            String(options.signalTraceSeconds),
+            '--launch',
+          ]),
       agentPath,
       ...request.args,
     ],
@@ -1048,6 +1129,9 @@ function trustedCliInterpreterName(token) {
 
 export const TRUSTED_CLI_ARGV_POLICY_SUFFIX = '.verity-trusted-cli-policy.json';
 export const LEGACY_TRUSTED_CLI_ARGV_POLICY_SUFFIX = '.breeze-trusted-cli-policy.json';
+// Paginated diagnostic modes can exceed 64 routes; keep the whole policy bounded
+// without invalidating every existing route when another mode is installed.
+const MAX_TRUSTED_CLI_ARGV_POLICY_ROUTES = 256;
 const MAX_TRUSTED_CLI_ARGV_POLICY_BYTES = 64 * 1024;
 const TRUSTED_CLI_POLICY_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/u;
 
@@ -1058,7 +1142,7 @@ function parseTrustedCliArgvPolicy(raw) {
     Object.keys(raw).some((key) => key !== 'version' && key !== 'routes') ||
     !Array.isArray(raw.routes) ||
     raw.routes.length === 0 ||
-    raw.routes.length > 64
+    raw.routes.length > MAX_TRUSTED_CLI_ARGV_POLICY_ROUTES
   ) {
     throw new Error('trusted CLI argv policy is invalid');
   }
@@ -1507,11 +1591,27 @@ const SCRIPT_SANDBOX_PROBE_TIMEOUT_MS = 10_000;
 export async function probeScriptSandbox(
   helperPath = DEFAULT_SCRIPT_SANDBOX_PATH,
   timeoutMs = SCRIPT_SANDBOX_PROBE_TIMEOUT_MS,
+  launchOptions,
 ) {
   return await new Promise((resolveProbe) => {
     let child;
     try {
-      child = spawn(helperPath, ['--probe'], {
+      const spec =
+        launchOptions === undefined
+          ? { command: helperPath, args: ['--probe'], spawnOptions: {} }
+          : trustedCliLaunchSpec(
+              {
+                kind: 'trusted-cli',
+                command: helperPath,
+                args: ['--probe'],
+                cwd: '/',
+                secrets: [],
+              },
+              launchOptions,
+            );
+      child = spawn(spec.command, spec.args, {
+        ...spec.spawnOptions,
+        detached: false,
         stdio: ['ignore', 'ignore', 'pipe'],
         timeout: timeoutMs,
       });
@@ -1564,7 +1664,6 @@ const TRUSTED_CLI_VALIDATION_CODES = new Map([
   ['trusted CLI entry script escaped the worktree root', 'validation_entry_outside_worktree'],
   ['trusted CLI entry script must be a regular file', 'validation_entry_not_regular_file'],
   ['trusted CLI entry script content hash changed after approval', 'validation_entry_hash_changed'],
-  ['trusted CLI entry script has no worktree', 'validation_entry_missing_worktree'],
   [
     'trusted CLI cwd and entry script must share one worktree root',
     'validation_entry_worktree_mismatch',
@@ -1594,10 +1693,14 @@ const TRUSTED_CLI_VALIDATION_CODES = new Map([
 
 function trustedCliFailureCode(phase, error) {
   if (phase === 'validation') {
-    return (
-      TRUSTED_CLI_VALIDATION_CODES.get(error instanceof Error ? error.message : '') ??
-      'validation_failed'
-    );
+    const rule = TRUSTED_CLI_VALIDATION_CODES.get(error instanceof Error ? error.message : '');
+    if (rule !== undefined) return rule;
+    // Filesystem exceptions carry paths in their messages; expose only the errno class.
+    const code = error && typeof error === 'object' ? error.code : undefined;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return 'validation_path_missing';
+    if (code === 'EACCES' || code === 'EPERM') return 'validation_path_permissions';
+    if (code === 'ELOOP') return 'validation_path_symlink_loop';
+    return 'validation_failed';
   }
   if (phase !== 'materialization') return `${phase.replace('-', '_')}_failed`;
   const code = error && typeof error === 'object' ? error.code : undefined;
@@ -1780,11 +1883,30 @@ export async function materializeTrustedCliEntryScript(request, options) {
     );
     const snapshot = join(snapshotRoot, relativeScript);
     const snapshotScriptDir = snapshot.slice(0, snapshot.lastIndexOf('/'));
-    await mkdir(snapshotScriptDir, { recursive: true, mode: 0o755 });
+    // The broker starts with umask 0077. mkdir's mode alone leaves root-owned
+    // snapshot directories at 0700, hiding the approved entry after setpriv.
+    const makeSnapshotDirectory = async (path) => {
+      await mkdir(snapshotRoot, { mode: 0o755 }).catch((error) => {
+        if (error.code !== 'EEXIST') throw error;
+      });
+      await chmod(snapshotRoot, 0o755);
+      let current = snapshotRoot;
+      for (const component of path
+        .slice(snapshotRoot.length + 1)
+        .split('/')
+        .filter(Boolean)) {
+        current = join(current, component);
+        await mkdir(current, { mode: 0o755 }).catch((error) => {
+          if (error.code !== 'EEXIST') throw error;
+        });
+        await chmod(current, 0o755);
+      }
+    };
+    await makeSnapshotDirectory(snapshotScriptDir);
     const relativeCwd = request.cwd.slice(request.entryScript.worktreeRoot.length + 1);
     const snapshotCwd = join(snapshotRoot, relativeCwd);
     if (request.entryScript.loading === 'isolated') {
-      await mkdir(snapshotCwd, { recursive: true, mode: 0o755 });
+      await makeSnapshotDirectory(snapshotCwd);
     }
     await writeFile(snapshot, bytes, { mode: 0o444, flag: 'wx' });
     await chmod(snapshot, 0o444);
@@ -2269,7 +2391,13 @@ export async function runAgentSpawnBroker(options = {}) {
   validateRunnerRuntimeStats(stats, options);
   const scriptIsolation =
     options.scriptIsolation ??
-    (await probeScriptSandbox(options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH));
+    // A root probe can fail user-namespace mapping even when the agent can
+    // enforce isolation. Probe with the same privilege drop as actual launches.
+    (await probeScriptSandbox(
+      options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH,
+      SCRIPT_SANDBOX_PROBE_TIMEOUT_MS,
+      options.enforceRoot === false ? undefined : options,
+    ));
   if (!scriptIsolation.available) {
     process.stderr.write(
       `verity-agent-spawn-broker: worktree entry scripts are disabled: ${scriptIsolation.reason ?? 'script sandbox unavailable'}\n`,
@@ -2439,11 +2567,18 @@ export async function runAgentSpawnBroker(options = {}) {
             };
           }
           if (request.kind === 'trusted-cli') trustedCliFailurePhase = 'launch-spec';
+          if (request.kind === 'agent' && request.command === 'codex-acp') {
+            releaseCodexStartup = await acquireCodexStartup();
+          }
           const spec =
             request.kind === 'agent'
               ? agentLaunchSpec(
                   { ...request, args: materialized.args },
-                  { ...options, connectorUrl },
+                  {
+                    ...options,
+                    connectorUrl,
+                    signalTraceSeconds: await agentSignalTraceSeconds(controlDir, request),
+                  },
                 )
               : trustedCliLaunchSpec(
                   {
@@ -2456,9 +2591,6 @@ export async function runAgentSpawnBroker(options = {}) {
                   options,
                 );
           if (request.kind === 'trusted-cli') trustedCliFailurePhase = 'spawn';
-          if (request.kind === 'agent' && request.command === 'codex-acp') {
-            releaseCodexStartup = await acquireCodexStartup();
-          }
           child = spawnChild(spec.command, spec.args, spec.spawnOptions);
         } catch (error) {
           releaseCodexStartup();

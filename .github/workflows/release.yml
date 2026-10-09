@@ -39,6 +39,11 @@ on:
         required: false
         default: false
         type: boolean
+      mobile-replan:
+        description: Plan pending mobile changes as a native release PR
+        required: false
+        default: false
+        type: boolean
       backend-replan:
         description: Plan the next backend release PR after a completed publication
         required: false
@@ -201,6 +206,7 @@ jobs:
 
       - name: Validate backend re-plan request
         env:
+          MOBILE_REPLAN: ${{ inputs.mobile-replan || format('{0}', github.event.inputs['mobile-replan']) == 'true' }}
           REPLAN: ${{ inputs.backend-replan }}
           RECONCILE: ${{ inputs.reconcile }}
           EVENT_NAME: ${{ github.event_name }}
@@ -222,8 +228,39 @@ jobs:
             if [[ "$EVENT_NAME" != workflow_dispatch ||
                   -n "${MOBILE_TAG}${VERSION}${SOURCE_REF}${SCHEMA_FORWARD_MAX}${WEBSITE_VERSION}${WEBSITE_REF}" ||
                   "$REPUBLISH" == true || "$ARTIFACT_ONLY" == true || "$ACCEPT_NO_ROLLBACK" == true ||
-                  "${RECONCILE:-false}" == true ]]; then
+                  "${RECONCILE:-false}" == true || "${MOBILE_REPLAN:-false}" == true ]]; then
               echo '::error::A backend re-plan is a manual planning run and must carry no recovery input.' >&2
+              exit 1
+            fi
+          fi
+
+      - name: Validate mobile re-plan request
+        env:
+          REPLAN: ${{ inputs.mobile-replan || format('{0}', github.event.inputs['mobile-replan']) == 'true' }}
+          OTHER_REPLAN: ${{ inputs.backend-replan || format('{0}', github.event.inputs['backend-replan']) == 'true' }}
+          REF: ${{ github.ref }}
+          RECONCILE: ${{ inputs.reconcile }}
+          EVENT_NAME: ${{ github.event_name }}
+          MOBILE_TAG: ${{ inputs.mobile-tag }}
+          VERSION: ${{ inputs.backend-version }}
+          SOURCE_REF: ${{ inputs.backend-ref }}
+          SCHEMA_FORWARD_MAX: ${{ inputs.backend-schema-forward-max }}
+          REPUBLISH: ${{ inputs.backend-republish }}
+          ARTIFACT_ONLY: ${{ inputs.backend-artifact-only }}
+          ACCEPT_NO_ROLLBACK: ${{ inputs.backend-accept-no-rollback }}
+          WEBSITE_VERSION: ${{ inputs.website-version }}
+          WEBSITE_REF: ${{ inputs.website-ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$REPLAN" == true ]]; then
+            # A re-plan carries no recovery input: planning may never publish,
+            # and a request that mixes both hides which mode actually ran.
+            if [[ "$EVENT_NAME" != workflow_dispatch || "$REF" != refs/heads/main || "$OTHER_REPLAN" == true ||
+                  -n "${MOBILE_TAG}${VERSION}${SOURCE_REF}${SCHEMA_FORWARD_MAX}${WEBSITE_VERSION}${WEBSITE_REF}" ||
+                  "$REPUBLISH" == true || "$ARTIFACT_ONLY" == true || "$ACCEPT_NO_ROLLBACK" == true ||
+                  "${RECONCILE:-false}" == true ]]; then
+              echo '::error::A mobile re-plan is a manual planning run and must carry no recovery input.' >&2
               exit 1
             fi
           fi
@@ -232,6 +269,7 @@ jobs:
         env:
           RECONCILE: ${{ inputs.reconcile }}
           EVENT_NAME: ${{ github.event_name }}
+          MOBILE_REPLAN: ${{ inputs.mobile-replan || format('{0}', github.event.inputs['mobile-replan']) == 'true' }}
           REPLAN: ${{ inputs.backend-replan }}
           MOBILE_TAG: ${{ inputs.mobile-tag }}
           VERSION: ${{ inputs.backend-version }}
@@ -249,7 +287,7 @@ jobs:
             # A reconcile run replays the push lifecycle at the current main
             # head. Recovery inputs pin an older source and a re-plan may never
             # publish, so a request mixing them hides which mode actually ran.
-            if [[ "$EVENT_NAME" != workflow_dispatch || "$REPLAN" == true ||
+            if [[ "$EVENT_NAME" != workflow_dispatch || "$REPLAN" == true || "${MOBILE_REPLAN:-false}" == true ||
                   -n "${MOBILE_TAG}${VERSION}${SOURCE_REF}${SCHEMA_FORWARD_MAX}${WEBSITE_VERSION}${WEBSITE_REF}" ||
                   "$REPUBLISH" == true || "$ARTIFACT_ONLY" == true || "$ACCEPT_NO_ROLLBACK" == true ]]; then
               echo '::error::A reconcile run replays the push lifecycle at the main head and must carry no recovery or re-plan input.' >&2
@@ -298,7 +336,7 @@ jobs:
       # hiding a manifest or a file that does not belong to the selected train.
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: github.event_name == 'push' || inputs.backend-replan || inputs.reconcile
+        if: github.event_name == 'push' || inputs.backend-replan || inputs.mobile-replan || inputs.reconcile
         with:
           fetch-depth: 0
 
@@ -471,19 +509,17 @@ jobs:
         id: lifecycle
         if: >-
           ((github.event_name == 'push' || inputs.reconcile) && steps.selected-trains.outputs[inputs.train] == 'true') ||
-          (inputs.backend-replan && inputs.train == 'backend')
+          (inputs.backend-replan && inputs.train == 'backend') ||
+          (inputs.mobile-replan && inputs.train == 'mobile')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: node scripts/release-lifecycle.mjs '${{ inputs.train }}' '${{ github.sha }}'
 
-      # GitHub's Releases API creates a missing tag as part of the release. If
-      # a delayed run targets a release commit behind HEAD and workflow files
-      # changed in between, that implicit ref creation requires workflows:write
-      # — a permission GITHUB_TOKEN cannot receive. Create only that recovery
-      # tag as an ordinary Git ref first; Release Please then attaches the
-      # release to the existing, verified tag. On-time release runs retain the
-      # normal draft-without-a-tag lifecycle.
+      # The dispatcher now registers tags before entering the train queue.
+      # Keep this fail-closed check for releases stranded before that registrar
+      # and the strict workflow-merge barrier were deployed: a historical
+      # workflow tree cannot always be tagged by GITHUB_TOKEN afterwards.
       - name: Require tags for delayed release commits
         if: (github.event_name == 'push' || inputs.reconcile) && steps.lifecycle.outputs.mode == 'release'
         env:
@@ -571,7 +607,10 @@ jobs:
 
       - name: Open mobile release PR or create release
         id: release-mobile
-        if: (github.event_name == 'push' || inputs.reconcile) && inputs.train == 'mobile' && steps.selected-trains.outputs.mobile == 'true' && steps.lifecycle.outputs.mode != 'skip'
+        if: >-
+          inputs.train == 'mobile' &&
+          (((github.event_name == 'push' || inputs.reconcile) && steps.selected-trains.outputs.mobile == 'true' && steps.lifecycle.outputs.mode != 'skip') ||
+          (inputs.mobile-replan && steps.lifecycle.outputs.mode == 'plan'))
         # renovate: datasource=github-actions depName=googleapis/release-please-action
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
@@ -637,10 +676,14 @@ jobs:
             exit 1
           fi
           tag="v${VERSION}"
-          release_json="$(gh release view "$tag" --json isDraft,targetCommitish)"
+          release_json="$(gh release view "$tag" --json isDraft,isPrerelease,targetCommitish)"
           is_draft="$(jq -r '.isDraft' <<<"$release_json")"
           target="$(jq -r '.targetCommitish' <<<"$release_json")"
           if [[ "$REPUBLISH" == 'true' ]]; then
+            if [[ "$(jq -r '.isPrerelease' <<< "$release_json")" == true ]]; then
+              echo '::error::A Staging prerelease requires its production promotion PR.' >&2
+              exit 1
+            fi
             if [[ "$is_draft" == 'true' ]]; then
               echo "::error::$tag is still a draft; republish is only for an existing release." >&2
               exit 1
@@ -805,9 +848,6 @@ jobs:
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
 
   publish-mobile-native:
-    # Not gated on the cutover: the native app is its own release train and
-    # carries no Server image, so a failing Server cutover has nothing to say
-    # about it.
     needs: release-please
     if: >-
       always() && inputs.train == 'mobile' &&
@@ -815,303 +855,85 @@ jobs:
       needs.release-please.outputs.mobile-already-published != 'true' &&
       (needs.release-please.outputs.mobile-release-created == 'true' ||
       (github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] != '' && github.ref == 'refs/heads/main'))
-    # Public-repository GitHub-hosted runners are free. Keep the expensive macOS
-    # allocation scoped to the native release job only.
-    runs-on: xcode-27
-    timeout-minutes: 120
+    uses: ./.github/workflows/mobile-native-build.yml
+    secrets: inherit
+    permissions:
+      contents: write
+      id-token: write
+      issues: write
+      pull-requests: write
+    with:
+      mobile-tag: ${{ github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] || needs.release-please.outputs.mobile-tag }}
+      variant: staging
+
+  dispatch-mobile-production:
+    needs: release-please
+    if: >-
+      always() && inputs.train == 'mobile' &&
+      needs.release-please.result == 'success' &&
+      needs.release-please.outputs.mobile-already-published != 'true' &&
+      (needs.release-please.outputs.mobile-release-created == 'true' ||
+      (github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] != '' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
     env:
       MOBILE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] || needs.release-please.outputs.mobile-tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Start independent production build
+        run: gh workflow run mobile-production-build.yml --ref main -f mobile-tag="$MOBILE_TAG"
+
+  finalize-mobile-staging:
+    needs: [release-please, publish-mobile-native]
+    if: needs.publish-mobile-native.result == 'success'
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       issues: write
-      # The release PR labels below are moved through the issues endpoint, but
-      # GitHub authorizes labels on a pull request against this scope; with
-      # read access the move fails with 403 after every artifact is published.
       pull-requests: write
+      actions: write
+    env:
+      MOBILE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs['mobile-tag'] || needs.release-please.outputs.mobile-tag }}
     steps:
-      - name: Resolve immutable native release source
-        id: native-source
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$MOBILE_TAG" =~ ^mobile-v[0-9]+\.[0-9]+\.0$ ]]
-          release="$(gh release view "$MOBILE_TAG" --json isDraft,targetCommitish)"
-          [[ "$(jq -r .isDraft <<< "$release")" == true ]]
-          sha="$(jq -r .targetCommitish <<< "$release")"
-          [[ "$sha" =~ ^[a-f0-9]{40}$ ]] || {
-            echo '::error::Native draft must record an immutable source SHA.' >&2
-            exit 1
-          }
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-
-      # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.native-source.outputs.sha }}
           fetch-depth: 0
-
-      - name: Validate native release
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-staging-${{ env.MOBILE_TAG }}
+          path: native-candidates
+      # renovate: datasource=github-actions depName=sigstore/cosign-installer
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - name: Record verified staging build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$MOBILE_TAG" =~ ^mobile-v[0-9]+\.[0-9]+\.0$ ]]; then
-            echo "::error::Native release tag must match mobile-vX.Y.0, got '$MOBILE_TAG'." >&2
+          release="$(gh release view "$MOBILE_TAG" --json targetCommitish)"
+          export SOURCE_REVISION="$(jq -r .targetCommitish <<< "$release")"
+          [[ "$SOURCE_REVISION" =~ ^[a-f0-9]{40}$ ]] || {
+            echo '::error::Native release must record an immutable source SHA.' >&2
             exit 1
-          fi
-          is_draft="$(gh release view "$MOBILE_TAG" --json isDraft --jq '.isDraft')"
-          if [[ "$is_draft" != "true" ]]; then
-            echo "::error::$MOBILE_TAG must still be a draft release before TestFlight publishing." >&2
-            exit 1
-          fi
-          configured_version="$(tr -d '[:space:]' < apps/mobile/version.txt)"
-          if [[ "mobile-v${configured_version}" != "$MOBILE_TAG" ]]; then
-            echo "::error::Checked-out mobile version $configured_version does not match $MOBILE_TAG." >&2
-            exit 1
-          fi
-
-      - name: Verify native tag still names the candidate
-        shell: bash
-        run: |
-          set -euo pipefail
+          }
           if git show-ref --verify --quiet "refs/tags/${MOBILE_TAG}"; then
-            [[ "$(git rev-parse "${MOBILE_TAG}^{commit}")" == "$(git rev-parse HEAD)" ]] || {
+            [[ "$(git rev-parse "${MOBILE_TAG}^{commit}")" == "$SOURCE_REVISION" ]] || {
               echo '::error::Native tag differs from its recorded release source.' >&2
               exit 1
             }
           fi
-
-      # The release job must not depend on the ambient Node.js installation.
-      # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24.21.0'
-
-      - name: Require App Store Connect credentials
-        env:
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
-          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for name in ASC_ISSUER_ID ASC_KEY_ID ASC_KEY_P8 ASC_APP_ID APPLE_TEAM_ID EXPO_TOKEN; do
-            if [[ -z "${!name:-}" ]]; then
-              echo "::error::$name is required for the native TestFlight release." >&2
-              exit 1
-            fi
-          done
-
-      - name: Require Google Drive OAuth client
-        env:
-          GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "${GOOGLE_AUTH_ID:-}" =~ ^[0-9]+-[a-z0-9-]+\.apps\.googleusercontent\.com$ ]]; then
-            echo "::error::GOOGLE_AUTH_ID must contain a Google iOS OAuth client ID." >&2
-            exit 1
-          fi
-
-      - name: Install mobile dependencies
-        run: npm ci
-
-      - name: Prepare mobile sources
-        run: |
-          npm run -w @verity/mobile-app patch:native
-          npm run -w @verity/mobile build
-
-      - name: Configure native compiler cache pilot
-        id: compiler-cache
-        shell: bash
-        run: |
-          set -euo pipefail
-          command -v ccache >/dev/null || brew install ccache
-          toolchain="$( { xcodebuild -version; ccache --version; } | shasum -a 256 | cut -d ' ' -f 1)"
-          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
-          {
-            echo "USE_CCACHE=1"
-            echo "CCACHE_DIR=$RUNNER_TEMP/verity-mobile-ccache"
-            echo "CCACHE_CONFIGPATH=$GITHUB_WORKSPACE/apps/mobile/build/ccache.conf"
-            echo "EAS_LOCAL_BUILD_WORKINGDIR=$RUNNER_TEMP/verity-eas-build"
-            echo "CCACHE_BASEDIR=$RUNNER_TEMP/verity-eas-build"
-          } >> "$GITHUB_ENV"
-
-      # Reuse only compiler objects, never credentials, IPAs, or EAS work directories.
-      # Restore across dependency updates only within the same toolchain and policy.
-      # app.config.ts contains the release version, which changes for every native
-      # release. ccache validates source content and compiler arguments itself;
-      # hashing that file here would discard reusable objects at every release.
-      # renovate: datasource=github-actions depName=actions/cache
-      - name: Restore native compiler cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/verity-mobile-ccache
-          key: mobile-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler-cache.outputs.toolchain }}-${{ hashFiles('apps/mobile/build/ccache.conf', 'scripts/patch-mobile-native-deps.mjs', 'scripts/prepare-mobile-eas-build.mjs') }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            mobile-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler-cache.outputs.toolchain }}-${{ hashFiles('apps/mobile/build/ccache.conf', 'scripts/patch-mobile-native-deps.mjs', 'scripts/prepare-mobile-eas-build.mjs') }}-
-
-      - name: Reset native compiler cache statistics
-        run: ccache --zero-stats
-
-      - name: Build and upload native TestFlight release
-        working-directory: apps/mobile
-        env:
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
-          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-          GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          key_dir="$RUNNER_TEMP/app-store-connect"
-          key_path="$key_dir/AuthKey_${ASC_KEY_ID}.p8"
-          ipa="$RUNNER_TEMP/Verity.ipa"
-          mkdir -p "$key_dir"
-          printf '%s' "$ASC_KEY_P8" > "$key_path"
-          chmod 600 "$key_path"
-
-          mint_asc_jwt() {
-            ruby -ropenssl -rjson -rbase64 -e '
-              b64 = ->(value) { Base64.urlsafe_encode64(value, padding: false) }
-              header = b64.call({ alg: "ES256", kid: ENV.fetch("ASC_KEY_ID"), typ: "JWT" }.to_json)
-              now = Time.now.to_i
-              claims = b64.call({ iss: ENV.fetch("ASC_ISSUER_ID"), iat: now - 60, exp: now + 1200, aud: "appstoreconnect-v1" }.to_json)
-              input = "#{header}.#{claims}"
-              der = OpenSSL::PKey.read(File.read(ARGV.fetch(0))).sign(OpenSSL::Digest::SHA256.new, input)
-              r, s = OpenSSL::ASN1.decode(der).value.map(&:value)
-              raw = [r, s].map { |part| [part.to_s(16).rjust(64, "0")].pack("H*") }.join
-              print "#{input}.#{b64.call(raw)}"
-            ' "$key_path"
-          }
-          asc_jwt="$(mint_asc_jwt)"
-          expected_bundle_id="$(npx expo config --type public --json \
-            | ruby -rjson -e 'print JSON.parse(STDIN.read).dig("ios", "bundleIdentifier")')"
-          app_json="$(curl --fail-with-body \
-            --retry 3 --retry-all-errors --max-time 30 \
-            --header "Authorization: Bearer $asc_jwt" \
-            "https://api.appstoreconnect.apple.com/v1/apps/$ASC_APP_ID")"
-          actual_bundle_id="$(ruby -rjson -e 'print JSON.parse(STDIN.read).dig("data", "attributes", "bundleId")' <<< "$app_json")"
-          if [[ "$actual_bundle_id" != "$expected_bundle_id" ]]; then
-            echo "::error::ASC_APP_ID $ASC_APP_ID belongs to '$actual_bundle_id', expected '$expected_bundle_id'." >&2
-            exit 1
-          fi
-
-          builds_json="$(curl --fail-with-body --get \
-            --retry 3 --retry-all-errors --max-time 30 \
-            --header "Authorization: Bearer $asc_jwt" \
-            --data-urlencode "filter[app]=$ASC_APP_ID" \
-            --data-urlencode 'sort=-uploadedDate' \
-            --data-urlencode 'limit=1' \
-            https://api.appstoreconnect.apple.com/v1/builds)"
-          latest_build="$(ruby -rjson -e 'data=JSON.parse(STDIN.read).fetch("data"); puts(data.empty? ? 0 : Integer(data.first.dig("attributes", "version")))' <<< "$builds_json")"
-          next_build="$((latest_build + 1))"
-          export VERITY_IOS_BUILD_NUMBER="$next_build"
-
-          # The repository normally lets EAS manage its remote counter. This
-          # release instead uses the next number observed in App Store Connect,
-          # so make only this runner's temporary EAS config use the local value.
-          ruby -rjson -e '
-            path = "eas.json"
-            config = JSON.parse(File.read(path))
-            config.fetch("cli")["appVersionSource"] = "local"
-            config.fetch("build").fetch("testflight")["autoIncrement"] = false
-            File.write(path, JSON.pretty_generate(config) + "\n")
-          '
-
-          # Build on the GitHub macOS runner while EAS supplies the remote
-          # distribution certificate and provisioning profile. This does not
-          # consume an EAS cloud-build slot or its build minutes.
-          build_started="$(date +%s)"
-          npx --yes eas-cli@20.3.0 build \
-            --platform ios \
-            --profile testflight \
-            --local \
-            --non-interactive \
-            --output "$ipa"
-
-          info_plist="$RUNNER_TEMP/Verity-Info.plist"
-          unzip -p "$ipa" 'Payload/*.app/Info.plist' > "$info_plist"
-          next_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info_plist")"
-          if [[ "$next_build" != "$VERITY_IOS_BUILD_NUMBER" ]]; then
-            echo "::error::The locally built IPA has build number '$next_build', expected '$VERITY_IOS_BUILD_NUMBER'." >&2
-            exit 1
-          fi
-          echo "Built App Store build number $next_build locally on GitHub Actions."
-
-          mkdir -p "$HOME/.appstoreconnect/private_keys"
-          cp "$key_path" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
-          echo "Native build and IPA verification: $(( $(date +%s) - build_started )) seconds" >> "$GITHUB_STEP_SUMMARY"
-          upload_started="$(date +%s)"
-          xcrun altool --upload-app --type ios --file "$ipa" \
-            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
-
-          echo "Apple upload acceptance: $(( $(date +%s) - upload_started )) seconds" >> "$GITHUB_STEP_SUMMARY"
-          processing_started="$(date +%s)"
-
-          # altool success means only that Apple accepted the upload. Keep the
-          # draft GitHub release closed until App Store Connect has processed
-          # this exact build and declared it valid.
-          for attempt in {1..60}; do
-            asc_jwt="$(mint_asc_jwt)"
-            if ! uploaded_builds="$(curl --fail-with-body --get \
-              --retry 3 --retry-all-errors --max-time 30 \
-              --header "Authorization: Bearer $asc_jwt" \
-              --data-urlencode "filter[app]=$ASC_APP_ID" \
-              --data-urlencode "filter[version]=$next_build" \
-              --data-urlencode 'limit=1' \
-              https://api.appstoreconnect.apple.com/v1/builds)"; then
-              if [[ "$attempt" == 60 ]]; then
-                echo "::error::App Store Connect remained unavailable while checking build $next_build." >&2
-                exit 1
-              fi
-              echo "App Store Connect check failed transiently; retrying ($attempt/60)."
-              sleep 30
-              continue
-            fi
-            processing_state="$(ruby -rjson -e '
-              data = JSON.parse(STDIN.read).fetch("data")
-              print(data.empty? ? "MISSING" : data.first.dig("attributes", "processingState"))
-            ' <<< "$uploaded_builds")"
-            case "$processing_state" in
-              VALID)
-                echo "App Store Connect processed build $next_build successfully."
-                echo "Apple processing: $(( $(date +%s) - processing_started )) seconds" >> "$GITHUB_STEP_SUMMARY"
-                break
-                ;;
-              FAILED|INVALID)
-                echo "::error::App Store Connect rejected build $next_build during processing ($processing_state)." >&2
-                exit 1
-                ;;
-              MISSING|PROCESSING)
-                if [[ "$attempt" == 60 ]]; then
-                  echo "::error::Timed out waiting for App Store Connect to process build $next_build." >&2
-                  exit 1
-                fi
-                echo "Build $next_build is $processing_state; waiting for App Store Connect ($attempt/60)."
-                sleep 30
-                ;;
-              *)
-                echo "::error::Unexpected App Store Connect processing state '$processing_state'." >&2
-                exit 1
-                ;;
-            esac
-          done
-
-      - name: Report native compiler cache statistics
-        if: always() && steps.compiler-cache.outcome == 'success'
-        run: |
-          ccache --show-stats --verbose >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/lib/mobile-release-evidence.sh verify native-candidates
+          gh release upload "$MOBILE_TAG" \
+            native-candidates/native-staging.json \
+            native-candidates/native-staging.sigstore.json \
+            native-candidates/native-staging.provenance.sigstore.json \
+            native-candidates/native-staging.intoto.jsonl --clobber
 
       - name: Publish verified native GitHub release
         env:
@@ -1120,6 +942,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          publish_staging_release() {
+            state="$(gh release view "$MOBILE_TAG" --json isDraft,isPrerelease)" || return $?
+            jq -e '(.isDraft | type) == "boolean" and (.isPrerelease | type) == "boolean"' <<< "$state" >/dev/null || return 1
+            # A retry must preserve a production release approved in the meantime.
+            if jq -e '.isDraft or .isPrerelease' <<< "$state" >/dev/null; then
+              gh release edit "$MOBILE_TAG" --draft=false --prerelease=true --latest=false
+            fi
+          }
           # Artifact-only bridges have no release-please PR; publish their pinned
           # draft without reconciling labels or marking them as the latest release.
           # release-please normally replaces this label while creating the
@@ -1130,7 +960,7 @@ jobs:
             version="${MOBILE_TAG#mobile-v}"
             pr_numbers="$(gh api --paginate \
               "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq \
-              '.[] | select(.merged_at != null and .title == "chore(main): release mobile '"$version"'") | .number')"
+              '.[] | select(.merged_at != null and (.title == "chore(main): release mobile '"$version"'" or .title == "chore(release): staging mobile native '"$version"'")) | .number')"
             pr_count="$(awk 'NF { count++ } END { print count + 0 }' <<< "$pr_numbers")"
             if [ "$pr_count" -ne 1 ]; then
               echo "::error::Expected exactly one release PR for $MOBILE_TAG, found $pr_count." >&2
@@ -1158,7 +988,7 @@ jobs:
             require_release_labels false true
 
             publish_status=0
-            gh release edit "$MOBILE_TAG" --draft=false --latest=false || publish_status=$?
+            publish_staging_release || publish_status=$?
             is_draft="$(gh release view "$MOBILE_TAG" --json isDraft --jq '.isDraft')"
             if [ "$is_draft" = "true" ]; then
               gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
@@ -1171,8 +1001,15 @@ jobs:
             fi
             require_release_labels false true
           else
-            gh release edit "$MOBILE_TAG" --draft=false --latest=false
+            publish_staging_release
           fi
+
+      # Merges received while this runtime was unpublished skipped OTA planning.
+      # Release publication has no push event to resume them automatically.
+      - name: Resume Staging OTA planning on the published runtime
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run mobile-ota.yml --ref main
 
   publish-website:
     # The Verity product website rides its own release train, so this job is
@@ -1461,6 +1298,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
     env:
       VERSION: ${{ needs.release-please.outputs.backend-version }}
     steps:
@@ -1563,14 +1401,15 @@ jobs:
       # renovate: datasource=github-actions depName=devcontainers/action
       - name: Publish verity-sandbox-toolkit
         if: ${{ !inputs['backend-artifact-only'] }}
-        uses: devcontainers/action@1082abd5d2bf3a11abccba70eef98df068277772 # v1.4.3
+        uses: devcontainers/action@bef2cf2d1a019b00b45e184f83035e01bd1972f3 # v1.4.4
         with:
           publish-features: 'true'
           base-path-to-features: features
-          features-namespace: heey-global/verity
+          features-namespace: heey-global/verity-staging
           oci-registry: ghcr.io
           disable-repo-tagging: 'true'
 
+      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
       - name: Publish toolkit channel tags
         if: ${{ !inputs['backend-artifact-only'] }}
         shell: bash
@@ -1578,6 +1417,7 @@ jobs:
           set -euo pipefail
           image=ghcr.io/heey-global/verity/verity-sandbox-toolkit
           numeric="${image}:${VERSION}"
+          oras copy "ghcr.io/heey-global/verity-staging/verity-sandbox-toolkit:${VERSION}" "$numeric"
           source_sha="$(git rev-parse HEAD)"
           docker buildx imagetools inspect --raw "$numeric" | \
             jq -e --arg sha "$source_sha" '.annotations["dev.containers.metadata"] | fromjson | .customizations.verity.sourceRevision == $sha' >/dev/null
@@ -1595,8 +1435,28 @@ jobs:
             echo "::error::Cannot resolve toolkit version: $existing" >&2
             exit 1
           fi
-          docker buildx imagetools create --prefer-index=false \
-            -t "${image}:latest" "${image}@${digest}"
+
+      # renovate: datasource=github-actions depName=sigstore/cosign-installer
+      - name: Install release signature verifier
+        if: ${{ !inputs['backend-artifact-only'] }}
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      - name: Sign and verify published artifacts
+        if: ${{ !inputs['backend-artifact-only'] }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for image in "ghcr.io/heey-global/verity/verity-sandbox-toolkit"; do
+            digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${image}:v${VERSION}")"
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+            cosign sign --yes "${image}@${digest}"
+            cosign verify \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity https://github.com/Heey-Global/verity/.github/workflows/release.yml@refs/heads/main \
+              "${image}@${digest}" >/dev/null
+          done
 
   save-script-sandbox-cache:
     # Recovery inputs must never seed a cache later consumed by main.
@@ -1884,6 +1744,7 @@ jobs:
             VERITY_BUNDLED_PROJECT_RELAY_IMAGE=${{ needs.stage-bundled-images.outputs.project-relay-image }}
             VERITY_BUNDLED_MATRIX_CONNECTOR_IMAGE=${{ needs.stage-bundled-images.outputs.matrix-connector-image }}
             VERITY_BUNDLED_POSTGRES_IMAGE=${{ steps.postgres.outputs.image }}
+            STAGING_GOOGLE_AUTH_ID=${{ secrets.STAGING_GOOGLE_AUTH_ID }}
             GOOGLE_AUTH_ID=${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
@@ -2035,7 +1896,6 @@ jobs:
             echo "${REGISTRY}/${IMAGE_NAME}:${IMAGE_VERSION}"
             if [[ "${{ inputs.backend-artifact-only }}" != true ]]; then
               echo "${REGISTRY}/${IMAGE_NAME}:sha-${SHORT_SHA}"
-              echo "${REGISTRY}/${IMAGE_NAME}:latest"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
@@ -2078,7 +1938,7 @@ jobs:
               "${image}:sha-${short_sha}-amd64" "${image}:sha-${short_sha}-arm64"
           if [[ "${{ inputs.backend-artifact-only }}" != true ]]; then
             docker buildx imagetools create \
-              -t "${image}:sha-${short_sha}" -t "${image}:latest" "${image}:v${VERSION}"
+              -t "${image}:sha-${short_sha}" "${image}:v${VERSION}"
           fi
           digest="$(docker buildx imagetools inspect "${image}:v${VERSION}" --format '{{ .Manifest.Digest }}')"
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
@@ -2180,7 +2040,7 @@ jobs:
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       # renovate: datasource=github-actions depName=oras-project/setup-oras
-      - uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
 
       - name: Prepare signed architecture release channel
         shell: bash
@@ -2207,6 +2067,12 @@ jobs:
             -e VERITY_RELEASE_ARCHITECTURE="$ARCHITECTURE" \
             -e VERITY_RELEASE_PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             "$image" release-channel-metadata > "$workdir/payload.json"
+
+          jq '.channel = "staging" | .generation = ("staging-" + .version)' "$workdir/payload.json" > "$workdir/staging-payload.json"
+          cosign sign-blob --yes --bundle "$workdir/staging-bundle.json" "$workdir/staging-payload.json"
+          printf '{"payload":"%s","signature":{"kind":"sigstore-bundle","bundle":"%s"}}' \
+            "$(base64 -w0 "$workdir/staging-payload.json")" \
+            "$(base64 -w0 "$workdir/staging-bundle.json")" > "$workdir/staging-channel.json"
 
           cosign sign-blob --yes --bundle "$workdir/bundle.json" "$workdir/payload.json"
           cosign verify-blob \
@@ -2272,11 +2138,12 @@ jobs:
           pattern: server-release-evidence-v${{ needs.release-please.outputs.backend-version }}-*
           path: evidence
       # renovate: datasource=github-actions depName=oras-project/setup-oras
-      - uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
       - name: Promote verified architecture channels
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.release-please.outputs.backend-version }}
+          REPUBLISH: ${{ inputs.backend-republish }}
         shell: bash
         run: |
           set -euo pipefail
@@ -2285,9 +2152,20 @@ jobs:
             directory="evidence/server-release-evidence-v${VERSION}-${architecture}"
             test -s "$directory/channel.json"
             (cd "$directory" && oras push \
-              "ghcr.io/heey-global/verity/verity-server:channel-stable-${architecture}" \
+              "ghcr.io/heey-global/verity/verity-server:candidate-stable-v${VERSION}-${architecture}" \
               --artifact-type application/vnd.verity.release-channel.v1+json \
               channel.json:application/json)
+            if [ "$REPUBLISH" = true ]; then
+              (cd "$directory" && oras push \
+                "ghcr.io/heey-global/verity/verity-server:channel-stable-${architecture}" \
+                --artifact-type application/vnd.verity.release-channel.v1+json \
+                channel.json:application/json)
+            else
+            (cd "$directory" && cp staging-channel.json channel.json && oras push \
+              "ghcr.io/heey-global/verity/verity-server:channel-staging-${architecture}" \
+              --artifact-type application/vnd.verity.release-channel.v1+json \
+              channel.json:application/json)
+            fi
           done
 
   publish-server-release-evidence:
@@ -2447,6 +2325,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: heey-global/verity-sandbox
@@ -2489,8 +2368,28 @@ jobs:
                 "${image}:sha-${short_sha}-amd64" "${image}:sha-${short_sha}-arm64"
             if [[ "${{ inputs.backend-artifact-only }}" != true ]]; then
               docker buildx imagetools create \
-                -t "${image}:sha-${short_sha}" -t "${image}:latest" "${image}:v${VERSION}"
+                -t "${image}:sha-${short_sha}" "${image}:v${VERSION}"
             fi
+          done
+
+      # renovate: datasource=github-actions depName=sigstore/cosign-installer
+      - name: Install release signature verifier
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      - name: Sign and verify published artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for image in "${REGISTRY}/${IMAGE_NAME}" "${REGISTRY}/${IMAGE_NAME_NEW}"; do
+            digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${image}:v${VERSION}")"
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+            cosign sign --yes "${image}@${digest}"
+            cosign verify \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity https://github.com/Heey-Global/verity/.github/workflows/release.yml@refs/heads/main \
+              "${image}@${digest}" >/dev/null
           done
 
   build-project-relay:
@@ -2634,6 +2533,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: heey-global/verity/verity-project-relay
@@ -2680,7 +2580,7 @@ jobs:
             node .release-tools/scripts/publish-release-index.mjs
           if [[ "${{ inputs.backend-artifact-only }}" != true ]]; then
             docker buildx imagetools create \
-              -t "${image}:sha-${short_sha}" -t "${image}:latest" "${image}:v${VERSION}"
+              -t "${image}:sha-${short_sha}" "${image}:v${VERSION}"
           fi
 
       - name: Record digest-pinned relay reference
@@ -2709,6 +2609,26 @@ jobs:
           name: verity-project-relay-image
           path: verity-project-relay-image.txt
           if-no-files-found: error
+
+      # renovate: datasource=github-actions depName=sigstore/cosign-installer
+      - name: Install release signature verifier
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      - name: Sign and verify published artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for image in "${REGISTRY}/${IMAGE_NAME}"; do
+            digest="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "${image}:v${VERSION}")"
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+            cosign sign --yes "${image}@${digest}"
+            cosign verify \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity https://github.com/Heey-Global/verity/.github/workflows/release.yml@refs/heads/main \
+              "${image}@${digest}" >/dev/null
+          done
 
   build-preview-images:
     # Preview images are not inputs to the stable Server image. Keep them behind
@@ -2879,7 +2799,7 @@ jobs:
               "${image}:sha-${short_sha}-amd64" "${image}:sha-${short_sha}-arm64"
           if [[ "${{ inputs.backend-artifact-only }}" != true ]]; then
             docker buildx imagetools create \
-              -t "${image}:sha-${short_sha}" -t "${image}:latest" "${image}:v${VERSION}"
+              -t "${image}:sha-${short_sha}" "${image}:v${VERSION}"
           fi
           digest="$(docker buildx imagetools inspect "${image}:v${VERSION}" --format '{{ .Manifest.Digest }}')"
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
@@ -3018,7 +2938,7 @@ jobs:
             node .release-tools/scripts/publish-release-index.mjs
           if [[ "${{ inputs.backend-artifact-only }}" != true ]]; then
             docker buildx imagetools create \
-              -t "${image}:sha-${short_sha}" -t "${image}:latest" "${image}:v${VERSION}"
+              -t "${image}:sha-${short_sha}" "${image}:v${VERSION}"
           fi
       - name: Record digest-pinned Matrix connector reference
         id: connector-reference
@@ -3063,103 +2983,65 @@ jobs:
       pull-requests: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # This job has no checkout, so gh cannot infer the repository from .git.
+      # Pin the repository independently of the promotion branch checkout.
       GH_REPO: ${{ github.repository }}
       TAG: v${{ needs.release-please.outputs.backend-version }}
     steps:
-      - name: Publish verified backend release
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+      - name: Open production approval for staged Server
         env:
-          RECONCILE: ${{ inputs.reconcile }}
-        shell: bash
+          VERSION: ${{ needs.release-please.outputs.backend-version }}
+          SOURCE: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true
-          # Artifact-only bridges have no release-please PR; publish their pinned
-          # draft without reconciling labels or marking them as the latest release.
-          # release-please normally replaces this label while creating the
-          # release. Recovery publishes an already-created draft without running
-          # that action. Move the label first, then roll it back if publication
-          # fails so either state remains retryable: pending+draft or tagged+public.
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.backend-artifact-only }}" != true ] && [ "${RECONCILE:-false}" != true ]; then
-            version="${TAG#v}"
-            pr_numbers="$(gh api --paginate \
-              "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq \
-              '.[] | select(.merged_at != null and .title == "chore(main): release server '"$version"'") | .number')"
-            pr_count="$(awk 'NF { count++ } END { print count + 0 }' <<< "$pr_numbers")"
-            if [ "$pr_count" -ne 1 ]; then
-              echo "::error::Expected exactly one release PR for $TAG, found $pr_count." >&2
-              exit 1
-            fi
-            pr_number="$pr_numbers"
-            require_release_labels() {
-              expected_pending="$1"
-              expected_tagged="$2"
-              labels="$(gh api \
-                "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" --jq '.[].name')"
-              pending=false
-              tagged=false
-              grep -Fxq 'autorelease: pending' <<< "$labels" && pending=true
-              grep -Fxq 'autorelease: tagged' <<< "$labels" && tagged=true
-              if [ "$pending" != "$expected_pending" ] || [ "$tagged" != "$expected_tagged" ]; then
-                echo "::error::Release PR labels are pending=$pending tagged=$tagged; expected pending=$expected_pending tagged=$expected_tagged." >&2
-                return 1
-              fi
-            }
-            labels="$(gh api \
-              "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" --jq '.[].name')"
-            pending=false
-            tagged=false
-            grep -Fxq 'autorelease: pending' <<< "$labels" && pending=true
-            grep -Fxq 'autorelease: tagged' <<< "$labels" && tagged=true
-            if [ "$pending" = false ] && [ "$tagged" = false ]; then
-              echo "::error::Release PR has neither pending nor tagged label." >&2
-              exit 1
-            fi
-            if [ "$tagged" = false ]; then
-              gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
-                -f 'labels[]=autorelease: tagged'
-            fi
-            if [ "$pending" = true ]; then
-              # Both labels means an earlier attempt stopped after the idempotent
-              # add. Removing pending resumes that transition safely.
-              gh api --method DELETE \
-                "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels/autorelease%3A%20pending"
-            fi
-            require_release_labels false true
-
-            publish_status=0
-            gh release edit "$TAG" --draft=false --latest=false || publish_status=$?
-            lookup_status=0
-            is_draft="$(gh release view "$TAG" --json isDraft --jq '.isDraft')" || lookup_status=$?
-            if [ "$lookup_status" -ne 0 ]; then
-              # Leave tagged-only in place: the release edit may have succeeded,
-              # and the next recovery attempt can safely resume this state.
-              exit "$lookup_status"
-            fi
-            if [ "$is_draft" = "true" ]; then
-              gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
-                -f 'labels[]=autorelease: pending'
-              gh api --method DELETE \
-                "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels/autorelease%3A%20tagged" || delete_status=$?
-              require_release_labels true false
-              [ "$publish_status" -ne 0 ] || publish_status=1
-              exit "${publish_status:-1}"
-            fi
-            require_release_labels false true
-          else
+          # Reviewed bridge artifacts retain their existing artifact-only path.
+          if [ "${{ inputs.backend-artifact-only }}" = true ]; then
             gh release edit "$TAG" --draft=false --latest=false
+            exit 0
           fi
-
-      # Planning and publication are separate modes, so the push that published
-      # this version could not also plan the next one, and nothing re-runs
-      # planning on its own. Without this dispatch, source commits merged before
-      # this release sit on main with no release PR until an unrelated later push
-      # happens to plan one — silently, with no failed run to notice. The
-      # publication above cleared the draft this planning run refuses to pass.
-      # The dispatcher only ever publishes from a push to main or a reconcile
-      # run at its head, so planning targets that same branch rather than
-      # this run's release tag.
-      - name: Plan the next backend release
-        if: github.event_name == 'push' || inputs.reconcile
-        shell: bash
-        run: gh workflow run release-dispatch.yml --ref main -f backend-replan=true
+          pr="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq '.[] | select(.merged_at != null and (.title == "chore(main): release server '"$VERSION"'" or .title == "chore(release): staging server '"$VERSION"'")) | .number')"
+          [[ "$pr" =~ ^[0-9]+$ ]]
+          amd64="$(oras resolve "ghcr.io/heey-global/verity/verity-server:candidate-stable-v${VERSION}-amd64")"
+          arm64="$(oras resolve "ghcr.io/heey-global/verity/verity-server:candidate-stable-v${VERSION}-arm64")"
+          images='{}'
+          for name in verity-server verity-sandbox verity-project-relay verity-preview-edge verity-preview-connector verity-matrix-connector verity-sandbox-toolkit; do
+            digest="$(oras resolve "ghcr.io/heey-global/verity/${name}:v${VERSION}")"
+            images="$(jq --arg name "$name" --arg ref "ghcr.io/heey-global/verity/${name}@$digest" '. + {($name):$ref}' <<< "$images")"
+          done
+          jq -n --arg version "$VERSION" --arg source "$SOURCE" --argjson releasePr "$pr" --argjson images "$images" \
+            --arg amd64 "ghcr.io/heey-global/verity/verity-server@$amd64" \
+            --arg arm64 "ghcr.io/heey-global/verity/verity-server@$arm64" \
+            '{schema:1, product:"server", version:$version, source:$source, releasePr:$releasePr, images:$images, envelopes:{amd64:$amd64,arm64:$arm64}}' > "$RUNNER_TEMP/server-production.json"
+          if gh release view "$TAG" --json assets --jq '.assets[].name' | grep -Fxq production-candidate.json; then
+            gh release download "$TAG" --pattern production-candidate.json --output "$RUNNER_TEMP/server-production.json" --clobber
+          fi
+          node scripts/production-promotion.ts propose "$RUNNER_TEMP/server-production.json"
+          labels="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${pr}/labels" --jq '.[].name')"
+          pending=false
+          tagged=false
+          grep -Fxq 'autorelease: pending' <<< "$labels" && pending=true
+          grep -Fxq 'autorelease: tagged' <<< "$labels" && tagged=true
+          if [ "$pending" = false ] && [ "$tagged" = false ]; then
+            echo '::error::Release PR has neither pending nor tagged label.' >&2
+            exit 1
+          fi
+          if [ "$tagged" = false ]; then
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${pr}/labels" -f 'labels[]=autorelease: tagged'
+          fi
+          if [ "$pending" = true ]; then
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/${pr}/labels/autorelease%3A%20pending"
+          fi
+          state="$(gh release view "$TAG" --json isDraft,isPrerelease)"
+          jq -e '(.isDraft | type) == "boolean" and (.isPrerelease | type) == "boolean"' <<< "$state" >/dev/null
+          # A retry must preserve a production release approved in the meantime.
+          if jq -e '.isDraft or .isPrerelease' <<< "$state" >/dev/null; then
+            gh release edit "$TAG" --draft=false --prerelease=true --latest=false
+          fi
+          gh workflow run release-dispatch.yml --ref main -f backend-replan=true

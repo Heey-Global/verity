@@ -1,3 +1,10 @@
+import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
+import {
+  createDevcontainerBuildSnapshot,
+  DEVCONTAINER_BASE_IMAGE_ARG,
+  declaresDevcontainerBaseImageArg,
+  pinDevcontainerBaseImage,
+} from './devcontainer-build-boundary.js';
 import {
   STANDARD_MOUNTS,
   DEFAULT_AGENT_SEED_SOURCE,
@@ -145,6 +152,7 @@ import {
   ENV_DRIFT_RECREATES_PER_TICK,
   envDriftIsSoleReason,
   IMAGE_UPDATE_DEFER_REPORT_AFTER_MS,
+  IMAGE_UPDATE_RECREATE_LIMIT,
   type ProjectContainerClass,
 } from './project-relay-migration.js';
 
@@ -184,9 +192,16 @@ const execFileAsync = promisify(execFile);
 // and there is no guest OOM killer: when the ceiling is hit the HOST kills the
 // Sentry, and every session of the project dies with it rather than one runaway
 // build. 4 GiB was hit that way four times in one evening (memcg 3.80 of 3.94 GB
-// shmem), so the ceiling has to fit all of a project's concurrent turns, not a
-// single process. Override per-host with VERITY_SANDBOX_MEMORY (server-main.ts)
+// shmem), and 6 GiB the same way on 2026-10-08, so the ceiling has to fit all of
+// a project's concurrent turns, not a single process. The toolkit's memory guard
+// (features/verity-sandbox-toolkit/bin/verity-memory-guard.mjs) stands in for
+// the missing guest OOM killer: it kills the largest agent-owned command a
+// reserve below this ceiling, so the common overrun costs one build rather than
+// the project. Override per-host with VERITY_SANDBOX_MEMORY (server-main.ts)
 // where the available RAM differs.
+// gVisor counts Sentry host threads as well as guest workload threads.
+export const DEFAULT_SANDBOX_PIDS_LIMIT = 4096;
+
 export const DEFAULT_SANDBOX_MEMORY_BYTES = 6 * 1024 * 1024 * 1024; // 6 GiB
 // Swap allowed per sandbox ON TOP of the memory ceiling (VERITY_SANDBOX_SWAP).
 // Off by default; see the `memorySwapBytes` comment at the container spec.
@@ -404,6 +419,8 @@ export function devcontainerBuildArgs(args: {
     'build',
     '--workspace-folder',
     args.workspaceFolder,
+    '--config',
+    join(args.workspaceFolder, '.devcontainer', 'devcontainer.json'),
     '--image-name',
     args.imageName,
   ];
@@ -436,30 +453,35 @@ export const defaultDevcontainerBuildSpawner: DevcontainerBuildSpawner = async (
   registryToken,
   noCache,
 }) => {
-  const env: NodeJS.ProcessEnv = { ...process.env, DOCKER_HOST: dockerHost };
+  // Image/feature metadata can also perform localEnv substitution. Validating
+  // the repository config alone must not expose the server's environment.
+  const dockerConfigDir = mkdtempSync(join(tmpdir(), 'verity-dockercfg-'));
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    HOME: dockerConfigDir,
+    DOCKER_HOST: dockerHost,
+    DOCKER_CONFIG: dockerConfigDir,
+  };
   // When we have a token, point the devcontainer CLI at a throwaway docker config
   // that authenticates to ghcr.io as the GitHub App (`x-access-token:<token>`).
   // Scoped via DOCKER_CONFIG so it never touches the server's own config and is
   // wiped in `finally`. Mode 0700/0600 — it holds a short-lived bearer.
-  let dockerConfigDir: string | undefined;
-  if (registryToken !== undefined && registryToken.length > 0) {
-    dockerConfigDir = mkdtempSync(join(tmpdir(), 'verity-dockercfg-'));
-    const auth = Buffer.from(`x-access-token:${registryToken}`, 'utf8').toString('base64');
-    writeFileSync(
-      join(dockerConfigDir, 'config.json'),
-      JSON.stringify({ auths: { 'ghcr.io': { auth } } }),
-      { mode: 0o600 },
-    );
-    env.DOCKER_CONFIG = dockerConfigDir;
-  }
   try {
+    if (registryToken !== undefined && registryToken.length > 0) {
+      const auth = Buffer.from(`x-access-token:${registryToken}`, 'utf8').toString('base64');
+      writeFileSync(
+        join(dockerConfigDir, 'config.json'),
+        JSON.stringify({ auths: { 'ghcr.io': { auth } } }),
+        { mode: 0o600 },
+      );
+    }
     return await execFileAsync(
       'devcontainer',
       devcontainerBuildArgs({ workspaceFolder, imageName, additionalFeatures, noCache }),
       { env, maxBuffer: DEVCONTAINER_BUILD_MAX_BUFFER_BYTES },
     );
   } finally {
-    if (dockerConfigDir !== undefined) rmSync(dockerConfigDir, { recursive: true, force: true });
+    rmSync(dockerConfigDir, { recursive: true, force: true });
   }
 };
 
@@ -591,6 +613,7 @@ export interface ProvisionerOptions {
    *  wrapper redeem the capability at `POST /internal/github/token` for a
    *  repo-scoped token minted on demand — so no GitHub token lives at rest. */
   ghTokenCapabilities?: GhTokenCapabilityRegistry | undefined;
+  forgeProxy?: { caCertPem: string; enabled(projectId: string): boolean } | undefined;
   /** Claude-egress mTLS projection (ADR 0006 D10). When set together with
    *  {@link claudeEgressGatewayUrl}, {@link claudeConnectorPort} and
    *  {@link gitSecretRoot}, the provisioner issues this project's client identity
@@ -813,8 +836,8 @@ function readFileNoFollow(path: string): string {
  *  path and its bytes. Same devcontainer + same base + same feature identity ⇒
  *  cache hit; editing any file OR a base-image rollout OR a Feature content
  *  change ⇒ different hash ⇒ rebuild. The `featureIdentity` is optional and
- *  mixed in ONLY when provided — when absent the hash is byte-identical to the
- *  pre-Feature form (back-compat / dormant). Exported for direct
+ *  mixed in only when provided. The build-policy version invalidates images
+ *  produced before project filesystem confinement. Exported for direct
  *  behaviour-driven testing. */
 export function devcontainerContentHash(
   devcontainerDir: string,
@@ -828,6 +851,8 @@ export function devcontainerContentHash(
     hash.update(buf);
     hash.update('\n');
   };
+  // Images built before filesystem confinement must not survive as cache hits.
+  mix('policy', 'project-build-boundary-v1');
   mix('base', baseImageRef);
   if (featureIdentity !== undefined) {
     mix('feature', featureIdentity);
@@ -1165,6 +1190,17 @@ function devcontainerMountBind(mount: string): string | undefined {
   const readonly = fields.get('readonly');
   if (readonly !== undefined && readonly !== 'true' && readonly !== 'false') return undefined;
   return readonly === 'true' ? `${source}:${containerTarget}:ro` : `${source}:${containerTarget}`;
+}
+
+export function projectDevcontainerVolumeBind(projectId: string, bind: string): string {
+  const separator = bind.indexOf(':');
+  const source = bind.slice(0, separator);
+  // Repository volume names are logical names, never authority to mount a
+  // daemon resource belonging to the server or a different project.
+  const digest = createHash('sha256')
+    .update(JSON.stringify([projectId, source]))
+    .digest('hex');
+  return `verity-devc-volume-${digest}${bind.slice(separator)}`;
 }
 
 /** Read and decode one JSON string token inside JSONC. Comments are handled by
@@ -1549,7 +1585,7 @@ export interface Provisioner {
   recoverInterruptedWake?(projectId: string): Promise<ProjectRecord>;
   /** Restart a retained Sandbox with freshly issued authority. */
   wakeProject?(projectId: string): Promise<ProjectRecord>;
-  /** Readiness gate used by turns and Agent Loops; concurrent callers share one wake. */
+  /** Readiness gate used by turns and automations; concurrent callers share one wake. */
   ensureProjectSandboxAwake?(
     projectId: string,
     requestingSessionIds?: ReadonlySet<string>,
@@ -1578,6 +1614,10 @@ export interface Provisioner {
        *  the drift is now a standing condition to be fixed in the provisioner, not
        *  something another recreate will resolve. */
       onEnvDriftUnresolved?: (projectId: string, info: { attempts: number }) => void;
+      /** An image update has been applied `IMAGE_UPDATE_RECREATE_LIMIT` times and
+       *  the sandbox is still reported behind, so the reconciler has stopped
+       *  recreating it. Fired once per project per budget. */
+      onImageUpdateUnresolved?: (projectId: string, info: { attempts: number }) => void;
       onEnvDriftThrottled?: (info: {
         deferred: number;
         attempted: number;
@@ -1638,44 +1678,6 @@ export class ProvisioningWarning extends Error {
     this.name = 'ProvisioningWarning';
     this.warnings = warnings;
   }
-}
-
-function validPort(value: string | null | undefined): string | null {
-  if (value == null) return null;
-  const trimmed = value.trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  const port = Number(trimmed);
-  return port >= 1 && port <= 65535 ? trimmed : null;
-}
-
-interface ProjectPortSettings {
-  devServerHostPort?: string | null;
-  devServerContainerPort?: string | null;
-}
-
-function projectPortBindings(
-  settings: unknown,
-): Array<{ hostPort: string; containerPort: string }> {
-  const candidates = Array.isArray(settings)
-    ? (settings as ProjectPortSettings[])
-    : [settings as ProjectPortSettings | undefined];
-  const seen = new Map<string, string>();
-  const bindings: Array<{ hostPort: string; containerPort: string }> = [];
-  for (const portSettings of candidates) {
-    const hostPort = validPort(portSettings?.devServerHostPort);
-    const containerPort = validPort(portSettings?.devServerContainerPort);
-    if (!hostPort || !containerPort) continue;
-    const existingContainerPort = seen.get(hostPort);
-    if (existingContainerPort !== undefined) {
-      if (existingContainerPort === containerPort) continue;
-      throw new Error(
-        `duplicate dev server host port ${hostPort} maps to both ${existingContainerPort} and ${containerPort}`,
-      );
-    }
-    seen.set(hostPort, containerPort);
-    bindings.push({ hostPort, containerPort });
-  }
-  return bindings;
 }
 
 function writeSecretFile(
@@ -2208,6 +2210,16 @@ export class ProvisionerImpl implements Provisioner {
    *  freshly started container, and both surfaced misleading errors. Concurrent
    *  `provision` calls now coalesce onto the running attempt's promise. */
   private readonly inFlightProvisions = new Map<string, Promise<ProjectRecord>>();
+  private readonly retiringSandboxes = new Set<string>();
+  private readonly sandboxReplacementGenerations = new Map<string, number>();
+  private readonly supervisorReconciliations = new Map<
+    string,
+    {
+      containerName: string;
+      generation: number | undefined;
+      promise: Promise<unknown>;
+    }
+  >();
   /** Per-project tail promises serialize managed-checkout fetch/reset operations.
    *  Unlike provisioning single-flight, every queued synchronization must run:
    *  a later request may correspond to a newer merge that was not visible when
@@ -2459,23 +2471,58 @@ export class ProvisionerImpl implements Provisioner {
             runtimeRoot !== undefined &&
             this.isDir(join(runtimeRoot, 'runners', project.id));
           if (!hasRunnerRuntime && !connectorEnabled) return undefined;
-          try {
-            await this.containerCommand({
-              containerName: project.containerName,
-              dockerHost,
-              user: hasRunnerRuntime
-                ? `0:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`
-                : `${String(this.opts.runnerRuntimeUid ?? RUNNER_RUNTIME_UID)}:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`,
-              workdir: hasRunnerRuntime ? RUNNER_RUNTIME_TARGET : '/',
-              command: hasRunnerRuntime
-                ? 'verity-runner-stack-start'
-                : 'verity-egress-connector-start --standalone',
-              timeoutMs: 12_000,
-            });
-            return undefined;
-          } catch (error) {
-            return error;
+          if (this.retiringSandboxes.has(project.id)) return undefined;
+          const replacementGeneration = this.sandboxReplacementGenerations.get(project.id);
+          const pending = this.supervisorReconciliations.get(project.id);
+          if (
+            pending?.containerName === project.containerName &&
+            pending.generation === replacementGeneration
+          ) {
+            return pending.promise;
           }
+          // A replacement stops and removes the old sandbox while the row still
+          // reads `active` (it only moves to `container_starting` once the new
+          // container phase begins), and starts the stack itself in the new one.
+          // An exec landing in that window hits a sandbox that is going away and
+          // fails with a runtime error that says nothing about the Runner.
+          const entry = {
+            containerName: project.containerName,
+            generation: replacementGeneration,
+            promise: Promise.resolve()
+              .then(async () => {
+                try {
+                  await this.containerCommand({
+                    containerName: project.containerName,
+                    dockerHost,
+                    user: hasRunnerRuntime
+                      ? `0:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`
+                      : `${String(this.opts.runnerRuntimeUid ?? RUNNER_RUNTIME_UID)}:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`,
+                    workdir: hasRunnerRuntime ? RUNNER_RUNTIME_TARGET : '/',
+                    command: hasRunnerRuntime
+                      ? 'verity-runner-stack-start'
+                      : 'verity-egress-connector-start --standalone',
+                    timeoutMs: 12_000,
+                  });
+                  return undefined;
+                } catch (error) {
+                  // The same race from the other side: the replacement began while
+                  // this exec was already in flight.
+                  if (
+                    this.sandboxReplacementGenerations.get(project.id) !== replacementGeneration
+                  ) {
+                    return undefined;
+                  }
+                  return error;
+                }
+              })
+              .finally(() => {
+                if (this.supervisorReconciliations.get(project.id) === entry) {
+                  this.supervisorReconciliations.delete(project.id);
+                }
+              }),
+          };
+          this.supervisorReconciliations.set(project.id, entry);
+          return entry.promise;
         }),
     );
     const failures = outcomes.filter((outcome) => outcome !== undefined);
@@ -2549,6 +2596,19 @@ export class ProvisionerImpl implements Provisioner {
    *  error line that says a fleet-wide cohort is misdeclared. Cleared with the
    *  budget, by the sandbox coming back whole. */
   private readonly envDriftReported = new Set<string>();
+
+  /** Per project, recreates spent on an image update the sandbox still reports
+   *  afterwards (see `IMAGE_UPDATE_RECREATE_LIMIT`). Cumulative for the same reason
+   *  as {@link envDriftRecreates}, and cleared only by a pass in which the update
+   *  checker answered and no longer reports the update for this sandbox. In-memory:
+   *  a restart hands back one budget, which is a bounded number of recreates per
+   *  Server start rather than one per minute. Keyed by project alone because the
+   *  target is: a released Server pins one sandbox image for its whole life, so a
+   *  newer target arrives only with a new Server process and a fresh budget. */
+  private readonly imageUpdateRecreates = new Map<string, number>();
+
+  /** Projects whose exhausted image-update budget has already been reported. */
+  private readonly imageUpdateReported = new Set<string>();
 
   /** Has this project used up its env-drift recreates? Shared by the reconcile tick
    *  and the turn-time repair on purpose: the two are separate loop drivers over the
@@ -3453,6 +3513,10 @@ export class ProvisionerImpl implements Provisioner {
        *  the drift is now a standing condition to be fixed in the provisioner, not
        *  something another recreate will resolve. */
       onEnvDriftUnresolved?: (projectId: string, info: { attempts: number }) => void;
+      /** An image update has been applied `IMAGE_UPDATE_RECREATE_LIMIT` times and
+       *  the sandbox is still reported behind, so the reconciler has stopped
+       *  recreating it. Fired once per project per budget. */
+      onImageUpdateUnresolved?: (projectId: string, info: { attempts: number }) => void;
       onEnvDriftThrottled?: (info: {
         deferred: number;
         attempted: number;
@@ -3508,8 +3572,28 @@ export class ProvisionerImpl implements Provisioner {
         try {
           const { classification, envDriftOnly } = await this.classifyProjectSandbox(project);
           const { busy, confirmed } = await this.probeProjectBusy(project.id);
-          const imageUpdate =
+          const updateOffered =
             classification === 'migrated' && callbacks.updateAvailable?.has(project.id) === true;
+          // Only an answer from the checker refunds the budget: a pass whose update
+          // discovery failed passes no set at all and says nothing about the image.
+          if (
+            classification === 'migrated' &&
+            callbacks.updateAvailable !== undefined &&
+            !updateOffered
+          ) {
+            this.imageUpdateRecreates.delete(project.id);
+            this.imageUpdateReported.delete(project.id);
+          }
+          const imageUpdateAttempts = this.imageUpdateRecreates.get(project.id) ?? 0;
+          const imageUpdateSpent =
+            updateOffered && imageUpdateAttempts >= IMAGE_UPDATE_RECREATE_LIMIT;
+          if (imageUpdateSpent && !this.imageUpdateReported.has(project.id)) {
+            this.imageUpdateReported.add(project.id);
+            callbacks.onImageUpdateUnresolved?.(project.id, { attempts: imageUpdateAttempts });
+          }
+          // A spent budget falls through as a plain `migrated` sandbox, which settles
+          // it below: reported as stalled, left running, and no longer recreated.
+          const imageUpdate = updateOffered && !imageUpdateSpent;
           // A failed automatic recreate may already have removed the old container
           // before its pull/create phase failed. `absent` normally means there is
           // nothing for relay migration to do, but for a repair we explicitly owe it
@@ -3622,6 +3706,7 @@ export class ProvisionerImpl implements Provisioner {
           // a repair that would have worked, permanently: only classifying
           // `migrated` clears the count, and a still-drifted sandbox never does.
           if (envDriftOnly) this.noteEnvDriftRecreate(project.id);
+          if (imageUpdate) this.imageUpdateRecreates.set(project.id, imageUpdateAttempts + 1);
           // The repair itself is past. Anything that throws below is a CALLER's
           // callback, and charging that to the streak would report a sandbox as
           // stuck twice over after two rebuilds that both worked.
@@ -3951,6 +4036,11 @@ export class ProvisionerImpl implements Provisioner {
       this.resolveRelayClaudeGateway(project);
       await this.ensureSandboxRuntime(project);
       replacementStarted = true;
+      this.retiringSandboxes.add(project.id);
+      this.sandboxReplacementGenerations.set(
+        project.id,
+        (this.sandboxReplacementGenerations.get(project.id) ?? 0) + 1,
+      );
       await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
 
       // ADR 0004 — "Update & restart" actively fetched the target image in the
@@ -3980,6 +4070,8 @@ export class ProvisionerImpl implements Provisioner {
         );
       }
       throw cause;
+    } finally {
+      this.retiringSandboxes.delete(project.id);
     }
   }
 
@@ -4794,7 +4886,6 @@ export class ProvisionerImpl implements Provisioner {
       await this.opts.store.updateProjectState(project.id, 'failed', message);
       throw new ProvisioningError(message, cause);
     }
-    const settings = await this.opts.store.getProjectSettings(project.id);
     // Central settings carry git identity/signing material. Doppler credentials
     // stay broker-side and are never part of project provisioning.
     let veritySettings: VeritySettingsRecord | undefined;
@@ -4810,16 +4901,6 @@ export class ProvisionerImpl implements Provisioner {
         'project relay signing requires gitSecretRoot for capability material',
       );
     }
-    await this.opts.store.reconcileDevServerHostPorts(project.id);
-    const devServers = await this.opts.store.listDevServers(project.id);
-    const portBindings = projectPortBindings(
-      devServers.length > 0
-        ? devServers.map((server) => ({
-            devServerHostPort: server.hostPort,
-            devServerContainerPort: server.containerPort,
-          }))
-        : settings,
-    );
     const pathMode = image.usesDevcontainerImage ? 'neutral' : 'home';
     const devcontainerRuntime = image.usesDevcontainerImage
       ? devcontainerRuntimeSettings(join(dirs.clonePath, '.devcontainer'))
@@ -5065,20 +5146,54 @@ export class ProvisionerImpl implements Provisioner {
         0o600,
       );
     }
+    const forgeProxy =
+      this.opts.forgeProxy?.enabled(project.id) === true &&
+      (project.kind === undefined || project.kind === 'github')
+        ? this.opts.forgeProxy
+        : undefined;
+    if (forgeProxy !== undefined && ghTokenCapabilityPath === undefined) {
+      throw new Error('forge proxy test mode requires a project-bound GitHub capability');
+    }
+    const forgeCaPath =
+      forgeProxy === undefined
+        ? undefined
+        : writeSecretFile(
+            this.opts.gitSecretRoot!,
+            `forge_proxy_ca.${project.id}.crt`,
+            forgeProxy.caCertPem,
+            'git',
+            0o644,
+          );
+    const forgeProxyUrl =
+      forgeProxy === undefined ? undefined : effectiveBrokerUrl.replace(/\/+$/, '');
+    const forgeProxyEnv =
+      forgeProxyUrl === undefined
+        ? []
+        : [
+            'VERITY_FORGE_MODE=proxy-test',
+            `VERITY_FORGE_PROXY_URL=${forgeProxyUrl}`,
+            `VERITY_FORGE_PROXY_CA_FILE=${FORGE_PROXY_CA_FILE}`,
+            'GIT_TERMINAL_PROMPT=0',
+            'NO_PROXY=',
+            'no_proxy=',
+          ];
     const ghTokenBrokerBinds =
       ghTokenCapabilityPath !== undefined
-        ? [`${ghTokenCapabilityPath}:${GH_BROKER_CAPABILITY_FILE}:ro`]
+        ? [
+            `${ghTokenCapabilityPath}:${GH_BROKER_CAPABILITY_FILE}:ro`,
+            ...(forgeCaPath === undefined ? [] : [`${forgeCaPath}:${FORGE_PROXY_CA_FILE}:ro`]),
+          ]
         : [];
     const ghTokenBrokerEnv =
       ghTokenCapabilityPath !== undefined
         ? [
-            `VERITY_GH_TOKEN_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/github/token`,
-            `VERITY_GH_TOKEN_DOCKER_CONTAINER=${project.containerName}`,
             `VERITY_GH_BROKER_CAPABILITY_FILE=${GH_BROKER_CAPABILITY_FILE}`,
             // Per-project agent memory broker (ADR 0008). Same internal listener and
             // per-container capability as the gh-token broker; `verity-memory` redeems
             // the capability to append to this project's memory (POST /internal/project/memory).
             `VERITY_PROJECT_MEMORY_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/project/memory`,
+            // Managed dev servers (concept 2.6): `verity-dev-server` add/start/stop/....
+            `VERITY_DEV_SERVER_URL=${effectiveBrokerUrl.replace(/\/+$/, '')}/internal/dev-servers`,
           ]
         : [];
     // Loopback MCP gateway (ADR 0014 D1). Same internal listener again, but no
@@ -5212,10 +5327,20 @@ export class ProvisionerImpl implements Provisioner {
       // server/provisioner has moved to the broker capability model. Injecting
       // the helper here makes every git invocation in agent sessions work
       // immediately, including `docker exec` turns and interactive shells.
+      if (forgeProxyUrl !== undefined)
+        gitRuntimeConfig.push({ key: 'credential.https://github.com.helper', value: '' });
       gitRuntimeConfig.push({
         key: 'credential.https://github.com.helper',
         value: '/opt/agent-seed/bin/verity-gh-cred',
       });
+    }
+    if (forgeProxyUrl !== undefined) {
+      gitRuntimeConfig.push(
+        { key: 'http.https://github.com.proxy', value: forgeProxyUrl },
+        { key: 'http.https://github.com.sslCAInfo', value: FORGE_PROXY_CA_FILE },
+        { key: 'http.https://github.com.sslVerify', value: 'true' },
+        { key: 'credential.interactive', value: 'false' },
+      );
     }
     const gitRuntimeConfigEnv =
       gitRuntimeConfig.length === 0
@@ -5314,7 +5439,9 @@ export class ProvisionerImpl implements Provisioner {
           codexHome,
           this.opts.claudeConnectorPort,
         ),
-        ...(devcontainerRuntime.binds ?? []),
+        ...(devcontainerRuntime.binds ?? []).map((bind) =>
+          projectDevcontainerVolumeBind(project.id, bind),
+        ),
         ...gvisorResolvBinds,
       ],
       this.opts.dataVolume,
@@ -5438,6 +5565,7 @@ export class ProvisionerImpl implements Provisioner {
         // path. The sandbox redeems the capability for a repo-scoped token; no
         // GitHub token is materialized into the container.
         ...ghTokenBrokerEnv,
+        ...forgeProxyEnv,
         // Loopback MCP gateway: endpoint URL only. The per-turn bearer arrives with
         // `session/new`, so nothing about this one is container-lifetime.
         ...mcpGatewayEnv,
@@ -5470,7 +5598,6 @@ export class ProvisionerImpl implements Provisioner {
       ...(devcontainerRuntime.remoteUser !== undefined
         ? { user: devcontainerRuntime.remoteUser }
         : {}),
-      ...(portBindings.length > 0 ? { portBindings } : {}),
       ...(image.usesDevcontainerImage
         ? {
             entrypoint: DEVCONTAINER_TOOLKIT_ENTRYPOINT,
@@ -5505,7 +5632,7 @@ export class ProvisionerImpl implements Provisioner {
       // agent workloads. Such a devcontainer must be adapted to the outer sandbox.
       securityOpt:
         this.opts.sandboxAllowPrivilegeEscalation === true ? [] : ['no-new-privileges:true'],
-      pidsLimit: this.opts.sandboxPidsLimit ?? 512,
+      pidsLimit: this.opts.sandboxPidsLimit ?? DEFAULT_SANDBOX_PIDS_LIMIT,
       memoryBytes: sandboxMemoryBytes,
       // `MemorySwap` is the COMBINED memory+swap ceiling, so it is always derived
       // from the memory ceiling: equal to it means no swap. Leaving it out is not
@@ -5847,67 +5974,80 @@ export class ProvisionerImpl implements Provisioner {
         'verity-sandbox-toolkit devcontainer Feature ref is required for project devcontainer builds',
       );
     }
-    const unsupportedKeys = unsupportedDevcontainerRuntimeKeys(devcontainerDir);
-    if (unsupportedKeys.length > 0) {
-      throw new Error(
-        `unsupported devcontainer runtime settings: ${unsupportedKeys.join(', ')}. ` +
-          'Verity currently builds devcontainer images but starts them through its own Docker create path.',
-      );
-    }
-    const hash = devcontainerContentHash(
-      devcontainerDir,
-      baseImageRef,
-      `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify(DEVCONTAINER_NODE_FEATURE_OPTIONS)}\n${feature.identity}:${JSON.stringify(DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS)}`,
-    );
-    const derivedTag = devcontainerImageTag(project.owner, project.repo, hash);
-    // Cache check: the derived tag on the daemon means an identical
-    // (devcontainer + base) was already built — reuse it, skip the build.
-    // A forced rebuild is precisely the request to not trust that conclusion,
-    // and so is a devcontainer whose build reads bytes the hash cannot see
-    // (`devcontainerBuildInputsConfined`): for those the tag proves only that
-    // SOME build produced it, never that this checkout did. Fall through to the
-    // build and let the daemon's own content-addressed layer cache decide what
-    // to re-run — it checksums the copied context files, so an unchanged tree
-    // is a cheap all-hit no-op and a changed one rebuilds and re-tags in place.
-    if (
-      !forceRebuild &&
-      devcontainerBuildInputsConfined(devcontainerDir) &&
-      this.opts.docker.imageExists !== undefined
-    ) {
-      const exists = await this.opts.docker.imageExists(derivedTag);
-      if (exists)
-        return {
-          imageRef: derivedTag,
-          usesDevcontainerImage: true,
-          usesConfiguredOverride: !usesDefaultImage,
-        };
-    }
-    // Mint a ghcr token (GitHub App installation, packages:read) so the build can
-    // resolve the PRIVATE verity-sandbox-toolkit Feature + pull the base image as
-    // the App. Best-effort: a mint failure/undefined degrades to no-auth (public).
-    let registryToken: string | undefined;
-    if (this.opts.registryTokenMint !== undefined) {
-      try {
-        registryToken = await this.opts.registryTokenMint();
-      } catch {
-        registryToken = undefined;
+    const snapshot = await createDevcontainerBuildSnapshot(dirs.clonePath);
+    try {
+      const snapshotDevcontainerDir = join(snapshot.workspaceFolder, '.devcontainer');
+      const unsupportedKeys = unsupportedDevcontainerRuntimeKeys(snapshotDevcontainerDir);
+      if (unsupportedKeys.length > 0) {
+        throw new Error(
+          `unsupported devcontainer runtime settings: ${unsupportedKeys.join(', ')}. ` +
+            'Verity currently builds devcontainer images but starts them through its own Docker create path.',
+        );
       }
+      const pinsBase = declaresDevcontainerBaseImageArg(snapshot);
+      const hash = devcontainerContentHash(
+        snapshotDevcontainerDir,
+        baseImageRef,
+        `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify(DEVCONTAINER_NODE_FEATURE_OPTIONS)}\n${feature.identity}:${JSON.stringify(DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS)}` +
+          // Only for Dockerfiles the pin applies to, so every other project keeps
+          // its cached image across this change.
+          (pinsBase ? `\n${DEVCONTAINER_BASE_IMAGE_ARG}=${baseImageRef}` : ''),
+      );
+      const derivedTag = devcontainerImageTag(project.owner, project.repo, hash);
+      // Cache check: the derived tag on the daemon means an identical
+      // (devcontainer + base) was already built — reuse it, skip the build.
+      // A forced rebuild is precisely the request to not trust that conclusion,
+      // and so is a devcontainer whose build reads bytes the hash cannot see
+      // (`devcontainerBuildInputsConfined`): for those the tag proves only that
+      // SOME build produced it, never that this checkout did. Fall through to the
+      // build and let the daemon's own content-addressed layer cache decide what
+      // to re-run — it checksums the copied context files, so an unchanged tree
+      // is a cheap all-hit no-op and a changed one rebuilds and re-tags in place.
+      if (
+        !forceRebuild &&
+        devcontainerBuildInputsConfined(snapshotDevcontainerDir) &&
+        this.opts.docker.imageExists !== undefined
+      ) {
+        const exists = await this.opts.docker.imageExists(derivedTag);
+        if (exists)
+          return {
+            imageRef: derivedTag,
+            usesDevcontainerImage: true,
+            usesConfiguredOverride: !usesDefaultImage,
+          };
+      }
+      // Mint a ghcr token (GitHub App installation, packages:read) so the build can
+      // resolve the PRIVATE verity-sandbox-toolkit Feature + pull the base image as
+      // the App. Best-effort: a mint failure/undefined degrades to no-auth (public).
+      let registryToken: string | undefined;
+      if (this.opts.registryTokenMint !== undefined) {
+        try {
+          registryToken = await this.opts.registryTokenMint();
+        } catch {
+          registryToken = undefined;
+        }
+      }
+      // Build the derived image onto the target daemon. A non-zero exit rejects
+      // with the build stderr, which the caller truncates into provision_error.
+      // After the cache check, into the private copy only: the hash above was
+      // computed over the project's own configuration.
+      if (pinsBase) pinDevcontainerBaseImage(snapshot, baseImageRef);
+      await build({
+        workspaceFolder: snapshot.workspaceFolder,
+        imageName: derivedTag,
+        dockerHost,
+        additionalFeatures: feature.ref,
+        ...(registryToken !== undefined ? { registryToken } : {}),
+        ...(forceRebuild ? { noCache: true } : {}),
+      });
+      return {
+        imageRef: derivedTag,
+        usesDevcontainerImage: true,
+        usesConfiguredOverride: !usesDefaultImage,
+      };
+    } finally {
+      await snapshot.dispose();
     }
-    // Build the derived image onto the target daemon. A non-zero exit rejects
-    // with the build stderr, which the caller truncates into provision_error.
-    await build({
-      workspaceFolder: dirs.clonePath,
-      imageName: derivedTag,
-      dockerHost,
-      additionalFeatures: feature.ref,
-      ...(registryToken !== undefined ? { registryToken } : {}),
-      ...(forceRebuild ? { noCache: true } : {}),
-    });
-    return {
-      imageRef: derivedTag,
-      usesDevcontainerImage: true,
-      usesConfiguredOverride: !usesDefaultImage,
-    };
   }
 
   /** Create the container, pulling the image on demand when it's missing (ADR

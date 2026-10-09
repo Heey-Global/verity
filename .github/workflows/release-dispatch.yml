@@ -36,6 +36,11 @@ on:
         required: false
         default: false
         type: boolean
+      mobile-replan:
+        description: Plan pending mobile changes as a native release PR
+        required: false
+        default: false
+        type: boolean
       backend-replan:
         description: Plan the next backend release PR after a completed publication
         required: false
@@ -59,12 +64,39 @@ on:
 # failed re-plan or recovery run never counts against a stranded release and a
 # reconcile run that ended green without publishing is noticed. Every other
 # trigger keeps GitHub's default title.
-run-name: ${{ format('{0}', inputs.reconcile) == 'true' && 'Reconcile unpublished releases' || '' }}
+run-name: ${{ format('{0}', inputs.reconcile) == 'true' && 'Reconcile unpublished releases' || (format('{0}', inputs['mobile-replan']) == 'true' && format('Replan native mobile {0}', github.sha) || '') }}
 
 permissions: read-all
 
 jobs:
+  register-release-tags:
+    # Never wait for the train lock: workflow merges must see the immutable
+    # release refs even while an earlier native build is still running.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # renovate: datasource=github-actions depName=actions/setup-node
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+      - name: Reserve approved release commits
+        if: github.event_name == 'push' || format('{0}', inputs.reconcile) == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_HEAD: ${{ github.sha }}
+        run: node scripts/release-tag-registration.mjs register "$RELEASE_HEAD"
+
   release-train:
+    needs: register-release-tags
     # Keep metadata and publication for one train in the same lifecycle lock.
     # Otherwise an unpublished draft can be mistaken for a new release boundary.
     strategy:
@@ -98,6 +130,7 @@ jobs:
       # The publisher dispatches this run through the API, which carries inputs
       # as strings, while the manual form sends a real boolean. Normalize both:
       # a string reaching this boolean input fails the whole dispatched run.
+      mobile-replan: ${{ matrix.train == 'mobile' && format('{0}', inputs['mobile-replan']) == 'true' }}
       backend-replan: ${{ matrix.train == 'backend' && format('{0}', inputs['backend-replan']) == 'true' }}
       reconcile: ${{ format('{0}', inputs['reconcile']) == 'true' }}
       website-version: ${{ inputs['website-version'] || '' }}

@@ -1,3 +1,4 @@
+import { googleDriveRequestSchema } from './google-drive-request.js';
 import { chmod } from 'node:fs/promises';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -5,14 +6,14 @@ import { z } from 'zod';
 import {
   GoogleDriveError,
   createDriveFile,
-  deleteDriveFile,
+  getDriveFileSnapshot,
+  mutateDriveFile,
   downloadDriveFile,
   exportDriveFile,
   getDriveFile,
   listDriveFiles,
   planDriveImport,
   referenceDocFileName,
-  updateDriveFile,
   type DriveFile,
 } from './google-drive.js';
 import { ensureProjectKnowledge, KNOWLEDGE_DOCUMENTS_DIR } from './knowledge-folder.js';
@@ -34,6 +35,8 @@ const updateBody = z
   .object({
     name: z.string().trim().min(1).max(255).optional(),
     parentId: z.string().min(1).optional(),
+    expectedVersion: z.string().min(1).max(1024),
+    confirmed: z.literal(true),
   })
   .refine((body) => body.name !== undefined || body.parentId !== undefined);
 const uploadQuery = z.object({
@@ -46,6 +49,7 @@ interface ProjectGoogleDriveFolder {
   projectId: string;
   folderId: string;
   name: string;
+  accessMode?: 'read-only' | 'read-write';
 }
 
 export interface ProjectGoogleDriveRouteDeps {
@@ -54,6 +58,7 @@ export interface ProjectGoogleDriveRouteDeps {
     folderId: string,
   ): Promise<ProjectGoogleDriveFolder | undefined>;
   googleAccessToken(): Promise<string | undefined>;
+  googleAccountIdentity?(): Promise<string | undefined>;
   dataRoot?: string;
 }
 
@@ -67,6 +72,8 @@ export async function assertDriveFileInLinkedFolder(
   seen = new Set<string>(),
   getFile: (accessToken: string, fileId: string) => Promise<DriveFile> = getDriveFile,
 ): Promise<DriveFile> {
+  if (seen.size >= 100)
+    throw new GoogleDriveFolderAuthorityError('Google Drive ancestry is too deep');
   if (seen.has(fileId)) throw new GoogleDriveFolderAuthorityError('cyclic Google Drive ancestry');
   seen.add(fileId);
   const file = await getFile(accessToken, fileId);
@@ -116,15 +123,26 @@ export function registerProjectGoogleDriveRoutes(
     if (error instanceof GoogleDriveFolderAuthorityError) {
       return reply.code(403).send({ error: error.message });
     }
+    if (error instanceof GoogleDriveError && error.reason === 'conflict')
+      return reply.code(409).send({ error: error.message });
     return reply.send(error);
   });
 
   const context = async (projectId: string, folderId: string) => {
+    const account = await deps.googleAccountIdentity?.();
     const [folder, accessToken] = await Promise.all([
       deps.getLinkedFolder(projectId, folderId),
       deps.googleAccessToken(),
     ]);
-    return folder && accessToken ? { folder, accessToken } : undefined;
+    return folder && accessToken ? { folder, accessToken, account } : undefined;
+  };
+
+  const recheckWrite = async (value: NonNullable<Awaited<ReturnType<typeof context>>>) => {
+    const current = await context(value.folder.projectId, value.folder.folderId);
+    if (!current || current.folder.accessMode === 'read-only' || current.account !== value.account)
+      throw new GoogleDriveFolderAuthorityError(
+        'Google Drive access changed during this operation',
+      );
   };
 
   app.get('/projects/:id/google-drive/folders/:folderId/files', async (request, reply) => {
@@ -147,13 +165,31 @@ export function registerProjectGoogleDriveRoutes(
     }
   });
 
+  app.get('/projects/:id/google-drive/folders/:folderId/files/:fileId', async (request, reply) => {
+    const { id, folderId, fileId } = fileParams.parse(request.params);
+    const value = await context(id, folderId);
+    if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
+    return {
+      file: await assertDriveFileInLinkedFolder(
+        value.accessToken,
+        folderId,
+        fileId,
+        new Set(),
+        getDriveFileSnapshot,
+      ),
+    };
+  });
+
   app.post('/projects/:id/google-drive/folders/:folderId/files/create', async (request, reply) => {
     const { id, folderId } = params.parse(request.params);
     const body = createBody.parse(request.body);
     const value = await context(id, folderId);
     if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
+    if (value.folder.accessMode === 'read-only')
+      return reply.code(403).send({ error: 'Google Drive folder is read-only' });
     const parentId = body.parentId ?? folderId;
     await assertDriveFileInLinkedFolder(value.accessToken, folderId, parentId);
+    await recheckWrite(value);
     return {
       file: await createDriveFile(value.accessToken, {
         name: body.name,
@@ -168,9 +204,16 @@ export function registerProjectGoogleDriveRoutes(
     const query = uploadQuery.parse(request.query);
     const value = await context(id, folderId);
     if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
+    if (value.folder.accessMode === 'read-only')
+      return reply.code(403).send({ error: 'Google Drive folder is read-only' });
     const parentId = query.parentId ?? folderId;
     await assertDriveFileInLinkedFolder(value.accessToken, folderId, parentId);
+    if (query.mimeType.startsWith('application/vnd.google-apps.'))
+      return reply
+        .code(415)
+        .send({ error: 'Upload creates regular files; use Workspace tools for native contents' });
     const bytes = await bytesFromRequest(request);
+    await recheckWrite(value);
     return {
       file: await createDriveFile(value.accessToken, {
         name: query.name,
@@ -188,20 +231,88 @@ export function registerProjectGoogleDriveRoutes(
       const body = updateBody.parse(request.body);
       const value = await context(id, folderId);
       if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
+      if (value.folder.accessMode === 'read-only')
+        return reply.code(403).send({ error: 'Google Drive folder is read-only' });
       const file = await assertDriveFileInLinkedFolder(value.accessToken, folderId, fileId);
       if (file.id === folderId)
         return reply.code(403).send({ error: 'the linked folder cannot be changed here' });
-      if (body.parentId)
-        await assertDriveFileInLinkedFolder(value.accessToken, folderId, body.parentId);
+      if (body.parentId) {
+        const destination = await assertDriveFileInLinkedFolder(
+          value.accessToken,
+          folderId,
+          body.parentId,
+        );
+        if (destination.mimeType !== NATIVE_MIME.folder)
+          return reply.code(415).send({ error: 'Destination must be a folder' });
+        try {
+          await assertDriveFileInLinkedFolder(value.accessToken, fileId, body.parentId);
+          return reply
+            .code(409)
+            .send({ error: 'A folder cannot be moved into itself or its descendants' });
+        } catch (error) {
+          if (!(error instanceof GoogleDriveFolderAuthorityError)) throw error;
+        }
+      }
+      await recheckWrite(value);
       return {
-        file: await updateDriveFile(value.accessToken, fileId, {
+        file: await mutateDriveFile(value.accessToken, fileId, {
+          expectedVersion: body.expectedVersion,
           ...(body.name ? { name: body.name } : {}),
           ...(body.parentId && body.parentId !== file.parents?.[0]
             ? {
                 addParentId: body.parentId,
-                ...(file.parents?.[0] ? { removeParentId: file.parents[0] } : {}),
+                ...(file.parents?.[0] ? { removeParentId: file.parents.join(',') } : {}),
               }
             : {}),
+        }),
+      };
+    },
+  );
+
+  app.put(
+    '/projects/:id/google-drive/folders/:folderId/files/:fileId/content',
+    // JSON escaping can require six wire bytes per accepted content byte.
+    { bodyLimit: 60_010_000 },
+    async (request, reply) => {
+      const { id, folderId, fileId } = fileParams.parse(request.params);
+      const body = z
+        .object({
+          content: z.string().max(10_000_000),
+          encoding: z.enum(['utf8', 'base64']).default('utf8'),
+          expectedVersion: z.string().min(1).max(1024),
+          confirmed: z.literal(true),
+        })
+        .parse(request.body);
+      const value = await context(id, folderId);
+      if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
+      if (value.folder.accessMode === 'read-only')
+        return reply.code(403).send({ error: 'Google Drive folder is read-only' });
+      const file = await assertDriveFileInLinkedFolder(
+        value.accessToken,
+        folderId,
+        fileId,
+        new Set(),
+        getDriveFileSnapshot,
+      );
+      if (file.id === folderId || file.mimeType.startsWith('application/vnd.google-apps.'))
+        return reply
+          .code(415)
+          .send({ error: 'Use Workspace tools to edit native document contents' });
+      const operation = googleDriveRequestSchema.parse({
+        action: 'overwrite',
+        fileId,
+        name: file.name,
+        expectedVersion: body.expectedVersion,
+        content: body.content,
+        encoding: body.encoding,
+      });
+      if (operation.action !== 'overwrite') throw new Error('Invalid overwrite operation');
+      await recheckWrite(value);
+      return {
+        file: await mutateDriveFile(value.accessToken, fileId, {
+          expectedVersion: operation.expectedVersion,
+          bytes: Buffer.from(operation.content, operation.encoding ?? 'utf8'),
+          mimeType: file.mimeType,
         }),
       };
     },
@@ -213,10 +324,19 @@ export function registerProjectGoogleDriveRoutes(
       const { id, folderId, fileId } = fileParams.parse(request.params);
       const value = await context(id, folderId);
       if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
+      if (value.folder.accessMode === 'read-only')
+        return reply.code(403).send({ error: 'Google Drive folder is read-only' });
       const file = await assertDriveFileInLinkedFolder(value.accessToken, folderId, fileId);
       if (file.id === folderId)
         return reply.code(403).send({ error: 'the linked folder cannot be deleted here' });
-      await deleteDriveFile(value.accessToken, fileId);
+      const body = z
+        .object({ expectedVersion: z.string().min(1).max(1024), confirmed: z.literal(true) })
+        .parse(request.body);
+      await recheckWrite(value);
+      await mutateDriveFile(value.accessToken, fileId, {
+        expectedVersion: body.expectedVersion,
+        trashed: true,
+      });
       return reply.code(204).send();
     },
   );

@@ -1,3 +1,4 @@
+import { useTaskPreferences } from '../../lib/taskPreferences';
 // Settings, top level: what is left to set up, where everything lives, and the
 // two app-wide switches. Everything with a form of its own is one tap deeper.
 //
@@ -7,17 +8,12 @@
 import {
   settingsChecklist,
   settingsChecklistHeadline,
-  commitAuthorReady,
-  githubRepositoryAccessReady,
-  secretStoreManaged,
-  secretStoreReady,
-  verifiedCommitsReady,
   type SettingsChecklistItemId,
   type VerityClient,
 } from '@verity/mobile';
 import * as Application from 'expo-application';
-import { router, useLocalSearchParams, type Href } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { router, useFocusEffect, type Href } from 'expo-router';
+import { useCallback, useMemo, useState } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 
 import {
@@ -31,10 +27,12 @@ import {
   SettingsToggleRow,
 } from '../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
+import { shareUpdateDiagnostics } from '../../lib/updateDiagnostics';
 import { checkForAppUpdate } from '../../lib/automaticUpdates';
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { useServerUpdateBadge } from '../../lib/serverUpdateBadge';
+import { enterDemoMode, isDemoMode } from '../../lib/demoMode';
 import {
   retryFailedVeritySettings,
   saveVeritySettings,
@@ -52,24 +50,14 @@ const APP_VERSION_LABEL = runningReleaseVersion(Application.nativeApplicationVer
 // without a destination — a row that explains a problem but goes nowhere is
 // worse than no row.
 const CHECKLIST_ROUTES: Readonly<Record<SettingsChecklistItemId, Href>> = {
-  secretStore: '/settings/services' as Href,
+  secretStore: '/settings/secret-store' as Href,
   githubAccess: '/settings/github' as Href,
   commitAuthor: '/settings/github' as Href,
   verifiedCommits: '/settings/github' as Href,
 };
 
 export default function SettingsIndexScreen() {
-  const { agentLogin } = useLocalSearchParams<{ agentLogin?: string | string[] }>();
   const client = useMemo(() => createVerityClient(), []);
-
-  // `/settings?agentLogin=…` used to open the AI-login panel on the one big
-  // screen. The panel now lives under Connected services; forward rather than
-  // break links held by an older notification or an un-updated client.
-  useEffect(() => {
-    if (agentLogin === 'claude' || agentLogin === 'codex') {
-      router.replace(`/settings/services?agentLogin=${agentLogin}` as Href);
-    }
-  }, [agentLogin]);
 
   if (!client) {
     return (
@@ -83,11 +71,42 @@ export default function SettingsIndexScreen() {
 }
 
 function SettingsIndexView({ client }: { client: VerityClient }) {
+  const taskPreferences = useTaskPreferences();
   const reload = useLoadVeritySettings(client);
   const { settings, secretStatus, loading, failed } = useVeritySettings();
   const [checkingForUpdate, setCheckingForUpdate] = useState(false);
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
   const updateVersion = useServerUpdateBadge(true);
+  const [connectedCount, setConnectedCount] = useState<number | undefined>(undefined);
+  // Re-read on focus: this screen stays mounted under /devices, where the
+  // count changes.
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      // Only the row's subtitle depends on it, so a failure leaves the row bare
+      // rather than raising a banner over the whole screen.
+      client
+        .listPairedDevices()
+        .then((devices) => active && setConnectedCount(devices.length))
+        .catch(() => undefined);
+      return () => {
+        active = false;
+      };
+    }, [client]),
+  );
+
+  const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
+  const exportDiagnostics = async () => {
+    if (exportingDiagnostics) return;
+    setExportingDiagnostics(true);
+    try {
+      await shareUpdateDiagnostics();
+    } catch {
+      Alert.alert('Export failed', 'Could not export update diagnostics. Try again later.');
+    } finally {
+      setExportingDiagnostics(false);
+    }
+  };
 
   const checkForManualUpdate = useCallback(() => {
     if (checkingForUpdate) return;
@@ -97,19 +116,14 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         if (result === 'current') Alert.alert('Verity is up to date', APP_VERSION_LABEL);
         if (result === 'busy') Alert.alert('Update check in progress');
         if (result === 'disabled') Alert.alert('Updates unavailable', 'EAS Update is disabled.');
-        if (result === 'failed') {
-          Alert.alert('Update failed', 'Could not check for an update. Try again later.');
+        if (typeof result === 'object' && result.status === 'failed') {
+          Alert.alert('Update failed', result.message);
         }
       })
       .finally(() => setCheckingForUpdate(false));
   }, [checkingForUpdate]);
 
   const checklist = settingsChecklist({ settings, secretStatus, failed });
-  const githubReady =
-    githubRepositoryAccessReady(settings) &&
-    commitAuthorReady(settings) &&
-    verifiedCommitsReady(settings);
-  const servicesNeedsUnlock = secretStoreManaged(secretStatus) && !secretStoreReady(secretStatus);
 
   return (
     <SettingsScaffold
@@ -153,39 +167,57 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         </View>
       ) : null}
 
-      <SettingsGroup title="Setup">
+      <SettingsGroup title="Connections">
         <SettingsListPanel>
           <SettingsNavRow
-            icon="github"
-            title="GitHub"
-            subtitle="Repository access, commit author, signing key"
-            status={
-              loading
-                ? undefined
-                : {
-                    intent: githubReady ? 'ready' : 'needsSetup',
-                    label: githubReady ? 'Ready' : 'Needs setup',
-                  }
-            }
-            onPress={() => router.push('/settings/github')}
-          />
-          <SettingsNavRow
-            icon="key"
-            title="Connected services"
-            subtitle="Secret store, AI logins, transcription, MCP, Matrix"
-            status={
-              !loading && servicesNeedsUnlock
-                ? { intent: 'needsSetup', label: 'Locked' }
-                : undefined
-            }
+            icon="link"
+            title="Connections"
+            subtitle="AI, code, documents and other services"
             onPress={() => router.push('/settings/services')}
           />
+        </SettingsListPanel>
+      </SettingsGroup>
+      <SettingsGroup title="Access">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="monitor"
+            title="Devices & Web Browsers"
+            subtitle={connectedCount !== undefined ? `${connectedCount} connected` : undefined}
+            onPress={() => router.push('/devices')}
+            accessibilityLabel="Manage devices and web browsers"
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
+      <SettingsGroup title="Server">
+        <SettingsListPanel>
           <SettingsNavRow
             icon="download"
             title="Server update"
             subtitle={updateVersion !== null ? `Version ${updateVersion} available` : undefined}
             status={updateVersion !== null ? { intent: 'needsSetup', label: 'Update' } : undefined}
             onPress={() => router.push('/settings/server-update')}
+          />
+          <SettingsNavRow
+            icon="globe"
+            title="Remote access"
+            subtitle="Verity Uplink"
+            onPress={() => router.push('/settings/remote-access')}
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
+      <SettingsGroup title="Features">
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="check-square"
+            title="Tasks"
+            subtitle="Capture bubble, screenshot suggestions"
+            value={taskPreferences.enabled ? 'On' : 'Off'}
+            onPress={() => router.push('/settings/tasks')}
+          />
+          <SettingsNavRow
+            icon="mic"
+            title="Meeting transcription"
+            onPress={() => router.push('/settings/transcription')}
           />
         </SettingsListPanel>
       </SettingsGroup>
@@ -196,30 +228,45 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       <SettingsGroup title="This app">
         <SettingsListPanel>
           <SettingsNavRow
-            icon="server"
-            title="Server"
-            value={getVerityBaseUrl() ?? 'Not set'}
-            onPress={() => router.push('/onboarding/server-url?reconfigure=1')}
-            accessibilityLabel="Change server address"
+            icon="file-text"
+            title="Diagnostics"
+            subtitle={exportingDiagnostics ? 'Preparing…' : 'Export app update logs'}
+            onPress={() => void exportDiagnostics()}
           />
+          {!isDemoMode() ? (
+            <SettingsNavRow
+              icon="play"
+              title="Try demo"
+              subtitle="Local sample data and simulated AI; your server connection is preserved"
+              onPress={() => {
+                void enterDemoMode()
+                  .then(() => router.replace('/'))
+                  .catch((error: unknown) =>
+                    Alert.alert(
+                      'Could not start demo',
+                      error instanceof Error ? error.message : 'Please try again.',
+                    ),
+                  );
+              }}
+            />
+          ) : null}
           <SettingsNavRow
-            icon="smartphone"
-            title="Paired devices"
-            onPress={() => router.push('/devices')}
-            accessibilityLabel="Manage paired devices"
+            icon="server"
+            title="Server address"
+            value={isDemoMode() ? 'Local demo' : (getVerityBaseUrl() ?? 'Not set')}
+            onPress={() => {
+              if (isDemoMode()) {
+                Alert.alert('Demo mode', 'Exit the demo to connect to your own Verity server.');
+              } else {
+                router.push('/onboarding/server-url?reconfigure=1');
+              }
+            }}
+            accessibilityLabel="Change server address"
           />
         </SettingsListPanel>
       </SettingsGroup>
 
       <SettingsGroup title="Advanced">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="mic"
-            title="Live STT test"
-            onPress={() => router.push('/settings/live-meeting-stt')}
-            accessibilityLabel="Test live meeting transcription engines"
-          />
-        </SettingsListPanel>
         <SettingsPanel>
           <Text style={styles.disclosureTitle}>Verity Control</Text>
           <Text style={styles.reproSubtitle}>

@@ -20,12 +20,12 @@ var __copyProps = (to, from, except, desc) => {
   }
   return to;
 };
-var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+var __toESM = (mod, isNodeMode, target2) => (target2 = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
   // If the importer is in node compatibility mode or this is not an ESM
   // file that has been converted to a CommonJS file using a Babel-
   // compatible transform (i.e. "__esModule" has not been set), then set
   // "default" to the CommonJS "module.exports" for node compatibility.
-  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target2, "default", { value: mod, enumerable: true }) : target2,
   mod
 ));
 
@@ -190,8 +190,8 @@ var require_util = __commonJS({
     function objectClone(obj) {
       return Object.create(Object.getPrototypeOf(obj), Object.getOwnPropertyDescriptors(obj));
     }
-    function assignProp(target, prop, value) {
-      Object.defineProperty(target, prop, {
+    function assignProp(target2, prop, value) {
+      Object.defineProperty(target2, prop, {
         value,
         writable: true,
         enumerable: true,
@@ -205,8 +205,8 @@ var require_util = __commonJS({
     function sourceShape(schema) {
       return rawShape(schema._zod.def) ?? schema._zod.def.shape;
     }
-    function deferProp(target, key, getter) {
-      Object.defineProperty(target, key, {
+    function deferProp(target2, key, getter) {
+      Object.defineProperty(target2, key, {
         get() {
           const value = getter();
           assignProp(this, key, value);
@@ -216,36 +216,36 @@ var require_util = __commonJS({
         configurable: true
       });
     }
-    function putProp(target, key, value) {
-      if (key in target)
-        assignProp(target, key, value);
+    function putProp(target2, key, value) {
+      if (key in target2)
+        assignProp(target2, key, value);
       else
-        target[key] = value;
+        target2[key] = value;
     }
-    function mirrorShape(target, source, keys, wrap) {
+    function mirrorShape(target2, source, keys, wrap) {
       const raw = sourceShape(source);
       for (const key of keys) {
         const desc = Object.getOwnPropertyDescriptor(raw, key);
         if (!desc.enumerable)
           continue;
         if (desc.get) {
-          deferProp(target, key, () => {
+          deferProp(target2, key, () => {
             const value = source._zod.def.shape[key];
             return wrap ? wrap(value, key) : value;
           });
         } else
-          putProp(target, key, wrap ? wrap(desc.value, key) : desc.value);
+          putProp(target2, key, wrap ? wrap(desc.value, key) : desc.value);
       }
     }
-    function mirrorProps(target, source) {
+    function mirrorProps(target2, source) {
       for (const key of Reflect.ownKeys(source)) {
         const desc = Object.getOwnPropertyDescriptor(source, key);
         if (!desc.enumerable)
           continue;
         if (desc.get)
-          deferProp(target, key, () => source[key]);
+          deferProp(target2, key, () => source[key]);
         else
-          putProp(target, key, desc.value);
+          putProp(target2, key, desc.value);
       }
     }
     function mergeDefs(...defs) {
@@ -425,35 +425,35 @@ var require_util = __commonJS({
       return params;
     }
     function createTransparentProxy(getter) {
-      let target;
+      let target2;
       return new Proxy({}, {
         get(_, prop, receiver) {
-          target ?? (target = getter());
-          return Reflect.get(target, prop, receiver);
+          target2 ?? (target2 = getter());
+          return Reflect.get(target2, prop, receiver);
         },
         set(_, prop, value, receiver) {
-          target ?? (target = getter());
-          return Reflect.set(target, prop, value, receiver);
+          target2 ?? (target2 = getter());
+          return Reflect.set(target2, prop, value, receiver);
         },
         has(_, prop) {
-          target ?? (target = getter());
-          return Reflect.has(target, prop);
+          target2 ?? (target2 = getter());
+          return Reflect.has(target2, prop);
         },
         deleteProperty(_, prop) {
-          target ?? (target = getter());
-          return Reflect.deleteProperty(target, prop);
+          target2 ?? (target2 = getter());
+          return Reflect.deleteProperty(target2, prop);
         },
         ownKeys(_) {
-          target ?? (target = getter());
-          return Reflect.ownKeys(target);
+          target2 ?? (target2 = getter());
+          return Reflect.ownKeys(target2);
         },
         getOwnPropertyDescriptor(_, prop) {
-          target ?? (target = getter());
-          return Reflect.getOwnPropertyDescriptor(target, prop);
+          target2 ?? (target2 = getter());
+          return Reflect.getOwnPropertyDescriptor(target2, prop);
         },
         defineProperty(_, prop, descriptor) {
-          target ?? (target = getter());
-          return Reflect.defineProperty(target, prop, descriptor);
+          target2 ?? (target2 = getter());
+          return Reflect.defineProperty(target2, prop, descriptor);
         }
       });
     }
@@ -562,12 +562,12 @@ var require_util = __commonJS({
       });
       return clone(a, def);
     }
-    function partial(Class2, schema, mask, name = "partial") {
+    function partial(Class2, schema, mask, name2 = "partial") {
       const currDef = schema._zod.def;
       const checks = currDef.checks;
       const hasChecks = checks && checks.length > 0;
       if (hasChecks) {
-        throw new Error(`.${name}() cannot be used on object schemas containing refinements`);
+        throw new Error(`.${name2}() cannot be used on object schemas containing refinements`);
       }
       const selected = mask ? new Set(maskedKeys(schema, mask)) : void 0;
       const newShape = {};
@@ -920,7 +920,7 @@ var require_core = __commonJS({
       }
       return new Definition();
     }
-    function $constructor(name, initializer, proto, params) {
+    function $constructor(name2, initializer, proto, params) {
       const zodProto = {};
       function Internals(def) {
         this.def = def;
@@ -938,10 +938,10 @@ var require_core = __commonJS({
           } finally {
             _zodDesc.value = void 0;
           }
-        } else if (inst._zod.traits.has(name)) {
+        } else if (inst._zod.traits.has(name2)) {
           return;
         }
-        inst._zod.traits.add(name);
+        inst._zod.traits.add(name2);
         initializer(inst, def);
         if (initialized) {
           const own = Object.getPrototypeOf(inst);
@@ -949,10 +949,10 @@ var require_core = __commonJS({
           let up = own;
           while (up && up !== ctorProto)
             up = Object.getPrototypeOf(up);
-          const target = up ?? own;
-          if (!initialized.has(target)) {
-            initialized.add(target);
-            (0, util_js_1.members)(target, protoMembers);
+          const target2 = up ?? own;
+          if (!initialized.has(target2)) {
+            initialized.add(target2);
+            (0, util_js_1.members)(target2, protoMembers);
           }
         }
         const proto2 = _.prototype;
@@ -967,7 +967,7 @@ var require_core = __commonJS({
       const Parent = params?.Parent ?? Object;
       class Definition extends Parent {
       }
-      Object.defineProperty(Definition, "name", { value: name });
+      Object.defineProperty(Definition, "name", { value: name2 });
       function _(def) {
         const inst = params?.Parent ? newError(Definition) : this;
         init(inst, def);
@@ -988,10 +988,10 @@ var require_core = __commonJS({
         value: (inst) => {
           if (params?.Parent && inst instanceof params.Parent)
             return true;
-          return inst?._zod?.traits?.has(name);
+          return inst?._zod?.traits?.has(name2);
         }
       });
-      Object.defineProperty(_, "name", { value: name });
+      Object.defineProperty(_, "name", { value: name2 });
       return _;
     }
     exports.$brand = /* @__PURE__ */ Symbol("zod_brand");
@@ -1002,8 +1002,8 @@ var require_core = __commonJS({
     };
     exports.$ZodAsyncError = $ZodAsyncError;
     var $ZodEncodeError = class extends Error {
-      constructor(name) {
-        super(`Encountered unidirectional transform during encode: ${name}`);
+      constructor(name2) {
+        super(`Encountered unidirectional transform during encode: ${name2}`);
         this.name = "ZodEncodeError";
       }
     };
@@ -1058,12 +1058,12 @@ var require_errors = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.$ZodRealError = exports.$ZodError = void 0;
@@ -1188,7 +1188,7 @@ var require_errors = __commonJS({
       return fieldErrors;
     }
     function treeifyError(error, mapper = (issue) => issue.message) {
-      const result2 = { errors: [] };
+      const result3 = { errors: [] };
       const processError = (error2, path = []) => {
         var _a;
         for (const issue of error2.issues) {
@@ -1201,10 +1201,10 @@ var require_errors = __commonJS({
           } else {
             const fullpath = [...path, ...issue.path];
             if (fullpath.length === 0) {
-              result2.errors.push(mapper(issue));
+              result3.errors.push(mapper(issue));
               continue;
             }
-            let curr = result2;
+            let curr = result3;
             let i = 0;
             while (i < fullpath.length) {
               const el = fullpath[i];
@@ -1234,7 +1234,7 @@ var require_errors = __commonJS({
         }
       };
       processError(error);
-      return result2;
+      return result3;
     }
     function toDotPath(_path) {
       const segs = [];
@@ -1307,12 +1307,12 @@ var require_parse = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.safeDecodeAsync = exports._safeDecodeAsync = exports.safeEncodeAsync = exports._safeEncodeAsync = exports.safeDecode = exports._safeDecode = exports.safeEncode = exports._safeEncode = exports.decodeAsync = exports._decodeAsync = exports.encodeAsync = exports._encodeAsync = exports.decode = exports._decode = exports.encode = exports._encode = exports.validateAsync = exports.validate = exports.safeParseAsync = exports._safeParseAsync = exports.safeParse = exports._safeParse = exports.parseAsync = exports._parseAsync = exports.parse = exports._parse = void 0;
@@ -1325,16 +1325,16 @@ var require_parse = __commonJS({
     var _parse = (_Err) => {
       const fn = (schema, value, _ctx, _params) => {
         const ctx = _ctx ? { ..._ctx, async: false } : { async: false };
-        const result2 = schema._zod.run({ value, issues: [] }, ctx);
-        if (result2 instanceof Promise) {
+        const result3 = schema._zod.run({ value, issues: [] }, ctx);
+        if (result3 instanceof Promise) {
           throw new core.$ZodAsyncError();
         }
-        if (result2.issues.length) {
-          const e = new (_params?.Err ?? _Err)(result2.issues.map((iss) => util.finalizeIssue(iss, ctx, core.config())));
+        if (result3.issues.length) {
+          const e = new (_params?.Err ?? _Err)(result3.issues.map((iss) => util.finalizeIssue(iss, ctx, core.config())));
           util.captureStackTrace(e, _params?.callee ?? fn);
           throw e;
         }
-        return result2.value;
+        return result3.value;
       };
       return fn;
     };
@@ -1343,15 +1343,15 @@ var require_parse = __commonJS({
     var _parseAsync = (_Err) => {
       const fn = async (schema, value, _ctx, params) => {
         const ctx = _ctx ? { ..._ctx, async: true } : { async: true };
-        let result2 = schema._zod.run({ value, issues: [] }, ctx);
-        if (result2 instanceof Promise)
-          result2 = await result2;
-        if (result2.issues.length) {
-          const e = new (params?.Err ?? _Err)(result2.issues.map((iss) => util.finalizeIssue(iss, ctx, core.config())));
+        let result3 = schema._zod.run({ value, issues: [] }, ctx);
+        if (result3 instanceof Promise)
+          result3 = await result3;
+        if (result3.issues.length) {
+          const e = new (params?.Err ?? _Err)(result3.issues.map((iss) => util.finalizeIssue(iss, ctx, core.config())));
           util.captureStackTrace(e, params?.callee ?? fn);
           throw e;
         }
-        return result2.value;
+        return result3.value;
       };
       return fn;
     };
@@ -1359,11 +1359,11 @@ var require_parse = __commonJS({
     exports.parseAsync = (0, exports._parseAsync)(errors.$ZodRealError);
     var _safeParse = (_Err) => (schema, value, _ctx) => {
       const ctx = _ctx ? { ..._ctx, async: false } : { async: false };
-      const result2 = schema._zod.run({ value, issues: [] }, ctx);
-      if (result2 instanceof Promise) {
+      const result3 = schema._zod.run({ value, issues: [] }, ctx);
+      if (result3 instanceof Promise) {
         throw new core.$ZodAsyncError();
       }
-      return result2.issues.length ? failure(_Err, result2.issues, ctx) : { success: true, data: result2.value };
+      return result3.issues.length ? failure(_Err, result3.issues, ctx) : { success: true, data: result3.value };
     };
     exports._safeParse = _safeParse;
     exports.safeParse = (0, exports._safeParse)(errors.$ZodRealError);
@@ -1388,10 +1388,10 @@ var require_parse = __commonJS({
     }
     var _safeParseAsync = (_Err) => async (schema, value, _ctx) => {
       const ctx = _ctx ? { ..._ctx, async: true } : { async: true };
-      let result2 = schema._zod.run({ value, issues: [] }, ctx);
-      if (result2 instanceof Promise)
-        result2 = await result2;
-      return result2.issues.length ? failure(_Err, result2.issues, ctx) : { success: true, data: result2.value };
+      let result3 = schema._zod.run({ value, issues: [] }, ctx);
+      if (result3 instanceof Promise)
+        result3 = await result3;
+      return result3.issues.length ? failure(_Err, result3.issues, ctx) : { success: true, data: result3.value };
     };
     exports._safeParseAsync = _safeParseAsync;
     exports.safeParseAsync = (0, exports._safeParseAsync)(errors.$ZodRealError);
@@ -1410,24 +1410,24 @@ var require_parse = __commonJS({
     function validateFallback(schema, value, _ctx) {
       const ctx = _ctx ? { ..._ctx, async: false, abortEarly: true } : { async: false, abortEarly: true };
       const fallbackRun = schema._zod.bag.fallbackRun;
-      let result2;
+      let result3;
       if (fallbackRun) {
         ctx[COMPILE_FALLBACK] = true;
-        result2 = fallbackRun({ value, issues: [] }, ctx);
+        result3 = fallbackRun({ value, issues: [] }, ctx);
       } else {
-        result2 = schema._zod.run({ value, issues: [] }, ctx);
+        result3 = schema._zod.run({ value, issues: [] }, ctx);
       }
-      if (result2 instanceof Promise) {
+      if (result3 instanceof Promise) {
         throw new core.$ZodAsyncError();
       }
-      return result2.issues.length === 0;
+      return result3.issues.length === 0;
     }
     var validateAsync = async (schema, value, _ctx) => {
       const ctx = _ctx ? { ..._ctx, async: true, abortEarly: true } : { async: true, abortEarly: true };
-      let result2 = schema._zod.run({ value, issues: [] }, ctx);
-      if (result2 instanceof Promise)
-        result2 = await result2;
-      return result2.issues.length === 0;
+      let result3 = schema._zod.run({ value, issues: [] }, ctx);
+      if (result3 instanceof Promise)
+        result3 = await result3;
+      return result3.issues.length === 0;
     };
     exports.validateAsync = validateAsync;
     var _encode = (_Err) => {
@@ -1533,12 +1533,12 @@ var require_regexes = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.sha1_base64 = exports.sha1_hex = exports.md5_base64url = exports.md5_base64 = exports.md5_hex = exports.hex = exports.uppercase = exports.lowercase = exports.undefined = exports.null = exports.boolean = exports.number = exports.integer = exports.bigint = exports.string = exports.anyString = exports.date = exports.iban = exports.currencyCode = exports.creditCard = exports.e164 = exports.httpProtocol = exports.domain = exports.hostname = exports.base64url = exports.base64 = exports.cidrv6 = exports.cidrv4 = exports.mac = exports.ipv6 = exports.ipv4 = exports.browserEmail = exports.idnEmail = exports.unicodeEmail = exports.rfc5322Email = exports.html5Email = exports.email = exports.uuid7 = exports.uuid6 = exports.uuid4 = exports.uuid = exports.guid = exports.extendedDuration = exports.duration = exports.nanoid = exports.ksuid = exports.xid = exports.ulid = exports.cuid2 = exports.cuid = void 0;
@@ -1560,10 +1560,10 @@ var require_regexes = __commonJS({
     exports.duration = /^P(?:(\d+W)|(?!.*W)(?=\d|T\d)(\d+Y)?(\d+M)?(\d+D)?(T(?=\d)(\d+H)?(\d+M)?(\d+([.,]\d+)?S)?)?)$/;
     exports.extendedDuration = /^[-+]?P(?!$)(?:(?:[-+]?\d+Y)|(?:[-+]?\d+[.,]\d+Y$))?(?:(?:[-+]?\d+M)|(?:[-+]?\d+[.,]\d+M$))?(?:(?:[-+]?\d+W)|(?:[-+]?\d+[.,]\d+W$))?(?:(?:[-+]?\d+D)|(?:[-+]?\d+[.,]\d+D$))?(?:T(?=[\d+-])(?:(?:[-+]?\d+H)|(?:[-+]?\d+[.,]\d+H$))?(?:(?:[-+]?\d+M)|(?:[-+]?\d+[.,]\d+M$))?(?:[-+]?\d+(?:[.,]\d+)?S)?)??$/;
     exports.guid = /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
-    var uuid = (version) => {
-      if (!version)
+    var uuid = (version2) => {
+      if (!version2)
         return /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/;
-      return new RegExp(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-${version}[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$`);
+      return new RegExp(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-${version2}[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$`);
     };
     exports.uuid = uuid;
     exports.uuid4 = (0, exports.uuid)(4);
@@ -1699,12 +1699,12 @@ var require_checks = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.$ZodCheckOverwrite = exports.$ZodCheckMimeType = exports.$ZodCheckProperties = exports.$ZodCheckProperty = exports.$ZodCheckEndsWith = exports.$ZodCheckStartsWith = exports.$ZodCheckIncludes = exports.$ZodCheckUpperCase = exports.$ZodCheckLowerCase = exports.$ZodCheckRegex = exports.$ZodCheckStringFormat = exports.$ZodCheckLengthEquals = exports.$ZodCheckMinLength = exports.$ZodCheckMaxLength = exports.$ZodCheckSizeEquals = exports.$ZodCheckMinSize = exports.$ZodCheckMaxSize = exports.$ZodCheckBigIntFormat = exports.$ZodCheckNumberFormat = exports.$ZodCheckMultipleOf = exports.$ZodCheckGreaterThan = exports.$ZodCheckLessThan = exports.$ZodCheck = void 0;
@@ -2117,22 +2117,22 @@ var require_checks = __commonJS({
         });
       };
     });
-    function handleCheckPropertyResult(result2, payload, property) {
-      if (result2.issues.length) {
-        payload.issues.push(...util.prefixIssues(property, result2.issues));
+    function handleCheckPropertyResult(result3, payload, property) {
+      if (result3.issues.length) {
+        payload.issues.push(...util.prefixIssues(property, result3.issues));
       }
     }
     exports.$ZodCheckProperty = core.$constructor("$ZodCheckProperty", (inst, def) => {
       exports.$ZodCheck.init(inst, def);
       inst._zod.check = (payload) => {
-        const result2 = def.schema._zod.run({
+        const result3 = def.schema._zod.run({
           value: payload.value[def.property],
           issues: []
         }, {});
-        if (result2 instanceof Promise) {
-          return result2.then((result3) => handleCheckPropertyResult(result3, payload, def.property));
+        if (result3 instanceof Promise) {
+          return result3.then((result4) => handleCheckPropertyResult(result4, payload, def.property));
         }
-        handleCheckPropertyResult(result2, payload, def.property);
+        handleCheckPropertyResult(result3, payload, def.property);
         return;
       };
     });
@@ -2151,12 +2151,12 @@ var require_checks = __commonJS({
         const input = payload.value;
         let proms;
         for (const [key, schema] of entries) {
-          const result2 = schema._zod.run({ value: input[key], issues: [] }, {});
-          if (result2 instanceof Promise) {
+          const result3 = schema._zod.run({ value: input[key], issues: [] }, {});
+          if (result3 instanceof Promise) {
             proms ?? (proms = []);
-            proms.push(result2.then((result3) => handleCheckPropertyResult(result3, payload, key)));
+            proms.push(result3.then((result4) => handleCheckPropertyResult(result4, payload, key)));
           } else {
-            handleCheckPropertyResult(result2, payload, key);
+            handleCheckPropertyResult(result3, payload, key);
           }
         }
         if (proms)
@@ -2232,8 +2232,8 @@ var require_doc = __commonJS({
           arg(this, { execution: "async" });
           return;
         }
-        const content = arg;
-        const lines = content.split("\n").filter((x) => x);
+        const content2 = arg;
+        const lines = content2.split("\n").filter((x) => x);
         const minIndent = Math.min(...lines.map((x) => x.length - x.trimStart().length));
         const dedented = lines.map((x) => x.slice(minIndent)).map((x) => " ".repeat(this.indent * 2) + x);
         for (const line of dedented) {
@@ -2242,9 +2242,9 @@ var require_doc = __commonJS({
       }
       compile() {
         const F = Function;
-        const content = this?.content ?? [``];
+        const content2 = this?.content ?? [``];
         const factory = new F(...Object.keys(this.closed), `return function (${this.args.join(", ")}) {
-${content.join("\n")}
+${content2.join("\n")}
 };`);
         return factory(...Object.values(this.closed));
       }
@@ -2323,12 +2323,12 @@ var require_schemas = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.$ZodObject = exports.$ZodArray = exports.$ZodDate = exports.$ZodVoid = exports.$ZodNever = exports.$ZodUnknown = exports.$ZodAny = exports.$ZodNull = exports.$ZodUndefined = exports.$ZodSymbol = exports.$ZodBigIntFormat = exports.$ZodBigInt = exports.$ZodBoolean = exports.$ZodNumberFormat = exports.$ZodNumber = exports.$ZodCustomStringFormat = exports.$ZodJWT = exports.$ZodIBAN = exports.$ZodCreditCard = exports.$ZodE164 = exports.$ZodBase64URL = exports.base64urlCharset = exports.$ZodBase64 = exports.base64Charset = exports.$ZodCIDRv6 = exports.$ZodCIDRv4 = exports.$ZodMAC = exports.$ZodIPv6 = exports.$ZodIPv4 = exports.$ZodISODuration = exports.$ZodISOTime = exports.$ZodISODate = exports.$ZodISODateTime = exports.$ZodKSUID = exports.$ZodXID = exports.$ZodULID = exports.$ZodCUID2 = exports.$ZodCUID = exports.$ZodNanoID = exports.$ZodEmoji = exports.$ZodURL = exports.URL_UNPARSEABLE = exports.URL_BAD_FORMAT = exports.$ZodEmail = exports.$ZodUUID = exports.$ZodGUID = exports.$ZodStringFormat = exports.$ZodString = exports.clone = exports.$ZodType = void 0;
@@ -2447,13 +2447,13 @@ var require_schemas = __commonJS({
             }
             return handleCanaryResult(canary, payload, ctx);
           }
-          const result2 = inst._zod.parse(payload, ctx);
-          if (result2 instanceof Promise) {
+          const result3 = inst._zod.parse(payload, ctx);
+          if (result3 instanceof Promise) {
             if (ctx.async === false)
               throw new core.$ZodAsyncError();
-            return result2.then((result3) => runChecks(result3, checks2, ctx));
+            return result3.then((result4) => runChecks(result4, checks2, ctx));
           }
-          return runChecks(result2, checks2, ctx);
+          return runChecks(result3, checks2, ctx);
         };
       }
     }, {
@@ -3112,11 +3112,11 @@ var require_schemas = __commonJS({
         return payload;
       };
     });
-    function handleArrayResult(result2, final, index) {
-      if (result2.issues.length) {
-        final.issues.push(...util.prefixIssues(index, result2.issues));
+    function handleArrayResult(result3, final, index) {
+      if (result3.issues.length) {
+        final.issues.push(...util.prefixIssues(index, result3.issues));
       }
-      final.value[index] = result2.value;
+      final.value[index] = result3.value;
     }
     exports.$ZodArray = core.$constructor("$ZodArray", (inst, def) => {
       exports.$ZodType.init(inst, def);
@@ -3138,15 +3138,15 @@ var require_schemas = __commonJS({
         const abortEarly = ctx?.abortEarly;
         for (let i = 0; i < input.length; i++) {
           const item = input[i];
-          const result2 = def.element._zod.run({
+          const result3 = def.element._zod.run({
             value: item,
             issues: []
           }, ctx);
-          if (result2 instanceof Promise) {
-            proms.push(result2.then((result3) => handleArrayResult(result3, payload, i)));
+          if (result3 instanceof Promise) {
+            proms.push(result3.then((result4) => handleArrayResult(result4, payload, i)));
           } else {
-            handleArrayResult(result2, payload, i);
-            if (abortEarly && result2.issues.length !== 0 && util.aborted(result2))
+            handleArrayResult(result3, payload, i);
+            if (abortEarly && result3.issues.length !== 0 && util.aborted(result3))
               break;
           }
         }
@@ -3156,20 +3156,20 @@ var require_schemas = __commonJS({
         return payload;
       };
     });
-    function handlePropertyResult(result2, final, key, input, optin, optout) {
+    function handlePropertyResult(result3, final, key, input, optin, optout) {
       const isPresent = key in input;
       const isOptionalOut = optout === "optional";
       if (!isPresent && isOptionalOut && optin === "optional") {
         return;
       }
-      if (result2.issues.length) {
+      if (result3.issues.length) {
         if (optin !== void 0 && isOptionalOut && !isPresent) {
           return;
         }
-        final.issues.push(...util.prefixIssues(key, result2.issues));
+        final.issues.push(...util.prefixIssues(key, result3.issues));
       }
       if (!isPresent && optin === void 0) {
-        if (!result2.issues.length) {
+        if (!result3.issues.length) {
           final.issues.push({
             code: "invalid_type",
             expected: "nonoptional",
@@ -3179,12 +3179,12 @@ var require_schemas = __commonJS({
         }
         return;
       }
-      if (result2.value === void 0) {
+      if (result3.value === void 0) {
         if (isPresent || optin === "defaulted" && !isOptionalOut) {
           final.value[key] = void 0;
         }
       } else {
-        final.value[key] = result2.value;
+        final.value[key] = result3.value;
       }
     }
     var NO_SYMBOL_KEYS = [];
@@ -3345,15 +3345,15 @@ var require_schemas = __commonJS({
         const syms = normalized.symbolKeys;
         const doc = new doc_js_1.Doc(["payload", "ctx"], { shape, inst, memo, syms });
         const parseStr = (k) => `shape[${k}]._zod.run({ value: input[${k}], issues: [] }, ctx)`;
-        const prefixStr = (id, k) => `
-          let ${id}_ab = false;
-          for (let i = 0; i < ${id}.issues.length; i++) {
-            const iss = ${id}.issues[i];
+        const prefixStr = (id2, k) => `
+          let ${id2}_ab = false;
+          for (let i = 0; i < ${id2}.issues.length; i++) {
+            const iss = ${id2}.issues[i];
             iss.path = iss.path ? [${k}, ...iss.path] : [${k}];
             payload.issues.push(iss);
-            if (iss.continue !== true) ${id}_ab = true;
+            if (iss.continue !== true) ${id2}_ab = true;
           }
-          if (${id}_ab && ctx && ctx.abortEarly) {
+          if (${id2}_ab && ctx && ctx.abortEarly) {
             payload.value = newResult;
             return payload;
           }`;
@@ -3367,34 +3367,34 @@ var require_schemas = __commonJS({
         for (const key of normalized.allKeys) {
           if (key === "__proto__")
             continue;
-          const id = ids[key];
+          const id2 = ids[key];
           const k = typeof key === "symbol" ? `syms[${syms.indexOf(key)}]` : util.esc(key);
           const isPresent = `${k} in input`;
           const schema = shape[key];
           const optin = schema?._zod?.optin;
           const isOptionalIn = optin !== void 0;
           const isOptionalOut = schema?._zod?.optout === "optional";
-          doc.write(`const ${id} = ${parseStr(k)};`);
+          doc.write(`const ${id2} = ${parseStr(k)};`);
           if (isOptionalIn && isOptionalOut) {
-            const assign = optin === "optional" ? `${id}_present` : `${id}.value !== undefined || ${id}_present`;
+            const assign = optin === "optional" ? `${id2}_present` : `${id2}.value !== undefined || ${id2}_present`;
             doc.write(`
-        const ${id}_present = ${isPresent};
-        if (!${id}.issues.length || ${id}_present) {
-          if (${id}.issues.length) {${prefixStr(id, k)}
+        const ${id2}_present = ${isPresent};
+        if (!${id2}.issues.length || ${id2}_present) {
+          if (${id2}.issues.length) {${prefixStr(id2, k)}
           }
 
           if (${assign}) {
-            newResult[${k}] = ${id}.value;
+            newResult[${k}] = ${id2}.value;
           }
         }
 
       `);
           } else if (!isOptionalIn) {
             doc.write(`
-        const ${id}_present = ${isPresent};
-        if (${id}.issues.length) {${prefixStr(id, k)}
+        const ${id2}_present = ${isPresent};
+        if (${id2}.issues.length) {${prefixStr(id2, k)}
         }
-        if (!${id}_present && !${id}.issues.length) {
+        if (!${id2}_present && !${id2}.issues.length) {
           payload.issues.push({
             code: "invalid_type",
             expected: "nonoptional",
@@ -3407,22 +3407,22 @@ var require_schemas = __commonJS({
           }
         }
 
-        if (${id}_present) {
-          newResult[${k}] = ${id}.value;
+        if (${id2}_present) {
+          newResult[${k}] = ${id2}.value;
         }
 
       `);
           } else {
             doc.write(`
-        if (${id}.issues.length) {${prefixStr(id, k)}
+        if (${id2}.issues.length) {${prefixStr(id2, k)}
         }
       `);
             if (optin === "defaulted") {
-              doc.write(`newResult[${k}] = ${id}.value;`);
+              doc.write(`newResult[${k}] = ${id2}.value;`);
             } else {
               doc.write(`
-        if (${id}.value !== undefined || ${isPresent}) {
-          newResult[${k}] = ${id}.value;
+        if (${id2}.value !== undefined || ${isPresent}) {
+          newResult[${k}] = ${id2}.value;
         }
       `);
             }
@@ -3463,9 +3463,9 @@ var require_schemas = __commonJS({
       };
     });
     function handleUnionResults(results, final, inst, ctx) {
-      for (const result2 of results) {
-        if (result2.issues.length === 0) {
-          final.value = result2.value;
+      for (const result3 of results) {
+        if (result3.issues.length === 0) {
+          final.value = result3.value;
           return final;
         }
       }
@@ -3478,7 +3478,7 @@ var require_schemas = __commonJS({
         code: "invalid_union",
         input: final.value,
         inst,
-        errors: results.map((result2) => result2.issues.map((iss) => util.finalizeIssue(iss, ctx, core.config())))
+        errors: results.map((result3) => result3.issues.map((iss) => util.finalizeIssue(iss, ctx, core.config())))
       });
       return final;
     }
@@ -3507,17 +3507,17 @@ var require_schemas = __commonJS({
         let async = false;
         const results = [];
         for (const option of def.options) {
-          const result2 = option._zod.run({
+          const result3 = option._zod.run({
             value: payload.value,
             issues: []
           }, ctx);
-          if (result2 instanceof Promise) {
-            results.push(result2);
+          if (result3 instanceof Promise) {
+            results.push(result3);
             async = true;
           } else {
-            if (result2.issues.length === 0)
-              return result2;
-            results.push(result2);
+            if (result3.issues.length === 0)
+              return result3;
+            results.push(result3);
           }
         }
         if (!async)
@@ -3542,7 +3542,7 @@ var require_schemas = __commonJS({
           code: "invalid_union",
           input: final.value,
           inst,
-          errors: results.map((result2) => result2.issues.map((iss) => util.finalizeIssue(iss, ctx, core.config())))
+          errors: results.map((result3) => result3.issues.map((iss) => util.finalizeIssue(iss, ctx, core.config())))
         });
       } else {
         final.issues.push({
@@ -3567,15 +3567,15 @@ var require_schemas = __commonJS({
         let async = false;
         const results = [];
         for (const option of def.options) {
-          const result2 = option._zod.run({
+          const result3 = option._zod.run({
             value: payload.value,
             issues: []
           }, ctx);
-          if (result2 instanceof Promise) {
-            results.push(result2);
+          if (result3 instanceof Promise) {
+            results.push(result3);
             async = true;
           } else {
-            results.push(result2);
+            results.push(result3);
           }
         }
         if (!async)
@@ -3743,7 +3743,7 @@ var require_schemas = __commonJS({
       }
       return { valid: false, mergeErrorPath: [] };
     }
-    function handleIntersectionResults(result2, left, right) {
+    function handleIntersectionResults(result3, left, right) {
       const unrecKeys = /* @__PURE__ */ new Map();
       let unrecIssue;
       const keyIssues = /* @__PURE__ */ new Map();
@@ -3769,30 +3769,30 @@ var require_schemas = __commonJS({
       };
       for (const iss of left.issues) {
         if (!collect(iss, "l"))
-          result2.issues.push(iss);
+          result3.issues.push(iss);
       }
       for (const iss of right.issues) {
         if (!collect(iss, "r"))
-          result2.issues.push(iss);
+          result3.issues.push(iss);
       }
       const bothKeys = [...unrecKeys].filter(([, f]) => f.l && f.r).map(([k]) => k);
       if (bothKeys.length) {
         const aggregated = unrecIssue ? bothKeys.filter((k) => unrecIssue.keys.includes(k)) : [];
         if (aggregated.length)
-          result2.issues.push({ ...unrecIssue, keys: aggregated });
+          result3.issues.push({ ...unrecIssue, keys: aggregated });
         for (const k of bothKeys) {
           if (!aggregated.includes(k) && keyIssues.has(k))
-            result2.issues.push(keyIssues.get(k));
+            result3.issues.push(keyIssues.get(k));
         }
       }
       const merged = mergeValues(left.value, right.value);
       if (!merged.valid) {
-        if (util.aborted(result2))
-          return result2;
+        if (util.aborted(result3))
+          return result3;
         throw new Error(`Unmergable intersection. Error path: ${JSON.stringify(merged.mergeErrorPath)}`);
       }
-      result2.value = merged.data;
-      return result2;
+      result3.value = merged.data;
+      return result3;
     }
     exports.$ZodTuple = core.$constructor("$ZodTuple", (inst, def) => {
       exports.$ZodType.init(inst, def);
@@ -3863,11 +3863,11 @@ var require_schemas = __commonJS({
               seen = payload.issues.length;
             }
             i++;
-            const result2 = def.rest._zod.run({ value: el, issues: [] }, ctx);
-            if (result2 instanceof Promise) {
-              proms.push(result2.then((r) => handleTupleResult(r, payload, i)));
+            const result3 = def.rest._zod.run({ value: el, issues: [] }, ctx);
+            if (result3 instanceof Promise) {
+              proms.push(result3.then((r) => handleTupleResult(r, payload, i)));
             } else {
-              handleTupleResult(result2, payload, i);
+              handleTupleResult(result3, payload, i);
             }
           }
         }
@@ -3885,11 +3885,11 @@ var require_schemas = __commonJS({
       }
       return 0;
     }
-    function handleTupleResult(result2, final, index) {
-      if (result2.issues.length) {
-        final.issues.push(...util.prefixIssues(index, result2.issues));
+    function handleTupleResult(result3, final, index) {
+      if (result3.issues.length) {
+        final.issues.push(...util.prefixIssues(index, result3.issues));
       }
-      final.value[index] = result2.value;
+      final.value[index] = result3.value;
     }
     function handleTupleResults(itemResults, final, items, input, optoutStart) {
       for (let i = 0; i < items.length; i++) {
@@ -3960,19 +3960,19 @@ var require_schemas = __commonJS({
               const outKey = keyResult.value;
               if (outKey === "__proto__")
                 continue;
-              const result2 = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
-              if (result2 instanceof Promise) {
-                proms.push(result2.then((result3) => {
-                  if (result3.issues.length) {
-                    payload.issues.push(...util.prefixIssues(key, result3.issues));
+              const result3 = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
+              if (result3 instanceof Promise) {
+                proms.push(result3.then((result4) => {
+                  if (result4.issues.length) {
+                    payload.issues.push(...util.prefixIssues(key, result4.issues));
                   }
-                  payload.value[outKey] = result3.value;
+                  payload.value[outKey] = result4.value;
                 }));
               } else {
-                if (result2.issues.length) {
-                  payload.issues.push(...util.prefixIssues(key, result2.issues));
+                if (result3.issues.length) {
+                  payload.issues.push(...util.prefixIssues(key, result3.issues));
                 }
-                payload.value[outKey] = result2.value;
+                payload.value[outKey] = result3.value;
               }
             }
           }
@@ -4041,19 +4041,19 @@ var require_schemas = __commonJS({
             const outKey = keyResult.value;
             if (outKey === "__proto__")
               continue;
-            const result2 = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
-            if (result2 instanceof Promise) {
-              proms.push(result2.then((result3) => {
-                if (result3.issues.length) {
-                  payload.issues.push(...util.prefixIssues(key, result3.issues));
+            const result3 = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
+            if (result3 instanceof Promise) {
+              proms.push(result3.then((result4) => {
+                if (result4.issues.length) {
+                  payload.issues.push(...util.prefixIssues(key, result4.issues));
                 }
-                payload.value[outKey] = result3.value;
+                payload.value[outKey] = result4.value;
               }));
             } else {
-              if (result2.issues.length) {
-                payload.issues.push(...util.prefixIssues(key, result2.issues));
+              if (result3.issues.length) {
+                payload.issues.push(...util.prefixIssues(key, result3.issues));
               }
-              payload.value[outKey] = result2.value;
+              payload.value[outKey] = result3.value;
             }
           }
           if (unrecognized && unrecognized.length > 0) {
@@ -4167,22 +4167,22 @@ var require_schemas = __commonJS({
               break;
             seen = payload.issues.length;
           }
-          const result2 = def.valueType._zod.run({ value: item, issues: [] }, ctx);
-          if (result2 instanceof Promise) {
-            proms.push(result2.then((result3) => handleSetResult(result3, payload)));
+          const result3 = def.valueType._zod.run({ value: item, issues: [] }, ctx);
+          if (result3 instanceof Promise) {
+            proms.push(result3.then((result4) => handleSetResult(result4, payload)));
           } else
-            handleSetResult(result2, payload);
+            handleSetResult(result3, payload);
         }
         if (proms.length)
           return Promise.all(proms).then(() => payload);
         return payload;
       };
     });
-    function handleSetResult(result2, final) {
-      if (result2.issues.length) {
-        final.issues.push(...result2.issues);
+    function handleSetResult(result3, final) {
+      if (result3.issues.length) {
+        final.issues.push(...result3.issues);
       }
-      final.value.add(result2.value);
+      final.value.add(result3.value);
     }
     exports.$ZodEnum = core.$constructor("$ZodEnum", (inst, def) => {
       exports.$ZodType.init(inst, def);
@@ -4267,8 +4267,8 @@ var require_schemas = __commonJS({
         return payload;
       };
     });
-    function handleOptionalResult(payload, result2) {
-      payload.value = result2.issues.length ? void 0 : result2.value;
+    function handleOptionalResult(payload, result3) {
+      payload.value = result3.issues.length ? void 0 : result3.value;
       return payload;
     }
     exports.$ZodOptional = core.$constructor("$ZodOptional", (inst, def) => {
@@ -4287,10 +4287,10 @@ var require_schemas = __commonJS({
         if (payload.value === void 0) {
           if (def.innerType._zod.optin !== "defaulted")
             return payload;
-          const result2 = def.innerType._zod.run({ value: payload.value, issues: [] }, ctx);
-          if (result2 instanceof Promise)
-            return result2.then((result3) => handleOptionalResult(payload, result3));
-          return handleOptionalResult(payload, result2);
+          const result3 = def.innerType._zod.run({ value: payload.value, issues: [] }, ctx);
+          if (result3 instanceof Promise)
+            return result3.then((result4) => handleOptionalResult(payload, result4));
+          return handleOptionalResult(payload, result3);
         }
         return def.innerType._zod.run(payload, ctx);
       };
@@ -4332,11 +4332,11 @@ var require_schemas = __commonJS({
           payload.value = def.defaultValue;
           return payload;
         }
-        const result2 = def.innerType._zod.run(payload, ctx);
-        if (result2 instanceof Promise) {
-          return result2.then((result3) => handleDefaultResult(result3, def));
+        const result3 = def.innerType._zod.run(payload, ctx);
+        if (result3 instanceof Promise) {
+          return result3.then((result4) => handleDefaultResult(result4, def));
         }
-        return handleDefaultResult(result2, def);
+        return handleDefaultResult(result3, def);
       };
     });
     function handleDefaultResult(payload, def) {
@@ -4366,11 +4366,11 @@ var require_schemas = __commonJS({
         return v ? new Set([...v].filter((x) => x !== void 0)) : void 0;
       });
       inst._zod.parse = (payload, ctx) => {
-        const result2 = def.innerType._zod.run(payload, ctx);
-        if (result2 instanceof Promise) {
-          return result2.then((result3) => handleNonOptionalResult(result3, inst));
+        const result3 = def.innerType._zod.run(payload, ctx);
+        if (result3 instanceof Promise) {
+          return result3.then((result4) => handleNonOptionalResult(result4, inst));
         }
-        return handleNonOptionalResult(result2, inst);
+        return handleNonOptionalResult(result3, inst);
       };
     });
     function handleNonOptionalResult(payload, inst) {
@@ -4390,29 +4390,29 @@ var require_schemas = __commonJS({
         if (ctx.direction === "backward") {
           throw new core.$ZodEncodeError("ZodSuccess");
         }
-        const result2 = def.innerType._zod.run(payload, ctx);
-        if (result2 instanceof Promise) {
-          return result2.then((result3) => {
-            payload.value = result3.issues.length === 0;
+        const result3 = def.innerType._zod.run(payload, ctx);
+        if (result3 instanceof Promise) {
+          return result3.then((result4) => {
+            payload.value = result4.issues.length === 0;
             return payload;
           });
         }
-        payload.value = result2.issues.length === 0;
+        payload.value = result3.issues.length === 0;
         return payload;
       };
     });
-    function handleCatchResult(payload, result2, def, ctx) {
-      if (!result2.issues.length) {
-        payload.value = result2.value;
-        if (result2.memo)
+    function handleCatchResult(payload, result3, def, ctx) {
+      if (!result3.issues.length) {
+        payload.value = result3.value;
+        if (result3.memo)
           payload.memo = true;
         return payload;
       }
       payload.value = def.catchValue({
-        ...result2,
+        ...result3,
         value: payload.value,
         error: {
-          issues: result2.issues.map((iss) => util.finalizeIssue(iss, ctx, core.config()))
+          issues: result3.issues.map((iss) => util.finalizeIssue(iss, ctx, core.config()))
         },
         input: payload.value
       });
@@ -4427,11 +4427,11 @@ var require_schemas = __commonJS({
         if (ctx.direction === "backward") {
           return def.innerType._zod.run(payload, ctx);
         }
-        const result2 = def.innerType._zod.run({ value: payload.value, issues: [] }, ctx);
-        if (result2 instanceof Promise) {
-          return result2.then((result3) => handleCatchResult(payload, result3, def, ctx));
+        const result3 = def.innerType._zod.run({ value: payload.value, issues: [] }, ctx);
+        if (result3 instanceof Promise) {
+          return result3.then((result4) => handleCatchResult(payload, result4, def, ctx));
         }
-        return handleCatchResult(payload, result2, def, ctx);
+        return handleCatchResult(payload, result3, def, ctx);
       };
     });
     exports.$ZodNaN = core.$constructor("$ZodNaN", (inst, def) => {
@@ -4500,24 +4500,24 @@ var require_schemas = __commonJS({
         }
       };
     });
-    function handleCodecAResult(result2, def, ctx) {
-      if (result2.issues.length) {
-        result2.aborted = true;
-        return result2;
+    function handleCodecAResult(result3, def, ctx) {
+      if (result3.issues.length) {
+        result3.aborted = true;
+        return result3;
       }
       const direction = ctx.direction || "forward";
       if (direction === "forward") {
-        const transformed = def.transform(result2.value, result2);
+        const transformed = def.transform(result3.value, result3);
         if (transformed instanceof Promise) {
-          return transformed.then((value) => handleCodecTxResult(result2, value, def.out, ctx));
+          return transformed.then((value) => handleCodecTxResult(result3, value, def.out, ctx));
         }
-        return handleCodecTxResult(result2, transformed, def.out, ctx);
+        return handleCodecTxResult(result3, transformed, def.out, ctx);
       } else {
-        const transformed = def.reverseTransform(result2.value, result2);
+        const transformed = def.reverseTransform(result3.value, result3);
         if (transformed instanceof Promise) {
-          return transformed.then((value) => handleCodecTxResult(result2, value, def.in, ctx));
+          return transformed.then((value) => handleCodecTxResult(result3, value, def.in, ctx));
         }
-        return handleCodecTxResult(result2, transformed, def.in, ctx);
+        return handleCodecTxResult(result3, transformed, def.in, ctx);
       }
     }
     function handleCodecTxResult(left, value, nextSchema, ctx) {
@@ -4540,11 +4540,11 @@ var require_schemas = __commonJS({
         if (ctx.direction === "backward") {
           return def.innerType._zod.run(payload, ctx);
         }
-        const result2 = def.innerType._zod.run(payload, ctx);
-        if (result2 instanceof Promise) {
-          return result2.then(handleReadonlyResult);
+        const result3 = def.innerType._zod.run(payload, ctx);
+        if (result3 instanceof Promise) {
+          return result3.then(handleReadonlyResult);
         }
-        return handleReadonlyResult(result2);
+        return handleReadonlyResult(result3);
       };
     });
     function handleReadonlyResult(payload) {
@@ -4649,11 +4649,11 @@ var require_schemas = __commonJS({
         }
         return Object.defineProperty(function(...args) {
           const parsedArgs = inst._def.input ? (0, parse_js_1.parse)(inst._def.input, args) : args;
-          const result2 = Reflect.apply(func, this, parsedArgs);
+          const result3 = Reflect.apply(func, this, parsedArgs);
           if (inst._def.output) {
-            return (0, parse_js_1.parse)(inst._def.output, result2);
+            return (0, parse_js_1.parse)(inst._def.output, result3);
           }
-          return result2;
+          return result3;
         }, "_zod", { value: inst._zod, enumerable: false });
       };
       inst.implementAsync = (func) => {
@@ -4662,11 +4662,11 @@ var require_schemas = __commonJS({
         }
         return Object.defineProperty(async function(...args) {
           const parsedArgs = inst._def.input ? await (0, parse_js_1.parseAsync)(inst._def.input, args) : args;
-          const result2 = await Reflect.apply(func, this, parsedArgs);
+          const result3 = await Reflect.apply(func, this, parsedArgs);
           if (inst._def.output) {
-            return await (0, parse_js_1.parseAsync)(inst._def.output, result2);
+            return await (0, parse_js_1.parseAsync)(inst._def.output, result3);
           }
-          return result2;
+          return result3;
         }, "_zod", { value: inst._zod, enumerable: false });
       };
       inst._zod.parse = (payload, _ctx) => {
@@ -4755,8 +4755,8 @@ var require_schemas = __commonJS({
         return;
       };
     });
-    function handleRefineResult(result2, payload, input, inst) {
-      if (!result2) {
+    function handleRefineResult(result3, payload, input, inst) {
+      if (!result3) {
         const _iss = {
           code: "custom",
           input,
@@ -4815,12 +4815,12 @@ var require_memoizer = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.$ZodCyclicError = void 0;
@@ -4854,12 +4854,12 @@ var require_memoizer = __commonJS({
       if (stack.has(inst))
         return PROVEN;
       stack.add(inst);
-      let result2 = NONE;
+      let result3 = NONE;
       const check = (child) => {
-        if (result2 !== PROVEN && child?._zod) {
+        if (result3 !== PROVEN && child?._zod) {
           const answer = isRecursive(child, stack, resolve3);
-          if (answer > result2)
-            result2 = answer;
+          if (answer > result3)
+            result3 = answer;
         }
       };
       const shape = (sh, spread) => {
@@ -4875,8 +4875,8 @@ var require_memoizer = __commonJS({
         return answer;
       };
       const merge = (answer) => {
-        if (answer > result2)
-          result2 = answer;
+        if (answer > result3)
+          result3 = answer;
       };
       const def = inst._zod.def;
       const kind = def.type;
@@ -4977,7 +4977,7 @@ var require_memoizer = __commonJS({
         }
       }
       stack.delete(inst);
-      return settle(inst, result2);
+      return settle(inst, result3);
     }
     function settle(inst, answer) {
       if (answer !== ASSUMED)
@@ -5077,19 +5077,19 @@ var require_memoizer = __commonJS({
             }
             handoff = bucket;
             const depth = open6.length;
-            const result2 = base(payload, ctx);
+            const result3 = base(payload, ctx);
             handoff = void 0;
             const entry = open6.length > depth ? open6.pop() : void 0;
-            if (result2 instanceof Promise) {
-              return result2.then((r) => {
+            if (result3 instanceof Promise) {
+              return result3.then((r) => {
                 if (entry)
                   entry.issues = r.issues.length ? cloneIssues(r.issues) : NO_ISSUES;
                 return r;
               });
             }
             if (entry)
-              entry.issues = result2.issues.length ? cloneIssues(result2.issues) : NO_ISSUES;
-            return result2;
+              entry.issues = result3.issues.length ? cloneIssues(result3.issues) : NO_ISSUES;
+            return result3;
           };
           inst._zod.parse = wrapped;
           if (inst._zod.run === base)
@@ -5147,12 +5147,12 @@ var require_ar = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -5295,12 +5295,12 @@ var require_az = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -5442,12 +5442,12 @@ var require_be = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -5647,12 +5647,12 @@ var require_bg = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -5809,12 +5809,12 @@ var require_bn = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -5959,12 +5959,12 @@ var require_ca = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -6109,12 +6109,12 @@ var require_ckb = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -6278,12 +6278,12 @@ var require_cs = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -6431,12 +6431,12 @@ var require_da = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -6588,12 +6588,12 @@ var require_de = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -6738,12 +6738,12 @@ var require_el = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -6887,12 +6887,12 @@ var require_en = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -7048,12 +7048,12 @@ var require_eo = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -7199,12 +7199,12 @@ var require_es = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -7372,12 +7372,12 @@ var require_fa = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -7528,12 +7528,12 @@ var require_fi = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -7682,12 +7682,12 @@ var require_fr = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -7848,12 +7848,12 @@ var require_fr_CA = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -7997,12 +7997,12 @@ var require_gu = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -8147,12 +8147,12 @@ var require_he = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -8385,12 +8385,12 @@ var require_hi = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -8533,12 +8533,12 @@ var require_hr = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -8696,12 +8696,12 @@ var require_hu = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -8846,12 +8846,12 @@ var require_hy = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -9041,12 +9041,12 @@ var require_id = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -9189,12 +9189,12 @@ var require_is = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -9340,12 +9340,12 @@ var require_it = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -9490,12 +9490,12 @@ var require_ja = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -9639,12 +9639,12 @@ var require_ka = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -9793,12 +9793,12 @@ var require_km = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -9962,12 +9962,12 @@ var require_kn = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -10114,12 +10114,12 @@ var require_ko = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -10267,12 +10267,12 @@ var require_lt = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -10362,12 +10362,12 @@ var require_lt = __commonJS({
         }
       };
       function getSizing(origin, unitType, inclusive, targetShouldBe) {
-        const result2 = Sizable[origin] ?? null;
-        if (result2 === null)
-          return result2;
+        const result3 = Sizable[origin] ?? null;
+        if (result3 === null)
+          return result3;
         return {
-          unit: result2.unit[unitType],
-          verb: result2.verb[targetShouldBe][inclusive ? "inclusive" : "notInclusive"]
+          unit: result3.unit[unitType],
+          verb: result3.verb[targetShouldBe][inclusive ? "inclusive" : "notInclusive"]
         };
       }
       const FormatDictionary = {
@@ -10511,12 +10511,12 @@ var require_mk = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -10662,12 +10662,12 @@ var require_ms = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -10811,12 +10811,12 @@ var require_ne = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -10959,12 +10959,12 @@ var require_nl = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -11111,12 +11111,12 @@ var require_nn = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -11261,12 +11261,12 @@ var require_no = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -11411,12 +11411,12 @@ var require_ota = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -11562,12 +11562,12 @@ var require_ps = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -11718,12 +11718,12 @@ var require_pl = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -11869,12 +11869,12 @@ var require_pt = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -12049,12 +12049,12 @@ var require_pt_BR = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -12230,12 +12230,12 @@ var require_ro = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -12389,12 +12389,12 @@ var require_ru = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -12594,12 +12594,12 @@ var require_sk = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -12747,12 +12747,12 @@ var require_sl = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -12898,12 +12898,12 @@ var require_sv = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -13050,12 +13050,12 @@ var require_ta = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -13202,12 +13202,12 @@ var require_tg = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -13355,12 +13355,12 @@ var require_th = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -13507,12 +13507,12 @@ var require_tk = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -13651,12 +13651,12 @@ var require_tr = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -13798,12 +13798,12 @@ var require_uk = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -13965,12 +13965,12 @@ var require_ur = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -14117,12 +14117,12 @@ var require_uz = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -14267,12 +14267,12 @@ var require_vi = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -14417,12 +14417,12 @@ var require_zh_CN = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -14568,12 +14568,12 @@ var require_zh_TW = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -14717,12 +14717,12 @@ var require_yo = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = default_1;
@@ -15222,12 +15222,12 @@ var require_compile = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.ZodCompileUnsupportedError = exports.ZodCompileAsyncError = exports.INVALID = void 0;
@@ -15307,8 +15307,8 @@ var require_compile = __commonJS({
         installCompiledUserMethods(clone, schema, parser);
       return clone;
     }
-    function installCompiledUserMethods(target, source, parser) {
-      const targetAny = target;
+    function installCompiledUserMethods(target2, source, parser) {
+      const targetAny = target2;
       const sourceAny = source;
       if (typeof sourceAny.safeParse === "function") {
         const originalSafeParse = sourceAny.safeParse;
@@ -15372,13 +15372,13 @@ ${code}
       return fn;
     }
     function addConstant(ctx, value) {
-      for (const [name2, v] of ctx.constants) {
+      for (const [name3, v] of ctx.constants) {
         if (v === value)
-          return name2;
+          return name3;
       }
-      const name = `c${ctx.constantCounter++}`;
-      ctx.constants.set(name, value);
-      return name;
+      const name2 = `c${ctx.constantCounter++}`;
+      ctx.constants.set(name2, value);
+      return name2;
     }
     function addUserConstant(ctx, fn) {
       ctx.definite = false;
@@ -15388,10 +15388,10 @@ ${code}
       return `v${ctx.varCounter++}`;
     }
     function runtimeRun(schema, value) {
-      const result2 = schema._zod.run({ value, issues: [] }, {});
-      if (result2 && typeof result2.then === "function")
+      const result3 = schema._zod.run({ value, issues: [] }, {});
+      if (result3 && typeof result3.then === "function")
         return exports.INVALID;
-      const r = result2;
+      const r = result3;
       return r.issues.length === 0 ? r.value : exports.INVALID;
     }
     function compileChild(doc, ctx, schema, accessor, needsValue = true) {
@@ -15663,8 +15663,8 @@ ${code}
         const checkFn = check._zod.check;
         const helperFn = (value) => {
           const fakePayload = { value, issues: [], addIssue: pushIssue };
-          const result2 = checkFn(fakePayload);
-          if (result2 instanceof Promise)
+          const result3 = checkFn(fakePayload);
+          if (result3 instanceof Promise)
             throwAsync();
           return fakePayload.issues.length === 0 ? fakePayload.value : exports.INVALID;
         };
@@ -16754,10 +16754,10 @@ ${code}
         const transformFn = def.transform;
         const helperFn = (value) => {
           const fakePayload = { value, issues: [], addIssue: pushIssue };
-          const result2 = transformFn(value, fakePayload);
-          if (result2 instanceof Promise)
+          const result3 = transformFn(value, fakePayload);
+          if (result3 instanceof Promise)
             return exports.INVALID;
-          return fakePayload.issues.length === 0 ? result2 : exports.INVALID;
+          return fakePayload.issues.length === 0 ? result3 : exports.INVALID;
         };
         const helperConst = addUserConstant(ctx, helperFn);
         const transformedVar = newVar(ctx);
@@ -16789,10 +16789,10 @@ ${code}
       return accessor;
     }
     function runtimeCatch(innerSchema, catchValue, value) {
-      const result2 = innerSchema._zod.run({ value, issues: [] }, {});
-      if (result2 && typeof result2.then === "function")
+      const result3 = innerSchema._zod.run({ value, issues: [] }, {});
+      if (result3 && typeof result3.then === "function")
         return exports.INVALID;
-      const r = result2;
+      const r = result3;
       if (r.issues.length === 0)
         return r.value;
       return catchValue();
@@ -16829,10 +16829,10 @@ ${code}
         const transformFn = def.transform;
         const helperFn = (value) => {
           const fakePayload = { value, issues: [], addIssue: pushIssue };
-          const result2 = transformFn(value, fakePayload);
-          if (result2 instanceof Promise)
+          const result3 = transformFn(value, fakePayload);
+          if (result3 instanceof Promise)
             return exports.INVALID;
-          return fakePayload.issues.length === 0 ? result2 : exports.INVALID;
+          return fakePayload.issues.length === 0 ? result3 : exports.INVALID;
         };
         const helperConst = addUserConstant(ctx, helperFn);
         const outputVar = newVar(ctx);
@@ -16885,12 +16885,12 @@ var require_api = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.TimePrecision = void 0;
@@ -18113,26 +18113,26 @@ var require_to_json_schema = __commonJS({
     exports.finalize = finalize;
     var registries_js_1 = require_registries();
     var util_js_1 = require_util();
-    function assignProps(target, ...sources) {
+    function assignProps(target2, ...sources) {
       for (const source of sources) {
         for (const key of Reflect.ownKeys(source)) {
           if (Object.prototype.propertyIsEnumerable.call(source, key)) {
-            (0, util_js_1.assignProp)(target, key, source[key]);
+            (0, util_js_1.assignProp)(target2, key, source[key]);
           }
         }
       }
-      return target;
+      return target2;
     }
     function initializeContext(params) {
-      let target = params?.target ?? "draft-2020-12";
-      if (target === "draft-4")
-        target = "draft-04";
-      if (target === "draft-7")
-        target = "draft-07";
+      let target2 = params?.target ?? "draft-2020-12";
+      if (target2 === "draft-4")
+        target2 = "draft-04";
+      if (target2 === "draft-7")
+        target2 = "draft-07";
       return {
         processors: params.processors ?? {},
         metadataRegistry: params?.metadata ?? registries_js_1.globalRegistry,
-        target,
+        target: target2,
         unrepresentable: params?.unrepresentable ?? "throw",
         override: params?.override ?? (() => {
         }),
@@ -18149,12 +18149,12 @@ var require_to_json_schema = __commonJS({
       };
     }
     function handleUnrepresentable(schema, ctx, json, params, message) {
-      const result2 = typeof ctx.unrepresentable === "function" ? ctx.unrepresentable({ zodSchema: schema, path: params.path, message }) : ctx.unrepresentable;
-      if (result2 === "any")
+      const result3 = typeof ctx.unrepresentable === "function" ? ctx.unrepresentable({ zodSchema: schema, path: params.path, message }) : ctx.unrepresentable;
+      if (result3 === "any")
         return false;
-      if (result2 === void 0 || result2 === "throw")
+      if (result3 === void 0 || result3 === "throw")
         throw new Error(message);
-      Object.assign(json, result2);
+      Object.assign(json, result3);
       return true;
     }
     function processSchema(schema, ctx, _params = { path: [], schemaPath: [] }) {
@@ -18169,13 +18169,13 @@ var require_to_json_schema = __commonJS({
         }
         return seen.schema;
       }
-      const result2 = { schema: {}, count: 1, cycle: void 0, path: _params.path };
-      ctx.seen.set(schema, result2);
+      const result3 = { schema: {}, count: 1, cycle: void 0, path: _params.path };
+      ctx.seen.set(schema, result3);
       ctx.sharedDefsExtractedFor = void 0;
       ctx.sharedEmitDoneFor = void 0;
       const overrideSchema = schema._zod.toJSONSchema?.();
       if (overrideSchema) {
-        result2.schema = overrideSchema;
+        result3.schema = overrideSchema;
       } else {
         const params = {
           ..._params,
@@ -18183,9 +18183,9 @@ var require_to_json_schema = __commonJS({
           path: _params.path
         };
         if (schema._zod.processJSONSchema) {
-          schema._zod.processJSONSchema(ctx, result2.schema, params);
+          schema._zod.processJSONSchema(ctx, result3.schema, params);
         } else {
-          const _json = result2.schema;
+          const _json = result3.schema;
           const processor = ctx.processors[def.type];
           if (!processor) {
             throw new Error(`[toJSONSchema]: Non-representable type encountered: ${def.type}`);
@@ -18194,22 +18194,22 @@ var require_to_json_schema = __commonJS({
         }
         const parent = schema._zod.parent;
         if (parent) {
-          if (!result2.ref)
-            result2.ref = parent;
+          if (!result3.ref)
+            result3.ref = parent;
           processSchema(parent, ctx, params);
           ctx.seen.get(parent).isParent = true;
         }
       }
       const meta = ctx.metadataRegistry.get(schema);
       if (meta)
-        assignProps(result2.schema, meta);
+        assignProps(result3.schema, meta);
       if (ctx.io === "input" && isTransforming(schema)) {
-        delete result2.schema.examples;
-        delete result2.schema.default;
+        delete result3.schema.examples;
+        delete result3.schema.default;
       }
-      if (ctx.io === "input" && "_prefault" in result2.schema)
-        (_a = result2.schema).default ?? (_a.default = result2.schema._prefault);
-      delete result2.schema._prefault;
+      if (ctx.io === "input" && "_prefault" in result3.schema)
+        (_a = result3.schema).default ?? (_a.default = result3.schema._prefault);
+      delete result3.schema._prefault;
       const _result = ctx.seen.get(schema);
       return _result.schema;
     }
@@ -18224,26 +18224,26 @@ var require_to_json_schema = __commonJS({
         return;
       const idToSchema = /* @__PURE__ */ new Map();
       for (const entry of ctx.seen.entries()) {
-        const id = ctx.metadataRegistry.get(entry[0])?.id;
-        if (id) {
-          const existing = idToSchema.get(id);
+        const id2 = ctx.metadataRegistry.get(entry[0])?.id;
+        if (id2) {
+          const existing = idToSchema.get(id2);
           if (existing && existing !== entry[0]) {
-            throw new Error(`Duplicate schema id "${id}" detected during JSON Schema conversion. Two different schemas cannot share the same id when converted together.`);
+            throw new Error(`Duplicate schema id "${id2}" detected during JSON Schema conversion. Two different schemas cannot share the same id when converted together.`);
           }
-          idToSchema.set(id, entry[0]);
+          idToSchema.set(id2, entry[0]);
         }
       }
       const makeURI = (entry) => {
         const defsSegment = ctx.target === "draft-2020-12" ? "$defs" : "definitions";
         if (ctx.external) {
           const externalId = ctx.external.registry.get(entry[0])?.id;
-          const uriGenerator = ctx.external.uri ?? ((id2) => id2);
+          const uriGenerator = ctx.external.uri ?? ((id3) => id3);
           if (externalId) {
             return { ref: uriGenerator(externalId) };
           }
-          const id = entry[1].defId ?? entry[1].schema.id ?? `schema${ctx.counter++}`;
-          entry[1].defId = id;
-          return { defId: id, ref: `${uriGenerator("__shared")}#/${defsSegment}/${encodeJSONPointerSegment(id)}` };
+          const id2 = entry[1].defId ?? entry[1].schema.id ?? `schema${ctx.counter++}`;
+          entry[1].defId = id2;
+          return { defId: id2, ref: `${uriGenerator("__shared")}#/${defsSegment}/${encodeJSONPointerSegment(id2)}` };
         }
         const uriPrefix = `#`;
         const defUriPrefix = `${uriPrefix}/${defsSegment}/`;
@@ -18291,8 +18291,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
             continue;
           }
         }
-        const id = ctx.metadataRegistry.get(entry[0])?.id;
-        if (id) {
+        const id2 = ctx.metadataRegistry.get(entry[0])?.id;
+        if (id2) {
           extractToDef(entry);
           continue;
         }
@@ -18514,26 +18514,26 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
           }
         }
       }
-      const result2 = {};
+      const result3 = {};
       if (ctx.target === "draft-2020-12") {
-        result2.$schema = "https://json-schema.org/draft/2020-12/schema";
+        result3.$schema = "https://json-schema.org/draft/2020-12/schema";
       } else if (ctx.target === "draft-07") {
-        result2.$schema = "http://json-schema.org/draft-07/schema#";
+        result3.$schema = "http://json-schema.org/draft-07/schema#";
       } else if (ctx.target === "draft-04") {
-        result2.$schema = "http://json-schema.org/draft-04/schema#";
+        result3.$schema = "http://json-schema.org/draft-04/schema#";
       } else if (ctx.target === "openapi-3.0") {
       } else {
       }
       if (ctx.external?.uri) {
-        const id = ctx.external.registry.get(schema)?.id;
-        if (!id)
+        const id2 = ctx.external.registry.get(schema)?.id;
+        if (!id2)
           throw new Error("Schema is missing an `id` property");
-        result2.$id = ctx.external.uri(id);
+        result3.$id = ctx.external.uri(id2);
       }
-      assignProps(result2, root.defId ? root.schema : root.def ?? root.schema);
+      assignProps(result3, root.defId ? root.schema : root.def ?? root.schema);
       const rootMetaId = ctx.metadataRegistry.get(schema)?.id;
-      if (rootMetaId !== void 0 && result2.id === rootMetaId)
-        delete result2.id;
+      if (rootMetaId !== void 0 && result3.id === rootMetaId)
+        delete result3.id;
       const defs = ctx.external?.defs ?? {};
       if (!ctx.external || ctx.sharedEmitDoneFor !== ctx.external) {
         for (const entry of ctx.seen.entries()) {
@@ -18551,14 +18551,14 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
       } else {
         if (Object.keys(defs).length > 0) {
           if (ctx.target === "draft-2020-12") {
-            result2.$defs = defs;
+            result3.$defs = defs;
           } else {
-            result2.definitions = defs;
+            result3.definitions = defs;
           }
         }
       }
       try {
-        const finalized = JSON.parse(JSON.stringify(result2));
+        const finalized = JSON.parse(JSON.stringify(result3));
         Object.defineProperty(finalized, "~standard", {
           value: {
             ...schema["~standard"],
@@ -18636,8 +18636,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
     };
     exports.createToJSONSchemaMethod = createToJSONSchemaMethod;
     var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) => {
-      const { libraryOptions, target } = params ?? {};
-      const ctx = initializeContext({ ...libraryOptions ?? {}, target, io, processors });
+      const { libraryOptions, target: target2 } = params ?? {};
+      const ctx = initializeContext({ ...libraryOptions ?? {}, target: target2, io, processors });
       processSchema(schema, ctx);
       extractDefs(ctx, schema);
       return finalize(ctx, schema);
@@ -18686,12 +18686,12 @@ var require_json_schema_processors = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.allProcessors = exports.lazyProcessor = exports.optionalProcessor = exports.promiseProcessor = exports.readonlyProcessor = exports.pipeProcessor = exports.catchProcessor = exports.prefaultProcessor = exports.defaultProcessor = exports.nonoptionalProcessor = exports.nullableProcessor = exports.recordProcessor = exports.tupleProcessor = exports.intersectionProcessor = exports.unionProcessor = exports.objectProcessor = exports.arrayProcessor = exports.setProcessor = exports.mapProcessor = exports.transformProcessor = exports.functionProcessor = exports.customProcessor = exports.successProcessor = exports.fileProcessor = exports.templateLiteralProcessor = exports.nanProcessor = exports.literalProcessor = exports.enumProcessor = exports.dateProcessor = exports.unknownProcessor = exports.anyProcessor = exports.neverProcessor = exports.voidProcessor = exports.undefinedProcessor = exports.nullProcessor = exports.symbolProcessor = exports.bigintProcessor = exports.booleanProcessor = exports.numberProcessor = exports.stringProcessor = void 0;
@@ -19220,7 +19220,7 @@ var require_json_schema_processors = __commonJS({
       const values = json.enum ?? (json.const !== void 0 ? [json.const] : void 0);
       if (!numericType && !values?.some((v) => typeof v === "number"))
         return json;
-      const { minimum, maximum, exclusiveMinimum, exclusiveMaximum, multipleOf, format, id, ...rest } = json;
+      const { minimum, maximum, exclusiveMinimum, exclusiveMaximum, multipleOf, format, id: id2, ...rest } = json;
       if (rest.enum)
         rest.enum = rest.enum.map((v) => typeof v === "number" ? String(v) : v);
       else if (typeof rest.const === "number")
@@ -19584,8 +19584,8 @@ var require_json_schema_generator = __commonJS({
         this.ctx.sharedDefsExtractedFor = void 0;
         this.ctx.sharedEmitDoneFor = void 0;
         (0, to_json_schema_js_1.extractDefs)(this.ctx, schema);
-        const result2 = (0, to_json_schema_js_1.finalize)(this.ctx, schema);
-        const { "~standard": _, ...plainResult } = result2;
+        const result3 = (0, to_json_schema_js_1.finalize)(this.ctx, schema);
+        const { "~standard": _, ...plainResult } = result3;
         return plainResult;
       }
     };
@@ -19660,12 +19660,12 @@ var require_core2 = __commonJS({
     };
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.JSONSchema = exports.JSONSchemaGenerator = exports.toJSONSchema = exports.locales = exports.regexes = exports.toZod = exports.util = void 0;
@@ -19856,12 +19856,12 @@ var require_errors2 = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.ZodRealError = exports.ZodError = void 0;
@@ -19955,12 +19955,12 @@ var require_parse2 = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.safeDecodeAsync = exports.safeEncodeAsync = exports.safeDecode = exports.safeEncode = exports.decodeAsync = exports.encodeAsync = exports.decode = exports.encode = exports.validateAsync = exports.validate = exports.safeParseAsync = exports.safeParse = exports.parseAsync = exports.parse = void 0;
@@ -20028,12 +20028,12 @@ var require_schemas2 = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     var __importDefault = exports && exports.__importDefault || function(mod) {
       return mod && mod.__esModule ? mod : { "default": mod };
@@ -20095,7 +20095,7 @@ var require_schemas2 = __commonJS({
     exports.keyof = keyof;
     exports.object = object3;
     exports.strictObject = strictObject;
-    exports.looseObject = looseObject;
+    exports.looseObject = looseObject2;
     exports.union = union3;
     exports.xor = xor;
     exports.discriminatedUnion = discriminatedUnion;
@@ -20229,8 +20229,8 @@ var require_schemas2 = __commonJS({
       catch(params) {
         return _catch(this, params);
       },
-      pipe(target) {
-        return pipe(this, target);
+      pipe(target2) {
+        return pipe(this, target2);
       },
       readonly() {
         return readonly(this);
@@ -21024,7 +21024,7 @@ var require_schemas2 = __commonJS({
         ...index_js_1.util.normalizeParams(params)
       });
     }
-    function looseObject(shape, params) {
+    function looseObject2(shape, params) {
       return new exports.ZodObject({
         type: "object",
         shape,
@@ -21654,12 +21654,12 @@ var require_compat = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.ZodFirstPartyTypeKind = exports.config = exports.$brand = exports.ZodIssueCode = void 0;
@@ -21740,12 +21740,12 @@ var require_iso = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.ZodISOTime = exports.ZodISODuration = exports.ZodISODateTime = exports.ZodISODate = void 0;
@@ -21823,12 +21823,12 @@ var require_from_json_schema = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.fromJSONSchema = fromJSONSchema;
@@ -21837,7 +21837,7 @@ var require_from_json_schema = __commonJS({
     var _checks = __importStar(require_checks2());
     var _iso = __importStar(require_iso());
     var _schemas = __importStar(require_schemas2());
-    var z9 = {
+    var z13 = {
       ..._schemas,
       ..._checks,
       iso: _iso
@@ -21951,7 +21951,7 @@ var require_from_json_schema = __commonJS({
       throw new Error(`Reference not found: ${ref}`);
     }
     function checkObjectGuards(objectSchema, guards) {
-      const guard = z9.transform((value) => value).check((payload) => {
+      const guard = z13.transform((value) => value).check((payload) => {
         const value = payload.value;
         if (typeof value !== "object" || value === null || Array.isArray(value))
           return;
@@ -21982,13 +21982,13 @@ var require_from_json_schema = __commonJS({
         }
         if (guards.keySchema) {
           for (const key of keys) {
-            const result2 = guards.keySchema.safeParse(key);
-            if (result2.success)
+            const result3 = guards.keySchema.safeParse(key);
+            if (result3.success)
               continue;
             payload.issues.push({
               code: "invalid_key",
               origin: "record",
-              issues: result2.error.issues,
+              issues: result3.error.issues,
               input: key,
               path: [key],
               continue: true
@@ -22080,7 +22080,7 @@ var require_from_json_schema = __commonJS({
       return n === 1 ? "element" : "elements";
     }
     function checkArrayGuards(arraySchema, guards) {
-      const guard = z9.transform((value) => value).check((payload) => {
+      const guard = z13.transform((value) => value).check((payload) => {
         const items = payload.value;
         if (!Array.isArray(items))
           return;
@@ -22137,7 +22137,7 @@ var require_from_json_schema = __commonJS({
         return void 0;
       }
       if (restSchema === void 0 || restSchema === true) {
-        return z9.any();
+        return z13.any();
       }
       return convertSchema(restSchema, ctx);
     }
@@ -22145,7 +22145,7 @@ var require_from_json_schema = __commonJS({
     function convertBaseSchema(schema, ctx) {
       if (schema.not !== void 0) {
         if (typeof schema.not === "object" && Object.keys(schema.not).length === 0) {
-          return z9.never();
+          return z13.never();
         }
         throw new Error("not is not supported in Zod (except { not: {} } for never)");
       }
@@ -22167,7 +22167,7 @@ var require_from_json_schema = __commonJS({
           return ctx.refs.get(refPath);
         }
         if (ctx.processing.has(refPath)) {
-          return z9.lazy(() => {
+          return z13.lazy(() => {
             if (!ctx.refs.has(refPath)) {
               throw new Error(`Circular reference not resolved: ${refPath}`);
             }
@@ -22184,25 +22184,25 @@ var require_from_json_schema = __commonJS({
       if (schema.enum !== void 0) {
         const enumValues = schema.enum;
         if (ctx.version === "openapi-3.0" && schema.nullable === true && enumValues.length === 1 && enumValues[0] === null) {
-          return z9.null();
+          return z13.null();
         }
         if (enumValues.length === 0) {
-          return z9.never();
+          return z13.never();
         }
         if (enumValues.length === 1) {
-          return z9.literal(enumValues[0]);
+          return z13.literal(enumValues[0]);
         }
         if (enumValues.every((v) => typeof v === "string")) {
-          return z9.enum(enumValues);
+          return z13.enum(enumValues);
         }
-        const literalSchemas = enumValues.map((v) => z9.literal(v));
+        const literalSchemas = enumValues.map((v) => z13.literal(v));
         if (literalSchemas.length < 2) {
           return literalSchemas[0];
         }
-        return z9.union([literalSchemas[0], literalSchemas[1], ...literalSchemas.slice(2)]);
+        return z13.union([literalSchemas[0], literalSchemas[1], ...literalSchemas.slice(2)]);
       }
       if (schema.const !== void 0) {
-        return z9.literal(schema.const);
+        return z13.literal(schema.const);
       }
       const type = schema.type;
       if (Array.isArray(type)) {
@@ -22211,74 +22211,74 @@ var require_from_json_schema = __commonJS({
           return convertBaseSchema(typeSchema, ctx);
         });
         if (typeSchemas.length === 0) {
-          return z9.never();
+          return z13.never();
         }
         if (typeSchemas.length === 1) {
           return typeSchemas[0];
         }
-        return z9.union(typeSchemas);
+        return z13.union(typeSchemas);
       }
       if (!type) {
-        return z9.any();
+        return z13.any();
       }
       let zodSchema;
       switch (type) {
         case "string": {
-          let stringSchema = z9.string();
+          let stringSchema = z13.string();
           if (schema.format) {
             const format = schema.format;
             if (format === "email") {
-              stringSchema = stringSchema.check(z9.email());
+              stringSchema = stringSchema.check(z13.email());
             } else if (format === "uri" || format === "uri-reference") {
-              stringSchema = stringSchema.check(z9.url());
+              stringSchema = stringSchema.check(z13.url());
             } else if (format === "uuid" || format === "guid") {
-              stringSchema = stringSchema.check(z9.uuid());
+              stringSchema = stringSchema.check(z13.uuid());
             } else if (format === "date-time") {
-              stringSchema = stringSchema.check(z9.iso.datetime({ offset: true }));
+              stringSchema = stringSchema.check(z13.iso.datetime({ offset: true }));
             } else if (format === "date") {
-              stringSchema = stringSchema.check(z9.iso.date());
+              stringSchema = stringSchema.check(z13.iso.date());
             } else if (format === "time") {
-              stringSchema = stringSchema.check(z9.regex(fullTime));
+              stringSchema = stringSchema.check(z13.regex(fullTime));
             } else if (format === "duration") {
-              stringSchema = stringSchema.check(z9.iso.duration());
+              stringSchema = stringSchema.check(z13.iso.duration());
             } else if (format === "hostname") {
-              stringSchema = stringSchema.check(z9.hostname());
+              stringSchema = stringSchema.check(z13.hostname());
             } else if (format === "ipv4") {
-              stringSchema = stringSchema.check(z9.ipv4());
+              stringSchema = stringSchema.check(z13.ipv4());
             } else if (format === "ipv6") {
-              stringSchema = stringSchema.check(z9.ipv6());
+              stringSchema = stringSchema.check(z13.ipv6());
             } else if (format === "mac") {
-              stringSchema = stringSchema.check(z9.mac());
+              stringSchema = stringSchema.check(z13.mac());
             } else if (format === "cidr") {
-              stringSchema = stringSchema.check(z9.cidrv4());
+              stringSchema = stringSchema.check(z13.cidrv4());
             } else if (format === "cidr-v6") {
-              stringSchema = stringSchema.check(z9.cidrv6());
+              stringSchema = stringSchema.check(z13.cidrv6());
             } else if (format === "base64") {
-              stringSchema = stringSchema.check(z9.base64());
+              stringSchema = stringSchema.check(z13.base64());
             } else if (format === "base64url") {
-              stringSchema = stringSchema.check(z9.base64url());
+              stringSchema = stringSchema.check(z13.base64url());
             } else if (format === "e164") {
-              stringSchema = stringSchema.check(z9.e164());
+              stringSchema = stringSchema.check(z13.e164());
             } else if (format === "credit_card") {
-              stringSchema = stringSchema.check(z9.creditCard());
+              stringSchema = stringSchema.check(z13.creditCard());
             } else if (format === "iban") {
-              stringSchema = stringSchema.check(z9.iban());
+              stringSchema = stringSchema.check(z13.iban());
             } else if (format === "jwt") {
-              stringSchema = stringSchema.check(z9.jwt());
+              stringSchema = stringSchema.check(z13.jwt());
             } else if (format === "emoji") {
-              stringSchema = stringSchema.check(z9.emoji());
+              stringSchema = stringSchema.check(z13.emoji());
             } else if (format === "nanoid") {
-              stringSchema = stringSchema.check(z9.nanoid());
+              stringSchema = stringSchema.check(z13.nanoid());
             } else if (format === "cuid") {
-              stringSchema = stringSchema.check(z9.cuid());
+              stringSchema = stringSchema.check(z13.cuid());
             } else if (format === "cuid2") {
-              stringSchema = stringSchema.check(z9.cuid2());
+              stringSchema = stringSchema.check(z13.cuid2());
             } else if (format === "ulid") {
-              stringSchema = stringSchema.check(z9.ulid());
+              stringSchema = stringSchema.check(z13.ulid());
             } else if (format === "xid") {
-              stringSchema = stringSchema.check(z9.xid());
+              stringSchema = stringSchema.check(z13.xid());
             } else if (format === "ksuid") {
-              stringSchema = stringSchema.check(z9.ksuid());
+              stringSchema = stringSchema.check(z13.ksuid());
             }
           }
           if (typeof schema.minLength === "number") {
@@ -22295,7 +22295,7 @@ var require_from_json_schema = __commonJS({
         }
         case "number":
         case "integer": {
-          let numberSchema = type === "integer" ? z9.number().int() : z9.number();
+          let numberSchema = type === "integer" ? z13.number().int() : z13.number();
           if (typeof schema.minimum === "number" && schema.exclusiveMinimum !== true) {
             numberSchema = numberSchema.min(schema.minimum);
           }
@@ -22319,11 +22319,11 @@ var require_from_json_schema = __commonJS({
           break;
         }
         case "boolean": {
-          zodSchema = z9.boolean();
+          zodSchema = z13.boolean();
           break;
         }
         case "null": {
-          zodSchema = z9.null();
+          zodSchema = z13.null();
           break;
         }
         case "object": {
@@ -22341,24 +22341,24 @@ var require_from_json_schema = __commonJS({
             const looseRecords = [];
             for (const pattern of patternKeys) {
               const patternValue = convertSchema(patternProps[pattern], ctx);
-              const keySchema = z9.string().regex(new RegExp(pattern));
-              looseRecords.push(z9.looseRecord(keySchema, patternValue));
+              const keySchema = z13.string().regex(new RegExp(pattern));
+              looseRecords.push(z13.looseRecord(keySchema, patternValue));
             }
             const schemasToIntersect = [];
             if (Object.keys(shape).length > 0) {
-              schemasToIntersect.push(z9.object(shape).passthrough());
+              schemasToIntersect.push(z13.object(shape).passthrough());
             }
             schemasToIntersect.push(...looseRecords);
             if (schemasToIntersect.length === 0) {
-              zodSchema = z9.object({}).passthrough();
+              zodSchema = z13.object({}).passthrough();
             } else if (schemasToIntersect.length === 1) {
               zodSchema = schemasToIntersect[0];
             } else {
-              let result2 = z9.intersection(schemasToIntersect[0], schemasToIntersect[1]);
+              let result3 = z13.intersection(schemasToIntersect[0], schemasToIntersect[1]);
               for (let i = 2; i < schemasToIntersect.length; i++) {
-                result2 = z9.intersection(result2, schemasToIntersect[i]);
+                result3 = z13.intersection(result3, schemasToIntersect[i]);
               }
-              zodSchema = result2;
+              zodSchema = result3;
             }
             if (schema.additionalProperties === false) {
               const propertyKeys = Object.keys(shape);
@@ -22386,7 +22386,7 @@ var require_from_json_schema = __commonJS({
               });
             }
           } else {
-            const objectSchema = z9.object(shape);
+            const objectSchema = z13.object(shape);
             if (schema.additionalProperties === false) {
               zodSchema = objectSchema.strict();
             } else if (additionalSchema) {
@@ -22416,30 +22416,30 @@ var require_from_json_schema = __commonJS({
             const tupleItems = prefixItems.map((item) => convertSchema(item, ctx));
             const positionalItems = applyMinItems(tupleItems, minItems);
             const rest = !Array.isArray(items) ? getTupleRest(items, ctx) : void 0;
-            const tupleSchema = z9.tuple(positionalItems);
+            const tupleSchema = z13.tuple(positionalItems);
             zodSchema = rest ? tupleSchema.rest(rest) : tupleSchema;
             if (typeof schema.minItems === "number") {
-              zodSchema = zodSchema.check(z9.minLength(schema.minItems));
+              zodSchema = zodSchema.check(z13.minLength(schema.minItems));
             }
             if (typeof schema.maxItems === "number") {
-              zodSchema = zodSchema.check(z9.maxLength(schema.maxItems));
+              zodSchema = zodSchema.check(z13.maxLength(schema.maxItems));
             }
           } else if (Array.isArray(items)) {
             const minItems = typeof schema.minItems === "number" ? schema.minItems : 0;
             const tupleItems = items.map((item) => convertSchema(item, ctx));
             const positionalItems = applyMinItems(tupleItems, minItems);
             const rest = getTupleRest(schema.additionalItems, ctx);
-            const tupleSchema = z9.tuple(positionalItems);
+            const tupleSchema = z13.tuple(positionalItems);
             zodSchema = rest ? tupleSchema.rest(rest) : tupleSchema;
             if (typeof schema.minItems === "number") {
-              zodSchema = zodSchema.check(z9.minLength(schema.minItems));
+              zodSchema = zodSchema.check(z13.minLength(schema.minItems));
             }
             if (typeof schema.maxItems === "number") {
-              zodSchema = zodSchema.check(z9.maxLength(schema.maxItems));
+              zodSchema = zodSchema.check(z13.maxLength(schema.maxItems));
             }
           } else if (items !== void 0) {
             const element = convertSchema(items, ctx);
-            let arraySchema = z9.array(element);
+            let arraySchema = z13.array(element);
             if (typeof schema.minItems === "number") {
               arraySchema = arraySchema.min(schema.minItems);
             }
@@ -22448,7 +22448,7 @@ var require_from_json_schema = __commonJS({
             }
             zodSchema = arraySchema;
           } else {
-            zodSchema = z9.array(z9.any());
+            zodSchema = z13.array(z13.any());
           }
           if (schema.uniqueItems === true || schema.contains !== void 0) {
             zodSchema = checkArrayGuards(zodSchema, {
@@ -22467,37 +22467,37 @@ var require_from_json_schema = __commonJS({
     }
     function convertSchema(schema, ctx) {
       if (typeof schema === "boolean") {
-        return schema ? z9.any() : z9.never();
+        return schema ? z13.any() : z13.never();
       }
       let baseSchema = convertBaseSchema(schema, ctx);
       const hasExplicitType = schema.type || schema.enum !== void 0 || schema.const !== void 0;
       if (schema.anyOf && Array.isArray(schema.anyOf)) {
         const options = schema.anyOf.map((s) => convertSchema(s, ctx));
-        const anyOfUnion = z9.union(options);
-        baseSchema = hasExplicitType ? z9.intersection(baseSchema, anyOfUnion) : anyOfUnion;
+        const anyOfUnion = z13.union(options);
+        baseSchema = hasExplicitType ? z13.intersection(baseSchema, anyOfUnion) : anyOfUnion;
       }
       if (schema.oneOf && Array.isArray(schema.oneOf)) {
         const options = schema.oneOf.map((s) => convertSchema(s, ctx));
-        const oneOfUnion = z9.xor(options);
-        baseSchema = hasExplicitType ? z9.intersection(baseSchema, oneOfUnion) : oneOfUnion;
+        const oneOfUnion = z13.xor(options);
+        baseSchema = hasExplicitType ? z13.intersection(baseSchema, oneOfUnion) : oneOfUnion;
       }
       if (schema.allOf && Array.isArray(schema.allOf)) {
         if (schema.allOf.length === 0) {
-          baseSchema = hasExplicitType ? baseSchema : z9.any();
+          baseSchema = hasExplicitType ? baseSchema : z13.any();
         } else {
-          let result2 = hasExplicitType ? baseSchema : convertSchema(schema.allOf[0], ctx);
+          let result3 = hasExplicitType ? baseSchema : convertSchema(schema.allOf[0], ctx);
           const startIdx = hasExplicitType ? 0 : 1;
           for (let i = startIdx; i < schema.allOf.length; i++) {
-            result2 = z9.intersection(result2, convertSchema(schema.allOf[i], ctx));
+            result3 = z13.intersection(result3, convertSchema(schema.allOf[i], ctx));
           }
-          baseSchema = result2;
+          baseSchema = result3;
         }
       }
       if (schema.nullable === true && ctx.version === "openapi-3.0") {
-        baseSchema = z9.nullable(baseSchema);
+        baseSchema = z13.nullable(baseSchema);
       }
       if (schema.readOnly === true) {
-        baseSchema = z9.readonly(baseSchema);
+        baseSchema = z13.readonly(baseSchema);
       }
       if (schema.default !== void 0) {
         baseSchema = baseSchema.default(schema.default);
@@ -22548,7 +22548,7 @@ var require_from_json_schema = __commonJS({
     }
     function fromJSONSchema(schema, params) {
       if (typeof schema === "boolean") {
-        return schema ? z9.any() : z9.never();
+        return schema ? z13.any() : z13.never();
       }
       let normalized;
       try {
@@ -22556,10 +22556,10 @@ var require_from_json_schema = __commonJS({
       } catch {
         throw new Error("fromJSONSchema input is not valid JSON (possibly cyclic); use $defs/$ref for recursive schemas");
       }
-      const version = detectVersion(normalized, params?.defaultTarget);
+      const version2 = detectVersion(normalized, params?.defaultTarget);
       const defs = normalized.$defs || normalized.definitions || {};
       const ctx = {
-        version,
+        version: version2,
         defs,
         refs: /* @__PURE__ */ new Map(),
         processing: /* @__PURE__ */ new Set(),
@@ -22611,12 +22611,12 @@ var require_visit = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.visit = visit;
@@ -22818,12 +22818,12 @@ var require_deep_partial = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.deepPartial = deepPartial;
@@ -22882,12 +22882,12 @@ var require_in_out = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.input = input;
@@ -22966,12 +22966,12 @@ var require_coerce = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.string = string3;
@@ -23039,12 +23039,12 @@ var require_external = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     var __exportStar = exports && exports.__exportStar || function(m, exports2) {
       for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) __createBinding(exports2, m, p);
@@ -23205,21 +23205,21 @@ var require_zod = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     var __exportStar = exports && exports.__exportStar || function(m, exports2) {
       for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) __createBinding(exports2, m, p);
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = exports.z = void 0;
-    var z9 = __importStar(require_external());
-    exports.z = z9;
-    exports.default = z9;
+    var z13 = __importStar(require_external());
+    exports.z = z13;
+    exports.default = z13;
     __exportStar(require_external(), exports);
     (function() {
       var keys = Object.getOwnPropertyNames(exports);
@@ -23264,21 +23264,21 @@ var require_classic = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     var __exportStar = exports && exports.__exportStar || function(m, exports2) {
       for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) __createBinding(exports2, m, p);
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = exports.z = void 0;
-    var z9 = __importStar(require_external());
-    exports.z = z9;
-    exports.default = z9;
+    var z13 = __importStar(require_external());
+    exports.z = z13;
+    exports.default = z13;
     __exportStar(require_external(), exports);
     (function() {
       var keys = Object.getOwnPropertyNames(exports);
@@ -23323,12 +23323,12 @@ var require_v4 = __commonJS({
     });
     var __importStar = exports && exports.__importStar || function(mod) {
       if (mod && mod.__esModule) return mod;
-      var result2 = {};
+      var result3 = {};
       if (mod != null) {
-        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result2, mod, k);
+        for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result3, mod, k);
       }
-      __setModuleDefault(result2, mod);
-      return result2;
+      __setModuleDefault(result3, mod);
+      return result3;
     };
     var __exportStar = exports && exports.__exportStar || function(m, exports2) {
       for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p)) __createBinding(exports2, m, p);
@@ -23428,27 +23428,36 @@ var choicesPayloadSchema = import_zod.z.object({
   options: import_zod.z.array(choicesOptionSchema).min(1).max(20),
   multiSelect: import_zod.z.boolean().optional()
 }).refine((payload) => payload.options.filter((option) => option.recommended === true).length <= 1, { message: "at most one choice option may be recommended", path: ["options"] });
-var agentLoopScheduleSchema = import_zod.z.discriminatedUnion("kind", [
+var automationTimeZoneSchema = import_zod.z.string().refine((timeZone) => {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
+}, "invalid time zone");
+var automationScheduleSchema = import_zod.z.discriminatedUnion("kind", [
   import_zod.z.object({ kind: import_zod.z.literal("interval"), everyMinutes: import_zod.z.number().int().min(15) }),
   import_zod.z.object({
     kind: import_zod.z.literal("daily"),
     hour: import_zod.z.number().int().min(0).max(23),
-    minute: import_zod.z.number().int().min(0).max(59)
+    minute: import_zod.z.number().int().min(0).max(59),
+    timeZone: automationTimeZoneSchema.optional()
   }),
   import_zod.z.object({
     kind: import_zod.z.literal("weekly"),
     weekday: import_zod.z.number().int().min(0).max(6),
     hour: import_zod.z.number().int().min(0).max(23),
-    minute: import_zod.z.number().int().min(0).max(59)
+    minute: import_zod.z.number().int().min(0).max(59),
+    timeZone: automationTimeZoneSchema.optional()
   })
 ]);
-var agentLoopProposalSchema = import_zod.z.object({
-  loopId: import_zod.z.string().uuid(),
+var automationProposalSchema = import_zod.z.object({
   name: import_zod.z.string().trim().min(1).max(80),
-  script: import_zod.z.string().min(1),
-  schedule: agentLoopScheduleSchema,
-  reactionPrompt: import_zod.z.string().trim().min(1).optional(),
-  reactionModel: import_zod.z.string().trim().min(1).nullable().optional()
+  schedule: automationScheduleSchema,
+  prompt: import_zod.z.string().trim().min(1).max(8e3),
+  script: import_zod.z.string().trim().min(1).max(16e3).optional(),
+  model: import_zod.z.string().trim().min(1).nullable().optional()
 });
 var usageSchema = import_zod.z.object({
   inputTokens: import_zod.z.number().int().nonnegative(),
@@ -23477,6 +23486,21 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
     id: import_zod.z.string().min(1),
     model: import_zod.z.string().min(1),
     worktree: import_zod.z.string().min(1)
+  }),
+  import_zod.z.object({
+    t: import_zod.z.literal("dev_servers_changed"),
+    devServers: import_zod.z.array(import_zod.z.object({
+      port: import_zod.z.number().int().min(1).max(65535),
+      reachable: import_zod.z.boolean(),
+      pid: import_zod.z.number().int(),
+      name: import_zod.z.string(),
+      command: import_zod.z.string(),
+      workdir: import_zod.z.string(),
+      scope: import_zod.z.enum(["session", "project"]).optional(),
+      sessionId: import_zod.z.string().optional(),
+      /** Set when the listener belongs to a managed dev server instance. */
+      managedInstanceId: import_zod.z.string().optional()
+    }))
   }),
   import_zod.z.object({
     t: import_zod.z.literal("status"),
@@ -23513,6 +23537,12 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
       label: import_zod.z.string(),
       message: import_zod.z.string()
     }).optional(),
+    // The local user the turn runs for (ADR 0023 §2): the authenticated caller of
+    // the turn route, or the confirming user of the automation that started it.
+    // Durable provenance set by the server, never taken from a request body, and
+    // the recipient of the turn's notifications. Absent for turns that predate it
+    // or have no user behind them (a linked peer's message, a meeting).
+    initiatedBy: import_zod.z.object({ userId: import_zod.z.string().min(1) }).optional(),
     // May be empty when the turn carries only attachments (e.g. a screenshot with
     // no caption); the dispatch boundary guarantees at least one of text/attachments.
     text: import_zod.z.string(),
@@ -23646,8 +23676,8 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
     path: ["options"]
   }),
   import_zod.z.object({
-    t: import_zod.z.literal("agent_loop_proposal"),
-    proposal: agentLoopProposalSchema
+    t: import_zod.z.literal("automation_proposal"),
+    proposal: automationProposalSchema
   }),
   import_zod.z.object({
     // A turn ended without normal completion. Emitted for an explicit cancel, an
@@ -23674,15 +23704,19 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
     kind: import_zod.z.string(),
     message: import_zod.z.string()
   }),
-  // Technical diagnostics are deliberately scalar and contain no agent, chat,
-  // tool-input, tool-output, or stderr text.
+  // Process failures may include a bounded, credential-redacted stderr tail.
   import_zod.z.object({
     t: import_zod.z.literal("diagnostic"),
     source: import_zod.z.enum(["agent", "tool", "mcp"]),
     outcome: import_zod.z.enum(["completed", "failed", "cancelled"]),
     phase: import_zod.z.enum(["spawn", "initialize", "session_load", "session_new", "prompt", "tool_call"]),
     backend: import_zod.z.string().min(1).max(40).optional(),
-    code: import_zod.z.number().int().optional()
+    code: import_zod.z.number().int().optional(),
+    model: import_zod.z.string().max(200).optional(),
+    exitCode: import_zod.z.number().int().nullable().optional(),
+    signal: import_zod.z.string().max(40).nullable().optional(),
+    turnActive: import_zod.z.boolean().optional(),
+    stderrTail: import_zod.z.string().max(65536).optional()
   }),
   import_zod.z.object({
     t: import_zod.z.literal("session_progress"),
@@ -23690,6 +23724,15 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
     outcomeDelivered: import_zod.z.boolean(),
     blocker: import_zod.z.string().min(1).max(500).optional(),
     requiredDecision: import_zod.z.string().min(1).max(500).optional()
+  }),
+  // The user's durable task list changed for this session (tasks assigned to it,
+  // or written by its agent), so an open panel and the badge refresh live and
+  // the chat can show a compact line linking to the panel.
+  import_zod.z.object({
+    t: import_zod.z.literal("tasks_updated"),
+    origin: import_zod.z.enum(["user", "agent"]),
+    change: import_zod.z.enum(["added", "updated", "completed", "dropped", "deleted"]),
+    taskIds: import_zod.z.array(import_zod.z.string().min(1).max(128)).min(1).max(100)
   }),
   import_zod.z.object({
     t: import_zod.z.literal("raw"),
@@ -24357,10 +24400,10 @@ ${output}
     return parseKeyword("true", "true") || parseKeyword("false", "false") || parseKeyword("null", "null") || // repair Python keywords True, False, None
     parseKeyword("True", "true") || parseKeyword("False", "false") || parseKeyword("None", "null");
   }
-  function parseKeyword(name, value) {
-    if (text.slice(i, i + name.length) === name && !isFunctionNameChar(text[i + name.length])) {
+  function parseKeyword(name2, value) {
+    if (text.slice(i, i + name2.length) === name2 && !isFunctionNameChar(text[i + name2.length])) {
       output += value;
-      i += name.length;
+      i += name2.length;
       return true;
     }
     return false;
@@ -24464,6 +24507,7 @@ function atEndOfBlockComment(text, i) {
 var CHOICES_FENCE_TAG = "verity:choices";
 var CHOICES_FENCE_RE = /```verity:choices[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
 var LEGACY_CHOICES_RE = /^<quick-actions>[ \t]*\r?\n([\s\S]*?)\r?\n<\/quick-actions>[ \t]*$/gm;
+var UNCLOSED_LEGACY_CHOICES_RE = /^<quick-actions>[ \t]*\r?\n((?:[ \t]*[-*•] [^\r\n]+(?:\r?\n|(?![\s\S])))+)[ \t\r\n]*(?![\s\S])/gm;
 function parseLenientJson(body) {
   try {
     return JSON.parse(body);
@@ -24484,9 +24528,9 @@ function parseChoicesBlock(input) {
     const parsedJson = parseLenientJson(matches[i][1] ?? "");
     if (parsedJson === void 0)
       continue;
-    const result2 = choicesPayloadSchema.safeParse(parsedJson);
-    if (result2.success)
-      choices = result2.data;
+    const result3 = choicesPayloadSchema.safeParse(parsedJson);
+    if (result3.success)
+      choices = result3.data;
   }
   if (choices === void 0)
     return parseLegacyChoices(input);
@@ -24498,23 +24542,26 @@ function parseChoicesBlock(input) {
   return { text: text.trimEnd(), choices };
 }
 function parseLegacyChoices(input) {
-  const matches = [...input.matchAll(LEGACY_CHOICES_RE)];
+  const matches = [
+    ...input.matchAll(LEGACY_CHOICES_RE),
+    ...input.matchAll(UNCLOSED_LEGACY_CHOICES_RE)
+  ].sort((a, b) => a.index - b.index);
   for (let i = matches.length - 1; i >= 0; i--) {
-    const lines = (matches[i][1] ?? "").split(/\r?\n/);
+    const lines = (matches[i][1] ?? "").trimEnd().split(/\r?\n/);
     if (lines.length < 2 || lines.length > 20)
       continue;
     const labels = lines.map((line) => /^[ \t]*[-*•] (.+?)[ \t]*$/.exec(line)?.[1]);
     if (labels.some((label) => label === void 0))
       continue;
-    const result2 = choicesPayloadSchema.safeParse({
+    const result3 = choicesPayloadSchema.safeParse({
       options: labels.map((label) => ({ label }))
     });
-    if (!result2.success)
+    if (!result3.success)
       continue;
     const match = matches[i];
     return {
       text: (input.slice(0, match.index) + input.slice(match.index + match[0].length)).trimEnd(),
-      choices: result2.data
+      choices: result3.data
     };
   }
   return { text: input };
@@ -24533,30 +24580,72 @@ Do not use a Quick Action to defer work already authorized by the user's request
 
 Mark at most one option recommended. Set \`multiSelect:false\` (the default) for almost every prompt: a single tap then sends the option immediately. Set \`multiSelect:true\` ONLY when the options are additive and the operator would genuinely pick several at once (e.g. "which files to include") \u2014 this adds a two-step confirm (tap to select, then a separate Send button), so never use it for mutually exclusive choices, go-aheads, or "pick one to start" prompts. Skip pure status updates, open-ended brainstorming, and the final merge decision on an open PR (the PR status/merge bar handles that). When not already authorized, a go-ahead to commit, review, push, or open a PR is still a decision, so emit the block for those; when the user already requested the action, execute it without another choice. Do not write check-only status prose or poll/monitor PR checks/CI with tools such as \`gh pr checks\` unless explicitly asked; Verity refreshes that status. Valid JSON only: double-quoted keys/strings, no trailing commas, and escape inner double-quotes as \\".`;
 
-// node_modules/@verity/events/dist/agent-loop.js
-var AGENT_LOOP_FENCE_RE = /```verity:agent-loop[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
-function parseAgentLoopProposal(input) {
-  const matches = [...input.matchAll(AGENT_LOOP_FENCE_RE)];
+// node_modules/@verity/events/dist/automation.js
+var AUTOMATION_FENCE_RE = /```verity:automation[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
+function validProposal(body) {
+  try {
+    const parsed = automationProposalSchema.safeParse(JSON.parse(body ?? ""));
+    return parsed.success ? parsed.data : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function parseAutomationProposal(input) {
+  const matches = [...input.matchAll(AUTOMATION_FENCE_RE)];
   let proposal;
   for (let i = matches.length - 1; i >= 0 && proposal === void 0; i -= 1) {
-    try {
-      const parsed = agentLoopProposalSchema.safeParse(JSON.parse(matches[i]?.[1] ?? ""));
-      if (parsed.success)
-        proposal = parsed.data;
-    } catch {
-    }
+    proposal = validProposal(matches[i]?.[1]);
   }
   if (!proposal)
     return { text: input };
-  const text = input.replace(AGENT_LOOP_FENCE_RE, (fence, body) => {
-    try {
-      return agentLoopProposalSchema.safeParse(JSON.parse(body)).success ? "" : fence;
-    } catch {
-      return fence;
-    }
-  }).trimEnd();
+  const text = input.replace(AUTOMATION_FENCE_RE, (fence, body) => validProposal(body) === void 0 ? fence : "").trimEnd();
   return { text, proposal };
 }
+var SCHEDULE_HELP = '`schedule` is `{"kind":"daily","hour":9,"minute":0}`, `{"kind":"weekly","weekday":1,"hour":9,"minute":0}` (weekday 0 is Sunday), or `{"kind":"interval","everyMinutes":60}` (at least 15). Times default to the user\'s local time; the app attaches the device time zone on confirmation. Never convert them to server time. An explicit IANA `timeZone` (for example `Europe/Berlin`) may be added to daily or weekly schedules when the user requests another zone.';
+var PROPOSAL_RULES = "The app turns the block into a confirmation card. The automation exists only after the user confirms it there, so never claim it is active before that. A session has at most one automation; a newly confirmed proposal replaces the current one. The user pauses or deletes it from the session header.";
+var AUTOMATION_SYSTEM_PROMPT = `# Recurring automations (Verity)
+
+When the user wants something done regularly in this session, set it up as an automation. Ask only for what is missing: what to do and when. Then append exactly one final \`verity:automation\` block containing valid JSON with \`name\` (short, user-facing), \`schedule\`, \`prompt\`, and optional \`script\` / \`model\`.
+
+${SCHEDULE_HELP} \`prompt\` is the instruction you receive on every run; make it self-contained, because it must make sense without this conversation. Add \`script\` only when a cheap read-only shell check can settle most runs: it runs in the project container before each run, exit 0 ends the run without waking you, exit 10 runs the prompt, and any other exit is an error. Otherwise omit it.
+
+${PROPOSAL_RULES}`;
+
+// node_modules/@verity/events/dist/planning.js
+var START_PLANNING_TOOL = "verity_start_planning";
+var PRESENT_PLAN_TOOL = "verity_present_plan";
+var END_PLANNING_TOOL = "verity_end_planning";
+var PLANNING_TOOLS = [
+  START_PLANNING_TOOL,
+  PRESENT_PLAN_TOOL,
+  END_PLANNING_TOOL
+];
+function planningToolName(name2) {
+  return PLANNING_TOOLS.find((tool) => name2 === tool || name2 === `mcp__verity__${tool}` || name2 === `verity_${tool}`);
+}
+var PLANNING_SYSTEM_PROMPT = `# Planning mode (Verity)
+
+Before a materially larger change with real design choices, offer to plan it first: ask with a \`verity:choices\` block whose options include "Plan first" (recommended) and "Implement directly". When the user picks "Plan first", or asks in any wording to plan before implementing, call \`${START_PLANNING_TOOL}\` and then work out the plan without changing any files. Small, clear tasks need no planning.`;
+var PLANNING_ACTIVE_SYSTEM_PROMPT = `# Planning mode is active (Verity)
+
+This session is in planning mode, started after the user chose to plan first. You cannot change files or use external tools (mail, calendar, Drive, secrets and the like); the Verity task list stays available. Investigate, ask clarifying questions, and discuss in the chat as usual.
+
+When the plan is complete, or the user asks to see it, submit it with \`${PRESENT_PLAN_TOOL}\`. Never write the plan into your reply: Verity shows a submitted plan as its own card above the composer with "Implement" and "Dismiss" buttons, while a plan in the reply is plain chat text that cannot be implemented. Resolve open questions in the chat before presenting the plan. Structure the plan as Markdown in this shape:
+
+\`\`\`markdown
+# Short plan title
+
+## Goal
+One sentence.
+
+## Steps
+1. **Short step title** \u2014 one line on what changes and where.
+
+\`\`\`
+
+Keep each step to one line and the whole plan scannable on a phone. After submitting, end your turn without repeating the plan or explaining the buttons. Submit the whole revised plan again whenever it changes. Do not add a \`verity:choices\` block to ask whether to implement the plan, since the card's button already asks that, and do not call \`ExitPlanMode\`.
+
+Never start implementing on your own. If the user tells you in the chat to go ahead, call \`${END_PLANNING_TOOL}\` (after submitting the plan, if you have not yet): their message already authorizes implementation; no extra confirmation is needed. Verity starts implementation once your turn ends. End your turn right after it returns. If the user wants to leave planning without a plan, call the same tool with action "discard"; it asks once before restoring file access. Do not create tasks for unaccepted proposal steps. Accepted steps are saved automatically as assigned tasks; update those existing tasks instead of creating duplicates.`;
 
 // node_modules/@verity/events/dist/session-handoff-tool.js
 var import_zod2 = __toESM(require_zod(), 1);
@@ -24629,6 +24718,58 @@ var publishSessionProgressRequestSchema = import_zod3.z.object({
 }).strict();
 var RECENT_SESSION_MESSAGES_TOOL_DESCRIPTION = `Read a small recent window from one exact project session after user approval. The request must state sessionId, purpose and optional count/time window; count defaults to ${String(RECENT_SESSION_MESSAGES_DEFAULT)} and is capped at ${String(RECENT_SESSION_MESSAGES_MAX)}. Returns only user/assistant/error text with recognized credential patterns redacted, without attachments, tools, hidden prompts or capabilities. Freely written text can contain unrecognizable sensitive material, so the approval must be treated as authorizing the displayed content scope. If hasMore is true, pass nextBeforeSeq as beforeSeq in a fresh approved request for the next older page; never poll it.`;
 
+// node_modules/@verity/events/dist/app-help.js
+var import_zod4 = __toESM(require_zod(), 1);
+var APP_HELP_TOOL = "verity_app_help";
+var appHelpRequestSchema = import_zod4.z.object({
+  /** A topic id from the index. Takes precedence over `query`. */
+  topic: import_zod4.z.string().trim().min(1).max(100).optional(),
+  /** Free-text question words to search titles, summaries and keywords. */
+  query: import_zod4.z.string().trim().min(1).max(500).optional()
+}).strict();
+var APP_HELP_SYSTEM_PROMPT = `# App help (Verity)
+
+When the user asks how Verity itself works, where a setting is, or how to connect a service, call \`${APP_HELP_TOOL}\` instead of answering from memory. Pass on its \`appLink\` as a Markdown link, for example [Open GitHub settings](verity://settings/github); the app opens it directly. Use only \`verity://\` links the tool returned and never invent one. Add \`docsUrl\` only when the user wants more detail. If the catalog does not cover the question, say so.`;
+
+// node_modules/@verity/events/dist/tasks-tool.js
+var import_zod5 = __toESM(require_zod(), 1);
+var TASKS_TOOL = "verity_tasks";
+var TASK_TITLE_MAX = 2e3;
+var TASK_DETAIL_MAX = 2e4;
+var TASK_RESULT_MAX = 2e3;
+var TASKS_ADD_MAX = 30;
+var taskId = import_zod5.z.string().trim().min(1).max(128);
+var title = import_zod5.z.string().trim().min(1).max(TASK_TITLE_MAX);
+var detail = import_zod5.z.string().trim().min(1).max(TASK_DETAIL_MAX);
+var result = import_zod5.z.string().trim().min(1).max(TASK_RESULT_MAX);
+var tasksRequestSchema = import_zod5.z.discriminatedUnion("action", [
+  import_zod5.z.object({
+    action: import_zod5.z.literal("list"),
+    /** `session` (default): tasks assigned to this session. `project`: also the
+     *  owner's unassigned tasks in this session's project. */
+    scope: import_zod5.z.enum(["session", "project"]).optional()
+  }).strict(),
+  import_zod5.z.object({
+    action: import_zod5.z.literal("add"),
+    tasks: import_zod5.z.array(import_zod5.z.object({ title, detail: detail.optional() }).strict()).min(1).max(TASKS_ADD_MAX)
+  }).strict(),
+  import_zod5.z.object({
+    action: import_zod5.z.literal("update"),
+    id: taskId,
+    title: title.optional(),
+    detail: detail.optional(),
+    status: import_zod5.z.enum(["open", "in_progress"]).optional()
+  }).strict(),
+  import_zod5.z.object({ action: import_zod5.z.literal("complete"), id: taskId, result }).strict(),
+  import_zod5.z.object({ action: import_zod5.z.literal("drop"), id: taskId, result }).strict()
+]);
+var TASKS_SYSTEM_PROMPT = `# Tasks (Verity)
+
+Verity keeps a durable task list per user, shown in the app and edited through \`${TASKS_TOOL}\`; your native checklist stays the plan for the current turn. Record agreed work in \`verity_tasks\`: accepted audit findings, agreed follow-ups and actionable steps of a user-approved plan, even a single task. Proposals await agreement; saving tasks does not authorize execution. List first to reuse existing tasks. Keep file reads and test commands in the native checklist. Write each task for a fresh session with context in \`detail\`. Mark a task in_progress when you start it, complete it only after verification with a one-line result, and drop it with a reason instead of leaving it open. Tasks assigned to this session appear under "Assigned tasks" in your context: keep their status current, and end a turn by naming what is still open, offering the next task as a Quick Action.`;
+var TASKS_RESUME_SYSTEM_PROMPT = `# Tasks (Verity)
+
+Durable tasks live in \`${TASKS_TOOL}\`, separate from your per-turn checklist. Record agreed work and approved plan steps there; list first to avoid duplicates. Saving is not execution approval. Keep small work steps in the native checklist, keep the status of tasks listed under "Assigned tasks" current, and end a turn by naming what is still open.`;
+
 // node_modules/@verity/events/dist/projection.js
 var SESSION_PROJECTION_EVENT_TYPES = [
   // Read by `deriveSessionStatus` (the backward scan and the open-task pass).
@@ -24649,40 +24790,192 @@ var WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;
 var FIVE_HOUR_WINDOW_MINUTES = 5 * 60;
 
 // node_modules/@verity/events/dist/knowledge-tool.js
-var import_zod4 = __toESM(require_zod(), 1);
-var sourcePath = import_zod4.z.string().trim().min(1).max(512).refine((path) => path.split("/").every((part) => part !== "" && part !== "." && part !== ".." && !part.startsWith(".") && !part.includes("\\") && !part.includes("\0")));
-var knowledgeToolRequestSchema = import_zod4.z.discriminatedUnion("operation", [
-  import_zod4.z.object({
-    operation: import_zod4.z.literal("import_source"),
-    sourcePath: import_zod4.z.string().trim().min(1).max(512),
-    destination: import_zod4.z.enum(["meetings", "documents"]),
+var import_zod6 = __toESM(require_zod(), 1);
+var sourcePath = import_zod6.z.string().trim().min(1).max(512).refine((path) => path.split("/").every((part) => part !== "" && part !== "." && part !== ".." && !part.startsWith(".") && !part.includes("\\") && !part.includes("\0")));
+var knowledgeToolRequestSchema = import_zod6.z.discriminatedUnion("operation", [
+  import_zod6.z.object({
+    operation: import_zod6.z.literal("import_source"),
+    sourcePath: import_zod6.z.string().trim().min(1).max(512),
+    destination: import_zod6.z.enum(["meetings", "documents"]),
     path: sourcePath
   }).strict(),
-  import_zod4.z.object({
-    operation: import_zod4.z.literal("create_source_folder"),
-    destination: import_zod4.z.enum(["meetings", "documents"]),
+  import_zod6.z.object({
+    operation: import_zod6.z.literal("create_source_folder"),
+    destination: import_zod6.z.enum(["meetings", "documents"]),
     path: sourcePath
   }).strict(),
-  import_zod4.z.object({
-    operation: import_zod4.z.literal("move_source"),
+  import_zod6.z.object({
+    operation: import_zod6.z.literal("move_source"),
     sourcePath,
-    destination: import_zod4.z.enum(["meetings", "documents"]),
+    destination: import_zod6.z.enum(["meetings", "documents"]),
     path: sourcePath
   }).strict(),
-  import_zod4.z.object({
-    operation: import_zod4.z.literal("publish_shared"),
-    path: import_zod4.z.string().trim().min(1).max(512),
-    sharedPath: import_zod4.z.string().trim().min(1).max(512).optional(),
-    expectedDigest: import_zod4.z.string().regex(/^[a-f0-9]{64}$/u).optional()
+  import_zod6.z.object({
+    operation: import_zod6.z.literal("publish_shared"),
+    path: import_zod6.z.string().trim().min(1).max(512),
+    sharedPath: import_zod6.z.string().trim().min(1).max(512).optional(),
+    expectedDigest: import_zod6.z.string().regex(/^[a-f0-9]{64}$/u).optional()
   }).strict()
 ]);
 
+// node_modules/@verity/events/dist/file-operations.js
+var import_zod7 = __toESM(require_zod(), 1);
+var id = import_zod7.z.string().min(1).max(512);
+var name = import_zod7.z.string().trim().min(1).max(255);
+var targetName = import_zod7.z.string().min(1).max(1024);
+var target = { fileId: id.optional(), name: name.optional() };
+var content = {
+  content: import_zod7.z.string().max(1e7),
+  encoding: import_zod7.z.enum(["utf8", "base64"]).optional()
+};
+var version = import_zod7.z.string().min(1).max(1024);
+var identified = (schema) => schema.refine((request2) => {
+  const value = request2;
+  return Boolean(value.fileId || value.name);
+}, "fileId or name required");
+function fitsUtf8Limit(text) {
+  let bytes = 0;
+  for (const character of text) {
+    const point = character.codePointAt(0);
+    bytes += point <= 127 ? 1 : point <= 2047 ? 2 : point <= 65535 ? 3 : 4;
+    if (bytes > 1e7)
+      return false;
+  }
+  return true;
+}
+function validBase64(text) {
+  if (text.length % 4 !== 0)
+    return false;
+  const padding = text.endsWith("==") ? 2 : text.endsWith("=") ? 1 : 0;
+  const unpadded = padding === 0 ? text : text.slice(0, -padding);
+  return !/[^A-Za-z0-9+/]/.test(unpadded);
+}
+var validContent = (value) => value.encoding === "base64" ? validBase64(value.content) : fitsUtf8Limit(value.content);
+var fileOperationRequestSchema = import_zod7.z.discriminatedUnion("action", [
+  import_zod7.z.object({ action: import_zod7.z.literal("capabilities") }).strict(),
+  import_zod7.z.object({
+    action: import_zod7.z.literal("list"),
+    folderId: id.optional(),
+    pageToken: import_zod7.z.string().min(1).max(4096).optional()
+  }).strict(),
+  import_zod7.z.object({
+    action: import_zod7.z.literal("search"),
+    query: import_zod7.z.string().trim().min(1).max(200),
+    pageToken: import_zod7.z.string().min(1).max(4096).optional()
+  }).strict(),
+  identified(import_zod7.z.object({ action: import_zod7.z.literal("read"), ...target }).strict()),
+  import_zod7.z.object({
+    action: import_zod7.z.literal("upload"),
+    name,
+    mimeType: import_zod7.z.string().min(1).max(255).regex(/^[^\r\n]+$/),
+    folderId: id.optional(),
+    ...content
+  }).strict().refine(validContent, "Content must be valid base64 or at most 10 MB of UTF-8"),
+  import_zod7.z.object({ action: import_zod7.z.literal("create_folder"), name, folderId: id.optional() }).strict(),
+  import_zod7.z.object({
+    action: import_zod7.z.literal("overwrite"),
+    fileId: id,
+    name: targetName,
+    expectedVersion: version,
+    ...content
+  }).strict().refine(validContent, "Content must be valid base64 or at most 10 MB of UTF-8"),
+  import_zod7.z.object({
+    action: import_zod7.z.literal("rename"),
+    fileId: id,
+    name: targetName,
+    expectedVersion: version,
+    newName: name
+  }).strict(),
+  import_zod7.z.object({
+    action: import_zod7.z.literal("move"),
+    fileId: id,
+    name: targetName,
+    expectedVersion: version,
+    folderId: id
+  }).strict(),
+  import_zod7.z.object({ action: import_zod7.z.literal("trash"), fileId: id, name: targetName, expectedVersion: version }).strict()
+]);
+
+// node_modules/@verity/events/dist/live.js
+var import_zod8 = __toESM(require_zod(), 1);
+var sessionId = import_zod8.z.string().min(1).max(200);
+var seq = import_zod8.z.number().int().nonnegative();
+var liveResourceSchema = import_zod8.z.object({
+  path: import_zod8.z.string().min(1).max(1e3),
+  ownerToken: import_zod8.z.string().min(1).max(512).optional()
+});
+var liveClientFrameSchema = import_zod8.z.union([
+  import_zod8.z.object({ k: import_zod8.z.literal("watch"), resource: liveResourceSchema }),
+  import_zod8.z.object({ k: import_zod8.z.literal("unwatch"), resource: liveResourceSchema }),
+  /** Whether the app is in front of the user: an active iOS app, a visible and
+   * focused browser tab. Only a foreground connection receives in-app alerts in
+   * place of a push. */
+  import_zod8.z.object({ k: import_zod8.z.literal("state"), foreground: import_zod8.z.boolean() }),
+  import_zod8.z.object({ k: import_zod8.z.literal("sub"), ch: import_zod8.z.literal("overview") }),
+  import_zod8.z.object({
+    k: import_zod8.z.literal("sub"),
+    ch: import_zod8.z.literal("session"),
+    id: sessionId,
+    sinceSeq: seq.optional(),
+    /** The session is on screen. A viewed session raises no notification for
+     * its viewer's user at all — they are already looking at it. */
+    view: import_zod8.z.boolean().optional()
+  }),
+  import_zod8.z.object({ k: import_zod8.z.literal("view"), id: sessionId, view: import_zod8.z.boolean() }),
+  import_zod8.z.object({ k: import_zod8.z.literal("unsub"), ch: import_zod8.z.literal("overview") }),
+  import_zod8.z.object({ k: import_zod8.z.literal("unsub"), ch: import_zod8.z.literal("session"), id: sessionId }),
+  import_zod8.z.object({ k: import_zod8.z.literal("ping"), n: import_zod8.z.number().int().nonnegative() })
+]);
+var LIVE_ENDED_REASONS = ["forbidden", "not_found", "overflow", "limit", "error"];
+var LIVE_HINT_TOPICS = ["events", "status", "permission", "activity", "session"];
+var liveHintSchema = import_zod8.z.object({
+  sessionId,
+  projectId: import_zod8.z.string().optional(),
+  topics: import_zod8.z.array(import_zod8.z.enum(LIVE_HINT_TOPICS)).min(1),
+  /** The session no longer exists. */
+  deleted: import_zod8.z.boolean().optional()
+});
+var LIVE_ALERT_KINDS = ["permission", "question"];
+var LIVE_ALERT_MAX_CHOICES = 4;
+var liveAlertSchema = import_zod8.z.object({
+  sessionId,
+  kind: import_zod8.z.enum(LIVE_ALERT_KINDS),
+  categoryId: import_zod8.z.string().min(1),
+  toolUseId: import_zod8.z.string().min(1).optional(),
+  /** Option labels of an agent question that offered fixed choices. */
+  choices: import_zod8.z.array(import_zod8.z.string().min(1).max(200)).max(LIVE_ALERT_MAX_CHOICES).optional(),
+  title: import_zod8.z.string(),
+  body: import_zod8.z.string()
+});
+var liveServerFrameSchema = import_zod8.z.discriminatedUnion("k", [
+  import_zod8.z.object({
+    k: import_zod8.z.literal("ready"),
+    v: import_zod8.z.number().int().positive(),
+    maxSessions: import_zod8.z.number().int().positive(),
+    resources: import_zod8.z.boolean().optional()
+  }),
+  import_zod8.z.object({
+    k: import_zod8.z.literal("event"),
+    id: sessionId,
+    seq,
+    ts: import_zod8.z.number().int().nonnegative().optional(),
+    event: agentEventSchema
+  }),
+  import_zod8.z.object({ k: import_zod8.z.literal("caught_up"), id: sessionId, seq }),
+  import_zod8.z.object({ k: import_zod8.z.literal("ended"), id: sessionId, reason: import_zod8.z.enum(LIVE_ENDED_REASONS) }),
+  import_zod8.z.object({ k: import_zod8.z.literal("hint"), hints: import_zod8.z.array(liveHintSchema).min(1) }),
+  import_zod8.z.object({ k: import_zod8.z.literal("alert"), alert: liveAlertSchema }),
+  import_zod8.z.object({ k: import_zod8.z.literal("invalidate"), path: import_zod8.z.string() }),
+  import_zod8.z.object({ k: import_zod8.z.literal("pong"), n: import_zod8.z.number().int().nonnegative() }),
+  import_zod8.z.object({ k: import_zod8.z.literal("error"), message: import_zod8.z.string() })
+]);
+
 // packages/session/dist/runner-worker-entry.js
-var import_zod5 = __toESM(require_zod(), 1);
+var import_zod9 = __toESM(require_zod(), 1);
 
 // packages/session/dist/backend-contract.js
 function isUsageLimitError(message) {
-  return /\b(?:rate limit|too many requests|quota exceeded|(?:limit|quota)\b.{0,40}\b(?:reached|exceeded)|you(?:['’]ve| have) hit your (?:session|usage|weekly) limit)\b/i.test(message);
+  return /\b(?:rate limit|too many requests|quota exceeded|(?:limit|quota)\b.{0,40}\b(?:reached|exceeded)|you(?:['’]ve| have) (?:hit your (?:session|usage|weekly)|reached your [\w -]{1,40}) limit)\b/i.test(message);
 }
 function isExplicitPreExecutionRejection(message) {
   return /\b(?:login required|not logged in|authentication failed|unauthorized|invalid api key|token expired)\b/i.test(message) || /\b(?:rate limit|too many requests|quota exceeded)\b/i.test(message) || /\b(?:limit|quota)\b.{0,40}\b(?:reached|exceeded)\b/i.test(message);
@@ -24739,9 +25032,7 @@ var CLIENT_METHODS = {
   terminal_release: "terminal/release",
   terminal_wait_for_exit: "terminal/wait_for_exit",
   terminal_kill: "terminal/kill",
-  mcp_connect: "mcp/connect",
   mcp_message: "mcp/message",
-  mcp_disconnect: "mcp/disconnect",
   elicitation_create: "elicitation/create",
   elicitation_complete: "elicitation/complete"
 };
@@ -24789,14 +25080,14 @@ function excludeKnownTags(schema, key, knownTags) {
 }
 function preserveCustomPayload(schema, key, knownTags) {
   return import_v4.z.unknown().transform((value, context) => {
-    const result2 = schema.safeParse(value);
-    if (!result2.success) {
-      for (const issue of result2.error.issues) {
+    const result3 = schema.safeParse(value);
+    if (!result3.success) {
+      for (const issue of result3.error.issues) {
         context.addIssue({ ...issue, input: value });
       }
       return import_v4.z.NEVER;
     }
-    const output = result2.data;
+    const output = result3.data;
     const tag = stringTag(value, key);
     if (tag !== void 0 && !knownTags.includes(tag)) {
       const raw = value;
@@ -24815,371 +25106,364 @@ function vecSkipError(itemSchema) {
 }
 
 // node_modules/@agentclientprotocol/sdk/dist/schema/zod.gen.js
-var z6 = __toESM(require_v4(), 1);
-var zRequestId = z6.union([z6.number(), z6.string()]).nullable();
-var zSessionId = z6.string();
-var zWriteTextFileRequest = z6.object({
+var z10 = __toESM(require_v4(), 1);
+var zRequestId = z10.union([z10.number(), z10.string()]).nullable();
+var zSessionId = z10.string();
+var zWriteTextFileRequest = z10.object({
   sessionId: zSessionId,
-  path: z6.string(),
-  content: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  path: z10.string(),
+  content: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zReadTextFileRequest = z6.object({
+var zReadTextFileRequest = z10.object({
   sessionId: zSessionId,
-  path: z6.string(),
-  line: defaultOnError(z6.int().gte(0).max(4294967295, {
+  path: z10.string(),
+  line: defaultOnError(z10.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  limit: defaultOnError(z6.int().gte(0).max(4294967295, {
+  limit: defaultOnError(z10.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zToolCallId = z6.string();
-var zToolKind = z6.union([
-  z6.literal("read"),
-  z6.literal("edit"),
-  z6.literal("delete"),
-  z6.literal("move"),
-  z6.literal("search"),
-  z6.literal("execute"),
-  z6.literal("think"),
-  z6.literal("fetch"),
-  z6.literal("switch_mode"),
-  z6.literal("other")
+var zToolCallId = z10.string();
+var zToolKind = z10.union([
+  z10.literal("read"),
+  z10.literal("edit"),
+  z10.literal("delete"),
+  z10.literal("move"),
+  z10.literal("search"),
+  z10.literal("execute"),
+  z10.literal("think"),
+  z10.literal("fetch"),
+  z10.literal("switch_mode"),
+  z10.literal("other")
 ]);
-var zToolCallStatus = z6.union([
-  z6.literal("pending"),
-  z6.literal("in_progress"),
-  z6.literal("completed"),
-  z6.literal("failed")
+var zToolCallStatus = z10.union([
+  z10.literal("pending"),
+  z10.literal("in_progress"),
+  z10.literal("completed"),
+  z10.literal("failed")
 ]);
-var zRole = z6.union([z6.literal("assistant"), z6.literal("user")]);
-var zAnnotations = z6.object({
+var zRole = z10.union([z10.literal("assistant"), z10.literal("user")]);
+var zAnnotations = z10.object({
   audience: defaultOnError(vecSkipError(zRole).nullish(), () => void 0),
-  lastModified: defaultOnError(z6.string().nullish(), () => void 0),
-  priority: defaultOnError(z6.number().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  lastModified: defaultOnError(z10.string().nullish(), () => void 0),
+  priority: defaultOnError(z10.number().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zTextContent = z6.object({
+var zTextContent = z10.object({
   annotations: defaultOnError(zAnnotations.nullish(), () => void 0),
-  text: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  text: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zImageContent = z6.object({
+var zImageContent = z10.object({
   annotations: defaultOnError(zAnnotations.nullish(), () => void 0),
-  data: z6.string(),
-  mimeType: z6.string(),
-  uri: defaultOnError(z6.string().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  data: z10.string(),
+  mimeType: z10.string(),
+  uri: defaultOnError(z10.string().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zAudioContent = z6.object({
+var zAudioContent = z10.object({
   annotations: defaultOnError(zAnnotations.nullish(), () => void 0),
-  data: z6.string(),
-  mimeType: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  data: z10.string(),
+  mimeType: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zResourceLink = z6.object({
+var zResourceLink = z10.object({
   annotations: defaultOnError(zAnnotations.nullish(), () => void 0),
-  description: defaultOnError(z6.string().nullish(), () => void 0),
-  mimeType: defaultOnError(z6.string().nullish(), () => void 0),
-  name: z6.string(),
-  size: defaultOnError(z6.number().nullish(), () => void 0),
-  title: defaultOnError(z6.string().nullish(), () => void 0),
-  uri: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  description: defaultOnError(z10.string().nullish(), () => void 0),
+  mimeType: defaultOnError(z10.string().nullish(), () => void 0),
+  name: z10.string(),
+  size: defaultOnError(z10.number().nullish(), () => void 0),
+  title: defaultOnError(z10.string().nullish(), () => void 0),
+  uri: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zTextResourceContents = z6.object({
-  mimeType: defaultOnError(z6.string().nullish(), () => void 0),
-  text: z6.string(),
-  uri: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zTextResourceContents = z10.object({
+  mimeType: defaultOnError(z10.string().nullish(), () => void 0),
+  text: z10.string(),
+  uri: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zBlobResourceContents = z6.object({
-  blob: z6.string(),
-  mimeType: defaultOnError(z6.string().nullish(), () => void 0),
-  uri: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zBlobResourceContents = z10.object({
+  blob: z10.string(),
+  mimeType: defaultOnError(z10.string().nullish(), () => void 0),
+  uri: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zEmbeddedResourceResource = z6.union([
+var zEmbeddedResourceResource = z10.union([
   zTextResourceContents,
   zBlobResourceContents
 ]);
-var zEmbeddedResource = z6.object({
+var zEmbeddedResource = z10.object({
   annotations: defaultOnError(zAnnotations.nullish(), () => void 0),
   resource: zEmbeddedResourceResource,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zContentBlock = z6.union([
-  zTextContent.and(z6.object({
-    type: z6.literal("text")
+var zContentBlock = z10.union([
+  zTextContent.and(z10.object({
+    type: z10.literal("text")
   })),
-  zImageContent.and(z6.object({
-    type: z6.literal("image")
+  zImageContent.and(z10.object({
+    type: z10.literal("image")
   })),
-  zAudioContent.and(z6.object({
-    type: z6.literal("audio")
+  zAudioContent.and(z10.object({
+    type: z10.literal("audio")
   })),
-  zResourceLink.and(z6.object({
-    type: z6.literal("resource_link")
+  zResourceLink.and(z10.object({
+    type: z10.literal("resource_link")
   })),
-  zEmbeddedResource.and(z6.object({
-    type: z6.literal("resource")
+  zEmbeddedResource.and(z10.object({
+    type: z10.literal("resource")
   }))
 ]);
-var zContent = z6.object({
+var zContent = z10.object({
   content: zContentBlock,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zDiff = z6.object({
-  path: z6.string(),
-  oldText: defaultOnError(z6.string().nullish(), () => void 0),
-  newText: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zDiff = z10.object({
+  path: z10.string(),
+  oldText: defaultOnError(z10.string().nullish(), () => void 0),
+  newText: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zTerminalId = z6.string();
-var zTerminal = z6.object({
+var zTerminalId = z10.string();
+var zTerminal = z10.object({
   terminalId: zTerminalId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zToolCallContent = z6.union([
-  zContent.and(z6.object({
-    type: z6.literal("content")
+var zToolCallContent = z10.union([
+  zContent.and(z10.object({
+    type: z10.literal("content")
   })),
-  zDiff.and(z6.object({
-    type: z6.literal("diff")
+  zDiff.and(z10.object({
+    type: z10.literal("diff")
   })),
-  zTerminal.and(z6.object({
-    type: z6.literal("terminal")
+  zTerminal.and(z10.object({
+    type: z10.literal("terminal")
   }))
 ]);
-var zToolCallLocation = z6.object({
-  path: z6.string(),
-  line: defaultOnError(z6.int().gte(0).max(4294967295, {
+var zToolCallLocation = z10.object({
+  path: z10.string(),
+  line: defaultOnError(z10.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zToolCallUpdate = z6.object({
+var zToolCallUpdate = z10.object({
   toolCallId: zToolCallId,
   kind: defaultOnError(zToolKind.nullish(), () => void 0),
   status: defaultOnError(zToolCallStatus.nullish(), () => void 0),
-  title: defaultOnError(z6.string().nullish(), () => void 0),
-  name: defaultOnError(z6.string().nullish(), () => void 0),
+  title: defaultOnError(z10.string().nullish(), () => void 0),
+  name: defaultOnError(z10.string().nullish(), () => void 0),
   content: defaultOnError(vecSkipError(zToolCallContent).nullish(), () => void 0),
   locations: defaultOnError(vecSkipError(zToolCallLocation).nullish(), () => void 0),
-  rawInput: defaultOnError(z6.unknown().optional(), () => void 0),
-  rawOutput: defaultOnError(z6.unknown().optional(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  rawInput: defaultOnError(z10.unknown().optional(), () => void 0),
+  rawOutput: defaultOnError(z10.unknown().optional(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zPermissionOptionId = z6.string();
-var zPermissionOptionKind = z6.union([
-  z6.literal("allow_once"),
-  z6.literal("allow_always"),
-  z6.literal("reject_once"),
-  z6.literal("reject_always")
+var zPermissionOptionId = z10.string();
+var zPermissionOptionKind = z10.union([
+  z10.literal("allow_once"),
+  z10.literal("allow_always"),
+  z10.literal("reject_once"),
+  z10.literal("reject_always")
 ]);
-var zPermissionOption = z6.object({
+var zPermissionOption = z10.object({
   optionId: zPermissionOptionId,
-  name: z6.string(),
+  name: z10.string(),
   kind: zPermissionOptionKind,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zRequestPermissionRequest = z6.object({
+var zRequestPermissionRequest = z10.object({
   sessionId: zSessionId,
   toolCall: zToolCallUpdate,
-  options: z6.array(zPermissionOption),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  options: z10.array(zPermissionOption),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zEnvVariable = z6.object({
-  name: z6.string(),
-  value: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zEnvVariable = z10.object({
+  name: z10.string(),
+  value: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zCreateTerminalRequest = z6.object({
+var zCreateTerminalRequest = z10.object({
   sessionId: zSessionId,
-  command: z6.string(),
-  args: defaultOnError(vecSkipError(z6.string()).optional(), () => []),
+  command: z10.string(),
+  args: defaultOnError(vecSkipError(z10.string()).optional(), () => []),
   env: defaultOnError(vecSkipError(zEnvVariable).optional(), () => []),
-  cwd: defaultOnError(z6.string().nullish(), () => void 0),
-  outputByteLimit: defaultOnError(z6.number().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  cwd: defaultOnError(z10.string().nullish(), () => void 0),
+  outputByteLimit: defaultOnError(z10.number().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zTerminalOutputRequest = z6.object({
+var zTerminalOutputRequest = z10.object({
   sessionId: zSessionId,
   terminalId: zTerminalId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zReleaseTerminalRequest = z6.object({
+var zReleaseTerminalRequest = z10.object({
   sessionId: zSessionId,
   terminalId: zTerminalId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zWaitForTerminalExitRequest = z6.object({
+var zWaitForTerminalExitRequest = z10.object({
   sessionId: zSessionId,
   terminalId: zTerminalId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zKillTerminalRequest = z6.object({
+var zKillTerminalRequest = z10.object({
   sessionId: zSessionId,
   terminalId: zTerminalId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zElicitationSessionScope = z6.object({
+var zElicitationSessionScope = z10.object({
   sessionId: zSessionId,
   toolCallId: defaultOnError(zToolCallId.nullish(), () => void 0)
 });
-var zElicitationRequestScope = z6.object({
+var zElicitationRequestScope = z10.object({
   requestId: zRequestId
 });
-var zElicitationSchemaType = z6.literal("object");
-var zStringFormat = z6.union([
-  z6.literal("email"),
-  z6.literal("uri"),
-  z6.literal("date"),
-  z6.literal("date-time")
+var zElicitationSchemaType = z10.literal("object");
+var zStringFormat = z10.union([
+  z10.literal("email"),
+  z10.literal("uri"),
+  z10.literal("date"),
+  z10.literal("date-time")
 ]);
-var zEnumOption = z6.object({
-  const: z6.string(),
-  title: z6.string(),
-  description: defaultOnError(z6.string().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zEnumOption = z10.object({
+  const: z10.string(),
+  title: z10.string(),
+  description: defaultOnError(z10.string().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zStringPropertySchema = z6.object({
-  title: defaultOnError(z6.string().nullish(), () => void 0),
-  description: defaultOnError(z6.string().nullish(), () => void 0),
-  minLength: z6.int().gte(0).max(4294967295, {
+var zStringPropertySchema = z10.object({
+  title: defaultOnError(z10.string().nullish(), () => void 0),
+  description: defaultOnError(z10.string().nullish(), () => void 0),
+  minLength: z10.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(),
-  maxLength: z6.int().gte(0).max(4294967295, {
+  maxLength: z10.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(),
-  pattern: z6.string().nullish(),
+  pattern: z10.string().nullish(),
   format: zStringFormat.nullish(),
-  default: defaultOnError(z6.string().nullish(), () => void 0),
-  enum: z6.array(z6.string()).nullish(),
-  oneOf: z6.array(zEnumOption).nullish(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  default: defaultOnError(z10.string().nullish(), () => void 0),
+  enum: z10.array(z10.string()).nullish(),
+  oneOf: z10.array(zEnumOption).nullish(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNumberPropertySchema = z6.object({
-  title: defaultOnError(z6.string().nullish(), () => void 0),
-  description: defaultOnError(z6.string().nullish(), () => void 0),
-  minimum: z6.number().nullish(),
-  maximum: z6.number().nullish(),
-  default: defaultOnError(z6.number().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNumberPropertySchema = z10.object({
+  title: defaultOnError(z10.string().nullish(), () => void 0),
+  description: defaultOnError(z10.string().nullish(), () => void 0),
+  minimum: z10.number().nullish(),
+  maximum: z10.number().nullish(),
+  default: defaultOnError(z10.number().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zIntegerPropertySchema = z6.object({
-  title: defaultOnError(z6.string().nullish(), () => void 0),
-  description: defaultOnError(z6.string().nullish(), () => void 0),
-  minimum: z6.number().nullish(),
-  maximum: z6.number().nullish(),
-  default: defaultOnError(z6.number().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zIntegerPropertySchema = z10.object({
+  title: defaultOnError(z10.string().nullish(), () => void 0),
+  description: defaultOnError(z10.string().nullish(), () => void 0),
+  minimum: z10.number().nullish(),
+  maximum: z10.number().nullish(),
+  default: defaultOnError(z10.number().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zBooleanPropertySchema = z6.object({
-  title: defaultOnError(z6.string().nullish(), () => void 0),
-  description: defaultOnError(z6.string().nullish(), () => void 0),
-  default: defaultOnError(z6.boolean().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zBooleanPropertySchema = z10.object({
+  title: defaultOnError(z10.string().nullish(), () => void 0),
+  description: defaultOnError(z10.string().nullish(), () => void 0),
+  default: defaultOnError(z10.boolean().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zStringMultiSelectItems = z6.object({
-  enum: z6.array(z6.string()),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zStringMultiSelectItems = z10.object({
+  enum: z10.array(z10.string()),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zTitledMultiSelectItems = z6.object({
-  anyOf: z6.array(zEnumOption),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zTitledMultiSelectItems = z10.object({
+  anyOf: z10.array(zEnumOption),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zMultiSelectItems = preserveCustomPayload(z6.union([
-  zStringMultiSelectItems.and(z6.object({
-    type: z6.literal("string")
+var zMultiSelectItems = preserveCustomPayload(z10.union([
+  zStringMultiSelectItems.and(z10.object({
+    type: z10.literal("string")
   })),
-  excludeKnownTags(z6.object({
-    type: z6.string()
+  excludeKnownTags(z10.object({
+    type: z10.string()
   }), "type", ["string"]),
   zTitledMultiSelectItems
 ]), "type", ["string"]);
-var zMultiSelectPropertySchema = z6.object({
-  title: defaultOnError(z6.string().nullish(), () => void 0),
-  description: defaultOnError(z6.string().nullish(), () => void 0),
-  minItems: z6.number().nullish(),
-  maxItems: z6.number().nullish(),
+var zMultiSelectPropertySchema = z10.object({
+  title: defaultOnError(z10.string().nullish(), () => void 0),
+  description: defaultOnError(z10.string().nullish(), () => void 0),
+  minItems: z10.number().nullish(),
+  maxItems: z10.number().nullish(),
   items: zMultiSelectItems,
-  default: defaultOnError(vecSkipError(z6.string()).nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  default: defaultOnError(vecSkipError(z10.string()).nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zElicitationPropertySchema = preserveCustomPayload(z6.union([
-  zStringPropertySchema.and(z6.object({
-    type: z6.literal("string")
+var zElicitationPropertySchema = preserveCustomPayload(z10.union([
+  zStringPropertySchema.and(z10.object({
+    type: z10.literal("string")
   })),
-  zNumberPropertySchema.and(z6.object({
-    type: z6.literal("number")
+  zNumberPropertySchema.and(z10.object({
+    type: z10.literal("number")
   })),
-  zIntegerPropertySchema.and(z6.object({
-    type: z6.literal("integer")
+  zIntegerPropertySchema.and(z10.object({
+    type: z10.literal("integer")
   })),
-  zBooleanPropertySchema.and(z6.object({
-    type: z6.literal("boolean")
+  zBooleanPropertySchema.and(z10.object({
+    type: z10.literal("boolean")
   })),
-  zMultiSelectPropertySchema.and(z6.object({
-    type: z6.literal("array")
+  zMultiSelectPropertySchema.and(z10.object({
+    type: z10.literal("array")
   })),
-  excludeKnownTags(z6.object({
-    type: z6.string()
+  excludeKnownTags(z10.object({
+    type: z10.string()
   }), "type", ["array", "boolean", "integer", "number", "string"])
 ]), "type", ["array", "boolean", "integer", "number", "string"]);
-var zElicitationSchema = z6.object({
+var zElicitationSchema = z10.object({
   type: defaultOnError(zElicitationSchemaType.optional().default("object"), () => "object"),
-  title: defaultOnError(z6.string().nullish(), () => void 0),
-  properties: z6.record(z6.string(), zElicitationPropertySchema).optional().default({}),
-  required: z6.array(z6.string()).nullish(),
-  description: defaultOnError(z6.string().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  title: defaultOnError(z10.string().nullish(), () => void 0),
+  properties: z10.record(z10.string(), zElicitationPropertySchema).optional().default({}),
+  required: z10.array(z10.string()).nullish(),
+  description: defaultOnError(z10.string().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zElicitationFormMode = z6.intersection(z6.union([zElicitationSessionScope, zElicitationRequestScope]), z6.object({
+var zElicitationFormMode = z10.intersection(z10.union([zElicitationSessionScope, zElicitationRequestScope]), z10.object({
   requestedSchema: zElicitationSchema
 }));
-var zElicitationId = z6.string();
-var zElicitationUrlMode = z6.intersection(z6.union([zElicitationSessionScope, zElicitationRequestScope]), z6.object({
+var zElicitationId = z10.string();
+var zElicitationUrlMode = z10.intersection(z10.union([zElicitationSessionScope, zElicitationRequestScope]), z10.object({
   elicitationId: zElicitationId,
-  url: z6.url()
+  url: z10.url()
 }));
-var zCreateElicitationRequest = preserveCustomPayload(z6.intersection(z6.union([
-  zElicitationFormMode.and(z6.object({
-    mode: z6.literal("form")
+var zCreateElicitationRequest = preserveCustomPayload(z10.intersection(z10.union([
+  zElicitationFormMode.and(z10.object({
+    mode: z10.literal("form")
   })),
-  zElicitationUrlMode.and(z6.object({
-    mode: z6.literal("url")
+  zElicitationUrlMode.and(z10.object({
+    mode: z10.literal("url")
   })),
-  excludeKnownTags(z6.intersection(z6.union([zElicitationSessionScope, zElicitationRequestScope]), z6.object({
-    mode: z6.string()
+  excludeKnownTags(z10.intersection(z10.union([zElicitationSessionScope, zElicitationRequestScope]), z10.object({
+    mode: z10.string()
   })), "mode", ["form", "url"])
-]), z6.object({
-  message: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+]), z10.object({
+  message: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 })), "mode", ["form", "url"]);
-var zMcpServerAcpId = z6.string();
-var zConnectMcpRequest = z6.object({
+var zMcpServerAcpId = z10.string();
+var zMcpRequestId = z10.string();
+var zMessageMcpRequest = z10.object({
   serverId: zMcpServerAcpId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  requestId: zMcpRequestId,
+  method: z10.string(),
+  params: z10.record(z10.string(), z10.unknown()).nullish(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zMcpConnectionId = z6.string();
-var zMessageMcpRequest = z6.object({
-  connectionId: zMcpConnectionId,
-  method: z6.string(),
-  params: z6.record(z6.string(), z6.unknown()).nullish(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
-});
-var zDisconnectMcpRequest = z6.object({
-  connectionId: zMcpConnectionId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
-});
-var zExtRequest = z6.unknown();
-var zAgentRequest = z6.object({
+var zExtRequest = z10.unknown();
+var zAgentRequest = z10.object({
   id: zRequestId,
-  method: z6.string(),
-  params: z6.union([
+  method: z10.string(),
+  params: z10.union([
     zWriteTextFileRequest,
     zReadTextFileRequest,
     zRequestPermissionRequest,
@@ -25189,142 +25473,140 @@ var zAgentRequest = z6.object({
     zWaitForTerminalExitRequest,
     zKillTerminalRequest,
     zCreateElicitationRequest,
-    zConnectMcpRequest,
     zMessageMcpRequest,
-    zDisconnectMcpRequest,
     zExtRequest
   ]).nullish()
 });
-var zProtocolVersion = z6.int().gte(0).lte(65535);
-var zPromptCapabilities = z6.object({
-  image: defaultOnError(z6.boolean().optional().default(false), () => false),
-  audio: defaultOnError(z6.boolean().optional().default(false), () => false),
-  embeddedContext: defaultOnError(z6.boolean().optional().default(false), () => false),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zProtocolVersion = z10.int().gte(0).lte(65535);
+var zPromptCapabilities = z10.object({
+  image: defaultOnError(z10.boolean().optional().default(false), () => false),
+  audio: defaultOnError(z10.boolean().optional().default(false), () => false),
+  embeddedContext: defaultOnError(z10.boolean().optional().default(false), () => false),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zMcpCapabilities = z6.object({
-  http: defaultOnError(z6.boolean().optional().default(false), () => false),
-  sse: defaultOnError(z6.boolean().optional().default(false), () => false),
-  acp: defaultOnError(z6.boolean().optional().default(false), () => false),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zMcpCapabilities = z10.object({
+  http: defaultOnError(z10.boolean().optional().default(false), () => false),
+  sse: defaultOnError(z10.boolean().optional().default(false), () => false),
+  acp: defaultOnError(z10.boolean().optional().default(false), () => false),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionListCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zSessionListCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionDeleteCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zSessionDeleteCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionAdditionalDirectoriesCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zSessionAdditionalDirectoriesCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionForkCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zSessionForkCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionResumeCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zSessionResumeCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionCloseCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zSessionCloseCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionCapabilities = z6.object({
+var zSessionCapabilities = z10.object({
   list: defaultOnError(zSessionListCapabilities.nullish(), () => void 0),
   delete: defaultOnError(zSessionDeleteCapabilities.nullish(), () => void 0),
   additionalDirectories: defaultOnError(zSessionAdditionalDirectoriesCapabilities.nullish(), () => void 0),
   fork: defaultOnError(zSessionForkCapabilities.nullish(), () => void 0),
   resume: defaultOnError(zSessionResumeCapabilities.nullish(), () => void 0),
   close: defaultOnError(zSessionCloseCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zLogoutCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zLogoutCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zAgentAuthCapabilities = z6.object({
+var zAgentAuthCapabilities = z10.object({
   logout: defaultOnError(zLogoutCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zProvidersCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zProvidersCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesDocumentDidOpenCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNesDocumentDidOpenCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zTextDocumentSyncKind = z6.union([
-  z6.literal("full"),
-  z6.literal("incremental")
+var zTextDocumentSyncKind = z10.union([
+  z10.literal("full"),
+  z10.literal("incremental")
 ]);
-var zNesDocumentDidChangeCapabilities = z6.object({
+var zNesDocumentDidChangeCapabilities = z10.object({
   syncKind: zTextDocumentSyncKind,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesDocumentDidCloseCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNesDocumentDidCloseCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesDocumentDidSaveCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNesDocumentDidSaveCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesDocumentDidFocusCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNesDocumentDidFocusCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesDocumentEventCapabilities = z6.object({
+var zNesDocumentEventCapabilities = z10.object({
   didOpen: defaultOnError(zNesDocumentDidOpenCapabilities.nullish(), () => void 0),
   didChange: defaultOnError(zNesDocumentDidChangeCapabilities.nullish(), () => void 0),
   didClose: defaultOnError(zNesDocumentDidCloseCapabilities.nullish(), () => void 0),
   didSave: defaultOnError(zNesDocumentDidSaveCapabilities.nullish(), () => void 0),
   didFocus: defaultOnError(zNesDocumentDidFocusCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesEventCapabilities = z6.object({
+var zNesEventCapabilities = z10.object({
   document: defaultOnError(zNesDocumentEventCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesRecentFilesCapabilities = z6.object({
-  maxCount: defaultOnError(z6.int().gte(0).max(4294967295, {
+var zNesRecentFilesCapabilities = z10.object({
+  maxCount: defaultOnError(z10.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesRelatedSnippetsCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNesRelatedSnippetsCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesEditHistoryCapabilities = z6.object({
-  maxCount: defaultOnError(z6.int().gte(0).max(4294967295, {
+var zNesEditHistoryCapabilities = z10.object({
+  maxCount: defaultOnError(z10.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesUserActionsCapabilities = z6.object({
-  maxCount: defaultOnError(z6.int().gte(0).max(4294967295, {
+var zNesUserActionsCapabilities = z10.object({
+  maxCount: defaultOnError(z10.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesOpenFilesCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNesOpenFilesCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesDiagnosticsCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNesDiagnosticsCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesContextCapabilities = z6.object({
+var zNesContextCapabilities = z10.object({
   recentFiles: defaultOnError(zNesRecentFilesCapabilities.nullish(), () => void 0),
   relatedSnippets: defaultOnError(zNesRelatedSnippetsCapabilities.nullish(), () => void 0),
   editHistory: defaultOnError(zNesEditHistoryCapabilities.nullish(), () => void 0),
   userActions: defaultOnError(zNesUserActionsCapabilities.nullish(), () => void 0),
   openFiles: defaultOnError(zNesOpenFilesCapabilities.nullish(), () => void 0),
   diagnostics: defaultOnError(zNesDiagnosticsCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesCapabilities = z6.object({
+var zNesCapabilities = z10.object({
   events: defaultOnError(zNesEventCapabilities.nullish(), () => void 0),
   context: defaultOnError(zNesContextCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zPositionEncodingKind = z6.union([
-  z6.literal("utf-16"),
-  z6.literal("utf-32"),
-  z6.literal("utf-8")
+var zPositionEncodingKind = z10.union([
+  z10.literal("utf-16"),
+  z10.literal("utf-32"),
+  z10.literal("utf-8")
 ]);
-var zAgentCapabilities = z6.object({
-  loadSession: defaultOnError(z6.boolean().optional().default(false), () => false),
+var zAgentCapabilities = z10.object({
+  loadSession: defaultOnError(z10.boolean().optional().default(false), () => false),
   promptCapabilities: defaultOnError(zPromptCapabilities.optional().default({
     image: false,
     audio: false,
@@ -25348,36 +25630,36 @@ var zAgentCapabilities = z6.object({
   providers: defaultOnError(zProvidersCapabilities.nullish(), () => void 0),
   nes: defaultOnError(zNesCapabilities.nullish(), () => void 0),
   positionEncoding: defaultOnError(zPositionEncodingKind.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zAuthMethodId = z6.string();
-var zAuthMethodTerminal = z6.object({
+var zAuthMethodId = z10.string();
+var zAuthMethodTerminal = z10.object({
   id: zAuthMethodId,
-  name: z6.string(),
-  description: defaultOnError(z6.string().nullish(), () => void 0),
-  args: defaultOnError(vecSkipError(z6.string()).optional(), () => []),
-  env: defaultOnError(z6.record(z6.string(), z6.string()).optional(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  name: z10.string(),
+  description: defaultOnError(z10.string().nullish(), () => void 0),
+  args: defaultOnError(vecSkipError(z10.string()).optional(), () => []),
+  env: defaultOnError(z10.record(z10.string(), z10.string()).optional(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zAuthMethodAgent = z6.object({
+var zAuthMethodAgent = z10.object({
   id: zAuthMethodId,
-  name: z6.string(),
-  description: defaultOnError(z6.string().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  name: z10.string(),
+  description: defaultOnError(z10.string().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zAuthMethod = z6.union([
-  zAuthMethodTerminal.and(z6.object({
-    type: z6.literal("terminal")
+var zAuthMethod = z10.union([
+  zAuthMethodTerminal.and(z10.object({
+    type: z10.literal("terminal")
   })),
   zAuthMethodAgent
 ]);
-var zImplementation = z6.object({
-  name: z6.string(),
-  title: defaultOnError(z6.string().nullish(), () => void 0),
-  version: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zImplementation = z10.object({
+  name: z10.string(),
+  title: defaultOnError(z10.string().nullish(), () => void 0),
+  version: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zInitializeResponse = z6.object({
+var zInitializeResponse = z10.object({
   protocolVersion: zProtocolVersion,
   agentCapabilities: defaultOnError(zAgentCapabilities.optional().default({
     loadSession: false,
@@ -25410,272 +25692,271 @@ var zInitializeResponse = z6.object({
   })),
   authMethods: defaultOnError(vecSkipError(zAuthMethod).optional().default([]), () => []),
   agentInfo: defaultOnError(zImplementation.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zAuthenticateResponse = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zAuthenticateResponse = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zProviderId = z6.string();
-var zLlmProtocol = z6.union([
-  z6.literal("anthropic"),
-  z6.literal("openai"),
-  z6.literal("azure"),
-  z6.literal("vertex"),
-  z6.literal("bedrock"),
-  z6.string()
+var zProviderId = z10.string();
+var zLlmProtocol = z10.union([
+  z10.literal("anthropic"),
+  z10.literal("openai"),
+  z10.literal("azure"),
+  z10.literal("vertex"),
+  z10.literal("bedrock"),
+  z10.string()
 ]);
-var zProviderCurrentConfig = z6.object({
+var zProviderCurrentConfig = z10.object({
   apiType: zLlmProtocol,
-  baseUrl: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  baseUrl: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zProviderInfo = z6.object({
+var zProviderInfo = z10.object({
   providerId: zProviderId,
   supported: requiredDefaultOnError(vecSkipError(zLlmProtocol), () => []),
-  required: z6.boolean(),
+  required: z10.boolean(),
   current: zProviderCurrentConfig.nullish(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zListProvidersResponse = z6.object({
-  providers: z6.array(zProviderInfo),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zListProvidersResponse = z10.object({
+  providers: z10.array(zProviderInfo),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSetProviderResponse = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zSetProviderResponse = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zDisableProviderResponse = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zDisableProviderResponse = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zLogoutResponse = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zLogoutResponse = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionModeId = z6.string();
-var zSessionMode = z6.object({
+var zSessionModeId = z10.string();
+var zSessionMode = z10.object({
   id: zSessionModeId,
-  name: z6.string(),
-  description: defaultOnError(z6.string().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  name: z10.string(),
+  description: defaultOnError(z10.string().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionModeState = z6.object({
+var zSessionModeState = z10.object({
   currentModeId: zSessionModeId,
   availableModes: requiredDefaultOnError(vecSkipError(zSessionMode), () => []),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionConfigId = z6.string();
-var zSessionConfigOptionCategory = z6.union([
-  z6.literal("mode"),
-  z6.literal("model"),
-  z6.literal("model_config"),
-  z6.literal("thought_level"),
-  z6.string()
+var zSessionConfigId = z10.string();
+var zSessionConfigOptionCategory = z10.union([
+  z10.literal("mode"),
+  z10.literal("model"),
+  z10.literal("model_config"),
+  z10.literal("thought_level"),
+  z10.string()
 ]);
-var zSessionConfigValueId = z6.string();
-var zSessionConfigSelectOption = z6.object({
+var zSessionConfigValueId = z10.string();
+var zSessionConfigSelectOption = z10.object({
   value: zSessionConfigValueId,
-  name: z6.string(),
-  description: defaultOnError(z6.string().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  name: z10.string(),
+  description: defaultOnError(z10.string().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionConfigGroupId = z6.string();
-var zSessionConfigSelectGroup = z6.object({
+var zSessionConfigGroupId = z10.string();
+var zSessionConfigSelectGroup = z10.object({
   group: zSessionConfigGroupId,
-  name: z6.string(),
+  name: z10.string(),
   options: requiredDefaultOnError(vecSkipError(zSessionConfigSelectOption), () => []),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionConfigSelectOptions = z6.union([
-  z6.array(zSessionConfigSelectOption),
-  z6.array(zSessionConfigSelectGroup)
+var zSessionConfigSelectOptions = z10.union([
+  z10.array(zSessionConfigSelectOption),
+  z10.array(zSessionConfigSelectGroup)
 ]);
-var zSessionConfigSelect = z6.object({
+var zSessionConfigSelect = z10.object({
   currentValue: zSessionConfigValueId,
   options: zSessionConfigSelectOptions
 });
-var zSessionConfigBoolean = z6.object({
-  currentValue: z6.boolean()
+var zSessionConfigBoolean = z10.object({
+  currentValue: z10.boolean()
 });
-var zSessionConfigOption = z6.intersection(z6.union([
-  zSessionConfigSelect.and(z6.object({
-    type: z6.literal("select")
+var zSessionConfigOption = z10.intersection(z10.union([
+  zSessionConfigSelect.and(z10.object({
+    type: z10.literal("select")
   })),
-  zSessionConfigBoolean.and(z6.object({
-    type: z6.literal("boolean")
+  zSessionConfigBoolean.and(z10.object({
+    type: z10.literal("boolean")
   }))
-]), z6.object({
+]), z10.object({
   id: zSessionConfigId,
-  name: z6.string(),
-  description: defaultOnError(z6.string().nullish(), () => void 0),
+  name: z10.string(),
+  description: defaultOnError(z10.string().nullish(), () => void 0),
   category: defaultOnError(zSessionConfigOptionCategory.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 }));
-var zNewSessionResponse = z6.object({
+var zNewSessionResponse = z10.object({
   sessionId: zSessionId,
   modes: defaultOnError(zSessionModeState.nullish(), () => void 0),
   configOptions: defaultOnError(vecSkipError(zSessionConfigOption).nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zLoadSessionResponse = z6.object({
+var zLoadSessionResponse = z10.object({
   modes: defaultOnError(zSessionModeState.nullish(), () => void 0),
   configOptions: defaultOnError(vecSkipError(zSessionConfigOption).nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionInfo = z6.object({
+var zSessionInfo = z10.object({
   sessionId: zSessionId,
-  cwd: z6.string(),
-  additionalDirectories: defaultOnError(vecSkipError(z6.string()).optional(), () => []),
-  title: defaultOnError(z6.string().nullish(), () => void 0),
-  updatedAt: defaultOnError(z6.string().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  cwd: z10.string(),
+  additionalDirectories: defaultOnError(vecSkipError(z10.string()).optional(), () => []),
+  title: defaultOnError(z10.string().nullish(), () => void 0),
+  updatedAt: defaultOnError(z10.string().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zListSessionsResponse = z6.object({
+var zListSessionsResponse = z10.object({
   sessions: requiredDefaultOnError(vecSkipError(zSessionInfo), () => []),
-  nextCursor: defaultOnError(z6.string().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  nextCursor: defaultOnError(z10.string().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zDeleteSessionResponse = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zDeleteSessionResponse = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zForkSessionResponse = z6.object({
+var zForkSessionResponse = z10.object({
   sessionId: zSessionId,
   modes: defaultOnError(zSessionModeState.nullish(), () => void 0),
   configOptions: defaultOnError(vecSkipError(zSessionConfigOption).nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zResumeSessionResponse = z6.object({
+var zResumeSessionResponse = z10.object({
   modes: defaultOnError(zSessionModeState.nullish(), () => void 0),
   configOptions: defaultOnError(vecSkipError(zSessionConfigOption).nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zCloseSessionResponse = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zCloseSessionResponse = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSetSessionModeResponse = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zSetSessionModeResponse = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSetSessionConfigOptionResponse = z6.object({
+var zSetSessionConfigOptionResponse = z10.object({
   configOptions: requiredDefaultOnError(vecSkipError(zSessionConfigOption), () => []),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zStopReason = z6.union([
-  z6.literal("end_turn"),
-  z6.literal("max_tokens"),
-  z6.literal("max_turn_requests"),
-  z6.literal("refusal"),
-  z6.literal("cancelled")
+var zStopReason = z10.union([
+  z10.literal("end_turn"),
+  z10.literal("max_tokens"),
+  z10.literal("max_turn_requests"),
+  z10.literal("refusal"),
+  z10.literal("cancelled")
 ]);
-var zUsage = z6.object({
-  totalTokens: z6.number(),
-  inputTokens: z6.number(),
-  outputTokens: z6.number(),
-  thoughtTokens: defaultOnError(z6.number().nullish(), () => void 0),
-  cachedReadTokens: defaultOnError(z6.number().nullish(), () => void 0),
-  cachedWriteTokens: defaultOnError(z6.number().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zUsage = z10.object({
+  totalTokens: z10.number(),
+  inputTokens: z10.number(),
+  outputTokens: z10.number(),
+  thoughtTokens: defaultOnError(z10.number().nullish(), () => void 0),
+  cachedReadTokens: defaultOnError(z10.number().nullish(), () => void 0),
+  cachedWriteTokens: defaultOnError(z10.number().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zPromptResponse = z6.object({
+var zPromptResponse = z10.object({
   stopReason: zStopReason,
   usage: defaultOnError(zUsage.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zStartNesResponse = z6.object({
+var zStartNesResponse = z10.object({
   sessionId: zSessionId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesSuggestionId = z6.string();
-var zPosition = z6.object({
-  line: z6.int().gte(0).max(4294967295, {
+var zNesSuggestionId = z10.string();
+var zPosition = z10.object({
+  line: z10.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }),
-  character: z6.int().gte(0).max(4294967295, {
+  character: z10.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zRange = z6.object({
+var zRange = z10.object({
   start: zPosition,
   end: zPosition,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesTextEdit = z6.object({
+var zNesTextEdit = z10.object({
   range: zRange,
-  newText: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  newText: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesEditSuggestion = z6.object({
+var zNesEditSuggestion = z10.object({
   id: zNesSuggestionId,
-  uri: z6.string(),
-  edits: z6.array(zNesTextEdit),
+  uri: z10.string(),
+  edits: z10.array(zNesTextEdit),
   cursorPosition: defaultOnError(zPosition.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesJumpSuggestion = z6.object({
+var zNesJumpSuggestion = z10.object({
   id: zNesSuggestionId,
-  uri: z6.string(),
+  uri: z10.string(),
   position: zPosition,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesRenameSuggestion = z6.object({
+var zNesRenameSuggestion = z10.object({
   id: zNesSuggestionId,
-  uri: z6.string(),
+  uri: z10.string(),
   position: zPosition,
-  newName: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  newName: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesSearchAndReplaceSuggestion = z6.object({
+var zNesSearchAndReplaceSuggestion = z10.object({
   id: zNesSuggestionId,
-  uri: z6.string(),
-  search: z6.string(),
-  replace: z6.string(),
-  isRegex: z6.boolean().nullish(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  uri: z10.string(),
+  search: z10.string(),
+  replace: z10.string(),
+  isRegex: z10.boolean().nullish(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesSuggestion = z6.union([
-  zNesEditSuggestion.and(z6.object({
-    kind: z6.literal("edit")
+var zNesSuggestion = z10.union([
+  zNesEditSuggestion.and(z10.object({
+    kind: z10.literal("edit")
   })),
-  zNesJumpSuggestion.and(z6.object({
-    kind: z6.literal("jump")
+  zNesJumpSuggestion.and(z10.object({
+    kind: z10.literal("jump")
   })),
-  zNesRenameSuggestion.and(z6.object({
-    kind: z6.literal("rename")
+  zNesRenameSuggestion.and(z10.object({
+    kind: z10.literal("rename")
   })),
-  zNesSearchAndReplaceSuggestion.and(z6.object({
-    kind: z6.literal("searchAndReplace")
+  zNesSearchAndReplaceSuggestion.and(z10.object({
+    kind: z10.literal("searchAndReplace")
   }))
 ]);
-var zSuggestNesResponse = z6.object({
-  suggestions: z6.array(zNesSuggestion),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zSuggestNesResponse = z10.object({
+  suggestions: z10.array(zNesSuggestion),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zCloseNesResponse = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zCloseNesResponse = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zExtResponse = z6.unknown();
-var zMessageMcpResponse = z6.unknown();
-var zErrorCode = z6.union([
-  z6.literal(-32700),
-  z6.literal(-32600),
-  z6.literal(-32601),
-  z6.literal(-32602),
-  z6.literal(-32603),
-  z6.literal(-32800),
-  z6.literal(-32e3),
-  z6.literal(-32002),
-  z6.int().min(-2147483648, {
+var zExtResponse = z10.unknown();
+var zErrorCode = z10.union([
+  z10.literal(-32700),
+  z10.literal(-32600),
+  z10.literal(-32601),
+  z10.literal(-32602),
+  z10.literal(-32603),
+  z10.literal(-32800),
+  z10.literal(-32e3),
+  z10.literal(-32002),
+  z10.int().min(-2147483648, {
     error: "Invalid value: Expected int32 to be >= -2147483648"
   }).max(2147483647, {
     error: "Invalid value: Expected int32 to be <= 2147483647"
   })
 ]);
-var zError = z6.object({
+var zError = z10.object({
   code: zErrorCode,
-  message: z6.string(),
-  data: defaultOnError(z6.unknown().optional(), () => void 0)
+  message: z10.string(),
+  data: defaultOnError(z10.unknown().optional(), () => void 0)
 });
-var zAgentResponse = z6.union([
-  z6.object({
+var zAgentResponse = z10.union([
+  z10.object({
     id: zRequestId,
-    result: z6.union([
+    result: z10.union([
       zInitializeResponse,
       zAuthenticateResponse,
       zListProvidersResponse,
@@ -25695,299 +25976,364 @@ var zAgentResponse = z6.union([
       zStartNesResponse,
       zSuggestNesResponse,
       zCloseNesResponse,
-      zExtResponse,
-      zMessageMcpResponse
+      zExtResponse
     ])
   }),
-  z6.object({
+  z10.object({
     id: zRequestId,
     error: zError
   })
 ]);
-var zMessageId = z6.string();
-var zContentChunk = z6.object({
+var zMessageId = z10.string();
+var zContentChunk = z10.object({
   content: zContentBlock,
   messageId: defaultOnError(zMessageId.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zToolCall = z6.object({
+var zToolCall = z10.object({
   toolCallId: zToolCallId,
-  title: z6.string(),
-  name: defaultOnError(z6.string().nullish(), () => void 0),
+  title: z10.string(),
+  name: defaultOnError(z10.string().nullish(), () => void 0),
   kind: defaultOnError(zToolKind.optional(), () => void 0),
   status: defaultOnError(zToolCallStatus.optional(), () => void 0),
   content: defaultOnError(vecSkipError(zToolCallContent).optional(), () => []),
   locations: defaultOnError(vecSkipError(zToolCallLocation).optional(), () => []),
-  rawInput: defaultOnError(z6.unknown().optional(), () => void 0),
-  rawOutput: defaultOnError(z6.unknown().optional(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  rawInput: defaultOnError(z10.unknown().optional(), () => void 0),
+  rawOutput: defaultOnError(z10.unknown().optional(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zPlanEntryPriority = z6.union([
-  z6.literal("high"),
-  z6.literal("medium"),
-  z6.literal("low")
+var zPlanEntryPriority = z10.union([
+  z10.literal("high"),
+  z10.literal("medium"),
+  z10.literal("low")
 ]);
-var zPlanEntryStatus = z6.union([
-  z6.literal("pending"),
-  z6.literal("in_progress"),
-  z6.literal("completed")
+var zPlanEntryStatus = z10.union([
+  z10.literal("pending"),
+  z10.literal("in_progress"),
+  z10.literal("completed")
 ]);
-var zPlanEntry = z6.object({
-  content: z6.string(),
+var zPlanEntry = z10.object({
+  content: z10.string(),
   priority: zPlanEntryPriority,
   status: zPlanEntryStatus,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zPlan = z6.object({
+var zPlan = z10.object({
   entries: requiredDefaultOnError(vecSkipError(zPlanEntry), () => []),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zPlanId = z6.string();
-var zPlanItems = z6.object({
+var zPlanId = z10.string();
+var zPlanItems = z10.object({
   planId: zPlanId,
   entries: requiredDefaultOnError(vecSkipError(zPlanEntry), () => []),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zPlanFile = z6.object({
+var zPlanFile = z10.object({
   planId: zPlanId,
-  uri: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  uri: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zPlanMarkdown = z6.object({
+var zPlanMarkdown = z10.object({
   planId: zPlanId,
-  content: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  content: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zPlanUpdateContent = z6.union([
-  zPlanItems.and(z6.object({
-    type: z6.literal("items")
+var zPlanUpdateContent = z10.union([
+  zPlanItems.and(z10.object({
+    type: z10.literal("items")
   })),
-  zPlanFile.and(z6.object({
-    type: z6.literal("file")
+  zPlanFile.and(z10.object({
+    type: z10.literal("file")
   })),
-  zPlanMarkdown.and(z6.object({
-    type: z6.literal("markdown")
+  zPlanMarkdown.and(z10.object({
+    type: z10.literal("markdown")
   }))
 ]);
-var zPlanUpdate = z6.object({
+var zPlanUpdate = z10.object({
   plan: zPlanUpdateContent,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zPlanRemoved = z6.object({
+var zPlanRemoved = z10.object({
   planId: zPlanId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zUnstructuredCommandInput = z6.object({
-  hint: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zUnstructuredCommandInput = z10.object({
+  hint: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
 var zAvailableCommandInput = zUnstructuredCommandInput;
-var zAvailableCommand = z6.object({
-  name: z6.string(),
-  description: z6.string(),
+var zAvailableCommand = z10.object({
+  name: z10.string(),
+  description: z10.string(),
   input: defaultOnError(zAvailableCommandInput.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zAvailableCommandsUpdate = z6.object({
+var zAvailableCommandsUpdate = z10.object({
   availableCommands: requiredDefaultOnError(vecSkipError(zAvailableCommand), () => []),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zCurrentModeUpdate = z6.object({
+var zCurrentModeUpdate = z10.object({
   currentModeId: zSessionModeId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zConfigOptionUpdate = z6.object({
+var zConfigOptionUpdate = z10.object({
   configOptions: requiredDefaultOnError(vecSkipError(zSessionConfigOption), () => []),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionInfoUpdate = z6.object({
-  title: defaultOnError(z6.string().nullish(), () => void 0),
-  updatedAt: defaultOnError(z6.string().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zSessionInfoUpdate = z10.object({
+  title: defaultOnError(z10.string().nullish(), () => void 0),
+  updatedAt: defaultOnError(z10.string().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zCost = z6.object({
-  amount: z6.number(),
-  currency: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zCost = z10.object({
+  amount: z10.number(),
+  currency: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zUsageUpdate = z6.object({
-  used: z6.number(),
-  size: z6.number(),
+var zUsageUpdate = z10.object({
+  used: z10.number(),
+  size: z10.number(),
   cost: defaultOnError(zCost.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNoticeSeverity = z6.union([
-  z6.literal("info"),
-  z6.literal("warning"),
-  z6.literal("error"),
-  z6.string()
+var zNoticeSeverity = z10.union([
+  z10.literal("info"),
+  z10.literal("warning"),
+  z10.literal("error"),
+  z10.string()
 ]);
-var zNotice = z6.object({
+var zNotice = z10.object({
   severity: zNoticeSeverity,
-  title: z6.string().min(1),
-  description: defaultOnError(z6.string().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  title: z10.string().min(1),
+  description: defaultOnError(z10.string().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zCompactionId = z6.string();
-var zCompactionStatus = z6.union([
-  z6.literal("in_progress"),
-  z6.literal("completed"),
-  z6.literal("failed"),
-  z6.literal("cancelled"),
-  z6.string()
+var zCompactionId = z10.string();
+var zCompactionStatus = z10.union([
+  z10.literal("in_progress"),
+  z10.literal("completed"),
+  z10.literal("failed"),
+  z10.literal("cancelled"),
+  z10.string()
 ]);
-var zCompactionUpdate = z6.object({
+var zCompactionUpdate = z10.object({
   compactionId: zCompactionId,
   status: zCompactionStatus,
   summary: defaultOnError(vecSkipError(zContentBlock).nullish(), () => void 0),
-  error: defaultOnError(z6.string().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  error: defaultOnError(z10.string().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zCompactionSummaryChunk = z6.object({
+var zCompactionSummaryChunk = z10.object({
   compactionId: zCompactionId,
   content: zContentBlock,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionUpdate = z6.union([
-  zContentChunk.and(z6.object({
-    sessionUpdate: z6.literal("user_message_chunk")
+var zSessionCancelCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+});
+var zSubagentSessionCapabilities = z10.object({
+  cancel: defaultOnError(zSessionCancelCapabilities.nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+});
+var zRunningStateUpdate = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+});
+var zIdleStateUpdate = z10.object({
+  stopReason: defaultOnError(zStopReason.nullish(), () => void 0),
+  usage: defaultOnError(zUsage.nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+});
+var zRequiresActionStateUpdate = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+});
+var zUnknownStateUpdate = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+});
+var zStateUpdate = preserveCustomPayload(z10.union([
+  zRunningStateUpdate.and(z10.object({
+    state: z10.literal("running")
   })),
-  zContentChunk.and(z6.object({
-    sessionUpdate: z6.literal("agent_message_chunk")
+  zIdleStateUpdate.and(z10.object({
+    state: z10.literal("idle")
   })),
-  zContentChunk.and(z6.object({
-    sessionUpdate: z6.literal("agent_thought_chunk")
+  zRequiresActionStateUpdate.and(z10.object({
+    state: z10.literal("requires_action")
   })),
-  zToolCall.and(z6.object({
-    sessionUpdate: z6.literal("tool_call")
+  zUnknownStateUpdate.and(z10.object({
+    state: z10.literal("unknown")
   })),
-  zToolCallUpdate.and(z6.object({
-    sessionUpdate: z6.literal("tool_call_update")
+  excludeKnownTags(z10.object({
+    state: z10.string()
+  }), "state", ["idle", "requires_action", "running", "unknown"])
+]), "state", ["idle", "requires_action", "running", "unknown"]);
+var zSubagentUpdate = z10.object({
+  sessionId: zSessionId,
+  title: defaultOnError(z10.string().nullish(), () => void 0),
+  description: defaultOnError(z10.string().nullish(), () => void 0),
+  capabilities: defaultOnError(zSubagentSessionCapabilities.nullish(), () => void 0),
+  state: defaultOnError(zStateUpdate.nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+});
+var zSessionMessage = z10.object({
+  messageId: zMessageId,
+  senderSessionId: defaultOnError(zSessionId.nullish(), () => void 0),
+  recipientSessionId: defaultOnError(zSessionId.nullish(), () => void 0),
+  content: defaultOnError(vecSkipError(zContentBlock).nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+});
+var zSessionMessageChunk = z10.object({
+  messageId: zMessageId,
+  senderSessionId: defaultOnError(zSessionId.nullish(), () => void 0),
+  recipientSessionId: defaultOnError(zSessionId.nullish(), () => void 0),
+  content: zContentBlock,
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+});
+var zSessionUpdate = z10.union([
+  zContentChunk.and(z10.object({
+    sessionUpdate: z10.literal("user_message_chunk")
   })),
-  zPlan.and(z6.object({
-    sessionUpdate: z6.literal("plan")
+  zContentChunk.and(z10.object({
+    sessionUpdate: z10.literal("agent_message_chunk")
   })),
-  zPlanUpdate.and(z6.object({
-    sessionUpdate: z6.literal("plan_update")
+  zContentChunk.and(z10.object({
+    sessionUpdate: z10.literal("agent_thought_chunk")
   })),
-  zPlanRemoved.and(z6.object({
-    sessionUpdate: z6.literal("plan_removed")
+  zToolCall.and(z10.object({
+    sessionUpdate: z10.literal("tool_call")
   })),
-  zAvailableCommandsUpdate.and(z6.object({
-    sessionUpdate: z6.literal("available_commands_update")
+  zToolCallUpdate.and(z10.object({
+    sessionUpdate: z10.literal("tool_call_update")
   })),
-  zCurrentModeUpdate.and(z6.object({
-    sessionUpdate: z6.literal("current_mode_update")
+  zPlan.and(z10.object({
+    sessionUpdate: z10.literal("plan")
   })),
-  zConfigOptionUpdate.and(z6.object({
-    sessionUpdate: z6.literal("config_option_update")
+  zPlanUpdate.and(z10.object({
+    sessionUpdate: z10.literal("plan_update")
   })),
-  zSessionInfoUpdate.and(z6.object({
-    sessionUpdate: z6.literal("session_info_update")
+  zPlanRemoved.and(z10.object({
+    sessionUpdate: z10.literal("plan_removed")
   })),
-  zUsageUpdate.and(z6.object({
-    sessionUpdate: z6.literal("usage_update")
+  zAvailableCommandsUpdate.and(z10.object({
+    sessionUpdate: z10.literal("available_commands_update")
   })),
-  zNotice.and(z6.object({
-    sessionUpdate: z6.literal("notice")
+  zCurrentModeUpdate.and(z10.object({
+    sessionUpdate: z10.literal("current_mode_update")
   })),
-  zCompactionUpdate.and(z6.object({
-    sessionUpdate: z6.literal("compaction_update")
+  zConfigOptionUpdate.and(z10.object({
+    sessionUpdate: z10.literal("config_option_update")
   })),
-  zCompactionSummaryChunk.and(z6.object({
-    sessionUpdate: z6.literal("compaction_summary_chunk")
+  zSessionInfoUpdate.and(z10.object({
+    sessionUpdate: z10.literal("session_info_update")
+  })),
+  zUsageUpdate.and(z10.object({
+    sessionUpdate: z10.literal("usage_update")
+  })),
+  zNotice.and(z10.object({
+    sessionUpdate: z10.literal("notice")
+  })),
+  zCompactionUpdate.and(z10.object({
+    sessionUpdate: z10.literal("compaction_update")
+  })),
+  zCompactionSummaryChunk.and(z10.object({
+    sessionUpdate: z10.literal("compaction_summary_chunk")
+  })),
+  zSubagentUpdate.and(z10.object({
+    sessionUpdate: z10.literal("subagent_update")
+  })),
+  zSessionMessage.and(z10.object({
+    sessionUpdate: z10.literal("session_message")
+  })),
+  zSessionMessageChunk.and(z10.object({
+    sessionUpdate: z10.literal("session_message_chunk")
   }))
 ]);
-var zSessionNotification = z6.object({
+var zSessionNotification = z10.object({
   sessionId: zSessionId,
   update: zSessionUpdate,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zCompleteElicitationNotification = z6.object({
+var zCompleteElicitationNotification = z10.object({
   elicitationId: zElicitationId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zMessageMcpNotification = z6.object({
-  connectionId: zMcpConnectionId,
-  method: z6.string(),
-  params: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
-});
-var zExtNotification = z6.unknown();
-var zAgentNotification = z6.object({
-  method: z6.string(),
-  params: z6.union([
+var zExtNotification = z10.unknown();
+var zAgentNotification = z10.object({
+  method: z10.string(),
+  params: z10.union([
     zSessionNotification,
     zCompleteElicitationNotification,
-    zMessageMcpNotification,
     zExtNotification
   ]).nullish()
 });
-var zFileSystemCapabilities = z6.object({
-  readTextFile: defaultOnError(z6.boolean().optional().default(false), () => false),
-  writeTextFile: defaultOnError(z6.boolean().optional().default(false), () => false),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zFileSystemCapabilities = z10.object({
+  readTextFile: defaultOnError(z10.boolean().optional().default(false), () => false),
+  writeTextFile: defaultOnError(z10.boolean().optional().default(false), () => false),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zCompactionCapabilities = z6.record(z6.string(), z6.unknown());
-var zBooleanConfigOptionCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zCompactionCapabilities = z10.record(z10.string(), z10.unknown());
+var zBooleanConfigOptionCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSessionConfigOptionsCapabilities = z6.object({
+var zSessionConfigOptionsCapabilities = z10.object({
   boolean: defaultOnError(zBooleanConfigOptionCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNoticeCapabilities = z6.record(z6.string(), z6.unknown());
-var zClientSessionCapabilities = z6.object({
+var zNoticeCapabilities = z10.record(z10.string(), z10.unknown());
+var zClientSessionCapabilities = z10.object({
   compaction: defaultOnError(zCompactionCapabilities.nullish(), () => void 0),
   configOptions: defaultOnError(zSessionConfigOptionsCapabilities.nullish(), () => void 0),
   notices: defaultOnError(zNoticeCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zPlanCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zSubagentCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zAuthCapabilities = z6.object({
-  terminal: defaultOnError(z6.boolean().optional().default(false), () => false),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zPlanCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zElicitationFormCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zAuthCapabilities = z10.object({
+  terminal: defaultOnError(z10.boolean().optional().default(false), () => false),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zElicitationUrlCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zElicitationFormCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zElicitationCapabilities = z6.object({
+var zElicitationUrlCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+});
+var zElicitationCapabilities = z10.object({
   form: defaultOnError(zElicitationFormCapabilities.nullish(), () => void 0),
   url: defaultOnError(zElicitationUrlCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesJumpCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNesJumpCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesRenameCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNesRenameCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesSearchAndReplaceCapabilities = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNesSearchAndReplaceCapabilities = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zClientNesCapabilities = z6.object({
+var zClientNesCapabilities = z10.object({
   jump: defaultOnError(zNesJumpCapabilities.nullish(), () => void 0),
   rename: defaultOnError(zNesRenameCapabilities.nullish(), () => void 0),
   searchAndReplace: defaultOnError(zNesSearchAndReplaceCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zClientCapabilities = z6.object({
+var zClientCapabilities = z10.object({
   fs: defaultOnError(zFileSystemCapabilities.optional().default({ readTextFile: false, writeTextFile: false }), () => ({ readTextFile: false, writeTextFile: false })),
-  terminal: defaultOnError(z6.boolean().optional().default(false), () => false),
+  terminal: defaultOnError(z10.boolean().optional().default(false), () => false),
   session: defaultOnError(zClientSessionCapabilities.nullish(), () => void 0),
+  subagents: defaultOnError(zSubagentCapabilities.nullish(), () => void 0),
   plan: defaultOnError(zPlanCapabilities.nullish(), () => void 0),
   auth: defaultOnError(zAuthCapabilities.optional().default({ terminal: false }), () => ({ terminal: false })),
   elicitation: defaultOnError(zElicitationCapabilities.nullish(), () => void 0),
   nes: defaultOnError(zClientNesCapabilities.nullish(), () => void 0),
   positionEncodings: defaultOnError(vecSkipError(zPositionEncodingKind).optional(), () => []),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zInitializeRequest = z6.object({
+var zInitializeRequest = z10.object({
   protocolVersion: zProtocolVersion,
   clientCapabilities: defaultOnError(zClientCapabilities.optional().default({
     fs: { readTextFile: false, writeTextFile: false },
@@ -25999,235 +26345,235 @@ var zInitializeRequest = z6.object({
     auth: { terminal: false }
   })),
   clientInfo: defaultOnError(zImplementation.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zAuthenticateRequest = z6.object({
+var zAuthenticateRequest = z10.object({
   methodId: zAuthMethodId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zListProvidersRequest = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zListProvidersRequest = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSetProviderRequest = z6.object({
+var zSetProviderRequest = z10.object({
   providerId: zProviderId,
   apiType: zLlmProtocol,
-  baseUrl: z6.string(),
-  headers: z6.record(z6.string(), z6.string()).optional(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  baseUrl: z10.string(),
+  headers: z10.record(z10.string(), z10.string()).optional(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zDisableProviderRequest = z6.object({
+var zDisableProviderRequest = z10.object({
   providerId: zProviderId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zLogoutRequest = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zLogoutRequest = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zHttpHeader = z6.object({
-  name: z6.string(),
-  value: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zHttpHeader = z10.object({
+  name: z10.string(),
+  value: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zMcpServerHttp = z6.object({
-  name: z6.string(),
-  url: z6.string(),
-  headers: z6.array(zHttpHeader),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zMcpServerHttp = z10.object({
+  name: z10.string(),
+  url: z10.string(),
+  headers: z10.array(zHttpHeader),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zMcpServerSse = z6.object({
-  name: z6.string(),
-  url: z6.string(),
-  headers: z6.array(zHttpHeader),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zMcpServerSse = z10.object({
+  name: z10.string(),
+  url: z10.string(),
+  headers: z10.array(zHttpHeader),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zMcpServerAcp = z6.object({
-  name: z6.string(),
+var zMcpServerAcp = z10.object({
+  name: z10.string(),
   serverId: zMcpServerAcpId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zMcpServerStdio = z6.object({
-  name: z6.string(),
-  command: z6.string(),
-  args: z6.array(z6.string()),
-  env: z6.array(zEnvVariable),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zMcpServerStdio = z10.object({
+  name: z10.string(),
+  command: z10.string(),
+  args: z10.array(z10.string()),
+  env: z10.array(zEnvVariable),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zMcpServer = z6.union([
-  zMcpServerHttp.and(z6.object({
-    type: z6.literal("http")
+var zMcpServer = z10.union([
+  zMcpServerHttp.and(z10.object({
+    type: z10.literal("http")
   })),
-  zMcpServerSse.and(z6.object({
-    type: z6.literal("sse")
+  zMcpServerSse.and(z10.object({
+    type: z10.literal("sse")
   })),
-  zMcpServerAcp.and(z6.object({
-    type: z6.literal("acp")
+  zMcpServerAcp.and(z10.object({
+    type: z10.literal("acp")
   })),
   zMcpServerStdio
 ]);
-var zNewSessionRequest = z6.object({
-  cwd: z6.string(),
-  additionalDirectories: defaultOnError(vecSkipError(z6.string()).optional(), () => []),
+var zNewSessionRequest = z10.object({
+  cwd: z10.string(),
+  additionalDirectories: defaultOnError(vecSkipError(z10.string()).optional(), () => []),
   mcpServers: requiredDefaultOnError(vecSkipError(zMcpServer), () => []),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zLoadSessionRequest = z6.object({
+var zLoadSessionRequest = z10.object({
   mcpServers: requiredDefaultOnError(vecSkipError(zMcpServer), () => []),
-  cwd: z6.string(),
-  additionalDirectories: defaultOnError(vecSkipError(z6.string()).optional(), () => []),
+  cwd: z10.string(),
+  additionalDirectories: defaultOnError(vecSkipError(z10.string()).optional(), () => []),
   sessionId: zSessionId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zListSessionsRequest = z6.object({
-  cwd: z6.string().nullish(),
-  cursor: z6.string().nullish(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zListSessionsRequest = z10.object({
+  cwd: z10.string().nullish(),
+  cursor: z10.string().nullish(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zDeleteSessionRequest = z6.object({
+var zDeleteSessionRequest = z10.object({
   sessionId: zSessionId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zForkSessionRequest = z6.object({
+var zForkSessionRequest = z10.object({
   sessionId: zSessionId,
-  cwd: z6.string(),
-  additionalDirectories: defaultOnError(vecSkipError(z6.string()).optional(), () => []),
+  cwd: z10.string(),
+  additionalDirectories: defaultOnError(vecSkipError(z10.string()).optional(), () => []),
   mcpServers: defaultOnError(vecSkipError(zMcpServer).optional(), () => []),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zResumeSessionRequest = z6.object({
+var zResumeSessionRequest = z10.object({
   sessionId: zSessionId,
-  cwd: z6.string(),
-  additionalDirectories: defaultOnError(vecSkipError(z6.string()).optional(), () => []),
+  cwd: z10.string(),
+  additionalDirectories: defaultOnError(vecSkipError(z10.string()).optional(), () => []),
   mcpServers: defaultOnError(vecSkipError(zMcpServer).optional(), () => []),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zCloseSessionRequest = z6.object({
+var zCloseSessionRequest = z10.object({
   sessionId: zSessionId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSetSessionModeRequest = z6.object({
+var zSetSessionModeRequest = z10.object({
   sessionId: zSessionId,
   modeId: zSessionModeId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSetSessionConfigOptionRequest = z6.intersection(z6.union([
-  z6.object({
-    value: z6.boolean(),
-    type: z6.literal("boolean")
+var zSetSessionConfigOptionRequest = z10.intersection(z10.union([
+  z10.object({
+    value: z10.boolean(),
+    type: z10.literal("boolean")
   }),
-  z6.object({
+  z10.object({
     value: zSessionConfigValueId
   })
-]), z6.object({
+]), z10.object({
   sessionId: zSessionId,
   configId: zSessionConfigId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 }));
-var zPromptRequest = z6.object({
+var zPromptRequest = z10.object({
   sessionId: zSessionId,
-  prompt: z6.array(zContentBlock),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  prompt: z10.array(zContentBlock),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zWorkspaceFolder = z6.object({
-  uri: z6.string(),
-  name: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zWorkspaceFolder = z10.object({
+  uri: z10.string(),
+  name: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesRepository = z6.object({
-  name: z6.string(),
-  owner: z6.string(),
-  remoteUrl: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNesRepository = z10.object({
+  name: z10.string(),
+  owner: z10.string(),
+  remoteUrl: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zStartNesRequest = z6.object({
-  workspaceUri: defaultOnError(z6.string().nullish(), () => void 0),
-  workspaceFolders: z6.array(zWorkspaceFolder).nullish(),
+var zStartNesRequest = z10.object({
+  workspaceUri: defaultOnError(z10.string().nullish(), () => void 0),
+  workspaceFolders: z10.array(zWorkspaceFolder).nullish(),
   repository: defaultOnError(zNesRepository.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesTriggerKind = z6.union([
-  z6.literal("automatic"),
-  z6.literal("diagnostic"),
-  z6.literal("manual")
+var zNesTriggerKind = z10.union([
+  z10.literal("automatic"),
+  z10.literal("diagnostic"),
+  z10.literal("manual")
 ]);
-var zNesRecentFile = z6.object({
-  uri: z6.string(),
-  languageId: z6.string(),
-  text: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNesRecentFile = z10.object({
+  uri: z10.string(),
+  languageId: z10.string(),
+  text: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesExcerpt = z6.object({
-  startLine: z6.int().gte(0).max(4294967295, {
+var zNesExcerpt = z10.object({
+  startLine: z10.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }),
-  endLine: z6.int().gte(0).max(4294967295, {
+  endLine: z10.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }),
-  text: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  text: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesRelatedSnippet = z6.object({
-  uri: z6.string(),
-  excerpts: z6.array(zNesExcerpt),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNesRelatedSnippet = z10.object({
+  uri: z10.string(),
+  excerpts: z10.array(zNesExcerpt),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesEditHistoryEntry = z6.object({
-  uri: z6.string(),
-  diff: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNesEditHistoryEntry = z10.object({
+  uri: z10.string(),
+  diff: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesUserAction = z6.object({
-  action: z6.string(),
-  uri: z6.string(),
+var zNesUserAction = z10.object({
+  action: z10.string(),
+  uri: z10.string(),
   position: zPosition,
-  timestampMs: z6.number(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  timestampMs: z10.number(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesOpenFile = z6.object({
-  uri: z6.string(),
-  languageId: z6.string(),
+var zNesOpenFile = z10.object({
+  uri: z10.string(),
+  languageId: z10.string(),
   visibleRange: defaultOnError(zRange.nullish(), () => void 0),
-  lastFocusedMs: defaultOnError(z6.number().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  lastFocusedMs: defaultOnError(z10.number().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesDiagnosticSeverity = z6.union([
-  z6.literal("error"),
-  z6.literal("warning"),
-  z6.literal("information"),
-  z6.literal("hint")
+var zNesDiagnosticSeverity = z10.union([
+  z10.literal("error"),
+  z10.literal("warning"),
+  z10.literal("information"),
+  z10.literal("hint")
 ]);
-var zNesDiagnostic = z6.object({
-  uri: z6.string(),
+var zNesDiagnostic = z10.object({
+  uri: z10.string(),
   range: zRange,
   severity: zNesDiagnosticSeverity,
-  message: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  message: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesSuggestContext = z6.object({
-  recentFiles: z6.array(zNesRecentFile).nullish(),
-  relatedSnippets: z6.array(zNesRelatedSnippet).nullish(),
-  editHistory: z6.array(zNesEditHistoryEntry).nullish(),
-  userActions: z6.array(zNesUserAction).nullish(),
-  openFiles: z6.array(zNesOpenFile).nullish(),
-  diagnostics: z6.array(zNesDiagnostic).nullish(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zNesSuggestContext = z10.object({
+  recentFiles: z10.array(zNesRecentFile).nullish(),
+  relatedSnippets: z10.array(zNesRelatedSnippet).nullish(),
+  editHistory: z10.array(zNesEditHistoryEntry).nullish(),
+  userActions: z10.array(zNesUserAction).nullish(),
+  openFiles: z10.array(zNesOpenFile).nullish(),
+  diagnostics: z10.array(zNesDiagnostic).nullish(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSuggestNesRequest = z6.object({
+var zSuggestNesRequest = z10.object({
   sessionId: zSessionId,
-  uri: z6.string(),
-  version: z6.number(),
+  uri: z10.string(),
+  version: z10.number(),
   position: zPosition,
   selection: zRange.nullish(),
   triggerKind: zNesTriggerKind,
   context: zNesSuggestContext.nullish(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zCloseNesRequest = z6.object({
+var zCloseNesRequest = z10.object({
   sessionId: zSessionId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zClientRequest = z6.object({
+var zClientRequest = z10.object({
   id: zRequestId,
-  method: z6.string(),
-  params: z6.union([
+  method: z10.string(),
+  params: z10.union([
     zInitializeRequest,
     zAuthenticateRequest,
     zListProvidersRequest,
@@ -26247,100 +26593,111 @@ var zClientRequest = z6.object({
     zStartNesRequest,
     zSuggestNesRequest,
     zCloseNesRequest,
-    zMessageMcpRequest,
     zExtRequest
   ]).nullish()
 });
-var zWriteTextFileResponse = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zWriteTextFileResponse = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zReadTextFileResponse = z6.object({
-  content: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zReadTextFileResponse = z10.object({
+  content: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zSelectedPermissionOutcome = z6.object({
+var zSelectedPermissionOutcome = z10.object({
   optionId: zPermissionOptionId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zRequestPermissionOutcome = z6.union([
-  z6.object({
-    outcome: z6.literal("cancelled")
+var zRequestPermissionOutcome = z10.union([
+  z10.object({
+    outcome: z10.literal("cancelled")
   }),
-  zSelectedPermissionOutcome.and(z6.object({
-    outcome: z6.literal("selected")
+  zSelectedPermissionOutcome.and(z10.object({
+    outcome: z10.literal("selected")
   }))
 ]);
-var zRequestPermissionResponse = z6.object({
+var zRequestPermissionResponse = z10.object({
   outcome: zRequestPermissionOutcome,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zCreateTerminalResponse = z6.object({
+var zCreateTerminalResponse = z10.object({
   terminalId: zTerminalId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zTerminalExitStatus = z6.object({
-  exitCode: defaultOnError(z6.int().gte(0).max(4294967295, {
+var zTerminalExitStatus = z10.object({
+  exitCode: defaultOnError(z10.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  signal: defaultOnError(z6.string().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  signal: defaultOnError(z10.string().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zTerminalOutputResponse = z6.object({
-  output: z6.string(),
-  truncated: z6.boolean(),
+var zTerminalOutputResponse = z10.object({
+  output: z10.string(),
+  truncated: z10.boolean(),
   exitStatus: defaultOnError(zTerminalExitStatus.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zReleaseTerminalResponse = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zReleaseTerminalResponse = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zWaitForTerminalExitResponse = z6.object({
-  exitCode: defaultOnError(z6.int().gte(0).max(4294967295, {
+var zWaitForTerminalExitResponse = z10.object({
+  exitCode: defaultOnError(z10.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  signal: defaultOnError(z6.string().nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  signal: defaultOnError(z10.string().nullish(), () => void 0),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zKillTerminalResponse = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zKillTerminalResponse = z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zElicitationContentValue = z6.union([
-  z6.string(),
-  z6.number(),
-  z6.number(),
-  z6.boolean(),
-  z6.array(z6.string())
+var zElicitationContentValue = z10.union([
+  z10.string(),
+  z10.number(),
+  z10.number(),
+  z10.boolean(),
+  z10.array(z10.string())
 ]);
-var zElicitationAcceptAction = z6.object({
-  content: z6.record(z6.string(), zElicitationContentValue).nullish()
+var zElicitationAcceptAction = z10.object({
+  content: z10.record(z10.string(), zElicitationContentValue).nullish()
 });
-var zCreateElicitationResponse = preserveCustomPayload(z6.intersection(z6.union([
-  zElicitationAcceptAction.and(z6.object({
-    action: z6.literal("accept")
+var zCreateElicitationResponse = preserveCustomPayload(z10.intersection(z10.union([
+  zElicitationAcceptAction.and(z10.object({
+    action: z10.literal("accept")
   })),
-  z6.object({
-    action: z6.literal("decline")
+  z10.object({
+    action: z10.literal("decline")
   }),
-  z6.object({
-    action: z6.literal("cancel")
+  z10.object({
+    action: z10.literal("cancel")
   }),
-  excludeKnownTags(z6.object({
-    action: z6.string()
+  excludeKnownTags(z10.object({
+    action: z10.string()
   }), "action", ["accept", "cancel", "decline"])
-]), z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+]), z10.object({
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 })), "action", ["accept", "cancel", "decline"]);
-var zConnectMcpResponse = z6.object({
-  connectionId: zMcpConnectionId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+var zMcpError = z10.looseObject({
+  code: z10.int().min(-2147483648, {
+    error: "Invalid value: Expected int32 to be >= -2147483648"
+  }).max(2147483647, {
+    error: "Invalid value: Expected int32 to be <= 2147483647"
+  }),
+  message: z10.string(),
+  data: z10.unknown().optional()
 });
-var zDisconnectMcpResponse = z6.object({
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
-});
-var zClientResponse = z6.union([
-  z6.object({
+var zMessageMcpResponse = z10.union([
+  z10.object({
+    result: z10.unknown(),
+    _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  }),
+  z10.object({
+    error: zMcpError,
+    _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  })
+]);
+var zClientResponse = z10.union([
+  z10.object({
     id: zRequestId,
-    result: z6.union([
+    result: z10.union([
       zWriteTextFileResponse,
       zReadTextFileResponse,
       zRequestPermissionResponse,
@@ -26350,79 +26707,84 @@ var zClientResponse = z6.union([
       zWaitForTerminalExitResponse,
       zKillTerminalResponse,
       zCreateElicitationResponse,
-      zConnectMcpResponse,
-      zDisconnectMcpResponse,
       zMessageMcpResponse,
       zExtResponse
     ])
   }),
-  z6.object({
+  z10.object({
     id: zRequestId,
     error: zError
   })
 ]);
-var zCancelNotification = z6.object({
+var zCancelNotification = z10.object({
   sessionId: zSessionId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zDidOpenDocumentNotification = z6.object({
+var zDidOpenDocumentNotification = z10.object({
   sessionId: zSessionId,
-  uri: z6.string(),
-  languageId: z6.string(),
-  version: z6.number(),
-  text: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  uri: z10.string(),
+  languageId: z10.string(),
+  version: z10.number(),
+  text: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zTextDocumentContentChangeEvent = z6.object({
+var zTextDocumentContentChangeEvent = z10.object({
   range: zRange.nullish(),
-  text: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  text: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zDidChangeDocumentNotification = z6.object({
+var zDidChangeDocumentNotification = z10.object({
   sessionId: zSessionId,
-  uri: z6.string(),
-  version: z6.number(),
+  uri: z10.string(),
+  version: z10.number(),
   contentChanges: requiredDefaultOnError(vecSkipError(zTextDocumentContentChangeEvent), () => []),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zDidCloseDocumentNotification = z6.object({
+var zDidCloseDocumentNotification = z10.object({
   sessionId: zSessionId,
-  uri: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  uri: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zDidSaveDocumentNotification = z6.object({
+var zDidSaveDocumentNotification = z10.object({
   sessionId: zSessionId,
-  uri: z6.string(),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  uri: z10.string(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zDidFocusDocumentNotification = z6.object({
+var zDidFocusDocumentNotification = z10.object({
   sessionId: zSessionId,
-  uri: z6.string(),
-  version: z6.number(),
+  uri: z10.string(),
+  version: z10.number(),
   position: zPosition,
   visibleRange: zRange,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zAcceptNesNotification = z6.object({
+var zAcceptNesNotification = z10.object({
   sessionId: zSessionId,
   id: zNesSuggestionId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zNesRejectReason = z6.union([
-  z6.literal("rejected"),
-  z6.literal("ignored"),
-  z6.literal("replaced"),
-  z6.literal("cancelled")
+var zNesRejectReason = z10.union([
+  z10.literal("rejected"),
+  z10.literal("ignored"),
+  z10.literal("replaced"),
+  z10.literal("cancelled")
 ]);
-var zRejectNesNotification = z6.object({
+var zRejectNesNotification = z10.object({
   sessionId: zSessionId,
   id: zNesSuggestionId,
   reason: defaultOnError(zNesRejectReason.nullish(), () => void 0),
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
-var zClientNotification = z6.object({
-  method: z6.string(),
-  params: z6.union([
+var zMessageMcpNotification = z10.object({
+  serverId: zMcpServerAcpId,
+  requestId: zMcpRequestId,
+  method: z10.string(),
+  params: z10.record(z10.string(), z10.unknown()).nullish(),
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+});
+var zClientNotification = z10.object({
+  method: z10.string(),
+  params: z10.union([
     zCancelNotification,
     zDidOpenDocumentNotification,
     zDidChangeDocumentNotification,
@@ -26435,9 +26797,9 @@ var zClientNotification = z6.object({
     zExtNotification
   ]).nullish()
 });
-var zCancelRequestNotification = z6.object({
+var zCancelRequestNotification = z10.object({
   requestId: zRequestId,
-  _meta: defaultOnError(z6.record(z6.string(), z6.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
 });
 
 // node_modules/@agentclientprotocol/sdk/dist/jsonrpc.js
@@ -26580,8 +26942,8 @@ var RequestResponder = class {
   signal;
   finishRequest;
   didRespond = false;
-  constructor(id, sendResult, signal = new AbortController().signal, finishRequest) {
-    this.id = id;
+  constructor(id2, sendResult, signal = new AbortController().signal, finishRequest) {
+    this.id = id2;
     this.sendResult = sendResult;
     this.signal = signal;
     this.finishRequest = finishRequest;
@@ -26608,12 +26970,12 @@ var RequestResponder = class {
   /**
    * Sends a complete JSON-RPC result payload.
    */
-  respondWithResult(result2) {
+  respondWithResult(result3) {
     if (this.didRespond) {
       return rejectedPromise(new Error("JSON-RPC request already responded"));
     }
     this.didRespond = true;
-    return this.sendResult(result2).finally(() => {
+    return this.sendResult(result3).finally(() => {
       this.finishRequest?.();
     });
   }
@@ -26873,7 +27235,7 @@ var Connection = class {
     return this.sendWireMessage({ jsonrpc: "2.0", method, params });
   }
   prepareRequest(method, params, mapResponse, options = {}) {
-    const id = this.nextRequestId++;
+    const id2 = this.nextRequestId++;
     let cancel = () => {
     };
     const response = new Promise((resolve3, reject) => {
@@ -26893,7 +27255,7 @@ var Connection = class {
         }
         pendingResponse.cancellationSent = true;
         pendingResponse.cleanup?.();
-        void this.sendCancelRequest(id).catch(() => {
+        void this.sendCancelRequest(id2).catch(() => {
         });
       };
       options.cancellationSignal?.addEventListener("abort", cancel, {
@@ -26902,12 +27264,12 @@ var Connection = class {
       pendingResponse.cleanup = () => {
         options.cancellationSignal?.removeEventListener("abort", cancel);
       };
-      this.pendingResponses.set(id, pendingResponse);
+      this.pendingResponses.set(id2, pendingResponse);
     });
     response.catch(() => {
     });
     return {
-      message: { jsonrpc: "2.0", id, method, params },
+      message: { jsonrpc: "2.0", id: id2, method, params },
       response,
       cancel: () => cancel()
     };
@@ -26946,8 +27308,8 @@ var Connection = class {
     return {
       handleMessage: async (message, cx) => {
         if (message.kind === "request") {
-          const result2 = await requestHandler(message.method, message.params, cx);
-          await message.responder.respond(result2);
+          const result3 = await requestHandler(message.method, message.params, cx);
+          await message.responder.respond(result3);
         } else {
           await notificationHandler(message.method, message.params, cx);
         }
@@ -27078,14 +27440,14 @@ var Connection = class {
         if (this.abortController.signal.aborted) {
           return;
         }
-        const result2 = await handler.handleMessage(current, this.context) ?? {
+        const result3 = await handler.handleMessage(current, this.context) ?? {
           handled: true
         };
-        if (result2.handled) {
+        if (result3.handled) {
           return;
         }
-        current = result2.message ?? current;
-        retry = retry || Boolean(result2.retry);
+        current = result3.message ?? current;
+        retry = retry || Boolean(result3.retry);
       }
       if (retry) {
         this.retryQueue.push(current);
@@ -27115,11 +27477,11 @@ var Connection = class {
           this.incomingRequests.delete(message.id);
         }
       };
-      const responder = new RequestResponder(message.id, (result2) => {
+      const responder = new RequestResponder(message.id, (result3) => {
         const response = {
           jsonrpc: "2.0",
           id: message.id,
-          ...result2
+          ...result3
         };
         return sendResponse ? sendResponse(response) : this.sendWireMessage(response);
       }, abortController.signal, finishRequest);
@@ -27203,8 +27565,8 @@ var ConnectionBuilder = class {
   /**
    * Sets a diagnostic name used by handlers created from this builder.
    */
-  name(name) {
-    this.connectionName = name;
+  name(name2) {
+    this.connectionName = name2;
     return this;
   }
   /**
@@ -27492,11 +27854,11 @@ function ndJsonStream(output, input, options = {}) {
   let inputReader;
   let outputWrite = Promise.resolve();
   const writeJson = (message) => {
-    const content = JSON.stringify(message) + "\n";
+    const content2 = JSON.stringify(message) + "\n";
     const write = outputWrite.then(async () => {
       const writer = output.getWriter();
       try {
-        await writer.write(textEncoder.encode(content));
+        await writer.write(textEncoder.encode(content2));
       } finally {
         writer.releaseLock();
       }
@@ -27588,22 +27950,26 @@ function ndJsonStream(output, input, options = {}) {
 }
 
 // node_modules/@agentclientprotocol/sdk/dist/schema/guards.gen.js
-var z7 = __toESM(require_v4(), 1);
-var zGuardCreateElicitationRequestForm = zElicitationFormMode.and(z7.object({ mode: z7.literal("form") })).and(z7.object({ message: z7.string() }));
-var zGuardCreateElicitationRequestUrl = zElicitationUrlMode.and(z7.object({ mode: z7.literal("url") })).and(z7.object({ message: z7.string() }));
-var zGuardCreateElicitationRequestCustom = z7.union([zElicitationSessionScope, zElicitationRequestScope]).and(z7.object({ message: z7.string() }));
-var zGuardElicitationPropertySchemaString = zStringPropertySchema.and(z7.object({ type: z7.literal("string") }));
-var zGuardElicitationPropertySchemaNumber = zNumberPropertySchema.and(z7.object({ type: z7.literal("number") }));
-var zGuardElicitationPropertySchemaInteger = zIntegerPropertySchema.and(z7.object({ type: z7.literal("integer") }));
-var zGuardElicitationPropertySchemaBoolean = zBooleanPropertySchema.and(z7.object({ type: z7.literal("boolean") }));
-var zGuardElicitationPropertySchemaArray = zMultiSelectPropertySchema.and(z7.object({ type: z7.literal("array") }));
-var zGuardMultiSelectItemsString = zStringMultiSelectItems.and(z7.object({ type: z7.literal("string") }));
-var zGuardCreateElicitationResponseAccept = zElicitationAcceptAction.and(z7.object({ action: z7.literal("accept") }));
-var zGuardCreateElicitationResponseDecline = z7.object({
-  action: z7.literal("decline")
+var z11 = __toESM(require_v4(), 1);
+var zGuardCreateElicitationRequestForm = zElicitationFormMode.and(z11.object({ mode: z11.literal("form") })).and(z11.object({ message: z11.string() }));
+var zGuardCreateElicitationRequestUrl = zElicitationUrlMode.and(z11.object({ mode: z11.literal("url") })).and(z11.object({ message: z11.string() }));
+var zGuardCreateElicitationRequestCustom = z11.union([zElicitationSessionScope, zElicitationRequestScope]).and(z11.object({ message: z11.string() }));
+var zGuardElicitationPropertySchemaString = zStringPropertySchema.and(z11.object({ type: z11.literal("string") }));
+var zGuardElicitationPropertySchemaNumber = zNumberPropertySchema.and(z11.object({ type: z11.literal("number") }));
+var zGuardElicitationPropertySchemaInteger = zIntegerPropertySchema.and(z11.object({ type: z11.literal("integer") }));
+var zGuardElicitationPropertySchemaBoolean = zBooleanPropertySchema.and(z11.object({ type: z11.literal("boolean") }));
+var zGuardElicitationPropertySchemaArray = zMultiSelectPropertySchema.and(z11.object({ type: z11.literal("array") }));
+var zGuardMultiSelectItemsString = zStringMultiSelectItems.and(z11.object({ type: z11.literal("string") }));
+var zGuardStateUpdateRunning = zRunningStateUpdate.and(z11.object({ state: z11.literal("running") }));
+var zGuardStateUpdateIdle = zIdleStateUpdate.and(z11.object({ state: z11.literal("idle") }));
+var zGuardStateUpdateRequiresAction = zRequiresActionStateUpdate.and(z11.object({ state: z11.literal("requires_action") }));
+var zGuardStateUpdateUnknown = zUnknownStateUpdate.and(z11.object({ state: z11.literal("unknown") }));
+var zGuardCreateElicitationResponseAccept = zElicitationAcceptAction.and(z11.object({ action: z11.literal("accept") }));
+var zGuardCreateElicitationResponseDecline = z11.object({
+  action: z11.literal("decline")
 });
-var zGuardCreateElicitationResponseCancel = z7.object({
-  action: z7.literal("cancel")
+var zGuardCreateElicitationResponseCancel = z11.object({
+  action: z11.literal("cancel")
 });
 
 // node_modules/@agentclientprotocol/sdk/dist/acp.js
@@ -28256,14 +28622,14 @@ function sessionUpdateRouter(cx) {
 }
 function runConnectHandlers(connection, handlers) {
   for (const handler of handlers) {
-    let result2;
+    let result3;
     try {
-      result2 = handler(connection);
+      result3 = handler(connection);
     } catch (error) {
       connection.close(error);
       throw error;
     }
-    void Promise.resolve(result2).catch((error) => {
+    void Promise.resolve(result3).catch((error) => {
       connection.close(error);
     });
   }
@@ -28288,18 +28654,32 @@ var AgentApp = class {
   [runAgentConnectHandlers](connection) {
     runConnectHandlers(connection, this.connectHandlers);
   }
-  connect(target, options = {}) {
-    return this.connectConnection(target, options).connection;
+  connect(target2, options = {}) {
+    return this.connectConnection(target2, options).connection;
   }
-  connectWith(target, op) {
-    const { rawConnection, connection } = this.connectConnection(target);
+  connectWith(target2, op) {
+    const { rawConnection, connection } = this.connectConnection(target2);
     return rawConnection.runUntil(() => op(connection.client));
   }
   /**
    * Registers a handler that runs when this agent app opens a connection.
    *
    * Use this for connection-scoped work that needs to call client-side ACP
-   * methods outside an inbound request handler.
+   * methods outside an inbound request handler, or to set up per-connection
+   * state that the request handlers use.
+   *
+   * Handlers are called synchronously in registration order and are not
+   * awaited. A handler that throws or rejects closes the connection. When they
+   * are called depends on who opens the connection:
+   *
+   * - `connect(...)` and `connectWith(...)` call them before the connection
+   *   handles its first inbound message, and so does the experimental
+   *   `AgentProtocolRouter`'s `connect(...)` when it routes to this app. Only
+   *   the work a handler does before its first `await` is guaranteed to come
+   *   first.
+   * - The experimental `AcpServer` calls them after the client has completed
+   *   `initialize`, so messages they send cannot replace the initialize
+   *   response. Request handlers, including `initialize`, can run before them.
    */
   onConnect(handler) {
     this.connectHandlers.push(handler);
@@ -28333,22 +28713,22 @@ var AgentApp = class {
     registerAppNotification(this.builder, spec, (params, cx, signal) => agentNotificationContext(params, AgentContext.create(cx), signal), handler);
     return this;
   }
-  connectConnection(target, options = {}) {
-    if (isStream(target)) {
-      const state2 = this.openStreamConnection(target);
+  connectConnection(target2, options = {}) {
+    if (isStream(target2)) {
+      const state2 = this.openStreamConnection(target2);
       if (!options.deferConnectHandlers) {
         this[runAgentConnectHandlers](state2.connection);
       }
       return state2;
     }
     const [thisStream, peerStream] = memoryStreamPair();
-    const peerRawConnection = target[appBuilder]().connect(peerStream, stableConnectionOptions);
+    const peerRawConnection = target2[appBuilder]().connect(peerStream, stableConnectionOptions);
     const peerConnection = clientConnection(peerRawConnection);
     const state = this.openStreamConnection(thisStream);
     void state.rawConnection.closed.then(() => peerConnection.close());
     void peerRawConnection.closed.then(() => state.connection.close());
     try {
-      target[runClientConnectHandlers](peerConnection);
+      target2[runClientConnectHandlers](peerConnection);
       this[runAgentConnectHandlers](state.connection);
     } catch (error) {
       peerConnection.close(error);
@@ -28388,11 +28768,11 @@ var ClientApp = class {
   [runClientConnectHandlers](connection) {
     runConnectHandlers(connection, this.connectHandlers);
   }
-  connect(target) {
-    return this.connectConnection(target).connection;
+  connect(target2) {
+    return this.connectConnection(target2).connection;
   }
-  connectWith(target, op) {
-    const { rawConnection, connection } = this.connectConnection(target);
+  connectWith(target2, op) {
+    const { rawConnection, connection } = this.connectConnection(target2);
     return rawConnection.runUntil(() => op(connection.agent));
   }
   /**
@@ -28433,20 +28813,20 @@ var ClientApp = class {
     registerAppNotification(this.builder, spec, (params, cx, signal) => clientNotificationContext(params, ClientContext.create(cx), signal), handler);
     return this;
   }
-  connectConnection(target) {
-    if (isStream(target)) {
-      const state2 = this.openStreamConnection(target);
+  connectConnection(target2) {
+    if (isStream(target2)) {
+      const state2 = this.openStreamConnection(target2);
       this[runClientConnectHandlers](state2.connection);
       return state2;
     }
     const [thisStream, peerStream] = memoryStreamPair();
-    const peerRawConnection = target[appBuilder]().connect(peerStream, stableConnectionOptions);
+    const peerRawConnection = target2[appBuilder]().connect(peerStream, stableConnectionOptions);
     const peerConnection = agentConnection(peerRawConnection);
     const state = this.openStreamConnection(thisStream);
     void state.rawConnection.closed.then(() => peerConnection.close());
     void peerRawConnection.closed.then(() => state.connection.close());
     try {
-      target[runAgentConnectHandlers](peerConnection);
+      target2[runAgentConnectHandlers](peerConnection);
       this[runClientConnectHandlers](state.connection);
     } catch (error) {
       peerConnection.close(error);
@@ -28515,6 +28895,9 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 
+// packages/session/dist/acp-adapter.js
+import { randomUUID } from "node:crypto";
+
 // packages/session/dist/structured-lifecycle.js
 function isRecord2(value) {
   return typeof value === "object" && value !== null;
@@ -28533,14 +28916,14 @@ function lifecycleSignalsFromMeta(meta) {
       continue;
     switch (value["type"]) {
       case "compaction": {
-        const id = nonEmptyString(value["id"]);
-        signals.push({ type: "compaction", ...id !== void 0 ? { id } : {} });
+        const id2 = nonEmptyString(value["id"]);
+        signals.push({ type: "compaction", ...id2 !== void 0 ? { id: id2 } : {} });
         break;
       }
       case "task": {
-        const id = nonEmptyString(value["id"]);
+        const id2 = nonEmptyString(value["id"]);
         const phase = value["phase"];
-        if (id === void 0 || phase !== "started" && phase !== "progress" && phase !== "ended") {
+        if (id2 === void 0 || phase !== "started" && phase !== "progress" && phase !== "ended") {
           break;
         }
         const toolUseId = nonEmptyString(value["toolUseId"]);
@@ -28548,7 +28931,7 @@ function lifecycleSignalsFromMeta(meta) {
         const status = nonEmptyString(value["status"]);
         signals.push({
           type: "task",
-          id,
+          id: id2,
           phase,
           ...toolUseId !== void 0 ? { toolUseId } : {},
           ...description !== void 0 ? { description } : {},
@@ -28708,11 +29091,14 @@ function acpLifecycleSignals(update, namespace) {
   }
   return signals;
 }
+var PLAN_TOOL_NAME = "TodoWrite";
 var AcpEventAdapter = class {
   emitted = /* @__PURE__ */ new Map();
   snapshots = /* @__PURE__ */ new Map();
   pendingTerminal = /* @__PURE__ */ new Set();
   lifecycle = new StructuredLifecycleMapper();
+  /** Last plan snapshot per agent (`''` for the main one, else its dispatching tool). */
+  lastPlans = /* @__PURE__ */ new Map();
   metaNamespace;
   resolveToolName;
   constructor(options = {}) {
@@ -28749,8 +29135,15 @@ var AcpEventAdapter = class {
       case "tool_call_update":
         return [...this.tool(update), ...lifecycle];
       case "plan":
+        return [...lifecycle, ...this.plan(update.entries, update._meta)];
       case "plan_update":
+        return [
+          ...lifecycle,
+          ...update.plan.type === "items" ? this.plan(update.plan.entries, update._meta) : []
+        ];
       case "plan_removed":
+        this.lastPlans.clear();
+        return lifecycle;
       case "available_commands_update":
       case "current_mode_update":
       case "config_option_update":
@@ -28770,9 +29163,35 @@ var AcpEventAdapter = class {
         ];
       case "compaction_summary_chunk":
         return lifecycle;
+      case "subagent_update":
+      case "session_message":
+      case "session_message_chunk":
+        return lifecycle;
       case "user_message_chunk":
         return lifecycle;
     }
+  }
+  /** Carry a plan snapshot as a settled `TodoWrite` call rather than a new event
+   *  kind: app builds that predate plan rendering reject an unknown `t` and would
+   *  then fail to load the session's whole history page, while a tool call renders
+   *  everywhere. ACP sends the complete list on every update; an unchanged repeat
+   *  from the same agent is dropped, and an empty list is not a checklist worth a
+   *  row. History a resumed session replays never reaches this adapter. */
+  plan(entries, meta) {
+    const todos = entries.map(({ content: content2, status, priority }) => ({ content: content2, status, priority }));
+    const parent = this.parent(meta);
+    const fingerprint = JSON.stringify(todos);
+    if (fingerprint === this.lastPlans.get(parent ?? ""))
+      return [];
+    this.lastPlans.set(parent ?? "", fingerprint);
+    if (todos.length === 0)
+      return [];
+    const id2 = `plan-${randomUUID()}`;
+    return [
+      { t: "tool_call_start", id: id2, name: PLAN_TOOL_NAME, parentToolId: parent },
+      { t: "tool_call", id: id2, name: PLAN_TOOL_NAME, input: { todos }, parentToolId: parent },
+      { t: "tool_result", id: id2, output: "", isError: false, parentToolId: parent }
+    ];
   }
   parent(meta) {
     return parentToolId2(meta, this.metaNamespace);
@@ -28781,31 +29200,31 @@ var AcpEventAdapter = class {
     return this.resolveToolName?.(tool) ?? toolName(tool, this.metaNamespace);
   }
   tool(tool) {
-    const id = tool.toolCallId;
-    const previous = this.snapshots.get(id);
+    const id2 = tool.toolCallId;
+    const previous = this.snapshots.get(id2);
     const snapshot = {
       ...previous,
       ...tool,
       _meta: tool._meta ?? previous?._meta
     };
-    this.snapshots.set(id, snapshot);
-    const seen = this.emitted.get(id) ?? /* @__PURE__ */ new Set();
-    this.emitted.set(id, seen);
-    const name = this.name(snapshot);
+    this.snapshots.set(id2, snapshot);
+    const seen = this.emitted.get(id2) ?? /* @__PURE__ */ new Set();
+    this.emitted.set(id2, seen);
+    const name2 = this.name(snapshot);
     const parent = this.parent(snapshot._meta);
     const events = [];
     if (!seen.has("start")) {
       seen.add("start");
-      events.push({ t: "tool_call_start", id, name, parentToolId: parent });
+      events.push({ t: "tool_call_start", id: id2, name: name2, parentToolId: parent });
     }
     if (!seen.has("call") && snapshot.rawInput !== void 0) {
       seen.add("call");
-      events.push({ t: "tool_call", id, name, input: snapshot.rawInput, parentToolId: parent });
+      events.push({ t: "tool_call", id: id2, name: name2, input: snapshot.rawInput, parentToolId: parent });
     }
     if (snapshot.status === "completed" || snapshot.status === "failed") {
-      this.pendingTerminal.add(id);
+      this.pendingTerminal.add(id2);
       if (hasToolOutput(snapshot, this.metaNamespace))
-        events.push(...this.finishTool(id));
+        events.push(...this.finishTool(id2));
     }
     return events;
   }
@@ -28821,27 +29240,27 @@ var AcpEventAdapter = class {
   }
   /** Emit terminal snapshots that never received a separate payload update. */
   flush() {
-    return [...this.pendingTerminal].flatMap((id) => this.finishTool(id));
+    return [...this.pendingTerminal].flatMap((id2) => this.finishTool(id2));
   }
-  finishTool(id) {
-    const tool = this.snapshots.get(id);
+  finishTool(id2) {
+    const tool = this.snapshots.get(id2);
     if (tool === void 0)
       return [];
-    const seen = this.emitted.get(id) ?? /* @__PURE__ */ new Set();
+    const seen = this.emitted.get(id2) ?? /* @__PURE__ */ new Set();
     if (seen.has("result"))
       return [];
-    const name = this.name(tool);
+    const name2 = this.name(tool);
     const parent = this.parent(tool._meta);
     const events = [];
     if (!seen.has("call")) {
       seen.add("call");
-      events.push({ t: "tool_call", id, name, input: tool.rawInput ?? {}, parentToolId: parent });
+      events.push({ t: "tool_call", id: id2, name: name2, input: tool.rawInput ?? {}, parentToolId: parent });
     }
     seen.add("result");
-    this.pendingTerminal.delete(id);
+    this.pendingTerminal.delete(id2);
     events.push({
       t: "tool_result",
-      id,
+      id: id2,
       output: toolOutput(tool, this.metaNamespace),
       isError: tool.status === "failed",
       parentToolId: parent
@@ -28849,7 +29268,7 @@ var AcpEventAdapter = class {
     if (tool.status === "failed") {
       events.push({
         t: "diagnostic",
-        source: name.startsWith("mcp__") ? "mcp" : "tool",
+        source: name2.startsWith("mcp__") ? "mcp" : "tool",
         outcome: "failed",
         phase: "tool_call"
       });
@@ -28858,12 +29277,12 @@ var AcpEventAdapter = class {
   }
 };
 function finalAcpTextEvents(text) {
-  const parsedLoop = parseAgentLoopProposal(text);
-  const { text: prose, choices } = parseChoicesBlock(parsedLoop.text);
-  if (parsedLoop.proposal !== void 0) {
+  const parsedAutomation = parseAutomationProposal(text);
+  const { text: prose, choices } = parseChoicesBlock(parsedAutomation.text);
+  if (parsedAutomation.proposal !== void 0) {
     return [
       ...prose.length > 0 ? [{ t: "text", delta: prose }] : [],
-      { t: "agent_loop_proposal", proposal: parsedLoop.proposal }
+      { t: "automation_proposal", proposal: parsedAutomation.proposal }
     ];
   }
   if (choices !== void 0) {
@@ -28877,7 +29296,7 @@ function finalAcpTextEvents(text) {
 var AcpTextStream = class _AcpTextStream {
   static fences = [
     "```verity:choices",
-    "```verity:agent-loop",
+    "```verity:automation",
     "<quick-actions>"
   ];
   static maxContractLength = 64 * 1024;
@@ -28933,6 +29352,64 @@ var AcpTextStream = class _AcpTextStream {
   }
 };
 
+// packages/store/dist/redact.js
+var SECRET_PATTERNS = [
+  // Anthropic / Claude keys: sk-ant-oat01-…, sk-ant-api03-…
+  /sk-ant-[a-z0-9-]{8,}/gi,
+  // GitHub tokens: ghp_/gho_/ghu_/ghs_/ghr_ + fine-grained github_pat_…
+  /gh[pousr]_[A-Za-z0-9]{20,}/g,
+  /github_pat_[A-Za-z0-9_]{20,}/g,
+  // Doppler service/personal/CLI tokens: dp.st.<config>.<secret>, dp.sa.…, dp.ct.…
+  /dp\.(?:st|sa|ct|scim|audit)\.[A-Za-z0-9._-]{16,}/g,
+  // Slack tokens: xoxb-/xoxp-/xoxa-/xoxr-/xoxs-…
+  /xox[baprs]-[A-Za-z0-9-]{10,}/g,
+  // AWS access key ids.
+  /AKIA[0-9A-Z]{16}/g,
+  // OpenAI keys: sk-…, sk-proj-… (kept last + length-bounded to limit false hits).
+  /sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g
+];
+var REDACTED = "[REDACTED]";
+function redactPrivateKeys(text) {
+  const markers = /-----(BEGIN|END) [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/gu;
+  const parts = [];
+  let start;
+  let cursor = 0;
+  for (const match of text.matchAll(markers)) {
+    if (match[1] === "BEGIN") {
+      start ??= match.index;
+    } else if (start !== void 0) {
+      parts.push(text.slice(cursor, start), REDACTED);
+      cursor = match.index + match[0].length;
+      start = void 0;
+    }
+  }
+  parts.push(text.slice(cursor));
+  return parts.join("");
+}
+function redactSecrets(text) {
+  let out = redactPrivateKeys(text);
+  for (const pattern of SECRET_PATTERNS) {
+    out = out.replace(pattern, REDACTED);
+  }
+  return out;
+}
+function redactProcessStderr(text, env = {}) {
+  let out = Buffer.byteLength(text) >= 65533 ? text.slice(text.indexOf("\n") + 1) : text;
+  if (Buffer.byteLength(text) >= 65533 && !text.includes("\n"))
+    return "[truncated stderr line omitted]";
+  out = redactSecrets(out).replace(/(["'])(?:[a-z0-9_]*(?:token|secret|password|api[_-]?key)[a-z0-9_]*|passphrase|authorization|proxy-authorization|cookie|set-cookie|private[_-]?key|credential)\1\s*:\s*[^\r\n]*/giu, "[REDACTED CREDENTIAL FIELD]").replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/gu, "[REDACTED JWT]").replace(/\b[A-Z][A-Z0-9_]*\s*=[^\r\n]*/gu, "[REDACTED ENVIRONMENT]").replace(/\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=][^\r\n]*/giu, "$1: [REDACTED]").replace(/\b(password|passphrase|api[ _-]?key|access[ _-]?token|refresh[ _-]?token|client[ _-]?secret|[a-z0-9_]*(?:secret|password|token|api[_-]?key)[a-z0-9_]*)\s*[:=][^\r\n]*/giu, "$1: [REDACTED]").replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/giu, "$1[REDACTED]@");
+  if (/-----BEGIN [A-Z0-9 ]*PRIVATE KEY/u.test(out) || /-----END [A-Z0-9 ]*PRIVATE KEY/u.test(out)) {
+    return "[REDACTED PARTIAL PRIVATE KEY]";
+  }
+  const values = Object.entries(env).filter(([name2, value]) => value && (value.length >= 4 || /TOKEN|SECRET|PASSWORD|KEY/u.test(name2))).map(([, value]) => value).sort((a, b) => b.length - a.length);
+  for (const value of values)
+    out = out.split(value).join(REDACTED);
+  return out;
+}
+
+// scripts/runner-worker-store-shim.mjs
+var RUNNER_FRAME_PROTOCOL_VERSION = 1;
+
 // packages/session/dist/ingest.js
 var NoSessionInitError = class extends Error {
   name = "NoSessionInitError";
@@ -28956,9 +29433,9 @@ var SessionWriter = class {
   }
   /** Persist durably, THEN publish to the bus — never broadcast an event that
    * didn't land. */
-  async persist(sessionId, event) {
-    const { seq, ts } = await this.store.appendEvent(sessionId, event);
-    this.hooks.bus?.publish(sessionId, { seq, ts, event });
+  async persist(sessionId2, event) {
+    const { seq: seq2, ts } = await this.store.appendEvent(sessionId2, event);
+    this.hooks.bus?.publish(sessionId2, { seq: seq2, ts, event });
   }
   async write(event) {
     let justBound = false;
@@ -29045,6 +29522,51 @@ var SessionWriter = class {
 
 // packages/session/dist/runner.js
 import { spawn } from "node:child_process";
+
+// packages/session/dist/stderr-tail.js
+var StderrTail = class {
+  bytes;
+  offset = 0;
+  length = 0;
+  constructor(capacity = 64 * 1024) {
+    if (!Number.isInteger(capacity) || capacity <= 0)
+      throw new Error("Invalid stderr capacity");
+    this.bytes = Buffer.alloc(capacity);
+  }
+  clear() {
+    this.offset = 0;
+    this.length = 0;
+  }
+  push(chunk) {
+    let source = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    if (source.length >= this.bytes.length) {
+      source = source.subarray(-this.bytes.length);
+      source.copy(this.bytes);
+      this.offset = 0;
+      this.length = this.bytes.length;
+      return;
+    }
+    const first = Math.min(source.length, this.bytes.length - this.offset);
+    source.copy(this.bytes, this.offset, 0, first);
+    source.copy(this.bytes, 0, first);
+    this.offset = (this.offset + source.length) % this.bytes.length;
+    this.length = Math.min(this.bytes.length, this.length + source.length);
+  }
+  text() {
+    const start = (this.offset - this.length + this.bytes.length) % this.bytes.length;
+    const first = Math.min(this.length, this.bytes.length - start);
+    const ordered = Buffer.concat([
+      this.bytes.subarray(start, start + first),
+      this.bytes.subarray(0, this.length - first)
+    ]);
+    let boundary = 0;
+    while (boundary < ordered.length && (ordered[boundary] & 192) === 128)
+      boundary++;
+    return ordered.subarray(boundary).toString("utf8");
+  }
+};
+
+// packages/session/dist/runner.js
 import { constants } from "node:os";
 
 // packages/session/dist/process-tree.js
@@ -29084,9 +29606,9 @@ function walkProcessTree(root, readProc, listTaskIds, keep) {
       taskIds = [parent];
     }
     const children = /* @__PURE__ */ new Set();
-    for (const taskId of taskIds) {
+    for (const taskId2 of taskIds) {
       try {
-        for (const child of readProc(`/proc/${parent}/task/${taskId}/children`).trim().split(/\s+/).filter(Boolean).map(Number)) {
+        for (const child of readProc(`/proc/${parent}/task/${taskId2}/children`).trim().split(/\s+/).filter(Boolean).map(Number)) {
           children.add(child);
         }
       } catch {
@@ -29149,7 +29671,6 @@ function signalProcessTree(tree, signal, options = {}) {
 
 // packages/session/dist/runner.js
 var ALLOWED_PERMISSION_MODES = ["auto", "default", "plan", "acceptEdits"];
-var STDERR_CAP_BYTES = 16 * 1024;
 async function* readStrings(readable) {
   for await (const chunk of readable) {
     yield typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -29237,16 +29758,18 @@ var nodeSpawner = (command, args, options) => {
   }
   const stdout = child.stdout;
   stdout.setEncoding("utf8");
-  let stderrTail = "";
+  const stderrTail = new StderrTail();
+  let exitDetails;
   if (child.stderr !== null) {
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk) => {
-      stderrTail = (stderrTail + chunk).slice(-STDERR_CAP_BYTES);
-    });
+    child.stderr.on("data", (chunk) => stderrTail.push(chunk));
   }
+  child.once("exit", (code, signal) => {
+    exitDetails = { code, signal };
+  });
   const exited = new Promise((resolve3, reject) => {
     child.once("error", reject);
     child.once("close", (code, signal) => {
+      exitDetails = { code, signal };
       resolve3(exitCodeFromClose(code, signal));
     });
   });
@@ -29255,7 +29778,8 @@ var nodeSpawner = (command, args, options) => {
     stdout: readStrings(stdout),
     pid: child.pid,
     exited,
-    stderr: () => stderrTail,
+    stderr: () => stderrTail.text(),
+    exitDetails: () => exitDetails,
     kill: (signal) => {
       killProcessGroup(child, signal);
     },
@@ -29337,11 +29861,11 @@ async function externalizeImageFrame(line, worktree) {
   const frame = JSON.parse(line);
   const params = frame["params"];
   const update = params?.["update"];
-  const content = update?.["content"];
+  const content2 = update?.["content"];
   const rawOutput = update?.["rawOutput"];
-  if (frame["method"] !== "session/update" || !Array.isArray(content) || typeof rawOutput?.["result"] !== "string")
+  if (frame["method"] !== "session/update" || !Array.isArray(content2) || typeof rawOutput?.["result"] !== "string")
     throw new Error("ACP frame is too large");
-  const image = content.find((entry) => {
+  const image = content2.find((entry) => {
     const block = entry?.["content"];
     return block?.["type"] === "image" && block["mimeType"] === "image/png" && block["data"] === rawOutput["result"];
   });
@@ -29351,7 +29875,7 @@ async function externalizeImageFrame(line, worktree) {
   const bytes = Buffer.from(encoded, "base64");
   if (bytes.toString("base64") !== encoded || !bytes.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex")))
     throw new Error("ACP frame is too large");
-  const id = createHash("sha256").update(bytes).digest("hex");
+  const id2 = createHash("sha256").update(bytes).digest("hex");
   const directory = join(worktree, ".agents", "generated-images");
   const agentDirectory = join(worktree, ".agents");
   for (const path2 of [agentDirectory, directory]) {
@@ -29370,7 +29894,7 @@ async function externalizeImageFrame(line, worktree) {
   ]);
   if (!realDirectory.startsWith(`${realWorktree}${sep}`))
     throw new Error("ACP image directory escapes the worktree");
-  const path = join(directory, `${id}.png`);
+  const path = join(directory, `${id2}.png`);
   await writeFile(path, bytes, { flag: "wx" }).catch(async (error) => {
     if (error.code !== "EEXIST")
       throw error;
@@ -29378,7 +29902,7 @@ async function externalizeImageFrame(line, worktree) {
     if (!stat.isFile() || !(await readFile(path)).equals(bytes))
       throw new Error("ACP image file collision");
   });
-  image["content"] = { type: "resource_link", name: `${id}.png`, uri: path };
+  image["content"] = { type: "resource_link", name: `${id2}.png`, uri: path };
   rawOutput["result"] = path;
   rawOutput["savedPath"] = path;
   const reduced = JSON.stringify(frame);
@@ -29530,11 +30054,11 @@ async function settled(work) {
       clearTimeout(timer);
   }
 }
-function permissionRequest(request2, name) {
+function permissionRequest(request2, name2) {
   return {
     requestId: request2.toolCall.toolCallId,
     toolUseId: request2.toolCall.toolCallId,
-    toolName: name,
+    toolName: name2,
     input: recordInput(request2.toolCall.rawInput)
   };
 }
@@ -29560,21 +30084,28 @@ async function runAcpTurn(opts, profile) {
   if (opts.toolless === true && profile.enforcesToolless !== true) {
     throw new Error(`${profile.telemetryBackend} cannot run a turn without tools`);
   }
-  const child = spawner(opts.command ?? profile.defaultCommand, args, {
+  const spawn2 = () => spawner(opts.command ?? profile.defaultCommand, args, {
     cwd: opts.cwd,
     env: opts.env ?? process.env,
     keepStdinOpen: true
   });
+  let child = spawn2();
+  const startupRecoveryDeadline = Date.now() + 16 * 6e4;
+  let stopped = false;
+  let wakeRetry;
   const writer = new SessionWriter(opts.store, {
     ...opts.bus !== void 0 ? { bus: opts.bus } : {},
     ...opts.onSession !== void 0 ? { onSession: opts.onSession } : {}
   }, opts.storeSessionId);
   const metaNamespace = profile.adapter?.metaNamespace;
   const adapter = new AcpEventAdapter(profile.adapter ?? {});
-  let sessionId = opts.resumeSessionId;
+  let sessionId2 = opts.resumeSessionId;
   let boundSessionId;
   let loadRefused = false;
   let diagnosticPhase = "spawn";
+  const isInitializing = () => diagnosticPhase === "initialize";
+  let promptDispatched = false;
+  const isPrompting = () => promptDispatched;
   const topLevelText = new AcpTextStream();
   let updateTail = Promise.resolve();
   let updateError;
@@ -29599,6 +30130,8 @@ async function runAcpTurn(opts, profile) {
     return true;
   });
   const stop = (operatorCancel) => {
+    stopped = true;
+    wakeRetry?.();
     if (operatorCancel)
       aborted = true;
     if (cancelSession === void 0) {
@@ -29617,9 +30150,9 @@ async function runAcpTurn(opts, profile) {
     timeout = setTimeout(() => stop(false), opts.timeoutMs);
   const onPermission = async (request2) => {
     await drainUpdates().catch(() => void 0);
-    const id = request2.toolCall.toolCallId;
-    const name = adapter.knownToolName(id) ?? toolName(request2.toolCall, metaNamespace);
-    const modePicker = isModePicker(request2, sessionModes, name, profile.modePickerTool);
+    const id2 = request2.toolCall.toolCallId;
+    const name2 = adapter.knownToolName(id2) ?? toolName(request2.toolCall, metaNamespace);
+    const modePicker = isModePicker(request2, sessionModes, name2, profile.modePickerTool);
     const adopt = (response) => {
       if (modePicker && response.outcome.outcome === "selected") {
         const contested = restoresPending > 0 && response.outcome.optionId !== activeMode;
@@ -29629,11 +30162,17 @@ async function runAcpTurn(opts, profile) {
       }
       return response;
     };
-    if (opts.permissionControl !== true || opts.onPermissionRequest === void 0) {
+    const planning = opts.planning === true;
+    if (planningToolName(name2) !== void 0) {
+      const allow = request2.options.find((option) => option.kind === "allow_once");
+      if (allow !== void 0)
+        return { outcome: { outcome: "selected", optionId: allow.optionId } };
+    }
+    if (planning || opts.permissionControl !== true || opts.onPermissionRequest === void 0) {
       const reject = request2.options.find((option) => option.kind === "reject_once");
       return adopt(reject === void 0 ? { outcome: { outcome: "cancelled" } } : { outcome: { outcome: "selected", optionId: reject.optionId } });
     }
-    const neutral = permissionRequest(request2, name);
+    const neutral = permissionRequest(request2, name2);
     await writer.writePermission(neutral, "acp");
     return await new Promise((resolve3) => {
       opts.onPermissionRequest?.(neutral, (decision) => {
@@ -29670,7 +30209,7 @@ async function runAcpTurn(opts, profile) {
     }
   };
   try {
-    const result2 = await client({ name: "verity" }).onRequest(methods.client.session.requestPermission, ({ params }) => onPermission(params)).onNotification(methods.client.session.update, ({ params }) => {
+    const connect = () => client({ name: "verity" }).onRequest(methods.client.session.requestPermission, ({ params }) => onPermission(params)).onNotification(methods.client.session.update, ({ params }) => {
       if (loadingSession)
         return Promise.resolve();
       if (isAgentContent(params.update))
@@ -29739,7 +30278,7 @@ async function runAcpTurn(opts, profile) {
         diagnosticPhase = "session_new";
         session = await agent.request(methods.agent.session.new, request2);
       }
-      sessionId = session.sessionId;
+      sessionId2 = session.sessionId;
       diagnosticPhase = "prompt";
       boundSessionId = session.sessionId;
       cancelSession = () => {
@@ -29785,10 +30324,15 @@ async function runAcpTurn(opts, profile) {
           await writer.write({ t: "notice", text });
         }
       }, opts);
+      if (opts.planning === true && setMode === void 0 && profile.planningViaConfig !== true) {
+        throw new Error("The agent does not support the required planning permission mode.");
+      }
       if (setMode !== void 0) {
         try {
           await setMode();
         } catch {
+          if (opts.planning === true)
+            throw new Error("The agent refused the required planning permission mode.");
           const wanted = activeMode;
           activeMode = void 0;
           restoreMode = void 0;
@@ -29806,6 +30350,7 @@ async function runAcpTurn(opts, profile) {
         }).catch(() => void 0);
       };
       loadingSession = false;
+      promptDispatched = true;
       const prompt = await agent.request(methods.agent.session.prompt, {
         sessionId: session.sessionId,
         prompt: promptBlocks(turnOpts, profile)
@@ -29860,47 +30405,110 @@ async function runAcpTurn(opts, profile) {
       await writer.finish();
       return prompt;
     });
+    let result3;
+    for (; ; ) {
+      try {
+        result3 = await connect();
+        break;
+      } catch (error) {
+        if (profile.telemetryBackend !== "codex-acp" || !isInitializing() || boundSessionId !== void 0 || stopped || Date.now() >= startupRecoveryDeadline || !/timed out waiting for state db backfill after 30s\s*\(status: running\)/.test(child.stderr()))
+          throw error;
+        child.closeStdin?.();
+        killAgent(child);
+        const exited = await new Promise((resolve3) => {
+          let settled2 = false;
+          const timer = setTimeout(() => done(false), Math.max(0, Math.min(1e4, startupRecoveryDeadline - Date.now())));
+          function done(didExit) {
+            if (settled2)
+              return;
+            settled2 = true;
+            clearTimeout(timer);
+            wakeRetry = void 0;
+            resolve3(didExit);
+          }
+          wakeRetry = () => done(false);
+          void child.exited.then(() => done(true), () => done(false));
+          if (stopped)
+            done(false);
+        });
+        if (!exited || stopped)
+          throw error;
+        await new Promise((resolve3) => {
+          const timer = setTimeout(done, Math.min(5e3, startupRecoveryDeadline - Date.now()));
+          function done() {
+            clearTimeout(timer);
+            wakeRetry = void 0;
+            resolve3();
+          }
+          wakeRetry = done;
+          if (stopped)
+            done();
+        });
+        if (stopped || Date.now() >= startupRecoveryDeadline)
+          throw error;
+        child = spawn2();
+      }
+    }
     return {
       sessionId: boundSessionId,
-      exitCode: result2.stopReason === "cancelled" && !aborted ? 1 : 0,
+      exitCode: result3.stopReason === "cancelled" && !aborted ? 1 : 0,
       stderr: child.stderr(),
       aborted
     };
   } catch (error) {
+    const turnActive = isPrompting() && !closedOut;
     acceptingSteering = false;
     const message = error instanceof Error ? error.message : String(error);
     await drainUpdates().catch(() => void 0);
     closedOut = true;
     await writeAll(writer, adapter.flush()).catch(() => void 0);
     await writeAll(writer, topLevelText.flush()).catch(() => void 0);
+    let exitTimer;
+    await Promise.race([
+      child.exited.then(() => true, () => false),
+      new Promise((resolve3) => {
+        exitTimer = setTimeout(() => resolve3(false), 250);
+      })
+    ]);
+    if (exitTimer !== void 0)
+      clearTimeout(exitTimer);
+    const exitDetails = child.exitDetails?.();
     const stderr = `${child.stderr()}
 ${message}`;
+    const processFailure = !aborted && exitDetails !== void 0 && (exitDetails.code !== 0 || exitDetails.signal !== null || turnActive) ? {
+      ...opts.model === void 0 ? {} : { model: opts.model.slice(0, 200) },
+      exitCode: exitDetails.code,
+      signal: exitDetails.signal,
+      turnActive,
+      stderrTail: redactProcessStderr(child.stderr(), opts.env ?? process.env).slice(-65536)
+    } : {};
     const failedBeforeExecution = !aborted && boundSessionId === void 0 && isExplicitPreExecutionRejection(stderr);
-    if (sessionId !== void 0 && !aborted && !failedBeforeExecution) {
+    if (sessionId2 !== void 0 && !aborted && !failedBeforeExecution) {
       const usageLimit = isUsageLimitError(message);
       await writer.write({ t: "error", kind: usageLimit ? "usage_limit" : "acp", message }).catch(() => void 0);
       await writer.write({ t: "status", state: usageLimit ? "completed" : "crashed" }).catch(() => void 0);
     }
-    if (sessionId !== void 0 || opts.storeSessionId !== void 0) {
+    if (sessionId2 !== void 0 || opts.storeSessionId !== void 0) {
       const diagnostic = {
         t: "diagnostic",
         source: "agent",
         outcome: aborted ? "cancelled" : "failed",
         phase: diagnosticPhase,
         backend: profile.telemetryBackend,
-        ...error instanceof RequestError ? { code: error.code } : {}
+        ...error instanceof RequestError ? { code: error.code } : {},
+        ...processFailure
       };
       if (writer.currentSessionId !== void 0) {
         await writer.write(diagnostic).catch(() => void 0);
       } else {
         const storeId = opts.storeSessionId ?? opts.resumeSessionId;
         if (storeId !== void 0 && await opts.store.getSession(storeId) !== void 0) {
-          const { seq, ts } = await opts.store.appendEvent(storeId, diagnostic).catch(() => ({
+          const { seq: seq2, ts } = await opts.store.appendEvent(storeId, diagnostic).catch(() => ({
             seq: void 0,
             ts: void 0
           }));
-          if (seq !== void 0 && ts !== void 0) {
-            opts.bus?.publish(storeId, { seq, ts, event: diagnostic });
+          if (seq2 !== void 0 && ts !== void 0) {
+            opts.bus?.publish(storeId, { seq: seq2, ts, event: diagnostic });
           }
         }
       }
@@ -29982,8 +30590,8 @@ var AcpClaudeBackend = class {
 };
 
 // packages/session/dist/acp-session-config.js
-function selectOption(options, id) {
-  return options?.find((option) => option.id === id && option.type === "select");
+function selectOption(options, id2) {
+  return options?.find((option) => option.id === id2 && option.type === "select");
 }
 function selectValues(option) {
   return option.options.flatMap((entry) => "value" in entry ? [entry.value] : entry.options.map((grouped) => grouped.value));
@@ -30030,16 +30638,27 @@ function parseCodexModel(model) {
   if (!model.startsWith(CODEX_MODEL_PREFIX)) {
     throw new Error(`Codex model must start with "${CODEX_MODEL_PREFIX}"; got "${model}"`);
   }
-  const id = model.slice(CODEX_MODEL_PREFIX.length);
-  if (id.length === 0)
+  const id2 = model.slice(CODEX_MODEL_PREFIX.length);
+  if (id2.length === 0)
     throw new Error(`Codex model must not be empty; got "${model}"`);
-  return id;
+  return id2;
 }
 
 // packages/session/dist/acp-codex-backend.js
 var CODEX_ACP_META = "codex";
 var MODEL_CONFIG_ID = "model";
 var CODEX_AGENT_MODE = "agent-full-access";
+var CODEX_PLANNING_MODE = "read-only";
+function codexMode(planning) {
+  return planning === true ? CODEX_PLANNING_MODE : CODEX_AGENT_MODE;
+}
+var CODEX_MCP_TITLE = /^mcp\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/;
+function codexToolName(tool) {
+  const mcp = typeof tool.title === "string" ? CODEX_MCP_TITLE.exec(tool.title) : null;
+  if (mcp !== null)
+    return `mcp__${mcp[1]}__${mcp[2]}`;
+  return toolNameFromKind(tool);
+}
 async function selectModel(setup, opts) {
   const wanted = parseCodexModel(opts.model);
   if (wanted === void 0)
@@ -30062,17 +30681,18 @@ var CODEX_ACP_PROFILE = {
   loadSessionUnsupported: "Codex ACP adapter does not support persistent session loading",
   // codex-acp advertises no tool `name`, only ACP's `kind` and a `title` that for
   // a command execution IS the command line.
-  adapter: { metaNamespace: CODEX_ACP_META, resolveToolName: toolNameFromKind },
+  adapter: { metaNamespace: CODEX_ACP_META, resolveToolName: codexToolName },
   // codex-acp takes no session-level options: the model and mode are configured
   // once the session answers with what this account can actually serve.
   sessionMeta: () => ({}),
   defaultModelLabel: () => CODEX_DEFAULT_MODEL,
   promptText: (opts) => promptWithSystemDirectives(opts),
-  sessionMode: () => CODEX_AGENT_MODE,
-  // No vocabulary, stated rather than omitted: `sessionMode` above ignores
-  // `opts.permissionMode` and returns a constant, so no caller-supplied string can
-  // become this session's mode and there is nothing for a §5b allowlist to bound.
-  // The day that arrow starts reading its options, this line has to change with it.
+  sessionMode: (opts) => codexMode(opts.planning),
+  // No vocabulary, stated rather than omitted: `codexMode` ignores
+  // `opts.permissionMode` and picks one of two constants, so no caller-supplied
+  // string can become this session's mode and there is nothing for a §5b
+  // allowlist to bound. The day it starts reading that option, this line has to
+  // change with it.
   permissionModes: void 0,
   configureSession: selectModel
 };
@@ -30084,6 +30704,9 @@ var AcpCodexBackend = class {
 };
 
 // packages/session/dist/acp-opencode-backend.js
+function openCodeToolName(tool) {
+  return tool.title === "todowrite" ? PLAN_TOOL_NAME : toolNameFromKind(tool);
+}
 var MODEL_CONFIG_ID2 = "model";
 var MODE_CONFIG_ID = "mode";
 var BUILD_MODE = "build";
@@ -30112,7 +30735,7 @@ async function configureSession(setup, opts) {
       (value, current) => `OpenCode model "${value}" was not applied; this turn runs on "${current}".`
     );
   }
-  const mode = openCodeMode(opts.permissionMode);
+  const mode = opts.planning === true ? PLAN_MODE : openCodeMode(opts.permissionMode);
   const outcome = await applySelectOption(
     setup,
     MODE_CONFIG_ID,
@@ -30146,6 +30769,7 @@ var OPENCODE_ACP_PROFILE = {
   // name that reached the multi-purpose CLI would let the caller's argv pick the
   // mode it starts in. The wrapper is installed by verity-sandbox-toolkit.
   defaultCommand: "opencode-acp",
+  planningViaConfig: true,
   telemetryBackend: "opencode-acp",
   httpMcpWhenUnspecified: true,
   // Unreachable in practice — opencode-acp advertises `loadSession: true`, so the
@@ -30154,7 +30778,7 @@ var OPENCODE_ACP_PROFILE = {
   loadSessionUnsupported: "This OpenCode version does not support persistent session loading",
   // opencode-acp sets no tool `name`, only ACP's `kind` and a `title` that is the
   // command line for an execution and the file path once a read resolves.
-  adapter: { resolveToolName: toolNameFromKind },
+  adapter: { resolveToolName: openCodeToolName },
   // No session-level options: both knobs Verity sets are session config options,
   // applied once the session has answered with what this account can serve.
   sessionMeta: () => ({}),
@@ -30183,10 +30807,13 @@ import { createConnection } from "node:net";
 import { constants as osConstants } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 var PROTOCOL_VERSION2 = 1;
-var MAX_STDERR_CHARS = 64 * 1024;
 var STDOUT_HIGH_WATER_BYTES = 1024 * 1024;
 var MAX_BROKER_FRAME_BYTES = 8 * 1024 * 1024;
-var SESSION_RUNTIME_ENV_KEYS = ["VERITY_SESSION_BACKEND", "VERITY_SESSION_MODEL"];
+var SESSION_RUNTIME_ENV_KEYS = [
+  "VERITY_SESSION_BACKEND",
+  "VERITY_SESSION_MODEL",
+  "VERITY_SESSION_ID"
+];
 function sessionRuntimeEnv(env) {
   const forwarded = {};
   for (const key of SESSION_RUNTIME_ENV_KEYS) {
@@ -30263,9 +30890,9 @@ function createBrokerSpawner(socketPath) {
       socket.resume();
       queueMicrotask(processBuffered);
     });
-    let stderrTail = "";
+    const stderrTail = new StderrTail();
+    let exitDetails;
     const stdoutDecoder = new StringDecoder("utf8");
-    const stderrDecoder = new StringDecoder("utf8");
     let pid;
     let spawned = false;
     let settled2 = false;
@@ -30282,7 +30909,6 @@ function createBrokerSpawner(socketPath) {
       const stdoutTail = stdoutDecoder.end();
       if (stdoutTail !== "")
         stdout.push(stdoutTail);
-      stderrTail = `${stderrTail}${stderrDecoder.end()}`.slice(-MAX_STDERR_CHARS);
       stdout.end();
       socket.destroy();
       resolveExited(code);
@@ -30312,7 +30938,8 @@ function createBrokerSpawner(socketPath) {
     });
     processBuffered = () => {
       if (Buffer.byteLength(buffered) > MAX_BROKER_FRAME_BYTES && !buffered.includes("\n")) {
-        stderrTail = "spawn broker frame exceeded the size limit";
+        stderrTail.clear();
+        stderrTail.push("spawn broker frame exceeded the size limit");
         settle(1);
         return;
       }
@@ -30325,7 +30952,8 @@ function createBrokerSpawner(socketPath) {
         const line = buffered.slice(0, newline2);
         buffered = buffered.slice(newline2 + 1);
         if (Buffer.byteLength(line) > MAX_BROKER_FRAME_BYTES) {
-          stderrTail = "spawn broker frame exceeded the size limit";
+          stderrTail.clear();
+          stderrTail.push("spawn broker frame exceeded the size limit");
           settle(1);
           break;
         }
@@ -30333,13 +30961,14 @@ function createBrokerSpawner(socketPath) {
         try {
           frame = JSON.parse(line);
         } catch {
-          stderrTail = "spawn broker returned malformed JSON";
+          stderrTail.clear();
+          stderrTail.push("spawn broker returned malformed JSON");
           settle(1);
           break;
         }
         if (frame.ok !== true) {
           const error = typeof frame.error === "string" ? frame.error : "spawn broker failed";
-          stderrTail = `${stderrTail}${stderrTail ? "\n" : ""}${error}`.slice(-MAX_STDERR_CHARS);
+          stderrTail.push(`${stderrTail.text() ? "\n" : ""}${error}`);
           settle(1);
         } else if (frame.kind === "spawned") {
           spawned = true;
@@ -30350,8 +30979,12 @@ function createBrokerSpawner(socketPath) {
           if (decoded !== "" && !stdout.push(decoded))
             break;
         } else if (frame.kind === "stderr" && typeof frame.data === "string") {
-          stderrTail = `${stderrTail}${stderrDecoder.write(Buffer.from(frame.data, "base64"))}`.slice(-MAX_STDERR_CHARS);
+          stderrTail.push(Buffer.from(frame.data, "base64"));
         } else if (frame.kind === "exit") {
+          exitDetails = {
+            code: typeof frame.code === "number" ? frame.code : null,
+            signal: typeof frame.signal === "string" ? frame.signal : null
+          };
           const signalNumber = typeof frame.signal === "string" ? osConstants.signals[frame.signal] : void 0;
           settle(typeof frame.code === "number" ? frame.code : 128 + (signalNumber ?? 0));
         }
@@ -30364,13 +30997,14 @@ function createBrokerSpawner(socketPath) {
       processBuffered();
     });
     socket.once("error", (error) => {
-      stderrTail = `${stderrTail}${stderrTail ? "\n" : ""}${error.message}`.slice(-MAX_STDERR_CHARS);
+      stderrTail.push(`${stderrTail.text() ? "\n" : ""}${error.message}`);
       settle(1);
     });
     socket.once("close", () => {
       if (!settled2) {
         if (Buffer.byteLength(buffered) > MAX_BROKER_FRAME_BYTES) {
-          stderrTail = "spawn broker frame exceeded the size limit";
+          stderrTail.clear();
+          stderrTail.push("spawn broker frame exceeded the size limit");
         }
         settle(1);
       }
@@ -30381,7 +31015,8 @@ function createBrokerSpawner(socketPath) {
         return pid;
       },
       exited,
-      stderr: () => stderrTail,
+      stderr: () => stderrTail.text(),
+      exitDetails: () => exitDetails,
       kill: (signal = "SIGTERM") => {
         if (signal !== "SIGTERM" && signal !== "SIGKILL")
           return;
@@ -30416,12 +31051,9 @@ function createBrokerSpawner(socketPath) {
 }
 
 // packages/session/dist/runner-server.js
-import { createHash as createHash3, randomUUID as randomUUID2, timingSafeEqual } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID3, timingSafeEqual } from "node:crypto";
 import { mkdir as mkdir3, open as open4 } from "node:fs/promises";
 import { dirname as dirname3 } from "node:path";
-
-// scripts/runner-worker-store-shim.mjs
-var RUNNER_FRAME_PROTOCOL_VERSION = 1;
 
 // packages/session/dist/runner-contract.js
 var LoopbackRunnerClient = class {
@@ -30446,7 +31078,7 @@ var LoopbackRunnerClient = class {
     const appendSystemPrompt = this.runtimeNotice === void 0 ? opts.appendSystemPrompt : `${opts.appendSystemPrompt ?? ""}
 
 ${this.runtimeNotice}`.trim();
-    const result2 = this.backend.run({
+    const result3 = this.backend.run({
       ...opts,
       ...appendSystemPrompt !== void 0 ? { appendSystemPrompt } : {},
       signal: controller.signal,
@@ -30465,9 +31097,9 @@ ${this.runtimeNotice}`.trim();
       capturedInject = void 0;
       respondById.clear();
     };
-    void result2.then(markSettled, markSettled);
+    void result3.then(markSettled, markSettled);
     return {
-      result: result2,
+      result: result3,
       // The inject decision is synchronous in-process; wrap it in a resolved promise
       // to satisfy the async contract without a spurious `async` (no await to make).
       steer: (message) => Promise.resolve(!settled2 && capturedInject ? capturedInject(message) : false),
@@ -31003,10 +31635,10 @@ async function serveControl(socketPath, handlers, opts = {}) {
 
 // packages/session/dist/runner-state.js
 import { chmod, open as open3, rename, readFile as readFile2, writeFile as writeFile2 } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 import { dirname as dirname2 } from "node:path";
 async function writeRunnerState(path, state) {
-  const tmp = `${path}.${randomUUID()}.tmp`;
+  const tmp = `${path}.${randomUUID2()}.tmp`;
   await writeFile2(tmp, JSON.stringify(state), "utf8");
   await chmod(tmp, 416);
   const file = await open3(tmp, "r");
@@ -31089,8 +31721,8 @@ var FileEventSink = class {
     this.seq += 1;
     return { seq: this.seq, ts: Date.now() };
   }
-  async bindSession(id) {
-    await this.writer.write({ kind: "session", id });
+  async bindSession(id2) {
+    await this.writer.write({ kind: "session", id: id2 });
     const event = this.pendingSessionEvent;
     this.pendingSessionEvent = void 0;
     if (event !== void 0)
@@ -31103,13 +31735,12 @@ var FileEventSink = class {
       model: session.model,
       name: session.name ?? null,
       projectId: session.projectId ?? null,
-      kind: session.kind ?? "normal",
       lastSeenEventCount: null
     });
     return Promise.resolve();
   }
-  getSession(sessionId) {
-    return Promise.resolve(this.sessions.get(sessionId));
+  getSession(sessionId2) {
+    return Promise.resolve(this.sessions.get(sessionId2));
   }
 };
 var RunnerServer = class {
@@ -31138,7 +31769,7 @@ var RunnerServer = class {
       await handle.close().catch(() => void 0);
       throw error;
     }
-    const runnerInstanceId = randomUUID2();
+    const runnerInstanceId = randomUUID3();
     const { controlSocketPath, controlCapability, exclusiveEventFile, terminalizeErrors, turnId, ...runOpts } = opts;
     void exclusiveEventFile;
     const writer = new SerialFrameWriter(handle, turnId, runnerInstanceId);
@@ -31158,9 +31789,9 @@ var RunnerServer = class {
     await persistState(true);
     const outstandingPermissions = /* @__PURE__ */ new Map();
     const turn2 = this.client.startTurn(runnerOptions, {
-      onSession: async (id) => {
-        await sink.bindSession(id);
-        state.sessionId = id;
+      onSession: async (id2) => {
+        await sink.bindSession(id2);
+        state.sessionId = id2;
         void persistState();
       },
       onPermissionRequest: (request2) => {
@@ -31209,7 +31840,7 @@ var RunnerServer = class {
       state.settledAt = Date.now();
       return persistState(true);
     };
-    const result2 = (async () => {
+    const result3 = (async () => {
       let settled2;
       try {
         settled2 = await turn2.result;
@@ -31245,9 +31876,9 @@ var RunnerServer = class {
       await controlServer?.close().catch(() => void 0);
       return settled2;
     })();
-    void result2.catch(() => void 0);
+    void result3.catch(() => void 0);
     return {
-      result: result2,
+      result: result3,
       steer: (message) => turn2.steer(message),
       answerPermission,
       cancel: () => turn2.cancel()
@@ -31290,9 +31921,9 @@ function resolveRunnerMcpServers(input) {
 }
 
 // packages/session/dist/runner-worker-entry.js
-var safeIdSchema = import_zod5.z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u);
-var boundedString = (max) => import_zod5.z.string().max(max);
-var httpMcpServerSchema = import_zod5.z.strictObject({
+var safeIdSchema = import_zod9.z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u);
+var boundedString = (max) => import_zod9.z.string().max(max);
+var httpMcpServerSchema = import_zod9.z.strictObject({
   name: boundedString(128).min(1),
   url: boundedString(4096).min(1).refine((value) => {
     if (value === "verity-internal://mcp-proxy")
@@ -31303,36 +31934,38 @@ var httpMcpServerSchema = import_zod5.z.strictObject({
       return false;
     }
   }, "MCP server URL must use HTTP"),
-  headers: import_zod5.z.array(import_zod5.z.strictObject({ name: boundedString(256).min(1), value: boundedString(4096) })).max(32)
+  headers: import_zod9.z.array(import_zod9.z.strictObject({ name: boundedString(256).min(1), value: boundedString(4096) })).max(32)
 });
-var startTurnRequestSchema = import_zod5.z.strictObject({
-  protocolVersion: import_zod5.z.literal(1),
-  kind: import_zod5.z.literal("start-turn"),
+var startTurnRequestSchema = import_zod9.z.strictObject({
+  protocolVersion: import_zod9.z.literal(1),
+  kind: import_zod9.z.literal("start-turn"),
   turnId: safeIdSchema,
   startCommandId: safeIdSchema,
   sessionId: safeIdSchema,
-  backend: import_zod5.z.enum(["claude-acp", "codex-acp", "opencode-acp"]),
+  backend: import_zod9.z.enum(["claude-acp", "codex-acp", "opencode-acp"]),
   worktree: boundedString(4096).refine((value) => value.startsWith("/")),
   cwd: boundedString(4096).refine((value) => value.startsWith("/")),
   prompt: boundedString(1024 * 1024),
-  attachments: import_zod5.z.array(attachmentUploadSchema).max(20).optional(),
+  attachments: import_zod9.z.array(attachmentUploadSchema).max(20).optional(),
   model: boundedString(256).optional(),
-  steerable: import_zod5.z.boolean(),
-  permissionControl: import_zod5.z.boolean(),
+  steerable: import_zod9.z.boolean(),
+  permissionControl: import_zod9.z.boolean(),
   appendSystemPrompt: boundedString(1024 * 1024).optional(),
   resumeSessionId: boundedString(256).optional(),
   permissionMode: boundedString(128).optional(),
-  allowedTools: import_zod5.z.array(boundedString(4096)).max(256).optional(),
-  disallowedTools: import_zod5.z.array(boundedString(4096)).max(256).optional(),
-  toolless: import_zod5.z.boolean().optional(),
-  timeoutMs: import_zod5.z.number().int().min(1).max(864e5).optional(),
-  trustedCliExecution: import_zod5.z.boolean().optional(),
+  planning: import_zod9.z.literal(true).optional(),
+  allowedTools: import_zod9.z.array(boundedString(4096)).max(256).optional(),
+  disallowedTools: import_zod9.z.array(boundedString(4096)).max(256).optional(),
+  toolless: import_zod9.z.boolean().optional(),
+  timeoutMs: import_zod9.z.number().int().min(1).max(864e5).optional(),
+  trustedCliExecution: import_zod9.z.boolean().optional(),
   mcpGatewayToken: boundedString(512).min(1).optional(),
   mcpProxyToken: boundedString(512).min(1).optional(),
-  mcpServers: import_zod5.z.array(httpMcpServerSchema).max(16).optional(),
-  sessionEnv: import_zod5.z.strictObject({
+  mcpServers: import_zod9.z.array(httpMcpServerSchema).max(16).optional(),
+  sessionEnv: import_zod9.z.strictObject({
     VERITY_SESSION_BACKEND: boundedString(256).optional(),
-    VERITY_SESSION_MODEL: boundedString(256).optional()
+    VERITY_SESSION_MODEL: boundedString(256).optional(),
+    VERITY_SESSION_ID: boundedString(256).optional()
   }).optional()
 }).superRefine((request2, context) => {
   const worktree = resolve2(request2.worktree);
@@ -31379,7 +32012,7 @@ if (request.mcpGatewayToken !== void 0 && request.backend !== "claude-acp" && re
 }
 if (request.sessionEnv !== void 0) {
   const entries = Object.entries(request.sessionEnv);
-  if (entries.length > 8 || entries.some(([key, value]) => !["VERITY_SESSION_BACKEND", "VERITY_SESSION_MODEL"].includes(key) || typeof value !== "string" || value.length > 256)) {
+  if (entries.length > 8 || entries.some(([key, value]) => !["VERITY_SESSION_BACKEND", "VERITY_SESSION_MODEL", "VERITY_SESSION_ID"].includes(key) || typeof value !== "string" || value.length > 256)) {
     throw new Error("runner worker received an unsupported session env");
   }
 }
@@ -31422,6 +32055,7 @@ var turn = await server.run(join3(turnDir, "events.jsonl"), {
   ...request.appendSystemPrompt !== void 0 ? { appendSystemPrompt: request.appendSystemPrompt } : {},
   ...request.resumeSessionId !== void 0 ? { resumeSessionId: request.resumeSessionId } : {},
   ...request.permissionMode !== void 0 ? { permissionMode: request.permissionMode } : {},
+  ...request.planning === true ? { planning: true } : {},
   ...request.allowedTools !== void 0 ? { allowedTools: request.allowedTools } : {},
   ...request.disallowedTools !== void 0 ? { disallowedTools: request.disallowedTools } : {},
   ...request.toolless === true ? { toolless: true } : {},
@@ -31436,5 +32070,5 @@ var turn = await server.run(join3(turnDir, "events.jsonl"), {
   ...request.mcpGatewayToken !== void 0 && mcpGatewayUrl !== void 0 ? { mcpGateway: { url: mcpGatewayUrl, token: request.mcpGatewayToken } } : {},
   spawner: createBrokerSpawner(brokerSocket)
 });
-var result = await turn.result;
-process.exitCode = result.exitCode;
+var result2 = await turn.result;
+process.exitCode = result2.exitCode;

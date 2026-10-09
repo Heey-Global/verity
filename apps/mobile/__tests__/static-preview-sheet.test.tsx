@@ -1,1031 +1,1839 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Alert, Modal, Share } from 'react-native';
+import { Alert, Linking, Modal, Platform, Share } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import type { PublicPreviewShare, VerityClient } from '@verity/mobile';
+import type {
+  ManagedDevServer,
+  PublicPreviewShare,
+  SessionDevServer,
+  VerityClient,
+} from '@verity/mobile';
+import { openLocalPreview } from '../components/project/previewAccess';
 import { StaticPreviewSheet } from '../components/project/StaticPreviewSheet';
+
+const mockLiveRefresh = new Set<() => void | Promise<unknown>>();
+jest.mock('../lib/liveConnection', () => ({
+  subscribeLiveRefresh: (_client: unknown, refresh: () => void | Promise<unknown>) => {
+    mockLiveRefresh.add(refresh);
+    return () => mockLiveRefresh.delete(refresh);
+  },
+}));
+afterEach(() => mockLiveRefresh.clear());
+
+jest.mock('../components/project/previewAccess', () => ({
+  openLocalPreview: jest.fn(async () => undefined),
+}));
 
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn(async () => undefined) }));
 
 const generatedPin = expect.stringMatching(/^\d{6}$/);
 
-// Folder and server rows only pick what to share. Expiry and the link follow
-// on their own step, so every create goes through this second button.
-async function pickFolder(name = 'Share this folder') {
-  await waitFor(() =>
-    expect(screen.getByRole('button', { name }).props.accessibilityState.disabled).toBe(false),
-  );
-  fireEvent.press(screen.getByRole('button', { name }));
-  expect(await screen.findByText('LINK EXPIRES AFTER')).toBeTruthy();
-}
+const vite: SessionDevServer = {
+  port: 5173,
+  reachable: true,
+  pid: 40,
+  name: 'Vite',
+  command: 'node node_modules/.bin/vite --host 0.0.0.0',
+  workdir: 'web',
+};
 
-// A PIN shown before the link exists reads as a link that is already out there.
-it('shows no PIN before the link exists and then the one it was created with', async () => {
-  const client = {
-    listSessionStaticPreviewEntries: jest.fn(async () => ({
-      directories: [],
-      files: ['index.html'],
-    })),
-    listPublicPreviewShares: jest.fn(async () => []),
-    createSessionStaticPreviewShare: jest.fn(
-      async (_sessionId: string, body: { pin: string; staticPath: string }) => ({
-        id: 'root-share',
-        sessionId: 'session-one',
-        targetKind: 'static-folder',
-        staticPath: body.staticPath,
-        state: 'active',
-        publicOrigin: 'https://root.example',
-        pin: body.pin,
-        expiresAt: '2030-01-01T01:00:00Z',
-      }),
-    ),
-  } as unknown as VerityClient;
-  render(
-    <StaticPreviewSheet
-      client={client}
-      projectId="project-one"
-      sessionId="session-one"
-      onClose={jest.fn()}
-    />,
-  );
+const portShare = (overrides: Partial<PublicPreviewShare> = {}) =>
+  ({
+    id: 'port-share',
+    sessionId: 'session-one',
+    targetKind: 'dev-server',
+    devServerId: null,
+    targetPort: 5173,
+    staticPath: null,
+    state: 'active',
+    publicOrigin: 'https://vite.example',
+    pin: '123456',
+    expiresAt: '2030-01-01T01:00:00Z',
+    ...overrides,
+  }) as PublicPreviewShare;
 
-  expect(await screen.findByLabelText('File index.html')).toBeTruthy();
-  expect(screen.queryByText(/\d{3} \d{3}/)).toBeNull();
-  await pickFolder();
-  expect(screen.getByText('Share Worktree')).toBeTruthy();
-  expect(screen.getByText('Protected by a PIN')).toBeTruthy();
-  expect(screen.queryByText(/\d{3} \d{3}/)).toBeNull();
-  expect(client.createSessionStaticPreviewShare).not.toHaveBeenCalled();
-
-  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
-  await waitFor(() =>
-    expect(client.createSessionStaticPreviewShare).toHaveBeenCalledWith('session-one', {
-      staticPath: '.',
-      pin: generatedPin,
-      ttlSeconds: 3600,
-    }),
-  );
-  const [[, { pin }]] = (client.createSessionStaticPreviewShare as jest.Mock).mock.calls as [
-    [string, { pin: string }],
-  ];
-  expect(await screen.findByText(pin.replace(/(\d{3})(?=\d)/g, '$1 '))).toBeTruthy();
-});
-
-it('submits the duration picked on the link step', async () => {
-  const client = {
-    listSessionStaticPreviewEntries: jest.fn(async () => ({
-      directories: [],
-      files: ['index.html'],
-    })),
-    listPublicPreviewShares: jest.fn(async () => []),
-    createSessionStaticPreviewShare: jest.fn(async () => ({
-      id: 'share-long',
-      sessionId: 'session-one',
-      targetKind: 'static-folder',
-      staticPath: '.',
-      state: 'active',
-      publicOrigin: 'https://long.example',
-      pin: '123456789012',
-      expiresAt: '2030-01-31T00:00:00Z',
-    })),
-  } as unknown as VerityClient;
-  render(
-    <StaticPreviewSheet
-      client={client}
-      projectId="project-one"
-      sessionId="session-one"
-      onClose={jest.fn()}
-    />,
-  );
-  expect(await screen.findByLabelText('File index.html')).toBeTruthy();
-  await pickFolder();
-  fireEvent.press(screen.getByRole('radio', { name: '30 days' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
-  await waitFor(() =>
-    expect(client.createSessionStaticPreviewShare).toHaveBeenCalledWith('session-one', {
-      staticPath: '.',
-      pin: generatedPin,
-      ttlSeconds: 30 * 24 * 60 * 60,
-    }),
-  );
-});
-
-// A locked share stays live for authenticated visitors, but its PIN no longer admits anyone.
-it('explains a locked PIN and lets it be stopped and replaced without sharing the PIN', async () => {
-  const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
-    buttons?.find((button) => button.style === 'destructive')?.onPress?.();
-  });
-  const client = {
-    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
-    listPublicPreviewShares: jest.fn(async () => [
-      {
-        id: 'locked-share',
-        sessionId: 'session-one',
-        targetKind: 'static-folder',
-        staticPath: 'site',
-        state: 'active',
-        publicOrigin: 'https://locked.example',
-        pin: '482913',
-        pinLocked: true,
-        expiresAt: '2030-01-01T01:00:00Z',
-      },
-    ]),
-    stopPublicPreviewShare: jest.fn(async () => undefined),
-  } as unknown as VerityClient;
-  try {
-    render(
-      <StaticPreviewSheet
-        client={client}
-        projectId="project-one"
-        sessionId="session-one"
-        onClose={jest.fn()}
-      />,
-    );
-    expect(
-      await screen.findByText(/PIN access locked after too many failed attempts/),
-    ).toBeTruthy();
-    expect(screen.getByText('Your preview is live')).toBeTruthy();
-    expect(screen.queryByText('482 913')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Copy PIN' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Share link and PIN' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Open preview in browser' })).toBeTruthy();
-    fireEvent.press(screen.getByRole('button', { name: 'Stop sharing' }));
-    expect(await screen.findByText('Link stopped')).toBeTruthy();
-    expect(client.stopPublicPreviewShare).toHaveBeenCalledWith('locked-share');
-    fireEvent.press(screen.getByRole('button', { name: 'Create a new link' }));
-    expect(await screen.findByRole('button', { name: 'Share this folder' })).toBeTruthy();
-  } finally {
-    alert.mockRestore();
-  }
-});
-
-it('refreshes PIN lock status while the live link is open', async () => {
-  jest.useFakeTimers();
-  const share = {
-    id: 'share-one',
+const folderShare = (overrides: Partial<PublicPreviewShare> = {}) =>
+  ({
+    id: 'folder-share',
     sessionId: 'session-one',
     targetKind: 'static-folder',
-    staticPath: 'site',
+    devServerId: null,
+    targetPort: null,
+    staticPath: 'dist',
     state: 'active',
-    publicOrigin: 'https://live.example',
-    pin: '123456',
+    publicOrigin: 'https://dist.example',
+    pin: '654321',
     expiresAt: '2030-01-01T01:00:00Z',
-  };
-  const listPublicPreviewShares = jest
-    .fn()
-    .mockResolvedValueOnce([share])
-    .mockResolvedValue([{ ...share, pinLocked: true }]);
-  const client = {
-    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
-    listPublicPreviewShares,
-  } as unknown as VerityClient;
-  try {
-    render(
-      <StaticPreviewSheet
-        client={client}
-        projectId="project-one"
-        sessionId="session-one"
-        onClose={jest.fn()}
-      />,
-    );
-    await act(async () => {});
-    expect(screen.getByRole('button', { name: 'Copy PIN' })).toBeTruthy();
-    await act(async () => {
-      jest.advanceTimersByTime(4_000);
-    });
-    expect(listPublicPreviewShares).toHaveBeenCalledTimes(2);
-    expect(screen.getByText(/PIN access locked after too many failed attempts/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Copy PIN' })).toBeNull();
-  } finally {
-    jest.useRealTimers();
-  }
-});
+    ...overrides,
+  }) as PublicPreviewShare;
 
-it('shows and copies the saved PIN on a reopened link and shares it with the URL', async () => {
-  const shareAction = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
-  const client = {
-    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
-    listPublicPreviewShares: jest.fn(async () => [
-      {
-        id: 'share-existing',
-        sessionId: 'session-one',
-        targetKind: 'static-folder',
-        staticPath: 'site',
-        state: 'active',
-        publicOrigin: 'https://existing.example',
-        pin: '482913',
-        expiresAt: '2030-01-01T01:00:00Z',
-      },
-    ]),
-  } as unknown as VerityClient;
-  try {
-    render(
-      <StaticPreviewSheet
-        client={client}
-        projectId="project-one"
-        sessionId="session-one"
-        onClose={jest.fn()}
-      />,
-    );
+const localShare = {
+  id: 'local-one',
+  url: 'http://server:8100/',
+  projectId: 'project-one',
+  sessionId: 'session-one',
+  targetPort: 5173,
+  staticPath: null,
+  expiresAt: new Date('2030-01-01T00:00:00Z'),
+};
 
-    expect(await screen.findByText('482 913')).toBeTruthy();
-    fireEvent.press(screen.getByRole('button', { name: 'Copy PIN' }));
-    await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith('482913'));
-    fireEvent.press(screen.getByRole('button', { name: 'Share link and PIN' }));
-    expect(shareAction).toHaveBeenCalledWith({
-      message: expect.stringContaining(
-        'Preview: https://existing.example\nPIN: 482913\nAvailable ',
-      ),
-    });
-  } finally {
-    shareAction.mockRestore();
-  }
-});
-
-it('creates and shows a static share for the folder selected in the session worktree', async () => {
-  const share = {
-    id: 'share-one',
-    projectId: 'project-one',
-    sessionId: 'session-one',
-    targetKind: 'static-folder' as const,
-    staticPath: 'site/dist',
-    state: 'active' as const,
-    publicOrigin: 'https://preview.example',
-    pin: '123456',
-    expiresAt: '2030-01-01T01:00:00Z',
-  };
-  const client = {
-    listSessionStaticPreviewDirectories: jest.fn(async (_sessionId: string, path: string) =>
-      path === 'site' ? ['dist'] : ['site'],
-    ),
-    listPublicPreviewShares: jest.fn(async () => []),
-    createSessionStaticPreviewShare: jest.fn(async () => share),
-    stopPublicPreviewShare: jest.fn(async () => undefined),
-  } as unknown as VerityClient;
-  render(
-    <StaticPreviewSheet
-      client={client}
-      projectId="project-one"
-      sessionId="session-one"
-      onClose={jest.fn()}
-    />,
-  );
-
-  fireEvent.press(await screen.findByLabelText('Open folder site'));
-  fireEvent.press(await screen.findByLabelText('Open folder site/dist'));
-  await pickFolder('Share folder site/dist');
-  expect(screen.getByText('Share dist')).toBeTruthy();
-  expect(screen.getByText('Worktree / site/dist')).toBeTruthy();
-  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
-
-  await waitFor(() =>
-    expect(client.createSessionStaticPreviewShare).toHaveBeenCalledWith('session-one', {
-      staticPath: 'site/dist',
-      pin: generatedPin,
-      ttlSeconds: 3600,
-    }),
-  );
-  expect(await screen.findByText('https://preview.example')).toBeTruthy();
-  expect(screen.getByText(/left · until/)).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Create link' })).toBeNull();
-  expect(
-    screen.getByRole('link', { name: 'Open preview link https://preview.example' }),
-  ).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Copy preview link' })).toBeTruthy();
-  expect(screen.getByText('Stop sharing')).toBeTruthy();
-});
-
-it('shows regular files next to folders so the selected publish root can be checked', async () => {
-  const client = {
-    listSessionStaticPreviewEntries: jest.fn(async (_sessionId: string, path: string) =>
-      path === 'site'
-        ? { directories: [], files: ['index.html', 'zoom-v2.html'] }
-        : { directories: ['site'], files: [] },
-    ),
-    listPublicPreviewShares: jest.fn(async () => []),
-  } as unknown as VerityClient;
-  render(
-    <StaticPreviewSheet
-      client={client}
-      projectId="project-one"
-      sessionId="session-one"
-      onClose={jest.fn()}
-    />,
-  );
-  fireEvent.press(await screen.findByLabelText('Open folder site'));
-  expect(await screen.findByLabelText('File index.html')).toBeTruthy();
-  expect(screen.getByLabelText('File zoom-v2.html')).toBeTruthy();
-  expect(screen.getByText('Worktree / site')).toBeTruthy();
-});
-
-it('opens directly on the active link when the sheet is reopened', async () => {
-  const client = {
-    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
-    listPublicPreviewShares: jest.fn(async () => [
-      {
-        id: 'share-existing',
-        sessionId: 'session-one',
-        targetKind: 'static-folder',
-        staticPath: 'docs/presentations/site',
-        state: 'active',
-        publicOrigin: 'https://existing.example',
-        pin: '123456',
-        expiresAt: '2030-01-01T01:00:00Z',
-      },
-    ]),
-  } as unknown as VerityClient;
-  render(
-    <StaticPreviewSheet
-      client={client}
-      projectId="project-one"
-      sessionId="session-one"
-      onClose={jest.fn()}
-    />,
-  );
-  expect(await screen.findByText('https://existing.example')).toBeTruthy();
-  expect(screen.getByLabelText('Active preview link')).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Share this folder' })).toBeNull();
-  expect(screen.queryByText('Create another link')).toBeNull();
-});
-
-it('stays on the link step for the same folder after Core is unreachable', async () => {
-  const client = {
-    listSessionStaticPreviewDirectories: jest.fn(async () => ['demo']),
-    listPublicPreviewShares: jest.fn(async () => []),
-    createSessionStaticPreviewShare: jest.fn(async () => {
-      throw new Error(
-        'Uplink Core request failed: Pinned TLS transport failed [NSURLErrorDomain:-1009:NO_AUTH_CHALLENGE]',
-      );
-    }),
-  } as unknown as VerityClient;
-  render(
-    <StaticPreviewSheet
-      client={client}
-      projectId="project-one"
-      sessionId="session-one"
-      onClose={jest.fn()}
-    />,
-  );
-
-  fireEvent.press(await screen.findByLabelText('Open folder demo'));
-  await pickFolder('Share folder demo');
-  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
-
-  expect(await screen.findByText(/connection to Verity Core is unavailable/)).toBeTruthy();
-  expect(screen.getByText('Share demo')).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Create link' })).toBeTruthy();
-  fireEvent.press(screen.getByRole('button', { name: 'Back to folder' }));
-  expect(await screen.findByText('Worktree / demo')).toBeTruthy();
-});
-
-it('explains an Uplink internal error and permits retrying the same folder', async () => {
-  const createSessionStaticPreviewShare = jest
-    .fn()
-    .mockRejectedValueOnce(new Error('Uplink refused public preview: internal'))
-    .mockResolvedValueOnce({
-      id: 'share-two',
-      targetKind: 'static-folder',
-      sessionId: 'session-one',
-      staticPath: 'demo',
-      state: 'active',
-      publicOrigin: 'https://retry.example',
-      pin: '123456',
-      expiresAt: '2030-01-01T01:00:00Z',
-    });
-  const client = {
-    listSessionStaticPreviewDirectories: jest.fn(async (_sessionId: string, path: string) =>
-      path ? [] : ['demo'],
-    ),
-    listPublicPreviewShares: jest.fn(async () => []),
-    createSessionStaticPreviewShare,
-  } as unknown as VerityClient;
-  render(
-    <StaticPreviewSheet
-      client={client}
-      projectId="project-one"
-      sessionId="session-one"
-      onClose={jest.fn()}
-    />,
-  );
-  fireEvent.press(await screen.findByLabelText('Open folder demo'));
-  await pickFolder('Share folder demo');
-  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
-  expect(
-    await screen.findByText('Uplink could not create this link. Please try again later.'),
-  ).toBeTruthy();
-  expect(screen.getByText('Share demo')).toBeTruthy();
-  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
-  expect(await screen.findByText('https://retry.example')).toBeTruthy();
-  expect(createSessionStaticPreviewShare).toHaveBeenCalledTimes(2);
-});
-
-it('keeps a newly created link when the initial share list arrives late', async () => {
-  let resolveShares!: (shares: PublicPreviewShare[]) => void;
-  const client = {
-    listSessionStaticPreviewDirectories: jest.fn(async (_sessionId: string, path: string) =>
-      path ? [] : ['demo'],
-    ),
-    listPublicPreviewShares: jest.fn(
-      () =>
-        new Promise<PublicPreviewShare[]>((resolve) => {
-          resolveShares = resolve;
-        }),
-    ),
-    createSessionStaticPreviewShare: jest.fn(async () => ({
-      id: 'share-new',
-      targetKind: 'static-folder',
-      sessionId: 'session-one',
-      staticPath: 'demo',
-      state: 'active',
-      publicOrigin: 'https://new.example',
-      pin: '123456',
-      expiresAt: '2030-01-01T01:00:00Z',
+function makeClient(overrides: Partial<VerityClient> = {}) {
+  return {
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'available' })),
+    listSessionLocalPreviewShares: jest.fn(async () => []),
+    listSessionStaticPreviewEntries: jest.fn(async () => ({
+      directories: ['dist', 'docs'],
+      files: ['index.html'],
     })),
-  } as unknown as VerityClient;
-  render(
-    <StaticPreviewSheet
-      client={client}
-      projectId="project-one"
-      sessionId="session-one"
-      onClose={jest.fn()}
-    />,
-  );
-  fireEvent.press(await screen.findByLabelText('Open folder demo'));
-  await pickFolder('Share folder demo');
-  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
-  expect(await screen.findByText('https://new.example')).toBeTruthy();
-  await act(async () => resolveShares([]));
-  expect(screen.getByText('https://new.example')).toBeTruthy();
-});
-
-it('ignores a child-folder response after returning to the session root', async () => {
-  let resolveChild!: (directories: string[]) => void;
-  let rootLoads = 0;
-  const client = {
-    listSessionStaticPreviewDirectories: jest.fn(async (_sessionId: string, path: string) => {
-      if (path === 'site') {
-        return await new Promise<string[]>((resolve) => {
-          resolveChild = resolve;
-        });
-      }
-      rootLoads += 1;
-      return rootLoads === 1 ? ['site'] : ['other'];
-    }),
     listPublicPreviewShares: jest.fn(async () => []),
+    listSessionDevServers: jest.fn(async () => [vite]),
+    ...overrides,
   } as unknown as VerityClient;
-  render(
+}
+
+function renderSheet(
+  client: VerityClient,
+  props: Partial<Parameters<typeof StaticPreviewSheet>[0]> = {},
+) {
+  return render(
     <StaticPreviewSheet
       client={client}
       projectId="project-one"
       sessionId="session-one"
       onClose={jest.fn()}
+      {...props}
     />,
   );
+}
 
-  fireEvent.press(await screen.findByLabelText('Open folder site'));
-  fireEvent.press(screen.getByLabelText('Back to parent folder'));
-  expect(await screen.findByLabelText('Open folder other')).toBeTruthy();
-  await act(async () => resolveChild(['dist']));
-  expect(screen.queryByLabelText('Open folder dist')).toBeNull();
-  expect(screen.getByLabelText('Open folder other')).toBeTruthy();
-});
-
-it('does not offer folders from the previous location when navigation fails', async () => {
-  const client = {
-    listSessionStaticPreviewDirectories: jest.fn(async (_sessionId: string, path: string) => {
-      if (path === 'site') throw new Error('Folder unavailable');
-      return ['site'];
-    }),
-    listPublicPreviewShares: jest.fn(async () => []),
-  } as unknown as VerityClient;
-  render(
-    <StaticPreviewSheet
-      client={client}
-      projectId="project-one"
-      sessionId="session-one"
-      onClose={jest.fn()}
-    />,
-  );
-
-  fireEvent.press(await screen.findByLabelText('Open folder site'));
-  expect(await screen.findByText('Folder unavailable')).toBeTruthy();
-  expect(screen.queryByLabelText('Open folder site')).toBeNull();
-  expect(screen.queryByLabelText('Open folder site/site')).toBeNull();
-});
-
-it('shows progress while a link is being created instead of only dimming the button', async () => {
-  let resolveCreate!: (share: PublicPreviewShare) => void;
-  const client = {
-    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
-    listPublicPreviewShares: jest.fn(async () => []),
-    createSessionStaticPreviewShare: jest.fn(
-      () =>
-        new Promise<PublicPreviewShare>((resolve) => {
-          resolveCreate = resolve;
-        }),
-    ),
-  } as unknown as VerityClient;
-  render(
-    <StaticPreviewSheet
-      client={client}
-      projectId="project-one"
-      sessionId="session-one"
-      onClose={jest.fn()}
-    />,
-  );
-  await pickFolder();
-  fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
-
-  // The Uplink alone spends seconds on a create. A disabled button with no
-  // other change reads as a tap that did not register.
-  const button = await screen.findByRole('button', { name: 'Creating link' });
-  expect(button.props.accessibilityState.busy).toBe(true);
-  expect(screen.getByText('Creating link…')).toBeTruthy();
-  expect(screen.getByText(/This takes a few seconds/)).toBeTruthy();
-  // Leaving mid-create would drop the user back into the explorer while the link
-  // still lands a moment later, unannounced.
-  expect(
-    screen.getByRole('button', { name: 'Back to folder' }).props.accessibilityState.disabled,
-  ).toBe(true);
-
-  await act(async () =>
-    resolveCreate({
-      id: 'share-new',
-      sessionId: 'session-one',
-      targetKind: 'static-folder',
-      staticPath: '.',
-      state: 'active',
-      publicOrigin: 'https://new.example',
-      pin: '123456',
-      expiresAt: '2030-01-01T01:00:00Z',
-    } as unknown as PublicPreviewShare),
-  );
-  expect(screen.getByText('Your preview is live')).toBeTruthy();
-});
-
-it('shows the stop in progress and confirms it before offering a new link', async () => {
-  const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
-    buttons?.find((button) => button.style === 'destructive')?.onPress?.();
+function enableDetectedOnline() {
+  jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
+    buttons?.find((button) => button.text === '1 hour')?.onPress?.();
   });
-  let resolveStop!: () => void;
-  const onClose = jest.fn();
-  const client = {
-    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
-    listPublicPreviewShares: jest.fn(async () => [
-      {
-        id: 'share-existing',
-        sessionId: 'session-one',
-        targetKind: 'static-folder',
-        staticPath: 'site',
-        state: 'active',
-        publicOrigin: 'https://existing.example',
-        pin: '123456',
-        expiresAt: '2030-01-01T01:00:00Z',
-      },
-    ]),
-    stopPublicPreviewShare: jest.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveStop = resolve;
-        }),
-    ),
-  } as unknown as VerityClient;
-  try {
-    render(
-      <StaticPreviewSheet
-        client={client}
-        projectId="project-one"
-        sessionId="session-one"
-        onClose={onClose}
-      />,
-    );
-    fireEvent.press(await screen.findByRole('button', { name: 'Stop sharing' }));
+  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
+}
 
-    // While the Uplink removes the edge the sheet must say so, not sit still.
-    expect(await screen.findByText('Stopping link…')).toBeTruthy();
-    expect(screen.getByText('Stopping your preview')).toBeTruthy();
-    expect(screen.queryByText('Your preview is live')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Stop sharing' }).props.accessibilityState.busy).toBe(
-      true,
-    );
-    expect(screen.queryByRole('button', { name: 'Share this folder' })).toBeNull();
-
-    await act(async () => resolveStop());
-
-    // And afterwards it confirms, instead of dropping the user into the create
-    // form as if nothing had happened.
-    expect(screen.getByText('Link stopped')).toBeTruthy();
-    expect(screen.getByText(/The link for site no longer works/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Share this folder' })).toBeNull();
-
-    fireEvent.press(screen.getByRole('button', { name: 'Create a new link' }));
-    expect(await screen.findByRole('button', { name: 'Share this folder' })).toBeTruthy();
-  } finally {
-    alert.mockRestore();
-  }
+beforeEach(() => {
+  jest.clearAllMocks();
 });
 
-it('keeps the link and explains when stopping fails', async () => {
-  const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
-    buttons?.find((button) => button.style === 'destructive')?.onPress?.();
+// Step one separates the two kinds of target, because they behave differently:
+// a dev server is live, a folder is served as files. The sheet opens on the
+// servers while one runs, and the folder tab is the explorer itself.
+it('separates running servers and static folders into two tabs', async () => {
+  renderSheet(makeClient());
+  expect(await screen.findByRole('button', { name: 'Vite on port 5173' })).toBeTruthy();
+  expect(screen.getByText('web · node node_modules/.bin/vite --host 0.0.0.0')).toBeTruthy();
+  expect(screen.getByRole('tab', { name: 'Dev server' }).props.accessibilityState.selected).toBe(
+    true,
+  );
+  expect(screen.queryByRole('button', { name: 'Open folder dist' })).toBeNull();
+  fireEvent.press(screen.getByRole('tab', { name: 'Static files' }));
+  expect(await screen.findByRole('button', { name: 'Open folder dist' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Open folder docs' })).toBeTruthy();
+  expect(screen.getByLabelText('File index.html')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Vite on port 5173' })).toBeNull();
+});
+
+// Each tab says what it is for in plain words. Without that line the static
+// tab was a bare file list and users could not tell the two paths apart.
+it('explains what each tab previews', async () => {
+  renderSheet(makeClient());
+  expect(await screen.findByText(/Make a server running in this session/)).toBeTruthy();
+  expect(screen.queryByText(/Make a folder of finished files/)).toBeNull();
+  fireEvent.press(screen.getByRole('tab', { name: 'Static files' }));
+  expect(await screen.findByText(/Make a folder of finished files/)).toBeTruthy();
+  expect(screen.queryByText(/Make a server running in this session/)).toBeNull();
+});
+
+it('opens on static files when no server runs in the session', async () => {
+  renderSheet(makeClient({ listSessionDevServers: jest.fn(async () => []) }), {
+    detectedServers: [],
   });
-  const client = {
-    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
-    listPublicPreviewShares: jest.fn(async () => [
-      {
-        id: 'share-existing',
-        sessionId: 'session-one',
-        targetKind: 'static-folder',
-        staticPath: '.',
-        state: 'active',
-        publicOrigin: 'https://existing.example',
-        pin: '123456',
-        expiresAt: '2030-01-01T01:00:00Z',
-      },
-    ]),
-    stopPublicPreviewShare: jest.fn(async () => {
-      throw new Error('Uplink offline');
-    }),
-  } as unknown as VerityClient;
-  try {
-    render(
-      <StaticPreviewSheet
-        client={client}
-        projectId="project-one"
-        sessionId="session-one"
-        onClose={jest.fn()}
-      />,
-    );
-    fireEvent.press(await screen.findByRole('button', { name: 'Stop sharing' }));
-    expect(await screen.findByText('Uplink offline')).toBeTruthy();
-    expect(screen.getByText('https://existing.example')).toBeTruthy();
-    expect(screen.getByText('Stop sharing')).toBeTruthy();
-    expect(screen.queryByText('Link stopped')).toBeNull();
-  } finally {
-    alert.mockRestore();
-  }
+  expect(await screen.findByRole('button', { name: 'Open folder dist' })).toBeTruthy();
+  fireEvent.press(screen.getByRole('tab', { name: 'Dev server' }));
+  expect(await screen.findByText('No dev server running')).toBeTruthy();
 });
 
-it('counts the remaining time down while the sheet stays open', async () => {
-  jest.useFakeTimers({ now: new Date('2030-01-01T00:15:00Z') });
-  const client = {
-    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
-    listPublicPreviewShares: jest.fn(async () => [
-      {
-        id: 'share-existing',
-        sessionId: 'session-one',
-        targetKind: 'static-folder',
-        staticPath: 'site',
-        state: 'active',
-        publicOrigin: 'https://existing.example',
-        pin: '123456',
-        expiresAt: '2030-01-01T01:00:00Z',
-      },
-    ]),
-  } as unknown as VerityClient;
-  try {
-    render(
-      <StaticPreviewSheet
-        client={client}
-        projectId="project-one"
-        sessionId="session-one"
-        onClose={jest.fn()}
-      />,
-    );
-    expect(await screen.findByText(/^45 min left/)).toBeTruthy();
+// Step two shows both accesses as equals. A public link form that already
+// exists must not pre-create anything, and the PIN appears only once the link
+// exists, because a PIN on screen reads as a link that is already out there.
+it('shows both access switches for a picked server and creates the public link on demand', async () => {
+  const createSessionPortPreviewShare = jest.fn(async () => portShare());
+  renderSheet(makeClient({ createSessionPortPreviewShare }));
 
-    // Rendered once and never again, the label would still promise time the
-    // link no longer has.
-    await act(async () => {
-      jest.advanceTimersByTime(60_000);
-    });
-    expect(screen.getByText(/^44 min left/)).toBeTruthy();
-  } finally {
-    jest.useRealTimers();
-  }
-});
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  expect(await screen.findByRole('switch', { name: 'Local' })).toBeTruthy();
+  expect(screen.getByRole('switch', { name: 'Shared online' })).toBeTruthy();
+  expect(screen.queryByText(/\d{3} \d{3}/)).toBeNull();
+  expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
 
-// The bottom button shares the folder the explorer is in, so it has to say
-// which one; a stale name would share a different folder than the one shown.
-it('names the folder the explorer is in on the share button', async () => {
-  let resolveDocs!: (entries: { directories: string[]; files: string[] }) => void;
-  const client = {
-    listSessionStaticPreviewEntries: jest.fn(async (_session: string, path: string) =>
-      path === 'docs'
-        ? await new Promise<{ directories: string[]; files: string[] }>((resolve) => {
-            resolveDocs = resolve;
-          })
-        : { directories: ['docs'], files: ['index.html'] },
-    ),
-    listPublicPreviewShares: jest.fn(async () => []),
-  } as unknown as VerityClient;
-  render(
-    <StaticPreviewSheet
-      client={client}
-      projectId="project-one"
-      sessionId="session-one"
-      onClose={jest.fn()}
-    />,
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
+  act(() =>
+    alert.mock.calls
+      .at(-1)?.[2]
+      ?.find((button) => button.text === '24 hours')
+      ?.onPress?.(),
   );
-  fireEvent.press(await screen.findByLabelText('Open folder docs'));
-  expect(screen.getByText('Share “docs”')).toBeTruthy();
-  expect(
-    screen.getByRole('button', { name: 'Share folder docs' }).props.accessibilityState.disabled,
-  ).toBe(true);
-  await act(async () => resolveDocs({ directories: [], files: ['guide.md'] }));
-  expect(screen.getByLabelText('File guide.md')).toBeTruthy();
-  await pickFolder('Share folder docs');
-  expect(screen.getByText('Share docs')).toBeTruthy();
-});
-
-// Android back reaches the sheet through Modal.onRequestClose. Left on onClose,
-// it threw away the whole sheet from the link step instead of going back.
-it('goes back from the link step on Android back instead of closing the sheet', async () => {
-  const onClose = jest.fn();
-  const client = {
-    listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
-    listPublicPreviewShares: jest.fn(async () => []),
-  } as unknown as VerityClient;
-  render(
-    <StaticPreviewSheet
-      client={client}
-      projectId="project-one"
-      sessionId="session-one"
-      onClose={onClose}
-    />,
-  );
-  await pickFolder();
-  act(() => screen.UNSAFE_getByType(Modal).props.onRequestClose());
-  expect(await screen.findByRole('button', { name: 'Share this folder' })).toBeTruthy();
-  expect(onClose).not.toHaveBeenCalled();
-  act(() => screen.UNSAFE_getByType(Modal).props.onRequestClose());
-  expect(onClose).toHaveBeenCalledTimes(1);
-});
-
-describe('dev server tab', () => {
-  const vite = {
-    port: 5173,
-    reachable: true,
-    pid: 40,
-    name: 'Vite',
-    command: 'node node_modules/.bin/vite --host 0.0.0.0',
-    workdir: 'web',
-  };
-  const portShare = (overrides: Partial<PublicPreviewShare> = {}) =>
-    ({
-      id: 'port-share',
-      sessionId: 'session-one',
-      targetKind: 'dev-server',
-      devServerId: null,
+  await waitFor(() =>
+    expect(createSessionPortPreviewShare).toHaveBeenCalledWith('session-one', {
       targetPort: 5173,
-      staticPath: null,
-      state: 'active',
-      publicOrigin: 'https://vite.example',
-      pin: '123456789012',
-      expiresAt: '2030-01-01T01:00:00Z',
-      ...overrides,
-    }) as PublicPreviewShare;
-  const renderSheet = (client: Partial<VerityClient>) =>
-    render(
-      <StaticPreviewSheet
-        client={
-          {
-            listSessionStaticPreviewEntries: jest.fn(async () => ({ directories: [], files: [] })),
-            listPublicPreviewShares: jest.fn(async () => []),
-            ...client,
-          } as unknown as VerityClient
-        }
-        projectId="project-one"
-        sessionId="session-one"
-        onClose={jest.fn()}
-      />,
-    );
-  // The sheet always opens on Folder, so every server test starts with a tap.
-  const openServers = async () =>
-    fireEvent.press(await screen.findByRole('tab', { name: 'Dev server' }));
+      pin: generatedPin,
+      ttlSeconds: 86400,
+    }),
+  );
+  expect(await screen.findByText('https://vite.example')).toBeTruthy();
+  expect(screen.getByText(/123 456/)).toBeTruthy();
+  // Both cards stay on screen: the local one is unaffected by the public link.
+  expect(screen.getByRole('switch', { name: 'Local' })).toBeTruthy();
+});
 
-  it('shares the picked server after the link step and shows its live link', async () => {
-    const createSessionPortPreviewShare = jest.fn(async () => portShare());
-    renderSheet({
-      listSessionDevServers: jest.fn(async () => [vite]),
-      createSessionPortPreviewShare,
-    });
+// Detected processes must not keep the legacy row-only overview.
+it('controls detected access directly from the server overview', async () => {
+  const createSessionLocalPreviewShare = jest.fn(async () => localShare);
+  const createSessionPortPreviewShare = jest.fn();
+  renderSheet(makeClient({ createSessionLocalPreviewShare, createSessionPortPreviewShare }));
+  fireEvent.press(await screen.findByRole('switch', { name: 'Local for Vite on port 5173' }));
+  await waitFor(() =>
+    expect(createSessionLocalPreviewShare).toHaveBeenCalledWith('session-one', {
+      targetPort: 5173,
+    }),
+  );
+  expect(
+    screen.getByRole('switch', { name: 'Local for Vite on port 5173' }).props.accessibilityState
+      .checked,
+  ).toBe(true);
+  expect(
+    screen.getByRole('switch', { name: 'Shared online for Vite on port 5173' }).props
+      .accessibilityState.checked,
+  ).toBe(false);
+  expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  expect(openLocalPreview).not.toHaveBeenCalled();
+});
 
-    await openServers();
-    const row = await screen.findByRole('button', { name: 'Share Vite on port 5173' });
-    expect(screen.getByText('web · node node_modules/.bin/vite --host 0.0.0.0')).toBeTruthy();
-    expect(screen.queryByText('LINK EXPIRES AFTER')).toBeNull();
-    fireEvent.press(row);
-    expect(await screen.findByText('Share Vite :5173')).toBeTruthy();
-    expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
-    fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
-
-    await waitFor(() =>
-      expect(createSessionPortPreviewShare).toHaveBeenCalledWith('session-one', {
-        targetPort: 5173,
-        pin: generatedPin,
-        ttlSeconds: 3600,
+it('identifies each detected server in overview switch labels', async () => {
+  renderSheet(
+    makeClient({
+      listSessionDevServers: jest.fn(async () => [
+        vite,
+        { ...vite, port: 3000, pid: 41, name: 'API' },
+      ]),
+    }),
+  );
+  for (const server of [vite, { name: 'API', port: 3000 }]) {
+    expect(
+      await screen.findByRole('switch', {
+        name: `Local for ${server.name} on port ${String(server.port)}`,
       }),
-    );
-    expect(await screen.findByText('https://vite.example')).toBeTruthy();
-    expect(screen.getByText('Vite :5173')).toBeTruthy();
-    fireEvent.press(screen.getByRole('button', { name: 'Back to dev servers' }));
-    expect(screen.getByRole('button', { name: 'Show link for port 5173' })).toBeTruthy();
-  });
+    ).toBeTruthy();
+    expect(
+      screen.getByRole('switch', {
+        name: `Shared online for ${server.name} on port ${String(server.port)}`,
+      }),
+    ).toBeTruthy();
+  }
+});
 
-  // With several servers listed, a row tap must share that one and no other.
-  it('shares only the server that was picked from several', async () => {
-    const createSessionPortPreviewShare = jest.fn(async () =>
-      portShare({ targetPort: 3000, publicOrigin: 'https://api.example' }),
-    );
-    renderSheet({
+// A failed revoke must leave the switch on so access can be retried.
+it('keeps detected Local on when revocation fails without changing Shared online', async () => {
+  const stopLocalPreviewShare = jest.fn(async () => {
+    throw new Error('Could not revoke local access');
+  });
+  const stopPublicPreviewShare = jest.fn();
+  renderSheet(
+    makeClient({
+      listSessionLocalPreviewShares: jest.fn(async () => [localShare]),
+      listPublicPreviewShares: jest.fn(async () => [portShare()]),
+      stopLocalPreviewShare,
+      stopPublicPreviewShare,
+    }),
+    { initialServer: vite },
+  );
+  await screen.findByText('https://vite.example');
+  fireEvent.press(screen.getByRole('switch', { name: 'Local' }));
+  expect(await screen.findByText('Could not revoke local access')).toBeTruthy();
+  expect(screen.getByRole('switch', { name: 'Local' }).props.accessibilityState.checked).toBe(true);
+  expect(
+    screen.getByRole('switch', { name: 'Shared online' }).props.accessibilityState.checked,
+  ).toBe(true);
+  expect(stopPublicPreviewShare).not.toHaveBeenCalled();
+});
+
+it('cancels a detected online link before allocating access', async () => {
+  const createSessionPortPreviewShare = jest.fn();
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  renderSheet(makeClient({ createSessionPortPreviewShare }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  expect(screen.queryByLabelText('On your network')).toBeNull();
+  expect(screen.queryByLabelText('Over the internet')).toBeNull();
+  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
+  expect(screen.getByRole('switch', { name: 'Local' }).props.accessibilityState.disabled).toBe(
+    true,
+  );
+  await act(async () => alert.mock.calls.at(-1)?.[3]?.onDismiss?.());
+  expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  expect(
+    screen.getByRole('switch', { name: 'Shared online' }).props.accessibilityState,
+  ).toMatchObject({ checked: false, disabled: false });
+});
+
+it('shares only the server that was picked from several', async () => {
+  const createSessionPortPreviewShare = jest.fn(async () =>
+    portShare({ targetPort: 3000, publicOrigin: 'https://api.example' }),
+  );
+  renderSheet(
+    makeClient({
       listSessionDevServers: jest.fn(async () => [
         vite,
         { ...vite, port: 3000, pid: 41, name: 'API', workdir: 'api' },
       ]),
       createSessionPortPreviewShare,
-    });
-
-    await openServers();
-    fireEvent.press(await screen.findByRole('button', { name: 'Share API on port 3000' }));
-    expect(await screen.findByText('Share API :3000')).toBeTruthy();
-    fireEvent.press(screen.getByRole('button', { name: 'Create link' }));
-    await waitFor(() => expect(createSessionPortPreviewShare).toHaveBeenCalledTimes(1));
+    }),
+  );
+  fireEvent.press(await screen.findByRole('button', { name: 'API on port 3000' }));
+  expect(await screen.findByText('API :3000')).toBeTruthy();
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
+  act(() =>
+    alert.mock.calls
+      .at(-1)?.[2]
+      ?.find((button) => button.text === '1 hour')
+      ?.onPress?.(),
+  );
+  await waitFor(() =>
     expect(createSessionPortPreviewShare).toHaveBeenCalledWith(
       'session-one',
       expect.objectContaining({ targetPort: 3000 }),
-    );
-    expect(await screen.findByText('https://api.example')).toBeTruthy();
+    ),
+  );
+  expect(await screen.findByText('https://api.example')).toBeTruthy();
+});
+
+// Opening locally creates the local share once and hands the reachability
+// decision to previewAccess, without touching the public path.
+it('opens a server on the local network without creating a public link', async () => {
+  const createSessionLocalPreviewShare = jest.fn(async () => localShare);
+  const createSessionPortPreviewShare = jest.fn();
+  const openSettings = jest.fn();
+  renderSheet(makeClient({ createSessionLocalPreviewShare, createSessionPortPreviewShare }), {
+    onOpenSettings: openSettings,
   });
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  fireEvent.press(await screen.findByRole('switch', { name: 'Local' }));
+  fireEvent.press(await screen.findByRole('link', { name: 'Open in browser' }));
+  await waitFor(() =>
+    expect(createSessionLocalPreviewShare).toHaveBeenCalledWith('session-one', {
+      targetPort: 5173,
+    }),
+  );
+  expect(openLocalPreview).toHaveBeenCalledWith(
+    localShare,
+    'available',
+    expect.any(Function),
+    openSettings,
+  );
+  expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  expect(await screen.findByText('http://server:8100/')).toBeTruthy();
+  expect(screen.getByRole('switch', { name: 'Local' }).props.accessibilityState.checked).toBe(true);
+});
 
-  it('explains why a loopback-only server cannot be shared instead of offering a link', async () => {
-    renderSheet({
-      listSessionDevServers: jest.fn(async () => [{ ...vite, reachable: false }]),
-      createSessionPortPreviewShare: jest.fn(),
-    });
+// The unreachable dialog's "Share publicly" lands directly on a link with the
+// duration shown in the card: the dialog was the deliberate step.
+it('creates the public link when the unreachable dialog asks to share instead', async () => {
+  const createSessionPortPreviewShare = jest.fn(async () => portShare());
+  renderSheet(
+    makeClient({
+      createSessionLocalPreviewShare: jest.fn(async () => localShare),
+      createSessionPortPreviewShare,
+    }),
+  );
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  fireEvent.press(await screen.findByRole('switch', { name: 'Local' }));
+  fireEvent.press(await screen.findByRole('link', { name: 'Open in browser' }));
+  await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
+  const sharePublicly = (openLocalPreview as jest.Mock).mock.calls[0]?.[2] as () => void;
+  act(() => sharePublicly());
+  await waitFor(() =>
+    expect(createSessionPortPreviewShare).toHaveBeenCalledWith(
+      'session-one',
+      expect.objectContaining({ targetPort: 5173, ttlSeconds: 3600 }),
+    ),
+  );
+});
 
-    await openServers();
-    expect(await screen.findByText('Local only')).toBeTruthy();
-    expect(screen.getByText(/Restart it with --host 0\.0\.0\.0/u)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Share Vite on port 5173' })).toBeNull();
-  });
+it('copies the local link, creating the local share on first use', async () => {
+  const createSessionLocalPreviewShare = jest.fn(async () => localShare);
+  renderSheet(
+    makeClient({
+      createSessionLocalPreviewShare,
+      listSessionLocalPreviewShares: jest
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValue([localShare]),
+    }),
+  );
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  fireEvent.press(await screen.findByRole('switch', { name: 'Local' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Copy local link' }));
+  await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith('http://server:8100/'));
+  expect(createSessionLocalPreviewShare).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('switch', { name: 'Local' }).props.accessibilityState.checked).toBe(true);
+  // A second copy reuses the share instead of allocating another port.
+  fireEvent.press(screen.getByRole('button', { name: 'Copy local link' }));
+  await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledTimes(2));
+  expect(createSessionLocalPreviewShare).toHaveBeenCalledTimes(1);
+});
 
-  // The link stays reachable from the row, but without the hint nothing says
-  // why it may not load any more.
-  it('keeps the loopback hint on a server whose link is still live', async () => {
-    renderSheet({
-      listSessionDevServers: jest.fn(async () => [{ ...vite, reachable: false }]),
+it('marks a target with an existing local share and lets it be stopped from its card', async () => {
+  const stopLocalPreviewShare = jest.fn(async () => undefined);
+  renderSheet(
+    makeClient({
+      getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'premium-required' as const })),
+      listSessionLocalPreviewShares: jest.fn(async () => [localShare]),
+      stopLocalPreviewShare,
+    }),
+  );
+  expect(await screen.findByText('On network')).toBeTruthy();
+  fireEvent.press(screen.getByRole('button', { name: 'Vite on port 5173' }));
+  expect(await screen.findByText('http://server:8100/')).toBeTruthy();
+  fireEvent.press(screen.getByRole('switch', { name: 'Local' }));
+  await waitFor(() => expect(stopLocalPreviewShare).toHaveBeenCalledWith('local-one'));
+  await waitFor(() => expect(screen.queryByText('http://server:8100/')).toBeNull());
+  expect(screen.getByRole('switch', { name: 'Local' })).toBeTruthy();
+});
+
+// Without entitlement the public card stays visible and explains itself. It
+// must not render a create button that does nothing, and the local card must
+// keep working.
+it('shows the public card as Premium without a create button for a free user', async () => {
+  const createSessionLocalPreviewShare = jest.fn(async () => localShare);
+  const openSettings = jest.fn();
+  renderSheet(
+    makeClient({
+      getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'premium-required' as const })),
+      createSessionLocalPreviewShare,
+      createSessionStaticPreviewShare: jest.fn(),
+    }),
+    { onOpenSettings: openSettings },
+  );
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  expect(await screen.findByText('Premium')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Create link with PIN' })).toBeNull();
+  expect(screen.queryByRole('radio', { name: '24 hours' })).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: 'Open Premium settings' }));
+  expect(openSettings).toHaveBeenCalledTimes(1);
+  fireEvent.press(screen.getByRole('switch', { name: 'Local' }));
+  fireEvent.press(await screen.findByRole('link', { name: 'Open in browser' }));
+  await waitFor(() => expect(createSessionLocalPreviewShare).toHaveBeenCalledTimes(1));
+  expect(openLocalPreview).toHaveBeenCalledWith(
+    localShare,
+    'premium-required',
+    expect.any(Function),
+    openSettings,
+  );
+});
+
+it('says the Uplink is temporarily unavailable rather than Premium when it is offline', async () => {
+  renderSheet(
+    makeClient({
+      getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'unavailable' as const })),
+    }),
+  );
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  expect(await screen.findByText('Temporarily unavailable')).toBeTruthy();
+  expect(screen.queryByText('Premium')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Create link with PIN' })).toBeNull();
+});
+
+// Reopening the sheet on a server with a live link shows link and PIN at once
+// and lets the link be shared and stopped; stopping asks first.
+it('shows the live public link with its PIN on reopen and stops it after confirming', async () => {
+  const stopPublicPreviewShare = jest.fn(async () => undefined);
+  renderSheet(
+    makeClient({
       listPublicPreviewShares: jest.fn(async () => [portShare()]),
-    });
+      stopPublicPreviewShare,
+    }),
+    { initialServer: vite },
+  );
+  expect(await screen.findByText('https://vite.example')).toBeTruthy();
+  expect(screen.getByText(/123 456/)).toBeTruthy();
+  expect(screen.getByText(/^until/)).toBeTruthy();
+  // The badge already carries the expiry; a second countdown under the card
+  // read as a different deadline. One copy control per credential row, too.
+  expect(screen.queryByText(/ left$/)).toBeNull();
+  expect(screen.getByRole('link', { name: 'Open preview link https://vite.example' })).toBeTruthy();
 
-    await openServers();
-    expect(await screen.findByRole('button', { name: 'Show link for port 5173' })).toBeTruthy();
-    expect(screen.getByText(/Restart it with --host 0\.0\.0\.0/u)).toBeTruthy();
+  const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+  fireEvent.press(screen.getByRole('button', { name: 'Share link and PIN' }));
+  expect(share).toHaveBeenCalledWith({
+    message: expect.stringContaining('PIN: 123456'),
   });
 
-  // Folder is the default and sits first; the sheet must not open on an empty
-  // Dev server list just because port detection exists.
-  it('opens on the folder tab, left of Dev server, while no server runs', async () => {
-    const listSessionDevServers = jest.fn(async () => []);
-    renderSheet({ listSessionDevServers });
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
+  expect(stopPublicPreviewShare).not.toHaveBeenCalled();
+  const confirm = alert.mock.calls[0]?.[2]?.find((choice) => choice.text === 'Stop sharing');
+  act(() => confirm?.onPress?.());
+  await waitFor(() => expect(stopPublicPreviewShare).toHaveBeenCalledWith('port-share'));
+  await waitFor(() =>
+    expect(
+      screen.getByRole('switch', { name: 'Shared online' }).props.accessibilityState.checked,
+    ).toBe(false),
+  );
+  expect(screen.queryByText('https://vite.example')).toBeNull();
+});
 
-    await waitFor(() => expect(listSessionDevServers).toHaveBeenCalled());
-    expect(await screen.findByRole('button', { name: 'Share this folder' })).toBeTruthy();
-    const tabs = screen.getAllByRole('tab');
-    expect(tabs.map((tab) => tab.props.accessibilityState.selected)).toEqual([true, false]);
-    expect(screen.getByRole('tab', { name: 'Folder' })).toBe(tabs[0]);
-    expect(screen.queryByText('No dev server running')).toBeNull();
-    expect(screen.queryByTestId('dev-server-tab-dot')).toBeNull();
-  });
+it('explains a locked PIN and keeps the PIN out of the share action', async () => {
+  renderSheet(
+    makeClient({
+      listPublicPreviewShares: jest.fn(async () => [portShare({ pinLocked: true })]),
+    }),
+    { initialServer: vite },
+  );
+  expect(await screen.findByText(/PIN locked/)).toBeTruthy();
+  expect(screen.queryByText('123 456')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Share link and PIN' })).toBeNull();
+  expect(screen.getByRole('link', { name: 'Open preview link https://vite.example' })).toBeTruthy();
+});
 
-  // The sheet opens on the explorer, so an error shown only on the other tab
-  // would leave existing links unlisted with nothing saying why.
-  it('shows a failed share list on the folder tab it opens on', async () => {
-    renderSheet({
-      listSessionDevServers: jest.fn(async () => []),
-      listPublicPreviewShares: jest.fn(async () => {
-        throw new Error('Uplink offline');
-      }),
-    });
+// A row badge tells apart "open locally" from "public until" so step one
+// already answers which access is active without opening the target.
+it('badges rows with their active accesses', async () => {
+  renderSheet(
+    makeClient({
+      listSessionLocalPreviewShares: jest.fn(async () => [localShare]),
+      listPublicPreviewShares: jest.fn(async () => [portShare(), folderShare()]),
+    }),
+  );
+  expect(await screen.findByText('On network')).toBeTruthy();
+  expect(await screen.findByText(/^Online until/)).toBeTruthy();
+  // A shared folder is listed on top of the explorer even when it sits deeper,
+  // so its link can be found again without walking the tree.
+  fireEvent.press(screen.getByRole('tab', { name: 'Static files' }));
+  expect(await screen.findByRole('button', { name: 'Shared folder dist' })).toBeTruthy();
+  expect(screen.getByText(/^Online until/)).toBeTruthy();
+});
 
-    expect(await screen.findByText('Uplink offline')).toBeTruthy();
-    expect(screen.getByRole('tab', { name: 'Folder' }).props.accessibilityState.selected).toBe(
-      true,
-    );
-  });
-
-  // Detection only marks the tab. Switching to it made the sheet wait on the
-  // probe and moved the explorer away from someone already using it.
-  it('stays on Folder and marks the Dev server tab when a server runs', async () => {
-    renderSheet({ listSessionDevServers: jest.fn(async () => [vite]) });
-
-    expect(await screen.findByTestId('dev-server-tab-dot')).toBeTruthy();
-    expect(screen.getByRole('tab', { name: 'Folder' }).props.accessibilityState.selected).toBe(
-      true,
-    );
-    expect(screen.getByRole('tab', { name: 'Dev server' }).props.accessibilityHint).toBe(
-      'A dev server is running',
-    );
-    expect(screen.getByRole('button', { name: 'Share this folder' })).toBeTruthy();
-  });
-
-  it('marks the Dev server tab when a server starts while the sheet is open', async () => {
-    jest.useFakeTimers();
-    try {
-      const listSessionDevServers = jest
-        .fn<Promise<(typeof vite)[]>, [string]>()
-        .mockResolvedValueOnce([])
-        .mockResolvedValue([vite]);
-      renderSheet({ listSessionDevServers });
-
-      await waitFor(() => expect(listSessionDevServers).toHaveBeenCalledTimes(1));
-      expect(screen.queryByTestId('dev-server-tab-dot')).toBeNull();
-      await act(async () => {
-        jest.advanceTimersByTime(4_000);
-      });
-      expect(await screen.findByTestId('dev-server-tab-dot')).toBeTruthy();
-      expect(screen.getByRole('tab', { name: 'Folder' }).props.accessibilityState.selected).toBe(
-        true,
-      );
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  // The agent starts servers while the sheet is open; without the poll the list
-  // would stay on "No dev server running" until the sheet is reopened.
-  it('picks up a server that starts while the sheet is open', async () => {
-    jest.useFakeTimers();
-    try {
-      const listSessionDevServers = jest
-        .fn<Promise<(typeof vite)[]>, [string]>()
-        .mockResolvedValueOnce([])
-        .mockResolvedValue([vite]);
-      renderSheet({ listSessionDevServers });
-
-      await openServers();
-      expect(await screen.findByText('No dev server running')).toBeTruthy();
-      expect(listSessionDevServers).toHaveBeenCalledTimes(1);
-      await act(async () => {
-        jest.advanceTimersByTime(4_000);
-      });
-      expect(await screen.findByRole('button', { name: 'Share Vite on port 5173' })).toBeTruthy();
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  // A Core older than port detection has no such route. Without the fallback the
-  // sheet would open on an error and keep polling a 404 every few seconds.
-  it('falls back to the folder flow when Core has no port detection', async () => {
-    jest.useFakeTimers();
-    try {
-      const listSessionDevServers = jest.fn(async () => null);
-      renderSheet({ listSessionDevServers });
-
-      expect(await screen.findByRole('button', { name: 'Share this folder' })).toBeTruthy();
-      expect(screen.queryByRole('tab', { name: 'Dev server' })).toBeNull();
-      await act(async () => {
-        jest.advanceTimersByTime(12_000);
-      });
-      expect(listSessionDevServers).toHaveBeenCalledTimes(1);
-    } finally {
-      jest.useRealTimers();
-    }
-  });
-
-  it('opens on the folder tab when only a folder link is live', async () => {
-    renderSheet({
-      listSessionDevServers: jest.fn(async () => [vite]),
+// Folder shares are matched by path, not "any folder": two folders can be
+// public at once and each card shows its own link.
+it('shows the public link of the picked folder only', async () => {
+  renderSheet(
+    makeClient({
       listPublicPreviewShares: jest.fn(async () => [
-        portShare({
-          id: 'folder-share',
-          targetKind: 'static-folder',
-          targetPort: null,
-          staticPath: 'site',
-          publicOrigin: 'https://folder.example',
+        folderShare(),
+        folderShare({ id: 'docs-share', staticPath: 'docs', publicOrigin: 'https://docs.example' }),
+      ]),
+    }),
+  );
+  fireEvent.press(await screen.findByRole('tab', { name: 'Static files' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Shared folder docs' }));
+  expect(await screen.findByText('https://docs.example')).toBeTruthy();
+  expect(screen.queryByText('https://dist.example')).toBeNull();
+});
+
+it('creates a static share for the whole worktree from the explorer root', async () => {
+  const createSessionStaticPreviewShare = jest.fn(
+    async (_sessionId: string, body: { pin: string; staticPath: string }) =>
+      folderShare({ id: 'root-share', staticPath: body.staticPath, pin: body.pin }),
+  );
+  renderSheet(makeClient({ createSessionStaticPreviewShare }));
+  fireEvent.press(await screen.findByRole('tab', { name: 'Static files' }));
+  const whole = await screen.findByRole('button', { name: 'Preview the whole worktree' });
+  await waitFor(() => expect(whole.props.accessibilityState.disabled).toBe(false));
+  fireEvent.press(whole);
+  expect(await screen.findByText('Whole worktree')).toBeTruthy();
+  expect(screen.getByText('Worktree root')).toBeTruthy();
+  fireEvent.press(screen.getByRole('button', { name: 'Create link with PIN' }));
+  await waitFor(() =>
+    expect(createSessionStaticPreviewShare).toHaveBeenCalledWith('session-one', {
+      staticPath: '.',
+      pin: generatedPin,
+      ttlSeconds: 3600,
+    }),
+  );
+  const [[, { pin }]] = (createSessionStaticPreviewShare as jest.Mock).mock.calls as [
+    [string, { pin: string }],
+  ];
+  expect(await screen.findByText(pin.replace(/(\d{3})(?=\d)/g, '$1 '))).toBeTruthy();
+});
+
+// Deeper folders are reached through the explorer; files are shown so the
+// publish root can be checked before it is used.
+it('browses into a nested folder and uses it as the target', async () => {
+  const listSessionStaticPreviewEntries = jest.fn(async (_sessionId: string, path: string) =>
+    path === ''
+      ? { directories: ['docs'], files: [] }
+      : path === 'docs'
+        ? { directories: ['slides'], files: ['README.md'] }
+        : { directories: [], files: ['index.html'] },
+  );
+  const createSessionStaticPreviewShare = jest.fn(async () =>
+    folderShare({ staticPath: 'docs/slides' }),
+  );
+  renderSheet(makeClient({ listSessionStaticPreviewEntries, createSessionStaticPreviewShare }));
+  fireEvent.press(await screen.findByRole('tab', { name: 'Static files' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs' }));
+  expect(await screen.findByLabelText('File README.md')).toBeTruthy();
+  fireEvent.press(screen.getByRole('button', { name: 'Open folder docs/slides' }));
+  expect(await screen.findByLabelText('File index.html')).toBeTruthy();
+  const use = screen.getByRole('button', { name: 'Preview folder docs/slides' });
+  await waitFor(() => expect(use.props.accessibilityState.disabled).toBe(false));
+  fireEvent.press(use);
+  expect(await screen.findByText('slides')).toBeTruthy();
+  expect(screen.getByText('Worktree / docs/slides')).toBeTruthy();
+  fireEvent.press(screen.getByRole('button', { name: 'Create link with PIN' }));
+  await waitFor(() =>
+    expect(createSessionStaticPreviewShare).toHaveBeenCalledWith(
+      'session-one',
+      expect.objectContaining({ staticPath: 'docs/slides' }),
+    ),
+  );
+});
+
+// Reusing the explorer breadcrumb must keep ancestor jumps wired to the folder list.
+it('navigates static folders through the explorer breadcrumb', async () => {
+  const listSessionStaticPreviewEntries = jest.fn(async (_sessionId: string, path: string) => ({
+    directories: path === '' ? ['docs'] : path === 'docs' ? ['slides'] : [],
+    files: [],
+  }));
+  renderSheet(makeClient({ listSessionStaticPreviewEntries }));
+  fireEvent.press(await screen.findByRole('tab', { name: 'Static files' }));
+  expect(screen.queryByLabelText('Back to Repository')).toBeNull();
+  fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs/slides' }));
+  expect(await screen.findByLabelText('slides')).toBeTruthy();
+  fireEvent.press(screen.getByRole('button', { name: 'Back to docs' }));
+  expect(await screen.findByRole('button', { name: 'Open folder docs/slides' })).toBeTruthy();
+  fireEvent.press(screen.getByRole('button', { name: 'Back to Repository' }));
+  expect(await screen.findByRole('button', { name: 'Open folder docs' })).toBeTruthy();
+  expect(screen.queryByLabelText('Back to docs')).toBeNull();
+});
+
+it('does not offer folders from the previous location when navigation fails', async () => {
+  const listSessionStaticPreviewEntries = jest.fn(async (_sessionId: string, path: string) => {
+    if (path === '') return { directories: ['docs'], files: [] };
+    throw new Error('Folder vanished');
+  });
+  renderSheet(makeClient({ listSessionStaticPreviewEntries }));
+  fireEvent.press(await screen.findByRole('tab', { name: 'Static files' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs' }));
+  expect(await screen.findByText('Folder vanished')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Open folder docs' })).toBeNull();
+  expect(
+    screen.getByRole('button', { name: 'Preview folder docs' }).props.accessibilityState.disabled,
+  ).toBe(true);
+});
+
+// Loopback listeners are shareable: the sandbox forwarder bridges them, so the
+// row must not be hidden or disabled.
+it('lists loopback listeners as targets', async () => {
+  renderSheet(
+    makeClient({ listSessionDevServers: jest.fn(async () => [{ ...vite, reachable: false }]) }),
+  );
+  expect(await screen.findByRole('button', { name: 'Vite on port 5173' })).toBeTruthy();
+});
+
+it('keeps a live port link reachable when discovery no longer sees its server', async () => {
+  renderSheet(
+    makeClient({
+      listSessionDevServers: jest.fn(async () => []),
+      listPublicPreviewShares: jest.fn(async () => [portShare()]),
+    }),
+  );
+  fireEvent.press(await screen.findByRole('button', { name: 'Show link for port 5173' }));
+  expect(await screen.findByText('https://vite.example')).toBeTruthy();
+});
+
+it('separates project listeners from the session’s own', async () => {
+  renderSheet(
+    makeClient({
+      listSessionDevServers: jest.fn(async () => [
+        vite,
+        { ...vite, port: 8080, pid: 7, name: 'Storybook', scope: 'project' as const },
+      ]),
+    }),
+  );
+  expect(await screen.findByText('OTHER SERVERS IN THIS PROJECT')).toBeTruthy();
+  expect(screen.getByText('Started outside this session.')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Storybook on port 8080' })).toBeTruthy();
+});
+
+it('updates detected servers from the live snapshot without polling', async () => {
+  const listSessionDevServers = jest.fn(async () => [vite]);
+  const view = renderSheet(makeClient({ listSessionDevServers }), { detectedServers: [] });
+  fireEvent.press(await screen.findByRole('tab', { name: 'Dev server' }));
+  expect(await screen.findByText(/No dev server running/)).toBeTruthy();
+  view.rerender(
+    <StaticPreviewSheet
+      client={makeClient({ listSessionDevServers })}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+      detectedServers={[vite]}
+    />,
+  );
+  expect(await screen.findByRole('button', { name: 'Vite on port 5173' })).toBeTruthy();
+  expect(listSessionDevServers).not.toHaveBeenCalled();
+});
+
+// The default tab is decided once the first state is known; a server that
+// starts later must not pull the folder root away from the user.
+it('keeps the folder root when a server starts after the sheet opened', async () => {
+  const view = renderSheet(makeClient(), { detectedServers: [] });
+  await screen.findByRole('button', { name: 'Open folder docs' });
+  await waitFor(() =>
+    expect(
+      screen.getByRole('tab', { name: 'Static files' }).props.accessibilityState.selected,
+    ).toBe(true),
+  );
+  view.rerender(
+    <StaticPreviewSheet
+      client={makeClient()}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+      detectedServers={[vite]}
+    />,
+  );
+  expect(await screen.findByTestId('preview-tab-server-dot')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Preview the whole worktree' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Vite on port 5173' })).toBeNull();
+});
+
+it('settles the folder tab without waiting for links when the Uplink is unavailable', async () => {
+  const client = makeClient({
+    getPreviewCapabilities: jest.fn(async () => ({ publicSharing: 'unavailable' as const })),
+    listPublicPreviewShares: jest.fn(() => new Promise<PublicPreviewShare[]>(() => undefined)),
+  });
+  // No fallback timeout: only the unavailable Uplink may settle the tab here.
+  const view = renderSheet(client, { detectedServers: [], settleTimeoutMs: 60_000 });
+  await waitFor(() =>
+    expect(
+      screen.getByRole('tab', { name: 'Static files' }).props.accessibilityState.selected,
+    ).toBe(true),
+  );
+  view.rerender(
+    <StaticPreviewSheet
+      client={client}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+      detectedServers={[vite]}
+    />,
+  );
+  expect(await screen.findByTestId('preview-tab-server-dot')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Vite on port 5173' })).toBeNull();
+});
+
+// A list that never answers must not leave the sheet loading forever.
+it('decides the default tab after the timeout when a list hangs', async () => {
+  renderSheet(
+    makeClient({
+      listSessionDevServers: jest.fn(() => new Promise<SessionDevServer[]>(() => undefined)),
+    }),
+    { settleTimeoutMs: 10 },
+  );
+  expect(await screen.findByRole('button', { name: 'Open folder dist' })).toBeTruthy();
+});
+
+// A server that starts while the user walks the folders marks the server tab
+// but must not switch away from the explorer.
+it('keeps the folder explorer open when a server starts during browsing', async () => {
+  const view = renderSheet(makeClient(), { detectedServers: [] });
+  fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs' }));
+  await screen.findByRole('button', { name: 'Back to Repository' });
+  view.rerender(
+    <StaticPreviewSheet
+      client={makeClient()}
+      projectId="project-one"
+      sessionId="session-one"
+      onClose={jest.fn()}
+      detectedServers={[vite]}
+    />,
+  );
+  expect(await screen.findByTestId('preview-tab-server-dot')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Back to Repository' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Vite on port 5173' })).toBeNull();
+});
+
+// Without the live snapshot the servers arrive by polling. The sheet waits for
+// them instead of showing the folders first and then jumping to the servers.
+it('shows no tab content until the polled servers decide the default', async () => {
+  let resolve: (servers: SessionDevServer[]) => void = () => undefined;
+  renderSheet(
+    makeClient({
+      listSessionDevServers: jest.fn(
+        () =>
+          new Promise<SessionDevServer[]>((done) => {
+            resolve = done;
+          }),
+      ),
+    }),
+    { settleTimeoutMs: 60_000 },
+  );
+  await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(2));
+  expect(screen.queryByRole('button', { name: 'Open folder dist' })).toBeNull();
+  await act(async () => {
+    resolve([vite]);
+  });
+  expect(await screen.findByRole('button', { name: 'Vite on port 5173' })).toBeTruthy();
+});
+
+// A Core without port detection reports null; the sheet then lists folders
+// only instead of an empty server section.
+it('lists folders only when Core has no port detection', async () => {
+  renderSheet(makeClient({ listSessionDevServers: jest.fn(async () => null) }));
+  expect(await screen.findByRole('button', { name: 'Open folder dist' })).toBeTruthy();
+  await waitFor(() => expect(screen.queryByRole('tab')).toBeNull());
+});
+
+it('explains an Uplink internal error and allows retrying', async () => {
+  const createSessionPortPreviewShare = jest
+    .fn()
+    .mockRejectedValueOnce(new Error('Uplink refused public preview: internal'))
+    .mockResolvedValueOnce(portShare());
+  renderSheet(makeClient({ createSessionPortPreviewShare }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  enableDetectedOnline();
+  expect(
+    await screen.findByText('Uplink could not create this link. Please try again later.'),
+  ).toBeTruthy();
+  enableDetectedOnline();
+  expect(await screen.findByText('https://vite.example')).toBeTruthy();
+});
+
+it('shows progress while a public link is being created', async () => {
+  let resolve: (share: PublicPreviewShare) => void = () => undefined;
+  const createSessionPortPreviewShare = jest.fn(
+    () =>
+      new Promise<PublicPreviewShare>((done) => {
+        resolve = done;
+      }),
+  );
+  renderSheet(makeClient({ createSessionPortPreviewShare }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  enableDetectedOnline();
+  expect(await screen.findByText('Creating link…')).toBeTruthy();
+  expect(screen.getByRole('switch', { name: 'Local' }).props.accessibilityState.disabled).toBe(
+    true,
+  );
+  await act(async () => {
+    resolve(portShare());
+  });
+  expect(await screen.findByText('https://vite.example')).toBeTruthy();
+});
+
+// Android back reaches the sheet through Modal.onRequestClose. It walks back
+// one step at a time rather than closing from the access step.
+it('steps back from the access step and out of nested folders on Android back', async () => {
+  const onClose = jest.fn();
+  renderSheet(makeClient(), { onClose });
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  expect(await screen.findByRole('switch', { name: 'Local' })).toBeTruthy();
+  act(() => screen.UNSAFE_getByType(Modal).props.onRequestClose());
+  expect(await screen.findByRole('button', { name: 'Vite on port 5173' })).toBeTruthy();
+  expect(onClose).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByRole('tab', { name: 'Static files' }));
+  fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs' }));
+  expect(await screen.findByRole('button', { name: 'Back to Repository' })).toBeTruthy();
+  act(() => screen.UNSAFE_getByType(Modal).props.onRequestClose());
+  expect(await screen.findByRole('button', { name: 'Preview the whole worktree' })).toBeTruthy();
+  expect(onClose).not.toHaveBeenCalled();
+  act(() => screen.UNSAFE_getByType(Modal).props.onRequestClose());
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+it('keeps a newly created link when the share list arrives late without it', async () => {
+  let resolveList: (shares: PublicPreviewShare[]) => void = () => undefined;
+  const listPublicPreviewShares = jest.fn(
+    () =>
+      new Promise<PublicPreviewShare[]>((done) => {
+        resolveList = done;
+      }),
+  );
+  renderSheet(
+    makeClient({
+      listPublicPreviewShares,
+      createSessionPortPreviewShare: jest.fn(async () => portShare()),
+    }),
+  );
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  enableDetectedOnline();
+  expect(await screen.findByText('https://vite.example')).toBeTruthy();
+  await act(async () => {
+    resolveList([]);
+  });
+  expect(screen.getByText('https://vite.example')).toBeTruthy();
+});
+
+it('keeps a local port access stoppable after its listener disappears', async () => {
+  const stopLocalPreviewShare = jest.fn(async () => undefined);
+  renderSheet(
+    makeClient({
+      listSessionDevServers: jest.fn(async () => []),
+      listSessionLocalPreviewShares: jest.fn(async () => [localShare]),
+      stopLocalPreviewShare,
+    }),
+  );
+  fireEvent.press(await screen.findByRole('button', { name: 'Show link for port 5173' }));
+  fireEvent.press(await screen.findByRole('switch', { name: 'Local' }));
+  await waitFor(() => expect(stopLocalPreviewShare).toHaveBeenCalledWith(localShare.id));
+});
+
+it('reuses the public link when local access is unreachable and both accesses exist', async () => {
+  const createSessionPortPreviewShare = jest.fn();
+  const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
+  renderSheet(
+    makeClient({
+      listSessionLocalPreviewShares: jest.fn(async () => [localShare]),
+      listPublicPreviewShares: jest.fn(async () => [portShare()]),
+      createSessionPortPreviewShare,
+    }),
+  );
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  await screen.findByText('https://vite.example');
+  fireEvent.press(screen.getByRole('link', { name: 'Open in browser' }));
+  await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
+  const fallback = jest.mocked(openLocalPreview).mock.calls[0]![2];
+  await act(async () => fallback());
+  expect(share).toHaveBeenCalledWith({ message: expect.stringContaining('https://vite.example') });
+  expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+});
+
+it('replaces a cached local access revoked by Core before opening', async () => {
+  const replacement = { ...localShare, id: 'local-new', url: 'http://server:8101/' };
+  const createSessionLocalPreviewShare = jest.fn(async () => replacement);
+  renderSheet(
+    makeClient({
+      listSessionLocalPreviewShares: jest
+        .fn()
+        .mockResolvedValueOnce([localShare])
+        .mockResolvedValue([]),
+      createSessionLocalPreviewShare,
+    }),
+  );
+  await screen.findByText('On network');
+  fireEvent.press(screen.getByRole('button', { name: 'Vite on port 5173' }));
+  fireEvent.press(screen.getByRole('link', { name: 'Open in browser' }));
+  await waitFor(() =>
+    expect(openLocalPreview).toHaveBeenCalledWith(
+      replacement,
+      'available',
+      expect.any(Function),
+      undefined,
+    ),
+  );
+});
+
+it('does not share a locked PIN from the unreachable-local fallback', async () => {
+  const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
+  renderSheet(
+    makeClient({
+      listSessionLocalPreviewShares: jest.fn(async () => [localShare]),
+      listPublicPreviewShares: jest.fn(async () => [portShare({ pinLocked: true })]),
+    }),
+  );
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  await screen.findByText('https://vite.example');
+  fireEvent.press(screen.getByRole('link', { name: 'Open in browser' }));
+  await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
+  await act(async () => jest.mocked(openLocalPreview).mock.calls[0]![2]());
+  expect(share).not.toHaveBeenCalled();
+  expect(
+    screen.getByText(
+      'This PIN is locked. Stop sharing and create a new link before sharing it again.',
+    ),
+  ).toBeTruthy();
+});
+
+it('checks the updated PIN lock when a delayed network-dialog action is selected', async () => {
+  jest.useFakeTimers();
+  try {
+    const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
+    const listPublicPreviewShares = jest
+      .fn()
+      .mockResolvedValueOnce([portShare()])
+      .mockResolvedValue([portShare({ pinLocked: true })]);
+    renderSheet(
+      makeClient({
+        listSessionLocalPreviewShares: jest.fn(async () => [localShare]),
+        listPublicPreviewShares,
+      }),
+    );
+    fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+    await screen.findByText('https://vite.example');
+    fireEvent.press(screen.getByRole('link', { name: 'Open in browser' }));
+    await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
+    const fallback = jest.mocked(openLocalPreview).mock.calls[0]![2];
+    await act(async () => {
+      for (const refresh of [...mockLiveRefresh]) await refresh();
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Share link and PIN' })).toBeNull(),
+    );
+    await act(async () => fallback());
+    expect(share).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(
+        'This PIN is locked. Stop sharing and create a new link before sharing it again.',
+      ),
+    ).toBeTruthy();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it('directs a second folder to its existing public link and blocks fallback creation', async () => {
+  const createSessionStaticPreviewShare = jest.fn();
+  renderSheet(
+    makeClient({
+      listPublicPreviewShares: jest.fn(async () => [folderShare()]),
+      createSessionStaticPreviewShare,
+      createSessionLocalPreviewShare: jest.fn(async () => ({
+        ...localShare,
+        targetPort: null,
+        staticPath: 'docs',
+      })),
+    }),
+  );
+  fireEvent.press(await screen.findByRole('tab', { name: 'Static files' }));
+  await screen.findByRole('button', { name: 'Shared folder dist' });
+  fireEvent.press(await screen.findByRole('button', { name: 'Open folder docs' }));
+  const docs = await screen.findByRole('button', { name: 'Preview folder docs' });
+  await waitFor(() => expect(docs.props.accessibilityState.disabled).toBe(false));
+  fireEvent.press(docs);
+  expect(await screen.findByRole('button', { name: 'Manage existing folder link' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Create link with PIN' })).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: 'Open in browser' }));
+  await waitFor(() => expect(openLocalPreview).toHaveBeenCalled());
+  await act(async () => jest.mocked(openLocalPreview).mock.calls[0]![2]());
+  expect(createSessionStaticPreviewShare).not.toHaveBeenCalled();
+  expect(
+    screen.getByText('Stop the existing public folder link before sharing another folder.'),
+  ).toBeTruthy();
+  fireEvent.press(screen.getByRole('button', { name: 'Manage existing folder link' }));
+  expect(await screen.findByText('https://dist.example')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeTruthy();
+});
+
+describe('managed dev servers', () => {
+  const demo = (overrides: Partial<ManagedDevServer> = {}): ManagedDevServer => ({
+    id: 'srv-1',
+    name: 'Curtis Demo',
+    command: 'node server.mjs --port {port}',
+    workdir: 'curtis-voice',
+    approved: true,
+    accessSwitches: true,
+    instance: {
+      id: 'inst-1',
+      localShareId: 'local-share-1',
+      sessionId: 'session-one',
+      state: 'running',
+      desired: 'running',
+      detail: null,
+      url: 'http://verity.local:8104/',
+      sandboxPort: 41000,
+      awaitingApproval: false,
+      localOn: true,
+      restartToApply: false,
+      startedAt: null,
+    },
+    elsewhere: [],
+    ...overrides,
+  });
+  const link = (overrides: Partial<PublicPreviewShare> = {}): PublicPreviewShare =>
+    ({
+      id: 'link-1',
+      projectId: 'project-one',
+      devServerId: null,
+      targetKind: 'dev-server',
+      targetPort: 41000,
+      sessionId: 'session-one',
+      managedInstanceId: 'inst-1',
+      staticPath: null,
+      state: 'active',
+      publicOrigin: 'https://ene41q3je23zkvpa.share.verity.build',
+      pin: '268080',
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      createdAt: new Date().toISOString(),
+      failure: null,
+      ...overrides,
+    }) as PublicPreviewShare;
+  const managedClient = (servers: ManagedDevServer[], overrides: Partial<VerityClient> = {}) =>
+    makeClient({
+      listSessionDevServers: jest.fn(async () => [
+        { ...vite, port: 41000, name: 'node', managedInstanceId: 'inst-1' },
+        { ...vite, port: 3000, name: 'API', pid: 41, workdir: 'api', command: 'node api.js' },
+      ]),
+      listManagedDevServers: jest.fn(async () => servers),
+      managedDevServerLogs: jest.fn(async () => 'Listening\n'),
+      ...overrides,
+    });
+  /** Answers each native dialog in turn with the button of that text. */
+  const answer = (...texts: string[]) =>
+    jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
+      const text = texts.shift();
+      buttons?.find((button) => button.text === text)?.onPress?.();
+    });
+
+  // The sandbox port is internal: the block names the server and its network
+  // address, and its listener does not show up again as an unmanaged server.
+  it('shows each server with its state and both accesses, apart from unmanaged listeners', async () => {
+    renderSheet(managedClient([demo()]));
+    expect(await screen.findByText('Curtis Demo')).toBeTruthy();
+    expect(screen.getAllByText('Running')).toHaveLength(2);
+    expect(screen.getByText('verity.local:8104')).toBeTruthy();
+    expect(
+      screen.getByRole('switch', { name: 'Local for Curtis Demo' }).props.accessibilityState,
+    ).toMatchObject({ checked: true });
+    expect(
+      screen.getByRole('switch', { name: 'Shared online for Curtis Demo' }).props
+        .accessibilityState,
+    ).toMatchObject({ checked: false });
+    expect(screen.queryByText(/41000/)).toBeNull();
+    expect(screen.getByText('NOT MANAGED')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'API on port 3000' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'node on port 41000' })).toBeNull();
+  });
+
+  // Local publishes the agent's command on the network, so the operator sees
+  // exactly what runs and approves only that.
+  it('shows the command and approves exactly it before Local turns on', async () => {
+    const approveManagedDevServer = jest.fn(async () => []);
+    const setManagedDevServerLocal = jest.fn(async () => demo());
+    const alert = answer('Allow');
+    renderSheet(
+      managedClient([demo({ approved: false, instance: null })], {
+        approveManagedDevServer,
+        setManagedDevServerLocal,
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Local for Curtis Demo' }));
+    await waitFor(() =>
+      expect(setManagedDevServerLocal).toHaveBeenCalledWith('session-one', 'srv-1', true),
+    );
+    expect(alert.mock.calls[0]?.[1]).toContain('node server.mjs --port {port}');
+    expect(alert.mock.calls[0]?.[1]).toContain('curtis-voice');
+    expect(alert.mock.calls[0]?.[1]).toContain('without a PIN');
+    expect(approveManagedDevServer).toHaveBeenCalledWith(
+      'session-one',
+      'srv-1',
+      { command: 'node server.mjs --port {port}', workdir: 'curtis-voice' },
+      {},
+    );
+  });
+
+  it('does not turn Local on when the operator cancels the approval', async () => {
+    const setManagedDevServerLocal = jest.fn();
+    answer('Cancel');
+    renderSheet(
+      managedClient([demo({ approved: false, instance: null })], { setManagedDevServerLocal }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Local for Curtis Demo' }));
+    await waitFor(() => expect(Alert.alert).toHaveBeenCalled());
+    expect(setManagedDevServerLocal).not.toHaveBeenCalled();
+  });
+
+  // Stopping a dev server is not destructive (design language): no dialog.
+  it('turns Local off without asking', async () => {
+    const setManagedDevServerLocal = jest.fn(async () => demo());
+    const alert = jest.spyOn(Alert, 'alert');
+    renderSheet(managedClient([demo()], { setManagedDevServerLocal }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Local for Curtis Demo' }));
+    await waitFor(() =>
+      expect(setManagedDevServerLocal).toHaveBeenCalledWith('session-one', 'srv-1', false),
+    );
+    expect(alert).not.toHaveBeenCalled();
+  });
+
+  it('opens the local address straight from the block', async () => {
+    renderSheet(managedClient([demo()]));
+    fireEvent.press(await screen.findByRole('link', { name: 'Open Curtis Demo on your network' }));
+    await waitFor(() =>
+      expect(openLocalPreview).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'local-share-1', url: 'http://verity.local:8104/' }),
+        'available',
+        expect.any(Function),
+        undefined,
+      ),
+    );
+  });
+
+  it('opens a managed response without localShareId by finding the real local share', async () => {
+    const server = demo();
+    delete server.instance!.localShareId;
+    renderSheet(
+      managedClient([server], {
+        listSessionLocalPreviewShares: jest.fn(async () => [
+          { ...localShare, id: 'another-access', targetPort: server.instance!.sandboxPort },
+          { ...localShare, url: server.instance!.url!, targetPort: server.instance!.sandboxPort },
+        ]),
+      }),
+    );
+    fireEvent.press(await screen.findByRole('link', { name: 'Open Curtis Demo on your network' }));
+    await waitFor(() =>
+      expect(openLocalPreview).toHaveBeenCalledWith(
+        expect.objectContaining({ id: localShare.id, url: server.instance!.url }),
+        'available',
+        expect.any(Function),
+        undefined,
+      ),
+    );
+  });
+
+  // Shared online asks how long the link lives and creates it for the
+  // instance; a running server is not started again.
+  it('creates a public link with the chosen lifetime for a running server', async () => {
+    const createSessionPortPreviewShare = jest.fn(async () => link());
+    const controlManagedDevServer = jest.fn();
+    answer('24 hours');
+    renderSheet(
+      managedClient([demo()], { createSessionPortPreviewShare, controlManagedDevServer }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(createSessionPortPreviewShare).toHaveBeenCalledWith('session-one', {
+        targetPort: 41000,
+        managedInstanceId: 'inst-1',
+        pin: expect.stringMatching(/^\d{6}$/u),
+        ttlSeconds: 86_400,
+      }),
+    );
+    expect(controlManagedDevServer).not.toHaveBeenCalled();
+  });
+
+  // Shared online alone must not also open the server on the local network.
+  it('starts a stopped server for Shared online with Local left off', async () => {
+    const stopped = demo({
+      instance: {
+        ...demo().instance!,
+        state: 'stopped',
+        desired: 'stopped',
+        url: null,
+        localOn: false,
+      },
+    });
+    const running = demo({ instance: { ...demo().instance!, url: null, localOn: false } });
+    const listManagedDevServers = jest
+      .fn()
+      .mockResolvedValueOnce([stopped])
+      .mockResolvedValue([running]);
+    const controlManagedDevServer = jest.fn(async () => running);
+    const createSessionPortPreviewShare = jest.fn(async () => link());
+    answer('1 hour');
+    renderSheet(
+      managedClient([stopped], {
+        listManagedDevServers,
+        controlManagedDevServer,
+        createSessionPortPreviewShare,
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() => expect(createSessionPortPreviewShare).toHaveBeenCalled());
+    expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'start', {
+      local: false,
+    });
+  });
+
+  it('approves for Shared online without opening the server locally', async () => {
+    const approveManagedDevServer = jest.fn(async () => []);
+    answer('1 hour', 'Share');
+    renderSheet(
+      managedClient(
+        [
+          demo({
+            approved: false,
+            instance: { ...demo().instance!, url: null, awaitingApproval: true, localOn: false },
+          }),
+        ],
+        {
+          approveManagedDevServer,
+          createSessionPortPreviewShare: jest.fn(async () => link()),
+        },
+      ),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(approveManagedDevServer).toHaveBeenCalledWith(
+        'session-one',
+        'srv-1',
+        { command: 'node server.mjs --port {port}', workdir: 'curtis-voice' },
+        { local: false },
+      ),
+    );
+  });
+
+  // Started only for the link: a failed link must not leave it running with
+  // no access on.
+  it('stops a server it started for Shared online when the link fails', async () => {
+    const stopped = demo({
+      instance: {
+        ...demo().instance!,
+        state: 'stopped',
+        desired: 'stopped',
+        url: null,
+        localOn: false,
+      },
+    });
+    const running = demo({ instance: { ...demo().instance!, url: null, localOn: false } });
+    const controlManagedDevServer = jest.fn(async () => running);
+    answer('1 hour');
+    renderSheet(
+      managedClient([stopped], {
+        listManagedDevServers: jest
+          .fn()
+          .mockResolvedValueOnce([stopped])
+          .mockResolvedValue([running]),
+        controlManagedDevServer,
+        createSessionPortPreviewShare: jest.fn(async () => {
+          throw new Error('Uplink refused');
+        }),
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
+        onlyIfUnshared: true,
+      }),
+    );
+  });
+
+  it('starts a changed command before creating the public link', async () => {
+    const changed = demo({
+      instance: { ...demo().instance!, restartToApply: true, localOn: false, url: null },
+    });
+    const running = demo({ instance: { ...changed.instance!, restartToApply: false } });
+    const controlManagedDevServer = jest.fn(async () => running);
+    const createSessionPortPreviewShare = jest.fn(async () => link());
+    answer('1 hour');
+    renderSheet(
+      managedClient([changed], {
+        controlManagedDevServer,
+        createSessionPortPreviewShare,
+        listManagedDevServers: jest
+          .fn()
+          .mockResolvedValueOnce([changed])
+          .mockResolvedValue([running]),
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() => expect(createSessionPortPreviewShare).toHaveBeenCalled());
+    expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'start', {
+      local: false,
+    });
+    expect(controlManagedDevServer.mock.invocationCallOrder[0]).toBeLessThan(
+      createSessionPortPreviewShare.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('conditionally stops after a failed start response', async () => {
+    const server = demo({
+      instance: {
+        ...demo().instance!,
+        state: 'stopped',
+        desired: 'stopped',
+        url: null,
+        localOn: false,
+      },
+    });
+    const controlManagedDevServer = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('response lost'))
+      .mockResolvedValue(server);
+    const createSessionPortPreviewShare = jest.fn();
+    answer('1 hour');
+    renderSheet(
+      managedClient([server], { controlManagedDevServer, createSessionPortPreviewShare }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
+        onlyIfUnshared: true,
+      }),
+    );
+    expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  });
+
+  it('allows stopping a link while it is still being created', async () => {
+    const stopPublicPreviewShare = jest.fn(async () => {});
+    answer('Stop sharing');
+    renderSheet(
+      managedClient([demo()], {
+        listPublicPreviewShares: jest.fn(async () => [
+          link({ state: 'creating', publicOrigin: null }),
+        ]),
+        stopPublicPreviewShare,
+      }),
+    );
+    const toggle = await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' });
+    await waitFor(() => expect(toggle.props.accessibilityState.checked).toBe(true));
+    expect(toggle.props.accessibilityState.disabled).toBe(false);
+    fireEvent.press(toggle);
+    await waitFor(() => expect(stopPublicPreviewShare).toHaveBeenCalledWith('link-1'));
+  });
+
+  it('disables other server switches while a managed action is pending', async () => {
+    let complete!: (server: ManagedDevServer) => void;
+    const pending = new Promise<ManagedDevServer>((resolve) => {
+      complete = resolve;
+    });
+    const first = demo();
+    const second = demo({ id: 'srv-2', name: 'API' });
+    const setManagedDevServerLocal = jest.fn(async () => pending);
+    renderSheet(managedClient([first, second], { setManagedDevServerLocal }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Local for Curtis Demo' }));
+    const other = screen.getByRole('switch', { name: 'Local for API' });
+    expect(other.props.accessibilityState.disabled).toBe(true);
+    expect(
+      screen.getByRole('switch', { name: 'Local for API on port 3000' }).props.accessibilityState
+        .disabled,
+    ).toBe(true);
+    fireEvent.press(other);
+    expect(setManagedDevServerLocal).toHaveBeenCalledTimes(1);
+    await act(async () => complete(first));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('switch', { name: 'Local for API' }).props.accessibilityState.disabled,
+      ).toBe(false),
+    );
+  });
+
+  it('conditionally stops if an online approval response is lost', async () => {
+    const server = demo({
+      approved: false,
+      instance: { ...demo().instance!, url: null, localOn: false, awaitingApproval: true },
+    });
+    const approveManagedDevServer = jest.fn(async () => {
+      throw new Error('response lost');
+    });
+    const controlManagedDevServer = jest.fn(async () => server);
+    const createSessionPortPreviewShare = jest.fn();
+    answer('1 hour', 'Share');
+    renderSheet(
+      managedClient([server], {
+        approveManagedDevServer,
+        controlManagedDevServer,
+        createSessionPortPreviewShare,
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
+        onlyIfUnshared: true,
+      }),
+    );
+    expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  });
+
+  it('shows failed Local publication in the overview and details', async () => {
+    const detail = 'No network ports available';
+    renderSheet(managedClient([demo({ instance: { ...demo().instance!, url: null, detail } })]));
+    expect(await screen.findByText(detail)).toBeTruthy();
+    expect(screen.queryByText('Starting on your network…')).toBeNull();
+    fireEvent.press(screen.getByRole('button', { name: /Curtis Demo, Running\. Details/u }));
+    expect(await screen.findByText(detail)).toBeTruthy();
+  });
+
+  it('cleans up a running online-only instance when creating its link fails', async () => {
+    const server = demo({ instance: { ...demo().instance!, url: null, localOn: false } });
+    const controlManagedDevServer = jest.fn(async () => server);
+    answer('1 hour');
+    renderSheet(
+      managedClient([server], {
+        controlManagedDevServer,
+        createSessionPortPreviewShare: jest.fn(async () => {
+          throw new Error('Uplink refused');
+        }),
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
+        onlyIfUnshared: true,
+      }),
+    );
+  });
+
+  it('requires consent to LAN exposure before sharing online on an older Core', async () => {
+    const createSessionPortPreviewShare = jest.fn(async () => link());
+    const alert = answer('1 hour', 'Cancel');
+    renderSheet(
+      managedClient([demo({ accessSwitches: undefined })], { createSessionPortPreviewShare }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(alert).toHaveBeenCalledWith(
+        'Share online and on your network?',
+        expect.stringContaining('without a PIN'),
+        expect.any(Array),
+        expect.any(Object),
+      ),
+    );
+    expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  });
+
+  // Stopped elsewhere while the link waits: give up at once instead of polling
+  // for over a minute with the server's fate unclear.
+  it('gives up on the link when the server stops while it starts', async () => {
+    const stopped = demo({
+      instance: {
+        ...demo().instance!,
+        state: 'stopped',
+        desired: 'stopped',
+        url: null,
+        localOn: false,
+      },
+    });
+    const controlManagedDevServer = jest.fn(async () => stopped);
+    const createSessionPortPreviewShare = jest.fn(async () => link());
+    answer('1 hour');
+    renderSheet(
+      managedClient([stopped], {
+        listManagedDevServers: jest.fn(async () => [stopped]),
+        controlManagedDevServer,
+        createSessionPortPreviewShare,
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
+        onlyIfUnshared: true,
+      }),
+    );
+    expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  });
+
+  // Closed while the server starts: the link and its PIN would reach nobody,
+  // and the server started only for it must not keep running.
+  it('makes no link after the sheet closes during the start', async () => {
+    const stopped = demo({
+      instance: {
+        ...demo().instance!,
+        state: 'stopped',
+        desired: 'stopped',
+        url: null,
+        localOn: false,
+      },
+    });
+    const starting = demo({
+      instance: { ...stopped.instance!, state: 'starting', desired: 'running' },
+    });
+    const controlManagedDevServer = jest.fn(async () => starting);
+    const createSessionPortPreviewShare = jest.fn(async () => link());
+    answer('1 hour');
+    const view = renderSheet(
+      managedClient([stopped], {
+        listManagedDevServers: jest
+          .fn()
+          .mockResolvedValueOnce([stopped])
+          .mockResolvedValue([starting]),
+        controlManagedDevServer,
+        createSessionPortPreviewShare,
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'start', {
+        local: false,
+      }),
+    );
+    view.unmount();
+    await waitFor(
+      () =>
+        expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
+          onlyIfUnshared: true,
+        }),
+      { timeout: 4_000 },
+    );
+    expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['1 hour', 3600],
+    ['24 hours', 86400],
+    ['7 days', 604800],
+    ['30 days', 2592000],
+  ])('offers %s without exceeding the native dialog button limit', async (label, seconds) => {
+    const createSessionPortPreviewShare = jest.fn(async () => link());
+    const alert = answer(
+      ...(seconds > 86400 ? ['More durations', String(label)] : [String(label)]),
+    );
+    renderSheet(managedClient([demo()], { createSessionPortPreviewShare }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      expect(createSessionPortPreviewShare).toHaveBeenCalledWith(
+        'session-one',
+        expect.objectContaining({ ttlSeconds: seconds }),
+      ),
+    );
+    for (const call of alert.mock.calls)
+      expect(call[2]!.length).toBeLessThanOrEqual(Platform.OS === 'ios' ? 4 : 3);
+  });
+
+  it('offers Cancel directly in the first iOS lifetime dialog', async () => {
+    const previous = Platform.OS;
+    Platform.OS = 'ios';
+    try {
+      const createSessionPortPreviewShare = jest.fn(async () => link());
+      const alert = answer('Cancel');
+      renderSheet(managedClient([demo()], { createSessionPortPreviewShare }));
+      fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+      await waitFor(() => expect(alert).toHaveBeenCalled());
+      expect(alert.mock.calls[0]![2]!.some((button) => button.text === 'Cancel')).toBe(true);
+      expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+    } finally {
+      Platform.OS = previous;
+    }
+  });
+
+  it.each(['list', 'create'])('cleans up when closed during the %s request', async (phase) => {
+    let complete!: (value: any) => void;
+    const pending = new Promise<any>((resolve) => {
+      complete = resolve;
+    });
+    const stopped = demo({
+      instance: {
+        ...demo().instance!,
+        state: 'stopped',
+        desired: 'stopped',
+        url: null,
+        localOn: false,
+      },
+    });
+    const running = demo({ instance: { ...demo().instance!, localOn: false, url: null } });
+    const listManagedDevServers = jest
+      .fn()
+      .mockResolvedValueOnce([stopped])
+      .mockImplementation(async () => (phase === 'list' ? pending : [running]));
+    const createSessionPortPreviewShare = jest.fn(async () =>
+      phase === 'create' ? pending : link(),
+    );
+    const stopPublicPreviewShare = jest.fn(async () => {});
+    const controlManagedDevServer = jest.fn(async () => running);
+    answer('1 hour');
+    const view = renderSheet(
+      managedClient([stopped], {
+        listManagedDevServers,
+        createSessionPortPreviewShare,
+        stopPublicPreviewShare,
+        controlManagedDevServer,
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() =>
+      phase === 'list'
+        ? expect(listManagedDevServers).toHaveBeenCalledTimes(2)
+        : expect(createSessionPortPreviewShare).toHaveBeenCalled(),
+    );
+    view.unmount();
+    await act(async () => {
+      complete(phase === 'list' ? [running] : link());
+    });
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
+        onlyIfUnshared: true,
+      }),
+    );
+    if (phase === 'list') expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+    else expect(stopPublicPreviewShare).toHaveBeenCalledWith('link-1');
+  });
+
+  // A link the Uplink has not given an address yet is already on; pressing the
+  // switch again must not create a second one.
+  it('shows a link without an address yet as being created', async () => {
+    renderSheet(
+      managedClient([demo()], {
+        listPublicPreviewShares: jest.fn(async () => [
+          link({ state: 'creating', publicOrigin: null }),
+        ]),
+      }),
+    );
+    expect(await screen.findByText('Creating link…')).toBeTruthy();
+    expect(
+      screen.getByRole('switch', { name: 'Shared online for Curtis Demo' }).props
+        .accessibilityState,
+    ).toMatchObject({ checked: true });
+  });
+
+  // An older Core has no Local route and rejects unknown body fields with 400;
+  // its switch started and stopped the server, also before it ever ran.
+  it('falls back to start and stop on a Core without the Local switch', async () => {
+    const server = demo({ accessSwitches: undefined });
+    delete server.instance!.localOn;
+    const controlManagedDevServer = jest.fn(async () => server);
+    const setManagedDevServerLocal = jest.fn();
+    renderSheet(managedClient([server], { controlManagedDevServer, setManagedDevServerLocal }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Local for Curtis Demo' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop'),
+    );
+    expect(setManagedDevServerLocal).not.toHaveBeenCalled();
+  });
+
+  it('approves and starts without the Local field on an older Core', async () => {
+    const approveManagedDevServer = jest.fn(async () => []);
+    const controlManagedDevServer = jest.fn(async () => demo());
+    answer('Allow');
+    renderSheet(
+      managedClient([demo({ accessSwitches: undefined, approved: false, instance: null })], {
+        approveManagedDevServer,
+        controlManagedDevServer,
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Local for Curtis Demo' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'start'),
+    );
+    expect(approveManagedDevServer).toHaveBeenCalledWith(
+      'session-one',
+      'srv-1',
+      { command: 'node server.mjs --port {port}', workdir: 'curtis-voice' },
+      {},
+    );
+  });
+
+  it('shows the public link, opens it with the PIN, and copies the PIN', async () => {
+    const open = jest.spyOn(Linking, 'openURL').mockResolvedValue(true);
+    renderSheet(
+      managedClient([demo()], { listPublicPreviewShares: jest.fn(async () => [link()]) }),
+    );
+    fireEvent.press(
+      await screen.findByRole('link', { name: 'Open the public link of Curtis Demo' }),
+    );
+    expect(open).toHaveBeenCalledWith('https://ene41q3je23zkvpa.share.verity.build/?pin=268080');
+    expect(screen.getByText('ene41q…share.verity.build')).toBeTruthy();
+    fireEvent.press(screen.getByRole('button', { name: 'Copy PIN 2 6 8 0 8 0' }));
+    await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith('268080'));
+  });
+
+  // Ending a public link affects visitors, so it asks; the server decides
+  // whether the server stops with it.
+  it('asks before Shared online turns off and then stops the link', async () => {
+    const stopPublicPreviewShare = jest.fn(async () => undefined);
+    answer('Stop sharing');
+    renderSheet(
+      managedClient([demo()], {
+        listPublicPreviewShares: jest.fn(async () => [link()]),
+        stopPublicPreviewShare,
+      }),
+    );
+    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await waitFor(() => expect(stopPublicPreviewShare).toHaveBeenCalledWith('link-1'));
+  });
+
+  it('offers Premium instead of the Shared online switch without entitlement', async () => {
+    const onOpenSettings = jest.fn();
+    renderSheet(
+      managedClient([demo()], {
+        getPreviewCapabilities: jest.fn(async () => ({
+          publicSharing: 'premium-required' as const,
+        })),
+      }),
+      { onOpenSettings },
+    );
+    fireEvent.press(
+      await screen.findByRole('button', {
+        name: 'Shared online needs Verity Premium. Open settings',
+      }),
+    );
+    expect(onOpenSettings).toHaveBeenCalled();
+    expect(screen.queryByRole('switch', { name: 'Shared online for Curtis Demo' })).toBeNull();
+  });
+
+  it('marks a server the agent started without approval as not shared yet', async () => {
+    renderSheet(
+      managedClient([
+        demo({
+          approved: false,
+          instance: { ...demo().instance!, url: null, awaitingApproval: true, localOn: false },
         }),
       ]),
-    });
-
-    expect(await screen.findByText('https://folder.example')).toBeTruthy();
-    expect(screen.getByRole('tab', { name: 'Folder' }).props.accessibilityState.selected).toBe(
-      true,
     );
-    fireEvent.press(screen.getByRole('tab', { name: 'Dev server' }));
-    expect(await screen.findByRole('button', { name: 'Share Vite on port 5173' })).toBeTruthy();
+    expect(await screen.findByText('not shared yet')).toBeTruthy();
+    expect(
+      screen.getByRole('switch', { name: 'Local for Curtis Demo' }).props.accessibilityState,
+    ).toMatchObject({ checked: false });
   });
 
-  it('keeps an active port link accessible when discovery finds no server', async () => {
-    renderSheet({
-      listSessionDevServers: jest.fn(async () => []),
-      listPublicPreviewShares: jest.fn(async () => [portShare()]),
+  it('asks the agent to fix a crashed server and shows its last output', async () => {
+    const onAskAgent = jest.fn();
+    const crashed = demo({
+      instance: {
+        ...demo().instance!,
+        state: 'crashed',
+        desired: 'stopped',
+        url: null,
+        detail: 'The server exited with code 1',
+      },
     });
+    renderSheet(managedClient([crashed]), { onAskAgent });
+    fireEvent.press(
+      await screen.findByRole('button', { name: /Curtis Demo, Crashed\. View output/u }),
+    );
+    expect(await screen.findByText('LAST OUTPUT')).toBeTruthy();
+    expect(await screen.findByText('Listening')).toBeTruthy();
+    fireEvent.press(screen.getByRole('button', { name: 'Ask the agent to fix it' }));
+    expect(onAskAgent).toHaveBeenCalledWith(
+      expect.stringContaining('verity-dev-server logs "Curtis Demo"'),
+    );
+  });
 
-    // A public link nobody can see from Folder is easy to forget running.
-    expect(await screen.findByTestId('dev-server-tab-dot')).toBeTruthy();
-    await openServers();
-    fireEvent.press(await screen.findByRole('button', { name: 'Show link for port 5173' }));
-    expect(await screen.findByText('https://vite.example')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Stop sharing' })).toBeTruthy();
+  // Stop from the details ends both accesses; a public link asks first.
+  it('keeps overview switches disabled while Stop from details revokes the link', async () => {
+    let complete!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      complete = resolve;
+    });
+    const stopPublicPreviewShare = jest.fn(async () => pending);
+    const setManagedDevServerLocal = jest.fn();
+    answer('Stop sharing');
+    renderSheet(
+      managedClient([demo()], {
+        listPublicPreviewShares: jest.fn(async () => [link()]),
+        stopPublicPreviewShare,
+        setManagedDevServerLocal,
+      }),
+    );
+    await screen.findByRole('link', { name: 'Open the public link of Curtis Demo' });
+    fireEvent.press(screen.getByRole('button', { name: /Curtis Demo, Running\. Details/u }));
+    fireEvent.press(await screen.findByRole('button', { name: 'Stop' }));
+    await waitFor(() => expect(stopPublicPreviewShare).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Restart' }).props.accessibilityState.disabled).toBe(
+      true,
+    );
+    fireEvent.press(screen.getByRole('button', { name: 'Back to preview targets' }));
+    const toggle = screen.getByRole('switch', { name: 'Local for Curtis Demo' });
+    expect(toggle.props.accessibilityState.disabled).toBe(true);
+    fireEvent.press(toggle);
+    expect(setManagedDevServerLocal).not.toHaveBeenCalled();
+    await act(async () => complete());
+  });
+
+  it('stops the public link and the server from the details after confirming', async () => {
+    const stopPublicPreviewShare = jest.fn(async () => undefined);
+    const controlManagedDevServer = jest.fn(async () => demo());
+    answer('Stop sharing');
+    renderSheet(
+      managedClient([demo()], {
+        listPublicPreviewShares: jest.fn(async () => [link()]),
+        stopPublicPreviewShare,
+        controlManagedDevServer,
+      }),
+    );
+    await screen.findByRole('link', { name: 'Open the public link of Curtis Demo' });
+    fireEvent.press(screen.getByRole('button', { name: /Curtis Demo, Running\. Details/u }));
+    fireEvent.press(await screen.findByRole('button', { name: 'Stop' }));
+    await waitFor(() =>
+      expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop'),
+    );
+    expect(stopPublicPreviewShare).toHaveBeenCalledWith('link-1');
+  });
+
+  it('asks the agent to save an unmanaged server as an entry', async () => {
+    const onAskAgent = jest.fn();
+    renderSheet(managedClient([demo()]), { onAskAgent });
+    fireEvent.press(await screen.findByRole('button', { name: 'Save API as an entry' }));
+    expect(onAskAgent).toHaveBeenCalledWith(expect.stringContaining('verity-dev-server add'));
   });
 });

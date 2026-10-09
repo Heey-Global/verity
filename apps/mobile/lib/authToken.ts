@@ -53,6 +53,22 @@ let currentToken: string | null = null;
 let currentTokenId: string | null = null;
 let currentTokenBaseUrl: string | null = null;
 
+const authTokenListeners = new Set<() => void>();
+
+function notifyAuthTokenChanged(): void {
+  for (const listener of [...authTokenListeners]) listener();
+}
+
+/** Observe the in-memory bearer being loaded, rotated or cleared — a biometric
+ *  unlock loads it after the app is already mounted, and the live connection
+ *  waits for it. */
+export function subscribeAuthToken(listener: () => void): () => void {
+  authTokenListeners.add(listener);
+  return () => {
+    authTokenListeners.delete(listener);
+  };
+}
+
 /** The in-memory bearer token for this server URL, or null when none is loaded. */
 export function getAuthToken(baseUrl: string | null): string | null {
   if (baseUrl === null || baseUrl !== currentTokenBaseUrl) return null;
@@ -96,6 +112,7 @@ export async function setAuthToken(
   if (key === null) return false;
   currentTokenBaseUrl = baseUrl;
   currentToken = token;
+  notifyAuthTokenChanged();
   // Reset (not preserve) when absent, so a base-URL switch can't leave the prior
   // URL's id readable under the new URL's now-passing base-URL guard.
   currentTokenId = tokenId ?? null;
@@ -155,6 +172,7 @@ export async function copyAuthTokenToEndpoint(
     );
   }
   currentTokenBaseUrl = toBaseUrl;
+  notifyAuthTokenChanged();
 }
 
 /** Whether this device can present a biometric/passcode prompt for Verity. */
@@ -312,6 +330,7 @@ export async function unlockAuthTokenWithBiometrics(baseUrl: string | null): Pro
     if (record.origin !== baseUrl || typeof record.secret !== 'string') return false;
     currentTokenBaseUrl = baseUrl;
     currentToken = record.secret;
+    notifyAuthTokenChanged();
     currentTokenId = await getStoredAuthTokenId(baseUrl);
     return true;
   } catch {
@@ -347,6 +366,7 @@ export async function restoreUnprotectedAuthToken(baseUrl: string | null): Promi
     if (record.origin !== baseUrl || typeof record.secret !== 'string') return false;
     currentTokenBaseUrl = baseUrl;
     currentToken = record.secret;
+    notifyAuthTokenChanged();
     currentTokenId = await getStoredAuthTokenId(baseUrl);
     return true;
   } catch {
@@ -392,6 +412,7 @@ export async function clearAuthToken(baseUrl: string | null): Promise<void> {
   if (baseUrl === null || baseUrl === currentTokenBaseUrl) {
     currentTokenBaseUrl = null;
     currentToken = null;
+    notifyAuthTokenChanged();
     currentTokenId = null;
   }
   try {
@@ -414,6 +435,7 @@ export async function clearStoredAuthState(baseUrl: string): Promise<void> {
   if (baseUrl === currentTokenBaseUrl) {
     currentTokenBaseUrl = null;
     currentToken = null;
+    notifyAuthTokenChanged();
     currentTokenId = null;
   }
   for (const storedKey of [key, idKey, preferenceKey, passwordKey, LEGACY_TOKEN_KEY]) {
@@ -425,6 +447,7 @@ export async function clearStoredAuthState(baseUrl: string): Promise<void> {
 export async function clearLegacyAuthState(): Promise<void> {
   currentTokenBaseUrl = null;
   currentToken = null;
+  notifyAuthTokenChanged();
   currentTokenId = null;
   await SecureStore.deleteItemAsync(LEGACY_TOKEN_KEY);
 }

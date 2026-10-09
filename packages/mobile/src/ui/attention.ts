@@ -20,6 +20,8 @@ export type AttentionKind =
   | 'ci_failed'
   | 'merge_blocked'
   | 'merge_ready'
+  | 'merge_checking'
+  | 'pr_unknown'
   | 'ci_running'
   | 'unread';
 
@@ -45,7 +47,9 @@ const FLAGS: Record<AttentionKind, Omit<AttentionFlag, 'kind'>> = {
   ci_failed: { tone: 'danger', label: 'CI failed', blocking: true },
   merge_blocked: { tone: 'danger', label: 'Merge blocked', blocking: true },
   merge_ready: { tone: 'done', label: 'Ready to merge', blocking: false },
-  ci_running: { tone: 'attention', label: 'CI running', blocking: false },
+  merge_checking: { tone: 'idle', label: 'Checking mergeability', blocking: false },
+  pr_unknown: { tone: 'attention', label: 'PR status unavailable', blocking: false },
+  ci_running: { tone: 'idle', label: 'CI running', blocking: false },
   unread: { tone: 'active', label: 'New messages', blocking: false },
 };
 const ORDER: readonly AttentionKind[] = [
@@ -63,6 +67,8 @@ const ORDER: readonly AttentionKind[] = [
   'ci_failed',
   'merge_blocked',
   'merge_ready',
+  'merge_checking',
+  'pr_unknown',
   'ci_running',
   'unread',
 ];
@@ -107,14 +113,27 @@ export function sessionAttention(input: AttentionInput): AttentionFlag[] {
     // checks for a PR it can't merge-ref. So flag it before the pipeline branches
     // below, which would otherwise leave such a session with no marker at all.
     if (pr.mergeState === 'dirty') kinds.add('merge_conflict');
-    if (pr.pipeline === 'failure') kinds.add('ci_failed');
+    // GitHub's merge verdict outranks a CI status it could not report (a repository
+    // without checks) or does not enforce (a failing check that is not required leaves
+    // the PR `unstable`). Mirrors `pullRequestMergeButton`, so the row never shows a
+    // red ✕ or a neutral marker beside a live Merge button.
+    const mergesAnyway =
+      pr.mergeable === true &&
+      (pr.pipeline === 'unknown' || (pr.pipeline === 'failure' && pr.mergeState === 'unstable'));
+    if (mergesAnyway && !kinds.has('merge_conflict')) kinds.add('merge_ready');
+    else if (pr.pipeline === 'unknown' && !kinds.has('merge_conflict')) {
+      // GitHub's confirmed "cannot merge" outranks a CI status it could not report.
+      kinds.add(pr.mergeable === false ? 'merge_blocked' : 'pr_unknown');
+    } else if (pr.pipeline === 'failure') kinds.add('ci_failed');
     else if (pr.pipeline === 'pending' || pr.pipeline === 'running') kinds.add('ci_running');
     else if (pr.pipeline === 'success') {
       if (pr.mergeable === true) kinds.add('merge_ready');
       // A confirmed conflict already says this, more precisely — don't mark twice.
       else if (pr.mergeable === false && !kinds.has('merge_conflict')) kinds.add('merge_blocked');
-      // mergeable === null: mergeability still being computed — no flag yet; the next
-      // poll resolves it to merge_ready (green) or merge_blocked (a real conflict).
+      // mergeable === null: GitHub is still computing mergeability. Not blocked, but
+      // not ready either — a non-blocking "settling" flag so the row keeps its PR
+      // marker instead of losing it until the next poll resolves ready/blocked.
+      else if (pr.mergeable === null && !kinds.has('merge_conflict')) kinds.add('merge_checking');
     }
   }
   if (input.unread) kinds.add('unread');

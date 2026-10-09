@@ -27,7 +27,37 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) 
     let outerDelegate = try CertificatePinDelegate(pin: outerPin, origin: outerOrigin.url!)
     let outer = URLSession(configuration: .ephemeral, delegate: outerDelegate, delegateQueue: nil)
     let tunnel = try RemoteAppTunnel(dataURL: dataURL, coreURL: origin, outerSession: outer)
-    defer { tunnel.stop(); outer.invalidateAndCancel() }
+    tunnel.enableDataDiagnostics()
+    defer {
+      tunnel.stop()
+      tunnel.stop()
+      let snapshot = try! JSONSerialization.jsonObject(with: Data(tunnel.exportDataDiagnostics()!.utf8)) as! [String: Any]
+      let events = snapshot["events"] as! [[String: Any]]
+      precondition(events.filter { $0["event"] as? String == "cancel_requested" }.count == 1)
+      precondition(events.filter { $0["event"] as? String == "socket_cancel" }.count == 1)
+      precondition(snapshot["sessionHash"] as? String != "fixture-session")
+      precondition(snapshot["delegateAvailable"] as? Bool == false)
+      let streamSnapshots = snapshot["streams"] as! [[String: Any]]
+      // Teardown must leave stream/TLS evidence in the recorder, not only the live summary.
+      precondition(!streamSnapshots.isEmpty)
+      precondition(streamSnapshots.count <= RemoteDataDiagnostics.streamCapacity)
+      for stream in streamSnapshots {
+        let id = stream["streamId"] as! String
+        precondition(id.range(of: "^[A-F0-9]{32}$", options: .regularExpression) != nil)
+        precondition(stream["proxy"] as? String == (connect ? "connect" : "socks"))
+        precondition(stream["endedBy"] as? String != "open")
+        precondition((stream["outgoingTLSRecords"] as! [Int]).count <= 8)
+        precondition((stream["incomingTLSRecords"] as! [Int]).count <= 8)
+      }
+      let opened = events.firstIndex { $0["event"] as? String == "stream_opened" }
+      let requested = events.firstIndex { $0["event"] as? String == "stream_send_requested" }
+      let completed = events.firstIndex { $0["event"] as? String == "stream_send_completed" }
+      precondition(opened != nil && requested != nil && completed != nil)
+      precondition(opened! < requested! && requested! < completed!)
+      precondition(events[requested!]["streamId"] as? String == events[completed!]["streamId"] as? String)
+      tunnel.disableDataDiagnostics()
+      outer.invalidateAndCancel()
+    }
     let port = try await tunnel.start(ticket: "fixture-ticket", sessionId: "fixture-session")
     if connect {
       // Any local process can dial the listener; only the host and port check

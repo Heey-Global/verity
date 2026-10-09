@@ -1,23 +1,8 @@
 name: verity-mobile-ota
 
-# Publishes a patch-versioned EAS Update to an isolated staging branch on every
-# eligible merge to main, then updates one rolling promotion PR per runtime. Merging that PR moves the
-# TestFlight channel to the exact staged branch; this workflow never exposes an
-# unapproved bundle to installed TestFlight builds.
-#
-# It NEVER builds a native binary. Native-sensitive changes wait for the mobile
-# release PR and GitHub-hosted TestFlight build instead. The explicit X.Y.0
-# runtime guarantees that patches only reach their native release line.
-#
-# Each delivered promotion gets the next patch in the current native line:
-# `mobile-v1.4.0` is the TestFlight build, followed by OTA releases
-# `mobile-v1.4.1`, `mobile-v1.4.2`, and so on. The version is stamped into the
-# exported bundle. Pending candidates share the planned patch version; their
-# source-specific branches and immutable records distinguish their exact bytes.
-#
-# Requires an EXPO_TOKEN repository secret (an Expo access token from
-# expo.dev -> account settings -> access tokens). The guard step below fails loudly
-# if it is missing rather than letting eas-cli error out cryptically.
+# Relevant main merges update a Release Please Staging OTA PR. Only merging
+# that PR publishes its fixed patch version and updates the production proposal.
+# Native changes still require a separate native TestFlight release first.
 
 on:
   push:
@@ -30,6 +15,9 @@ on:
       - 'package-lock.json'
       - 'scripts/mobile-ota-release.ts'
       - 'scripts/mobile-native-compatibility.mjs'
+      - 'scripts/mobile-ota-proposal.mjs'
+      - 'release-please-config.mobile-ota.json'
+      - '.release-please-manifest.mobile-ota.json'
   # A delivered promotion strands any candidate staged after its approval, and
   # its own commit is the only push that follows. The promotion workflow asks
   # for the restage that no push would trigger.
@@ -50,6 +38,7 @@ jobs:
     permissions:
       actions: write
       contents: write
+      issues: write
       pull-requests: write
     # A stalled Metro export / EAS publish must not hold the serialized release
     # slot indefinitely.
@@ -78,8 +67,25 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Require Expo release configuration
+      - name: Reconcile the latest main source
         if: steps.release-kind.outputs.skip != 'true'
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          git checkout --detach origin/main
+
+      - name: Detect merged Staging OTA release
+        if: steps.release-kind.outputs.skip != 'true'
+        id: intent
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/mobile-ota-proposal.mjs detect
+
+      - name: Check out the immutable merged release source
+        if: steps.intent.outputs.mode == 'stage'
+        run: git checkout --detach '${{ steps.intent.outputs.commit }}'
+
+      - name: Require Expo release configuration
+        if: steps.intent.outputs.mode == 'stage'
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         shell: bash
@@ -104,11 +110,11 @@ jobs:
       # apps/mobile bundles @verity/mobile from its built dist (the mobile-app CI
       # job builds it before its checks for the same reason), so build the workspace
       # dependency before Metro exports the update bundle.
-      - if: steps.release-kind.outputs.skip != 'true'
+      - if: steps.intent.outputs.mode == 'stage'
         run: npm run -w @verity/mobile build
 
-      - name: Allocate next OTA patch version
-        if: steps.release-kind.outputs.skip != 'true'
+      - name: Verify published native runtime compatibility
+        if: steps.intent.outputs.mode == 'stage'
         id: version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -117,7 +123,7 @@ jobs:
           set -euo pipefail
           native_tag="$(
             gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-              --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+              --jq '.[] | select(.draft == false) | .tag_name' \
               | grep -E '^mobile-v[0-9]+\.[0-9]+\.0$' \
               | sort -V \
               | tail -n 1
@@ -157,9 +163,25 @@ jobs:
           fi
           echo "runtime=$native_version" >> "$GITHUB_OUTPUT"
 
-      - name: Stage immutable candidate and update rolling promotion PR
-        if: steps.release-kind.outputs.skip != 'true' && steps.version.outputs.blocked != 'true'
+      - name: Update Staging OTA Release Please PR
+        if: steps.intent.outputs.mode == 'plan'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/mobile-ota-proposal.mjs plan "$(tr -d '[:space:]' < apps/mobile/version.txt)"
+
+      - name: Stage immutable candidate and update rolling promotion PR
+        id: stage
+        if: steps.intent.outputs.mode == 'stage' && steps.version.outputs.blocked != 'true'
+        env:
+          OTA_SOURCE_SHA: ${{ steps.intent.outputs.commit }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: node scripts/mobile-ota-release.ts stage "${{ steps.version.outputs.runtime }}"
+          STAGING_GOOGLE_AUTH_ID: ${{ secrets.STAGING_GOOGLE_AUTH_ID }}
+          GOOGLE_AUTH_ID: ${{ vars.GOOGLE_AUTH_ID || '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com' }}
+        run: node scripts/mobile-ota-release.ts stage "${{ steps.version.outputs.runtime }}" "${{ steps.intent.outputs.version }}"
+
+      - name: Record the delivered Staging release
+        if: steps.intent.outputs.mode == 'stage' && steps.version.outputs.blocked != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/mobile-ota-proposal.mjs complete "${{ steps.intent.outputs.pr }}" "${{ steps.stage.outputs.deferred }}"

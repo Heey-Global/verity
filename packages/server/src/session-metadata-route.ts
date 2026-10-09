@@ -17,6 +17,7 @@ const patchSessionBody = z.object({
     .nullable()
     .optional(),
   model: z.string().min(1).optional(),
+  favorite: z.boolean().optional(),
 });
 
 export interface SessionMetadataRouteDeps {
@@ -24,6 +25,7 @@ export interface SessionMetadataRouteDeps {
     EventStore,
     | 'getSession'
     | 'renameSession'
+    | 'setSessionFavorite'
     | 'getSessionBackendStates'
     | 'setSessionModel'
     | 'deleteSessionBackendStates'
@@ -32,16 +34,18 @@ export interface SessionMetadataRouteDeps {
   closeSession: Conductor['closeSession'];
   isModelAllowed: (model: string | undefined) => boolean;
   projectModelError: string;
+  /** The project's agent rule; answers the reason when it rejects `model`. */
+  projectAgentRejection?: (model: string, projectId: string) => Promise<string | undefined>;
 }
 
-/** Registers atomic session rename and backend/model handoff updates. */
+/** Registers atomic session rename, favorite and backend/model handoff updates. */
 export function registerSessionMetadataRoute(
   app: FastifyInstance,
   deps: SessionMetadataRouteDeps,
 ): void {
   app.patch('/sessions/:id', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);
-    const { name, model } = patchSessionBody.parse(request.body);
+    const { name, model, favorite } = patchSessionBody.parse(request.body);
     const current = model !== undefined ? await deps.store.getSession(id) : undefined;
 
     if (model !== undefined && !current) {
@@ -61,11 +65,34 @@ export function registerSessionMetadataRoute(
 
     const modelUnchanged = model !== undefined && current?.model === model;
 
+    // A session already on an agent the project later excluded keeps running; only
+    // a switch has to land on an allowed agent.
+    if (
+      model !== undefined &&
+      !modelUnchanged &&
+      current?.projectId != null &&
+      deps.projectAgentRejection !== undefined
+    ) {
+      const rejection = await deps.projectAgentRejection(model, current.projectId);
+      if (rejection !== undefined) {
+        reply.code(400);
+        return { error: rejection };
+      }
+    }
+
     // A rename is independent metadata and must land before a handoff that may
     // answer 409/503. Those responses explicitly tell the client it was applied.
     if (name !== undefined) {
       const renamed = await deps.store.renameSession(id, name);
       if (!renamed) {
+        reply.code(404);
+        return { error: `session ${id} not found` };
+      }
+    }
+
+    if (favorite !== undefined) {
+      const marked = await deps.store.setSessionFavorite(id, favorite);
+      if (!marked) {
         reply.code(404);
         return { error: `session ${id} not found` };
       }
@@ -108,7 +135,8 @@ export function registerSessionMetadataRoute(
           return {
             error:
               `session ${id} still has an unterminated backend — retry the model switch` +
-              (name !== undefined ? ' (the rename in this request was applied)' : ''),
+              (name !== undefined ? ' (the rename in this request was applied)' : '') +
+              (favorite !== undefined ? ' (the favorite change in this request was applied)' : ''),
           };
         }
         if (error instanceof SessionBusyError) {
@@ -116,7 +144,8 @@ export function registerSessionMetadataRoute(
           return {
             error:
               `session ${id} is busy with another operation — retry the model switch` +
-              (name !== undefined ? ' (the rename in this request was applied)' : ''),
+              (name !== undefined ? ' (the rename in this request was applied)' : '') +
+              (favorite !== undefined ? ' (the favorite change in this request was applied)' : ''),
           };
         }
         throw error;
@@ -130,6 +159,7 @@ export function registerSessionMetadataRoute(
     return {
       sessionId: id,
       ...(name !== undefined ? { name } : {}),
+      ...(favorite !== undefined ? { favorite } : {}),
       ...(model !== undefined ? { model, deferred: false } : {}),
     };
   });

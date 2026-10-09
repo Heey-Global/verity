@@ -6,7 +6,7 @@ import { InMemoryEventBus, type Backend, type SpawnedProcess, type Spawner } fro
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { ProjectRecord } from '@verity/store';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildControlPlane } from './app.js';
+import { buildControlPlane, type ControlPlaneDeps } from './app.js';
 import { createAuthTokenRegistry } from './auth.js';
 import { createProjectEgressCa, issueGatewayServerCertificate } from './claude-egress-ca.js';
 
@@ -56,6 +56,65 @@ function fakeProcess(lines: string[]): SpawnedProcess {
 }
 
 describe('buildControlPlane', () => {
+  it('composes local preview discovery and sharing without an Uplink manager', async () => {
+    await ctx.store.createSession({
+      sessionId: 'local-preview',
+      worktree: '/work/session',
+      model: 'm',
+    });
+    const devServers = [
+      {
+        port: 5173,
+        name: 'Vite',
+        command: 'vite',
+        pid: 42,
+        reachable: true,
+        workdir: '.',
+        scope: 'session',
+      },
+    ];
+    const listSessionDevServers = vi.fn(async () => devServers);
+    const share = {
+      id: 'local-share',
+      url: 'http://localhost:8100',
+      expiresAt: new Date(),
+      sessionId: 'local-preview',
+      projectId: 'p',
+      targetPort: 5173,
+      staticPath: null,
+    };
+    const create = vi.fn(async () => share);
+    const app = buildControlPlane({
+      eventStore: ctx.store,
+      bus: new InMemoryEventBus(),
+      listenerDiscovery: { listSessionDevServers } as unknown as NonNullable<
+        ControlPlaneDeps['listenerDiscovery']
+      >,
+      localPreviewManager: { create, list: () => [share] } as unknown as NonNullable<
+        ControlPlaneDeps['localPreviewManager']
+      >,
+      previewSharingCapability: () => 'premium-required',
+    });
+    try {
+      expect(
+        (await app.inject({ method: 'GET', url: '/sessions/local-preview/dev-servers' })).json(),
+      ).toEqual({ devServers });
+      expect((await app.inject({ method: 'GET', url: '/preview-capabilities' })).json()).toEqual({
+        publicSharing: 'premium-required',
+      });
+      const response = await app.inject({
+        method: 'POST',
+        url: '/sessions/local-preview/local-shares',
+        payload: { targetPort: 5173 },
+      });
+      expect(response.statusCode).toBe(201);
+      expect(create).toHaveBeenCalledWith('local-preview', { targetPort: 5173 });
+      expect(response.json().share.id).toBe(share.id);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('serves live Uplink diagnostics through the composed control plane', async () => {
     const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
     const device = await registry.mint('iPhone');
@@ -137,7 +196,7 @@ describe('buildControlPlane', () => {
     }
   });
 
-  it('injects durable Verity Control capabilities for project and Concierge sessions', async () => {
+  it('injects durable Verity Control capabilities for project and legacy Concierge sessions', async () => {
     const projectWorktree = mkdtempSync(join(tmpdir(), 'verity-project-control-'));
     const legacyWorktree = mkdtempSync(join(tmpdir(), 'verity-legacy-control-'));
     await ctx.store.upsertProject({
@@ -294,6 +353,7 @@ describe('buildControlPlane', () => {
         switchable: async () => [],
         previewable: async () => [],
         isDirty: async () => false,
+        hasProjectChanges: async () => false,
         switch: async () => 'feat/119-footer',
         autoRename: async () => null,
         resetToMergedBase: async () => ({ base: 'main' }),
@@ -334,6 +394,7 @@ describe('buildControlPlane', () => {
         switchable: async () => [],
         previewable: async () => [],
         isDirty: async () => false,
+        hasProjectChanges: async () => false,
         switch: async () => 'feat/live',
         autoRename: async () => null,
         resetToMergedBase: async () => ({ base: 'main' }),

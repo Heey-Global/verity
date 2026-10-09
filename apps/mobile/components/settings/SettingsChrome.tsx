@@ -15,6 +15,7 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../Icon';
 import { StatusPill } from '../StatusPill';
+import { Toggle } from '../Toggle';
 import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
 import { useVeritySettings } from '../../lib/settingsStore';
 import { ApplyPendingBanner } from './ApplyPendingBanner';
@@ -157,6 +158,7 @@ export function SettingsNavRow({
   status,
   onPress,
   accessibilityLabel,
+  disabled = false,
 }: {
   icon: IconName;
   title: string;
@@ -165,12 +167,19 @@ export function SettingsNavRow({
   status?: { intent: 'ready' | 'needsSetup' | 'optional' | 'transient'; label: string };
   onPress: () => void;
   accessibilityLabel?: string;
+  disabled?: boolean;
 }) {
   const { theme } = useUnistyles();
   return (
     <Pressable
-      style={({ pressed }) => [styles.navRow, pressed ? styles.pressed : null]}
+      style={({ pressed }) => [
+        styles.navRow,
+        disabled ? styles.buttonDisabled : null,
+        pressed ? styles.pressed : null,
+      ]}
       onPress={onPress}
+      disabled={disabled}
+      accessibilityState={{ disabled }}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? title}
     >
@@ -244,11 +253,14 @@ export function SettingsToggleRow({
   value,
   onValueChange,
   disabled = false,
+  icon,
 }: {
   label: string;
   value: boolean;
   onValueChange: (value: boolean) => void;
   disabled?: boolean;
+  /** Leading glyph, drawn in the same slot as a nav row's icon. */
+  icon?: ReactNode;
 }) {
   return (
     <Pressable
@@ -263,10 +275,9 @@ export function SettingsToggleRow({
       accessibilityState={{ checked: value, disabled }}
       accessibilityLabel={label}
     >
+      {icon !== undefined ? <View style={styles.navRowIcon}>{icon}</View> : null}
       <Text style={styles.toggleLabel}>{label}</Text>
-      <View style={[styles.toggleTrack, value ? styles.toggleTrackOn : null]}>
-        <View style={[styles.toggleKnob, value ? styles.toggleKnobOn : null]} />
-      </View>
+      <Toggle value={value} />
     </Pressable>
   );
 }

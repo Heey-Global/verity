@@ -1,10 +1,11 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "extra-label": "staging",
   "packages": {
     ".": {
       "release-type": "simple",
       "package-name": "server",
-      "pull-request-title-pattern": "chore${scope}: release server ${version}",
+      "pull-request-title-pattern": "chore(release): staging server ${version}",
       "include-component-in-tag": false,
       "draft": true,
       "version-file": "/version.txt",

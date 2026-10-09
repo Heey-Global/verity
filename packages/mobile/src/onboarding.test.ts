@@ -30,7 +30,7 @@ function status(overrides: Partial<OnboardingStatus> = {}): OnboardingStatus {
 
 describe('ONBOARDING_STEPS', () => {
   it('lists only the setup wizard steps in order', () => {
-    expect(ONBOARDING_STEP_IDS).toEqual(['master-password', 'github', 'doppler', 'ai-backends']);
+    expect(ONBOARDING_STEP_IDS).toEqual(['master-password', 'ai-backends']);
   });
 
   it('keeps welcome + server-url out of the numbered setup wizard', () => {
@@ -40,9 +40,9 @@ describe('ONBOARDING_STEPS', () => {
 
   it('keeps project creation out of the credential wizard', () => {
     const required = ONBOARDING_STEPS.filter((step) => step.required).map((step) => step.id);
-    expect(required).toEqual(['master-password', 'github']);
+    expect(required).toEqual(['master-password', 'ai-backends']);
     const optional = ONBOARDING_STEPS.filter((step) => !step.required).map((step) => step.id);
-    expect(optional).toEqual(['doppler', 'ai-backends']);
+    expect(optional).toEqual([]);
   });
 });
 
@@ -52,7 +52,11 @@ describe('resumeStep', () => {
   });
 
   it('returns done when setup is complete', () => {
-    expect(resumeStep(status({ complete: true, nextStep: null }))).toBe('ai-backends');
+    expect(
+      resumeStep(
+        status({ masterPasswordSet: true, claudeConfigured: true, complete: true, nextStep: null }),
+      ),
+    ).toBe('ai-backends');
   });
 
   it('jumps to the first incomplete required step once something is set', () => {
@@ -66,7 +70,7 @@ describe('resumeStep', () => {
       resumeStep(
         status({ masterPasswordSet: true, githubAppConfigured: false, nextStep: 'github' }),
       ),
-    ).toBe('github');
+    ).toBe('ai-backends');
     expect(
       resumeStep(
         status({
@@ -76,7 +80,7 @@ describe('resumeStep', () => {
           nextStep: 'github',
         }),
       ),
-    ).toBe('github');
+    ).toBe('ai-backends');
     expect(
       resumeStep(
         status({
@@ -90,24 +94,23 @@ describe('resumeStep', () => {
     ).toBe('ai-backends');
   });
 
-  it('falls back to master-password if the server omits nextStep while not complete', () => {
+  it('resumes AI setup if an older server omits nextStep', () => {
     // Defensive: not complete + some progress but a null nextStep shouldn't crash.
     expect(resumeStep(status({ masterPasswordSet: true, nextStep: null, complete: false }))).toBe(
-      'master-password',
+      'ai-backends',
     );
   });
 });
 
 describe('stepProgress', () => {
   it('reports a 1-based index and the total step count', () => {
-    expect(stepProgress('master-password')).toEqual({ index: 1, total: 4 });
-    expect(stepProgress('github')).toEqual({ index: 2, total: 4 });
-    expect(stepProgress('ai-backends')).toEqual({ index: 4, total: 4 });
+    expect(stepProgress('master-password')).toEqual({ index: 1, total: 2 });
+    expect(stepProgress('ai-backends')).toEqual({ index: 2, total: 2 });
   });
 
   it('is consistent with the ordered id list for every step', () => {
     for (const [i, id] of ONBOARDING_STEP_IDS.entries()) {
-      expect(stepProgress(id)).toEqual({ index: i + 1, total: 4 });
+      expect(stepProgress(id)).toEqual({ index: i + 1, total: 2 });
     }
   });
 
@@ -127,8 +130,34 @@ describe('isCoreOnboardingComplete', () => {
           hasProject: false,
           complete: false,
           nextStep: 'first-project',
+          claudeConfigured: true,
         }),
       ),
+    ).toBe(true);
+  });
+});
+
+describe('minimal setup completion', () => {
+  it('allows local work without GitHub or signing', () => {
+    expect(
+      isCoreOnboardingComplete(status({ masterPasswordSet: true, codexConfigured: true })),
+    ).toBe(true);
+  });
+  it('does not trust an older server complete flag without an AI provider', () => {
+    expect(
+      isCoreOnboardingComplete(
+        status({
+          masterPasswordSet: true,
+          complete: true,
+          githubAppConfigured: true,
+          signingKeyConfigured: true,
+        }),
+      ),
+    ).toBe(false);
+  });
+  it('accepts configured OpenCode as the only AI provider', () => {
+    expect(
+      isCoreOnboardingComplete(status({ masterPasswordSet: true, opencodeConfigured: true })),
     ).toBe(true);
   });
 });

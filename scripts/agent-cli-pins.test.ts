@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import semver from 'semver';
 import { describe, expect, it } from 'vitest';
@@ -41,17 +42,12 @@ const CODEX_MODEL_CLI_FLOOR: Readonly<Record<string, string>> = {
  */
 const dockerfilePins = (source: string): Map<string, string> =>
   new Map(
-    [
-      ...source.matchAll(
-        /# renovate: datasource=npm depName=(\S+)\nRUN npm install -g (\S+)@([^\s@]+)\n/gu,
-      ),
-    ]
-      // The annotation names the package Renovate updates; the command names the
-      // package npm installs. A pin whose two halves disagree is invisible to
-      // Renovate, so read it as a pair and let the comparison below miss it rather
-      // than silently trusting the annotation.
-      .filter((pin) => pin[1] === pin[2])
-      .map((pin) => [pin[1]!, pin[3]!]),
+    [...source.matchAll(/^RUN node \S*\/verity-cli-install\.mjs ([a-z-]+)$/gm)].map((match) => {
+      const manifest = JSON.parse(
+        readFileSync(`features/verity-sandbox-toolkit/npm/${match[1]}/package.json`, 'utf8'),
+      ) as { dependencies: Record<string, string> };
+      return Object.entries(manifest.dependencies)[0]!;
+    }),
   );
 
 const featurePins = (source: string): Map<string, string> =>

@@ -48,6 +48,47 @@ const sampleEvents: AgentEvent[] = [
 ];
 
 describe('EventStore — linked session allowance', () => {
+  it('links distinct sessions within one project and keeps self-links forbidden', async () => {
+    await ctx.store.upsertProject({
+      id: 'p1',
+      owner: 'local',
+      repo: 'p1',
+      containerName: 'test-p1',
+      state: 'active',
+    });
+    await ctx.store.createSession({ ...session, projectId: 'p1' });
+    await ctx.store.createSession({
+      sessionId: 's2',
+      worktree: '/wt/agent-s2',
+      model: session.model,
+      projectId: 'p1',
+    });
+    await expect(ctx.store.createSessionLink('s1', 's1')).rejects.toThrow(
+      'a session cannot link to itself',
+    );
+    expect(await ctx.store.linkedSessionIds()).toEqual(new Set());
+    expect(await ctx.store.createSessionLink('s1', 's2')).toBe(true);
+    expect(await ctx.store.linkedSessionIds()).toEqual(new Set(['s1', 's2']));
+    expect(await ctx.store.createSessionLink('s2', 's1')).toBe(false);
+    expect(await ctx.store.listSessionLinks('s1')).toEqual([
+      { sessionId: 's1', peerSessionId: 's2', peerProjectId: 'p1', peerName: null },
+    ]);
+    expect(await ctx.store.listSessionLinks('s2')).toEqual([
+      { sessionId: 's2', peerSessionId: 's1', peerProjectId: 'p1', peerName: null },
+    ]);
+    expect(await ctx.store.reserveSessionLinkMessage('s1', 's2', 'message', false)).toBe(
+      'reserved',
+    );
+    expect(await ctx.store.reserveSessionLinkMessage('s2', 's1', 'reply', false)).toBe('reserved');
+    await ctx.store.hideProject('p1');
+    expect(await ctx.store.linkedSessionIds()).toEqual(new Set());
+    expect(await ctx.store.listSessionLinks('s1')).toEqual([]);
+    expect(await ctx.store.listSessionLinks('s2')).toEqual([]);
+    await expect(ctx.store.createSessionLink('s1', 's2')).rejects.toThrow(
+      'linked sessions require available projects',
+    );
+  });
+
   it('retains unanswered messages across store instances and bounds the pending inbox', async () => {
     for (const id of ['p1', 'p2']) {
       await ctx.store.upsertProject({
@@ -269,9 +310,7 @@ describe('EventStore — linked session allowance', () => {
     await ctx.store.createSessionLink('s1', 's2');
     await ctx.store.setSessionProject('s1', 'p2');
     expect(await ctx.store.listSessionLinks('s2')).toEqual([]);
-    await expect(ctx.store.createSessionLink('s1', 's2')).rejects.toThrow(
-      'linked sessions must belong to different projects',
-    );
+    expect(await ctx.store.createSessionLink('s1', 's2')).toBe(true);
     await ctx.store.setSessionProject('s1', 'p1');
     await ctx.store.createSessionLink('s1', 's2');
     await ctx.store.hideProject('p2');
@@ -519,7 +558,14 @@ describe('EventStore — session Google Slides assignment', () => {
     await expect(ctx.store.claimGoogleSlideInvocation(input)).resolves.toEqual({
       status: 'pending',
     });
+    await expect(ctx.store.getCompletedGoogleWorkspaceInvocation(input)).resolves.toBeUndefined();
     await ctx.store.completeGoogleSlideInvocation(input.invocationId, { revisionId: 'rev-2' });
+    await expect(ctx.store.getCompletedGoogleWorkspaceInvocation(input)).resolves.toEqual({
+      result: { revisionId: 'rev-2' },
+    });
+    await expect(
+      ctx.store.getCompletedGoogleWorkspaceInvocation({ ...input, turnId: 'other' }),
+    ).rejects.toThrow('reused across turns');
     await expect(ctx.store.claimGoogleSlideInvocation(input)).resolves.toEqual({
       status: 'completed',
       result: { revisionId: 'rev-2' },
@@ -912,8 +958,9 @@ describe('EventStore — sessions', () => {
       ...session,
       name: null,
       projectId: null,
-      kind: 'normal',
       lastSeenEventCount: null,
+      planningRevision: 0,
+      planningPlan: null,
     });
   });
 
@@ -923,8 +970,9 @@ describe('EventStore — sessions', () => {
       ...session,
       name: 'Add settings',
       projectId: null,
-      kind: 'normal',
       lastSeenEventCount: null,
+      planningRevision: 0,
+      planningPlan: null,
     });
   });
 
@@ -945,6 +993,24 @@ describe('EventStore — sessions', () => {
 
     // Unknown session id → false (the server maps this to a 404).
     expect(await ctx.store.setSessionSeen('missing', 1)).toBe(false);
+  });
+
+  it('setSessionPlanning moves planning mode only from the states it is told to expect', async () => {
+    await ctx.store.createSession(session);
+    // Never planned: the record carries no planning state at all.
+    expect(await ctx.store.getSession('s1')).not.toHaveProperty('planning');
+
+    expect(await ctx.store.setSessionPlanning('s1', 'active', [null, 'implemented'])).toBe(true);
+    expect((await ctx.store.getSession('s1'))?.planning).toBe('active');
+
+    // The first decision wins: a second one expecting `active` finds it already gone,
+    // so a tap and an approval racing each other cannot both start an implementation.
+    expect(await ctx.store.setSessionPlanning('s1', 'implemented', ['active'])).toBe(true);
+    expect(await ctx.store.setSessionPlanning('s1', 'discarded', ['active'])).toBe(false);
+    expect((await ctx.store.getSession('s1'))?.planning).toBe('implemented');
+    expect((await ctx.store.listSessions())[0]?.planning).toBe('implemented');
+
+    expect(await ctx.store.setSessionPlanning('missing', 'active')).toBe(false);
   });
 
   it('returns undefined for an unknown session', async () => {
@@ -1217,6 +1283,29 @@ describe('EventStore — sessions', () => {
 
     it('returns false for an unknown session (no row matched)', async () => {
       expect(await ctx.store.renameSession('missing', 'x')).toBe(false);
+    });
+  });
+
+  describe('setSessionFavorite', () => {
+    it('marks and unmarks a favorite, visible through getSession and listSessions', async () => {
+      await ctx.store.createSession(session);
+      expect((await ctx.store.getSession('s1'))?.favorite).toBeUndefined();
+
+      expect(await ctx.store.setSessionFavorite('s1', true)).toBe(true);
+      expect((await ctx.store.getSession('s1'))?.favorite).toBe(true);
+      expect((await ctx.store.listSessions()).find((s) => s.sessionId === 's1')?.favorite).toBe(
+        true,
+      );
+
+      expect(await ctx.store.setSessionFavorite('s1', false)).toBe(true);
+      expect((await ctx.store.getSession('s1'))?.favorite).toBeUndefined();
+      expect(
+        (await ctx.store.listSessions()).find((s) => s.sessionId === 's1')?.favorite,
+      ).toBeUndefined();
+    });
+
+    it('returns false for an unknown session (no row matched)', async () => {
+      expect(await ctx.store.setSessionFavorite('missing', true)).toBe(false);
     });
   });
 
@@ -2044,14 +2133,17 @@ describe('EventStore — session projection facts', () => {
       // rather than quietly serving a short log to the overview.
       const expected = full.filter((row) => sessionProjectionEvents([row.event]).length === 1);
       expect(entry?.events).toEqual(expected);
-      expect(entry?.eventCount).toBe(full.length);
+      expect(entry?.eventCount).toBe(
+        full.filter((row) => row.event.t === 'text' && row.event.delta.length > 0).length,
+      );
       expect(entry?.lastEventSeq).toBe(full.at(-1)?.seq ?? 0);
       expect(entry?.lastActivityAt).toBe(full.at(-1)?.ts);
     }
-    // s2 holds none of the projected kinds — the count still separates it from an
-    // empty log, which is the whole reason it travels alongside the events.
+    // Non-projected text still advances unread state independently of status.
     expect(facts.get('s2')?.events).toEqual([]);
-    expect(facts.get('s2')?.eventCount).toBe(sampleEvents.length);
+    expect(facts.get('s2')?.eventCount).toBe(
+      sampleEvents.filter((event) => event.t === 'text' && event.delta.length > 0).length,
+    );
   });
 
   it('returns a zeroed entry for a session with no events and for an unknown id', async () => {
@@ -2152,7 +2244,7 @@ describe('EventStore — session projection facts', () => {
     const facts = await ctx.store.listSessionProjectionFacts(['s1'], WHOLE_LOG);
     expect(facts.get('s1')?.lastActivityAt).toBe(newestBySeq?.created_at.getTime());
     expect(facts.get('s1')?.lastActivityAt).toBe(older.getTime());
-    expect(facts.get('s1')?.eventCount).toBe(2);
+    expect(facts.get('s1')?.eventCount).toBe(0);
   });
 
   it('reads the same slice with and without the counters', async () => {
@@ -2245,7 +2337,7 @@ describe('EventStore — session projection facts', () => {
     expect(facts.get('s1')?.eventsTruncated).toBe(true);
     // The counters are still facts about the WHOLE log — a tail that shortened
     // them would read as an unread badge quietly resetting itself.
-    expect(facts.get('s1')?.eventCount).toBe(tailLimit * 3 * 2);
+    expect(facts.get('s1')?.eventCount).toBe(tailLimit * 3);
   });
 
   it('bounds each session separately, and calls a short tail complete', async () => {

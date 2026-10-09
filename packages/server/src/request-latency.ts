@@ -1,3 +1,7 @@
+import {
+  switchRequestDiagnostic,
+  createSwitchDiagnosticBudget,
+} from './switch-request-diagnostic.js';
 import { performance } from 'node:perf_hooks';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
@@ -5,6 +9,7 @@ import {
   withRequestLatencyTrace,
   type RequestLatencyTrace,
 } from '@verity/store';
+import { createLatencyCpuProfiler } from './latency-cpu-profile.js';
 
 const PROBE_INTERVAL_MS = 100;
 const SLOW_REQUEST_MS = 3_000;
@@ -12,11 +17,15 @@ const TRACKED_ROUTES = new Set([
   '/projects',
   '/sessions',
   '/sessions/:id',
+  '/sessions/:id/events',
   '/sessions/:id/activity',
   '/sessions/:id/links',
   '/sessions/:id/branches',
   '/sessions/:id/dev-servers',
   '/projects/:id/public-shares',
+  '/projects/:id/dev-servers',
+  '/server/updates',
+  '/provider-limits',
 ]);
 
 interface Probe {
@@ -29,9 +38,34 @@ interface Probe {
   timer: ReturnType<typeof setInterval>;
 }
 
-/** Slow reads log bounded numeric measurements, never IDs, URLs, SQL or parameters. */
+/** Slow reads log bounded measurements and route patterns, never raw URLs or SQL. */
 export function registerRequestLatencyDiagnostics(app: FastifyInstance): void {
+  const admitSwitchDiagnostic = createSwitchDiagnosticBudget();
   const probes = new Map<FastifyRequest, Probe>();
+  const switchRequests = new WeakMap<
+    FastifyRequest,
+    { started: number; diagnosticRequestId: string; kind: string }
+  >();
+  const finishSwitch = (request: FastifyRequest, outcome: string, statusCode?: number): void => {
+    const trace = switchRequests.get(request);
+    if (!trace) return;
+    switchRequests.delete(request);
+    request.log.info(
+      {
+        diagnosticRequestId: trace.diagnosticRequestId,
+        kind: trace.kind,
+        completedAt: Date.now(),
+        elapsedMs: performance.now() - trace.started,
+        outcome,
+        ...(statusCode === undefined ? {} : { statusCode }),
+      },
+      'session switch handler completed',
+    );
+  };
+  const cpuProfiler = createLatencyCpuProfiler({
+    directory: process.env.VERITY_LATENCY_CPU_PROFILE_DIR,
+    log: (event) => app.log.warn(event, 'backend latency CPU profile'),
+  });
   function finish(request: FastifyRequest): Probe | undefined {
     const probe = probes.get(request);
     if (!probe) return;
@@ -42,18 +76,26 @@ export function registerRequestLatencyDiagnostics(app: FastifyInstance): void {
       probe.eventLoopDelayMaxMs,
       performance.now() - probe.nextTick,
     );
+    cpuProfiler.trigger(probe.eventLoopDelayMaxMs);
     return probe;
   }
 
   app.addHook('onRequest', (request, reply, done) => {
+    const diagnostic = switchRequestDiagnostic(request.method, request.url, request.headers);
+    if (diagnostic && admitSwitchDiagnostic()) {
+      switchRequests.set(request, { ...diagnostic, started: performance.now() });
+      request.log = request.log.child(diagnostic);
+      request.log.info({ receivedAt: Date.now() }, 'session switch handler received');
+    }
+    const trace = createRequestLatencyTrace();
+    trace.owner = `${request.method} ${request.routeOptions.url ?? 'unmatched'} (${request.id})`;
     if (
       request.method !== 'GET' ||
       !TRACKED_ROUTES.has((request.routeOptions.url ?? '').replace(/:[^/]+/g, ':id'))
     ) {
-      return done();
+      return withRequestLatencyTrace(trace, done);
     }
     const started = performance.now();
-    const trace = createRequestLatencyTrace();
     const probe: Probe = {
       trace,
       started,
@@ -63,6 +105,7 @@ export function registerRequestLatencyDiagnostics(app: FastifyInstance): void {
       timer: setInterval(() => {
         const now = performance.now();
         probe.eventLoopDelayMaxMs = Math.max(probe.eventLoopDelayMaxMs, now - probe.nextTick);
+        cpuProfiler.trigger(now - probe.nextTick);
         probe.nextTick = now + PROBE_INTERVAL_MS;
       }, PROBE_INTERVAL_MS),
     };
@@ -81,6 +124,7 @@ export function registerRequestLatencyDiagnostics(app: FastifyInstance): void {
     done();
   });
   app.addHook('onResponse', (request, reply, done) => {
+    finishSwitch(request, 'finished', reply.statusCode);
     const probe = finish(request);
     if (probe && reply.elapsedTime >= SLOW_REQUEST_MS) {
       request.log.warn(
@@ -100,15 +144,17 @@ export function registerRequestLatencyDiagnostics(app: FastifyInstance): void {
     done();
   });
   app.addHook('onRequestAbort', (request, done) => {
+    finishSwitch(request, 'aborted');
     finish(request);
     done();
   });
   app.addHook('onTimeout', (request, _reply, done) => {
+    finishSwitch(request, 'timeout');
     finish(request);
     done();
   });
-  app.addHook('onClose', (_instance, done) => {
+  app.addHook('onClose', async () => {
     for (const request of probes.keys()) finish(request);
-    done();
+    await cpuProfiler.close();
   });
 }

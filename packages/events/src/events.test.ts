@@ -12,7 +12,9 @@ const validEvents: Record<AgentEvent['t'], AgentEvent> = {
   session: { t: 'session', id: 's1', model: 'claude-sonnet-4-6', worktree: '/w/agent-s1' },
   status: { t: 'status', state: 'running' },
   text: { t: 'text', delta: 'hello' },
+  dev_servers_changed: { t: 'dev_servers_changed', devServers: [] },
   notice: { t: 'notice', text: 'Meeting transcript saved', role: 'agent' },
+  tasks_updated: { t: 'tasks_updated', origin: 'agent', change: 'added', taskIds: ['t1'] },
   prompt: { t: 'prompt', text: 'do the thing' },
   thinking: { t: 'thinking', blockId: 'b1', signature: 'sig', delta: 'pondering' },
   skill: { t: 'skill', text: '# /code-review\nRun before push.' },
@@ -61,13 +63,12 @@ const validEvents: Record<AgentEvent['t'], AgentEvent> = {
     options: [{ label: 'Build it now', recommended: true }, { label: 'Formalize first' }],
     multiSelect: false,
   },
-  agent_loop_proposal: {
-    t: 'agent_loop_proposal',
+  automation_proposal: {
+    t: 'automation_proposal',
     proposal: {
-      loopId: '11111111-1111-4111-8111-111111111111',
-      name: 'Dependency audit',
-      script: '#!/bin/sh\nexit 0',
-      schedule: { kind: 'daily', hour: 3, minute: 0 },
+      name: 'Morning review',
+      schedule: { kind: 'daily', hour: 9, minute: 0 },
+      prompt: 'Summarize the open pull requests.',
     },
   },
   interrupted: { t: 'interrupted' },

@@ -98,6 +98,9 @@ describe('onboarding connection entry', () => {
     expect(screen.getByText('Pair this device')).toBeOnTheScreen();
     expect(screen.getAllByText(/^Step [12]$/)).toHaveLength(2);
     expect(screen.getByText(/curl -fsSL https:\/\/verity\.build\/install\.sh/)).toBeOnTheScreen();
+    // The installer accepts amd64 and arm64 hosts; the screen must not turn
+    // ARM users away with a stale architecture restriction.
+    expect(screen.queryByText(/x86|amd64|arm64/i)).toBeNull();
     expect(screen.getByLabelText('Scan QR code')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Server address')).toBeNull();
     expect(screen.queryByLabelText('Test connection')).toBeNull();
@@ -154,6 +157,7 @@ describe('onboarding connection entry', () => {
         signingKeyConfigured: true,
         hasProject: true,
         complete: true,
+        claudeConfigured: true,
         nextStep: null,
       }),
     );

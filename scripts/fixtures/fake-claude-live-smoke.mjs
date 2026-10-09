@@ -134,6 +134,30 @@ if (process.argv.includes('--input-format') && process.argv.includes('stream-jso
             response: {},
           },
         });
+      } else if (
+        frame.type === 'control_request' &&
+        typeof frame.request_id === 'string' &&
+        isRecord(request) &&
+        request.subtype === 'get_context_usage'
+      ) {
+        emit({
+          type: 'control_response',
+          response: {
+            subtype: 'success',
+            request_id: frame.request_id,
+            response: {
+              categories: [],
+              totalTokens: 1,
+              maxTokens: 200_000,
+              rawMaxTokens: 200_000,
+              percentage: 0,
+              gridRows: [],
+              model: 'smoke',
+              memoryFiles: [],
+              mcpTools: [],
+            },
+          },
+        });
       } else if (frame.type === 'user') {
         receivedUserPrompt = true;
         break;

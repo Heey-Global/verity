@@ -1,7 +1,11 @@
+import Constants from 'expo-constants';
+import { Platform } from 'react-native';
+import { browserFetch, getBrowserSession } from './browserSession';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { VerityClient, normalizeServerUrl } from '@verity/mobile';
 import { fetch as expoFetch } from 'expo/fetch';
-import { clearAuthToken, getAuthToken } from './authToken';
+import { clearAuthToken, getAuthToken, getAuthTokenId } from './authToken';
+import { registerBranchesClientScope } from './branchesPrefetch';
 import { createPinnedFetch } from './pinnedTransport';
 import {
   getServerProfile,
@@ -9,6 +13,8 @@ import {
   saveRemoteControlDescriptor,
 } from './serverProfile';
 import { resetVeritySettingsStore } from './settingsStore';
+import { exitDemoMode, hydrateDemoMode, isDemoMode } from './demoMode';
+import { DEMO_BASE_URL, demoFetch } from './demoTransport';
 
 // The control-plane base URL (e.g. a Tailscale address of the server). It is
 // RUNTIME-configurable + persisted on the device: the operator enters it in the
@@ -20,6 +26,19 @@ const STORAGE_KEY = 'verity.serverUrl';
 // (re)configures the server.
 let currentBaseUrl: string | null = null;
 let configuredBaseUrl = false;
+const baseUrlListeners = new Set<() => void>();
+
+/** Observe runtime endpoint changes, including switches between paired endpoints. */
+export function subscribeVerityBaseUrl(listener: () => void): () => void {
+  baseUrlListeners.add(listener);
+  return () => {
+    baseUrlListeners.delete(listener);
+  };
+}
+
+function notifyBaseUrlChanged(): void {
+  for (const listener of baseUrlListeners) listener();
+}
 let lastDescriptorToken: string | null = null;
 let lastDescriptorAttempt = 0;
 
@@ -34,7 +53,13 @@ let lastDescriptorAttempt = 0;
  * the control-plane origin only.
  */
 export async function hydrateVerityBaseUrl(): Promise<void> {
+  await hydrateDemoMode();
   resetVeritySettingsStore();
+  if (Platform.OS === 'web') {
+    currentBaseUrl = window.location.origin;
+    configuredBaseUrl = true;
+    return;
+  }
   currentBaseUrl = null;
   configuredBaseUrl = false;
   try {
@@ -62,18 +87,23 @@ export async function hydrateVerityBaseUrl(): Promise<void> {
  *  at render (never a captured const) so they observe
  *  the runtime value hydrated/updated by `hydrateVerityBaseUrl`/`setVerityBaseUrl`. */
 export function getVerityBaseUrl(): string | null {
+  return isDemoMode() ? DEMO_BASE_URL : currentBaseUrl;
+}
+
+export function getSavedVerityBaseUrl(): string | null {
   return currentBaseUrl;
 }
 
 /** A verified installation identity shared by its direct and Uplink endpoints. */
 export function getActiveMeetingServerId(): string | null {
+  if (isDemoMode()) return null;
   const profile = getServerProfile();
   return profile?.activeUrl === currentBaseUrl ? profile.serverId : null;
 }
 
 /** Whether the device has explicitly selected a Verity server URL. */
 export function hasConfiguredVerityBaseUrl(): boolean {
-  return configuredBaseUrl;
+  return isDemoMode() || configuredBaseUrl;
 }
 
 /**
@@ -89,7 +119,12 @@ export async function setVerityBaseUrl(url: string): Promise<void> {
   if (normalized !== currentBaseUrl) resetVeritySettingsStore();
   currentBaseUrl = normalized;
   configuredBaseUrl = true;
+  if (!isDemoMode()) notifyBaseUrlChanged();
   await AsyncStorage.setItem(STORAGE_KEY, normalized);
+  if (isDemoMode()) {
+    await exitDemoMode();
+    notifyBaseUrlChanged();
+  }
 }
 
 /** Build the API client for the current base URL, or `null` when none is set.
@@ -97,13 +132,40 @@ export async function setVerityBaseUrl(url: string): Promise<void> {
  *  every request, and a 401 from a gated route drops the stored token so the app
  *  falls back to master-password re-auth. */
 export function createVerityClient(): VerityClient | null {
+  if (isDemoMode()) {
+    const client = new VerityClient({
+      baseUrl: DEMO_BASE_URL,
+      fetch: demoFetch,
+      uploadFetch: demoFetch,
+      allowBackgroundUpload: false,
+    });
+    registerBranchesClientScope(client, () => DEMO_BASE_URL);
+    return client;
+  }
   const serverUrl = currentBaseUrl;
   if (!serverUrl) return null;
+  if (Platform.OS === 'web') {
+    const client = new VerityClient({
+      baseUrl: serverUrl,
+      fetch: browserFetch,
+      uploadFetch: browserFetch,
+      allowBackgroundUpload: false,
+    });
+    registerBranchesClientScope(
+      client,
+      () => `${serverUrl}:${getBrowserSession()?.tokenId ?? 'guest'}`,
+    );
+    return client;
+  }
   const endpoint = getServerProfile()?.endpoints.find(({ url }) => url === serverUrl);
   const pinnedFetch =
     endpoint?.transport === 'direct' ? createPinnedFetch(endpoint.tlsPin!, true) : undefined;
   const client = new VerityClient({
     baseUrl: serverUrl,
+    localPreviewBaseUrl:
+      getServerProfile()?.endpoints.find((item) => item.transport === 'direct')?.url ??
+      (endpoint?.transport === 'uplink' ? null : serverUrl),
+    appVariant: Constants.expoConfig?.extra?.appVariant === 'staging' ? 'staging' : 'production',
     // expo-file-system File implements Blob through Expo's native networking
     // stack. Keep ordinary API calls on the global fetch and route only uploads
     // through expo/fetch so large picked files stream without a JS copy.
@@ -115,6 +177,7 @@ export function createVerityClient(): VerityClient | null {
       void clearAuthToken(serverUrl);
     },
   });
+  registerBranchesClientScope(client, () => `${serverUrl}:${getAuthTokenId(serverUrl) ?? 'guest'}`);
   const token = getAuthToken(serverUrl);
   if (
     token !== null &&

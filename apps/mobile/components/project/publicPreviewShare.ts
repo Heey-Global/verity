@@ -7,10 +7,6 @@ export const PUBLIC_PREVIEW_DURATIONS = [
   { label: '30 days', a11y: '30 days', seconds: 2592000 },
 ] as const;
 
-export function validPreviewPin(pin: string): boolean {
-  return /^\d{6}$/.test(pin);
-}
-
 export function generatePreviewPin(): string {
   const values = getRandomValues(new Uint32Array(1));
   return String(values[0]! % 1_000_000).padStart(6, '0');

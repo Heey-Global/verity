@@ -1,3 +1,11 @@
+const mockLive = new Set<() => void>();
+const mockBase = new Set<() => void>();
+jest.mock('./liveConnection', () => ({
+  subscribeLiveRefresh: (_client: unknown, refresh: () => void) => {
+    mockLive.add(refresh);
+    return () => mockLive.delete(refresh);
+  },
+}));
 // The badge hook's two non-obvious contracts, both of which are about WHEN it
 // asks rather than what it answers: every screen in the stack renders the header
 // that calls it, and the Verity client does not exist until the operator has
@@ -5,9 +13,16 @@
 import { type VerityClient, type ServerUpdateStatus } from '@verity/mobile';
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { createVerityClient, getVerityBaseUrl } from './client';
-import { SERVER_UPDATE_BADGE_POLL_MS, useServerUpdateBadge } from './serverUpdateBadge';
+import { useServerUpdateBadge } from './serverUpdateBadge';
 
-jest.mock('./client', () => ({ createVerityClient: jest.fn(), getVerityBaseUrl: jest.fn() }));
+jest.mock('./client', () => ({
+  createVerityClient: jest.fn(),
+  getVerityBaseUrl: jest.fn(),
+  subscribeVerityBaseUrl: (listener: () => void) => {
+    mockBase.add(listener);
+    return () => mockBase.delete(listener);
+  },
+}));
 
 const createClient = createVerityClient as jest.MockedFunction<typeof createVerityClient>;
 const baseUrl = getVerityBaseUrl as jest.MockedFunction<typeof getVerityBaseUrl>;
@@ -23,6 +38,8 @@ function fakeClient(getServerUpdates: jest.Mock): VerityClient {
 }
 
 beforeEach(() => {
+  mockLive.clear();
+  mockBase.clear();
   baseUrl.mockReturnValue('http://server-a');
 });
 
@@ -66,13 +83,14 @@ describe('useServerUpdateBadge', () => {
   it('picks up a server configured after it mounted', async () => {
     jest.useFakeTimers();
     const getServerUpdates = jest.fn().mockResolvedValue(available);
-    createClient.mockReturnValueOnce(null).mockReturnValue(fakeClient(getServerUpdates));
+    createClient.mockReturnValue(null);
 
     const { result } = renderHook(() => useServerUpdateBadge(true));
     expect(result.current).toBeNull();
+    createClient.mockReturnValue(fakeClient(getServerUpdates));
 
     await act(async () => {
-      jest.advanceTimersByTime(SERVER_UPDATE_BADGE_POLL_MS);
+      for (const listener of [...mockBase]) listener();
     });
     expect(getServerUpdates).toHaveBeenCalledTimes(1);
     expect(result.current).toBe('v11.1.0');
@@ -118,7 +136,7 @@ describe('when the server changes underneath it', () => {
     getServerUpdates.mockRejectedValue(new Error('unreachable'));
     rerender(undefined);
     await act(async () => {
-      jest.advanceTimersByTime(SERVER_UPDATE_BADGE_POLL_MS);
+      for (const listener of [...mockBase]) listener();
     });
     expect(result.current).toBeNull();
   });
@@ -134,7 +152,7 @@ describe('when the server changes underneath it', () => {
 
     getServerUpdates.mockRejectedValue(new Error('update cutover'));
     await act(async () => {
-      jest.advanceTimersByTime(SERVER_UPDATE_BADGE_POLL_MS);
+      for (const listener of [...mockLive]) listener();
     });
     expect(result.current).toBeNull();
   });
@@ -152,7 +170,7 @@ describe('when the server changes underneath it', () => {
     createClient.mockReturnValue(null);
     baseUrl.mockReturnValue(null);
     await act(async () => {
-      jest.advanceTimersByTime(SERVER_UPDATE_BADGE_POLL_MS);
+      for (const listener of [...mockBase]) listener();
     });
     expect(result.current).toBeNull();
   });

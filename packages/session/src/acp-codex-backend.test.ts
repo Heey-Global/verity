@@ -1,3 +1,4 @@
+import { agentEventSchema } from '@verity/events';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { createHash, randomBytes } from 'node:crypto';
 import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -5,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AcpCodexBackend } from './acp-codex-backend.js';
+import { AcpCodexBackend, codexToolName } from './acp-codex-backend.js';
+import { PLANNING_PERMISSION_MODE } from './runner.js';
 import { GATEWAY_UNAVAILABLE_DIRECTIVE } from './acp-backend.js';
 import type { SpawnedProcess, Spawner } from './backend-contract.js';
 
@@ -73,6 +75,12 @@ function largePng(): Buffer {
 function acpSpawner(
   behavior: {
     loadSession?: boolean;
+    startupFailure?: string;
+    promptFailure?: string;
+    processExit?: { code: number | null; signal: NodeJS.Signals | null };
+    exitDelayMs?: number;
+    exitDetailsBeforeClose?: boolean;
+    setupFailure?: boolean;
     /** Refuse `session/load` the way the adapter refuses a rollout it cannot
      *  restore: JSON-RPC -32002 naming the requested id. */
     loadNotFound?: boolean;
@@ -81,12 +89,14 @@ function acpSpawner(
     withoutModelOption?: boolean;
     /** The mode `session/new` reports the session already opened in. */
     modeId?: string;
+    noPlanningMode?: boolean;
+    refusePlanningMode?: boolean;
     /** Answer `session/set_config_option` with the full option set, but with the
      *  model still on the one the session opened with. */
     echoStaleModel?: boolean;
     /** Advertise HTTP MCP support in the adapter's initialize response. */
     httpMcp?: boolean;
-    cancel?: { operator?: AbortController };
+    cancel?: { operator?: AbortController; disconnect?: boolean };
     generatedImage?: string;
     fragmentImageFrame?: boolean;
   } = {},
@@ -98,6 +108,8 @@ function acpSpawner(
   const queue: string[] = [];
   const waiters: Array<(value: IteratorResult<string>) => void> = [];
   let closed = false;
+  let exitReady = false;
+  let resolveExit: ((code: number) => void) | undefined;
   const enqueue = (value: string): void => {
     const waiter = waiters.shift();
     if (waiter === undefined) queue.push(value);
@@ -113,6 +125,11 @@ function acpSpawner(
   const close = (): void => {
     if (closed) return;
     closed = true;
+    if (behavior.exitDelayMs !== undefined)
+      setTimeout(() => {
+        exitReady = true;
+        resolveExit?.(behavior.processExit?.code ?? 1);
+      }, behavior.exitDelayMs);
     for (const waiter of waiters.splice(0)) waiter({ value: undefined, done: true });
   };
   const kill = vi.fn(close);
@@ -134,7 +151,7 @@ function acpSpawner(
     modes: {
       currentModeId: behavior.modeId ?? 'agent',
       availableModes: [
-        { id: 'read-only', name: 'Read Only' },
+        ...(behavior.noPlanningMode ? [] : [{ id: 'read-only', name: 'Read Only' }]),
         { id: 'agent', name: 'Agent' },
         { id: 'agent-full-access', name: 'Full Access' },
       ],
@@ -147,8 +164,20 @@ function acpSpawner(
     return {
       stdout,
       pid: 321,
-      exited: Promise.resolve(0),
-      stderr: () => '',
+      exited:
+        behavior.exitDelayMs === undefined
+          ? Promise.resolve(behavior.processExit?.code ?? 0)
+          : new Promise<number>((resolve) => {
+              resolveExit = resolve;
+            }),
+      exitDetails: () =>
+        closed &&
+        (behavior.exitDetailsBeforeClose || behavior.exitDelayMs === undefined || exitReady)
+          ? behavior.processExit
+          : undefined,
+      stderr: () =>
+        (behavior.startupFailure ?? behavior.promptFailure ?? '') +
+        (exitReady ? '\nlate stderr' : ''),
       kill,
       closeStdin: close,
       writeStdin(data) {
@@ -158,6 +187,10 @@ function acpSpawner(
           const id = message['id'];
           const method = message['method'];
           if (method === 'initialize') {
+            if (behavior.startupFailure !== undefined) {
+              close();
+              return true;
+            }
             push({
               jsonrpc: '2.0',
               id,
@@ -185,7 +218,13 @@ function acpSpawner(
             });
           } else if (method === 'session/load') {
             push({ jsonrpc: '2.0', id, result: sessionResult('codex-session-existing') });
+          } else if (method === 'session/set_mode' && behavior.refusePlanningMode) {
+            push({ jsonrpc: '2.0', id, error: { code: -32602, message: 'mode refused' } });
           } else if (method === 'session/set_mode' || method === 'session/set_config_option') {
+            if (behavior.setupFailure) {
+              close();
+              return true;
+            }
             // Echoing nothing is the adapter shape Codex actually has today, and it
             // keeps the plain ack's meaning in `applySelectOption`. `echoStaleModel`
             // is the other half of that contract — an adapter that answers with the
@@ -211,8 +250,13 @@ function acpSpawner(
               },
             });
             behavior.cancel.operator?.abort();
-            push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
+            if (behavior.cancel.disconnect) close();
+            else push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
           } else if (method === 'session/prompt') {
+            if (behavior.promptFailure !== undefined) {
+              close();
+              return true;
+            }
             if (behavior.generatedImage) {
               push(
                 {
@@ -299,6 +343,192 @@ function write(
 }
 
 describe('AcpCodexBackend', () => {
+  it.each([
+    { code: 1, signal: null },
+    { code: null, signal: 'SIGKILL' as const },
+    { code: 0, signal: null },
+  ])(
+    'persists redacted process details for an unexpected active-turn exit: %j',
+    async (processExit) => {
+      const append = vi.spyOn(ctx.store, 'appendEvent');
+      const secret = 'ghp_' + 'a'.repeat(24);
+      const opaque = 'opaque-runtime-credential';
+      const fake = acpSpawner({
+        promptFailure: `fatal: ${secret} ${opaque}\nCUSTOM_VALUE=private-setting\nlast failure`,
+        processExit,
+      });
+      const result = await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        model: 'codex/gpt-6.1-sol',
+        env: { CUSTOM_SECRET: opaque },
+        spawner: fake.spawner,
+      });
+      const events = await ctx.store.getEvents('codex-session-1');
+      const diagnostic = events.findLast((event) => event.t === 'diagnostic');
+      expect(diagnostic).toMatchObject({
+        t: 'diagnostic',
+        outcome: 'failed',
+        exitCode: processExit.code,
+        signal: processExit.signal,
+        turnActive: true,
+        model: 'codex/gpt-6.1-sol',
+      });
+      expect(JSON.stringify(diagnostic)).not.toContain(secret);
+      expect(JSON.stringify(diagnostic)).not.toContain(opaque);
+      expect(JSON.stringify(diagnostic)).not.toContain('private-setting');
+      expect(diagnostic).toHaveProperty('stderrTail', expect.stringContaining('last failure'));
+      expect(result.exitCode).toBe(1);
+      const persisted = append.mock.calls.findLast(([, event]) => event.t === 'diagnostic')?.[1];
+      // Older frame readers hash schema output, so new diagnostics must keep its field order.
+      expect(JSON.stringify(persisted)).toBe(JSON.stringify(agentEventSchema.parse(persisted)));
+      expect(JSON.stringify(persisted)).not.toContain(secret);
+      expect(JSON.stringify(persisted)).not.toContain(opaque);
+      expect(JSON.stringify(persisted)).not.toContain('private-setting');
+      append.mockRestore();
+    },
+  );
+
+  it.each([false, true])(
+    'omits process failure details for an intentional stop (disconnect=%s)',
+    async (disconnect) => {
+      const operator = new AbortController();
+      const fake = acpSpawner({
+        cancel: { operator, disconnect },
+        processExit: { code: null, signal: 'SIGTERM' },
+      });
+      await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        signal: operator.signal,
+        spawner: fake.spawner,
+      });
+      const events = await ctx.store.getEvents('codex-session-1');
+      expect(
+        events.filter((event) => event.t === 'diagnostic' && event.outcome === 'failed'),
+      ).toEqual([]);
+      expect(events.some((event) => event.t === 'diagnostic' && event.exitCode !== undefined)).toBe(
+        false,
+      );
+    },
+  );
+
+  it('captures delayed exit details and stderr after transport EOF', async () => {
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({
+        promptFailure: 'fatal error',
+        processExit: { code: 1, signal: null },
+        exitDelayMs: 30,
+      }).spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: true,
+      stderrTail: expect.stringContaining('late stderr'),
+    });
+  });
+
+  it('records native process termination even when stdio close exceeds the drain wait', async () => {
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({
+        promptFailure: 'fatal error',
+        processExit: { code: 1, signal: null },
+        exitDelayMs: 350,
+        exitDetailsBeforeClose: true,
+      }).spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: true,
+    });
+  });
+
+  it('records a startup process failure with no active prompt', async () => {
+    await ctx.store.createSession({
+      sessionId: 'startup',
+      worktree: '/work',
+      model: 'codex/default',
+    });
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      storeSessionId: 'startup',
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({
+        startupFailure: 'fatal startup',
+        processExit: { code: 1, signal: null },
+      }).spawner,
+    });
+    const events = await ctx.store.getEvents('startup');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: false,
+      phase: 'initialize',
+    });
+  });
+
+  it('keeps the prompt inactive when the process exits during session configuration', async () => {
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({ setupFailure: true, processExit: { code: 1, signal: null } }).spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events.findLast((event) => event.t === 'diagnostic')).toMatchObject({
+      exitCode: 1,
+      signal: null,
+      turnActive: false,
+    });
+  });
+
+  it('preserves raw pre-execution rejection evidence for recovery classification', async () => {
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({ startupFailure: 'API key: invalid api key' }).spawner,
+    });
+    expect(result.failedBeforeExecution).toBe(true);
+  });
+
+  it('does not record a process failure for a clean completed turn', async () => {
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: acpSpawner({ processExit: { code: 0, signal: null } }).spawner,
+    });
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events.some((event) => event.t === 'diagnostic' && event.outcome === 'failed')).toBe(
+      false,
+    );
+    expect(events.some((event) => event.t === 'diagnostic' && event.exitCode !== undefined)).toBe(
+      false,
+    );
+  });
+
   it('externalizes an image generation notification larger than the ACP frame limit', async () => {
     const worktree = await mkdtemp(join(tmpdir(), 'verity-acp-image-'));
     const png = largePng();
@@ -369,6 +599,110 @@ describe('AcpCodexBackend', () => {
       await rm(outside, { recursive: true, force: true });
     }
   }, 60_000);
+  it('recovers a backfill initialization failure without replaying a prompt', async () => {
+    const failed = acpSpawner({
+      startupFailure: 'timed out waiting for state db backfill after 30s (status: running)',
+    });
+    const recovered = acpSpawner();
+    let attempts = 0;
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Do it',
+      spawner: (...args) => {
+        if (++attempts !== 1) return recovered.spawner(...args);
+        return {
+          ...failed.spawner(...args),
+          exited: new Promise<number>((resolve) => setTimeout(() => resolve(1), 50)),
+        };
+      },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(attempts).toBe(2);
+    expect(failed.writes.map((row) => row['method'])).toEqual(['initialize']);
+    expect(recovered.writes.filter((row) => row['method'] === 'session/prompt')).toHaveLength(1);
+    expect(failed.kill).toHaveBeenCalled();
+  }, 10_000);
+
+  it.each(['cancel', 'timeout'] as const)(
+    'stops waiting for stalled teardown on %s',
+    async (reason) => {
+      const controller = new AbortController();
+      const failed = acpSpawner({
+        startupFailure: 'timed out waiting for state db backfill after 30s (status: running)',
+      });
+      const spawn = vi.fn<Spawner>((...args) => ({
+        ...failed.spawner(...args),
+        exited: new Promise<number>(() => {}),
+      }));
+      const timer = reason === 'cancel' ? setTimeout(() => controller.abort(), 50) : undefined;
+      try {
+        const result = await new AcpCodexBackend().run({
+          store: ctx.store,
+          worktree: '/work/project',
+          cwd: '/work/project',
+          prompt: 'Do it',
+          spawner: spawn,
+          signal: controller.signal,
+          ...(reason === 'timeout' ? { timeoutMs: 50 } : {}),
+        });
+        expect(result.exitCode).toBe(reason === 'cancel' ? 143 : 1);
+        expect(spawn).toHaveBeenCalledTimes(1);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    },
+  );
+
+  it('does not replay a prompt when a later failure contains the backfill message', async () => {
+    const failed = acpSpawner({
+      promptFailure: 'timed out waiting for state db backfill after 30s (status: running)',
+    });
+    const spawn = vi.fn(failed.spawner);
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Do it',
+      spawner: spawn,
+    });
+    expect(result.exitCode).toBe(1);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(failed.writes.filter((row) => row['method'] === 'session/prompt')).toHaveLength(1);
+  });
+
+  it.each(['cancel', 'timeout', 'unrelated'] as const)(
+    'does not retry startup after %s',
+    async (reason) => {
+      const controller = new AbortController();
+      const failed = acpSpawner({
+        startupFailure:
+          reason === 'unrelated'
+            ? 'failed to initialize sqlite state runtime'
+            : 'timed out waiting for state db backfill after 30s (status: running)',
+      });
+      const spawn = vi.fn(failed.spawner);
+      const timer = reason === 'cancel' ? setTimeout(() => controller.abort(), 50) : undefined;
+      try {
+        const result = await new AcpCodexBackend().run({
+          store: ctx.store,
+          worktree: '/work/project',
+          cwd: '/work/project',
+          prompt: 'Do it',
+          spawner: spawn,
+          signal: controller.signal,
+          ...(reason === 'timeout' ? { timeoutMs: 50 } : {}),
+        });
+        expect(result.exitCode).toBe(reason === 'cancel' ? 143 : 1);
+        expect(spawn).toHaveBeenCalledTimes(1);
+        expect(failed.writes.map((row) => row['method'])).toEqual(['initialize']);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    },
+  );
+
   it('runs a Codex turn through ACP, carrying the system directives in the prompt', async () => {
     const fake = acpSpawner();
     let steer: ((message: { text: string }) => boolean) | undefined;
@@ -552,6 +886,70 @@ describe('AcpCodexBackend', () => {
     expect(write(fake.writes, 'session/set_mode')).toMatchObject({
       params: { modeId: 'agent-full-access' },
     });
+  });
+
+  it('runs a planning turn in the read-only sandbox', async () => {
+    // Planning must not change files. Full access would leave that to the model's
+    // good behaviour; the read-only sandbox makes Codex itself refuse the write.
+    const fake = acpSpawner();
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-codex-planning',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Plan it',
+      permissionMode: PLANNING_PERMISSION_MODE,
+      planning: true,
+      spawner: fake.spawner,
+    });
+    expect(write(fake.writes, 'session/set_mode')).toMatchObject({
+      params: { modeId: 'read-only' },
+    });
+  });
+
+  it.each([{ noPlanningMode: true }, { refusePlanningMode: true }])(
+    'fails closed when planning posture cannot be applied: %j',
+    async (behavior) => {
+      const fake = acpSpawner(behavior);
+      const result = await new AcpCodexBackend().run({
+        store: ctx.store,
+        storeSessionId: 'codex-planning-unavailable',
+        worktree: '/work/project',
+        cwd: '/work/project',
+        prompt: 'Plan it',
+        planning: true,
+        permissionMode: PLANNING_PERMISSION_MODE,
+        spawner: fake.spawner,
+      });
+      expect(result.exitCode).toBe(1);
+      expect(write(fake.writes, 'session/prompt')).toBeUndefined();
+    },
+  );
+
+  it('keeps full access for a plan posture requested outside planning mode', async () => {
+    // Only Verity's planning mode has a way back out of the read-only sandbox.
+    const fake = acpSpawner();
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-codex-plan-posture',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Plan it',
+      permissionMode: PLANNING_PERMISSION_MODE,
+      spawner: fake.spawner,
+    });
+    expect(write(fake.writes, 'session/set_mode')).toMatchObject({
+      params: { modeId: 'agent-full-access' },
+    });
+  });
+
+  it('names an MCP call by its server and tool instead of by its execute kind', () => {
+    // Otherwise a plan Codex presents through Verity reads as a Bash command and
+    // never becomes a plan card.
+    expect(
+      codexToolName({ toolCallId: 'c1', kind: 'execute', title: 'mcp.verity.verity_present_plan' }),
+    ).toBe('mcp__verity__verity_present_plan');
+    expect(codexToolName({ toolCallId: 'c2', kind: 'execute', title: 'npm test' })).toBe('Bash');
   });
 
   it('asserts the posture after model selection, not on the mode session/new reported', async () => {

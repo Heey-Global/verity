@@ -106,3 +106,6 @@ export function createBrokeredHttpTool(options: {
     });
   };
 }
+
+// The CLI streaming entry point shares the HTTP secret broker transport policy.
+export { createBrokeredForgeProxy } from './brokered-forge-proxy.js';

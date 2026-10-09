@@ -107,6 +107,9 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
   // trust-on-first-use is embedded/managed topologies that wire no pairing —
   // there the deployment must sit behind a trusted network on first boot. See
   // SECURITY.md.
+  declare('POST', '/secret/init/browser', 'onboarding', 'master password with pairing bootstrap'),
+  declare('POST', '/secret/unlock/browser', 'onboarding', 'master password with pairing bootstrap'),
+  declare('POST', '/pair/enroll/browser', 'device-pairing', 'single-use invitation'),
   declare('POST', '/secret/init', 'onboarding', 'master password (sets the first one)'),
   declare('POST', '/secret/unlock', 'onboarding', 'master password'),
   declare('GET', '/pair/identity', 'device-pairing', 'pairing code issued out of band'),
@@ -159,6 +162,12 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
   ),
   declare(
     'POST',
+    '/internal/integrations/matrix/source/left',
+    'container-capability',
+    'Matrix connector bearer token',
+  ),
+  declare(
+    'POST',
     '/internal/integrations/matrix/event',
     'container-capability',
     'Matrix connector bearer token',
@@ -180,6 +189,12 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
     '/internal/project/memory',
     'container-capability',
     'per-container capability, presented by the sandbox `verity-memory` wrapper (ADR 0008)',
+  ),
+  declare(
+    'POST',
+    '/internal/dev-servers',
+    'container-capability',
+    'per-container capability, presented by the sandbox `verity-dev-server` command',
   ),
   // Both methods: the MCP endpoint answers POST for calls and GET for the
   // server-sent event stream, and the same per-turn bearer covers both.
@@ -252,6 +267,9 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
 export const LOCKOUT_CRITICAL_KEYS: readonly string[] = [
   'GET /secret/status',
   'GET /onboarding/status',
+  'POST /secret/init/browser',
+  'POST /secret/unlock/browser',
+  'POST /pair/enroll/browser',
   'POST /secret/init',
   'POST /secret/unlock',
   'POST /pair/redeem',

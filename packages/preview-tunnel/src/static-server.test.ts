@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+import { constants, closeSync, openSync } from 'node:fs';
 import { chmod, mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
 import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -51,6 +53,44 @@ async function publishedWorkspace(): Promise<{ workspace: string; origin: string
 }
 
 describe('static preview server', () => {
+  it('serves the logo referenced by missing-file pages for GET and HEAD', async () => {
+    const { origin } = await publishedWorkspace();
+    const page = await fetch(`${origin}/missing.html`);
+    expect(page.status).toBe(404);
+    const html = await page.text();
+    const source = /<img\b[^>]*src="([^"]+)"/u.exec(html)?.[1];
+    expect(source).toBeDefined();
+    const logoUrl = new URL(source!, origin);
+    const logo = await fetch(logoUrl);
+    expect(logo.status).toBe(200);
+    expect(logo.headers.get('content-type')).toBe('image/png');
+    const bytes = new Uint8Array(await logo.arrayBuffer());
+    expect([...bytes.slice(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+    const head = await fetch(logoUrl, { method: 'HEAD' });
+    expect(head.status).toBe(200);
+    expect(head.headers.get('content-length')).toBe(String(bytes.length));
+    expect(await head.text()).toBe('');
+    expect((await fetch(logoUrl, { method: 'POST' })).status).toBe(405);
+  });
+
+  it('rejects FIFOs without waiting for a writer and continues serving files', async () => {
+    const { workspace, origin } = await publishedWorkspace();
+    const fifo = join(workspace, 'dist', 'pipe.txt');
+    execFileSync('mkfifo', [fifo]);
+    try {
+      // A blocking open would wait forever for a writer, tying up a filesystem worker.
+      const response = await fetch(`${origin}/pipe.txt`, { signal: AbortSignal.timeout(1000) });
+      expect(response.status).toBe(404);
+      await response.text();
+      expect((await fetch(origin)).status).toBe(200);
+    } finally {
+      // Also release a blocked open when checking the deliberately broken guard.
+      const fd = openSync(fifo, constants.O_RDWR | constants.O_NONBLOCK);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      closeSync(fd);
+    }
+  });
+
   it('serves the selected directory and refuses symlink escapes', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'verity-static-preview-'));
     await mkdir(join(workspace, 'dist'));

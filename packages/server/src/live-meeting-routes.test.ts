@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { createHash } from 'node:crypto';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
-import { registerLiveMeetingRoutes } from './live-meeting-routes.js';
+import { registerLiveMeetingRoutes, verifiedSpeakerName } from './live-meeting-routes.js';
 
 let ctx: TestDb;
 let app: FastifyInstance;
@@ -497,6 +497,68 @@ it('checks one spoken request per session at a time', async () => {
   }
 });
 
+it('suggests a speaker name only when it was introduced verbatim', async () => {
+  const checked = Fastify();
+  const query = vi
+    .fn()
+    .mockResolvedValueOnce(
+      // A code fence around the JSON must not fail the check.
+      '```json\n' +
+        JSON.stringify({ name: 'Holger Teske', quote: 'Hi, ich bin Holger.' }) +
+        '\n```',
+    )
+    .mockResolvedValueOnce(
+      JSON.stringify({ name: 'Anna', quote: 'ich bin heute die Moderatorin' }),
+    );
+  registerLiveMeetingRoutes(checked, ctx.store, { query });
+  await checked.ready();
+  try {
+    const payload = {
+      text: 'Hi, ich bin Holger. Ich freue mich, dass ihr da seid.',
+      hints: ['Holger Teske', 'Anna Berg'],
+    };
+    const named = await checked.inject({ method: 'POST', url: `${url}/speaker-name`, payload });
+    // The invited spelling may complete a first name that was actually spoken.
+    expect(named.json()).toEqual({ name: 'Holger Teske', quote: 'Hi, ich bin Holger.' });
+    expect(query).toHaveBeenCalledWith(
+      'session-1',
+      expect.stringContaining('"Anna Berg"'),
+      expect.any(AbortSignal),
+    );
+    // A quote nobody said, or a name absent from its quote, must never label a voice.
+    const invented = await checked.inject({
+      method: 'POST',
+      url: `${url}/speaker-name`,
+      payload: { text: 'Ja, ich bin heute die Moderatorin.', hints: [] },
+    });
+    expect(invented.json()).toEqual({ name: null });
+  } finally {
+    await checked.close();
+  }
+});
+
+// Each rejected case is a way a wrong name could be shown as someone's identity.
+it.each([
+  ['a quote that was not said', { name: 'Anna', quote: 'ich bin Anna' }, null],
+  ['a name missing from its quote', { name: 'Anna', quote: 'ich bin Holger' }, null],
+  [
+    'an uninvited full name only partly spoken',
+    { name: 'Holger Meier', quote: 'ich bin Holger' },
+    null,
+  ],
+  ['a role word', { name: 'Lehrer 2', quote: 'ich bin Holger' }, null],
+  ['a spoken name', { name: 'Holger', quote: 'ich bin Holger' }, 'Holger'],
+  [
+    'an invited spelling of a spoken first name',
+    { name: 'Anna Berg', quote: "I'm Anna" },
+    'Anna Berg',
+  ],
+])('verifies %s', (_case, result, expected) => {
+  expect(
+    verifiedSpeakerName("Hallo, ich bin Holger. Later: I'm Anna, hi.", ['Anna Berg'], result),
+  ).toBe(expected);
+});
+
 it('files finished uploads before acknowledging them and includes late notes', async () => {
   const onFinished = vi.fn(async () => undefined);
   const filing = Fastify();
@@ -577,5 +639,27 @@ it('files late notes after a restart and retries filing failures', async () => {
     await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(3));
   } finally {
     await restarted.close();
+  }
+});
+
+it('files server-owned online meetings through the same finished-meeting hook', async () => {
+  const online = Fastify();
+  const onFinished = vi.fn().mockResolvedValue(undefined);
+  const controller = registerLiveMeetingRoutes(online, ctx.store, { onFinished });
+  try {
+    const record = {
+      ...meeting,
+      id: 'meeting-1',
+      sessionId: 'session-1',
+      engine: 'attendee',
+      state: 'active' as const,
+      ownerTokenHash: createHash('sha256').update(ownerToken).digest('hex'),
+    };
+    await controller.ingest(record);
+    expect(onFinished).not.toHaveBeenCalled();
+    await controller.ingest({ ...record, state: 'ended', endedAt: 200, revision: 2 });
+    expect(onFinished).toHaveBeenCalledWith('session-1', 'meeting-1');
+  } finally {
+    await online.close();
   }
 });

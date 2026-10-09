@@ -240,9 +240,23 @@ describe('createPostgresDb', () => {
       pools[0]!.config as { verify: (client: FakeClient, done: (error?: Error) => void) => void }
     ).verify;
     const client = new FakeClient({});
-    await new Promise<void>((resolve, reject) =>
-      verify(client, (error) => (error ? reject(error) : resolve())),
+    const trace = createRequestLatencyTrace();
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
+    const originalQuery = client.query.getMockImplementation()!;
+    client.query.mockImplementation((...args) => {
+      clock.mockReturnValue(1_200);
+      return originalQuery(...args);
+    });
+    await withRequestLatencyTrace(
+      trace,
+      () =>
+        new Promise<void>((resolve, reject) =>
+          verify(client, (error) => (error ? reject(error) : resolve())),
+        ),
     );
+    // Lock verification precedes pool.connect() resolution and is otherwise
+    // indistinguishable from waiting for a free connection.
+    expect(trace.phases.pool_generation_verify).toMatchObject({ calls: 1, totalMs: 1_200 });
     expect(client.query.mock.calls[0]?.[0]).toContain('pg_advisory_lock_shared');
     expect(client.query.mock.calls[1]?.[0]).toContain('select exists');
     expect(client.query).toHaveBeenCalledTimes(2);

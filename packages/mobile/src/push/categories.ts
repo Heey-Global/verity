@@ -7,6 +7,10 @@ export const PUSH_CATEGORY = {
   sessionStatus: 'SESSION_STATUS',
   agentQuestion: 'AGENT_QUESTION',
   pullRequestReady: 'PULL_REQUEST_READY',
+  /** An agent question with fixed options, shown in-app from a live alert. Its
+   * buttons carry the options' own labels, so it is registered per alert
+   * ({@link choiceCategorySpec}) rather than at launch. */
+  agentQuestionChoices: 'AGENT_QUESTION_CHOICES',
 } as const;
 export type PushCategoryId = (typeof PUSH_CATEGORY)[keyof typeof PUSH_CATEGORY];
 
@@ -20,7 +24,15 @@ export const PUSH_ACTION = {
   mergePullRequest: 'VERITY_MERGE_PULL_REQUEST',
   openSession: 'VERITY_OPEN_SESSION',
 } as const;
-export type PushActionId = (typeof PUSH_ACTION)[keyof typeof PUSH_ACTION];
+/** One action per offered option, by position. */
+export const PUSH_CHOICE_ACTIONS = [
+  'VERITY_CHOICE_0',
+  'VERITY_CHOICE_1',
+  'VERITY_CHOICE_2',
+  'VERITY_CHOICE_3',
+] as const;
+export type PushActionId =
+  (typeof PUSH_ACTION)[keyof typeof PUSH_ACTION] | (typeof PUSH_CHOICE_ACTIONS)[number];
 
 /** A single category button, shaped so the native layer can hand it straight to
  * `Notifications.setNotificationCategoryAsync` without re-deriving semantics. */
@@ -48,6 +60,25 @@ export interface PushCategorySpec {
  * omitted: it has no custom actions, so a default tap (open the session) is all it
  * needs. The `AGENT_QUESTION` reply becomes live once the server emits that fire
  * point (Block 0), which it now does when a turn ends on a prose question. */
+/** The in-app question category for these option labels: one button per option
+ * (up to {@link PUSH_CHOICE_ACTIONS}), plus a free-text reply. */
+export function choiceCategorySpec(labels: readonly string[]): PushCategorySpec {
+  return {
+    identifier: PUSH_CATEGORY.agentQuestionChoices,
+    actions: [
+      ...labels.slice(0, PUSH_CHOICE_ACTIONS.length).map((label, index) => ({
+        identifier: PUSH_CHOICE_ACTIONS[index]!,
+        buttonTitle: label,
+      })),
+      {
+        identifier: PUSH_ACTION.reply,
+        buttonTitle: 'Reply',
+        textInput: { submitButtonTitle: 'Send', placeholder: 'Reply to the agent…' },
+      },
+    ],
+  };
+}
+
 export const PUSH_NOTIFICATION_CATEGORIES: readonly PushCategorySpec[] = [
   {
     identifier: PUSH_CATEGORY.permissionPrompt,

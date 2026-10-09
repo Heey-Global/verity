@@ -1,3 +1,16 @@
+import { listProjectGitHubIssues } from './project-github-issues.js';
+import { createGhcrForgeAdapter } from './brokered-forge-ghcr.js';
+import { loadForgePackageMap } from './brokered-forge-package-map.js';
+import { createBrokeredForgeProxy } from './brokered-http-tool.js';
+import { createGitHubForgeAdapter } from './brokered-forge-github.js';
+import { brokeredHttpStreamTransport } from './brokered-http-stream.js';
+import { loadForgeProxyIdentity } from './brokered-forge-identity.js';
+import { MANAGED_CONTROL_PLANE_RUNNER_NAME } from './self-update/managed-control-plane-runner.js';
+import { previewSharingCapability } from './preview-capability.js';
+import { LocalPreviewManager } from './local-preview-manager.js';
+import { localPreviewPorts } from './local-preview-ports.js';
+import { ManagedDevServerManager } from './managed-dev-server-manager.js';
+import { ListenerDiscovery } from './listener-discovery.js';
 export { parsePort } from './deployment-port.js';
 import { sandboxNotReadyError } from '@verity/events';
 import {
@@ -47,7 +60,7 @@ import type { Kysely } from 'kysely';
 import { existsSync, readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { chmod, chown, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-catalog.js';
@@ -68,6 +81,7 @@ export async function resolveRepoWorktreeFetchAuthHeader(
 }
 
 import { buildControlPlane } from './app.js';
+import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import { createProjectListCache } from './project-list-cache.js';
 import type { ServerDeps, ServerUpdateController } from './server.js';
 import { createAuthTokenRegistry } from './auth.js';
@@ -100,7 +114,12 @@ import {
 } from './github.js';
 import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
 import { startDockerGcScheduler, type DockerGcPolicy } from './docker-gc.js';
-import { PreviewShareManager, sweepOrphanedPreviewShares } from './preview-share-manager.js';
+import { sweepOrphanedLocalPreviews } from './local-preview-orphans.js';
+import {
+  PreviewShareConflictError,
+  PreviewShareManager,
+  sweepOrphanedPreviewShares,
+} from './preview-share-manager.js';
 import { UplinkControlClient } from './uplink-control-client.js';
 import {
   createRemoteConnectorPool,
@@ -163,6 +182,7 @@ import {
 import { supervisorSocketReachable } from './runner-supervisor-socket.js';
 import { codexRolloutFiles, ServerCodexTranscript, ServerTranscript } from './runner-transcript.js';
 import { sweepOrphanArtifacts, type SweepResult } from './session-artifact-sweep.js';
+import { removeRetiredSessionSandboxes } from './retired-session-sandboxes.js';
 import {
   purgeSessionArtifacts as purgeSessionArtifactFiles,
   type SessionArtifactScope,
@@ -205,8 +225,12 @@ import { reportToolkitDrift } from './toolkit-drift.js';
 import { defaultSshKeygenSpawner } from './signing-key.js';
 import { requestArrivedInternally } from './internal-listener.js';
 import { containerNameFor } from './canonical.js';
-import { DockerExecBackend, dockerHostFor } from './project-backend.js';
-import { createSandboxGit } from './sandbox-git.js';
+import { containerPathFor, DockerExecBackend, dockerHostFor } from './project-backend.js';
+import {
+  createSleepingSessionGit,
+  createSandboxGit,
+  withSleepingSessionGit,
+} from './sandbox-git.js';
 import { projectSettingsEnv, type ProjectEnvironmentSettings } from './project-settings-env.js';
 import { createNodeRestrictedHttpJsonTransport } from './restricted-http-json-connector.js';
 import { createBrokeredHttpConsumptionStore } from './brokered-http-consumption.js';
@@ -584,6 +608,8 @@ export interface EmbeddedServerConfig {
   /** TLS termination for a direct Server. Managed mode terminates at its Gateway. */
   https?: ServerDeps['https'];
   unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
+  webAppDir?: ServerDeps['webAppDir'];
+  browserRequestOrigin?: ServerDeps['browserRequestOrigin'];
   /** Optional installer-issued authority that gates first initialization. */
   devicePairing?: ServerDeps['devicePairing'];
   /** Verified official release channel supplied by the managed deployment bootstrap. */
@@ -630,6 +656,7 @@ export interface EmbeddedServerConfig {
    *  into the server env at image build (no runtime Doppler). Non-secret; the app
    *  reads it via `/settings` to build the PKCE request. */
   googleDriveClientId?: string | undefined;
+  stagingGoogleClientId?: string | undefined;
   /** Host-visible root for runtime-materialized files that spawned sibling
    * Docker containers bind-mount (gateway config, Git signing metadata). When
    * Verity talks to the host Docker daemon from inside a container, this path
@@ -673,6 +700,8 @@ export interface EmbeddedServerConfig {
    *  `POST /projects/:id/deprovision` become operational. Omit → those routes
    *  return 503 (multi-repo fleet registry not configured). */
   dockerBaseUrl?: string | undefined;
+  diagnosticServerContainerId?: string | undefined;
+  hostDiagnosticSnapshotPath?: string | undefined;
   /** Enable fail-closed Docker/runsc readiness for the production Secret Job Executor path. */
   secretJobRuntimeRequired?: boolean | undefined;
   /** Test seam; production derives this checker from dockerBaseUrl and the pinned runtime config. */
@@ -784,6 +813,8 @@ export interface EmbeddedServerConfig {
   projectRelayGid?: number | undefined;
   /** Complete public-preview runtime. The subscription key is deliberately not
    * part of config: it is loaded from encrypted Verity settings. */
+  /** Local preview transport is available independently of Uplink. */
+  resolvePreviewConnectorImage?: (() => Promise<string | undefined>) | undefined;
   publicPreviews?:
     | {
         resolveConnectorImage: () => Promise<string | undefined>;
@@ -991,7 +1022,7 @@ export function startRunnerSupervisorReconciler(
  *    supervisor launch guard fail-closed and the server-side tail the single writer),
  *    and {@link SupervisorRunnerRecovery} lets startup recovery REATTACH a still-live
  *    turn (D7) instead of settling it `interrupted`. Project-less Claude ACP and Codex
- *    control-plane sessions (e.g. the concierge) use the dedicated `verity-control`
+ *    control-plane sessions (e.g. Verity Control) use the dedicated `verity-control`
  *    supervisor so their approval-gated tools retain the same boundary.
  *  - `runnerTransport` (Stage 2.2-prep, opt-in): the proven in-process
  *    {@link FileTailRunnerClient} event-file/control-socket transport, unchanged.
@@ -1951,6 +1982,11 @@ export async function buildEmbeddedServer(
             'verity_publish_session_progress',
             'verity_send_session_message',
             'verity_list_linked_sessions',
+            'verity_start_planning',
+            'verity_present_plan',
+            'verity_end_planning',
+            'verity_tasks',
+            'verity_app_help',
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',
@@ -1965,6 +2001,11 @@ export async function buildEmbeddedServer(
             'verity_publish_session_progress',
             'verity_send_session_message',
             'verity_list_linked_sessions',
+            'verity_start_planning',
+            'verity_present_plan',
+            'verity_end_planning',
+            'verity_tasks',
+            'verity_app_help',
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',
@@ -1979,6 +2020,7 @@ export async function buildEmbeddedServer(
     extraToolsForProject: (projectId) =>
       projectId === CONTROL_PLANE_RUNNER_PROJECT_ID
         ? [
+            'verity_diagnostics',
             'verity_list_sessions',
             'verity_session_handoff',
             'verity_session_progress',
@@ -2074,7 +2116,6 @@ export async function buildEmbeddedServer(
     brokeredAliasCache.set(projectId, { names, expiresAt: Date.now() + ttlMs });
     return names;
   };
-  await eventStore.reconcileDevServerHostPorts();
   const secretKeyMeta = await eventStore.getSecretKeyMeta();
   const hasMasterPassword = secretKeyMeta !== undefined;
   // The one non-interactive way in (ADR 0008 D8): a Server promoted by a
@@ -2157,6 +2198,107 @@ export async function buildEmbeddedServer(
       ? createGitBranchService({
           ...(config.repoDir ? { repoDir: config.repoDir } : {}),
           baseBranch: 'main',
+          ...(config.dockerBaseUrl && config.hostCloneRoot
+            ? {
+                withGit: async (worktree, operation) => {
+                  const docker = projectDocker;
+                  if (!docker) throw new Error('Project Docker runtime is unavailable');
+                  const session = (await eventStore.listSessions()).find(
+                    (s) => s.worktree === worktree,
+                  );
+                  if (!session) throw new Error('Git requires persistent session context');
+                  const project = await eventStore.getProject(
+                    session.projectId ?? CONTROL_PLANE_PROJECT_ID,
+                  );
+                  if (!project) throw new Error('Project is unavailable');
+                  const containerName =
+                    project.kind === 'control_plane' && config.controlPlaneRunner === true
+                      ? MANAGED_CONTROL_PLANE_RUNNER_NAME
+                      : project.containerName;
+                  const hostRoot = projectClonePath(config.hostCloneRoot!, project);
+                  if (!(await docker.inspectContainer(containerName)).running) {
+                    if (config.dataVolume && !dataVolumeRoot)
+                      throw new Error('Data volume root is unavailable');
+                    return withSleepingSessionGit(
+                      {
+                        docker,
+                        templateContainer: containerName,
+                        projectId: project.id,
+                        hostRoot,
+                        dockerBaseUrl: config.dockerBaseUrl,
+                        ...(config.dataVolume
+                          ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot! } }
+                          : {}),
+                      },
+                      operation,
+                    );
+                  }
+                  return operation(
+                    createSandboxGit({
+                      containerName,
+                      hostRoot,
+                      dockerBaseUrl: config.dockerBaseUrl,
+                      inspect: () => docker.inspectContainer(containerName),
+                      timeoutMs: 10_000,
+                    }),
+                  );
+                },
+                git: async (args: readonly string[]) => {
+                  // Repository helpers must run with the same privileges as the agent.
+                  const index = args.indexOf('-C');
+                  const path = index < 0 ? undefined : args[index + 1];
+                  const session = (await eventStore.listSessions()).find(
+                    (row) => row.worktree === path,
+                  );
+                  if (!session || !projectDocker)
+                    throw new Error('Git operation has no project session context');
+                  const project = await eventStore.getProject(
+                    session.projectId ?? CONTROL_PLANE_PROJECT_ID,
+                  );
+                  if (!project) throw new Error('Project is unavailable');
+                  const containerName =
+                    project.kind === 'control_plane' && config.controlPlaneRunner === true
+                      ? MANAGED_CONTROL_PLANE_RUNNER_NAME
+                      : project.containerName;
+                  const readOnly =
+                    [
+                      'rev-parse',
+                      'for-each-ref',
+                      'symbolic-ref',
+                      'reflog',
+                      'status',
+                      'diff',
+                      'log',
+                      'show',
+                      'merge-base',
+                      'show-ref',
+                    ].includes(args[index + 2] ?? '') ||
+                    (args[index + 2] === 'worktree' && args[index + 3] === 'list');
+                  if (readOnly && !(await projectDocker.inspectContainer(containerName)).running) {
+                    if (config.dataVolume && !dataVolumeRoot)
+                      throw new Error('Data volume root is unavailable');
+                    return createSleepingSessionGit({
+                      docker: projectDocker,
+                      templateContainer: containerName,
+                      projectId: project.id,
+                      hostRoot: projectClonePath(config.hostCloneRoot!, project),
+                      ...(config.dataVolume
+                        ? {
+                            dataVolume: { name: config.dataVolume, root: dataVolumeRoot! },
+                          }
+                        : {}),
+                      dockerBaseUrl: config.dockerBaseUrl,
+                    })(args);
+                  }
+                  return createSandboxGit({
+                    containerName: containerName,
+                    hostRoot: projectClonePath(config.hostCloneRoot!, project),
+                    dockerBaseUrl: config.dockerBaseUrl,
+                    inspect: () => projectDocker.inspectContainer(containerName),
+                  })(args);
+                },
+              }
+            : {}),
         })
       : undefined;
   // Open-PR lookup for the header/PR strip (#125): built per SESSION WORKTREE, not
@@ -2248,6 +2390,10 @@ export async function buildEmbeddedServer(
       permissions: PROJECT_GITHUB_TOKEN_PERMISSIONS,
     });
 
+  const issuesTokenMint = createGitHubAppProjectTokenMint({
+    ...baseMintOpts,
+    permissions: { metadata: 'read', issues: 'read' },
+  });
   const cachedProjectTokenMint = createCachedProjectTokenMint(projectTokenMint, {
     authorityKey:
       config.githubProjectTokenMint === undefined
@@ -2263,10 +2409,10 @@ export async function buildEmbeddedServer(
   const signingCapabilities = createSigningCapabilityRegistry(db);
   // Real git worktrees only when a project repo is configured; else the server's
   // scratch-dir default (spawned agents start on an empty dir, no repo).
-  // Concierge/default Verity sessions branch from `/work`, so their refresh fetch
+  // Verity Control/default Verity sessions branch from `/work`, so their refresh fetch
   // must authenticate through the DB-backed GitHub App too. DB-only onboarding
   // deployments intentionally do not carry a broad `.gh-token`; without this header
-  // `git fetch origin main` fails before the Concierge session can be created.
+  // `git fetch origin main` fails before the Verity Control session can be created.
   const worktrees = config.repoDir
     ? createGitWorktreeProvisioner({
         repoDir: config.repoDir,
@@ -2385,6 +2531,19 @@ export async function buildEmbeddedServer(
           ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
         })
       : undefined;
+  if (projectDocker !== undefined) {
+    // Per-session sandboxes from a Server that ran sessions in private containers
+    // have no owner here; see removeRetiredSessionSandboxes.
+    void removeRetiredSessionSandboxes(projectDocker)
+      .then((result) => {
+        if (result.containers + result.volumes + result.failed > 0) {
+          console.info(`verity: removed retired session sandboxes ${JSON.stringify(result)}`);
+        }
+      })
+      .catch((error: unknown) => {
+        console.warn('verity: could not remove retired session sandboxes', error);
+      });
+  }
   const runtimeDocker = config.dockerBaseUrl
     ? (projectDocker ??
       createDockerClient({
@@ -2392,7 +2551,38 @@ export async function buildEmbeddedServer(
         ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
       }))
     : undefined;
+  const resolvePreviewUser = async (project: ProjectRecord): Promise<string | undefined> => {
+    const sandbox = await projectDocker?.inspectContainer(project.containerName);
+    const env = Object.fromEntries(
+      (sandbox?.env ?? []).map((entry) => {
+        const index = entry.indexOf('=');
+        return [entry.slice(0, index), entry.slice(index + 1)];
+      }),
+    );
+    if (env.VERITY_RUNNER_RUNTIME) {
+      const uid = env.VERITY_AGENT_UID,
+        gid = env.VERITY_AGENT_GID;
+      if (!uid || !gid || !/^\d+$/.test(uid) || !/^\d+$/.test(gid))
+        throw new Error('sandbox agent identity is unavailable');
+      return `${uid}:${gid}`;
+    }
+    return sandbox?.user || undefined;
+  };
+  // Filled once the managed dev server manager exists, further down.
+  const managedLinkEnded: { current?: (instanceId: string, shareId: string) => void } = {};
   let previewShareManager: PreviewShareManager | undefined;
+  const withPreviewProjectMutation = async <T>(
+    projectId: string,
+    mutation: () => Promise<T>,
+  ): Promise<T> => {
+    const runPublic = () =>
+      previewShareManager
+        ? previewShareManager.withProjectMutation(projectId, mutation)
+        : mutation();
+    return localPreviewManager
+      ? localPreviewManager.withProjectMutation(projectId, runPublic)
+      : runPublic();
+  };
   // Every line the Uplink client writes is conditional on this option being
   // present. Without it the handshake record, the close code and the refusal
   // reason are all no-ops, and a control channel that is being refused is
@@ -2433,6 +2623,9 @@ export async function buildEmbeddedServer(
   ) {
     previewShareManager = new PreviewShareManager({
       store: eventStore,
+      onShareEnded: (share) => {
+        if (share.managedInstanceId) managedLinkEnded.current?.(share.managedInstanceId, share.id);
+      },
       docker: projectDocker,
       resolveConnectorImage: config.publicPreviews.resolveConnectorImage,
       ...(config.dataVolume ? { dataVolume: config.dataVolume } : {}),
@@ -2443,6 +2636,7 @@ export async function buildEmbeddedServer(
         : {}),
       isDevServerRunning: async ({ project, devServer }) => {
         const status = await new DockerProjectRuntime({
+          resolveUser: resolvePreviewUser,
           dockerBaseUrl: config.dockerBaseUrl,
         }).devServerStatus(project, {
           defaultBranch: null,
@@ -2456,8 +2650,16 @@ export async function buildEmbeddedServer(
         });
         return status.running;
       },
+      prepareTargetPort: (project, port) =>
+        new DockerProjectRuntime({
+          resolveUser: resolvePreviewUser,
+          dockerBaseUrl: config.dockerBaseUrl,
+        }).ensurePreviewTarget(project, port),
+      listSessionServers: (sessionId) =>
+        listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
       listListeningProcesses: async (project) =>
         await new DockerProjectRuntime({
+          resolveUser: resolvePreviewUser,
           dockerBaseUrl: config.dockerBaseUrl,
         }).listListeningProcesses(project),
       edge: uplinkControl,
@@ -2896,6 +3098,40 @@ export async function buildEmbeddedServer(
   };
   let projectRelayLifecycle: ProjectRelayLifecycle | undefined;
   const projectRelayEnabled = (config.projectRelayImage ?? '').trim().length > 0;
+  const forgeIdentity = projectRelayEnabled ? await loadForgeProxyIdentity(secretRoot) : undefined;
+  const forgeProxyEnabled = (): boolean => projectRelayEnabled;
+  const forgePackageMap = projectRelayEnabled
+    ? await loadForgePackageMap(secretRoot)
+    : new Map<string, readonly string[]>();
+  const githubForgeAdapter = createGitHubForgeAdapter({
+    mint: cachedProjectTokenMint,
+    transport: brokeredHttpStreamTransport,
+  });
+  const ghcrForgeAdapter = createGhcrForgeAdapter({
+    packages: (projectId) => Promise.resolve(forgePackageMap.get(projectId) ?? []),
+    mint: createGitHubAppInstallationTokenMint({
+      ...baseMintOpts,
+      permissions: REGISTRY_GITHUB_TOKEN_PERMISSIONS,
+    }),
+    transport: brokeredHttpStreamTransport,
+  });
+  const forgeProxy =
+    forgeIdentity === undefined
+      ? undefined
+      : createBrokeredForgeProxy({
+          certificate: forgeIdentity.certificate,
+          capabilities: ghTokenCapabilities,
+          adapter: {
+            hosts: new Set([...githubForgeAdapter.hosts, ...ghcrForgeAdapter.hosts]),
+            streams: (request) => githubForgeAdapter.streams(request),
+            authorize: (request, ...args) =>
+              (request.hostname === 'ghcr.io' ? ghcrForgeAdapter : githubForgeAdapter).authorize(
+                request,
+                ...args,
+              ),
+          },
+          enabled: forgeProxyEnabled,
+        });
   if (
     config.dockerBaseUrl !== undefined &&
     config.hostCloneRoot !== undefined &&
@@ -3292,6 +3528,10 @@ export async function buildEmbeddedServer(
       // resolves against. The provisioner issues a per-container capability into it
       // instead of writing a gh-token file, so the sandbox mints tokens on demand.
       ghTokenCapabilities,
+      forgeProxy:
+        forgeIdentity === undefined
+          ? undefined
+          : { caCertPem: forgeIdentity.ca.caCertPem, enabled: forgeProxyEnabled },
       projectRelay: projectRelayControl!,
       claudeEgressGatewayUrl: config.claudeEgressGatewayUrl!,
       codexEgressGatewayUrl: config.codexEgressGatewayUrl!,
@@ -3330,12 +3570,8 @@ export async function buildEmbeddedServer(
       onSandboxWakeFallback: (event) => {
         app.log.warn(event, 'verity: sleeping Sandbox requires cold wake fallback');
       },
-      ...(previewShareManager !== undefined
-        ? {
-            withContainerReplace: <T>(project: ProjectRecord, mutation: () => Promise<T>) =>
-              previewShareManager.withProjectMutation(project.id, mutation),
-          }
-        : {}),
+      withContainerReplace: <T>(project: ProjectRecord, mutation: () => Promise<T>) =>
+        withPreviewProjectMutation(project.id, mutation),
       // Named data volume (M16): per-project mounts become volume subpaths instead
       // of host binds, so sibling sandboxes need no host-path knowledge.
       ...(config.dataVolume !== undefined ? { dataVolume: config.dataVolume } : {}),
@@ -3366,7 +3602,7 @@ export async function buildEmbeddedServer(
         ? { sandboxCpuShares: config.sandboxCpuShares }
         : {}),
       ...(config.sandboxCapAdd !== undefined ? { sandboxCapAdd: config.sandboxCapAdd } : {}),
-      ...(config.publicPreviews !== undefined
+      ...(config.publicPreviews !== undefined || config.resolvePreviewConnectorImage !== undefined
         ? (() => {
             const verifier = createDockerGvisorRuntimeVerifier({
               docker,
@@ -3419,10 +3655,8 @@ export async function buildEmbeddedServer(
       // Revoke the project's Claude-egress client cert on teardown (opt-in).
       claudeEgressIdentity,
       projectRelayControl,
-      previewShareManager === undefined
-        ? undefined
-        : (project: ProjectRecord, mutation: () => Promise<ProjectRecord>) =>
-            previewShareManager.withProjectMutation(project.id, mutation),
+      (project: ProjectRecord, mutation: () => Promise<ProjectRecord>) =>
+        withPreviewProjectMutation(project.id, mutation),
       // Resource cleanup never blocks the deprovision, so the log is where a
       // leftover container, clone directory, or relay socket becomes visible.
       (project: ProjectRecord, step: string, cause: unknown) =>
@@ -3441,6 +3675,98 @@ export async function buildEmbeddedServer(
   // events the FileTailRunnerClient republishes off the tailed event file must
   // reach the exact bus the live stream reads from, not a second instance.
   const bus = new InMemoryEventBus();
+  // Declared before discovery, whose scans feed its orphan sweep.
+  let managedDevServerManager: ManagedDevServerManager | undefined;
+  const listenerDiscovery =
+    config.dockerBaseUrl && config.hostCloneRoot
+      ? new ListenerDiscovery({
+          eventStore,
+          bus,
+          hostCloneRoot: config.hostCloneRoot,
+          dockerBaseUrl: config.dockerBaseUrl,
+          resolveUser: resolvePreviewUser,
+          onScan: (project, processes) => {
+            void managedDevServerManager?.sweepOrphans(project, processes);
+          },
+          scan: (project) =>
+            new DockerProjectRuntime({
+              resolveUser: resolvePreviewUser,
+              dockerBaseUrl: config.dockerBaseUrl,
+            }).listListeningProcesses(project),
+        })
+      : undefined;
+
+  const localConnectorImage =
+    config.resolvePreviewConnectorImage ?? config.publicPreviews?.resolveConnectorImage;
+  // `app.log` exists only once the control plane is built further down.
+  const managedDevServerLog: {
+    current?: (message: string, detail?: Record<string, unknown>) => void;
+  } = {};
+  const localPreviewManager =
+    projectDocker && localConnectorImage && config.hostCloneRoot
+      ? new LocalPreviewManager({
+          store: eventStore,
+          docker: projectDocker,
+          resolveConnectorImage: localConnectorImage,
+          hostCloneRoot: config.hostCloneRoot,
+          ...(config.dataVolume ? { dataVolume: config.dataVolume } : {}),
+          ...(config.dataVolumeRoot ? { dataVolumeRoot: config.dataVolumeRoot } : {}),
+          ...(config.agentSeedHostPath ? { agentSeedHostPath: config.agentSeedHostPath } : {}),
+          isDevServerRunning: () => Promise.resolve(false),
+          listListeningProcesses: (project) =>
+            new DockerProjectRuntime({
+              resolveUser: resolvePreviewUser,
+              dockerBaseUrl: config.dockerBaseUrl,
+            }).listListeningProcesses(project),
+          listSessionServers: (sessionId) =>
+            listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
+          prepareTargetPort: (project, port) =>
+            new DockerProjectRuntime({
+              resolveUser: resolvePreviewUser,
+              dockerBaseUrl: config.dockerBaseUrl,
+            }).ensurePreviewTarget(project, port),
+          publicHost: process.env.VERITY_LOCAL_PREVIEW_HOST ?? 'localhost',
+          connectorHost: hostname(),
+          resolveConnectorHost: async () => {
+            const server = await projectDocker.inspectContainer(hostname());
+            const address = server.networks?.['verity-net']?.ipAddress;
+            if (!address)
+              throw new PreviewShareConflictError('local preview server network is unavailable');
+            return address;
+          },
+          connectorNetwork: 'verity-net',
+          ...(process.env.VERITY_LOCAL_PREVIEW_PORT_RANGE
+            ? { portRange: process.env.VERITY_LOCAL_PREVIEW_PORT_RANGE }
+            : {}),
+          reservedNetworkPorts: () =>
+            managedDevServerManager?.reservedNetworkPorts() ?? new Set<number>(),
+        })
+      : undefined;
+  // Dev servers the agent sets up and Verity runs (concept 2.6).
+  if (projectDocker && config.hostCloneRoot) {
+    const hostCloneRoot = config.hostCloneRoot;
+    managedDevServerManager = new ManagedDevServerManager({
+      store: eventStore,
+      runtime: new DockerProjectRuntime({
+        resolveUser: resolvePreviewUser,
+        dockerBaseUrl: config.dockerBaseUrl,
+      }),
+      ...(localPreviewManager ? { localShares: localPreviewManager } : {}),
+      networkPorts: localPreviewPorts(process.env.VERITY_LOCAL_PREVIEW_PORT_RANGE),
+      sandboxWorktree: (project, worktree) =>
+        containerPathFor(worktree, projectClonePath(hostCloneRoot, project)),
+      refreshListeners: (project) => listenerDiscovery?.refreshProject(project),
+      wakeSandbox: (projectId, sessionId) =>
+        provisioner?.ensureProjectSandboxAwake(projectId, new Set([sessionId])) ??
+        Promise.reject(new Error('sandbox wake is unavailable')),
+      log: (message, detail) => managedDevServerLog.current?.(message, detail),
+    });
+    const managed = managedDevServerManager;
+    // Fired from a share's teardown; a store error here must not become an
+    // unhandled rejection in the Core.
+    managedLinkEnded.current = (instanceId, shareId) =>
+      void managed.publicLinkEnded(instanceId, shareId).catch(() => undefined);
+  }
 
   // Per-turn transport path allocators (ADR 0006 Stage 2.2-prep). Only exercised
   // when `config.runnerTransport` is on; cheap to build unconditionally.
@@ -3864,6 +4190,10 @@ export async function buildEmbeddedServer(
     // The same root the provisioner mounts from, so the explorer and the sandbox
     // are looking at one directory rather than two copies of an idea (ADR 0022).
     ...(config.dataVolumeRoot !== undefined ? { dataRoot: config.dataVolumeRoot } : {}),
+    ...(config.webAppDir !== undefined ? { webAppDir: config.webAppDir } : {}),
+    ...(config.browserRequestOrigin !== undefined
+      ? { browserRequestOrigin: config.browserRequestOrigin }
+      : {}),
     ...(config.unlockClientIdentity !== undefined
       ? { unlockClientIdentity: config.unlockClientIdentity }
       : {}),
@@ -3890,6 +4220,17 @@ export async function buildEmbeddedServer(
     ...(config.serverUpdateNotifierStatePath !== undefined
       ? { serverUpdateNotifierStatePath: config.serverUpdateNotifierStatePath }
       : {}),
+    ...(listenerDiscovery ? { listenerDiscovery } : {}),
+    ...(localPreviewManager ? { localPreviewManager } : {}),
+    ...(managedDevServerManager ? { managedDevServerManager } : {}),
+    previewSharingCapability: async () => {
+      const settings = await eventStore.getVeritySettings();
+      return previewSharingCapability(
+        uplinkControl?.isAvailable() === true,
+        Boolean(settings?.uplinkSubscriptionKey?.trim()),
+        uplinkControl?.diagnostics(),
+      );
+    },
     ...(previewShareManager !== undefined ? { previewShareManager } : {}),
     ...(uplinkControl !== undefined
       ? { remoteControlDescriptor: () => uplinkControl.remoteControlDescriptor() }
@@ -3907,13 +4248,20 @@ export async function buildEmbeddedServer(
     ...(uplinkControl !== undefined
       ? { onUplinkCredentialsChanged: () => uplinkControl.refreshCredentials() }
       : {}),
+    ...(uplinkControl ? { attendeeEdge: uplinkControl } : {}),
     onOpenCodeSettingsChanged: async (settings) => {
       materializeOpenCodeSettings(settings, secretRoot, config.claudeConnectorPort);
       await refreshAgentGatewayCredential();
     },
+    ...(config.stagingGoogleClientId !== undefined
+      ? { stagingGoogleClientId: config.stagingGoogleClientId }
+      : {}),
     ...(config.googleDriveClientId !== undefined
       ? { googleDriveClientId: config.googleDriveClientId }
       : {}),
+    googleDriveDocumentIsWithinProject: (
+      input: Parameters<typeof googleDriveTool.canReadDocumentWithoutApproval>[0],
+    ) => googleDriveTool.canReadDocumentWithoutApproval(input),
     onGoogleCredentialsChanged: () => googleAccessToken.invalidate(),
     secretCipher,
     persistAgentCredentials: async (patch, persist) => {
@@ -3987,6 +4335,12 @@ export async function buildEmbeddedServer(
     listBrokeredGrants: async (projectId) =>
       brokeredHttpGrants.list(projectId, (await brokeredGrantBindingId(projectId)) ?? null),
     revokeBrokeredGrant: (projectId, grantId) => brokeredHttpGrants.revoke(projectId, grantId),
+    runtimeDiagnostics: createRuntimeDiagnostics({
+      dockerBaseUrl: config.dockerBaseUrl,
+      dataRoot: config.dataVolumeRoot,
+      serverContainerId: config.diagnosticServerContainerId,
+      hostSnapshotPath: config.hostDiagnosticSnapshotPath,
+    }),
     ...(secretJobRuntimeReadiness !== undefined ? { secretJobRuntimeReadiness } : {}),
     ...(config.pushEnabled === true
       ? {
@@ -4083,6 +4437,8 @@ export async function buildEmbeddedServer(
     sshKeygen: defaultSshKeygenSpawner,
     // Give server-side model queries the configured repository as context.
     ...(config.repoDir ? { refineCwd: config.repoDir } : {}),
+    listProjectGitHubIssues: (project: ProjectRecord) =>
+      listProjectGitHubIssues(project, issuesTokenMint),
     latestRelease: (owner: string, repo: string) => releaseService.latestRelease(owner, repo),
     refreshLatestRelease: (owner: string, repo: string) =>
       releaseService.refreshLatestRelease(owner, repo),
@@ -4187,7 +4543,12 @@ export async function buildEmbeddedServer(
               }
             : {}),
           ...(config.enableProjectRuntime === true
-            ? { projectRuntime: new DockerProjectRuntime({ dockerBaseUrl: config.dockerBaseUrl }) }
+            ? {
+                projectRuntime: new DockerProjectRuntime({
+                  resolveUser: resolvePreviewUser,
+                  dockerBaseUrl: config.dockerBaseUrl,
+                }),
+              }
             : {}),
         }
       : {}),
@@ -4776,6 +5137,35 @@ export async function buildEmbeddedServer(
       },
     });
   }
+  if (localPreviewManager && projectDocker) {
+    const sweepLocalConnectors = () =>
+      sweepOrphanedLocalPreviews(projectDocker, hostname(), (id, shareId) =>
+        localPreviewManager.ownsConnector(id, shareId),
+      );
+    await sweepLocalConnectors().catch((error) =>
+      app.log.warn({ err: error }, 'local connector cleanup deferred until Docker recovers'),
+    );
+    let reconcilingLocal = false;
+    const localTimer = setInterval(() => {
+      if (reconcilingLocal) return;
+      reconcilingLocal = true;
+      void sweepLocalConnectors()
+        .then(() => localPreviewManager.reconcile())
+        .catch((error) => app.log.warn({ err: error }, 'local preview reconciliation failed'))
+        .finally(() => {
+          reconcilingLocal = false;
+        });
+    }, 10000);
+    localTimer.unref();
+    app.addHook('onClose', async () => {
+      clearInterval(localTimer);
+      await localPreviewManager.close();
+    });
+  }
+  app.addHook('onClose', () => listenerDiscovery?.close());
+  managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
+  app.addHook('onClose', () => managedDevServerManager?.close());
+  void listenerDiscovery?.reconcile();
   app.addHook('onClose', () => claudeCredentialSync.close());
   let preserveProjectRelaysOnClose = false;
   app.addHook('onClose', () =>
@@ -4819,6 +5209,9 @@ export async function buildEmbeddedServer(
         const swept = await sweepOrphanedPreviewShares({
           store: eventStore,
           docker: projectDocker,
+          onShareEnded: ({ managedInstanceId, id }) => {
+            if (managedInstanceId) managedLinkEnded.current?.(managedInstanceId, id);
+          },
         });
         if (swept > 0) {
           app.log.warn({ swept }, 'revoked orphaned public preview shares');
@@ -4887,6 +5280,8 @@ export async function buildEmbeddedServer(
       docker,
       signingCapabilities,
       githubCapabilities: ghTokenCapabilities,
+      forgeProxy,
+      forgeProxyEnabled,
       image: config.projectRelayImage!,
       dataVolume: config.dataVolume,
       dataVolumeRoot: config.dataVolumeRoot,

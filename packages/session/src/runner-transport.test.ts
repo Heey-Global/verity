@@ -1,9 +1,10 @@
+import { createHash } from 'node:crypto';
 import { appendFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PermissionRequest } from '@verity/adapter-claude';
-import type { AgentEvent } from '@verity/events';
+import { agentEventSchema, type AgentEvent } from '@verity/events';
 import type { RunResult } from './backend-contract.js';
 import {
   stampFrame,
@@ -38,6 +39,152 @@ const PERMISSION_FRAME = frame({ kind: 'permission-request', request: PERMISSION
 const RESULT: RunResult = { sessionId: 'sess-1', exitCode: 0, stderr: '', aborted: false };
 const RESULT_FRAME = frame({ kind: 'result', result: RESULT }, 5);
 
+const eventExamples: Record<AgentEvent['t'], AgentEvent> = {
+  session: { t: 'session', id: 's', model: 'model', worktree: '/work' },
+  dev_servers_changed: {
+    t: 'dev_servers_changed',
+    devServers: [
+      {
+        port: 3000,
+        reachable: true,
+        pid: 1,
+        name: 'Web',
+        command: 'npm start',
+        workdir: '.',
+        scope: 'session',
+        sessionId: 's',
+        managedInstanceId: 'instance',
+      },
+    ],
+  },
+  status: { t: 'status', state: 'crashed', message: 'Connection closed' },
+  text: { t: 'text', delta: 'hello', parentToolId: 'parent' },
+  notice: { t: 'notice', text: 'notice', role: 'agent', clientRequestId: 'request' },
+  prompt: {
+    t: 'prompt',
+    peer: { sessionId: 's', projectId: 'p', label: 'Peer', message: 'hello' },
+    initiatedBy: { userId: 'user' },
+    text: 'hello',
+    steered: true,
+    attachments: [
+      { kind: 'image', mediaType: 'image/png', id: 'blob', data: 'YQ==' },
+      { kind: 'file', mediaType: 'text/plain', fileName: 'a.txt', id: 'blob', data: 'YQ==' },
+    ],
+  },
+  thinking: { t: 'thinking', blockId: 'b', signature: 'sig', delta: 'hmm', parentToolId: 'parent' },
+  skill: { t: 'skill', text: 'skill' },
+  tool_call_start: { t: 'tool_call_start', id: 'tool', name: 'Bash', parentToolId: 'parent' },
+  tool_call: {
+    t: 'tool_call',
+    id: 'tool',
+    name: 'Bash',
+    input: { command: 'ls' },
+    parentToolId: 'parent',
+  },
+  tool_result: {
+    t: 'tool_result',
+    id: 'tool',
+    output: 'ok',
+    isError: false,
+    outputRef: { id: 'blob', bytes: 2 },
+    parentToolId: 'parent',
+  },
+  permission: {
+    t: 'permission',
+    id: 'permission',
+    tool: 'Bash',
+    input: {},
+    riskClass: 'ask',
+    grantChannel: 'acp',
+  },
+  result: {
+    t: 'result',
+    usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheCreationTokens: 4 },
+    stopReason: 'end_turn',
+    telemetry: {
+      backend: 'codex',
+      mode: 'acp',
+      userPromptChars: 1,
+      runtimePromptChars: 2,
+      submittedPromptChars: 3,
+      attachments: 0,
+      resumed: false,
+    },
+    permissionDenials: [{ tool: 'Bash', toolUseId: 'tool', input: {} }],
+  },
+  rate_limit: {
+    t: 'rate_limit',
+    status: 'allowed',
+    resetsAt: 1,
+    window: 'weekly',
+    usedPercent: 10,
+    scope: 'all',
+    providerLabel: 'Provider',
+  },
+  task: {
+    t: 'task',
+    id: 'task',
+    phase: 'ended',
+    toolUseId: 'tool',
+    description: 'Work',
+    status: 'completed',
+  },
+  choices: {
+    t: 'choices',
+    question: 'Which?',
+    options: [{ label: 'Continue', recommended: true }],
+    multiSelect: false,
+  },
+  automation_proposal: {
+    t: 'automation_proposal',
+    proposal: {
+      name: 'Review',
+      schedule: { kind: 'daily', hour: 9, minute: 0, timeZone: 'UTC' },
+      prompt: 'Review changes',
+      script: 'true',
+      model: 'model',
+    },
+  },
+  interrupted: { t: 'interrupted' },
+  merged: { t: 'merged', number: 1 },
+  compaction: { t: 'compaction', boundary: true },
+  error: { t: 'error', kind: 'connection_closed', message: 'closed' },
+  diagnostic: {
+    t: 'diagnostic',
+    source: 'agent',
+    outcome: 'failed',
+    phase: 'prompt',
+    backend: 'codex',
+    code: -1,
+    model: 'model',
+    exitCode: 1,
+    signal: null,
+    turnActive: true,
+    stderrTail: 'agent stderr',
+  },
+  session_progress: {
+    t: 'session_progress',
+    summary: 'Done',
+    outcomeDelivered: true,
+    blocker: 'None',
+    requiredDecision: 'Continue',
+  },
+  tasks_updated: { t: 'tasks_updated', origin: 'agent', change: 'completed', taskIds: ['task'] },
+  raw: { t: 'raw', backend: 'codex', payload: { nested: true } },
+};
+
+function reverseKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(reverseKeys);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value)
+        .reverse()
+        .map(([key, item]) => [key, reverseKeys(item)]),
+    );
+  }
+  return value;
+}
+
 let dir: string;
 let file: string;
 
@@ -51,6 +198,121 @@ afterEach(async () => {
 });
 
 describe('runner-transport (ADR 0006 Stage 2.1)', () => {
+  it('covers every event variant and optional object field in the schema', () => {
+    expect(Object.keys(eventExamples).sort()).toEqual(
+      agentEventSchema.options.map((schema) => schema.shape.t.value).sort(),
+    );
+    for (const schema of agentEventSchema.options) {
+      const example = eventExamples[schema.shape.t.value];
+      expect(Object.keys(example).sort()).toEqual(Object.keys(schema.shape).sort());
+    }
+  });
+
+  it.each(Object.entries(eventExamples))(
+    'roundtrips a %s event with reversed nested field order',
+    async (_type, example) => {
+      const event = reverseKeys(example) as AgentEvent;
+      const stamped = frame({ kind: 'event', event }, 1);
+      await writeFrame({ path: file }, stamped);
+      await writeFrame({ path: file }, frame({ kind: 'result', result: RESULT }, 2));
+      const seen: RunnerFrame[] = [];
+      await tailFrames(file, (item) => {
+        seen.push(item);
+      });
+      expect(seen[0]).toEqual(stamped);
+      expect(JSON.stringify(seen[0])).toBe(JSON.stringify(stamped));
+    },
+  );
+
+  it.each([
+    ['retired channel', { ...eventExamples.permission, grantChannel: 'native' }],
+    ['unknown fields', { ...eventExamples.diagnostic, futureField: { detail: 'retained' } }],
+  ])('verifies the original payload before schema normalization: %s', async (_label, event) => {
+    expect(JSON.stringify(agentEventSchema.parse(event))).not.toBe(JSON.stringify(event));
+    const stamped = frame({ kind: 'event', event: event as AgentEvent }, 1);
+    await writeFrame({ path: file }, stamped);
+    await writeFrame({ path: file }, frame({ kind: 'result', result: RESULT }, 2));
+    const seen: RunnerFrame[] = [];
+    await tailFrames(file, (item) => {
+      seen.push(item);
+    });
+    expect(seen[0]).toEqual(stamped);
+  });
+
+  it('still rejects a valid event whose payload was changed after stamping', async () => {
+    const stamped = frame({ kind: 'event', event: eventExamples.diagnostic }, 1);
+    await writeFrame({ path: file }, {
+      ...stamped,
+      event: { ...eventExamples.diagnostic, stderrTail: 'tampered' },
+    } as RunnerFrame);
+    await expect(tailFrames(file, () => {})).rejects.toThrow('invalid runner frame payload hash');
+  });
+
+  it('rejects an invalid event even when its raw hash is valid', async () => {
+    await writeFrame(
+      { path: file },
+      frame(
+        { kind: 'event', event: { t: 'diagnostic', source: 'invalid' } as unknown as AgentEvent },
+        1,
+      ),
+    );
+    await expect(tailFrames(file, () => {})).rejects.toThrow('invalid event frame');
+  });
+
+  it('accepts the legacy runner hash for a process diagnostic with model appended last', async () => {
+    const body = {
+      kind: 'event',
+      event: {
+        t: 'diagnostic',
+        source: 'agent',
+        outcome: 'failed',
+        phase: 'prompt',
+        backend: 'codex',
+        exitCode: 1,
+        signal: null,
+        turnActive: true,
+        stderrTail: 'stderr',
+        model: 'model',
+      },
+    };
+    // Keep the old algorithm independent of stampFrame to guard rolling upgrades.
+    const payloadHash = createHash('sha256').update(JSON.stringify(body)).digest('hex');
+    await appendFile(
+      file,
+      JSON.stringify({
+        protocolVersion: SESSION_FRAME.protocolVersion,
+        runnerInstanceId: RUNNER_INSTANCE,
+        turnId: TURN_ID,
+        frameSeq: 1,
+        payloadHash,
+        ...body,
+      }) + '\n',
+    );
+    await writeFrame({ path: file }, frame({ kind: 'result', result: RESULT }, 2));
+    const seen: RunnerFrame[] = [];
+    await tailFrames(file, (item) => {
+      seen.push(item);
+    });
+    expect(seen[0]).toMatchObject({ ...body, payloadHash });
+  });
+
+  it.each([
+    { id: 's', kind: 'session' },
+    { event: eventExamples.diagnostic, kind: 'event' },
+    { request: PERMISSION_REQUEST, kind: 'permission-request' },
+    { result: RESULT, kind: 'result' },
+  ] as RunnerFrameBody[])('preserves body key order for $kind frames', async (body) => {
+    const stamped = frame(body, 1);
+    await writeFrame({ path: file }, stamped);
+    if (body.kind !== 'result')
+      await writeFrame({ path: file }, frame({ kind: 'result', result: RESULT }, 2));
+    const seen: RunnerFrame[] = [];
+    await tailFrames(file, (item) => {
+      seen.push(item);
+    });
+    expect(seen[0]).toEqual(stamped);
+  });
+
   it('writes each frame variant as one JSONL line and tails them back in order + typed', async () => {
     const frames = [SESSION_FRAME, EVENT_FRAME_A, PERMISSION_FRAME, EVENT_FRAME_B, RESULT_FRAME];
     for (const f of frames) await writeFrame({ path: file }, f);

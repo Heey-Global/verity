@@ -1,5 +1,8 @@
 # Releases
 
+See [Staging and production releases](staging-releases.md) for the candidate
+channels, production promotion PRs, separate mobile app, and channel switching.
+
 Verity has three products and four delivery paths: Server, website, native
 mobile, and mobile OTA. Changes accumulate in an open approval pull request;
 merging that pull request approves a specific release candidate. Ordinary source
@@ -7,10 +10,10 @@ merges do not approve a release.
 
 | Product | Approval | Delivered artifact |
 | --- | --- | --- |
-| Server | Release Please PR | Verified Server and supporting images, signed update channels |
+| Server | Release Please PR, then production promotion PR | Verified images, signed staging and stable update channels |
 | Website | Release Please PR | Versioned, smoke-tested website image |
-| Mobile native | Release Please PR | A new `X.Y.0` runtime and TestFlight binary |
-| Mobile OTA | Rolling promotion PR per runtime | A specific EAS update group for the installed runtime |
+| Mobile native | Release Please PR, then production promotion PR | Separate Staging and production TestFlight binaries; approved production build verified for internal TestFlight testing |
+| Mobile OTA | Staging Release Please PR, then rolling production promotion PR per runtime | Separate Staging OTA and a specific approved production EAS update group |
 
 ## Release ownership
 
@@ -181,9 +184,9 @@ The Server release includes the toolkit, sandbox, relay, Server, and required
 preview images. Existing installation, self-update/rollback, architecture,
 provenance, signing, and digest checks remain part of release acceptance.
 
-Generate and upload signed channel evidence before updating the mutable stable
-channel. Promote only after the required images and evidence are complete, then
-finalize the public GitHub release. A partial promotion remains recoverable and
+Generate and upload signed channel evidence before updating the mutable staging
+channel. Open a production promotion PR only after the required images and evidence
+are complete. Merging that PR advances stable and finalizes the public GitHub release. A partial promotion remains recoverable and
 must not be reported as a completed publication.
 
 Keep signing jobs in `.github/workflows/release.yml`: installed Servers trust
@@ -216,6 +219,15 @@ explicit runtime string are excluded from that comparison; native modules,
 plugins, native assets, and custom native preparation still matter. Failure to
 establish compatibility blocks OTA.
 
+To request a new TestFlight binary without native changes, dispatch
+`release-dispatch.yml` on `main` with `mobile-replan=true`. This only opens or
+updates the next native release PR (for example, 1.52.0 to 1.53.0); merging
+that PR approves the build. Recovery and reconciliation inputs cannot be combined
+with this request. Release Please needs releasable mobile commits since the last
+native release; with no such commits, no new PR is created. This request does not
+force an empty release. Pending publication must be resolved before another release
+can be planned. Production still requires its separate promotion PR.
+
 Once `main` needs a different native runtime, its changes accumulate in the
 native release PR. Do not publish that source to the old runtime. Supporting
 parallel OTA fixes for an older runtime would need an explicit maintenance
@@ -229,11 +241,19 @@ There is one open OTA promotion PR per TestFlight runtime, not one PR per source
 merge. The PR contains the cumulative changelog since the latest **published**
 mobile release and points at the newest successfully prepared candidate.
 
-The planned patch version stays the same while source changes accumulate.
-Candidate references and EAS branches include the source identity, so updating
-the PR never overwrites a previously built candidate. Reserve the candidate
-before upload; retries reuse the recorded update group rather than publishing
-different bytes to the same candidate branch.
+Compatible merges accumulate in a Staging OTA Release Please PR. Merging it
+publishes its fixed patch version to Staging and creates a GitHub prerelease.
+Each merged Staging release advances the patch, even if production has not yet
+promoted the previous one. For example, Staging can publish 1.52.1 and 1.52.2;
+the rolling production PR then promotes 1.52.2 and skips 1.52.1.
+
+The native runtime remains X.Y.0. OTA versions live separately in
+`apps/mobile/ota/version.txt`; the release PR updates that marker and its changelog.
+Candidate references and EAS branches include the source identity. Retries reuse
+the recorded groups, and production promotion keeps the same version, source,
+and prepared production group without exporting another bundle. Staging and
+production have distinct native identities, so preparation exports one group for
+each identity before offering production approval.
 
 A promotion manifest binds the runtime, source commit, planned version, EAS
 branch, exact update group, and release notes. The staging workflow updates the
@@ -243,8 +263,8 @@ stops if dismissal fails. Promotion independently rejects any remaining stale
 approval. Configure required checks on the protected branch as well.
 
 Merging freezes the manifest used by promotion. Promotion validates that source,
-runtime, candidate reference, and EAS group agree, changes the TestFlight
-channel, reads it back, and records the same cumulative notes on the GitHub
+runtime, candidate reference, and EAS group agree, changes the candidate
+channel (`production` for new candidates), reads it back, and records the same cumulative notes on the GitHub
 release. A later merge to `main` cannot change the already-approved candidate.
 
 ## Scheduling, permissions, and migration
@@ -279,3 +299,44 @@ backend maintenance inputs, or website version/ref. OTA promotion can be retried
 through its own workflow. Always inspect the recorded source and artifact
 identity; a successful retry should complete the original operation, not create
 a new one under the same name.
+
+## Tag registration and workflow merge ordering
+
+The dispatcher's `register-release-tags` job reserves approved release commits
+before entering any product's build queue. A tag records the source commit; it
+does not publish a GitHub release, move a channel, or approve production. Release
+Please still creates the draft, and the existing train lock still owns planning
+and publication. Existing tags must identify the validated source and are never
+moved. Registration requires only the standard `GITHUB_TOKEN` permissions.
+
+GitHub can reject tagging an older commit after its workflow contents have been
+removed from the current branch. Early registration alone does not close that
+race. CI's `release-tag-barrier` checks the base's release tags before a PR changes
+anything under `.github/workflows`, including deletions and rename sources.
+Ordinary source-only PRs pass without waiting for tags or builds. If the barrier
+fails because registration is still running, rerun CI once registration succeeds.
+A failed registration needs recovery; merging the workflow change is not a
+recovery mechanism.
+
+### Required repository configuration
+
+A repository administrator must enable these settings on `main` after deploying
+the workflow. The code alone does **not** enforce merge ordering:
+
+1. Require the GitHub Actions status check `release-tag-barrier`.
+2. Enable **Require branches to be up to date before merging** (strict required
+   status checks). This invalidates a passing check when another release merges.
+3. Apply the rule to administrators and automation; do not grant bypasses that
+   can merge workflow changes without the check. Preserve all existing required
+   checks and other protections when editing the rule.
+
+Do not substitute a non-strict status rule: two PRs could pass against the same
+base, then the workflow PR could overtake the release PR. This setup uses strict
+branch protection, not a merge queue; a merge queue would need its own
+`merge_group` check coverage before being enabled.
+
+Verify configuration with a workflow-changing PR based on a main commit whose
+release tag is absent: the barrier must fail and merging must be blocked. Once
+the exact tag is registered, rerun CI and confirm the barrier passes. Then advance
+main and confirm GitHub requires the PR to update before merging. Activation is
+incomplete until both the required check and strict base freshness are enforced.

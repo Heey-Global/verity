@@ -1,3 +1,20 @@
+import { TranscriptTimingContext } from '../../components/TranscriptRow';
+import { useSwitchFrameTiming } from '../../hooks/useSwitchFrameTiming';
+import {
+  beginRenderWork,
+  markFirstSessionRender,
+  markInitialListLoad,
+} from '../../lib/sessionSwitchTiming';
+import { beginSessionSwitch, type SwitchTiming } from '@verity/mobile';
+import { markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
+import { PinnedPlan } from '../../components/PinnedPlan';
+import { shouldSendWebKey } from '../../lib/composerWebKey';
+import { subscribeLiveRefresh } from '../../lib/liveConnection';
+import { openTasksPanel } from '../../lib/taskPanelEvents';
+import { ActionMenu } from '../../components/ActionMenu';
+import { SlowSpinner } from '../../components/SlowSpinner';
+import { FileTextEditor } from '../../components/files/FileTextEditor';
+import { FileContentPreview } from '../../components/files/FileContentPreview';
 // Session chat screen: the live transcript for one Claude Code session plus the
 // operator input bar. Binds @verity/mobile's headless SessionModel via useSession
 // (live WS stream → reducer → Message[]) and renders each canonical message kind
@@ -8,12 +25,12 @@
 // plugin (root: 'app') processes them.
 import {
   type AgentTextMessage,
-  type AgentLoop,
-  type AgentLoopProposalMessage,
   type Attachment,
+  type AutomationProposalMessage,
   type AttachmentUpload,
   type BranchSwitchRequest,
   type DriveFile,
+  type SessionAutomation,
   VerityApiError,
   type VerityClient,
   type ChoicesMessage,
@@ -25,36 +42,48 @@ import {
   type PermissionDecision,
   type RateLimitNotice,
   type SessionFileEntry,
+  type SessionFileContent,
   type SessionFileRoot,
+  type AppLinkTarget,
   type SessionGoogleWorkspaceFile,
+  type SessionPlanning,
   type ToolCallMessage,
   type UserTextMessage,
   agentEventDescriptor,
-  agentLoopConfigFingerprint,
   briefingExtent,
-  chunkFilePreview,
   engineLabel,
   groupModelsByEngine,
   formatChoiceAnswer,
+  planProposal,
+  planProposalRevision,
+  planProposalDisplay,
+  isPlanImplementationPermission,
+  planProposalHeadline,
+  planProposalContent,
+  planningToolName,
+  END_PLANNING_TOOL,
+  START_PLANNING_TOOL,
   freezeTranscriptTail,
   frozenTranscriptRows,
   gmailPreviewHtml,
   gmailSendSummary,
   calendarChangeSummary,
   githubRefUrl,
-  isPullRequestConflicted,
   isSessionImageFilePath,
   groupRows,
   reconcileTranscriptRows,
+  withPlanningSnapshot,
+  pullRequestMergeButton,
   pullRequestStatusText,
   markdownSectionTitle,
   modelRateLimited,
   modelDisplayName,
+  excludedAgentsNote,
   orderModels,
   partitionModels,
-  publishAgentLoopMutation,
-  subscribeAgentLoopMutations,
+  publishSessionAutomationMutation,
   parseBranchIssue,
+  parseAppLink,
   parseInline,
   parseMarkdownBlocks,
   rateLimitNotice,
@@ -70,6 +99,8 @@ import {
   listSessionsSummary,
   listSessionsTitle,
   permissionInputText,
+  knowledgePublishSummary,
+  KNOWLEDGE_PUBLISH_EXPLANATION,
   printableFileHtml,
   sessionHandoffCaveats,
   sessionHandoffSummary,
@@ -85,6 +116,9 @@ import {
   sessionFileTargetFromLocalLink,
   splitRichText,
   toolCallView,
+  planHeadline,
+  type PlanView,
+  type PullRequestBlockReason,
   trustedCliUnlockCandidate,
   type AgentEventTone,
   type FrozenTranscriptTail,
@@ -95,6 +129,8 @@ import {
   type Row,
   type ToolCallTone,
   type ToolImage,
+  type LocalPreviewShare,
+  type ManagedDevServer,
 } from '@verity/mobile';
 import { FlashList, type FlashListRef } from '@shopify/flash-list';
 import * as Haptics from 'expo-haptics';
@@ -131,7 +167,6 @@ import {
   type StyleProp,
   Text,
   TextInput,
-  type TextInputKeyPressEventData,
   type TextStyle,
   useWindowDimensions,
   View,
@@ -139,9 +174,18 @@ import {
   type ViewToken,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
+import { openLocalPreview } from '../../components/project/previewAccess';
+import { openFailureAlert, RunningServerCard } from '../../components/project/RunningServerCard';
 import { StaticPreviewSheet } from '../../components/project/StaticPreviewSheet';
-import { openPublicPreview } from '../../components/premiumFeature';
 import { SessionFolderRow } from '../../components/SessionFolderRow';
+import { type FileAction, FileActionMenu } from '../../components/files/FileActionMenu';
+import { FileBreadcrumb } from '../../components/files/FileBreadcrumb';
+import { FileNameDialog } from '../../components/files/FileNameDialog';
+import {
+  FileSheetHeader,
+  HeaderIconButton,
+  HeaderTextButton,
+} from '../../components/files/FileSheetHeader';
 import { usePermissionHaptic } from '../../components/usePermissionHaptic';
 import * as Clipboard from 'expo-clipboard';
 import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-system';
@@ -155,11 +199,18 @@ import Reanimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { Icon } from '../../components/Icon';
-import { AgentLoopCockpit } from '../../components/AgentLoopCockpit';
+import { Icon, type IconName } from '../../components/Icon';
+import {
+  AutomationBar,
+  AutomationProposalCard,
+  AutomationSheet,
+  SessionStarterCard,
+  type AutomationProposalState,
+} from '../../components/SessionAutomation';
 import { DragSource } from '../../components/DragSource';
 import { DropZone } from '../../components/DropZone';
 import { ImageLightbox } from '../../components/ImageLightbox';
+import { PromptComposerInput } from '../../components/PromptComposerInput';
 import { WorkingDot } from '../../components/WorkingDot';
 import {
   hardwareKeyboardDetection,
@@ -169,12 +220,14 @@ import {
 } from '../../hardwareKeyboard';
 import { type Bookmarks, useBookmarks } from '../../hooks/useBookmarks';
 import { type UseBranches, useBranches } from '../../hooks/useBranches';
+import { shouldShowPullRequest } from '../../lib/pullRequestVisibility';
 import { useModels } from '../../hooks/useModels';
 import { useAttachmentMenuAnchor } from '../../hooks/useAttachmentMenuAnchor';
 import { useSessionKeyboardAvoidance } from '../../hooks/useSessionKeyboardAvoidance';
 import { useTranscriptNavigation } from '../../hooks/useTranscriptNavigation';
 import { TranscriptRow } from '../../components/TranscriptRow';
 import { isProjectSessionModel } from '../../lib/projectSessionModels';
+import { isSameAutomation } from '../../lib/automationText';
 import { useSession } from '../../hooks/useSession';
 import { type VoiceState, useVoiceInput } from '../../hooks/useVoiceInput';
 import { type AttachAnchor, attachMenuRows } from '../../lib/attachMenu';
@@ -182,7 +235,9 @@ import {
   type DroppedFileDescriptor,
   captureImage,
   pickMeetingAudioAsset,
+  droppedFileData,
   pickSessionFiles,
+  releaseDroppedFile,
   readMeetingAudioUpload,
   pickFiles,
   pickImagesFromLibrary,
@@ -190,22 +245,26 @@ import {
 } from '../../lib/attachments';
 import { getAuthToken } from '../../lib/authToken';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
+import { isDemoMode } from '../../lib/demoMode';
 import { downloadPinnedFile } from '../../lib/pinnedTransport';
 import { getServerProfile } from '../../lib/serverProfile';
 import { subscribeVoiceShortcut } from '../../lib/voiceShortcut';
 import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
+import { ensureGoogleWorkspaceAccess } from '../../lib/googleDrive';
 import {
-  runCalendarAuth,
-  runContactsAuth,
-  runGmailAuth,
-  ensureGoogleWorkspaceAccess,
-} from '../../lib/googleDrive';
+  hasConnectedGoogleAccount,
+  getProjectGoogleAccess,
+  connectSessionGoogleService,
+  disconnectSessionGoogleService,
+  type GoogleService,
+} from '../../lib/sessionGoogleAccess';
 import {
   type ClickModifiers,
   type DragFileItem,
   dragItemsForRow,
   fileNameFromPath,
   isSelectableFile,
+  isTextPreviewCandidate,
   mimeTypeForFile,
   retainVisibleSelection,
   selectionForModifierClick,
@@ -213,6 +272,7 @@ import {
   toggleFileSelection,
 } from '../../lib/fileSelection';
 import {
+  breadcrumbSegments,
   cacheDirectoryName,
   fileEntryMeta,
   fileIcon,
@@ -220,6 +280,7 @@ import {
   loadSharingModule,
   parentPath,
   pdfFileName,
+  renameProblem,
 } from '../../lib/sessionFileUi';
 import {
   claimPendingMeetingUpload,
@@ -264,6 +325,7 @@ import {
   messageSeq,
   type ScrollAnchor,
 } from '../../lib/transcriptAnchor';
+import { settleTranscriptJump } from '../../lib/transcriptJump';
 import { formatResetDisplay, formatTurnTimestamp } from '../../lib/time';
 
 const AnimatedKeyboardAvoidingView = Reanimated.createAnimatedComponent(KeyboardAvoidingView);
@@ -274,8 +336,6 @@ const AnimatedKeyboardAvoidingView = Reanimated.createAnimatedComponent(Keyboard
 // (Cross-app-restart persistence would need AsyncStorage — a follow-up.)
 const draftStore = new Map<string, string>();
 
-const MEETING_FOLLOW_UP_IDLE_POLL_MS = 1200;
-const MEETING_FOLLOW_UP_IDLE_ATTEMPTS = 100;
 const MAX_ATTACHMENTS_PER_TURN = 8;
 // Points at 72 PPI (~18 mm). iOS takes page margins only from this option; the
 // document's own `@page` rule covers Android.
@@ -286,20 +346,60 @@ const PRINT_MARGINS = { top: 50, bottom: 50, left: 50, right: 50 };
 // another measurement pass onto a list that is still moving.
 const HISTORY_APPEND_SETTLE_MS = 200;
 const HISTORY_APPEND_SETTLE_FALLBACK_MS = 2000;
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+/** Upper bound on the jump cover; the passes themselves finish in about two seconds. */
+const JUMP_FAIL_SAFE_MS = 4000;
 
 async function waitForSessionIdle(client: VerityClient, sessionId: string): Promise<void> {
-  for (let attempt = 0; attempt < MEETING_FOLLOW_UP_IDLE_ATTEMPTS; attempt += 1) {
-    const activity = await client.getActivity(sessionId);
-    if (!activity.busy && activity.queued.length === 0) return;
-    await delay(MEETING_FOLLOW_UP_IDLE_POLL_MS);
-  }
-  throw new Error(
-    'The session is still busy. The meeting prompt will retry when this chat opens again.',
-  );
+  await new Promise<void>((resolve, reject) => {
+    let finished = false;
+    let reading = false;
+    let again = false;
+    let detach = () => {};
+    const timeout = setTimeout(
+      () =>
+        finish(
+          new Error(
+            'The session is still busy. The meeting prompt will retry when this chat opens again.',
+          ),
+        ),
+      120_000,
+    );
+    const finish = (error?: unknown): void => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      detach();
+      if (error) reject(error);
+      else resolve();
+    };
+    const read = async (): Promise<void> => {
+      if (finished) return;
+      if (reading) {
+        again = true;
+        return;
+      }
+      reading = true;
+      try {
+        const activity = await client.getActivity(sessionId);
+        if (!activity.busy && activity.queued.length === 0) finish();
+      } catch (error) {
+        finish(error);
+      } finally {
+        reading = false;
+        if (again && !finished) {
+          again = false;
+          void read();
+        }
+      }
+    };
+    detach = subscribeLiveRefresh(
+      client,
+      read,
+      (path) => path === `/sessions/${encodeURIComponent(sessionId)}/activity`,
+      [{ path: `/sessions/${encodeURIComponent(sessionId)}/activity` }],
+    );
+    void read();
+  });
 }
 
 interface LocalMeetingUploadActivity {
@@ -373,16 +473,6 @@ function shouldAlertMeetingUploadApiError(error: VerityApiError): boolean {
 // its `offsetY` measures something else, so it is repositioned by row identity alone
 // (`migratedAnchorOffset`).
 const dismissedPullRequests = createPersistedStringSet('verity.dismissedPullRequests.v1');
-
-function isSingleInsertedNewline(previous: string, next: string): boolean {
-  if (next.length !== previous.length + 1) return false;
-  for (let index = 0; index < next.length; index += 1) {
-    if (next[index] !== previous[index]) {
-      return next[index] === '\n' && next.slice(index + 1) === previous.slice(index);
-    }
-  }
-  return false;
-}
 
 // Half-height of the 3-item message-nav stack, incl. the backdrop's vertical padding:
 // 3 btns·(icon 22 + 6·2) + 2 gaps·8 + container 6·2 = 130; half = 65. Used to
@@ -497,14 +587,21 @@ interface SessionActions {
   focusInput: () => void;
   /** Put a failed optimistic message back into the input for editing. */
   recoverPending: (id: string) => void;
-  /** Persist, test, and enable a structured Agent Loop proposal after explicit approval. */
-  confirmAgentLoop: (message: AgentLoopProposalMessage) => Promise<void>;
-  enableAgentLoop: (loopId: string) => Promise<void>;
-  /** Server-persisted readiness survives navigation away from the proposal row. */
-  agentLoopStatus: AgentLoop['status'] | null;
-  agentLoopTested: boolean;
-  agentLoopId: string | null;
-  agentLoopConfigFingerprint: string | null;
+  /** Save a proposed automation after the operator confirms it. */
+  confirmAutomation: (proposal: AutomationProposalMessage['proposal']) => Promise<void>;
+  /** The automation this session has now, so a proposal card knows whether it
+   * is already active or would replace another one. */
+  automation: SessionAutomation | null;
+  automationReady: boolean;
+  /** Only the newest proposal can be confirmed; older cards are superseded. */
+  latestAutomationProposalId: string | null;
+  /** Planning mode, for the plan cards' button and status line. */
+  planning: SessionPlanning | undefined;
+  planningRevision: number | undefined;
+  planningPlan: string | null | undefined;
+  decidingPlanning: boolean;
+  /** The plan card's "Implement plan": the tap itself is the operator's approval. */
+  implementPlan: (revision?: number) => void;
 }
 
 const SessionActionsContext = createContext<SessionActions | null>(null);
@@ -515,24 +612,46 @@ const SessionActionsContext = createContext<SessionActions | null>(null);
 // nothing rather than crashing (never happens in practice; the FlashList is always
 // wrapped).
 const BookmarksContext = createContext<Bookmarks | null>(null);
+// Knowledge — Project and Global alike — has one symbol across the app, so the
+// message "…" sheet, the Explorer tabs and its breadcrumb all read as the same
+// thing; the labels tell the two scopes apart.
+const KNOWLEDGE_ICON: IconName = 'book-open';
+// Where the native drag zone owns the long press; see the row's onLongPress.
+const longPressDrags = Platform.OS === 'ios' && Platform.isPad;
+
+const FILE_ROOT_ICON: Record<SessionFileRoot, IconName> = {
+  worktree: 'folder',
+  knowledge: KNOWLEDGE_ICON,
+  shared: KNOWLEDGE_ICON,
+};
+
 const KnowledgeSaveContext = createContext<{
   save(messageId: string, text: string): Promise<void>;
 } | null>(null);
 
 type OpenLocalFile = (path: string, root?: SessionFileRoot) => void;
 const SessionFileOpenContext = createContext<OpenLocalFile | null>(null);
+// An agent's `verity://` link resolved by `parseAppLink`. The screen owns the
+// navigation and the sheets, so it answers with the handler for a target, or null
+// when the target cannot be opened here; the renderer then shows the same
+// non-tappable reference styling as an unknown target instead of a link that
+// would do nothing.
+type OpenAppLink = (target: AppLinkTarget) => (() => void) | null;
+const AppLinkOpenContext = createContext<OpenAppLink | null>(null);
 const SessionFileImageSourceContext = createContext<
   ((path: string) => ImageSource | undefined) | null
 >(null);
 const SearchHighlightContext = createContext<string | null>(null);
 
-function useTranscriptRows(messages: readonly Message[]): Row[] {
+function useTranscriptRows(messages: readonly Message[], sessionId: string): Row[] {
   const previous = useRef<Row[]>([]);
   return useMemo(() => {
+    const finishReconcile = beginRenderWork('transcript-reconcile', sessionId);
     const rows = groupRows(messages, previous.current);
+    finishReconcile();
     previous.current = rows;
     return rows;
-  }, [messages]);
+  }, [messages, sessionId]);
 }
 
 export function SessionChat({
@@ -552,6 +671,16 @@ export function SessionChat({
   initialTargetSearchQuery?: string;
   retrySecret?: string;
 }) {
+  markFirstSessionRender(sessionId, 'session-screen-render-entry');
+  const finishChatWork = beginRenderWork('chat-body', sessionId);
+  const switchTiming = useMemo(() => sessionSwitchTiming(sessionId), [sessionId]);
+  const [loadedListSessionId, setLoadedListSessionId] = useState<string | null>(null);
+  const initialListLoaded = loadedListSessionId === sessionId;
+  useSwitchFrameTiming(switchTiming, initialListLoaded);
+  useEffect(() => {
+    markSessionSwitch(switchTiming, 'session-screen-react-commit');
+    return () => markSessionSwitch(switchTiming, 'session-screen-cleanup');
+  }, [switchTiming]);
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const { theme } = useUnistyles();
@@ -565,7 +694,6 @@ export function SessionChat({
     name,
     model: currentModel,
     projectId,
-    kind,
     switchingModel,
     modelSwitchPending,
     terminationUnconfirmed,
@@ -574,9 +702,16 @@ export function SessionChat({
     locallyCreated,
     busy,
     working,
+    activityAnimating,
     waitingMessages,
     pendingMessages,
     branch: liveBranch,
+    planning,
+    planningRevision,
+    planningPlan,
+    decidingPlanning,
+    planningError,
+    decidePlanning,
     decidingPermission,
     permissionError,
     sendTurn,
@@ -618,10 +753,14 @@ export function SessionChat({
           .catch(() => undefined);
       };
       refresh();
-      const interval = setInterval(refresh, 15_000);
+      const detach = subscribeLiveRefresh(
+        client,
+        refresh,
+        (path) => path === `/sessions/${encodeURIComponent(sessionId)}/links`,
+      );
       return () => {
         active = false;
-        clearInterval(interval);
+        detach();
       };
     }, [client, sessionId, loaded]),
   );
@@ -639,10 +778,14 @@ export function SessionChat({
           .catch(() => undefined);
       };
       refresh();
-      const interval = setInterval(refresh, 5_000);
+      const detach = subscribeLiveRefresh(
+        client,
+        refresh,
+        (path) => path === `/sessions/${encodeURIComponent(sessionId)}/linked-message-approvals`,
+      );
       return () => {
         active = false;
-        clearInterval(interval);
+        detach();
       };
     }, [client, sessionId, loaded]),
   );
@@ -704,44 +847,192 @@ export function SessionChat({
   // taps open a picker to switch the session's backend mid-flight (#switch-engine).
   // `currentModel` is the persisted choice (survives a switch + remount); fall back
   // to the reducer's spawn model until the detail loads.
-  const { models, modelOrder, moreModels, refresh: refreshModels } = useModels(client, loaded);
+  const {
+    models,
+    modelOrder,
+    moreModels,
+    allowedAgents,
+    refresh: refreshModels,
+  } = useModels(client, loaded, projectId);
   const [enginePickerOpen, setEnginePickerOpen] = useState(false);
   const effectiveModel = currentModel ?? session.model;
-  const [agentLoop, setAgentLoop] = useState<AgentLoop | null>(null);
-  const agentLoopGeneration = useRef(0);
-  const [loopCockpitOpen, setLoopCockpitOpen] = useState(false);
-  useEffect(() => {
-    if (kind !== 'agent_loop' || !projectId) {
-      setAgentLoop(null);
-      return;
-    }
-    let active = true;
-    const generation = agentLoopGeneration.current;
-    void client
-      .listAgentLoops(projectId)
-      .then((loops) => {
-        if (active && generation === agentLoopGeneration.current) {
-          setAgentLoop(loops.find((loop) => loop.sessionId === sessionId) ?? null);
-        }
+  const [automation, setAutomation] = useState<SessionAutomation | null>(null);
+  const [automationReady, setAutomationReady] = useState(false);
+  const [automationSheetOpen, setAutomationSheetOpen] = useState(false);
+  const [automationUpdating, setAutomationUpdating] = useState(false);
+  // Name of a header action shown under the title after a long-press — the icon-only
+  // buttons explain themselves on demand without permanent labels.
+  const [headerHint, setHeaderHint] = useState<string | null>(null);
+  const headerHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showHeaderHint = useCallback((label: string) => {
+    if (headerHintTimer.current) clearTimeout(headerHintTimer.current);
+    setHeaderHint(label);
+    headerHintTimer.current = setTimeout(() => setHeaderHint(null), 1500);
+  }, []);
+  useEffect(
+    () => () => {
+      if (headerHintTimer.current) clearTimeout(headerHintTimer.current);
+    },
+    [],
+  );
+  // The automation is read when the session opens and again whenever its sheet
+  // opens, so the "last run" sentence reflects runs that happened meanwhile.
+  // Bumped by every local change, so a read that started earlier cannot bring
+  // back an automation the operator just paused, replaced, or deleted.
+  const automationGeneration = useRef(0);
+  const automationMutationPending = useRef(false);
+  useEffect(
+    () => () => {
+      // A closed chat must not publish an old read over mutations from its replacement.
+      automationGeneration.current += 1;
+    },
+    [sessionId],
+  );
+  const loadAutomation = useCallback(() => {
+    if (automationMutationPending.current) return Promise.resolve();
+    const generation = ++automationGeneration.current;
+    return client
+      .getSessionAutomation(sessionId)
+      .then((loaded) => {
+        if (generation !== automationGeneration.current) return;
+        setAutomationReady(true);
+        setAutomation(loaded);
+        publishSessionAutomationMutation(sessionId, loaded);
       })
       .catch(() => {
-        if (active && generation === agentLoopGeneration.current) setAgentLoop(null);
+        if (generation === automationGeneration.current) setAutomationReady(false);
       });
+  }, [client, sessionId]);
+  useEffect(() => {
+    setAutomationReady(false);
+    if (loaded) void loadAutomation();
+  }, [loadAutomation, loaded]);
+  const applyAutomation = useCallback(
+    (next: SessionAutomation | null) => {
+      automationGeneration.current += 1;
+      setAutomationReady(true);
+      setAutomation(next);
+      publishSessionAutomationMutation(sessionId, next);
+    },
+    [sessionId],
+  );
+  const openAutomation = useCallback(() => {
+    setAutomationSheetOpen(true);
+    void loadAutomation();
+  }, [loadAutomation]);
+  const toggleAutomation = useCallback(() => {
+    if (!automation || automationMutationPending.current) return;
+    automationMutationPending.current = true;
+    automationGeneration.current += 1;
+    setAutomationUpdating(true);
+    void client
+      .setSessionAutomationStatus(sessionId, automation.status === 'enabled' ? 'paused' : 'enabled')
+      .then(applyAutomation)
+      .catch((error: unknown) =>
+        Alert.alert(
+          'Could not update automation',
+          error instanceof Error ? error.message : 'Please try again.',
+        ),
+      )
+      .finally(() => {
+        automationMutationPending.current = false;
+        setAutomationUpdating(false);
+      });
+  }, [applyAutomation, automation, automationUpdating, client, sessionId]);
+  const deleteAutomation = useCallback(() => {
+    if (!automation) return;
+    Alert.alert(
+      'Delete this automation?',
+      `“${automation.name}” will stop running. The conversation stays as it is.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            if (automationMutationPending.current) return;
+            automationMutationPending.current = true;
+            automationGeneration.current += 1;
+            setAutomationUpdating(true);
+            void client
+              .deleteSessionAutomation(sessionId)
+              .then(() => {
+                setAutomationSheetOpen(false);
+                applyAutomation(null);
+              })
+              .catch((error: unknown) =>
+                Alert.alert(
+                  'Could not delete automation',
+                  error instanceof Error ? error.message : 'Please try again.',
+                ),
+              )
+              .finally(() => {
+                automationMutationPending.current = false;
+                setAutomationUpdating(false);
+              });
+          },
+        },
+      ],
+    );
+  }, [applyAutomation, automation, client, sessionId]);
+
+  const [staticPreviewOpen, setStaticPreviewOpen] = useState(false);
+  const [previewServer, setPreviewServer] =
+    useState<NonNullable<typeof session.devServers>[number]>();
+  const [previewOpening, setPreviewOpening] = useState<number | null>(null);
+  const completedServerTools = session.messages.filter(
+    (message) => message.kind === 'tool-call' && message.tool.state === 'completed',
+  ).length;
+  // Names and addresses of managed servers, for their chat cards.
+  const [managedByInstance, setManagedByInstance] = useState<Map<string, ManagedDevServer>>(
+    () => new Map(),
+  );
+  useEffect(() => {
+    if (typeof client.listManagedDevServers !== 'function') return;
+    let active = true;
+    void client
+      .listManagedDevServers(sessionId)
+      .then((servers) => {
+        if (!active || !servers) return;
+        setManagedByInstance(
+          new Map(
+            servers.flatMap((server) =>
+              server.instance ? [[server.instance.id, server] as const] : [],
+            ),
+          ),
+        );
+      })
+      .catch(() => undefined);
     return () => {
       active = false;
     };
-  }, [client, kind, projectId, sessionId]);
-  useEffect(
-    () =>
-      subscribeAgentLoopMutations((updated) => {
-        if (updated.sessionId !== sessionId) return;
-        agentLoopGeneration.current += 1;
-        setAgentLoop(updated);
-      }),
-    [sessionId],
-  );
-
-  const [staticPreviewOpen, setStaticPreviewOpen] = useState(false);
+  }, [client, completedServerTools, session.devServers, sessionId]);
+  const openDetectedLocally = async (server: NonNullable<typeof session.devServers>[number]) => {
+    if (previewOpening !== null) return;
+    setPreviewOpening(server.port);
+    try {
+      const capabilities = await client
+        .getPreviewCapabilities()
+        .catch(() => ({ publicSharing: 'unavailable' as const }));
+      const share = await client.createSessionLocalPreviewShare(sessionId, {
+        targetPort: server.port,
+      });
+      await openLocalPreview(
+        share,
+        capabilities.publicSharing,
+        () => {
+          setPreviewServer(server);
+          setStaticPreviewOpen(true);
+        },
+        () => router.push('/settings/services'),
+      );
+    } catch (caught) {
+      const alert = openFailureAlert(server.name, caught instanceof Error ? caught.message : '');
+      Alert.alert(alert.title, alert.body);
+    } finally {
+      setPreviewOpening(null);
+    }
+  };
   const [hasActiveStaticPreview, setHasActiveStaticPreview] = useState(false);
   const [hasRunningDevServer, setHasRunningDevServer] = useState(false);
   // Set once a Core without port detection says so, so the header stops asking.
@@ -757,83 +1048,74 @@ export function SessionChat({
         })
         .catch(() => undefined);
     }
-    void client
+    // Shared means shared on the local network or online alike: either lights the
+    // preview button. A failed read counts as "not shared" for that source only.
+    const now = Date.now();
+    const publicShared = client
       .listPublicPreviewShares(projectId)
-      .then((shares) => {
-        setHasActiveStaticPreview(
-          shares.some(
-            (share) =>
-              (share.targetKind === 'static-folder' ||
-                (share.targetKind === 'dev-server' && share.devServerId === null)) &&
-              share.sessionId === sessionId &&
-              share.state === 'active' &&
-              new Date(share.expiresAt).getTime() > Date.now(),
-          ),
-        );
-      })
-      .catch(() => undefined);
+      .then((shares) =>
+        shares.some(
+          (share) =>
+            (share.targetKind === 'static-folder' ||
+              (share.targetKind === 'dev-server' && share.devServerId === null)) &&
+            share.sessionId === sessionId &&
+            share.state === 'active' &&
+            new Date(share.expiresAt).getTime() > now,
+        ),
+      )
+      .catch(() => false);
+    const localShared =
+      typeof client.listSessionLocalPreviewShares === 'function'
+        ? client
+            .listSessionLocalPreviewShares(sessionId)
+            .then((shares) => shares.some((share) => share.expiresAt.getTime() > now))
+            .catch(() => false)
+        : Promise.resolve(false);
+    void Promise.all([publicShared, localShared]).then(([online, local]) =>
+      setHasActiveStaticPreview(online || local),
+    );
   }, [client, projectId, sessionId]);
   useEffect(() => {
     if (!loaded) return;
     refreshStaticPreview();
-    // Short enough that a server the agent just started lights the dot up soon.
-    const timer = setInterval(refreshStaticPreview, 20_000);
-    return () => clearInterval(timer);
-  }, [refreshStaticPreview, loaded]);
-
-  const editAgentLoop = useCallback(() => {
-    if (!agentLoop || sending || busy) return;
-    sendTurn(
-      [
-        `Reconfigure the Agent Loop "${agentLoop.name}".`,
-        `Agent Loop ID: ${agentLoop.id}`,
-        'Ask me focused questions about the script and schedule, one decision at a time.',
-        `Current config:\n${JSON.stringify(
-          {
-            name: agentLoop.name,
-            schedule: agentLoop.schedule,
-            script: agentLoop.script,
-            reactionPrompt: agentLoop.reactionPrompt,
-            reactionModel: agentLoop.reactionModel,
-          },
-          null,
-          2,
-        )}`,
-        'Keep the script deterministic, read-only by default, bounded, and self-contained.',
-        'Propose the full replacement config for my explicit confirmation and test run. The final verity:agent-loop block must use the Agent Loop ID above. Do not enable it yourself.',
-      ].join('\n\n'),
+    const detach = subscribeLiveRefresh(
+      client,
+      refreshStaticPreview,
+      (path) =>
+        (projectId != null &&
+          path === `/projects/${encodeURIComponent(projectId)}/public-shares`) ||
+        (path.startsWith(`/sessions/${encodeURIComponent(sessionId)}/`) &&
+          /preview|share|dev-server/u.test(path)),
     );
-  }, [agentLoop, busy, sendTurn, sending]);
+    return () => detach();
+  }, [refreshStaticPreview, loaded, client, projectId, sessionId]);
 
-  const confirmAgentLoop = useCallback(
-    async (message: AgentLoopProposalMessage): Promise<void> => {
-      const proposal = message.proposal;
-      if (agentLoop?.id !== proposal.loopId) {
-        throw new Error('This proposal does not belong to the open Agent Loop.');
+  useEffect(() => {
+    if (session.devServers !== undefined) setHasRunningDevServer(session.devServers.length > 0);
+  }, [session.devServers]);
+
+  const confirmAutomation = useCallback(
+    async (proposal: AutomationProposalMessage['proposal']): Promise<void> => {
+      if (automationMutationPending.current)
+        throw new Error('An automation update is in progress.');
+      automationMutationPending.current = true;
+      automationGeneration.current += 1;
+      setAutomationUpdating(true);
+      try {
+        const saved = await client.saveSessionAutomation(sessionId, {
+          name: proposal.name,
+          schedule: proposal.schedule,
+          prompt: proposal.prompt,
+          ...(proposal.script !== undefined ? { script: proposal.script } : {}),
+          ...(proposal.model !== undefined ? { model: proposal.model } : {}),
+        });
+        applyAutomation(saved);
+      } finally {
+        automationMutationPending.current = false;
+        setAutomationUpdating(false);
       }
-      await client.updateAgentLoop(proposal.loopId, {
-        name: proposal.name,
-        script: proposal.script,
-        schedule: proposal.schedule,
-        reactionPrompt: proposal.reactionPrompt ?? null,
-        reactionModel: proposal.reactionModel ?? null,
-      });
-      const tested = await client.testAgentLoop(proposal.loopId);
-      if (tested.result.outcome === 'error') {
-        throw new Error(tested.result.detail ?? 'The Agent Loop test run failed.');
-      }
-      setAgentLoop(tested.loop);
-      publishAgentLoopMutation(tested.loop);
     },
-    [agentLoop?.id, client],
-  );
-  const enableAgentLoop = useCallback(
-    async (loopId: string): Promise<void> => {
-      const enabled = await client.updateAgentLoop(loopId, { status: 'enabled' });
-      setAgentLoop(enabled);
-      publishAgentLoopMutation(enabled);
-    },
-    [client],
+    [applyAutomation, automationReady, client, sessionId],
   );
   // Keep configured OpenCode gateway models available in project sessions while
   // excluding provider IDs that the server cannot route.
@@ -862,10 +1144,19 @@ export function SessionChat({
   );
   // Live dictation writes recognized speech straight into the draft as it streams.
   const voiceAutoSendRef = useRef<(text: string) => Promise<boolean>>(async () => false);
-  const voice = useVoiceInput(draft, setDraft, (text) => voiceAutoSendRef.current(text));
+  const [voiceVisible, setVoiceVisible] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setVoiceVisible(true);
+      return () => setVoiceVisible(false);
+    }, []),
+  );
+  const voice = useVoiceInput(draft, setDraft, (text) => voiceAutoSendRef.current(text), {
+    visible: voiceVisible,
+  });
   // Branch switcher (#91): tap the top chip to switch this session's worktree to a
   // different branch — the chat (one persistent thread per session) stays put.
-  const branches = useBranches(client, sessionId, loaded);
+  const branches = useBranches(client, sessionId, loaded || !locallyCreated);
   const branchesRefresh = branches.refresh;
   const [switcherOpen, setSwitcherOpen] = useState(false);
   // The chip names the CURRENT BRANCH; fall back to the session label while the
@@ -887,8 +1178,8 @@ export function SessionChat({
   // older server) — the chip then renders non-tappable, never linking to a broken URL.
   const repoIdentity = { owner: branches.owner, repo: branches.repo };
   const issueUrl = githubRefUrl('issue', repoIdentity, issueNumber);
-  // Gate the PR bar until dismissed-state has loaded so a hidden bar does not flash
-  // before the local cache resolves.
+  // Open PRs cannot be dismissed, so they can render immediately. Wait for the
+  // dismissed-state cache only for terminal PRs to avoid flashing a hidden bar.
   const [pullRequestBarReady, setPullRequestBarReady] = useState(() =>
     dismissedPullRequests.loaded(),
   );
@@ -911,10 +1202,13 @@ export function SessionChat({
     branches.pullRequest?.phase !== 'open' &&
     pullRequestKey !== null &&
     dismissedPullRequests.store.has(pullRequestKey);
-  const visiblePullRequest =
-    pullRequestBarReady && branches.pullRequest && !pullRequestDismissed
-      ? branches.pullRequest
-      : null;
+  const visiblePullRequest = shouldShowPullRequest(
+    branches.pullRequest?.phase,
+    pullRequestBarReady,
+    pullRequestDismissed,
+  )
+    ? branches.pullRequest
+    : null;
   const dismissPullRequest = useCallback(() => {
     if (pullRequestKey === null) return;
     dismissedPullRequests.store.add(pullRequestKey);
@@ -971,9 +1265,13 @@ export function SessionChat({
   // Group consecutive tool calls into one collapsible row (Claude-app style: a run
   // of tools reads as a single rolling line, not N stacked cards). The reducer keeps
   // messages chronological; grouping needs that order.
-  const transcriptData = useTranscriptRows(session.messages);
-  const localMeetingData = useTranscriptRows(localMeetingMessages);
-  const pendingEchoData = useTranscriptRows(pendingEchoMessages);
+  const loadedTranscriptData = useTranscriptRows(session.messages, sessionId);
+  const transcriptData = useMemo(
+    () => withPlanningSnapshot(loadedTranscriptData, { planning, planningPlan, planningRevision }),
+    [loadedTranscriptData, planning, planningPlan, planningRevision],
+  );
+  const localMeetingData = useTranscriptRows(localMeetingMessages, sessionId);
+  const pendingEchoData = useTranscriptRows(pendingEchoMessages, sessionId);
   const liveChronologicalData = useMemo(
     () => [...transcriptData, ...localMeetingData, ...pendingEchoData],
     [transcriptData, localMeetingData, pendingEchoData],
@@ -999,10 +1297,20 @@ export function SessionChat({
   // not the one captured when the callback was created.
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  const transcriptSnapshot = {
+    messages: session.messages,
+    planning: { planning, planningPlan, planningRevision },
+    localMessageGroups: [localMeetingMessages, pendingEchoMessages],
+  };
+  const transcriptSnapshotRef = useRef(transcriptSnapshot);
+  transcriptSnapshotRef.current = transcriptSnapshot;
   const frozenTailRef = useRef<FrozenTranscriptTail | null>(null);
   frozenTailRef.current = frozenTail;
   const snapshotLiveTail = useCallback(() => {
-    setFrozenTail(freezeTranscriptTail(messagesRef.current));
+    const snapshot = transcriptSnapshotRef.current;
+    setFrozenTail(
+      freezeTranscriptTail(snapshot.messages, snapshot.planning, snapshot.localMessageGroups),
+    );
   }, []);
   // A snapshot whose boundary message is gone (the transcript was reloaded) no longer
   // describes this session: `frozenTranscriptRows` returned null and we are rendering
@@ -1010,7 +1318,7 @@ export function SessionChat({
   useEffect(() => {
     if (frozenTail !== null && frozenRows === null) snapshotLiveTail();
   }, [frozenTail, frozenRows, snapshotLiveTail]);
-  // FlashList is fed NEWEST-FIRST and rendered inverted (styles.invertedList /
+  // FlashList is fed NEWEST-FIRST and rendered inverted (the list transform /
   // styles.invertedItem). That single decision is what removes the whole class of
   // prepend jumps: older pages append at the DATA END, behind the viewport, so no row
   // is ever inserted in front of what the operator is reading and there is nothing to
@@ -1477,38 +1785,41 @@ export function SessionChat({
   );
   const [pendingUserJump, setPendingUserJump] = useState<'previous' | null>(null);
   const userJumpCursorRef = useRef<number | undefined>(undefined);
+  // Rows above the target are a padding's width from the screen edge, like the newest
+  // row is from the bottom; the same inset keeps the jumped-to prompt off the edge.
+  const jumpTopInset = theme.spacing.lg;
   useEffect(() => {
     if (jumpTarget === null) return;
     let cancelled = false;
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    let revealFrame: number | null = null;
-    const steps = [0, 60, 150, 300, 500];
-    const step = (pass: number) => {
+    // One awaited scrollToIndex pass at a time, re-checked against the measured layout
+    // before the cover lifts (see lib/transcriptJump.ts for why timers fail here).
+    void settleTranscriptJump({
+      list: () => listRef.current,
+      resolveIndex: () => findAnchorIndex(dataRef.current, jumpTarget, 'newest-first'),
+      topInset: jumpTopInset,
+      isCancelled: () => cancelled,
+      onPass: (pass, index) => {
+        scrollDebugLastProgrammaticAtRef.current = Date.now();
+        reportScrollDebug('jump-pass', { pass, index });
+      },
+    }).then((outcome) => {
       if (cancelled) return;
-      const index = findAnchorIndex(dataRef.current, jumpTarget, 'newest-first');
-      if (index < 0) {
-        setJumpTarget(null);
-        return;
-      }
-      // Variable-height rows make FlashList's first offset an estimate. Reposition
-      // while covered as layout measurements arrive, as the restore path does.
-      scrollDebugLastProgrammaticAtRef.current = Date.now();
-      void listRef.current
-        ?.scrollToIndex({ index, animated: false, viewPosition: 1 })
-        .catch(() => undefined);
-      if (pass + 1 < steps.length) {
-        timers.push(setTimeout(() => step(pass + 1), steps[pass + 1] - steps[pass]));
-      } else {
-        revealFrame = requestAnimationFrame(() => setJumpTarget(null));
-      }
-    };
-    step(0);
+      reportScrollDebug('jump-settled', { outcome });
+      setJumpTarget(null);
+    });
+    // Never strand the cover: a pass whose native promise never resolves (list torn
+    // down mid-scroll) would otherwise hide the transcript for good.
+    const failSafe = setTimeout(() => {
+      if (cancelled) return;
+      cancelled = true;
+      reportScrollDebug('jump-fail-safe');
+      setJumpTarget(null);
+    }, JUMP_FAIL_SAFE_MS);
     return () => {
       cancelled = true;
-      timers.forEach(clearTimeout);
-      if (revealFrame !== null) cancelAnimationFrame(revealFrame);
+      clearTimeout(failSafe);
     };
-  }, [jumpTarget]);
+  }, [jumpTarget, jumpTopInset, reportScrollDebug]);
   const jumpToPreviousUserRow = useCallback(() => {
     if (prevUserIndex >= 0) {
       scrollToUserRow(prevUserIndex);
@@ -1679,6 +1990,24 @@ export function SessionChat({
   // pass lands after layout/measurement.
   const [restoreTarget, setRestoreTarget] = useState<ScrollAnchor | null>(null);
   const [restoring, setRestoring] = useState(true);
+  const timingReadinessRef = useRef<string | null>(null);
+  const timingLoadedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!loaded || !switchTiming || timingLoadedRef.current === switchTiming.id) return;
+    timingLoadedRef.current = switchTiming.id;
+    markSessionSwitch(switchTiming, 'history-loaded-react-commit');
+  }, [loaded, switchTiming]);
+  useEffect(() => {
+    if (
+      !loaded ||
+      restoring ||
+      data.length === 0 ||
+      timingReadinessRef.current === switchTiming?.id
+    )
+      return;
+    timingReadinessRef.current = switchTiming?.id ?? null;
+    markSessionSwitch(switchTiming, 'transcript-ready-react-commit');
+  }, [loaded, restoring, data.length, switchTiming]);
   // Opening at the newest edge is offset ZERO in the inverted list — an exact constant
   // that no row measurement can invalidate. The former converging scroll-to-end (three
   // passes against progressively-measured estimates, each one visible) has no
@@ -1719,7 +2048,9 @@ export function SessionChat({
     // below) so an interrupt raised while older history is still paging in is preserved
     // into the convergence rather than discarded when the row finally loads.
     restoreInterruptedRef.current = false;
+    markSessionSwitch(switchTiming, 'anchor-read-start');
     void loadScrollAnchor(requestedSessionId).then((anchor) => {
+      markSessionSwitch(switchTiming, 'anchor-read-end');
       if (!active || sessionIdRef.current !== requestedSessionId) return;
       if (restoreInterruptedRef.current) {
         reportScrollDebug('restore-skipped-after-user-action');
@@ -1758,7 +2089,7 @@ export function SessionChat({
     return () => {
       active = false;
     };
-  }, [restoreToLatestEdge, loaded, hasRestoreData, reportScrollDebug, sessionId]);
+  }, [restoreToLatestEdge, loaded, hasRestoreData, reportScrollDebug, sessionId, switchTiming]);
   // Positioning loop. Restore only targets rows already present in the initial loaded
   // tail; it never fetches older history on open.
   useEffect(() => {
@@ -1967,14 +2298,17 @@ export function SessionChat({
           olderLoadStalled,
           allowStalledRetry,
           historyAppendSettlingRef.current,
+          initialListLoaded,
         )
       ) {
         reportScrollDebug('start-reached-blocked', {
-          blockedBy: !hasOlder
-            ? 'no-older-history'
-            : historyAppendSettlingRef.current && !loadingOlder
-              ? 'append-settling'
-              : 'loading-older',
+          blockedBy: !initialListLoaded
+            ? 'initial-list-loading'
+            : !hasOlder
+              ? 'no-older-history'
+              : historyAppendSettlingRef.current && !loadingOlder
+                ? 'append-settling'
+                : 'loading-older',
         });
         return;
       }
@@ -2001,7 +2335,15 @@ export function SessionChat({
       });
       void loadOlder();
     },
-    [hasOlder, loadingOlder, loadOlder, olderLoadStalled, pendingUserJump, reportScrollDebug],
+    [
+      hasOlder,
+      loadingOlder,
+      loadOlder,
+      olderLoadStalled,
+      pendingUserJump,
+      reportScrollDebug,
+      initialListLoaded,
+    ],
   );
   loadOlderNearStartRef.current = requestOlderHistory;
   const onListContentSizeChange = useCallback((_width: number, height: number) => {
@@ -2009,14 +2351,22 @@ export function SessionChat({
   }, []);
   const initialHistoryPrefetchRef = useRef(false);
   useEffect(() => {
-    if (initialHistoryPrefetchRef.current || !loaded || restoring || !hasOlder || loadingOlder)
+    if (
+      initialHistoryPrefetchRef.current ||
+      !initialListLoaded ||
+      !loaded ||
+      restoring ||
+      !hasOlder ||
+      loadingOlder
+    )
       return;
     initialHistoryPrefetchRef.current = true;
-    // A single extra page starts behind the initial render. Subsequent pages are
-    // governed by the measured four-viewport buffer, so opening a long session
+    // Automatic pages must not compete with initial list measurement.
+    // A single extra page starts after FlashList reports its initial load.
+    // Subsequent pages use the measured four-viewport buffer, so opening a long session
     // cannot pull its whole transcript into memory.
     loadOlderNearStartRef.current();
-  }, [loaded, restoring, hasOlder, loadingOlder]);
+  }, [loaded, restoring, hasOlder, loadingOlder, initialListLoaded]);
   // Hold the settle window until the appended rows have been committed AND measured.
   // Nothing visible depends on it — it exists purely to space automatic follow-ups.
   useEffect(() => {
@@ -2103,6 +2453,41 @@ export function SessionChat({
     setFilesInitialRoot(root);
     setFilesOpen(true);
   }, []);
+  // Project settings, the Preview sheet and the knowledge root need the session's
+  // project, like the header's Preview button; without one (not loaded yet, or a
+  // session outside a project) those targets are not openable.
+  const openAppLink = useCallback<OpenAppLink>(
+    (target) => {
+      switch (target.kind) {
+        case 'route':
+          return () => router.push(target.path);
+        case 'project-settings': {
+          if (!projectId) return null;
+          const pathname =
+            target.page === null
+              ? '/project/[id]/settings'
+              : (`/project/[id]/settings/${target.page}` as const);
+          return () => router.push({ pathname, params: { id: projectId } });
+        }
+        case 'new-project':
+          return () => router.push('/new-project');
+        case 'preview':
+          if (!projectId) return null;
+          return () => {
+            refreshStaticPreview();
+            setStaticPreviewOpen(true);
+          };
+        case 'files':
+          if (target.root === 'knowledge' && !projectId) return null;
+          return () => {
+            setFilesInitialPath(null);
+            setFilesInitialRoot(target.root);
+            setFilesOpen(true);
+          };
+      }
+    },
+    [projectId, refreshStaticPreview],
+  );
   // Index of a bookmarked message id in the current rows, or -1 if not loaded yet.
   const rowIndexOfMessage = useCallback(
     (messageId: string) =>
@@ -2259,13 +2644,25 @@ export function SessionChat({
     if (attachments.length === 0) setSaveAttachmentsToKnowledge(false);
   }, [attachments.length]);
   const [workspaceFile, setWorkspaceFile] = useState<SessionGoogleWorkspaceFile | null>(null);
+  const [googleConnected, setGoogleConnected] = useState(false);
   const [gmailConnection, setGmailConnection] = useState<GmailSessionConnection | null>(null);
   const [calendarConnection, setCalendarConnection] = useState<CalendarSessionConnection | null>(
     null,
   );
+  const [projectGoogleAccess, setProjectGoogleAccess] = useState<Record<GoogleService, boolean>>({
+    gmail: false,
+    calendar: false,
+    contacts: false,
+  });
   useFocusEffect(
     useCallback(() => {
       let active = true;
+      setGoogleConnected(false);
+      void hasConnectedGoogleAccount(client, sessionId)
+        .then((connection) => {
+          if (active) setGoogleConnected(connection);
+        })
+        .catch(() => undefined);
       void client
         .getSessionGoogleWorkspaceFile(sessionId)
         .then((file) => {
@@ -2290,10 +2687,15 @@ export function SessionChat({
           if (active) setContactsConnection(connection);
         })
         .catch(() => undefined);
+      void getProjectGoogleAccess(client, projectId)
+        .then((access) => {
+          if (active) setProjectGoogleAccess(access);
+        })
+        .catch(() => undefined);
       return () => {
         active = false;
       };
-    }, [client, sessionId]),
+    }, [client, projectId, sessionId]),
   );
   // A dead session (worktree gone) can't take turns — disable sending proactively
   // (`resumable === false`); `undefined` (detail still loading) stays enabled.
@@ -2522,8 +2924,10 @@ export function SessionChat({
     // previously fell back to `software`, but the operator has since focused the
     // composer with a hardware keyboard attached.
     const preserveFocus =
-      isIpadFocusTarget &&
-      (shouldPreserveComposerFocus() || (composerFocusedRef.current && !keyboardShownRef.current));
+      Platform.OS === 'web' ||
+      (isIpadFocusTarget &&
+        (shouldPreserveComposerFocus() ||
+          (composerFocusedRef.current && !keyboardShownRef.current)));
     preserveFocusAfterSendRef.current = preserveFocus;
     if (!preserveFocus) Keyboard.dismiss();
   }, [
@@ -2597,7 +3001,7 @@ export function SessionChat({
               .updateMeetingTranscriptionBackendMode(mode)
               .then(() => {
                 if (mode === 'external' && !readiness.externalConfigured) {
-                  router.push('/settings/services');
+                  router.push('/settings/transcription');
                 } else {
                   uploadMeetingAudioRef.current();
                 }
@@ -2628,7 +3032,7 @@ export function SessionChat({
             'This saved backend is no longer available. Configure the OpenAI-compatible API in Settings.',
             [
               { text: 'Cancel', style: 'cancel' },
-              { text: 'Open settings', onPress: () => router.push('/settings/services') },
+              { text: 'Open settings', onPress: () => router.push('/settings/transcription') },
             ],
           );
           return;
@@ -2639,7 +3043,7 @@ export function SessionChat({
             'Add the API URL and model before uploading meeting audio. Add a token if your service requires one.',
             [
               { text: 'Cancel', style: 'cancel' },
-              { text: 'Open settings', onPress: () => router.push('/settings/services') },
+              { text: 'Open settings', onPress: () => router.push('/settings/transcription') },
             ],
           );
           return;
@@ -2798,7 +3202,7 @@ export function SessionChat({
                 'configure-external'
               ) {
                 defer();
-                router.push('/settings/services');
+                router.push('/settings/transcription');
                 return;
               }
               await resumePending();
@@ -2833,7 +3237,7 @@ export function SessionChat({
             : 'Add the external API URL and model before the pending recording can be uploaded.',
           [
             { text: 'Not now', style: 'cancel' },
-            { text: 'Open settings', onPress: () => router.push('/settings/services') },
+            { text: 'Open settings', onPress: () => router.push('/settings/transcription') },
           ],
         );
       }
@@ -2882,158 +3286,74 @@ export function SessionChat({
     voice.abort();
     router.push({ pathname: '/meeting/[sessionId]', params: { sessionId } });
   }, [sessionId, voice]);
-  const onConnectGmail = useCallback(() => {
-    setAttachMenuOpen(false);
-    void (async () => {
-      try {
-        let connection = await client.getSessionGmailConnection(sessionId);
-        if (!connection.connected) {
-          if (!connection.clientId) {
-            Alert.alert(
-              'Gmail not set up',
-              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
-            );
-            return;
+  const onConnectGoogleService = useCallback(
+    (service: GoogleService) => {
+      setAttachMenuOpen(false);
+      void connectSessionGoogleService(client, sessionId, service)
+        .then((result) => {
+          if (result.kind === 'session') {
+            setGmailConnection(result.connections.gmail);
+            setCalendarConnection(result.connections.calendar);
+            setContactsConnection(result.connections.contacts);
           }
-          const auth = await runGmailAuth(connection.clientId);
-          if (auth.kind === 'cancelled') return;
-          await client.connectGmail({
-            code: auth.code,
-            codeVerifier: auth.codeVerifier,
-            redirectUri: auth.redirectUri,
-          });
-        }
-        setCalendarConnection(
-          await client.getSessionCalendarConnection(sessionId).catch(() => null),
+        })
+        .catch((error: unknown) =>
+          Alert.alert(
+            'Could not connect Google service',
+            error instanceof Error ? error.message : String(error),
+          ),
         );
-        setContactsConnection(
-          await client.getSessionContactsConnection(sessionId).catch(() => null),
-        );
-        connection = await client.enableSessionGmail(sessionId);
-        setGmailConnection(connection);
-      } catch (error) {
-        Alert.alert(
-          'Could not connect Gmail',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    })();
-  }, [client, sessionId]);
-  const disableGmail = useCallback(() => {
-    void client
-      .disableSessionGmail(sessionId)
-      .then(() =>
-        setGmailConnection((connection) =>
-          connection === null ? null : { ...connection, enabled: false },
-        ),
-      )
-      .catch((error: unknown) =>
-        Alert.alert(
-          'Could not disconnect Gmail',
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
-  }, [client, sessionId]);
-  const onConnectCalendar = useCallback(() => {
-    setAttachMenuOpen(false);
-    void (async () => {
-      try {
-        let connection = await client.getSessionCalendarConnection(sessionId);
-        if (!connection.connected) {
-          if (!connection.clientId) {
-            Alert.alert(
-              'Google Calendar not set up',
-              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
+    },
+    [client, sessionId],
+  );
+  const onConnectGmail = useCallback(
+    () => onConnectGoogleService('gmail'),
+    [onConnectGoogleService],
+  );
+  const onConnectCalendar = useCallback(
+    () => onConnectGoogleService('calendar'),
+    [onConnectGoogleService],
+  );
+  const onConnectContacts = useCallback(
+    () => onConnectGoogleService('contacts'),
+    [onConnectGoogleService],
+  );
+  const disableGoogleService = useCallback(
+    (service: GoogleService) => {
+      void disconnectSessionGoogleService(client, sessionId, projectId, service)
+        .then(() => {
+          setProjectGoogleAccess((current) => ({ ...current, [service]: false }));
+          if (service === 'gmail')
+            setGmailConnection((current) =>
+              current === null ? null : { ...current, enabled: false },
             );
-            return;
-          }
-          const auth = await runCalendarAuth(connection.clientId);
-          if (auth.kind === 'cancelled') return;
-          await client.connectCalendar({
-            code: auth.code,
-            codeVerifier: auth.codeVerifier,
-            redirectUri: auth.redirectUri,
-          });
-        }
-        setGmailConnection(await client.getSessionGmailConnection(sessionId).catch(() => null));
-        setContactsConnection(
-          await client.getSessionContactsConnection(sessionId).catch(() => null),
-        );
-        connection = await client.enableSessionCalendar(sessionId);
-        setCalendarConnection(connection);
-      } catch (error) {
-        Alert.alert(
-          'Could not connect Calendar',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    })();
-  }, [client, sessionId]);
-  const disableCalendar = useCallback(() => {
-    void client
-      .disableSessionCalendar(sessionId)
-      .then(() =>
-        setCalendarConnection((connection) =>
-          connection === null ? null : { ...connection, enabled: false },
-        ),
-      )
-      .catch((error: unknown) =>
-        Alert.alert(
-          'Could not disconnect Calendar',
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
-  }, [client, sessionId]);
-  const onConnectContacts = useCallback(() => {
-    setAttachMenuOpen(false);
-    void (async () => {
-      try {
-        let connection = await client.getSessionContactsConnection(sessionId);
-        if (!connection.connected) {
-          if (!connection.clientId) {
-            Alert.alert(
-              'Google Contacts not set up',
-              'This Verity server does not provide Google sign-in. Configure GOOGLE_AUTH_ID on the server.',
+          else if (service === 'calendar')
+            setCalendarConnection((current) =>
+              current === null ? null : { ...current, enabled: false },
             );
-            return;
-          }
-          const auth = await runContactsAuth(connection.clientId);
-          if (auth.kind === 'cancelled') return;
-          await client.connectContacts({
-            code: auth.code,
-            codeVerifier: auth.codeVerifier,
-            redirectUri: auth.redirectUri,
-          });
-        }
-        setGmailConnection(await client.getSessionGmailConnection(sessionId).catch(() => null));
-        setCalendarConnection(
-          await client.getSessionCalendarConnection(sessionId).catch(() => null),
+          else
+            setContactsConnection((current) =>
+              current === null ? null : { ...current, enabled: false },
+            );
+        })
+        .catch((error: unknown) =>
+          Alert.alert(
+            'Could not disconnect Google service',
+            error instanceof Error ? error.message : String(error),
+          ),
         );
-        connection = await client.enableSessionContacts(sessionId);
-        setContactsConnection(connection);
-      } catch (error) {
-        Alert.alert(
-          'Could not connect Contacts',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-    })();
-  }, [client, sessionId]);
-  const disableContacts = useCallback(() => {
-    void client
-      .disableSessionContacts(sessionId)
-      .then(() =>
-        setContactsConnection((connection) =>
-          connection === null ? null : { ...connection, enabled: false },
-        ),
-      )
-      .catch((error: unknown) =>
-        Alert.alert(
-          'Could not disconnect Contacts',
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
-  }, [client, sessionId]);
+    },
+    [client, projectId, sessionId],
+  );
+  const disableGmail = useCallback(() => disableGoogleService('gmail'), [disableGoogleService]);
+  const disableCalendar = useCallback(
+    () => disableGoogleService('calendar'),
+    [disableGoogleService],
+  );
+  const disableContacts = useCallback(
+    () => disableGoogleService('contacts'),
+    [disableGoogleService],
+  );
   const clearWorkspaceFile = useCallback(() => {
     if (workspaceFile === null) return;
     Alert.alert(
@@ -3175,6 +3495,55 @@ export function SessionChat({
     },
     [scrollToLatest, sendTurn],
   );
+  const latestAutomationProposalId = useMemo(() => {
+    for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+      const message = session.messages[i];
+      if (message?.kind === 'automation-proposal') return message.id;
+    }
+    return null;
+  }, [session.messages]);
+  const planUpdated = useMemo(() => {
+    let count = 0;
+    for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+      const message = session.messages[i];
+      if (message?.kind !== 'tool-call') continue;
+      if (
+        message.tool.state === 'completed' &&
+        planningToolName(message.tool.name) === START_PLANNING_TOOL
+      )
+        break;
+      if (planProposal(message.tool) !== null) count += 1;
+    }
+    return count > 1;
+  }, [session.messages]);
+  const implementPlan = useCallback(
+    (revision?: number) => {
+      const pending = session.pendingPermission;
+      if (pending && isPlanImplementationPermission(pending)) {
+        decidePermission(pending.toolUseId, { behavior: 'allow' });
+      } else {
+        decidePlanning('implement', revision);
+      }
+      scrollToLatest(true);
+    },
+    [decidePermission, decidePlanning, scrollToLatest, session.pendingPermission],
+  );
+  const dismissPlan = useCallback(() => {
+    Alert.alert('Cancel this plan?', 'The plan stays in the chat. Nothing is implemented.', [
+      { text: 'Keep', style: 'cancel' },
+      {
+        text: 'Cancel plan',
+        style: 'destructive',
+        onPress: () => {
+          const pending = session.pendingPermission;
+          if (pending && isPlanImplementationPermission(pending)) {
+            decidePermission(pending.toolUseId, { behavior: 'deny' });
+          }
+          decidePlanning('discard', planningRevision);
+        },
+      },
+    ]);
+  }, [decidePermission, decidePlanning, planningRevision, session.pendingPermission]);
   const actions = useMemo<SessionActions>(
     () => ({
       sendTurn: sendQuickReply,
@@ -3182,12 +3551,15 @@ export function SessionChat({
       dead,
       focusInput,
       recoverPending: onDismissPendingEcho,
-      confirmAgentLoop,
-      enableAgentLoop,
-      agentLoopStatus: agentLoop?.status ?? null,
-      agentLoopTested: agentLoop?.testedScriptFingerprint !== null && agentLoop !== null,
-      agentLoopId: agentLoop?.id ?? null,
-      agentLoopConfigFingerprint: agentLoop ? agentLoopConfigFingerprint(agentLoop) : null,
+      confirmAutomation,
+      automation,
+      automationReady,
+      latestAutomationProposalId,
+      planning,
+      planningRevision,
+      planningPlan,
+      decidingPlanning,
+      implementPlan,
     }),
     [
       sendQuickReply,
@@ -3195,16 +3567,15 @@ export function SessionChat({
       dead,
       focusInput,
       onDismissPendingEcho,
-      confirmAgentLoop,
-      enableAgentLoop,
-      agentLoop?.status,
-      agentLoop?.testedScriptFingerprint,
-      agentLoop?.id,
-      agentLoop?.name,
-      agentLoop?.script,
-      agentLoop?.schedule,
-      agentLoop?.reactionPrompt,
-      agentLoop?.reactionModel,
+      confirmAutomation,
+      automation,
+      automationReady,
+      latestAutomationProposalId,
+      planning,
+      planningRevision,
+      planningPlan,
+      decidingPlanning,
+      implementPlan,
     ],
   );
   // Local upload placeholders may sit after the transcript tail, but quick-action
@@ -3223,14 +3594,21 @@ export function SessionChat({
   );
   const renderItem = useCallback(
     ({ item, index }: { item: Row; index: number }) => {
+      const finishItemWork = beginRenderWork('list-item-elements', sessionId);
       const isSearchTarget = index === highlightedRowIndex;
       const key = rowKey(item);
       const isLatestTranscriptRow =
         latestTranscriptRowKey !== null && key === latestTranscriptRowKey;
       const rendered = (
-        <TranscriptRow item={item} isLatest={isLatestTranscriptRow} renderContent={renderRow} />
+        <TranscriptRow
+          sessionId={sessionId}
+          item={item}
+          isLatest={isLatestTranscriptRow}
+          renderContent={renderRow}
+        />
       );
       // Counter-flip each row so the inverted list reads the right way up.
+      finishItemWork();
       return rendered ? (
         <View style={styles.invertedItem}>
           <SearchHighlightContext.Provider value={isSearchTarget ? highlightedSearchQuery : null}>
@@ -3239,7 +3617,7 @@ export function SessionChat({
         </View>
       ) : null;
     },
-    [highlightedRowIndex, highlightedSearchQuery, latestTranscriptRowKey],
+    [highlightedRowIndex, highlightedSearchQuery, latestTranscriptRowKey, sessionId],
   );
   // Keep recycling pools shape-compatible. Agent prose gets bounded height buckets:
   // reusing a many-screen cell for a short progress update can leave the old native
@@ -3347,6 +3725,14 @@ export function SessionChat({
     };
   }, []);
 
+  // Navigation can retain the session screen, so mounting alone misses return visits.
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== 'web') return;
+      return focusComposer();
+    }, [focusComposer, sessionId]),
+  );
+
   // Composer autofocus on iPad with a hardware keyboard (#98): drop the operator
   // straight into the input (blinking cursor, ready to type) when a session opens, so
   // they don't have to tap the field first. "Unknown" gets one probe attempt because
@@ -3404,10 +3790,9 @@ export function SessionChat({
   // (incl. the back button) in a Liquid-Glass capsule, which made the branch label
   // read as a tappable Back-style button. Rendering our own header lets the branch be
   // plain inline text (no box) while keeping it tappable to open the switcher. Back
-  // chevron + centered title replace the native equivalents.
-  // Three-column row: equal-flex left/right slots keep the title truly centered
-  // regardless of branch-name length; the right slot is bounded so a long branch name
-  // truncates instead of shoving the title off-center.
+  // chevron + title replace the native equivalents.
+  // One row: back, a left-aligned title block (name over branch) that truncates, and
+  // the round action buttons pinned right.
   // When `embedded`, this renders inline in a two-pane layout (the embedding screen
   // owns the route header): no back button (no pane-local back nav) and `theme.spacing.sm`
   // top padding instead of the safe-area inset (the pane sits below the app header).
@@ -3430,9 +3815,7 @@ export function SessionChat({
           compactLandscape && styles.headerRowCompact,
         ]}
       >
-        {embedded ? (
-          <View style={styles.headerSide} />
-        ) : (
+        {embedded ? null : (
           <View style={styles.headerSide}>
             <Pressable
               onPress={() => router.back()}
@@ -3445,126 +3828,74 @@ export function SessionChat({
             </Pressable>
           </View>
         )}
-        <Text style={styles.headerTitle} numberOfLines={1} accessibilityRole="header">
-          {sessionFallback}
-        </Text>
-        {/* Right spacer keeps the title centered now that the actions live on the
-            context row below — the title row gets the full width, so the session name
-            no longer truncates on a phone. */}
-        <View style={styles.headerSide} />
-      </View>
-      {/* Context row under the title: the branch switcher (#91) and the bookmarks
-          jump-list (#bookmarks), plus the Issue chip when present. Moved down off the
-          title row so the title reads full-width; the engine switcher lives on the
-          input bar's action row. */}
-      <View style={[styles.headerMetaRow, compactLandscape && styles.headerMetaRowCompact]}>
-        {/* Left slot: the Issue chip when present, left-aligned so it never nudges the
-            centered branch switcher. */}
-        <View style={[styles.headerMetaSide, compactLandscape && styles.headerMetaSideCompact]}>
-          {issueNumber !== null ? (
-            <MetaChip label={`Issue #${issueNumber}`} url={issueUrl} />
-          ) : null}
-        </View>
-        {/* Center: the branch switcher (#91), anchored to the row's true center by the
-            two equal-flex side slots — so its position stays put whether or not there
-            are bookmarks. */}
-        <Pressable
-          onPress={() => setSwitcherOpen(true)}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={`Current branch ${currentLabel}. Tap to switch branch.`}
-          style={styles.headerBranchBtn}
-        >
-          <Icon name="git-branch" size={12} color={theme.colors.textMuted} />
-          <Text style={styles.headerBranch} numberOfLines={1}>
-            {currentLabel}
+        {/* Title block: the session name with quiet context underneath — the branch
+            as a bare glyph that opens the switcher (#91, where its full name is
+            shown) and the issue as a bare `#123`. A long-press on a header action
+            briefly swaps this line for the action's name. */}
+        <View style={styles.headerTitleBlock}>
+          <Text style={styles.headerTitle} numberOfLines={1} accessibilityRole="header">
+            {sessionFallback}
           </Text>
-          {/* A quiet caret signals the branch is tappable (opens the switcher, #91)
-              without making it read as a Back-style button. */}
-          <Icon name="chevron-down" size={18} color={theme.colors.textFaint} />
-        </Pressable>
-        {/* Right slot: the bookmarks jump-list (#bookmarks), pinned to the right edge
-            when any exist — it appears without shifting the centered branch. */}
-        <View
-          style={[
-            styles.headerMetaSide,
-            styles.headerMetaSideRight,
-            compactLandscape && styles.headerMetaSideCompact,
-            compactLandscape && styles.headerMetaSideRightCompact,
-          ]}
-        >
-          {kind === 'agent_loop' ? (
-            <Pressable
-              onPress={() => setLoopCockpitOpen(true)}
-              disabled={!agentLoop}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Open Loop cockpit"
-              accessibilityState={{ disabled: !agentLoop }}
-              style={styles.headerLoopButton}
-            >
-              <Text style={styles.headerLoopButtonText}>Loop</Text>
-            </Pressable>
-          ) : null}
-          {bookmarks.ids.size > 0 ? (
-            <Pressable
-              onPress={() => setBookmarksOpen(true)}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel={`${String(bookmarks.ids.size)} bookmarks. Tap to view.`}
-              style={styles.headerBookmarkBtn}
-            >
-              <Icon name="bookmark" size={15} color={theme.colors.textMuted} />
-              <Text style={styles.headerBookmarkCount}>{bookmarks.ids.size}</Text>
-            </Pressable>
-          ) : null}
+          {headerHint !== null ? (
+            <Text style={[styles.headerBranch, styles.headerHintText]} numberOfLines={1}>
+              {headerHint}
+            </Text>
+          ) : (
+            <View style={styles.headerSubtitle}>
+              <Pressable
+                onPress={() => setSwitcherOpen(true)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={`Current branch ${currentLabel}. Tap to switch branch.`}
+                style={styles.headerBranchBtn}
+              >
+                <Icon name="git-branch" size={13} color={theme.colors.textFaint} />
+              </Pressable>
+              {issueNumber !== null ? <IssueRef number={issueNumber} url={issueUrl} /> : null}
+            </View>
+          )}
+        </View>
+        {/* Actions sit on the title row as large round buttons, so the header needs a
+            single row and the targets are big enough to hit and recognise. */}
+        <View style={styles.headerActions}>
           {projectId ? (
-            <Pressable
-              onPress={() => {
-                void openPublicPreview(client, () => {
-                  refreshStaticPreview();
-                  setStaticPreviewOpen(true);
-                });
-              }}
-              hitSlop={8}
-              accessibilityRole="button"
+            <HeaderActionButton
+              icon="monitor"
+              label="Preview"
               accessibilityLabel={
                 hasRunningDevServer ? 'Share preview. A dev server is running.' : 'Share preview'
               }
-              style={styles.headerBookmarkBtn}
-            >
-              <View>
-                <Icon
-                  name="monitor"
-                  size={15}
-                  color={hasActiveStaticPreview ? theme.colors.primary : theme.colors.textMuted}
-                />
-                {hasRunningDevServer ? (
-                  <View testID="preview-server-dot" style={styles.headerPreviewServerDot} />
-                ) : null}
-              </View>
-              <Text
-                style={[
-                  styles.headerBookmarkCount,
-                  hasActiveStaticPreview ? styles.headerPreviewActiveText : null,
-                ]}
-              >
-                Preview
-              </Text>
-            </Pressable>
+              active={hasActiveStaticPreview}
+              activeColor={theme.colors.tone.done}
+              dot={hasRunningDevServer}
+              dotTestID="preview-server-dot"
+              onHint={showHeaderHint}
+              onPress={() => {
+                refreshStaticPreview();
+                setStaticPreviewOpen(true);
+              }}
+            />
           ) : null}
-          <Pressable
+          <HeaderActionButton
+            icon="folder"
+            label="Files"
+            accessibilityLabel="Browse session files"
+            onHint={showHeaderHint}
             onPress={() => {
               setFilesInitialPath(null);
               setFilesOpen(true);
             }}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Browse session files"
-            style={styles.headerBookmarkBtn}
-          >
-            <Icon name="folder" size={15} color={theme.colors.textMuted} />
-          </Pressable>
+          />
+          {bookmarks.ids.size > 0 ? (
+            <HeaderActionButton
+              icon="bookmark"
+              label="Bookmarks"
+              accessibilityLabel={`${String(bookmarks.ids.size)} bookmarks. Tap to view.`}
+              badge={bookmarks.ids.size}
+              onHint={showHeaderHint}
+              onPress={() => setBookmarksOpen(true)}
+            />
+          ) : null}
         </View>
       </View>
       {linkedSessions.length > 0 ? (
@@ -3595,6 +3926,7 @@ export function SessionChat({
     </View>
   );
 
+  finishChatWork();
   return (
     <AnimatedKeyboardAvoidingView
       style={[styles.flex, keyboardAvoidance.resetStyle]}
@@ -3651,19 +3983,31 @@ export function SessionChat({
           </Pressable>
         </View>
       ) : null}
+      {automation ? (
+        <AutomationBar
+          automation={automation}
+          onOpen={openAutomation}
+          onDelete={deleteAutomation}
+        />
+      ) : null}
       {gmailConnection?.enabled ? (
         <View style={styles.workspaceFileBar}>
           <View style={styles.slideDeckLink}>
             <Icon name="mail" size={16} color={theme.colors.primary} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Gmail{gmailConnection.accountEmail ? ` · ${gmailConnection.accountEmail}` : ''}
+              Gmail{projectGoogleAccess.gmail ? ' · Project access' : ''}
+              {gmailConnection.accountEmail ? ` · ${gmailConnection.accountEmail}` : ''}
             </Text>
           </View>
           <Pressable
             onPress={disableGmail}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel="Disconnect Gmail from this session"
+            accessibilityLabel={
+              projectGoogleAccess.gmail
+                ? 'Disable Gmail for this project'
+                : 'Disconnect Gmail from this session'
+            }
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -3674,7 +4018,7 @@ export function SessionChat({
           <View style={styles.slideDeckLink}>
             <Icon name="calendar" size={16} color={theme.colors.primary} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Google Calendar
+              Google Calendar{projectGoogleAccess.calendar ? ' · Project access' : ''}
               {calendarConnection.accountEmail ? ` · ${calendarConnection.accountEmail}` : ''}
             </Text>
           </View>
@@ -3682,7 +4026,11 @@ export function SessionChat({
             onPress={disableCalendar}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel="Disconnect Google Calendar from this session"
+            accessibilityLabel={
+              projectGoogleAccess.calendar
+                ? 'Disable Google Calendar for this project'
+                : 'Disconnect Google Calendar from this session'
+            }
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -3693,7 +4041,7 @@ export function SessionChat({
           <View style={styles.slideDeckLink}>
             <Icon name="users" size={16} color={theme.colors.primary} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Google Contacts
+              Google Contacts{projectGoogleAccess.contacts ? ' · Project access' : ''}
               {contactsConnection.accountEmail ? ` · ${contactsConnection.accountEmail}` : ''}
             </Text>
           </View>
@@ -3701,12 +4049,100 @@ export function SessionChat({
             onPress={disableContacts}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel="Disconnect Google Contacts from this session"
+            accessibilityLabel={
+              projectGoogleAccess.contacts
+                ? 'Disable Google Contacts for this project'
+                : 'Disconnect Google Contacts from this session'
+            }
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
         </View>
       ) : null}
+      {/* Below the connection bars (Docs, Gmail, Calendar, Contacts): those
+          describe the session itself, while a server comes and goes. */}
+      {session.devServers
+        ?.filter((server) => server.scope !== 'project')
+        .map((server) => {
+          // A managed server is named by its entry and opened through it: its
+          // address is the reserved one, not a fresh ad hoc share.
+          const entry = server.managedInstanceId
+            ? managedByInstance.get(server.managedInstanceId)
+            : undefined;
+          // The overview holds both access switches, so the card leads there.
+          const openEntry = () => {
+            setStaticPreviewOpen(true);
+          };
+          return (
+            <RunningServerCard
+              key={server.port}
+              server={entry ? { ...server, name: entry.name } : server}
+              managed={entry}
+              opening={previewOpening === server.port}
+              disabled={previewOpening !== null}
+              onOpen={() => {
+                if (!server.managedInstanceId) return void openDetectedLocally(server);
+                if (!entry?.instance) return openEntry();
+                setPreviewOpening(server.port);
+                void (async () => {
+                  let current = entry;
+                  if (!current.approved || current.instance?.awaitingApproval) {
+                    const allowed = await new Promise<boolean>((resolve) =>
+                      Alert.alert(
+                        `Allow ${current.name} on your network?`,
+                        `It runs:\n\n${current.command}${current.workdir !== '.' ? `\nin ${current.workdir}` : ''}\n\nAnyone on your network can open it while it runs.`,
+                        [
+                          { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+                          { text: 'Allow', onPress: () => resolve(true) },
+                        ],
+                        { cancelable: true, onDismiss: () => resolve(false) },
+                      ),
+                    );
+                    if (!allowed) return;
+                    const approved = await client.approveManagedDevServer(sessionId, current.id, {
+                      command: current.command,
+                      workdir: current.workdir,
+                    });
+                    current = approved.find((value) => value.id === current.id) ?? current;
+                  }
+                  const url = current.instance?.url;
+                  if (!url || !current.instance) return openEntry();
+                  const localShareId =
+                    current.instance.localShareId ??
+                    (await client.listSessionLocalPreviewShares(sessionId)).find(
+                      (share) =>
+                        share.sessionId === sessionId &&
+                        share.targetPort === current.instance?.sandboxPort &&
+                        new URL(share.url).origin === new URL(url).origin,
+                    )?.id;
+                  if (!localShareId)
+                    throw new Error('Network access changed. Refresh and try again.');
+                  const capabilities = await client
+                    .getPreviewCapabilities()
+                    .catch(() => ({ publicSharing: 'unavailable' as const }));
+                  await openLocalPreview(
+                    { id: localShareId, url } as LocalPreviewShare,
+                    capabilities.publicSharing,
+                    openEntry,
+                    () => router.push('/settings/services'),
+                  );
+                })()
+                  .catch((caught: unknown) =>
+                    Alert.alert(
+                      'Could not open preview',
+                      caught instanceof Error ? caught.message : 'Try again.',
+                    ),
+                  )
+                  .finally(() => setPreviewOpening(null));
+              }}
+              onShare={() => {
+                if (server.managedInstanceId) return openEntry();
+                setPreviewServer(server);
+                setStaticPreviewOpen(true);
+              }}
+            />
+          );
+        })}
       {switcherOpen ? (
         <BranchSwitcherSheet branches={branches} onClose={() => setSwitcherOpen(false)} />
       ) : null}
@@ -3722,11 +4158,22 @@ export function SessionChat({
       ) : null}
       {staticPreviewOpen && projectId ? (
         <StaticPreviewSheet
+          detectedServers={session.devServers}
+          initialServer={previewServer}
+          onAskAgent={(prompt) => {
+            setStaticPreviewOpen(false);
+            sendQuickReply(prompt);
+          }}
+          onOpenSettings={() => {
+            setStaticPreviewOpen(false);
+            router.push('/settings/services');
+          }}
           client={client}
           projectId={projectId}
           sessionId={sessionId}
           onClose={() => {
             setStaticPreviewOpen(false);
+            setPreviewServer(undefined);
             refreshStaticPreview();
           }}
         />
@@ -3750,6 +4197,7 @@ export function SessionChat({
           selected={effectiveModel}
           busy={switchingModel}
           rateLimitNotice={rateNotice}
+          excludedNote={excludedAgentsNote(allowedAgents)}
           onPick={(m) => {
             // No-op if it's already the current engine/model; otherwise switch and
             // close (the chip + subsequent turns reflect it via the persisted choice).
@@ -3798,18 +4246,13 @@ export function SessionChat({
           onClose={() => setEnginePickerOpen(false)}
         />
       ) : null}
-      {agentLoop ? (
-        <AgentLoopCockpit
-          client={client}
-          loop={agentLoop}
-          visible={loopCockpitOpen}
-          onClose={() => setLoopCockpitOpen(false)}
-          onEdit={editAgentLoop}
-          onLoopChanged={(updated) => {
-            setAgentLoop(updated);
-            publishAgentLoopMutation(updated);
-          }}
-          sessionBusy={sending || busy}
+      {automation && automationSheetOpen ? (
+        <AutomationSheet
+          automation={automation}
+          updating={automationUpdating}
+          onToggle={toggleAutomation}
+          onDelete={deleteAutomation}
+          onClose={() => setAutomationSheetOpen(false)}
         />
       ) : null}
       {dead ? (
@@ -3853,6 +4296,16 @@ export function SessionChat({
       {permissionError ? (
         <Banner tone="danger" text={`Decision failed: ${permissionError}`} />
       ) : null}
+      {voice.preparation ? (
+        <Banner
+          tone="attention"
+          text={
+            voice.preparation === 'downloading'
+              ? 'Downloading speech recognition model…'
+              : 'Preparing voice input…'
+          }
+        />
+      ) : null}
       {voice.error ? <Banner tone="danger" text={`Voice: ${voice.error}`} /> : null}
       {!loaded && !locallyCreated && messages.length === 0 && !streamError ? (
         // Still coming up: transcript hasn't drained yet and nothing has streamed in.
@@ -3869,113 +4322,140 @@ export function SessionChat({
         // Existing sessions wait for their backlog before claiming to be empty.
         // A locally-created session is already known to start empty, so show the
         // usable chat state immediately while provisioning continues behind it.
-        <View style={styles.centered}>
-          <Text style={styles.emptyTitle}>No messages yet</Text>
-          <Text style={styles.emptySubtitle}>
-            Send a prompt below to steer this agent — its reply streams in live.
-          </Text>
-        </View>
+        <ScrollView
+          contentContainerStyle={styles.starterScreen}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Text style={styles.emptyTitle}>What should this session do?</Text>
+          <View style={styles.starterList}>
+            <SessionStarterCard
+              icon="code"
+              title="Build something"
+              text="Describe a change or a bug. The agent works on it in this session's own branch."
+            />
+            <SessionStarterCard
+              icon="message-circle"
+              title="Just chat"
+              text="Ask questions, plan, or think out loud. Nothing changes until you ask for it."
+            />
+            <SessionStarterCard
+              icon="repeat"
+              title="Recurring task"
+              badge="New"
+              text="Say what should happen and when, for example every Monday at 9:00. You confirm it before it starts."
+            />
+          </View>
+        </ScrollView>
       ) : (
         // Quick-Action chips (#97) reach the input/dispatch through the context. The
         // Rows stay chronological so FlashList's native chat anchoring can preserve the
         // viewport while older history is prepended and new text grows below it.
         <SessionActionsContext.Provider value={actions}>
           <SessionFileOpenContext.Provider value={openSessionFile}>
-            <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
-              <BookmarksContext.Provider value={bookmarks}>
-                <KnowledgeSaveContext.Provider
-                  value={
-                    projectId
-                      ? {
-                          save: async (messageId, text) => {
-                            await client.saveSessionKnowledge(sessionId, { messageId, text });
-                          },
-                        }
-                      : null
-                  }
-                >
-                  <FlashList
-                    ref={listRef}
-                    data={data}
-                    keyExtractor={rowKey}
-                    renderItem={renderItem}
-                    getItemType={getItemType}
-                    // Render further beyond the viewport (default ~250px) so rows above are
-                    // MEASURED before a scroll-up reveals them — their height correction then
-                    // happens off-screen instead of jumping the visible offset (cause-2 fix).
-                    drawDistance={500}
-                    // Visual inversion: newest-first data flipped back the right way up.
-                    // Each row is counter-flipped in renderItem (styles.invertedItem).
-                    style={{
-                      ...styles.invertedList,
-                      marginLeft: embedded ? 0 : insets.left,
-                      marginRight: embedded ? 0 : insets.right,
-                    }}
-                    contentContainerStyle={styles.listContent}
-                    onScroll={onListScroll}
-                    onContentSizeChange={onListContentSizeChange}
-                    onTouchEnd={clearSearchHighlightAfterTouch}
-                    scrollEventThrottle={64}
-                    // Only a real finger drag/fling summons the message-nav stack (see
-                    // revealNav) — programmatic/content-driven scrolls (session open, agent
-                    // streaming) fire none of these, so the stack never pops up on its own. The
-                    // hold-then-fade starts on motion END (drag lift / fling settle), so the
-                    // 1.8s is measured from the list coming to REST.
-                    onScrollBeginDrag={onListScrollBeginDrag}
-                    onMomentumScrollBegin={onListMomentumScrollBegin}
-                    onScrollEndDrag={onListScrollEndDrag}
-                    onMomentumScrollEnd={onListMomentumScrollEnd}
-                    onViewableItemsChanged={onViewableItemsChanged}
-                    viewabilityConfig={viewabilityConfig}
-                    // Paging is driven by our scroll/viewability callbacks (see
-                    // requestOlderHistory), which also own the settle window between
-                    // pages that the native edge callbacks have no notion of.
-                    //
-                    // The spinner belongs to the OLDEST end, which in the newest-first
-                    // list is the footer. It sits behind the viewport, so unlike the
-                    // former header spinner it cannot shift a single visible row.
-                    ListFooterComponent={
-                      <View style={[styles.olderSpinner, styles.invertedItem]}>
+            <AppLinkOpenContext.Provider value={openAppLink}>
+              <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
+                <BookmarksContext.Provider value={bookmarks}>
+                  <KnowledgeSaveContext.Provider
+                    value={
+                      projectId
+                        ? {
+                            save: async (messageId, text) => {
+                              await client.saveSessionKnowledge(sessionId, { messageId, text });
+                            },
+                          }
+                        : null
+                    }
+                  >
+                    <FlashList
+                      onLoad={() => {
+                        markInitialListLoad(switchTiming);
+                        setLoadedListSessionId(sessionId);
+                      }}
+                      ref={listRef}
+                      data={data}
+                      keyExtractor={rowKey}
+                      renderItem={renderItem}
+                      getItemType={getItemType}
+                      // Render further beyond the viewport (default ~250px) so rows above are
+                      // MEASURED before a scroll-up reveals them — their height correction then
+                      // happens off-screen instead of jumping the visible offset (cause-2 fix).
+                      drawDistance={500}
+                      // Visual inversion: newest-first data flipped back the right way up.
+                      // Each row is counter-flipped in renderItem (styles.invertedItem).
+                      // FlashList consumes plain styles; Unistyles metadata loses the web flip.
+                      style={{
+                        transform: [{ scaleY: -1 }],
+                        marginLeft: embedded ? 0 : insets.left,
+                        marginRight: embedded ? 0 : insets.right,
+                      }}
+                      contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.lg }}
+                      onScroll={onListScroll}
+                      onContentSizeChange={onListContentSizeChange}
+                      onTouchEnd={clearSearchHighlightAfterTouch}
+                      scrollEventThrottle={64}
+                      // Only a real finger drag/fling summons the message-nav stack (see
+                      // revealNav) — programmatic/content-driven scrolls (session open, agent
+                      // streaming) fire none of these, so the stack never pops up on its own. The
+                      // hold-then-fade starts on motion END (drag lift / fling settle), so the
+                      // 1.8s is measured from the list coming to REST.
+                      onScrollBeginDrag={onListScrollBeginDrag}
+                      onMomentumScrollBegin={onListMomentumScrollBegin}
+                      onScrollEndDrag={onListScrollEndDrag}
+                      onMomentumScrollEnd={onListMomentumScrollEnd}
+                      onViewableItemsChanged={onViewableItemsChanged}
+                      viewabilityConfig={viewabilityConfig}
+                      // Paging is driven by our scroll/viewability callbacks (see
+                      // requestOlderHistory), which also own the settle window between
+                      // pages that the native edge callbacks have no notion of.
+                      //
+                      // The spinner belongs to the OLDEST end, which in the newest-first
+                      // list is the footer. It sits behind the viewport, so unlike the
+                      // former header spinner it cannot shift a single visible row.
+                      ListFooterComponent={
+                        <View style={[styles.olderSpinner, styles.invertedItem]}>
+                          <ActivityIndicator
+                            color={theme.colors.textMuted}
+                            animating={loadingOlder}
+                            hidesWhenStopped={false}
+                            style={!loadingOlder ? styles.olderSpinnerHidden : undefined}
+                            accessibilityLabel="Loading older messages"
+                            accessibilityElementsHidden={!loadingOlder}
+                            importantForAccessibility={
+                              loadingOlder ? 'auto' : 'no-hide-descendants'
+                            }
+                          />
+                        </View>
+                      }
+                      maintainVisibleContentPosition={maintainVisibleContentPosition}
+                      // Drag down to dismiss the keyboard; keep taps working (e.g. tool cards).
+                      keyboardDismissMode="interactive"
+                      keyboardShouldPersistTaps="handled"
+                    />
+                    {/* Keep intermediate history pages hidden while resolving a jump, and
+                cover measurement correction while restoring a saved position. */}
+                    {restoring || pendingUserJump !== null || jumpTarget !== null ? (
+                      <View style={styles.restoreCover}>
                         <ActivityIndicator
                           color={theme.colors.textMuted}
-                          animating={loadingOlder}
-                          hidesWhenStopped={false}
-                          style={!loadingOlder ? styles.olderSpinnerHidden : undefined}
-                          accessibilityLabel="Loading older messages"
-                          accessibilityElementsHidden={!loadingOlder}
-                          importantForAccessibility={loadingOlder ? 'auto' : 'no-hide-descendants'}
+                          accessibilityLabel={
+                            pendingUserJump !== null || jumpTarget !== null
+                              ? 'Jumping to message or bookmark'
+                              : 'Restoring chat position'
+                          }
                         />
+                        {pendingUserJump !== null || jumpTarget !== null ? (
+                          <Text style={styles.emptySubtitle}>
+                            {pendingUserJump !== null
+                              ? 'Finding previous message or bookmark…'
+                              : 'Jumping to message or bookmark…'}
+                          </Text>
+                        ) : null}
                       </View>
-                    }
-                    maintainVisibleContentPosition={maintainVisibleContentPosition}
-                    // Drag down to dismiss the keyboard; keep taps working (e.g. tool cards).
-                    keyboardDismissMode="interactive"
-                    keyboardShouldPersistTaps="handled"
-                  />
-                  {/* Keep intermediate history pages hidden while resolving a jump, and
-                cover measurement correction while restoring a saved position. */}
-                  {restoring || pendingUserJump !== null || jumpTarget !== null ? (
-                    <View style={styles.restoreCover}>
-                      <ActivityIndicator
-                        color={theme.colors.textMuted}
-                        accessibilityLabel={
-                          pendingUserJump !== null || jumpTarget !== null
-                            ? 'Jumping to message or bookmark'
-                            : 'Restoring chat position'
-                        }
-                      />
-                      {pendingUserJump !== null || jumpTarget !== null ? (
-                        <Text style={styles.emptySubtitle}>
-                          {pendingUserJump !== null
-                            ? 'Finding previous message or bookmark…'
-                            : 'Jumping to message or bookmark…'}
-                        </Text>
-                      ) : null}
-                    </View>
-                  ) : null}
-                </KnowledgeSaveContext.Provider>
-              </BookmarksContext.Provider>
-            </SessionFileImageSourceContext.Provider>
+                    ) : null}
+                  </KnowledgeSaveContext.Provider>
+                </BookmarksContext.Provider>
+              </SessionFileImageSourceContext.Provider>
+            </AppLinkOpenContext.Provider>
           </SessionFileOpenContext.Provider>
         </SessionActionsContext.Provider>
       )}
@@ -4066,8 +4546,14 @@ export function SessionChat({
           tool, render an approve/deny prompt above the input. Sits below the
           transcript so it reads as "the agent is waiting on YOU", and POSTs the
           decision back. Hidden once answered (the stream clears `pendingPermission`). */}
-      {session.pendingPermission ? (
+      {session.pendingPermission &&
+      !(
+        planning === 'active' &&
+        planningPlan != null &&
+        isPlanImplementationPermission(session.pendingPermission)
+      ) ? (
         <PermissionPrompt
+          sessionId={sessionId}
           pending={session.pendingPermission}
           deciding={decidingPermission === session.pendingPermission.toolUseId}
           dead={
@@ -4085,6 +4571,7 @@ export function SessionChat({
         .slice(0, 1)
         .map((item) => (
           <PermissionPrompt
+            sessionId={sessionId}
             key={item.id}
             pending={{
               toolUseId: item.id,
@@ -4108,10 +4595,12 @@ export function SessionChat({
           key={visiblePullRequest.number}
           pullRequest={visiblePullRequest}
           onMerge={onMergePullRequest}
+          onRefresh={branchesRefresh}
           onDismiss={visiblePullRequest.phase === 'open' ? undefined : dismissPullRequest}
         />
       ) : null}
       {!visiblePullRequest &&
+      branches.localMergeHasChanges &&
       branches.localMergeBase !== undefined &&
       branches.current !== undefined &&
       branches.current !== branches.localMergeBase &&
@@ -4123,7 +4612,35 @@ export function SessionChat({
           onSave={onSaveToProject}
         />
       ) : null}
+      {planning === 'active' && planningPlan != null ? (
+        <PinnedPlan
+          revision={planningRevision}
+          sendNonce={sendNonce}
+          renderMarkdown={(content) => (
+            <MarkdownText
+              content={content}
+              onOpenLocalFile={null}
+              onOpenAppLink={null}
+              sessionFileImageSource={null}
+              onOpenImage={() => undefined}
+            />
+          )}
+          markdown={planningPlan}
+          updated={planUpdated}
+          deciding={
+            decidingPlanning ||
+            (isPlanImplementationPermission(session.pendingPermission) &&
+              decidingPermission === session.pendingPermission?.toolUseId)
+          }
+          disabled={dead || planningRevision === undefined}
+          error={planningError}
+          onDismiss={dismissPlan}
+          onImplement={() => implementPlan(planningRevision)}
+        />
+      ) : null}
       <InputBar
+        hasPlan={planning === 'active' && planningPlan != null}
+        planning={planning === 'active'}
         inputRef={inputRef}
         value={draft}
         sendNonce={sendNonce}
@@ -4138,9 +4655,11 @@ export function SessionChat({
         // (a reducer that missed a `task ended`), so the Stop button + activity line
         // agree with the overview's server `status` dot instead of diverging.
         running={working}
+        activityAnimating={activityAnimating}
         onStop={onStop}
         dead={dead}
         voiceState={voice.state}
+        voicePreparation={voice.preparation}
         voiceAutoMode={voice.autoMode}
         voiceCountdown={voice.countdown}
         onMic={voice.toggle}
@@ -4183,6 +4702,7 @@ export function SessionChat({
         onPickFiles={onPickFiles}
         onPickMeetingAudio={onPickMeetingAudio}
         onLiveMeeting={onLiveMeeting}
+        googleConnected={googleConnected}
         onConnectGmail={onConnectGmail}
         onConnectCalendar={onConnectCalendar}
         onConnectContacts={onConnectContacts}
@@ -4193,13 +4713,71 @@ export function SessionChat({
   );
 }
 
-// A header Issue context chip (#125). Tappable when `url` is a string (opens the
-// GitHub issue via `Linking.openURL`, announced as a link); when `url` is null —
-// owner/repo unknown (no GitHub remote / older server) — it renders as the plain,
-// non-tappable chip it always was, never linking to a broken URL (#161).
-function MetaChip({ label, url }: { label: string; url: string | null }) {
+// A round header action (Preview / Files / Bookmarks): an icon large enough to hit
+// and recognise, with an optional status dot (e.g. a running dev server) or count
+// badge. Long-press reports its name through `onHint`.
+function HeaderActionButton({
+  icon,
+  label,
+  accessibilityLabel,
+  onPress,
+  onHint,
+  active = false,
+  dot = false,
+  dotTestID,
+  badge,
+  activeColor,
+}: {
+  icon: IconName;
+  label: string;
+  accessibilityLabel: string;
+  onPress: () => void;
+  onHint: (label: string) => void;
+  active?: boolean;
+  dot?: boolean;
+  dotTestID?: string;
+  badge?: number;
+  /** Icon color while `active`; defaults to the primary blue. */
+  activeColor?: string;
+}) {
+  const { theme } = useUnistyles();
+  return (
+    <Pressable
+      onPress={onPress}
+      onLongPress={() => onHint(label)}
+      hitSlop={4}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      style={({ pressed }) => [styles.headerActionBtn, pressed ? styles.copyBtnPressed : null]}
+    >
+      <Icon
+        name={icon}
+        size={20}
+        color={active ? (activeColor ?? theme.colors.primary) : theme.colors.textMuted}
+      />
+      {dot ? <View testID={dotTestID} style={styles.headerActionDot} /> : null}
+      {badge !== undefined ? (
+        <View style={styles.headerActionBadge}>
+          <Text style={styles.headerActionBadgeText}>{badge > 99 ? '99+' : String(badge)}</Text>
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
+// The header's issue reference (#125): a bare `#123`. Tappable when `url` is a
+// string (opens the GitHub issue via `Linking.openURL`, announced as a link) and
+// then tinted like the app's other tappable meta; when `url` is null — owner/repo
+// unknown (no GitHub remote / older server) — it stays plain, faint text and never
+// links to a broken URL (#161).
+function IssueRef({ number, url }: { number: number; url: string | null }) {
+  const label = `#${String(number)}`;
   if (url === null) {
-    return <Text style={styles.headerMetaChip}>{label}</Text>;
+    return (
+      <Text style={styles.headerBranch} accessibilityLabel={`Issue ${String(number)}`}>
+        {label}
+      </Text>
+    );
   }
   return (
     <Pressable
@@ -4208,9 +4786,9 @@ function MetaChip({ label, url }: { label: string; url: string | null }) {
       // so it never surfaces as an unhandled rejection.
       onPress={() => void Linking.openURL(url).catch(() => undefined)}
       accessibilityRole="link"
-      accessibilityLabel={`${label}. Tap to open on GitHub.`}
+      accessibilityLabel={`Issue ${String(number)}. Tap to open on GitHub.`}
     >
-      <Text style={styles.headerMetaChip}>{label}</Text>
+      <Text style={[styles.headerBranch, styles.headerIssueLink]}>{label}</Text>
     </Pressable>
   );
 }
@@ -4379,13 +4957,14 @@ function SessionFilesSheet({
 }) {
   const { theme } = useUnistyles();
   const sheet = useResizableSheet();
+  const compactRootLabels = Platform.OS === 'ios' && !Platform.isPad;
   const [path, setPath] = useState(initialFilePath ? parentPath(initialFilePath) : '');
   const [root, setRoot] = useState<SessionFileRoot>(initialRoot);
   const [entries, setEntries] = useState<SessionFileEntry[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [preview, setPreview] = useState<{ path: string; content: string } | null>(null);
+  const [preview, setPreview] = useState<SessionFileContent | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [mutating, setMutating] = useState(false);
@@ -4394,10 +4973,18 @@ function SessionFilesSheet({
   const [selected, setSelected] = useState<string[]>([]);
   const [dropActive, setDropActive] = useState(false);
   const [driveActive, setDriveActive] = useState(false);
+  const [driveCanWrite, setDriveCanWrite] = useState(false);
   const [driveFolderId, setDriveFolderId] = useState<string | null>(null);
   const [drivePath, setDrivePath] = useState<Array<{ id: string; name: string }>>([]);
   const [driveEntries, setDriveEntries] = useState<DriveFile[]>([]);
   const [driveUnconfigured, setDriveUnconfigured] = useState(false);
+  // The file whose action menu is open, and the one being renamed. Both are drawn
+  // over the sheet (see FileActionMenu), so they live here rather than in a row.
+  const [menuFor, setMenuFor] = useState<{ path: string; inPreview: boolean } | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [editing, setEditing] = useState<SessionFileContent | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [adding, setAdding] = useState(false);
   // Monotonic id of the newest preview fetch; a resolved fetch whose id no longer
   // matches is a superseded tap and is dropped. See openFile.
   const previewRequest = useRef(0);
@@ -4441,7 +5028,7 @@ function SessionFilesSheet({
     void client
       .getSessionFileContent(sessionId, initialFilePath, initialRoot)
       .then((file) => {
-        if (active()) setPreview({ path: file.path, content: file.content });
+        if (active()) setPreview(file);
       })
       .catch((err) => {
         if (!active()) return;
@@ -4497,17 +5084,21 @@ function SessionFilesSheet({
       try {
         let folderId = driveFolderId;
         let nextPath = drivePath;
-        if (!folderId) {
-          const detail = await client.getProject(projectId);
-          folderId = detail.settings?.googleDriveFolderId ?? null;
-          const folderName = detail.settings?.googleDriveFolderName ?? null;
-          if (!folderId || !folderName) {
-            if (active) {
-              setDriveEntries([]);
-              setDriveUnconfigured(true);
-            }
-            return;
+        const detail = await client.getProject(projectId);
+        const configuredFolderId = detail.settings?.googleDriveFolderId ?? null;
+        const folderName = detail.settings?.googleDriveFolderName ?? null;
+        if (active) setDriveCanWrite(detail.settings?.googleDriveAccessMode !== 'read-only');
+        if (!configuredFolderId || !folderName) {
+          if (active) {
+            setDriveEntries([]);
+            setDriveFolderId(null);
+            setDriveCanWrite(false);
+            setDriveUnconfigured(true);
           }
+          return;
+        }
+        if (!folderId || folderId !== configuredFolderId) {
+          folderId = configuredFolderId;
           nextPath = [{ id: folderId, name: folderName }];
           if (active) {
             setDriveFolderId(folderId);
@@ -4588,7 +5179,7 @@ function SessionFilesSheet({
   }, [client, path, root, sessionId]);
 
   const uploadDriveFiles = useCallback(() => {
-    if (!projectId || !driveFolderId || drivePath.length === 0) return;
+    if (!projectId || !driveFolderId || drivePath.length === 0 || !driveCanWrite) return;
     void (async () => {
       let picked: Awaited<ReturnType<typeof pickSessionFiles>> = [];
       try {
@@ -4620,7 +5211,7 @@ function SessionFilesSheet({
         setUploading(false);
       }
     })();
-  }, [client, driveFolderId, drivePath, projectId]);
+  }, [client, driveFolderId, drivePath, projectId, driveCanWrite]);
 
   const openDriveFile = useCallback(
     (file: DriveFile) => {
@@ -4705,7 +5296,7 @@ function SessionFilesSheet({
               await client.uploadSessionFile(sessionId, {
                 path,
                 fileName: file.fileName,
-                data: new FsFile(file.uri),
+                data: await droppedFileData(file.uri),
                 root,
               });
               uploaded = true;
@@ -4727,7 +5318,7 @@ function SessionFilesSheet({
           // failure partway through must not strand the rest.
           for (const file of files) {
             try {
-              new FsFile(file.uri).delete();
+              releaseDroppedFile(file.uri);
             } catch {
               // Best effort; the OS also clears the app's temporary directory.
             }
@@ -4763,6 +5354,18 @@ function SessionFilesSheet({
           cacheDir.create({ idempotent: true, intermediates: true });
           const token = getAuthToken(baseUrl);
           const destination = new FsFile(cacheDir, fileNameFromPath(filePath));
+          if (isDemoMode()) {
+            const { content } = await client.getSessionFileContent(sessionId, filePath, root);
+            destination.write(content);
+            const sharing = await loadSharingModule();
+            if (sharing !== undefined && (await sharing.isAvailableAsync())) {
+              await sharing.shareAsync(destination.uri, {
+                mimeType: mimeTypeForFile(filePath),
+                dialogTitle: `Open ${fileNameFromPath(filePath)}`,
+              });
+            }
+            return;
+          }
           const headers =
             token !== null && token.length > 0 ? { authorization: `Bearer ${token}` } : undefined;
           const file = directTlsPin
@@ -4886,7 +5489,7 @@ function SessionFilesSheet({
         .getSessionFileContent(sessionId, entry.path, root)
         .then((file) => {
           if (previewRequest.current !== request) return;
-          setPreview({ path: file.path, content: file.content });
+          setPreview(file);
         })
         .catch((err) => {
           if (previewRequest.current !== request) return;
@@ -4910,78 +5513,128 @@ function SessionFilesSheet({
     setSelected((current) => toggleFileSelection(current, entry.path));
   }, []);
 
+  // Selection starts from a row, never from the header: the file you held or
+  // chose "Select" for is the first one picked, so the mode never opens empty.
+  const startSelection = useCallback(
+    (entry: SessionFileEntry) => {
+      if (mutating || driveActive || !isSelectableFile(entry)) return;
+      modifierClick.current = { anchor: entry.path, range: [] };
+      setSelected([entry.path]);
+      setSelecting(true);
+      void Haptics.selectionAsync();
+    },
+    [driveActive, mutating],
+  );
+
   const endSelection = useCallback(() => {
     setSelecting(false);
     setSelected([]);
     modifierClick.current = { anchor: null, range: [] };
   }, []);
 
-  const deleteSelectedFiles = useCallback(() => {
-    if (mutating || selected.length === 0) return;
-    setMutating(true);
-    Alert.alert(
-      selected.length === 1 ? 'Delete file?' : `Delete ${selected.length} files?`,
-      root === 'worktree'
-        ? 'This permanently removes the selected files from the workspace.'
-        : 'This removes the files and their extracted text.',
-      [
-        { text: 'Cancel', style: 'cancel', onPress: () => setMutating(false) },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              const deleted: string[] = [];
-              try {
-                for (const filePath of selected) {
-                  await client.deleteSessionFile(sessionId, root, filePath);
-                  deleted.push(filePath);
+  // One confirmation for every delete, from a row's menu, the open file or the
+  // selection. It names the files and the root they leave: Shared is read by
+  // every project, so "this file" is not enough to know what is at stake.
+  const confirmDelete = useCallback(
+    (
+      paths: readonly string[],
+      onDeleted: (deleted: readonly string[], complete: boolean) => void,
+    ) => {
+      if (mutating || paths.length === 0) return;
+      setMutating(true);
+      const names = paths.slice(0, 5).map((filePath) => `• ${fileNameFromPath(filePath)}`);
+      if (paths.length > names.length) names.push(`… and ${paths.length - names.length} more`);
+      Alert.alert(
+        paths.length === 1 ? 'Delete file?' : `Delete ${paths.length} files?`,
+        `${names.join('\n')}\n\n${
+          root === 'worktree'
+            ? 'This permanently removes them from the workspace.'
+            : root === 'shared'
+              ? 'This removes them from Global Knowledge, for every project, with their extracted text.'
+              : 'This removes them from the project with their extracted text.'
+        }`,
+        [
+          { text: 'Cancel', style: 'cancel', onPress: () => setMutating(false) },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: () => {
+              void (async () => {
+                const deleted: string[] = [];
+                try {
+                  for (const filePath of paths) {
+                    await client.deleteSessionFile(sessionId, root, filePath);
+                    deleted.push(filePath);
+                  }
+                  onDeleted(deleted, true);
+                } catch (err) {
+                  onDeleted(deleted, false);
+                  Alert.alert(
+                    'Could not delete file',
+                    err instanceof Error ? err.message : String(err),
+                  );
+                } finally {
+                  if (deleted.length > 0) setReloadKey((key) => key + 1);
+                  setMutating(false);
                 }
-                endSelection();
-              } catch (err) {
-                setSelected((current) => current.filter((path) => !deleted.includes(path)));
-                Alert.alert(
-                  'Could not delete file',
-                  err instanceof Error ? err.message : String(err),
-                );
-              } finally {
-                if (deleted.length > 0) setReloadKey((key) => key + 1);
-                setMutating(false);
-              }
-            })();
+              })();
+            },
           },
-        },
-      ],
-      { cancelable: false },
-    );
-  }, [client, endSelection, mutating, root, selected, sessionId]);
+        ],
+        { cancelable: false },
+      );
+    },
+    [client, mutating, root, sessionId],
+  );
 
-  const moveSelectedKnowledge = useCallback(() => {
-    if (mutating || root === 'worktree' || selected.length === 0) return;
-    setMutating(true);
-    const destination = root === 'knowledge' ? 'shared' : 'knowledge';
-    void (async () => {
-      const moved: string[] = [];
+  const deleteSelectedFiles = useCallback(() => {
+    confirmDelete(selected, (deleted, complete) => {
+      if (complete) endSelection();
+      else setSelected((current) => current.filter((path) => !deleted.includes(path)));
+    });
+  }, [confirmDelete, endSelection, selected]);
+
+  const closePreview = useCallback(() => {
+    // Also drops a fetch still in flight, so leaving the preview can't be undone
+    // a second later by a slow response.
+    previewRequest.current += 1;
+    setPreview(null);
+    setPreviewLoading(false);
+  }, []);
+
+  const renameFile = useCallback(
+    async (filePath: string, name: string) => {
+      setMutating(true);
       try {
-        for (const filePath of selected) {
-          await client.moveSessionFile(sessionId, {
-            root,
-            path: filePath,
-            toRoot: destination,
-            toPath: filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '',
-          });
-          moved.push(filePath);
-        }
-        endSelection();
+        const renamed = await client.renameSessionFile(sessionId, root, filePath, name);
+        setPreview((current) =>
+          current?.path === filePath ? { ...current, path: renamed.path } : current,
+        );
+        setRenaming(null);
+        setReloadKey((key) => key + 1);
       } catch (err) {
-        setSelected((current) => current.filter((path) => !moved.includes(path)));
-        Alert.alert('Could not move file', err instanceof Error ? err.message : String(err));
+        // A server from before worktree renames answers with the knowledge-only
+        // refusal, which reads as nonsense on the Files tab.
+        if (
+          err instanceof VerityApiError &&
+          err.status === 400 &&
+          root === 'worktree' &&
+          /only knowledge files/.test(err.message)
+        ) {
+          throw new Error('Update the Verity server to rename files here.');
+        }
+        throw err;
       } finally {
-        if (moved.length > 0) setReloadKey((key) => key + 1);
         setMutating(false);
       }
-    })();
-  }, [client, endSelection, mutating, root, selected, sessionId]);
+    },
+    [client, root, sessionId],
+  );
+
+  const selectableEntries = useMemo(() => entries.filter(isSelectableFile), [entries]);
+  const allSelected =
+    selectableEntries.length > 0 &&
+    selectableEntries.every((entry) => selected.includes(entry.path));
 
   const rememberModifiers = useCallback((held: ClickModifiers) => {
     modifiers.current = held;
@@ -5055,18 +5708,126 @@ function SessionFilesSheet({
     return byPath;
   }, [entries, selected, downloadUrlFor]);
 
-  const canSelect = useMemo(
-    () => !driveActive && entries.some(isSelectableFile),
-    [driveActive, entries],
-  );
-
-  // React Native lays a `<Text>` out as one native text node, so the whole body in a
-  // single node silently renders blank well below the server's 1 MB preview limit (a
-  // ~143 KB transcript did). Chunked + virtualized, only the visible blocks lay out.
-  const previewChunks = useMemo(
-    () => (preview ? chunkFilePreview(preview.content) : []),
-    [preview],
-  );
+  const editFile = async (filePath: string) => {
+    if (mutating) return;
+    setMutating(true);
+    try {
+      const file = await client.getSessionFileContent(sessionId, filePath, root);
+      if (file.editable === false) throw new Error('This preview is read-only.');
+      if (!file.version || !file.editable)
+        throw new Error('Update the Verity server to edit text files.');
+      setEditing(file);
+    } catch (error) {
+      Alert.alert('Could not edit file', error instanceof Error ? error.message : String(error));
+    } finally {
+      setMutating(false);
+    }
+  };
+  const menuActions: FileAction[] =
+    menuFor === null
+      ? []
+      : [
+          ...(!menuFor.inPreview
+            ? [
+                {
+                  key: 'open',
+                  label: 'Open',
+                  icon: 'file' as const,
+                  onPress: () => {
+                    const entry = entries.find((entry) => entry.path === menuFor.path);
+                    if (entry) void openFile(entry);
+                  },
+                },
+              ]
+            : []),
+          ...(() => {
+            // Offered only where it will do something: a file past the download
+            // limit has a menu but cannot be selected (see isSelectableFile).
+            const entry = entries.find((entry) => entry.path === menuFor.path);
+            return !menuFor.inPreview && !driveActive && entry && isSelectableFile(entry)
+              ? [
+                  {
+                    key: 'select',
+                    label: 'Select',
+                    icon: 'check-circle' as const,
+                    onPress: () => startSelection(entry),
+                  },
+                ]
+              : [];
+          })(),
+          ...(menuFor.inPreview && preview
+            ? [
+                {
+                  // Chunked rendering means native text selection stops at each
+                  // block, so drag-selecting the whole file does not work — this
+                  // copies the exact content the server returned instead.
+                  key: 'copy',
+                  label: 'Copy contents',
+                  icon: 'copy' as const,
+                  onPress: () => {
+                    void Clipboard.setStringAsync(preview.content)
+                      .then(() =>
+                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success),
+                      )
+                      .catch((err: unknown) =>
+                        Alert.alert(
+                          'Could not copy',
+                          err instanceof Error ? err.message : String(err),
+                        ),
+                      );
+                  },
+                },
+              ]
+            : []),
+          ...(menuFor.inPreview && preview && Platform.OS !== 'web'
+            ? [
+                {
+                  key: 'export',
+                  label: 'Print or share as PDF',
+                  icon: 'printer' as const,
+                  onPress: () => chooseExport(preview),
+                },
+              ]
+            : []),
+          {
+            key: 'open-with',
+            label: 'Open with another app',
+            icon: 'share' as const,
+            onPress: () => openWith(menuFor.path),
+          },
+          // An open file already has Edit in its header; listing it twice would
+          // make the menu disagree with the bar above it about where editing lives.
+          ...(isTextPreviewCandidate(menuFor.path) && !menuFor.inPreview
+            ? [
+                {
+                  key: 'edit',
+                  label: 'Edit text',
+                  icon: 'edit' as const,
+                  onPress: () => {
+                    void editFile(menuFor.path);
+                  },
+                },
+              ]
+            : []),
+          {
+            key: 'rename',
+            label: 'Rename…',
+            icon: 'edit-3' as const,
+            onPress: () => setRenaming(menuFor.path),
+          },
+          {
+            key: 'delete',
+            label: 'Delete…',
+            icon: 'trash-2' as const,
+            destructive: true,
+            onPress: () =>
+              confirmDelete([menuFor.path], (deleted) => {
+                if (deleted.length === 0) return;
+                setSelected((current) => current.filter((path) => !deleted.includes(path)));
+                if (menuFor.inPreview) closePreview();
+              }),
+          },
+        ];
 
   return (
     <Modal visible animationType="slide" transparent onRequestClose={onClose}>
@@ -5075,105 +5836,71 @@ function SessionFilesSheet({
       </Pressable>
       <Animated.View style={[styles.sheet, sheet.sheetStyle]}>
         <SheetResizeHandle panHandlers={sheet.panHandlers} />
-        <View style={styles.filesHeader}>
-          <View style={styles.filesTitleWrap}>
-            <Text style={styles.sheetTitle}>
-              {selecting
-                ? selected.length > 0
-                  ? selectionSummary(selected.length)
-                  : 'Select files'
-                : 'Files'}
-            </Text>
-            <Text style={styles.filesPath} numberOfLines={1}>
-              {driveActive
-                ? `Google Drive${drivePath.map(({ name }) => ` / ${name}`).join('')}`
-                : root === 'worktree'
-                  ? 'Worktree'
-                  : root === 'knowledge'
-                    ? '📚 Project'
-                    : '📚 Shared'}
-              {!driveActive && path ? ` / ${path}` : ''}
-            </Text>
-          </View>
-          {canSelect ? (
-            <Pressable
-              onPress={() => (selecting ? endSelection() : setSelecting(true))}
-              disabled={mutating}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityState={{ selected: selecting }}
-              accessibilityLabel={selecting ? 'Stop selecting files' : 'Select files'}
-              style={styles.bookmarkRemove}
-            >
-              <Icon
-                name={selecting ? 'x-square' : 'check-square'}
-                size={19}
-                color={selecting ? theme.colors.primary : theme.colors.textMuted}
-              />
-            </Pressable>
-          ) : null}
-          {selecting && selected.length > 0 ? (
-            <>
-              {root !== 'worktree' ? (
-                <Pressable
-                  onPress={moveSelectedKnowledge}
+        {!preview ? (
+          selecting ? (
+            <FileSheetHeader
+              leading={
+                <HeaderTextButton
+                  label={allSelected ? 'Select None' : 'Select All'}
                   disabled={mutating}
-                  hitSlop={8}
-                  accessibilityRole="button"
-                  accessibilityLabel={root === 'knowledge' ? 'Move to Shared' : 'Move to Project'}
-                  style={styles.bookmarkRemove}
-                >
-                  <Icon name="repeat" size={18} color={theme.colors.textMuted} />
-                </Pressable>
-              ) : null}
-              <Pressable
-                onPress={deleteSelectedFiles}
-                disabled={mutating}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="Delete selected files"
-                style={styles.bookmarkRemove}
-              >
-                <Icon name="trash-2" size={18} color={theme.colors.tone.danger} />
-              </Pressable>
-            </>
-          ) : null}
-          <Pressable
-            onPress={driveActive ? uploadDriveFiles : uploadFiles}
-            disabled={uploading || mutating || error !== null || (driveActive && driveUnconfigured)}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={
-              driveActive ? 'Upload files to Google Drive' : `Upload files to /${path}`
-            }
-            style={styles.bookmarkRemove}
-          >
-            {uploading ? (
-              <ActivityIndicator size="small" color={theme.colors.textMuted} />
-            ) : (
-              // `file-plus`, not `upload`: Feather's upload glyph is a tray with an
-              // arrow out of it, near-identical at this size to the per-row `share`
-              // glyph right below it — two different actions reading as one icon.
-              <Icon name="file-plus" size={19} color={theme.colors.textMuted} />
-            )}
-          </Pressable>
-          <Pressable
-            onPress={onClose}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Close files"
-            style={styles.bookmarkRemove}
-          >
-            <Icon name="x" size={20} color={theme.colors.textMuted} />
-          </Pressable>
-        </View>
+                  onPress={() => {
+                    modifierClick.current = { anchor: null, range: [] };
+                    setSelected(allSelected ? [] : selectableEntries.map((entry) => entry.path));
+                  }}
+                />
+              }
+              title={selected.length > 0 ? selectionSummary(selected.length) : 'Select files'}
+              trailing={
+                // Text, not a glyph: the old toggle turned into an X beside the X
+                // that closes the sheet, and nobody could tell which ended what.
+                <HeaderTextButton
+                  label="Done"
+                  emphasis="strong"
+                  disabled={mutating}
+                  accessibilityLabel="Done selecting files"
+                  onPress={endSelection}
+                />
+              }
+            />
+          ) : (
+            <FileSheetHeader
+              title="Files"
+              trailing={
+                <>
+                  {/* One way in to adding, as in every file app's toolbar. Selecting
+                      is not up here: a long press on a row starts it, as does
+                      "Select" in the row's menu, so the bar stays two glyphs. */}
+                  <HeaderIconButton
+                    icon={driveActive ? 'upload' : 'plus'}
+                    tint
+                    busy={uploading}
+                    disabled={
+                      mutating ||
+                      error !== null ||
+                      (driveActive && (driveUnconfigured || !driveCanWrite))
+                    }
+                    accessibilityLabel={
+                      driveActive
+                        ? driveCanWrite
+                          ? 'Upload files to Google Drive'
+                          : 'Google Drive is read-only'
+                        : 'New or upload files'
+                    }
+                    onPress={driveActive ? uploadDriveFiles : () => setAdding(true)}
+                  />
+                  <HeaderIconButton icon="x" accessibilityLabel="Close files" onPress={onClose} />
+                </>
+              }
+            />
+          )
+        ) : null}
         {!preview ? (
           <View style={styles.filesRootBar}>
             {(
               [
-                ['worktree', 'Files'],
-                ['knowledge', '📚 Project'],
-                ['shared', '📚 Shared'],
+                ['worktree', compactRootLabels ? 'Repo' : 'Repository'],
+                ['knowledge', compactRootLabels ? 'Project' : 'Project Knowledge'],
+                ['shared', compactRootLabels ? 'Global' : 'Global Knowledge'],
               ] as const
             ).map(([candidate, label]) => (
               <Pressable
@@ -5194,15 +5921,26 @@ function SessionFilesSheet({
                   setError(null);
                 }}
                 accessibilityRole="tab"
-                accessibilityState={{ selected: root === candidate }}
+                accessibilityState={{ selected: !driveActive && root === candidate }}
                 accessibilityLabel={label}
                 style={[
                   styles.filesRootButton,
-                  root === candidate ? styles.filesRootButtonActive : null,
+                  !driveActive && root === candidate ? styles.filesRootButtonActive : null,
                 ]}
               >
+                <Icon
+                  name={FILE_ROOT_ICON[candidate]}
+                  size={14}
+                  color={
+                    !driveActive && root === candidate ? theme.colors.text : theme.colors.textMuted
+                  }
+                />
                 <Text
-                  style={root === candidate ? styles.filesRootLabelActive : styles.filesRootLabel}
+                  style={
+                    !driveActive && root === candidate
+                      ? styles.filesRootLabelActive
+                      : styles.filesRootLabel
+                  }
                 >
                   {label}
                 </Text>
@@ -5225,6 +5963,11 @@ function SessionFilesSheet({
                 accessibilityLabel="Google Drive"
                 style={[styles.filesRootButton, driveActive ? styles.filesRootButtonActive : null]}
               >
+                <Icon
+                  name="hard-drive"
+                  size={14}
+                  color={driveActive ? theme.colors.text : theme.colors.textMuted}
+                />
                 <Text style={driveActive ? styles.filesRootLabelActive : styles.filesRootLabel}>
                   Google Drive
                 </Text>
@@ -5232,23 +5975,46 @@ function SessionFilesSheet({
             ) : null}
           </View>
         ) : null}
+        {preview ? null : driveActive ? (
+          drivePath.length > 1 ? (
+            <FileBreadcrumb
+              rootIcon="hard-drive"
+              rootLabel={drivePath[0]?.name ?? 'Google Drive'}
+              segments={drivePath.slice(1).map(({ id, name }) => ({ key: id, name }))}
+              disabled={mutating}
+              onNavigate={(index) => setDrivePath((current) => current.slice(0, index + 2))}
+            />
+          ) : null
+        ) : path ? (
+          // At the top of a tab the tab itself says where you are; a breadcrumb
+          // of nothing but the root would be a control with nowhere to go.
+          <FileBreadcrumb
+            rootIcon={FILE_ROOT_ICON[root]}
+            rootLabel={
+              root === 'worktree'
+                ? 'Repository'
+                : root === 'knowledge'
+                  ? 'Project Knowledge'
+                  : 'Global Knowledge'
+            }
+            segments={breadcrumbSegments(path).map((segment) => ({
+              key: segment.path,
+              name: segment.name,
+            }))}
+            disabled={mutating || selecting}
+            onNavigate={(index) => setPath(index < 0 ? '' : breadcrumbSegments(path)[index]!.path)}
+          />
+        ) : null}
         {driveActive ? (
           <ScrollView style={styles.filesList}>
-            {drivePath.length > 1 ? (
-              <Pressable
-                onPress={() => setDrivePath((current) => current.slice(0, -1))}
-                accessibilityRole="button"
-                accessibilityLabel="Back to parent folder"
-                style={({ pressed }) => [styles.fileRow, pressed ? styles.sheetRowPressed : null]}
-              >
-                <Icon name="corner-up-left" size={18} color={theme.colors.textMuted} />
-                <Text style={styles.sheetRowLabel}>..</Text>
-              </Pressable>
-            ) : null}
             {error ? <Text style={styles.sheetError}>{error}</Text> : null}
             {driveUnconfigured && projectId ? (
               <View style={styles.driveSetupNotice}>
-                <Text style={styles.sheetEmpty}>No Google Drive folder connected.</Text>
+                <Icon name="hard-drive" size={28} color={theme.colors.textFaint} />
+                <Text style={styles.emptyTitle}>No Google Drive folder</Text>
+                <Text style={styles.emptySubtitle}>
+                  Connect a folder in the project settings to use its documents in this project.
+                </Text>
                 <Pressable
                   onPress={() => {
                     onClose();
@@ -5257,10 +6023,14 @@ function SessionFilesSheet({
                       params: { id: projectId, section: 'drive' },
                     });
                   }}
-                  accessibilityRole="link"
+                  accessibilityRole="button"
                   accessibilityLabel="Open project settings to connect Google Drive"
+                  style={({ pressed }) => [
+                    styles.driveSetupButton,
+                    pressed ? styles.driveSetupButtonPressed : null,
+                  ]}
                 >
-                  <Text style={styles.driveSetupLink}>Open project settings</Text>
+                  <Text style={styles.driveSetupButtonLabel}>Connect a folder</Text>
                 </Pressable>
               </View>
             ) : loading ? (
@@ -5310,64 +6080,62 @@ function SessionFilesSheet({
           </ScrollView>
         ) : preview ? (
           <View style={styles.filesPreviewWrap}>
-            <View style={styles.filesPreviewHeader}>
-              <Pressable
-                onPress={() => {
-                  // Also drops a fetch still in flight, so leaving the preview can't
-                  // be undone a second later by a slow response.
-                  previewRequest.current += 1;
-                  setPreview(null);
-                  setPreviewLoading(false);
-                }}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="Back to file list"
-                style={styles.bookmarkRemove}
-              >
-                <Icon name="chevron-left" size={20} color={theme.colors.textMuted} />
-              </Pressable>
-              <Text style={styles.filesPreviewTitle} numberOfLines={1}>
-                {preview.path}
-              </Text>
-              {/* Chunked rendering means native text selection stops at each block, so
-                  drag-selecting the whole file no longer works — this copies the exact
-                  content the server returned, which is what select-all was for anyway. */}
-              <CopyButton value={preview.content} accessibilityLabel="Copy file contents" />
-              {Platform.OS !== 'web' ? (
-                <Pressable
-                  onPress={() => chooseExport(preview)}
-                  hitSlop={8}
-                  accessibilityRole="button"
-                  accessibilityLabel="Print or share as PDF"
-                  style={styles.bookmarkRemove}
-                >
-                  <Icon name="printer" size={18} color={theme.colors.textMuted} />
-                </Pressable>
-              ) : null}
-              <Pressable
-                onPress={() => openWith(preview.path)}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="Open file with another app"
-                style={styles.bookmarkRemove}
-              >
-                <Icon name="share" size={18} color={theme.colors.textMuted} />
-              </Pressable>
-            </View>
-            <FlatList
-              style={styles.filesPreview}
-              contentContainerStyle={styles.filesPreviewBody}
-              data={previewChunks}
-              keyExtractor={(_, index) => String(index)}
-              initialNumToRender={8}
-              maxToRenderPerBatch={8}
-              windowSize={7}
-              renderItem={({ item }) => (
-                <Text selectable style={styles.filesPreviewText}>
-                  {item}
-                </Text>
-              )}
-              ListEmptyComponent={<Text style={styles.sheetEmpty}>Empty file</Text>}
+            <FileSheetHeader
+              leading={
+                <HeaderIconButton
+                  icon="chevron-left"
+                  accessibilityLabel="Back to file list"
+                  onPress={closePreview}
+                />
+              }
+              title={fileNameFromPath(preview.path)}
+              subtitle={parentPath(preview.path) || null}
+              trailing={
+                <>
+                  {preview.editable && preview.version ? (
+                    <HeaderTextButton
+                      label="Edit"
+                      disabled={mutating}
+                      onPress={() => setEditing(preview)}
+                    />
+                  ) : null}
+                  <HeaderIconButton
+                    icon="more-horizontal"
+                    disabled={mutating}
+                    accessibilityLabel={`More actions for ${fileNameFromPath(preview.path)}`}
+                    onPress={() => setMenuFor({ path: preview.path, inPreview: true })}
+                  />
+                  <HeaderIconButton icon="x" accessibilityLabel="Close files" onPress={onClose} />
+                </>
+              }
+            />
+            <FileContentPreview
+              key={preview.path}
+              path={preview.path}
+              content={preview.content}
+              listStyle={styles.filesPreview}
+              bodyStyle={styles.filesPreviewBody}
+              textStyle={styles.filesPreviewText}
+              renderMarkdown={(item) =>
+                item.type === 'table' ? (
+                  <MarkdownTable header={item.header} rows={item.rows} />
+                ) : item.type === 'code' ? (
+                  <View style={styles.codeBlock}>
+                    {item.lang ? <Text style={styles.codeLang}>{item.lang}</Text> : null}
+                    <Text selectable style={styles.codeText}>
+                      {item.content}
+                    </Text>
+                  </View>
+                ) : (
+                  <MarkdownLine
+                    line={item.content}
+                    onOpenLocalFile={null}
+                    onOpenAppLink={null}
+                    sessionFileImageSource={null}
+                    onOpenImage={() => {}}
+                  />
+                )
+              }
             />
           </View>
         ) : previewLoading ? (
@@ -5396,14 +6164,6 @@ function SessionFilesSheet({
                 {/* A touch that turned into a scroll never reaches a press, so
                     the modifiers it reported have to be withdrawn here too. */}
                 <ScrollView style={styles.filesList} onScrollBeginDrag={forgetModifiers}>
-                  {path ? (
-                    <SessionFolderRow
-                      name=".."
-                      parent
-                      onPress={() => setPath(parentPath(path))}
-                      accessibilityLabel="Back to parent folder"
-                    />
-                  ) : null}
                   {entries.length === 0 ? (
                     <Text style={styles.sheetEmpty}>No files</Text>
                   ) : (
@@ -5423,7 +6183,7 @@ function SessionFilesSheet({
                           // Every row stays draggable while selecting: grabbing
                           // one outside the selection drags just that file, the
                           // same as Finder. `items` already encodes which.
-                          enabled
+                          enabled={!isDemoMode()}
                           items={dragItemsByPath.get(entry.path) ?? []}
                           authorization={authorization}
                           tlsPin={directTlsPin ?? ''}
@@ -5447,6 +6207,15 @@ function SessionFilesSheet({
                               onPress={() => {
                                 pressFileRow(entry);
                               }}
+                              // Not on iPad, where a long press is the lift that
+                              // starts a native drag (UIDragInteraction is off on
+                              // iPhone by default); both firing at ~500 ms would
+                              // race. There the row menu and ⌘-click remain.
+                              onLongPress={
+                                !selecting && selectable && !longPressDrags
+                                  ? () => startSelection(entry)
+                                  : undefined
+                              }
                               disabled={inert}
                               accessibilityRole={selecting ? 'checkbox' : 'button'}
                               accessibilityLabel={entry.name}
@@ -5479,20 +6248,25 @@ function SessionFilesSheet({
                               {selecting ? (
                                 <View style={styles.fileDownload}>
                                   <Icon
-                                    name={picked ? 'check-square' : 'square'}
+                                    name={picked ? 'check-circle' : 'circle'}
                                     size={18}
                                     color={picked ? theme.colors.primary : theme.colors.textFaint}
                                   />
                                 </View>
                               ) : entry.kind === 'file' ? (
                                 <Pressable
-                                  onPress={() => openWith(entry.path)}
+                                  onPress={() => setMenuFor({ path: entry.path, inPreview: false })}
+                                  disabled={mutating}
                                   hitSlop={8}
                                   accessibilityRole="button"
-                                  accessibilityLabel={`Open ${entry.name} with another app`}
+                                  accessibilityLabel={`More actions for ${entry.name}`}
                                   style={styles.fileDownload}
                                 >
-                                  <Icon name="share" size={17} color={theme.colors.textMuted} />
+                                  <Icon
+                                    name="more-horizontal"
+                                    size={18}
+                                    color={theme.colors.textMuted}
+                                  />
                                 </Pressable>
                               ) : (
                                 <Icon
@@ -5516,8 +6290,109 @@ function SessionFilesSheet({
                 ) : null}
               </DropZone>
             )}
+            {selecting ? (
+              <View style={styles.filesSelectionBar}>
+                {selected.length === 0 ? (
+                  <Text style={styles.filesPath}>Tap files to select them</Text>
+                ) : (
+                  <View />
+                )}
+                <HeaderTextButton
+                  label="Delete…"
+                  emphasis="destructive"
+                  disabled={mutating || selected.length === 0}
+                  accessibilityLabel="Delete selected files"
+                  onPress={deleteSelectedFiles}
+                />
+              </View>
+            ) : null}
           </>
         )}
+        {menuFor ? (
+          <FileActionMenu
+            title={fileNameFromPath(menuFor.path)}
+            actions={menuActions}
+            onDismiss={() => setMenuFor(null)}
+          />
+        ) : null}
+        {adding ? (
+          <FileActionMenu
+            title="Add files"
+            onDismiss={() => setAdding(false)}
+            actions={[
+              {
+                key: 'create',
+                label: 'New Markdown file…',
+                icon: 'file-plus',
+                onPress: () => setCreating(true),
+              },
+              { key: 'upload', label: 'Upload files…', icon: 'upload', onPress: uploadFiles },
+            ]}
+          />
+        ) : null}
+        {creating ? (
+          <FileNameDialog
+            title="New Markdown file"
+            initialName="note.md"
+            allowUnchanged
+            confirmLabel="Create"
+            validate={(name) =>
+              renameProblem(
+                name,
+                '',
+                entries.map((entry) => entry.name),
+              ) ?? (!/\.md$/i.test(name) ? 'Use a .md extension.' : null)
+            }
+            onCancel={() => setCreating(false)}
+            onSubmit={async (name) => {
+              setCreating(false);
+              setEditing({
+                path: [path, name].filter(Boolean).join('/'),
+                content: '',
+                size: 0,
+                editable: true,
+              });
+            }}
+          />
+        ) : null}
+        {editing ? (
+          <FileTextEditor
+            file={editing}
+            onCancel={() => setEditing(null)}
+            onRead={(filePath) => client.getSessionFileContent(sessionId, filePath, root)}
+            onHistory={() => client.listSessionFileVersions(sessionId, root, editing.path)}
+            onVersion={(version) =>
+              client.readSessionFileVersion(sessionId, root, editing.path, version)
+            }
+            onSave={(filePath, content, version) =>
+              client.saveSessionFileContent(sessionId, root, filePath, content, version)
+            }
+            onSaved={(file) => {
+              if (file.warning) Alert.alert('File saved', file.warning);
+              setEditing(null);
+              setPreview(file);
+              setPath(parentPath(file.path));
+              setReloadKey((key) => key + 1);
+            }}
+          />
+        ) : null}
+        {renaming ? (
+          <FileNameDialog
+            title="Rename file"
+            subtitle={parentPath(renaming) ? `in /${parentPath(renaming)}` : undefined}
+            initialName={fileNameFromPath(renaming)}
+            confirmLabel="Rename"
+            validate={(name) =>
+              renameProblem(
+                name,
+                fileNameFromPath(renaming),
+                entries.filter((entry) => entry.path !== renaming).map((entry) => entry.name),
+              )
+            }
+            onSubmit={(name) => renameFile(renaming, name)}
+            onCancel={() => setRenaming(null)}
+          />
+        ) : null}
       </Animated.View>
     </Modal>
   );
@@ -5548,6 +6423,25 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
   if (item.kind === 'todo-group')
     return <TodoGroup key={item.tools[0]?.id ?? item.id} tools={item.tools} />;
   if (item.kind === 'delegated-agent') return <DelegatedAgent key={item.id} row={item} />;
+  // Keyed by the snapshot and its open state, so a cell recycled from (or into) the
+  // open checklist does not keep the other's height or toggled state.
+  if (item.kind === 'plan')
+    return (
+      <PlanCard
+        key={`${item.message.id}:${String(item.latest)}`}
+        plan={item.plan}
+        latest={item.latest}
+      />
+    );
+  if (item.kind === 'plan-proposal')
+    return (
+      <PlanProposalCard
+        key={`${item.message.id}:${String(item.latest)}`}
+        markdown={item.markdown}
+        latest={item.latest}
+        revision={planProposalRevision(item.message.tool)}
+      />
+    );
   switch (item.message.kind) {
     case 'user-text':
       return <UserBubble message={item.message} />;
@@ -5564,8 +6458,8 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
       // the chat list order. Once the operator answers, a newer row makes it no longer
       // latest and the chips freeze (#97: stale chips deactivate).
       return <ChoicesRow message={item.message} isLatest={isLatest} />;
-    case 'agent-loop-proposal':
-      return <AgentLoopProposalRow message={item.message} isLatest={isLatest} />;
+    case 'automation-proposal':
+      return <AutomationProposalRow message={item.message} />;
   }
   return null;
 }
@@ -5744,11 +6638,13 @@ function CopyButton({
   label,
   style,
   accessibilityLabel,
+  iconSize = 15,
 }: {
   value: string;
   label?: string;
   style?: StyleProp<ViewStyle>;
   accessibilityLabel: string;
+  iconSize?: number;
 }) {
   const { theme } = useUnistyles();
   const [copied, setCopied] = useState(false);
@@ -5768,7 +6664,7 @@ function CopyButton({
       accessibilityLabel={accessibilityLabel}
       style={({ pressed }) => [styles.copyBtn, style, pressed ? styles.copyBtnPressed : null]}
     >
-      <Icon name={copied ? 'check' : 'copy'} size={15} color={tint} />
+      <Icon name={copied ? 'check' : 'copy'} size={iconSize} color={tint} />
       {label ? (
         <Text style={[styles.copyLabel, { color: tint }]}>{copied ? 'Copied' : label}</Text>
       ) : null}
@@ -5784,8 +6680,9 @@ function CopyButton({
 // gestures don't fight. (Text long-press selection is the per-block fallback until
 // contiguous-prose selection lands.)
 // `messageId` is present only for a bookmarkable top-level message (see renderRow /
-// AgentBlock); when set, the tap-reveal row gains a bookmark toggle beside Copy and a
-// persistent dog-ear marks the message while scrolling.
+// AgentBlock); when set, the tap-reveal row gains a "…" button beside Copy that opens
+// the bookmark / Project Knowledge actions, and a persistent dog-ear marks a
+// bookmarked message while scrolling.
 function AgentMarkdown({
   text,
   messageId,
@@ -5799,6 +6696,7 @@ function AgentMarkdown({
   const searchHighlightQuery = useContext(SearchHighlightContext);
   const blocks = useMemo(() => splitRichText(text), [text]);
   const openSessionFile = useContext(SessionFileOpenContext);
+  const openAppLink = useContext(AppLinkOpenContext);
   const sessionFileImageSource = useContext(SessionFileImageSourceContext);
   const [viewer, setViewer] = useState<{ source: ImageSource; label: string } | null>(null);
   const [imagePathViewer, setImagePathViewer] = useState<string | null>(null);
@@ -5835,168 +6733,267 @@ function AgentMarkdown({
   const [knowledgeSavedFor, setKnowledgeSavedFor] = useState<string>();
   const knowledgeSaved = messageId != null && knowledgeSavedFor === messageId;
   const bookmarked = messageId != null && bookmarks?.isBookmarked(messageId) === true;
+  const hasMoreActions = messageId != null && (bookmarks !== null || knowledge !== null);
+  // The "…" menu opens at the button that was tapped, so it's obvious which message
+  // it acts on. Keyed by message (like knowledgeSavedFor) so a recycled list cell
+  // never opens it for a different message.
+  const moreRef = useRef<View>(null);
+  const [actionsMenu, setActionsMenu] = useState<{ messageId: string; anchor: MenuAnchor }>();
+  const actionsOpen = messageId != null && actionsMenu?.messageId === messageId;
+  const closeActions = useCallback(() => {
+    setActionsMenu(undefined);
+    setShowCopy(false);
+  }, []);
+  const showActions = useCallback(
+    (anchor: MenuAnchor) => {
+      if (messageId == null) return;
+      // Keep the message highlighted with its action row while the menu is open.
+      if (hideTimer.current) clearTimeout(hideTimer.current);
+      setActionsMenu({ messageId, anchor });
+    },
+    [messageId],
+  );
+  // Measured after any keyboard dismissal settles (the Modal would dismiss it and
+  // leave the menu at a stale position), same as the composer's attachment menu.
+  const measureActions = useAttachmentMenuAnchor(moreRef, showActions);
+  // The measurement waits for any keyboard dismissal, so hold the action row (and
+  // the button being measured) for the whole press, then give the auto-hide a fresh
+  // window — a cancelled press hides it as usual, a completed one is cleared again
+  // by showActions.
+  const holdActionRow = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+  }, []);
+  const releaseActionRow = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    hideTimer.current = setTimeout(() => setShowCopy(false), 4000);
+  }, []);
   return (
-    <Pressable
-      onPress={toggleCopy}
-      // Not an a11y element itself: keep the prose readable as individual nodes
-      // rather than collapsing the whole message into one button. Copy is exposed
-      // via the CopyButton's own a11y (and the reveal gesture is a sighted-user
-      // convenience). VoiceOver users get per-block selection + the code badges.
-      accessible={false}
-    >
-      <View style={[styles.agentBlock, showCopy && styles.agentBlockActive]}>
-        {blocks.map((block, i) =>
-          block.type === 'code' ? (
-            <View key={i} style={styles.codeBlock}>
-              {block.lang ? <Text style={styles.codeLang}>{block.lang}</Text> : null}
-              {searchHighlightQuery ? (
-                <Text style={styles.codeText} selectable>
-                  <HighlightedSearchText text={block.content} />
-                </Text>
-              ) : (
-                <UITextView style={styles.codeText} selectable uiTextView>
-                  {block.content}
-                </UITextView>
-              )}
-              <CopyButton
-                value={block.content}
-                accessibilityLabel="Copy code block"
-                style={styles.codeCopyBtn}
+    <>
+      <Pressable
+        onPress={toggleCopy}
+        // Not an a11y element itself: keep the prose readable as individual nodes
+        // rather than collapsing the whole message into one button. Copy is exposed
+        // via the CopyButton's own a11y (and the reveal gesture is a sighted-user
+        // convenience). VoiceOver users get per-block selection + the code badges.
+        accessible={false}
+      >
+        <View style={[styles.agentBlock, (showCopy || actionsOpen) && styles.agentBlockActive]}>
+          {blocks.map((block, i) =>
+            block.type === 'code' ? (
+              <View key={i} style={styles.codeBlock}>
+                {block.lang ? <Text style={styles.codeLang}>{block.lang}</Text> : null}
+                {searchHighlightQuery ? (
+                  <Text style={styles.codeText} selectable>
+                    <HighlightedSearchText text={block.content} />
+                  </Text>
+                ) : (
+                  <UITextView style={styles.codeText} selectable uiTextView>
+                    {block.content}
+                  </UITextView>
+                )}
+                <CopyButton
+                  value={block.content}
+                  accessibilityLabel="Copy code block"
+                  style={styles.codeCopyBtn}
+                />
+              </View>
+            ) : (
+              <MarkdownText
+                key={i}
+                content={block.content}
+                onOpenLocalFile={openLocalFile}
+                onOpenAppLink={openAppLink}
+                sessionFileImageSource={sessionFileImageSource}
+                onOpenImage={(source, label) => setViewer({ source, label })}
               />
-            </View>
-          ) : (
-            <MarkdownText
-              key={i}
-              content={block.content}
-              onOpenLocalFile={openLocalFile}
-              sessionFileImageSource={sessionFileImageSource}
-              onOpenImage={(source, label) => setViewer({ source, label })}
+            ),
+          )}
+          {viewer !== null ? (
+            <ImageSourceViewer
+              source={viewer.source}
+              label={viewer.label}
+              onClose={() => setViewer(null)}
             />
-          ),
-        )}
-        {viewer !== null ? (
-          <ImageSourceViewer
-            source={viewer.source}
-            label={viewer.label}
-            onClose={() => setViewer(null)}
-          />
-        ) : null}
-        {imagePathViewer !== null && sessionFileImageSource !== null ? (
-          <SessionFileImageViewer
-            path={imagePathViewer}
-            sessionFileImageSource={sessionFileImageSource}
-            onClose={() => setImagePathViewer(null)}
-            onUnavailable={() => {
-              setImagePathViewer(null);
-              openSessionFile?.(imagePathViewer);
-            }}
-          />
-        ) : null}
-        {/* Persistent dog-ear: shows a bookmarked message is marked even at rest (no
+          ) : null}
+          {imagePathViewer !== null && sessionFileImageSource !== null ? (
+            <SessionFileImageViewer
+              path={imagePathViewer}
+              sessionFileImageSource={sessionFileImageSource}
+              onClose={() => setImagePathViewer(null)}
+              onUnavailable={() => {
+                setImagePathViewer(null);
+                openSessionFile?.(imagePathViewer);
+              }}
+            />
+          ) : null}
+          {/* Persistent dog-ear: shows a bookmarked message is marked even at rest (no
             reveal needed), so it's spottable while scrolling — the Kindle affordance.
             Non-interactive so it never fights the tap-to-reveal / long-press-select
-            gestures; toggling off happens via the reveal row or the header sheet. */}
-        {bookmarked && !showCopy ? (
-          <View style={styles.msgBookmarkFlag} pointerEvents="none">
-            <Icon name="bookmark" size={13} color={theme.colors.primary} />
-          </View>
-        ) : null}
-        {showCopy ? (
-          <View style={styles.msgActions}>
-            {messageId != null && bookmarks ? (
-              <BookmarkButton
-                bookmarked={bookmarked}
-                // Persist a short preview + timestamp so the jump-list can show this
-                // bookmark even when its message is scrolled out of the loaded window.
-                onToggle={() =>
-                  bookmarks.toggle(messageId, { preview: bookmarkPreview(text), createdAt })
-                }
+            gestures; toggling off happens via the "…" sheet or the header sheet. */}
+          {bookmarked && !showCopy && !actionsOpen ? (
+            <View style={styles.msgBookmarkFlag} pointerEvents="none">
+              <Icon name="bookmark" size={13} color={theme.colors.primary} />
+            </View>
+          ) : null}
+          {showCopy || actionsOpen ? (
+            <View style={styles.msgActions}>
+              {/* Copy stays one tap away; everything else lives behind "…" in a menu
+                that names each action, since bare icons (an open book for Project
+                Knowledge) didn't explain themselves. */}
+              {hasMoreActions ? (
+                <Pressable
+                  ref={moreRef}
+                  onPressIn={holdActionRow}
+                  onPressOut={releaseActionRow}
+                  onPress={measureActions}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="More message actions"
+                  style={({ pressed }) => [
+                    styles.copyBtn,
+                    styles.msgActionBtn,
+                    pressed ? styles.copyBtnPressed : null,
+                  ]}
+                >
+                  <Icon name="more-horizontal" size={18} color={theme.colors.text} />
+                </Pressable>
+              ) : null}
+              <CopyButton
+                value={text}
+                accessibilityLabel="Copy message"
+                iconSize={18}
+                style={styles.msgActionBtn}
               />
-            ) : null}
-            {messageId != null && knowledge ? (
-              <Pressable
-                onPress={() => {
-                  void knowledge
-                    .save(messageId, text)
-                    .then(() => setKnowledgeSavedFor(messageId))
-                    .catch((error: unknown) =>
-                      Alert.alert(
-                        'Could not add to Project Knowledge',
-                        error instanceof Error ? error.message : String(error),
-                      ),
-                    );
-                }}
-                disabled={knowledgeSaved}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel={
-                  knowledgeSaved ? 'Added to Project Knowledge' : 'Add to Project Knowledge'
+            </View>
+          ) : null}
+        </View>
+      </Pressable>
+      {/* Outside the message Pressable: the Modal's content stays in this React tree,
+        so taps on the menu would otherwise bubble into the message's tap-to-reveal. */}
+      {actionsOpen && actionsMenu && messageId != null ? (
+        <MessageActionsMenu
+          anchor={actionsMenu.anchor}
+          onClose={closeActions}
+          onCopy={() => {
+            void Clipboard.setStringAsync(text);
+            closeActions();
+          }}
+          knowledge={
+            knowledge
+              ? {
+                  saved: knowledgeSaved,
+                  save: () =>
+                    knowledge.save(messageId, text).then(() => setKnowledgeSavedFor(messageId)),
                 }
-                style={({ pressed }) => [
-                  styles.copyBtn,
-                  styles.msgActionBtn,
-                  pressed ? styles.copyBtnPressed : null,
-                ]}
-              >
-                <Icon
-                  name={knowledgeSaved ? 'check' : 'book-open'}
-                  size={15}
-                  color={knowledgeSaved ? theme.colors.primary : theme.colors.textMuted}
-                />
-              </Pressable>
-            ) : null}
-            <CopyButton
-              value={text}
-              accessibilityLabel="Copy message"
-              style={styles.msgActionBtn}
-            />
-          </View>
-        ) : null}
-      </View>
-    </Pressable>
+              : null
+          }
+          bookmark={
+            bookmarks
+              ? {
+                  bookmarked,
+                  toggle: () => {
+                    // Persist a short preview + timestamp so the jump-list can show
+                    // this bookmark even when its message is scrolled out of the
+                    // loaded window.
+                    bookmarks.toggle(messageId, { preview: bookmarkPreview(text), createdAt });
+                    closeActions();
+                  },
+                }
+              : null
+          }
+        />
+      ) : null}
+    </>
   );
 }
 
-// The bookmark toggle in a message's tap-revealed action row — the same corner-chip
-// language as the Copy button next to it. Filled + tinted once bookmarked, so its
-// state reads at a glance; tapping toggles it (and updates the header count + the
-// dog-ear). Icon-only to match the Copy chip.
-function BookmarkButton({ bookmarked, onToggle }: { bookmarked: boolean; onToggle: () => void }) {
-  const { theme } = useUnistyles();
+type MenuAnchor = AttachAnchor;
+
+// The "…" menu on an agent message: a small card pinned to the button, right-aligned
+// with it, below when there's room and above otherwise — the message it belongs to
+// stays visible and highlighted. Each action has a name and a one-line explanation.
+// Saving to Project Knowledge keeps the menu open to show its progress and result;
+// the other actions close it.
+function MessageActionsMenu({
+  anchor,
+  onClose,
+  onCopy,
+  knowledge,
+  bookmark,
+}: {
+  anchor: MenuAnchor;
+  onClose: () => void;
+  onCopy: () => void;
+  knowledge: { saved: boolean; save: () => Promise<void> } | null;
+  bookmark: { bookmarked: boolean; toggle: () => void } | null;
+}) {
+  const [saving, setSaving] = useState(false);
+  const saveKnowledge = (): void => {
+    if (!knowledge || knowledge.saved || saving) return;
+    setSaving(true);
+    knowledge
+      .save()
+      .catch((error: unknown) =>
+        Alert.alert(
+          'Could not add to Project Knowledge',
+          error instanceof Error ? error.message : String(error),
+        ),
+      )
+      .finally(() => setSaving(false));
+  };
   return (
-    <Pressable
-      onPress={onToggle}
-      hitSlop={8}
-      accessibilityRole="button"
-      accessibilityLabel={bookmarked ? 'Remove bookmark' : 'Bookmark this message'}
-      style={({ pressed }) => [
-        styles.copyBtn,
-        styles.msgActionBtn,
-        pressed ? styles.copyBtnPressed : null,
+    <ActionMenu
+      anchor={anchor}
+      label="Message actions"
+      onClose={onClose}
+      items={[
+        { icon: 'copy', title: 'Copy text', subtitle: 'Copy the whole message', onPress: onCopy },
+        ...(knowledge
+          ? [
+              {
+                icon: knowledge.saved ? ('check' as const) : KNOWLEDGE_ICON,
+                title: knowledge.saved ? 'Added to Project Knowledge' : 'Save to Project Knowledge',
+                subtitle: 'Keep it as a project insight',
+                busy: saving,
+                disabled: knowledge.saved,
+                onPress: saveKnowledge,
+              },
+            ]
+          : []),
+        ...(bookmark
+          ? [
+              {
+                icon: 'bookmark' as const,
+                title: bookmark.bookmarked ? 'Remove bookmark' : 'Bookmark',
+                subtitle: 'Find it again via the header',
+                onPress: bookmark.toggle,
+              },
+            ]
+          : []),
       ]}
-    >
-      <Icon
-        name="bookmark"
-        size={15}
-        color={bookmarked ? theme.colors.primary : theme.colors.textMuted}
-      />
-    </Pressable>
+    />
   );
 }
 
 function MarkdownText({
   content,
   onOpenLocalFile,
+  onOpenAppLink,
   sessionFileImageSource,
   onOpenImage,
 }: {
   content: string;
   onOpenLocalFile: OpenLocalFile | null;
+  onOpenAppLink: OpenAppLink | null;
   sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
   onOpenImage: (source: ImageSource, label: string) => void;
 }) {
+  const finishMarkdownWork = beginRenderWork(
+    'markdown-body',
+    useContext(TranscriptTimingContext) ?? '',
+  );
   const blocks = useMemo(() => parseMarkdownBlocks(content), [content]);
-  return (
+  const rendered = (
     <View>
       {blocks.map((block, i) =>
         block.type === 'table' ? (
@@ -6007,6 +7004,7 @@ function MarkdownText({
               key={`${i}-${j}`}
               line={line}
               onOpenLocalFile={onOpenLocalFile}
+              onOpenAppLink={onOpenAppLink}
               sessionFileImageSource={sessionFileImageSource}
               onOpenImage={onOpenImage}
             />
@@ -6015,6 +7013,8 @@ function MarkdownText({
       )}
     </View>
   );
+  finishMarkdownWork();
+  return rendered;
 }
 
 // A markdown table (GitHub-flavored: a header row, a `|---|` separator, body
@@ -6028,7 +7028,7 @@ function MarkdownTable({ header, rows }: { header: string[]; rows: string[][] })
         {header.map((cell, i) => (
           <View key={i} style={styles.tableCell}>
             <SelectableMarkdownText textStyle={[styles.agentText, styles.tableHeaderText]}>
-              <Inline text={cell} onOpenLocalFile={null} />
+              <Inline text={cell} onOpenLocalFile={null} onOpenAppLink={null} />
             </SelectableMarkdownText>
           </View>
         ))}
@@ -6041,7 +7041,7 @@ function MarkdownTable({ header, rows }: { header: string[]; rows: string[][] })
           {row.map((cell, ci) => (
             <View key={ci} style={styles.tableCell}>
               <SelectableMarkdownText textStyle={styles.agentText}>
-                <Inline text={cell} onOpenLocalFile={null} />
+                <Inline text={cell} onOpenLocalFile={null} onOpenAppLink={null} />
               </SelectableMarkdownText>
             </View>
           ))}
@@ -6076,11 +7076,13 @@ function SelectableMarkdownText({
 function MarkdownLine({
   line,
   onOpenLocalFile,
+  onOpenAppLink,
   sessionFileImageSource,
   onOpenImage,
 }: {
   line: string;
   onOpenLocalFile: OpenLocalFile | null;
+  onOpenAppLink: OpenAppLink | null;
   sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
   onOpenImage: (source: ImageSource, label: string) => void;
 }) {
@@ -6089,7 +7091,11 @@ function MarkdownLine({
   if (heading) {
     return (
       <SelectableMarkdownText textStyle={[styles.agentText, styles.mdHeading]}>
-        <Inline text={heading[2] ?? ''} onOpenLocalFile={onOpenLocalFile} />
+        <Inline
+          text={heading[2] ?? ''}
+          onOpenLocalFile={onOpenLocalFile}
+          onOpenAppLink={onOpenAppLink}
+        />
       </SelectableMarkdownText>
     );
   }
@@ -6100,7 +7106,11 @@ function MarkdownLine({
         <Text style={styles.mdBullet}>•</Text>
         <View style={styles.mdTextSlot}>
           <SelectableMarkdownText textStyle={styles.agentText}>
-            <Inline text={bullet[1] ?? ''} onOpenLocalFile={onOpenLocalFile} />
+            <Inline
+              text={bullet[1] ?? ''}
+              onOpenLocalFile={onOpenLocalFile}
+              onOpenAppLink={onOpenAppLink}
+            />
           </SelectableMarkdownText>
           <LocalImageLinks
             links={imageLinks}
@@ -6118,7 +7128,11 @@ function MarkdownLine({
         <Text style={styles.mdBullet}>{ordered[1]}.</Text>
         <View style={styles.mdTextSlot}>
           <SelectableMarkdownText textStyle={styles.agentText}>
-            <Inline text={ordered[2] ?? ''} onOpenLocalFile={onOpenLocalFile} />
+            <Inline
+              text={ordered[2] ?? ''}
+              onOpenLocalFile={onOpenLocalFile}
+              onOpenAppLink={onOpenAppLink}
+            />
           </SelectableMarkdownText>
           <LocalImageLinks
             links={imageLinks}
@@ -6141,7 +7155,7 @@ function MarkdownLine({
   return (
     <View>
       <SelectableMarkdownText textStyle={styles.agentText}>
-        <Inline text={line} onOpenLocalFile={onOpenLocalFile} />
+        <Inline text={line} onOpenLocalFile={onOpenLocalFile} onOpenAppLink={onOpenAppLink} />
       </SelectableMarkdownText>
       <LocalImageLinks
         links={imageLinks}
@@ -6253,14 +7267,17 @@ function SessionFileImageViewer({
 }
 
 // Render inline **bold** / `code` / link spans (nested Text lays them out inline).
-// A link tap opens the URL in the system browser; selection still works via a
-// long-press on the surrounding selectable Text.
+// A link tap opens the URL in the system browser, a `verity://` link opens the
+// whitelisted screen or sheet in the app; selection still works via a long-press
+// on the surrounding selectable Text.
 function Inline({
   text,
   onOpenLocalFile,
+  onOpenAppLink,
 }: {
   text: string;
   onOpenLocalFile: OpenLocalFile | null;
+  onOpenAppLink: OpenAppLink | null;
 }) {
   const { theme } = useUnistyles();
   return (
@@ -6281,25 +7298,32 @@ function Inline({
           );
         }
         if (span.t === 'link') {
-          const local = span.external ? null : sessionFileTargetFromLocalLink(span.url);
+          const appLink = span.external ? null : parseAppLink(span.url);
+          const openApp =
+            appLink !== null && onOpenAppLink !== null ? onOpenAppLink(appLink) : null;
+          const local =
+            span.external || appLink !== null ? null : sessionFileTargetFromLocalLink(span.url);
           const canOpenLocal = local !== null && onOpenLocalFile !== null;
+          const asLink = span.external || openApp !== null;
           return (
             <Text
               key={i}
               style={[
-                span.external ? styles.mdLink : styles.mdReference,
-                { color: span.external ? theme.colors.primary : theme.colors.accent },
+                asLink ? styles.mdLink : styles.mdReference,
+                { color: asLink ? theme.colors.primary : theme.colors.accent },
               ]}
               // openURL rejects only if no handler can open it (no browser); swallow
               // so it never surfaces as an unhandled rejection (only http(s) reach here).
               onPress={
                 span.external
                   ? () => void Linking.openURL(span.url).catch(() => undefined)
-                  : canOpenLocal
-                    ? () => onOpenLocalFile(local.path, local.root)
-                    : undefined
+                  : openApp !== null
+                    ? openApp
+                    : canOpenLocal
+                      ? () => onOpenLocalFile(local.path, local.root)
+                      : undefined
               }
-              accessibilityRole={span.external || canOpenLocal ? 'link' : undefined}
+              accessibilityRole={asLink || canOpenLocal ? 'link' : undefined}
             >
               <HighlightedSearchText text={span.text} />
             </Text>
@@ -6346,7 +7370,7 @@ function ThinkingBlock({ text }: { text: string }) {
 // Images a tool returned (e.g. a Read of a PNG, #115) render inline — they ARE
 // the payload the operator wants to see, not hidden behind a tap. Shared by the
 // single-tool ToolCard and the collapsed ToolGroup so a Read that happens to sit
-// next to another tool call never buries its image behind the group's "·N" line.
+// next to another tool call never buries its image behind the group's "+N more" line.
 // The inline slot is only a preview though (a fixed-height, letterboxed strip), so
 // a tap opens the image in the zoomable full-screen lightbox — a floor plan or a
 // screenshot is unreadable at strip size. The Pressable also swallows the tap so it
@@ -6398,6 +7422,18 @@ function ToolCard({ message }: { message: ToolCallMessage }) {
   const skillBody = message.tool.skillBody;
   const running = message.tool.name === 'Skill' && message.tool.state === 'running';
   const expandable = Boolean(view.subtitle) || Boolean(view.preview) || Boolean(skillBody);
+  if (
+    planningToolName(message.tool.name) === START_PLANNING_TOOL &&
+    message.tool.state === 'completed'
+  )
+    return (
+      <View style={styles.eventRow}>
+        <Icon name="map" size={14} color={theme.colors.textMuted} />
+        <Text style={styles.eventDetail}>
+          Planning started · nothing changes until you approve a plan
+        </Text>
+      </View>
+    );
   return (
     <Pressable
       style={styles.toolCard}
@@ -6443,9 +7479,17 @@ function ToolCard({ message }: { message: ToolCallMessage }) {
   );
 }
 
+// The collapsed line already shows one call (the latest), so the count names the
+// hidden rest: "+9 more" for a run of ten.
+function ToolGroupCount({ count }: { count: number }) {
+  // A todo run can hold a single update — nothing is hidden then.
+  if (count < 2) return null;
+  return <Text style={styles.toolGroupCountText}>{`+${String(count - 1)} more`}</Text>;
+}
+
 // A run of consecutive tool calls. One tool → the plain line. Several → a single
 // collapsed line showing the LATEST tool (the "currently running" command as it
-// streams in) plus a quiet "·N" count; tap to expand the whole run as individual
+// streams in) plus a quiet "+N more" count; tap to expand the whole run as individual
 // lines.
 function ToolGroup({ tools }: { tools: ToolCallMessage[] }) {
   const { theme } = useUnistyles();
@@ -6473,7 +7517,7 @@ function ToolGroup({ tools }: { tools: ToolCallMessage[] }) {
           <Text style={styles.toolHeadline} numberOfLines={1}>
             {view.headline}
           </Text>
-          <Text style={styles.toolGroupCountText}>{`·${String(tools.length)}`}</Text>
+          <ToolGroupCount count={tools.length} />
           <Icon
             name={expanded ? 'chevron-down' : 'chevron-right'}
             size={16}
@@ -6573,7 +7617,7 @@ function TodoGroup({ tools }: { tools: ToolCallMessage[] }) {
           <Text style={styles.toolHeadline} numberOfLines={1}>
             {view.headline}
           </Text>
-          <Text style={styles.toolGroupCountText}>{`·${String(tools.length)}`}</Text>
+          <ToolGroupCount count={tools.length} />
           <Icon
             name={expanded ? 'chevron-down' : 'chevron-right'}
             size={16}
@@ -6592,10 +7636,170 @@ function TodoGroup({ tools }: { tools: ToolCallMessage[] }) {
   );
 }
 
+const PLAN_MARK: Record<PlanView['entries'][number]['status'], string> = {
+  completed: '✓',
+  in_progress: '◐',
+  pending: '○',
+};
+
+// The agent's task list. The latest snapshot opens as a checklist; older ones are
+// history and show one line — progress plus the step then in hand — until tapped.
+function PlanCard({ plan, latest }: { plan: PlanView; latest: boolean }) {
+  const { theme } = useUnistyles();
+  const [expanded, setExpanded] = useState(latest);
+  const done = plan.completed === plan.entries.length;
+  const color = done ? theme.colors.tone.done : theme.colors.tone.active;
+  return (
+    <Pressable
+      style={styles.toolCard}
+      onPress={() => setExpanded((e) => !e)}
+      accessibilityRole="button"
+      accessibilityState={{ expanded }}
+      accessibilityLabel={`${planHeadline(plan)}${plan.current !== null ? `, now: ${plan.current}` : ''}`}
+    >
+      <View style={styles.toolHeader}>
+        <View style={[styles.toolDot, { backgroundColor: color }]} />
+        <Text style={styles.toolHeadline} numberOfLines={1}>
+          {planHeadline(plan)}
+          {!expanded && plan.current !== null ? ` · ${plan.current}` : ''}
+        </Text>
+        <Icon
+          name={expanded ? 'chevron-down' : 'chevron-right'}
+          size={16}
+          color={theme.colors.textFaint}
+        />
+      </View>
+      {expanded ? (
+        <View style={styles.toolDetail}>
+          {plan.entries.map((entry, index) => (
+            <View key={index} style={styles.planEntry}>
+              <Text
+                style={[
+                  styles.planMark,
+                  entry.status === 'in_progress' ? { color: theme.colors.tone.active } : null,
+                ]}
+              >
+                {PLAN_MARK[entry.status]}
+              </Text>
+              <Text
+                style={[
+                  styles.planEntryText,
+                  entry.status === 'completed' ? styles.planEntryDone : null,
+                  entry.status === 'in_progress' ? styles.planEntryCurrent : null,
+                ]}
+              >
+                {entry.content}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
+/** A plan the agent presented for the operator's decision. Only the newest one can
+ * be implemented; older versions collapse to one line, expandable. */
+function PlanProposalCard({
+  markdown: presentedMarkdown,
+  latest,
+  revision: presentedRevision,
+}: {
+  markdown: string;
+  latest: boolean;
+  revision?: number;
+}) {
+  const { theme } = useUnistyles();
+  const actions = useContext(SessionActionsContext);
+  const [expanded, setExpanded] = useState(false);
+  const planning = actions?.planning;
+  const { markdown } = planProposalDisplay(
+    { markdown: presentedMarkdown, revision: presentedRevision },
+    latest,
+    actions,
+  );
+  const decidable = latest && planning === 'active' && actions?.planningPlan !== null;
+  if (decidable) return null;
+  const title = planProposalHeadline(markdown);
+  const stepCount = planProposalContent(markdown).steps.length;
+  const status = !latest
+    ? 'Earlier version'
+    : planning === 'implemented'
+      ? 'Approved'
+      : planning === 'discarded'
+        ? 'Cancelled'
+        : null;
+  return (
+    <View
+      style={[
+        styles.planHistory,
+        latest && planning === 'implemented' ? styles.planHistoryDone : null,
+      ]}
+    >
+      <Pressable
+        style={styles.toolHeader}
+        onPress={() => setExpanded((e) => !e)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
+        accessibilityLabel={status === null ? title : `${title}, ${status}`}
+      >
+        <View
+          style={[
+            styles.toolDot,
+            {
+              backgroundColor: decidable
+                ? theme.colors.tone.attention
+                : planning === 'implemented' && latest
+                  ? theme.colors.tone.done
+                  : theme.colors.tone.idle,
+            },
+          ]}
+        />
+        <Text style={styles.permissionTitle} numberOfLines={1}>
+          Plan
+        </Text>
+        {status !== null ? <Text style={styles.planHistoryStatus}>{status}</Text> : null}
+        <Text style={styles.planCount}>{stepCount} steps</Text>
+        <Icon
+          name={expanded ? 'chevron-down' : 'chevron-right'}
+          size={16}
+          color={theme.colors.textFaint}
+        />
+      </Pressable>
+      {expanded ? (
+        <View style={styles.toolDetail}>
+          <MarkdownText
+            content={markdown}
+            onOpenLocalFile={null}
+            onOpenAppLink={null}
+            sessionFileImageSource={null}
+            onOpenImage={() => undefined}
+          />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function EventRow({ message }: { message: ModeSwitchMessage }) {
   const { theme } = useUnistyles();
   const descriptor = agentEventDescriptor(message.event);
   const color = theme.colors.tone[eventToneColor(descriptor.tone)];
+  // A task change is bookkeeping, not conversation: one muted line that opens
+  // the panel when tapped, so it never competes with the reply around it.
+  if (descriptor.action === 'tasks') {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${descriptor.label}. Open Tasks`}
+        onPress={openTasksPanel}
+        style={({ pressed }) => [styles.eventRow, pressed ? styles.eventActionPressed : null]}
+      >
+        <Text style={styles.eventDetail}>{descriptor.label}</Text>
+        <Text style={styles.eventTasksLink}>Tasks ›</Text>
+      </Pressable>
+    );
+  }
   return (
     <View style={[styles.eventRow, descriptor.action ? styles.eventRowActionable : null]}>
       <Text style={[styles.eventLabel, { color }]}>{descriptor.label}</Text>
@@ -6603,7 +7807,7 @@ function EventRow({ message }: { message: ModeSwitchMessage }) {
       {descriptor.action === 'claude-login' ? (
         <Pressable
           style={({ pressed }) => [styles.eventAction, pressed ? styles.eventActionPressed : null]}
-          onPress={() => router.push('/settings/services?agentLogin=claude')}
+          onPress={() => router.push('/settings/services/claude?agentLogin=claude')}
           accessibilityRole="button"
           accessibilityLabel="Sign in to Claude"
         >
@@ -6726,135 +7930,48 @@ function ChoicesRow({ message, isLatest }: { message: ChoicesMessage; isLatest: 
   );
 }
 
-function AgentLoopProposalRow({
-  message,
-  isLatest,
-}: {
-  message: AgentLoopProposalMessage;
-  isLatest: boolean;
-}) {
+function AutomationProposalRow({ message }: { message: AutomationProposalMessage }) {
   const actions = useContext(SessionActionsContext);
-  const [state, setState] = useState<'idle' | 'testing' | 'tested' | 'enabling' | 'enabled'>(
-    'idle',
-  );
+  const [state, setState] = useState<AutomationProposalState>('idle');
   const [error, setError] = useState<string | null>(null);
   const proposal = message.proposal;
-  const actionsAvailable = actions !== null && !actions.sending;
-  const currentProposal =
-    actions?.agentLoopId === proposal.loopId &&
-    actions.agentLoopConfigFingerprint === agentLoopConfigFingerprint(proposal);
-  const confirmActive = isLatest && actionsAvailable;
-  const enableActive = actionsAvailable && currentProposal;
-
-  useEffect(() => {
-    if (!actions || !currentProposal || state === 'testing' || state === 'enabling') return;
-    if (actions.agentLoopStatus === 'enabled') setState('enabled');
-    else if (actions.agentLoopTested) setState('tested');
-  }, [actions, currentProposal, state]);
-
+  const current = actions?.automation
+    ? isSameAutomation(actions.automation, proposal)
+      ? 'same'
+      : 'other'
+    : 'none';
+  // Once saved, the card follows the live automation: deleting or replacing it
+  // turns the button back on so this proposal can be confirmed again.
+  const shownState = state === 'saved' && current !== 'same' ? 'idle' : state;
   const confirm = useCallback(() => {
-    if (!confirmActive || !actions) return;
-    setState('testing');
+    if (!actions || shownState !== 'idle') return;
+    setState('saving');
     setError(null);
     void actions
-      .confirmAgentLoop(message)
-      .then(() => setState('tested'))
+      .confirmAutomation(proposal)
+      .then(() => setState('saved'))
       .catch((caught: unknown) => {
         setState('idle');
-        setError(caught instanceof Error ? caught.message : 'Could not test Agent Loop.');
+        setError(caught instanceof Error ? caught.message : 'Could not create the automation.');
       });
-  }, [actions, confirmActive, message]);
-
-  const enable = useCallback(() => {
-    if (!enableActive || !actions || state !== 'tested') return;
-    setState('enabling');
-    setError(null);
-    void actions
-      .enableAgentLoop(proposal.loopId)
-      .then(() => setState('enabled'))
-      .catch((caught: unknown) => {
-        setState('tested');
-        setError(caught instanceof Error ? caught.message : 'Could not enable Agent Loop.');
-      });
-  }, [actions, enableActive, proposal.loopId, state]);
-
+  }, [actions, proposal, shownState]);
   return (
-    <View style={styles.agentLoopProposal}>
-      <View style={styles.agentLoopProposalHeader}>
-        <Text style={styles.agentLoopProposalTitle}>{proposal.name}</Text>
-        <Text style={styles.agentLoopProposalState}>
-          {state === 'enabled'
-            ? 'Enabled'
-            : state === 'tested'
-              ? 'Test passed'
-              : state === 'testing'
-                ? 'Testing…'
-                : state === 'enabling'
-                  ? 'Enabling…'
-                  : 'Ready to test'}
-        </Text>
-      </View>
-      <Text style={styles.agentLoopProposalSchedule}>
-        {agentLoopProposalScheduleLabel(proposal.schedule)}
-      </Text>
-      <ScrollView style={styles.agentLoopProposalScript} nestedScrollEnabled>
-        <Text selectable style={styles.agentLoopProposalScriptText}>
-          {proposal.script}
-        </Text>
-      </ScrollView>
-      <Text style={styles.agentLoopProposalHint}>
-        Confirmation saves this configuration and runs it once in the project container. Enabling
-        stays a separate decision after the test passes.
-      </Text>
-      {error ? <Text style={styles.agentLoopProposalError}>{error}</Text> : null}
-      <Pressable
-        onPress={confirm}
-        disabled={!confirmActive || state !== 'idle'}
-        accessibilityRole="button"
-        accessibilityLabel="Confirm and test Agent Loop"
-        accessibilityState={{ disabled: !confirmActive || state !== 'idle' }}
-        style={[
-          styles.agentLoopProposalConfirm,
-          (!confirmActive || state !== 'idle') && styles.choicesSendDisabled,
-        ]}
-      >
-        {state === 'testing' ? <ActivityIndicator size="small" /> : null}
-        <Text style={styles.agentLoopProposalConfirmText}>
-          {state === 'tested' || state === 'enabling' || state === 'enabled'
-            ? 'Test passed'
-            : 'Confirm & test'}
-        </Text>
-      </Pressable>
-      {state === 'tested' || state === 'enabling' || state === 'enabled' ? (
-        <Pressable
-          onPress={enable}
-          disabled={!enableActive || state !== 'tested'}
-          accessibilityRole="button"
-          accessibilityLabel="Enable Agent Loop"
-          accessibilityState={{ disabled: !enableActive || state !== 'tested' }}
-          style={[
-            styles.agentLoopProposalConfirm,
-            (!enableActive || state !== 'tested') && styles.choicesSendDisabled,
-          ]}
-        >
-          {state === 'enabling' ? <ActivityIndicator size="small" /> : null}
-          <Text style={styles.agentLoopProposalConfirmText}>
-            {state === 'enabled' ? 'Agent Loop enabled' : 'Enable loop'}
-          </Text>
-        </Pressable>
-      ) : null}
-    </View>
+    <AutomationProposalCard
+      proposal={proposal}
+      state={shownState}
+      current={current}
+      error={
+        error ??
+        (actions && !actions.automationReady
+          ? 'Loading the current automation. If this persists, open the session again.'
+          : null)
+      }
+      disabled={actions === null || !actions.automationReady || actions.sending || actions.dead}
+      superseded={actions !== null && actions.latestAutomationProposalId !== message.id}
+      currentPaused={actions?.automation?.status === 'paused'}
+      onConfirm={confirm}
+    />
   );
-}
-
-function agentLoopProposalScheduleLabel(
-  schedule: AgentLoopProposalMessage['proposal']['schedule'],
-): string {
-  if (schedule.kind === 'interval') return `Every ${String(schedule.everyMinutes)} minutes`;
-  const time = `${String(schedule.hour).padStart(2, '0')}:${String(schedule.minute).padStart(2, '0')}`;
-  if (schedule.kind === 'daily') return `Daily at ${time}`;
-  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  return `${days[schedule.weekday] ?? 'Weekly'} at ${time}`;
 }
 
 // First non-empty line of a bookmarked message, lightly de-marked (drop a leading
@@ -7193,6 +8310,7 @@ function EngineSwitcherSheet({
   selected,
   busy,
   rateLimitNotice,
+  excludedNote,
   onPick,
   onClose,
 }: {
@@ -7202,6 +8320,8 @@ function EngineSwitcherSheet({
   selected: string | undefined;
   busy: boolean;
   rateLimitNotice: RateLimitNotice | null;
+  /** Why some agents are missing: the project turned them off. */
+  excludedNote?: string | undefined;
   onPick: (model: string) => void;
   onClose: () => void;
 }) {
@@ -7301,6 +8421,9 @@ function EngineSwitcherSheet({
             </Pressable>
           ) : null}
           {moreOpen ? renderGroups(partitionedModels.more) : null}
+          {excludedNote !== undefined ? (
+            <Text style={styles.sheetExcludedNote}>{excludedNote}</Text>
+          ) : null}
         </ScrollView>
       </Animated.View>
     </Modal>
@@ -7318,15 +8441,16 @@ function EngineSwitcherSheet({
 // unmounts. Both buttons are real <Pressable> buttons with explicit accessibility
 // labels so they're focus/keyboard reachable (a11y). A brokered-HTTP prompt shows
 // a readable request summary instead of raw JSON and offers scoped allows
-// (ADR 0011 D2): HTTP supports every scope; trusted CLI remains one-time because
-// generic CLI configuration can load code that an argv digest cannot safely model.
+// for both HTTP and CLI: once, this session, or 30 days in the project.
 function PermissionPrompt({
+  sessionId,
   pending,
   deciding,
   dead,
   approvedForDelivery = false,
   onDecide,
 }: {
+  sessionId: string;
   pending: PendingPermission;
   /** A decision POST for THIS prompt is in flight — disable the buttons + spin. */
   deciding: boolean;
@@ -7348,7 +8472,15 @@ function PermissionPrompt({
     completedAt: null,
     description: null,
   });
+  const allowTiming = useRef<SwitchTiming | undefined>(undefined);
+  useEffect(() => {
+    if (deciding) markSessionSwitch(allowTiming.current, 'allow-spinner-react-commit');
+  }, [deciding]);
   const active = !deciding && !dead;
+  const allowTouch = (timestamp: number): void => {
+    allowTiming.current = beginSessionSwitch(sessionId, 'permission');
+    markSessionSwitch(allowTiming.current, 'allow-js-touch-start', timestamp);
+  };
   const isBrokeredHttp = pending.tool === 'verity_http_request';
   const isTrustedCli = pending.tool === 'verity_secret_run';
   const isSessionHandoff = pending.tool === 'verity_session_handoff';
@@ -7358,6 +8490,11 @@ function PermissionPrompt({
   const isRecentSessionMessages = pending.tool === 'verity_recent_session_messages';
   const isGmail = pending.tool === 'verity_gmail';
   const isCalendar = pending.tool === 'verity_google_calendar';
+  const isKnowledge = pending.tool === 'verity_knowledge';
+  const planningTool = planningToolName(pending.tool);
+  const isEndPlanning = planningTool === END_PLANNING_TOOL;
+  const isPresentPlan = planningTool === 'verity_present_plan';
+  const knowledgeSummary = isKnowledge ? knowledgePublishSummary(pending.input) : null;
   const calendarSummary = isCalendar ? calendarChangeSummary(pending.input) : null;
   const httpSummary = isBrokeredHttp ? brokeredHttpSummary(pending.input) : null;
   const cliSummary = isTrustedCli ? trustedCliSummary(pending.input) : null;
@@ -7400,7 +8537,8 @@ function PermissionPrompt({
     (isSessionProgress && progressSummary === null) ||
     (isRecentSessionMessages && recentSummary === null) ||
     (isGmail && gmailSummary === null) ||
-    (isCalendar && calendarSummary === null)
+    (isCalendar && calendarSummary === null) ||
+    (isKnowledge && knowledgeSummary === null)
       ? permissionInputText(pending.input)
       : null;
   // The fallback path only — `brokeredRequestDetails` is non-null exactly when no summariser
@@ -7415,17 +8553,24 @@ function PermissionPrompt({
   const brokeredRequestCaveats =
     brokeredRequestDetails === null
       ? null
-      : isSessionHandoff
-        ? sessionHandoffCaveats(null)
-        : isListSessions
-          ? listSessionsSentence(null)
-          : null;
+      : isKnowledge
+        ? KNOWLEDGE_PUBLISH_EXPLANATION
+        : isSessionHandoff
+          ? sessionHandoffCaveats(null)
+          : isListSessions
+            ? listSessionsSentence(null)
+            : null;
   // One row per brokered card rather than a ternary chain in the header: each summariser
   // owns its own headline, first match wins in the order they are parsed above, and the next
   // tool adds a line here instead of another level of nesting. The fallback names the tool,
   // which is all that is known when no summariser recognised the input.
   const cardTitle =
     [
+      !isKnowledge
+        ? null
+        : knowledgeSummary?.replacesExisting
+          ? 'Save changes to Global Knowledge?'
+          : 'Publish insight to Global Knowledge?',
       httpSummary === null ? null : brokeredHttpTitle(httpSummary),
       cliSecretLabel === null ? null : `Run trusted command with ${cliSecretLabel}?`,
       handoffSummary === null ? null : sessionHandoffTitle(handoffSummary),
@@ -7441,13 +8586,26 @@ function PermissionPrompt({
         : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
       calendarSummary?.title ?? null,
       gmailSummary === null ? null : `Send email to ${gmailSummary.to.join(', ')}?`,
+      isEndPlanning
+        ? grantInput?.action === 'discard'
+          ? 'Leave planning and change files?'
+          : 'Implement the plan?'
+        : null,
+      isPresentPlan ? 'Show the proposed plan?' : null,
     ].find((title) => title !== null) ??
     // Spelled out like every other string on the card. Tool names are server-controlled today,
     // so this is consistency rather than exposure — but it is the headline, and the one field
     // here that never passed a summariser.
-    `Allow ${spellOutBidiControls(pending.tool)}?`;
+    `Allow ${spellOutBidiControls(view.title)}?`;
   const allow = (scope?: 'session' | 'project' | 'forever'): void => {
     if (!active) return;
+    if (
+      allowTiming.current !== sessionSwitchTiming(sessionId, 'permission') ||
+      allowTiming.current?.phases.some((p) => p.phase === 'allow-js-press-handler')
+    )
+      allowTiming.current = undefined;
+    allowTiming.current ??= beginSessionSwitch(sessionId, 'permission');
+    markSessionSwitch(allowTiming.current, 'allow-js-press-handler');
     onDecide(
       pending.toolUseId,
       scope === undefined ? { behavior: 'allow' } : { behavior: 'allow', scope },
@@ -7459,7 +8617,11 @@ function PermissionPrompt({
       // Announce the whole prompt as one a11y unit so the intent ("approve this
       // tool") is read before the operator reaches the Allow/Deny buttons.
       accessibilityRole="alert"
-      accessibilityLabel={`The agent wants to run ${pending.tool}. Allow or deny.`}
+      accessibilityLabel={
+        isKnowledge
+          ? `${cardTitle} ${KNOWLEDGE_PUBLISH_EXPLANATION}`
+          : `${cardTitle} Allow or deny.`
+      }
     >
       <View style={styles.permissionHeader}>
         <View style={[styles.permissionDot, { backgroundColor: theme.colors.tone.attention }]} />
@@ -7478,7 +8640,30 @@ function PermissionPrompt({
               : pending.riskClass}
         </Text>
       </View>
-      {httpSummary !== null ? (
+      {isPresentPlan ? (
+        <View style={styles.permissionHttpSummary}>
+          <Text style={styles.permissionHttpMeta}>
+            The agent wants to show you a plan for review. This does not approve implementation.
+          </Text>
+        </View>
+      ) : null}
+      {knowledgeSummary !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          <Text style={styles.permissionSubtitle} selectable>
+            Source: {spellOutBidiControls(knowledgeSummary.source)}
+          </Text>
+          <Text style={styles.permissionSubtitle} selectable>
+            Destination: {spellOutBidiControls(knowledgeSummary.destination)}
+          </Text>
+          <Text style={styles.permissionHttpMeta}>{KNOWLEDGE_PUBLISH_EXPLANATION}</Text>
+          {knowledgeSummary.replacesExisting ? (
+            <Text style={styles.permissionHttpMeta}>
+              Saves the project version as the updated global file. Agents in every project can use
+              the updated content.
+            </Text>
+          ) : null}
+        </View>
+      ) : httpSummary !== null ? (
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionSubtitle} selectable numberOfLines={2}>
             {httpSummary.method} {httpSummary.host}
@@ -7695,7 +8880,7 @@ function PermissionPrompt({
           disabled={!active}
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
-          accessibilityLabel={`${approvedForDelivery ? 'Cancel' : 'Deny'} ${pending.tool}`}
+          accessibilityLabel={`${approvedForDelivery ? 'Cancel' : 'Deny'} ${view.title}`}
           style={({ pressed }) => [
             styles.permissionButton,
             styles.permissionDeny,
@@ -7712,11 +8897,23 @@ function PermissionPrompt({
           )}
         </Pressable>
         <Pressable
+          onTouchStart={(event) => allowTouch(event.nativeEvent.timestamp)}
+          onPressIn={() => markSessionSwitch(allowTiming.current, 'allow-js-press-in')}
+          onTouchCancel={() => {
+            markSessionSwitch(allowTiming.current, 'allow-touch-cancel');
+            if (allowTiming.current) allowTiming.current.status = 'cancelled';
+          }}
           onPress={() => allow()}
           disabled={!active}
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
-          accessibilityLabel={`${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${pending.tool}${isScopedSecretTool ? ' once' : ''}`}
+          accessibilityLabel={
+            isKnowledge
+              ? knowledgeSummary?.replacesExisting
+                ? 'Save changes to Global Knowledge'
+                : 'Publish to Global Knowledge'
+              : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${view.title}${isScopedSecretTool ? ' once' : ''}`
+          }
           style={({ pressed }) => [
             styles.permissionButton,
             styles.permissionAllow,
@@ -7728,7 +8925,15 @@ function PermissionPrompt({
             <ActivityIndicator color={theme.colors.onPrimary} />
           ) : (
             <Text style={[styles.permissionButtonLabel, styles.permissionAllowLabel]}>
-              {approvedForDelivery ? 'Retry delivery' : isScopedSecretTool ? 'Allow once' : 'Allow'}
+              {isKnowledge
+                ? knowledgeSummary?.replacesExisting
+                  ? 'Save changes'
+                  : 'Publish to Global'
+                : approvedForDelivery
+                  ? 'Retry delivery'
+                  : isScopedSecretTool
+                    ? 'Allow once'
+                    : 'Allow'}
             </Text>
           )}
         </Pressable>
@@ -7740,11 +8945,17 @@ function PermissionPrompt({
         <View style={styles.permissionScopeRow}>
           {reusableScopes.includes('session') ? (
             <Pressable
+              onTouchStart={(event) => allowTouch(event.nativeEvent.timestamp)}
+              onPressIn={() => markSessionSwitch(allowTiming.current, 'allow-js-press-in')}
+              onTouchCancel={() => {
+                markSessionSwitch(allowTiming.current, 'allow-touch-cancel');
+                if (allowTiming.current) allowTiming.current.status = 'cancelled';
+              }}
               onPress={() => allow('session')}
               disabled={!active}
               accessibilityRole="button"
               accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? pending.tool} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} for this session`}
+              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? view.title} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} for this session`}
               style={({ pressed }) => [
                 styles.permissionScopeButton,
                 active ? null : styles.permissionButtonDisabled,
@@ -7756,11 +8967,17 @@ function PermissionPrompt({
           ) : null}
           {reusableScopes.includes('project') ? (
             <Pressable
+              onTouchStart={(event) => allowTouch(event.nativeEvent.timestamp)}
+              onPressIn={() => markSessionSwitch(allowTiming.current, 'allow-js-press-in')}
+              onTouchCancel={() => {
+                markSessionSwitch(allowTiming.current, 'allow-touch-cancel');
+                if (allowTiming.current) allowTiming.current.status = 'cancelled';
+              }}
               onPress={() => allow('project')}
               disabled={!active}
               accessibilityRole="button"
               accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? pending.tool} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} in this project for 30 days`}
+              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? view.title} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} in this project for 30 days`}
               style={({ pressed }) => [
                 styles.permissionScopeButton,
                 active ? null : styles.permissionButtonDisabled,
@@ -7772,11 +8989,17 @@ function PermissionPrompt({
           ) : null}
           {reusableScopes.includes('forever') ? (
             <Pressable
+              onTouchStart={(event) => allowTouch(event.nativeEvent.timestamp)}
+              onPressIn={() => markSessionSwitch(allowTiming.current, 'allow-js-press-in')}
+              onTouchCancel={() => {
+                markSessionSwitch(allowTiming.current, 'allow-touch-cancel');
+                if (allowTiming.current) allowTiming.current.status = 'cancelled';
+              }}
               onPress={() => allow('forever')}
               disabled={!active}
               accessibilityRole="button"
               accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Always allow ${httpSummary?.secretAlias ?? pending.tool} for ${httpSummary?.host ?? 'this destination'}`}
+              accessibilityLabel={`Always allow ${httpSummary?.secretAlias ?? view.title} for ${httpSummary?.host ?? 'this destination'}`}
               style={({ pressed }) => [
                 styles.permissionScopeButton,
                 active ? null : styles.permissionButtonDisabled,
@@ -7860,10 +9083,12 @@ function QueuedMessages({
 function PullRequestBar({
   pullRequest,
   onMerge,
+  onRefresh,
   onDismiss,
 }: {
   pullRequest: NonNullable<UseBranches['pullRequest']>;
   onMerge: UseBranches['mergePullRequest'];
+  onRefresh: () => void;
   onDismiss?: () => void;
 }) {
   const { theme } = useUnistyles();
@@ -7889,67 +9114,44 @@ function PullRequestBar({
     pullRequest.mergeState ?? 'no-state',
   ].join(':');
   const pending = pullRequest.pipeline === 'running' || pullRequest.pipeline === 'pending';
-  const failed = pullRequest.pipeline === 'failure';
-  // A conflicting PR gets no merge ref from GitHub, so its `pull_request` workflows
-  // never start and the pipeline reads `unknown` with zero checks — which used to
-  // render as the dead-end "status unavailable". `mergeable_state: 'dirty'` is the
-  // authoritative signal, independent of the pipeline, so name the conflict instead.
-  const conflicted = isPullRequestConflicted(pullRequest);
-  const unavailable = pullRequest.pipeline === 'unknown' && !conflicted;
-  // Only a CONFIRMED conflict (mergeable === false) blocks. `null` means GitHub is
-  // still computing mergeability just after a push — treat that as "checks green,
-  // resolving", not blocked, so a just-fixed PR doesn't flash red before it settles.
-  const mergeabilityBlocked =
-    conflicted ||
-    (pullRequest.phase === 'open' &&
-      pullRequest.pipeline === 'success' &&
-      pullRequest.mergeable === false);
   const mergeRejected = !pending && mergeRejectedFor === pullRequestStateKey && error !== undefined;
-  const mergeBlocked = failed || mergeabilityBlocked || mergeRejected;
   const visibleError = mergeRejected ? error : undefined;
   const merged = pullRequest.phase === 'merged';
   const checksText = pullRequestStatusText(pullRequest);
-  const statusColor = mergeBlocked
-    ? theme.colors.tone.danger
-    : pending || checks.total === 0
-      ? theme.colors.tone.attention
-      : theme.colors.tone.done;
-  const canMerge =
-    pullRequest.phase === 'open' &&
-    pullRequest.mergeable === true &&
-    !conflicted &&
-    !pending &&
-    !merging &&
-    !mergeRejected;
-  const mergeButtonEnabled = canMerge;
-  // A conflicted PR has zero checks but is NOT "waiting" for anything — nothing will
-  // run until the conflict is resolved, so it must not pulse like a starting pipeline.
-  const active =
-    !failed &&
-    !unavailable &&
-    !conflicted &&
-    (pending || (pullRequest.phase === 'open' && checks.total === 0) || merging);
-  const pulse = useRef(new Animated.Value(1)).current;
-
-  useEffect(() => {
-    if (!active) {
-      pulse.stopAnimation();
-      pulse.setValue(1);
-      return;
-    }
-
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, { toValue: 0.68, duration: 850, useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 1, duration: 850, useNativeDriver: true }),
-      ]),
-    );
-    loop.start();
-    return () => {
-      loop.stop();
-      pulse.setValue(1);
-    };
-  }, [active, pulse]);
+  // One verdict drives the dot and the button, so they cannot disagree. A conflicting
+  // PR reads `unknown` with zero checks (GitHub builds no merge ref for it), and
+  // `mergeable: null` right after a push means "still computing", not blocked — both
+  // are resolved inside `pullRequestMergeButton`.
+  const button = pullRequestMergeButton(pullRequest, { merging, mergeRejected });
+  const mergeButtonEnabled = button.kind === 'merge';
+  // Static on purpose: the waiting states show their spinner on the button, and a
+  // second animation beside it only competed with it.
+  const statusColor =
+    button.kind === 'blocked' || (button.kind === 'closed' && pullRequest.pipeline === 'failure')
+      ? theme.colors.tone.danger
+      : button.kind === 'waiting'
+        ? theme.colors.tone.idle
+        : button.kind === 'refresh'
+          ? theme.colors.tone.attention
+          : theme.colors.tone.done;
+  const conflictTarget = pullRequest.baseRef ?? 'the base branch';
+  const prNumber = String(pullRequest.number);
+  const blockedLabels: Record<PullRequestBlockReason, string> = {
+    rejected: `Merge blocked because GitHub rejected pull request ${prNumber}`,
+    conflict: `Merge blocked because pull request ${prNumber} conflicts with ${conflictTarget}`,
+    ci_failed: `Merge blocked because CI failed for pull request ${prNumber}`,
+    blocked: `Merge blocked for pull request ${prNumber}`,
+  };
+  const buttonLabel =
+    button.kind === 'blocked'
+      ? blockedLabels[button.reason]
+      : button.kind === 'refresh'
+        ? `Refresh status of pull request ${prNumber}`
+        : button.kind === 'waiting'
+          ? `Merge unavailable for pull request ${prNumber}: ${checksText}`
+          : button.kind === 'closed'
+            ? `Pull request ${prNumber} is ${pullRequest.phase}`
+            : `Merge pull request ${prNumber}`;
 
   useEffect(() => {
     return () => {
@@ -7993,13 +9195,7 @@ function PullRequestBar({
           accessibilityRole="link"
           accessibilityLabel={`Open pull request ${String(pullRequest.number)} on GitHub`}
         >
-          <Animated.View
-            style={[
-              styles.prStatusDot,
-              { backgroundColor: statusColor },
-              active ? { opacity: pulse, transform: [{ scale: pulse }] } : null,
-            ]}
-          />
+          <View style={[styles.prStatusDot, { backgroundColor: statusColor }]} />
           <View style={styles.prMain}>
             <Text style={styles.prTitle} numberOfLines={1}>
               PR #{pullRequest.number} · {pullRequest.title}
@@ -8030,33 +9226,37 @@ function PullRequestBar({
           <Pressable
             style={({ pressed }) => [
               styles.prMergeButton,
-              // "Merge" reads as green for the go action. Hard blockers, including a
-              // rejected merge attempt, turn the disabled button danger instead of leaving
-              // a green action next to a red error.
-              { backgroundColor: mergeBlocked ? theme.colors.tone.danger : theme.colors.tone.done },
-              !mergeButtonEnabled && !mergeBlocked ? styles.prMergeButtonDisabled : null,
-              pressed && mergeButtonEnabled ? styles.prMergeButtonPressed : null,
+              button.kind === 'merge' || button.kind === 'merging'
+                ? { backgroundColor: theme.colors.tone.done }
+                : button.kind === 'blocked'
+                  ? { backgroundColor: theme.colors.tone.danger }
+                  : button.kind === 'waiting'
+                    ? styles.prMergeButtonWaiting
+                    : styles.prMergeButtonOutline,
+              pressed && (mergeButtonEnabled || button.kind === 'refresh')
+                ? styles.prMergeButtonPressed
+                : null,
             ]}
-            onPress={merge}
-            disabled={!mergeButtonEnabled}
+            onPress={button.kind === 'refresh' ? onRefresh : merge}
+            disabled={!mergeButtonEnabled && button.kind !== 'refresh'}
             accessibilityRole="button"
-            accessibilityState={{ disabled: !mergeButtonEnabled, busy: merging }}
-            accessibilityLabel={
-              mergeRejected
-                ? `Merge blocked because GitHub rejected pull request ${String(pullRequest.number)}`
-                : conflicted
-                  ? `Merge blocked because pull request ${String(pullRequest.number)} conflicts with ${pullRequest.baseRef ?? 'the base branch'}`
-                  : failed
-                    ? `Merge blocked because CI failed for pull request ${String(pullRequest.number)}`
-                    : mergeabilityBlocked
-                      ? `Merge blocked for pull request ${String(pullRequest.number)}`
-                      : `Merge pull request ${String(pullRequest.number)}`
-            }
+            accessibilityState={{
+              disabled: !mergeButtonEnabled && button.kind !== 'refresh',
+              busy: button.kind === 'merging' || button.kind === 'waiting',
+            }}
+            accessibilityLabel={buttonLabel}
           >
-            {merging ? (
+            {button.kind === 'merging' ? (
               <ActivityIndicator color={theme.colors.onPrimary} />
-            ) : (
-              <Text style={styles.prMergeText}>{mergeBlocked ? 'Blocked' : 'Merge'}</Text>
+            ) : button.kind === 'waiting' ? (
+              <View style={styles.prMergeWaiting}>
+                <SlowSpinner color={theme.colors.textMuted} />
+                <Text style={styles.prMergeWaitingText}>{button.label}</Text>
+              </View>
+            ) : button.kind === 'closed' ? null : (
+              <Text style={button.kind === 'refresh' ? styles.prRefreshText : styles.prMergeText}>
+                {button.label}
+              </Text>
             )}
           </Pressable>
         )}
@@ -8148,6 +9348,8 @@ function LocalMergeBar({
 }
 
 function InputBar({
+  hasPlan,
+  planning,
   inputRef,
   value,
   sendNonce,
@@ -8156,8 +9358,10 @@ function InputBar({
   canSend,
   sending,
   running,
+  activityAnimating,
   onStop,
   dead,
+  voicePreparation,
   voiceState,
   voiceAutoMode,
   voiceCountdown,
@@ -8183,6 +9387,8 @@ function InputBar({
   onFocus,
   onBlur,
 }: {
+  hasPlan: boolean;
+  planning: boolean;
   /** Ref to the text field so a "Custom answer" chip can focus it (issue #97). */
   inputRef: RefObject<TextInput | null>;
   value: string;
@@ -8195,10 +9401,13 @@ function InputBar({
   sending: boolean;
   /** A turn is in flight (#79) — the empty-field action button becomes Stop. */
   running: boolean;
+  /** Work is progressing; awaiting user input can still keep Stop available. */
+  activityAnimating: boolean;
   /** Interrupt the in-flight turn (#79). */
   onStop: () => void;
   /** Session can't be resumed (worktree gone) — lock the input, no send/mic. */
   dead: boolean;
+  voicePreparation?: string | null;
   voiceState: VoiceState;
   voiceAutoMode: boolean;
   voiceCountdown: number | null;
@@ -8239,28 +9448,14 @@ function InputBar({
   const [dropActive, setDropActive] = useState(false);
   const attachBtnRef = useRef<View>(null);
   const openAttachMenu = useAttachmentMenuAnchor(attachBtnRef, onAttach);
-  const suppressReturnChangeRef = useRef(false);
-  const returnSubmitValueRef = useRef('');
-  const onComposerChangeText = useCallback(
-    (next: string) => {
-      if (suppressReturnChangeRef.current) {
-        suppressReturnChangeRef.current = false;
-        if (isSingleInsertedNewline(returnSubmitValueRef.current, next)) return;
-      }
-      onChangeText(next);
-    },
-    [onChangeText],
-  );
   const onComposerKeyPress = useCallback(
-    (event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
-      if (dead || Platform.OS !== 'ios' || !Platform.isPad || event.nativeEvent.key !== 'Enter')
-        return;
-      if (!shouldSubmitOnReturn(keyboardHeight)) return;
-      suppressReturnChangeRef.current = true;
-      returnSubmitValueRef.current = value;
-      onSend();
+    (event: Parameters<NonNullable<React.ComponentProps<typeof TextInput>['onKeyPress']>>[0]) => {
+      if (Platform.OS === 'web' && !dead && shouldSendWebKey(event.nativeEvent)) {
+        event.preventDefault();
+        onSend();
+      }
     },
-    [dead, keyboardHeight, onSend, value],
+    [dead, onSend],
   );
   // Auto-grow: let the native multiline TextInput size to its content (it grows up
   // to `maxHeight`, then scrolls). We deliberately do NOT set an explicit `height`
@@ -8269,7 +9464,7 @@ function InputBar({
   // text padding lives on the `inputCard`, not the TextInput, so the input's content
   // width is clean and lines wrap correctly.
   return (
-    <DropZone
+    <View
       style={[
         styles.inputBarWrap,
         {
@@ -8279,141 +9474,156 @@ function InputBar({
         },
       ]}
       onLayout={(e) => onHeightChange(e.nativeEvent.layout.height)}
-      enabled={!dead && attachments.length < MAX_ATTACHMENTS_PER_TURN}
-      maxFiles={Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length)}
-      onFiles={onDropFiles}
-      onRejected={onDropRejected}
-      onActiveChange={setDropActive}
     >
-      <InputActivityLine running={running && !dead} />
-      {dropActive ? (
-        <View pointerEvents="none" style={styles.inputDropHint}>
-          <Icon name="paperclip" size={18} color={theme.colors.primary} />
-          <Text style={styles.inputDropHintText}>Drop files to attach</Text>
-        </View>
-      ) : null}
-      {attachments.length > 0 ? (
-        <>
-          <AttachmentPreviews attachments={attachments} onRemove={onRemoveAttachment} />
-          {knowledgeEnabled ? (
-            <Pressable
-              onPress={onToggleSaveAttachmentsToKnowledge}
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked: saveAttachmentsToKnowledge }}
-              style={styles.knowledgeAttachmentToggle}
-            >
-              <Icon
-                name={saveAttachmentsToKnowledge ? 'check-square' : 'square'}
-                size={16}
-                color={saveAttachmentsToKnowledge ? theme.colors.primary : theme.colors.textMuted}
-              />
-              <Text style={styles.knowledgeAttachmentToggleText}>Save to Project Knowledge</Text>
-            </Pressable>
-          ) : null}
-        </>
-      ) : null}
-      {/* Two-tier layout (like the Claude app): the text field spans the FULL width
+      <DropZone
+        enabled={!dead && attachments.length < MAX_ATTACHMENTS_PER_TURN}
+        maxFiles={Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length)}
+        onFiles={onDropFiles}
+        onRejected={onDropRejected}
+        onActiveChange={setDropActive}
+      >
+        <InputActivityLine running={activityAnimating && !dead} />
+        {dropActive ? (
+          <View pointerEvents="none" style={styles.inputDropHint}>
+            <Icon name="paperclip" size={18} color={theme.colors.primary} />
+            <Text style={styles.inputDropHintText}>Drop files to attach</Text>
+          </View>
+        ) : null}
+        {attachments.length > 0 ? (
+          <>
+            <AttachmentPreviews attachments={attachments} onRemove={onRemoveAttachment} />
+            {knowledgeEnabled ? (
+              <Pressable
+                onPress={onToggleSaveAttachmentsToKnowledge}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: saveAttachmentsToKnowledge }}
+                style={styles.knowledgeAttachmentToggle}
+              >
+                <Icon
+                  name={saveAttachmentsToKnowledge ? 'check-square' : 'square'}
+                  size={16}
+                  color={saveAttachmentsToKnowledge ? theme.colors.primary : theme.colors.textMuted}
+                />
+                <Text style={styles.knowledgeAttachmentToggleText}>Save to Project Knowledge</Text>
+              </Pressable>
+            ) : null}
+          </>
+        ) : null}
+        {/* Two-tier layout (like the Claude app): the text field spans the FULL width
           on top, and the action buttons sit in a row UNDERNEATH it — so the field is
           never squeezed between inline buttons. Padding lives on this card (not the
           TextInput) so the input's content-size measurement isn't skewed (RN#35234). */}
-      <View
-        style={[
-          styles.inputCard,
-          compact && styles.inputCardCompact,
-          dropActive ? styles.inputCardDropActive : null,
-        ]}
-      >
-        <TextInput
-          key={sendNonce}
-          ref={inputRef}
-          style={[styles.input, compact && styles.inputCompact]}
-          value={value}
-          onChangeText={onComposerChangeText}
-          onKeyPress={onComposerKeyPress}
-          onFocus={onFocus}
-          onBlur={onBlur}
-          placeholder={
-            dead
-              ? 'This session can’t be resumed'
-              : voiceState === 'recording'
-                ? 'Listening…'
-                : 'Message this agent…'
-          }
-          placeholderTextColor={theme.colors.textFaint}
-          editable={!dead}
-          multiline
-          keyboardAppearance="dark"
-          accessibilityLabel="Message input"
-        />
-        <View style={[styles.actionRow, compact && styles.actionRowCompact]}>
-          {/* Left: attach + the engine/model chip (moved here from the header, like
-              the Claude app — it sits with the composer instead of the nav bar). */}
-          <View style={styles.actionRowLeft}>
-            <Pressable
-              ref={attachBtnRef}
-              style={styles.iconButton}
-              onPress={openAttachMenu}
-              disabled={dead}
-              hitSlop={4}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: dead }}
-              accessibilityLabel="Add content or connect a service"
-            >
-              <Icon
-                name="plus"
-                size={22}
-                color={dead ? theme.colors.textFaint : theme.colors.textMuted}
-              />
-            </Pressable>
-            <EngineChip
-              engine={engineLabel}
-              busy={engineBusy}
-              onPress={onEnginePress}
-              style={styles.inputEngineChip}
-              textStyle={styles.inputEngineChipText}
-            />
-          </View>
-          {/* Right: the persistent mic, then the Send/Stop slot. */}
-          <View style={styles.actionRowRight}>
-            {/* The mic is ALWAYS a mic (never a stop glyph) and always pressable —
-                dictation is tap-to-toggle; recording gets its own active treatment.
-                A separate button keeps it from ever "mutating" into Send/Stop. */}
-            <MicButton
-              voiceState={voiceState}
-              autoMode={voiceAutoMode}
-              countdown={voiceCountdown}
-              onMic={onMic}
-              onLongPress={onMicLongPress}
-              onPauseCountdown={onPauseVoiceCountdown}
-              disabled={dead}
-            />
-            {running && !canSend && !sending && !dead ? (
-              // Empty field while a turn runs → Stop is available, while the top
-              // activity line carries the "agent is working" cue.
-              <StopButton onStop={onStop} />
-            ) : (
-              // Otherwise the Send button — active when there's something to send,
-              // greyed when idle/empty or dead. Sending while a turn runs queues/steers
-              // it, so Send keeps priority over Stop whenever the field is sendable.
+        <View
+          style={[
+            styles.inputCard,
+            compact && styles.inputCardCompact,
+            dropActive ? styles.inputCardDropActive : null,
+          ]}
+        >
+          <PromptComposerInput
+            key={Platform.OS === 'web' ? 'web-composer' : sendNonce}
+            ref={inputRef}
+            style={[
+              styles.input,
+              compact && styles.inputCompact,
+              Platform.OS === 'web' ? { outlineWidth: 0 } : null,
+            ]}
+            value={value}
+            onChangeText={onChangeText}
+            containerStyle={compact ? styles.inputContainerCompact : undefined}
+            submitOnReturn={shouldSubmitOnReturn(keyboardHeight)}
+            onSend={onSend}
+            onKeyPress={onComposerKeyPress}
+            onFocus={onFocus}
+            onBlur={onBlur}
+            placeholder={
+              dead
+                ? 'This session can’t be resumed'
+                : voicePreparation
+                  ? 'Preparing microphone…'
+                  : voiceState === 'recording'
+                    ? 'Listening…'
+                    : hasPlan
+                      ? 'Reply to change the plan…'
+                      : planning
+                        ? 'Answer, or add what matters to you…'
+                        : 'Message this agent…'
+            }
+            placeholderTextColor={theme.colors.textFaint}
+            editable={!dead}
+            keyboardAppearance="dark"
+            accessibilityLabel="Message input"
+          />
+          <View style={[styles.actionRow, compact && styles.actionRowCompact]}>
+            {/* Left: attach + the engine/model chip (moved here from the header, like
+the Claude app — it sits with the composer instead of the nav bar). */}
+            <View style={styles.actionRowLeft}>
               <Pressable
-                style={[styles.sendButton, canSend ? null : styles.sendButtonDisabled]}
-                onPress={onSend}
-                disabled={!canSend}
-                hitSlop={8}
+                ref={attachBtnRef}
+                style={styles.iconButton}
+                onPress={openAttachMenu}
+                disabled={dead}
+                hitSlop={4}
                 accessibilityRole="button"
-                accessibilityLabel="Send message"
+                accessibilityState={{ disabled: dead }}
+                accessibilityLabel="Add content or connect a service"
               >
                 <Icon
-                  name="arrow-up"
+                  name="plus"
                   size={22}
-                  color={canSend ? theme.colors.onPrimary : theme.colors.textMuted}
+                  color={dead ? theme.colors.textFaint : theme.colors.textMuted}
                 />
               </Pressable>
-            )}
+              <EngineChip
+                engine={engineLabel}
+                busy={engineBusy}
+                onPress={onEnginePress}
+                style={styles.inputEngineChip}
+                textStyle={styles.inputEngineChipText}
+              />
+            </View>
+            {/* Right: the persistent mic, then the Send/Stop slot. */}
+            <View style={styles.actionRowRight}>
+              {/* The mic is ALWAYS a mic (never a stop glyph) and always pressable —
+                dictation is tap-to-toggle; recording gets its own active treatment.
+                A separate button keeps it from ever "mutating" into Send/Stop. */}
+              <MicButton
+                voiceState={voiceState}
+                autoMode={voiceAutoMode}
+                countdown={voiceCountdown}
+                onMic={onMic}
+                onLongPress={onMicLongPress}
+                onPauseCountdown={onPauseVoiceCountdown}
+                disabled={dead}
+              />
+              {running && !canSend && !sending && !dead ? (
+                // Empty field while a turn runs → Stop is available, while the top
+                // activity line carries the "agent is working" cue.
+                <StopButton onStop={onStop} />
+              ) : (
+                // Otherwise the Send button — active when there's something to send,
+                // greyed when idle/empty or dead. Sending while a turn runs queues/steers
+                // it, so Send keeps priority over Stop whenever the field is sendable.
+                <Pressable
+                  style={[styles.sendButton, canSend ? null : styles.sendButtonDisabled]}
+                  onPress={onSend}
+                  disabled={!canSend}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Send message"
+                >
+                  <Icon
+                    name="arrow-up"
+                    size={22}
+                    color={canSend ? theme.colors.onPrimary : theme.colors.textMuted}
+                  />
+                </Pressable>
+              )}
+            </View>
           </View>
         </View>
-      </View>
-    </DropZone>
+      </DropZone>
+    </View>
   );
 }
 
@@ -8421,6 +9631,7 @@ function InputBar({
 // popover docked to it — a source per row (camera, photo library, or an arbitrary
 // file) — instead of a full-width bottom sheet.
 function AttachMenu({
+  googleConnected,
   visible,
   anchor,
   onCapturePhoto,
@@ -8434,6 +9645,7 @@ function AttachMenu({
   onClose,
   onDismiss,
 }: {
+  googleConnected: boolean;
   visible: boolean;
   anchor: AttachAnchor | null;
   onCapturePhoto: () => void;
@@ -8449,16 +9661,19 @@ function AttachMenu({
 }) {
   const { theme } = useUnistyles();
   const { width: winW, height: winH } = useWindowDimensions();
-  const rows = attachMenuRows({
-    onCapturePhoto,
-    onPickPhotos,
-    onPickFiles,
-    onPickMeetingAudio,
-    onLiveMeeting,
-    onConnectGmail,
-    onConnectCalendar,
-    onConnectContacts,
-  });
+  const rows = attachMenuRows(
+    {
+      onCapturePhoto,
+      onPickPhotos,
+      onPickFiles,
+      onPickMeetingAudio,
+      onLiveMeeting,
+      onConnectGmail,
+      onConnectCalendar,
+      onConnectContacts,
+    },
+    { googleConnected },
+  );
   // Dock to the button: left-aligned and clamped on-screen; placed above the button
   // (the composer sits at the bottom, so the menu opens upward).
   const MENU_WIDTH = 220;
@@ -8693,6 +9908,7 @@ function AttachmentPreviews({
 }
 
 function InputActivityLine({ running }: { running: boolean }) {
+  const { theme } = useUnistyles();
   const [width, setWidth] = useState(0);
   const progress = useRef(new Animated.Value(0)).current;
   const isPad = Platform.OS === 'ios' && Platform.isPad;
@@ -8718,7 +9934,7 @@ function InputActivityLine({ running }: { running: boolean }) {
         toValue: 1,
         duration,
         easing: Easing.linear,
-        useNativeDriver: true,
+        useNativeDriver: Platform.OS !== 'web',
       }),
     );
     loop.start();
@@ -8739,7 +9955,14 @@ function InputActivityLine({ running }: { running: boolean }) {
       {running ? (
         <Animated.View
           style={[
-            styles.inputActivitySegment,
+            Platform.OS === 'web'
+              ? {
+                  height: 2,
+                  borderRadius: theme.radius.pill,
+                  backgroundColor: theme.colors.accent,
+                  opacity: 0.8,
+                }
+              : styles.inputActivitySegment,
             isPad ? { opacity: 0.55 } : null,
             { width: segmentWidth, transform: [{ translateX }] },
           ]}
@@ -8941,6 +10164,22 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.text.lg,
     fontWeight: '600',
   },
+  starterScreen: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.xl,
+  },
+  starterList: {
+    alignSelf: 'stretch',
+    maxWidth: 440,
+    width: '100%',
+    marginHorizontal: 'auto',
+    gap: theme.spacing.sm,
+    marginTop: theme.spacing.md,
+  },
   emptySubtitle: {
     color: theme.colors.textMuted,
     fontSize: theme.text.sm,
@@ -8963,17 +10202,19 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
   },
   headerRow: {
-    height: 44,
+    height: 56,
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: theme.spacing.sm,
     gap: theme.spacing.xs,
   },
   // In the two-pane (embedded) layout the right-pane header sits beside the left
-  // pane's compact usage meters; a shorter title row + reduced top padding line
-  // the two bars up on the same baseline. The phone header keeps the full 44px.
+  // pane's compact usage meters; a shorter title row + reduced top padding keep the
+  // two bars close, while still fitting the 40pt action buttons. The phone header
+  // uses the full 56px.
   headerRowEmbedded: {
-    height: 38,
+    height: 48,
+    paddingLeft: theme.spacing.md,
   },
   headerRowCompact: {
     flex: 1,
@@ -9027,121 +10268,102 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: 2.5,
     backgroundColor: theme.colors.background,
   },
-  headerTitle: {
-    // flex: 1 so the title spans the full width BETWEEN the two fixed-width side slots
-    // (not just an equal third): now that the branch selector moved to the context row,
-    // the right slot is an empty spacer, and a narrow fixed width on both sides frees
-    // the middle for the session name — it truncates far later than the old 1/3 column.
+  // Keep the name and branch centred in the space between navigation and actions.
+  // Long names shrink before the action buttons do.
+  headerTitleBlock: {
     flex: 1,
-    textAlign: 'center',
-    marginHorizontal: theme.spacing.xs,
+    minWidth: 0,
+    justifyContent: 'center',
+    gap: 1,
+  },
+  headerTitle: {
     color: theme.colors.text,
     fontSize: theme.text.md,
     fontWeight: '600',
+    textAlign: 'center',
   },
-  // Fixed, equal-width side slots so the title stays screen-centered while spanning the
-  // middle: the back chevron sits in the left slot; an empty right slot of the same
-  // width balances it (the actions now live on the context row below). Width fits the
-  // 28px chevron + its padding.
+  headerSubtitle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+  },
+  headerHintText: {
+    color: theme.colors.primary,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  // Fits the 28px back chevron + its padding.
   headerSide: {
-    width: 40,
+    width: 32,
     flexDirection: 'row',
     alignItems: 'center',
   },
-  // The branch affordance on the context row: a quiet git-branch icon + the branch
-  // name, both muted + caption-sized — no box/border/background, deliberately not the
-  // title/tint color — so it reads as a passive status hint, not a tappable Back-style
-  // button. Bounded narrow so a long name truncates instead of stretching the row.
+  // The branch glyph under the title: muted so it reads as status, while staying
+  // tappable for the switcher. `headerBranch` is the caption text style that line
+  // (and the action hint replacing it) uses.
   headerBranchBtn: {
+    flexShrink: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
-    maxWidth: 120,
   },
   headerBranch: {
     flexShrink: 1,
-    color: theme.colors.textMuted,
-    fontSize: 11 * theme.fontScale,
+    color: theme.colors.textFaint,
+    fontSize: 12 * theme.fontScale,
     fontWeight: '400',
   },
-  // The bookmarks jump-list opener: a quiet dog-ear + count on the context row. Same
-  // muted, box-less caption language so it reads as a passive affordance. Row spacing
-  // is handled by the context row's `gap`.
-  headerBookmarkBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-  },
+  headerIssueLink: { color: theme.colors.primary },
   headerBookmarkCount: {
     color: theme.colors.textMuted,
     fontSize: 11 * theme.fontScale,
     fontWeight: '600',
   },
-  headerPreviewActiveText: { color: theme.colors.primary },
-  headerPreviewServerDot: {
-    position: 'absolute',
-    top: -2,
-    right: -3,
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: theme.colors.tone.done,
-    borderWidth: 1,
-    borderColor: theme.colors.surface,
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingRight: theme.spacing.xs,
   },
-  headerLoopButton: {
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 5,
+  // A 40pt round target with a 20pt icon — big enough to recognise at a glance.
+  headerActionBtn: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
     borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.surfaceAlt,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
   },
-  headerLoopButtonText: {
-    color: theme.colors.text,
+  headerActionDot: {
+    position: 'absolute',
+    top: 5,
+    right: 5,
+    width: 9,
+    height: 9,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.tone.done,
+    borderWidth: 1.5,
+    borderColor: theme.colors.surfaceAlt,
+  },
+  headerActionBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.accent,
+  },
+  headerActionBadgeText: {
+    color: '#ffffff',
     fontSize: 11 * theme.fontScale,
     fontWeight: '700',
-  },
-  // The context row under the title: a three-slot layout that pins the branch switcher
-  // to the row's true center (stable position) with the Issue chip in the left slot and
-  // the bookmarks opener in the right slot. Keeps the title row itself free of controls
-  // so the session name reads full-width.
-  headerMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: theme.spacing.sm,
-    paddingBottom: theme.spacing.xs,
-  },
-  headerMetaRowCompact: {
-    flexShrink: 0,
-    height: 44,
-    paddingLeft: 0,
-    paddingBottom: 0,
-  },
-  // Equal-flex side slots flanking the centered branch switcher: the left holds the
-  // Issue chip (left-aligned), the right holds the bookmarks opener (right-aligned, see
-  // headerMetaSideRight). Equal flex keeps the branch centered regardless of what — if
-  // anything — sits in either slot.
-  headerMetaSide: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  headerMetaSideCompact: {
-    flex: 0,
-  },
-  headerMetaSideRight: {
-    justifyContent: 'flex-end',
-    gap: theme.spacing.md,
-    // A little extra inset so the bookmark count doesn't hug the screen edge. Padding
-    // on the slot (not a margin on the button) keeps both side slots equal-flex, so the
-    // centered branch switcher stays put.
-    paddingRight: theme.spacing.sm,
-  },
-  headerMetaSideRightCompact: {
-    paddingRight: 0,
-    paddingLeft: theme.spacing.sm,
-    gap: theme.spacing.sm,
   },
   // The tappable engine chip (#switch-engine): the engine pill + a quiet caret/spinner
   // in a row, so the whole affordance reads as one button on the meta row.
@@ -9235,11 +10457,24 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.md,
   },
   driveSetupNotice: {
-    alignItems: 'flex-start',
-    gap: theme.spacing.xs,
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.xl * 2,
   },
-  driveSetupLink: {
-    color: theme.colors.primary,
+  driveSetupButton: {
+    marginTop: theme.spacing.sm,
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.lg,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.primary,
+  },
+  driveSetupButtonPressed: {
+    opacity: 0.78,
+  },
+  driveSetupButtonLabel: {
+    color: theme.colors.onPrimary,
     fontSize: theme.text.sm,
     fontWeight: '700',
   },
@@ -9247,32 +10482,42 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.lg,
     alignItems: 'center',
   },
-  filesHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    marginBottom: theme.spacing.sm,
-  },
-  filesTitleWrap: {
-    flex: 1,
-    minWidth: 0,
-  },
   filesPath: {
     color: theme.colors.textFaint,
     fontSize: theme.text.xs,
   },
+  // Pinned under the list while selecting: the one action that applies to the
+  // whole selection, labelled and away from the header's Done.
+  filesSelectionBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+    paddingTop: theme.spacing.sm,
+    paddingBottom: theme.spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+  },
+  // Tabs mark the active root with an underline, not a filled chip: a fill is
+  // what a button looks like, and these are places, not actions.
   filesRootBar: {
     flexDirection: 'row',
-    gap: theme.spacing.xs,
+    gap: theme.spacing.md,
     marginBottom: theme.spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.border,
   },
   filesRootButton: {
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: theme.spacing.xs,
-    borderRadius: theme.radius.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: theme.spacing.sm,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+    marginBottom: -StyleSheet.hairlineWidth,
   },
   filesRootButtonActive: {
-    backgroundColor: theme.colors.surfaceAlt,
+    borderBottomColor: theme.colors.primary,
   },
   filesRootLabel: {
     color: theme.colors.textMuted,
@@ -9342,20 +10587,6 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     minHeight: 280,
   },
-  filesPreviewHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.xs,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-    paddingBottom: theme.spacing.sm,
-  },
-  filesPreviewTitle: {
-    flex: 1,
-    color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
-  },
   filesPreview: {
     flex: 1,
   },
@@ -9401,6 +10632,14 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     color: theme.colors.text,
     fontSize: theme.text.md,
+  },
+  sheetExcludedNote: {
+    color: theme.colors.textFaint,
+    fontSize: theme.text.xs,
+    marginTop: theme.spacing.md,
+    paddingTop: theme.spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.colors.border,
   },
   sheetCurrent: {
     color: theme.colors.textFaint,
@@ -9547,6 +10786,7 @@ const styles = StyleSheet.create((theme) => ({
   /** The local merge bar has no status dot and nothing to open, so it carries the
    *  padding `prOpenTarget` gives the PR row itself — without it the branch name sits
    *  flush against the bar's border on one side and the Merge button on the other. */
+
   prLocalMain: {
     flex: 1,
     minWidth: 0,
@@ -9572,8 +10812,9 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: '600',
   },
   prMergeButton: {
-    width: 78,
+    minWidth: 78,
     height: 36,
+    paddingHorizontal: theme.spacing.sm,
     marginRight: theme.spacing.sm,
     alignItems: 'center',
     justifyContent: 'center',
@@ -9589,10 +10830,37 @@ const styles = StyleSheet.create((theme) => ({
   prMergeButtonPressed: {
     opacity: 0.8,
   },
+  prMergeButtonWaiting: {
+    // Same surface as the bar behind it would read as bare text, so the waiting button
+    // gets the stronger border tone as fill plus a visible edge to stay a button.
+    backgroundColor: theme.colors.border,
+    borderWidth: 1,
+    borderColor: theme.colors.textFaint,
+  },
+  prMergeButtonOutline: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: theme.colors.textMuted,
+  },
   prMergeText: {
     color: theme.colors.onPrimary,
     fontSize: theme.text.sm,
     fontWeight: '700',
+  },
+  prMergeWaiting: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+  },
+  prMergeWaitingText: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.xs,
+    fontWeight: '600',
+  },
+  prRefreshText: {
+    color: theme.colors.text,
+    fontSize: theme.text.xs,
+    fontWeight: '600',
   },
   prDismissButton: {
     width: 36,
@@ -9662,17 +10930,10 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: '600',
     textDecorationLine: 'underline',
   },
-  listContent: {
-    padding: theme.spacing.lg,
-    gap: theme.spacing.lg,
-  },
   // The transcript is stored newest-first and flipped: history then APPENDS at the
   // data end, behind the viewport, instead of being inserted in front of the reader.
   // FlashList 2 has no `inverted` prop, so the flip is a transform on the list plus a
   // counter-transform on every row (and on the footer spinner).
-  invertedList: {
-    transform: [{ scaleY: -1 }],
-  },
   invertedItem: {
     transform: [{ scaleY: -1 }],
   },
@@ -9824,6 +11085,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   // Each action chip: solid surface + border so it reads over the prose it overlaps.
   msgActionBtn: {
+    paddingVertical: 7,
+    paddingHorizontal: 9,
+    borderRadius: theme.radius.md,
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
     borderColor: theme.colors.border,
@@ -10028,11 +11292,11 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.textMuted,
     fontSize: theme.text.sm,
   },
-  // Collapsed multi-tool group count — a quiet "·N" suffix, not a filled badge.
+  // Collapsed multi-tool group count: quiet caption text, spelled out ("+9 more")
+  // so it explains itself instead of reading as a stray "·N".
   toolGroupCountText: {
-    color: theme.colors.textFaint,
+    color: theme.colors.textMuted,
     fontSize: theme.text.xs,
-    fontWeight: '600',
   },
   // The expanded run: individual tool lines, indented under the group line.
   toolGroupList: {
@@ -10088,6 +11352,27 @@ const styles = StyleSheet.create((theme) => ({
     marginTop: theme.spacing.xs,
     marginLeft: theme.spacing.lg,
   },
+  planEntry: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+  },
+  planMark: {
+    width: 14 * theme.fontScale,
+    color: theme.colors.textFaint,
+    fontSize: theme.text.sm,
+  },
+  planEntryText: {
+    flex: 1,
+    color: theme.colors.text,
+    fontSize: theme.text.sm,
+  },
+  planEntryDone: {
+    color: theme.colors.textFaint,
+    textDecorationLine: 'line-through',
+  },
+  planEntryCurrent: {
+    fontWeight: '600',
+  },
   toolCommand: {
     color: theme.colors.text,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
@@ -10134,6 +11419,11 @@ const styles = StyleSheet.create((theme) => ({
   eventDetail: {
     color: theme.colors.textFaint,
     fontSize: theme.text.xs,
+  },
+  eventTasksLink: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.xs,
+    fontWeight: '600',
   },
   eventAction: {
     alignSelf: 'flex-start',
@@ -10223,71 +11513,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.text.sm,
     fontWeight: '600',
   },
-  agentLoopProposal: {
-    gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    marginVertical: theme.spacing.sm,
-    borderRadius: theme.radius.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-  },
-  agentLoopProposalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.sm,
-  },
-  agentLoopProposalTitle: {
-    flex: 1,
-    color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '700',
-  },
-  agentLoopProposalState: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
-  },
-  agentLoopProposalSchedule: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-  },
-  agentLoopProposalScript: {
-    maxHeight: 220,
-    padding: theme.spacing.sm,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  agentLoopProposalScriptText: {
-    color: theme.colors.text,
-    fontSize: theme.text.xs,
-    lineHeight: 18 * theme.fontScale,
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-  },
-  agentLoopProposalHint: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    lineHeight: 18 * theme.fontScale,
-  },
-  agentLoopProposalError: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.xs,
-  },
-  agentLoopProposalConfirm: {
-    minHeight: 44,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.sm,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.accent,
-  },
-  agentLoopProposalConfirmText: {
-    color: theme.colors.background,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
-  },
   choicesChips: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -10362,6 +11587,23 @@ const styles = StyleSheet.create((theme) => ({
   },
   // The live per-tool permission prompt (#149): a bordered card just above the input,
   // attention-toned so it reads as "the agent is paused, waiting on your decision".
+  planHistory: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.surfaceAlt,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    gap: theme.spacing.sm,
+  },
+  planHistoryDone: { borderColor: theme.colors.tone.done },
+  planCount: { color: theme.colors.textMuted, fontSize: theme.text.xs },
+  planHistoryStatus: {
+    color: theme.colors.textFaint,
+    fontSize: theme.text.xs,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
   permissionPrompt: {
     marginHorizontal: theme.spacing.md,
     marginBottom: theme.spacing.sm,
@@ -10704,9 +11946,11 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: 2,
     textAlignVertical: 'top',
   },
-  inputCompact: {
+  inputContainerCompact: {
     flex: 1,
     minWidth: 80,
+  },
+  inputCompact: {
     maxHeight: 21 * 3,
   },
   // Action-slot + attach buttons share one clear circular footprint; the visible

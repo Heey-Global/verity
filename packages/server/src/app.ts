@@ -1,4 +1,6 @@
+import type { ProjectGitHubIssues } from './project-github-issues.js';
 import { Conductor, type Backend, type ConductorDeps, type EventBus } from '@verity/session';
+import { renderAssignedTasksPrompt } from '@verity/events';
 import type { VeritySettingsPatch, EventStore, SealableSecretCipher } from '@verity/store';
 import type { FastifyBaseLogger, FastifyInstance, FastifyRequest } from 'fastify';
 import {
@@ -38,6 +40,7 @@ import type { SandboxUpdateChecker } from './sandbox-updates.js';
 import type { ClaudeOAuthTokenProvider } from './claudeUsage.js';
 import type { CodexUsageCredentialProvider } from './codexUsage.js';
 import type { PushSender } from './push-sender.js';
+import { createSessionChangeFeed } from './live/live-hub.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
 export interface ControlPlaneDeps {
@@ -50,6 +53,8 @@ export interface ControlPlaneDeps {
   onMatrixConfigured?: ServerDeps['onMatrixConfigured'];
   /** TLS termination options for the public direct-server listener. */
   https?: ServerDeps['https'];
+  webAppDir?: ServerDeps['webAppDir'];
+  browserRequestOrigin?: ServerDeps['browserRequestOrigin'];
   unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
   /** Installer-issued authority that gates first initialization. */
   devicePairing?: ServerDeps['devicePairing'];
@@ -69,6 +74,7 @@ export interface ControlPlaneDeps {
   /** Google Drive OAuth iOS client id (ADR 0009), from `GOOGLE_AUTH_ID`. Forwarded
    *  to {@link buildServer}; non-secret, surfaced to the app via `/settings`. */
   googleDriveClientId?: string | undefined;
+  stagingGoogleClientId?: string | undefined;
   /** The sealable at-rest secret cipher — powers `/secret/status|init|unlock`.
    *  Omit → those routes report/act as an always-unlocked no-op deployment. */
   secretCipher?: SealableSecretCipher | undefined;
@@ -90,10 +96,16 @@ export interface ControlPlaneDeps {
   pushEnabled?: boolean | undefined;
   /** Temporary public preview lifecycle. Absent keeps sharing routes disabled. */
   previewShareManager?: ServerDeps['previewShareManager'];
+  listenerDiscovery?: ServerDeps['listenerDiscovery'];
+  localPreviewManager?: ServerDeps['localPreviewManager'];
+  previewSharingCapability?: ServerDeps['previewSharingCapability'];
   remoteControlDescriptor?: ServerDeps['remoteControlDescriptor'];
   uplinkDiagnostics?: ServerDeps['uplinkDiagnostics'];
+  runtimeDiagnostics?: ServerDeps['runtimeDiagnostics'];
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: ServerDeps['onUplinkCredentialsChanged'];
+  /** Check live Drive ancestry before granting automatic document URL reads. */
+  googleDriveDocumentIsWithinProject?: ServerDeps['googleDriveDocumentIsWithinProject'];
   /** Invalidate cached access tokens after shared Google OAuth credentials change. */
   onGoogleCredentialsChanged?: ServerDeps['onGoogleCredentialsChanged'];
   /** Standing brokered-secret grants for a project (ADR 0011 D2). */
@@ -215,6 +227,8 @@ export interface ControlPlaneDeps {
    * so neither the write's response nor the next overview poll echoes the state
    * from before it. Omit when `listProjects` is not memoised. */
   invalidateProjectList?: (() => void) | undefined;
+  /** Open issues read with a repository-scoped GitHub App credential. */
+  listProjectGitHubIssues?: ((project: ProjectRecord) => Promise<ProjectGitHubIssues>) | undefined;
   /** Every GitHub-App installation repository that could become a project —
    * including `state='absent'` rows `listProjects` leaves out. Omit → the repo
    * picker falls back to the project overview. */
@@ -294,8 +308,10 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
         }
       : undefined;
 
+  const sessionChanges = createSessionChangeFeed();
   return buildServer({
     eventStore: deps.eventStore,
+    sessionChanges,
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
     ...(deps.matrixConnectorToken !== undefined
       ? { matrixConnectorToken: deps.matrixConnectorToken }
@@ -304,6 +320,10 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { onMatrixConfigured: deps.onMatrixConfigured }
       : {}),
     ...(deps.https !== undefined ? { https: deps.https } : {}),
+    ...(deps.webAppDir !== undefined ? { webAppDir: deps.webAppDir } : {}),
+    ...(deps.browserRequestOrigin !== undefined
+      ? { browserRequestOrigin: deps.browserRequestOrigin }
+      : {}),
     ...(deps.unlockClientIdentity !== undefined
       ? { unlockClientIdentity: deps.unlockClientIdentity }
       : {}),
@@ -320,6 +340,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.serverUpdateNotifierStatePath !== undefined
       ? { serverUpdateNotifierStatePath: deps.serverUpdateNotifierStatePath }
+      : {}),
+    ...(deps.stagingGoogleClientId !== undefined
+      ? { stagingGoogleClientId: deps.stagingGoogleClientId }
       : {}),
     ...(deps.googleDriveClientId !== undefined
       ? { googleDriveClientId: deps.googleDriveClientId }
@@ -340,15 +363,28 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
     ...(deps.pushEnabled !== undefined ? { pushEnabled: deps.pushEnabled } : {}),
+    ...(deps.listenerDiscovery !== undefined ? { listenerDiscovery: deps.listenerDiscovery } : {}),
+    ...(deps.localPreviewManager !== undefined
+      ? { localPreviewManager: deps.localPreviewManager }
+      : {}),
+    ...(deps.previewSharingCapability !== undefined
+      ? { previewSharingCapability: deps.previewSharingCapability }
+      : {}),
     ...(deps.previewShareManager !== undefined
       ? { previewShareManager: deps.previewShareManager }
       : {}),
     ...(deps.remoteControlDescriptor !== undefined
       ? { remoteControlDescriptor: deps.remoteControlDescriptor }
       : {}),
+    ...(deps.runtimeDiagnostics !== undefined
+      ? { runtimeDiagnostics: deps.runtimeDiagnostics }
+      : {}),
     ...(deps.uplinkDiagnostics !== undefined ? { uplinkDiagnostics: deps.uplinkDiagnostics } : {}),
     ...(deps.onUplinkCredentialsChanged !== undefined
       ? { onUplinkCredentialsChanged: deps.onUplinkCredentialsChanged }
+      : {}),
+    ...(deps.googleDriveDocumentIsWithinProject !== undefined
+      ? { googleDriveDocumentIsWithinProject: deps.googleDriveDocumentIsWithinProject }
       : {}),
     ...(deps.onGoogleCredentialsChanged !== undefined
       ? { onGoogleCredentialsChanged: deps.onGoogleCredentialsChanged }
@@ -413,6 +449,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.invalidateProjectList !== undefined
       ? { invalidateProjectList: deps.invalidateProjectList }
       : {}),
+    ...(deps.listProjectGitHubIssues !== undefined
+      ? { listProjectGitHubIssues: deps.listProjectGitHubIssues }
+      : {}),
     ...(deps.listAvailableRepositories !== undefined
       ? { listAvailableRepositories: deps.listAvailableRepositories }
       : {}),
@@ -442,6 +481,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       new Conductor({
         store: deps.eventStore,
         bus: deps.bus,
+        onSessionChanged: (sessionId, change) => sessionChanges.emit(sessionId, change),
         ...deps.conductor,
         ...(deps.conductor?.sessionBackend === undefined &&
         derivedProjectSessionBackend !== undefined
@@ -455,6 +495,19 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
                   (session.name === VERITY_CONTROL_SESSION_NAME || session.name === 'Concierge'))
                   ? VERITY_CONTROL_SYSTEM_PROMPT
                   : '',
+            }
+          : {}),
+        ...(deps.conductor?.assignedTasksPrompt === undefined
+          ? {
+              assignedTasksPrompt: async (session) =>
+                renderAssignedTasksPrompt(
+                  (await deps.eventStore.tasks.listAssigned(session.sessionId)).map((task) => ({
+                    id: task.id,
+                    title: task.title,
+                    status: task.status === 'in_progress' ? 'in_progress' : 'open',
+                    attachments: task.attachments.length,
+                  })),
+                ),
             }
           : {}),
         onTurnError: (sessionId, error) => {

@@ -1,13 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
+  PROJECT_AGENTS,
   PROJECT_MEMORY_MAX_CHARS,
-  DevServerPortRangeExhaustedError,
   SealedError,
   type ProjectSettingsPatch,
 } from '@verity/store';
 import { isValidBranchName } from './branches.js';
 import type { BrokeredGrantRecord } from './brokered-http-grants.js';
+import { ProjectAgentNotAllowedError } from './project-agent-policy.js';
 
 const projectParams = z.object({ id: z.string().min(1) });
 const grantParams = z.object({ id: z.string().min(1), grantId: z.string().min(1) });
@@ -17,6 +18,7 @@ const setupStatusBody = z.object({
 });
 const settingsBody = z
   .object({
+    googleDriveAccessMode: z.enum(['read-only', 'read-write']).optional(),
     dopplerProject: z.string().nullable().optional(),
     dopplerConfig: z.string().nullable().optional(),
     defaultBranch: z
@@ -26,6 +28,13 @@ const settingsBody = z
       .nullable()
       .optional(),
     defaultModel: z.string().nullable().optional(),
+    // Null allows every connected agent; a list must keep at least one agent.
+    allowedAgents: z
+      .array(z.enum(PROJECT_AGENTS))
+      .min(1, 'at least one agent must stay allowed')
+      .refine((agents) => new Set(agents).size === agents.length, 'duplicate agent')
+      .nullable()
+      .optional(),
     memory: z
       .string()
       .max(
@@ -123,19 +132,18 @@ export function registerProjectDetailRoutes(
       reply.code(404);
       return { error: `project ${id} not found` };
     }
+    let settings: unknown;
     try {
-      const settings = await deps.updateSettings(id, patch);
-      if (settings === undefined) {
-        reply.code(404);
-        return { error: `project ${id} not found` };
-      }
-      return { settings };
+      settings = await deps.updateSettings(id, patch);
     } catch (error) {
-      if (error instanceof DevServerPortRangeExhaustedError) {
-        reply.code(409);
-        return { error: error.message };
-      }
-      throw error;
+      if (!(error instanceof ProjectAgentNotAllowedError)) throw error;
+      reply.code(400);
+      return { error: error.message };
     }
+    if (settings === undefined) {
+      reply.code(404);
+      return { error: `project ${id} not found` };
+    }
+    return { settings };
   });
 }

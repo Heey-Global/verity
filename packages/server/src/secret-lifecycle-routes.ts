@@ -9,7 +9,13 @@ import {
   type SealableSecretCipher,
 } from '@verity/store';
 import type { SecretStatus } from './attention.js';
-import { bearerToken, type AuthTokenRegistry } from './auth.js';
+import {
+  browserOriginAllowed,
+  cookieCredential,
+  setBrowserSession,
+  requestCredential,
+  type AuthTokenRegistry,
+} from './auth.js';
 import type { DevicePairingManager } from './device-pairing.js';
 import { createUnlockThrottle } from './unlock-throttle.js';
 
@@ -39,6 +45,7 @@ export interface SecretLifecycleRouteDeps {
   readStatus: () => Promise<SecretStatus>;
   secretCipher?: SealableSecretCipher | undefined;
   devicePairing?: DevicePairingManager | undefined;
+  browserRequestOrigin?: ((request: FastifyRequest) => string | undefined) | undefined;
   authRegistry?: AuthTokenRegistry | undefined;
   unlockClientIdentity?: ((request: FastifyRequest) => string | undefined) | undefined;
   onSecretUnlocked?: (() => Promise<void>) | undefined;
@@ -86,7 +93,9 @@ export function registerSecretLifecycleRoutes(
     status: await deps.readStatus(),
   }));
 
-  app.post('/secret/init', { bodyLimit: 4_096 }, async (request, reply) => {
+  const initialize = (browser: boolean) => async (request: FastifyRequest, reply: FastifyReply) => {
+    if (browser && !browserOriginAllowed(request, deps.browserRequestOrigin?.(request)))
+      return reply.code(403).send({ error: 'invalid origin' });
     // Keep this pre-auth body far below the media-sized global limit so an
     // unauthenticated caller cannot make the server buffer tens of megabytes.
     const cipher = deps.secretCipher;
@@ -157,13 +166,22 @@ export function registerSecretLifecycleRoutes(
     }
     // Mint only after every deferred authority is active; otherwise a failed
     // activation could orphan a valid device token.
-    const auth = await mintDeviceToken(deviceLabel);
+    deps.authRegistry?.enable();
+    const auth =
+      browser && deps.authRegistry !== undefined
+        ? await deps.authRegistry
+            .mint(deviceLabel ?? null, true)
+            .then(({ token, id }) => ({ token, tokenId: id }))
+        : await mintDeviceToken(deviceLabel);
+    if (browser && auth !== undefined) setBrowserSession(reply, auth.token);
     unlockThrottle.recordSuccess(throttleIdentity);
     deps.recoverQueuedTurns('secret-init');
-    return { status: 'unlocked' as const, ...auth };
-  });
+    return { status: 'unlocked' as const, ...(browser ? { tokenId: auth?.tokenId } : auth) };
+  };
 
-  app.post('/secret/unlock', { bodyLimit: 4_096 }, async (request, reply) => {
+  const unlock = (browser: boolean) => async (request: FastifyRequest, reply: FastifyReply) => {
+    if (browser && !browserOriginAllowed(request, deps.browserRequestOrigin?.(request)))
+      return reply.code(403).send({ error: 'invalid origin' });
     // This route is also pre-auth, so it receives the same tight body limit as
     // initialization instead of inheriting the media-sized global limit.
     const cipher = deps.secretCipher;
@@ -173,7 +191,9 @@ export function registerSecretLifecycleRoutes(
     }
     if (deps.devicePairing !== undefined) {
       const existingDevice =
-        deps.authRegistry?.verify(bearerToken(request.headers.authorization)) === true;
+        deps.authRegistry?.verify(requestCredential(request)) === true &&
+        (cookieCredential(request) === undefined ||
+          deps.authRegistry.isBrowserToken(requestCredential(request)));
       const bootstrap = request.headers['x-verity-pairing'];
       if (!existingDevice && typeof bootstrap !== 'string') {
         reply.code(401);
@@ -212,7 +232,9 @@ export function registerSecretLifecycleRoutes(
     // unauthenticated guess cannot burn a valid pairing attempt.
     if (deps.devicePairing !== undefined) {
       const existingDevice =
-        deps.authRegistry?.verify(bearerToken(request.headers.authorization)) === true;
+        deps.authRegistry?.verify(requestCredential(request)) === true &&
+        (cookieCredential(request) === undefined ||
+          deps.authRegistry.isBrowserToken(requestCredential(request)));
       const bootstrap = request.headers['x-verity-pairing'];
       if (!existingDevice && !deps.devicePairing.consumeBootstrap(bootstrap as string)) {
         unlockThrottle.recordFailure(throttleIdentity);
@@ -231,8 +253,26 @@ export function registerSecretLifecycleRoutes(
       return { error: 'secret store unlocked, but broker activation is still pending' };
     }
     // Enroll the device only after broker activation succeeds.
-    const auth = await mintDeviceToken(deviceLabel);
+    deps.authRegistry?.enable();
+    const existingCookie = cookieCredential(request);
+    const existingId = deps.authRegistry?.resolveId(existingCookie);
+    const auth =
+      browser &&
+      existingCookie !== undefined &&
+      existingId !== undefined &&
+      deps.authRegistry?.isBrowserToken(existingCookie)
+        ? { token: existingCookie, tokenId: existingId }
+        : browser && deps.authRegistry !== undefined
+          ? await deps.authRegistry
+              .mint(deviceLabel ?? null, true)
+              .then(({ token, id }) => ({ token, tokenId: id }))
+          : await mintDeviceToken(deviceLabel);
+    if (browser && auth !== undefined) setBrowserSession(reply, auth.token);
     deps.recoverQueuedTurns('secret-unlock');
-    return { status: 'unlocked' as const, ...auth };
-  });
+    return { status: 'unlocked' as const, ...(browser ? { tokenId: auth?.tokenId } : auth) };
+  };
+  app.post('/secret/init', { bodyLimit: 4096 }, initialize(false));
+  app.post('/secret/init/browser', { bodyLimit: 4096 }, initialize(true));
+  app.post('/secret/unlock', { bodyLimit: 4096 }, unlock(false));
+  app.post('/secret/unlock/browser', { bodyLimit: 4096 }, unlock(true));
 }

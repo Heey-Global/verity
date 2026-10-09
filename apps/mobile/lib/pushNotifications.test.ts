@@ -19,6 +19,7 @@ import { getAuthTokenId, getStoredAuthTokenId } from './authToken';
 import {
   createPushOutboxForClient,
   ensurePushRegistration,
+  foregroundPushBehavior,
   handlePushResponse,
   registerPushCategories,
 } from './pushNotifications';
@@ -342,5 +343,37 @@ describe('handlePushResponse', () => {
     await handlePushResponse(response('VERITY_ALLOW', { nope: true }), outbox, navigate);
     expect(outbox.enqueue).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
+  });
+});
+
+describe('foregroundPushBehavior', () => {
+  const surfaced = (data: unknown): boolean => {
+    const behavior = foregroundPushBehavior(data);
+    // Banner, list and sound move together: a banner without the sound is exactly
+    // the silent delivery that let a waiting agent go unnoticed.
+    expect(behavior.shouldShowList).toBe(behavior.shouldShowBanner);
+    expect(behavior.shouldPlaySound).toBe(behavior.shouldShowBanner);
+    return behavior.shouldShowBanner;
+  };
+
+  it('surfaces the pushes the agent is blocked on', () => {
+    expect(surfaced({ sessionId: 's1', kind: 'permission', toolUseId: 't1' })).toBe(true);
+    expect(surfaced({ sessionId: 's1', kind: 'question' })).toBe(true);
+  });
+
+  it('keeps informational and unrecognised pushes quiet in the foreground', () => {
+    expect(surfaced({ sessionId: 's1', kind: 'completed' })).toBe(false);
+    expect(surfaced({ sessionId: 's1', kind: 'crashed' })).toBe(false);
+    expect(
+      surfaced({
+        sessionId: 's1',
+        kind: 'pull_request_ready',
+        pullRequestNumber: 1,
+        deviceId: 'd',
+      }),
+    ).toBe(false);
+    expect(surfaced({ kind: 'server-update', version: '1.2.3' })).toBe(false);
+    // A permission payload without its toolUseId is malformed, not a prompt.
+    expect(surfaced({ sessionId: 's1', kind: 'permission' })).toBe(false);
   });
 });

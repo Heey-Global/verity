@@ -40,9 +40,14 @@ import * as http from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { HttpFetch, HttpResponse } from './github.js';
 
+/** Additive companion configuration applied only to the replacement container. */
+export interface ContainerReplacementConfig {
+  env: Record<string, string>;
+  portBindings: Record<string, Array<{ HostIp: string; HostPort: string }>>;
+}
+
 /** The subset of the Docker Engine REST API Verity calls. §17 socket-proxy
- *  scope: only those endpoints the proxy explicitly allows; unscoped endpoints
- *  return 403 and we don't reach them here. */
+ * scope: only those endpoints the proxy explicitly allows. */
 export interface DockerClient {
   /** Create a container without starting it (Engine `/containers/create`). The
    *  `{ Id }` of the new container is returned, NOT the running state. Rejects
@@ -94,11 +99,13 @@ export interface DockerClient {
   removeContainer(id: string): Promise<void>;
   /** Replace one host-infrastructure container with the same Docker config and
    * mounts but a different immutable image. The real client rolls the original
-   * config back if creation or startup of the successor fails. */
+   * config back if creation or startup of the successor fails. Optional config
+   * additions migrate companion ingress without changing the rollback source. */
   replaceContainerImage?(
     id: string,
     image: string,
     labels?: Record<string, string>,
+    config?: ContainerReplacementConfig,
   ): Promise<string>;
   /** Inspect a container — `{ State: { Running } }` is all the provisioner reads.
    *  404 → `ContainerNotFound`. Used to detect an already-running sibling
@@ -288,6 +295,7 @@ export interface ContainerSpec {
    *  by its service DNS name (e.g. the commit-signing broker at
    *  `http://verity:8082`) container-to-container, without a host round-trip. */
   network?: string;
+  additionalNetworks?: string[];
   /** Static `/etc/hosts` entries, `host:ip` (`HostConfig.ExtraHosts`). */
   extraHosts?: string[];
   /** OCI runtime registered with the Docker daemon (`HostConfig.Runtime`). Secret jobs set this
@@ -396,6 +404,10 @@ export interface ContainerInspect {
   openStdin?: boolean;
   /** Container image reference recorded on the container config. */
   image?: string | undefined;
+  /** Per-process resource limits retained by session containers. */
+  ulimits?: Array<{ name: string; soft: number; hard: number }> | undefined;
+  /** Immutable image ID used by this container. */
+  imageId?: string | undefined;
   /** OpenContainers/custom labels recorded on the container config. */
   labels?: Record<string, string> | undefined;
   /** Docker networks attached to the container, keyed by network name. */
@@ -416,6 +428,8 @@ export interface ContainerInspect {
    *  `Restarting`, which is only true during the brief window of a restart. */
   restartCount?: number | undefined;
   healthStatus?: string | undefined;
+  extraHosts?: string[] | undefined;
+  sysctls?: Record<string, string> | undefined;
   networkMode?: string | undefined;
   readOnlyRootfs?: boolean | undefined;
   tmpfs?: Record<string, string> | undefined;
@@ -433,6 +447,7 @@ export interface ContainerInspect {
    *  its neighbours. 0 and 1024 are NOT the same answer here; see
    *  {@link ContainerSpec.cpuShares}. */
   cpuShares?: number | undefined;
+  portBindings?: ContainerReplacementConfig['portBindings'] | undefined;
   env?: string[] | undefined;
   /** Runtime mounts reported by inspect; secret jobs require this to be empty. */
   mountCount?: number | undefined;
@@ -1129,6 +1144,17 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
     );
     const body = {
       Image: spec.image,
+      ...(spec.additionalNetworks?.length
+        ? {
+            NetworkingConfig: {
+              EndpointsConfig: Object.fromEntries(
+                [spec.network, ...spec.additionalNetworks]
+                  .filter((name): name is string => Boolean(name))
+                  .map((name) => [name, {}]),
+              ),
+            },
+          }
+        : {}),
       // OpenContainers labels carry the host-side metadata; §19.3 sets
       // verity.project-id so a future reconcile pass finds Verity-owned containers.
       Labels: spec.labels ?? {},
@@ -1470,7 +1496,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       );
       if (!res.ok) throw await toDockerError(res, id);
     },
-    replaceContainerImage: async (id, image, labels) => {
+    replaceContainerImage: async (id, image, labels, replacementConfig) => {
       const replacementForLabel = 'verity.replacement-for';
       const replacementNameLabel = 'verity.replacement-name';
       const findReplacement = async (): Promise<{ id: string; name: string } | undefined> => {
@@ -1585,7 +1611,39 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         const replacementId = await createRawReplacement(
           `${name}-replacement-${id.slice(0, 12)}`,
           image,
-          original,
+          replacementConfig === undefined
+            ? original
+            : {
+                ...original,
+                Config: {
+                  ...original.Config,
+                  Env: [
+                    ...(isStringArray(original.Config?.Env) ? original.Config.Env : []).filter(
+                      (entry) => !Object.hasOwn(replacementConfig.env, entry.split('=')[0]!),
+                    ),
+                    ...Object.entries(replacementConfig.env).map(
+                      ([key, value]) => `${key}=${value}`,
+                    ),
+                  ],
+                  ExposedPorts: {
+                    ...(objectRecord(original.Config?.ExposedPorts)
+                      ? original.Config.ExposedPorts
+                      : {}),
+                    ...Object.fromEntries(
+                      Object.keys(replacementConfig.portBindings).map((port) => [port, {}]),
+                    ),
+                  },
+                },
+                HostConfig: {
+                  ...original.HostConfig,
+                  PortBindings: {
+                    ...(objectRecord(original.HostConfig?.PortBindings)
+                      ? original.HostConfig.PortBindings
+                      : {}),
+                    ...replacementConfig.portBindings,
+                  },
+                },
+              },
           name,
           targetEnvironment,
           {
@@ -1701,6 +1759,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       if (!res.ok) throw await toDockerError(res, id);
       const json = (await res.json()) as {
         Id?: unknown;
+        Image?: unknown;
         RestartCount?: unknown;
         State?: {
           Running?: unknown;
@@ -1718,8 +1777,12 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         };
         NetworkSettings?: { Networks?: unknown };
         HostConfig?: {
+          Ulimits?: unknown;
+          PortBindings?: ContainerReplacementConfig['portBindings'];
           Runtime?: unknown;
           NetworkMode?: unknown;
+          ExtraHosts?: unknown;
+          Sysctls?: unknown;
           ReadonlyRootfs?: unknown;
           Tmpfs?: unknown;
           CapDrop?: unknown;
@@ -1772,9 +1835,23 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
             )
           : undefined;
       return {
+        ...(Array.isArray(json.HostConfig?.Ulimits)
+          ? {
+              ulimits: json.HostConfig.Ulimits.flatMap((value: unknown) => {
+                if (typeof value !== 'object' || value === null) return [];
+                const limit = value as { Name?: unknown; Soft?: unknown; Hard?: unknown };
+                return typeof limit.Name === 'string' &&
+                  typeof limit.Soft === 'number' &&
+                  typeof limit.Hard === 'number'
+                  ? [{ name: limit.Name, soft: limit.Soft, hard: limit.Hard }]
+                  : [];
+              }),
+            }
+          : {}),
         id: json.Id,
         running: json.State?.Running === true,
         ...(typeof json.Config?.Image === 'string' ? { image: json.Config.Image } : {}),
+        ...(typeof json.Image === 'string' ? { imageId: json.Image } : {}),
         ...(labels !== undefined ? { labels } : {}),
         ...(networks !== undefined ? { networks } : {}),
         ...(typeof json.Config?.User === 'string' ? { user: json.Config.User } : {}),
@@ -1793,6 +1870,12 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           ? { readOnlyRootfs: json.HostConfig.ReadonlyRootfs }
           : {}),
         ...(isStringRecord(json.HostConfig?.Tmpfs) ? { tmpfs: json.HostConfig.Tmpfs } : {}),
+        ...(isStringArray(json.HostConfig?.ExtraHosts)
+          ? { extraHosts: json.HostConfig.ExtraHosts }
+          : {}),
+        ...(parseDockerLabels(json.HostConfig?.Sysctls)
+          ? { sysctls: parseDockerLabels(json.HostConfig?.Sysctls) }
+          : {}),
         ...(isStringArray(json.HostConfig?.CapDrop) ? { capDrop: json.HostConfig.CapDrop } : {}),
         ...(isStringArray(json.HostConfig?.SecurityOpt)
           ? { securityOpt: json.HostConfig.SecurityOpt }
@@ -1812,6 +1895,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         ...(typeof json.HostConfig?.CpuShares === 'number'
           ? { cpuShares: json.HostConfig.CpuShares }
           : {}),
+        ...(json.HostConfig?.PortBindings ? { portBindings: json.HostConfig.PortBindings } : {}),
         ...(isStringArray(json.Config?.Env) ? { env: json.Config.Env } : {}),
         ...(Array.isArray(json.Mounts)
           ? {

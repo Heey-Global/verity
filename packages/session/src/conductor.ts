@@ -5,6 +5,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import {
   appendExternalPromptData,
+  DISMISSED_PLAN_SYSTEM_PROMPT,
+  PLANNING_ACTIVE_SYSTEM_PROMPT,
   SANDBOX_NOT_READY_ERROR_KIND,
   turnFailureErrorKind,
   type AgentEvent,
@@ -12,8 +14,10 @@ import {
   type AttachmentUpload,
 } from '@verity/events';
 import { isLocalProject } from '@verity/store';
+import { PLANNING_PERMISSION_MODE } from './runner.js';
 import type {
   EventStore,
+  PlanningConsent,
   QueuedTurnOpts,
   RunningTurnRecord,
   SessionRecord,
@@ -441,12 +445,20 @@ export interface TurnPreparationContext {
 
 export interface ConductorDeps {
   store: EventStore;
+  /** A session changed in a way no event records: it started or stopped
+   * working, or received an automatic name. Lets live overviews refresh the row.
+   * Must not throw; called synchronously. */
+  onSessionChanged?: ((sessionId: string, change: 'activity' | 'name') => void) | undefined;
   /** Project overview.md contents for a fresh backend context. */
   projectOverview?: ((projectId: string) => Promise<string | undefined>) | undefined;
   /** Durable Verity-owned system context selected from the persisted session.
    * Evaluated whenever a fresh backend context starts, so an empty session can
    * receive hidden capabilities on its first real turn without a synthetic turn. */
   sessionSystemPrompt?: ((session: SessionRecord) => string | Promise<string>) | undefined;
+  /** The "Assigned tasks" section for a session (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md
+   * §6.2). Rebuilt on EVERY turn, resumed contexts included, so compaction or a
+   * backend switch cannot lose the list; empty when nothing is assigned. */
+  assignedTasksPrompt?: ((session: SessionRecord) => string | Promise<string>) | undefined;
   /** Secret alias NAMES eligible for `verity_http_request` / `verity_secret_run` in a
    * project (ADR 0011 D3); best-effort — failures or absence simply omit the list from
    * the turn context. Backend-independent: the names reach every ACP backend that can
@@ -675,24 +687,47 @@ export interface TurnOptions {
   attachments?: readonly AttachmentUpload[] | undefined;
 }
 
-export interface DispatchTurnOptions {
+/** Who a prompt came from: a linked peer session, and/or the local user the turn
+ * runs for (ADR 0023 §2). Both are durable provenance on the `prompt` event, set
+ * by the server and never taken from a request body. */
+export interface PromptOrigin {
+  peer?: { sessionId: string; projectId: string; label: string; message: string };
+  initiatedBy?: { userId: string };
+}
+
+/** Copy only the provenance fields that are set, so a persisted event carries no
+ * explicit `undefined` keys. */
+function originFields(origin: PromptOrigin): PromptOrigin {
+  return {
+    ...(origin.peer ? { peer: origin.peer } : {}),
+    ...(origin.initiatedBy ? { initiatedBy: origin.initiatedBy } : {}),
+  };
+}
+
+export interface DispatchTurnOptions extends PromptOrigin {
   /** Transcript text to show for this turn when it differs from the backend prompt. */
   displayPrompt?: string;
-  peer?: { sessionId: string; projectId: string; label: string; message: string };
   /** Client-minted idempotency key (ADR 0008). A background-woken app can be
    * suspended by iOS before it reads the 202 and re-flush the same quick reply on
    * the next foreground; keyed dispatches dedupe so the replay returns the prior
    * result instead of dispatching a second turn. Omitted by in-app turns. */
   clientReplyId?: string;
+  /** Wait for the running turn instead of steering into it. A turn that must run
+   *  under different session state than the live one — the implementation that
+   *  follows an accepted plan — cannot be folded into the planning turn still
+   *  running under the old posture. */
+  queueBehindActiveTurn?: boolean;
+  /** Atomically accept this plan revision with the durable implementation queue. */
+  planningRevision?: number;
+  planningConsent?: PlanningConsent;
 }
 
-interface QueuedConductorTurn {
+interface QueuedConductorTurn extends PromptOrigin {
   /** Durable queue row id. Undefined for prompts already persisted in the event log. */
   id?: string;
   prompt: string;
   opts: TurnOptions;
   displayPrompt?: string;
-  peer?: { sessionId: string; projectId: string; label: string; message: string };
   /** Stored attachment refs used by queue-status consumers for lightweight previews. */
   displayAttachments?: Attachment[];
   /** True when recovery is replaying a tail prompt event and must not append it again. */
@@ -805,8 +840,6 @@ function buildConversationDigest(events: readonly AgentEvent[], maxPrompts: numb
 export interface StartOptions {
   /** Optional Verity-owned session id to persist the new run under. */
   sessionId?: string | undefined;
-  /** Known kind for a pre-created Verity session; selects kind-specific directives. */
-  sessionKind?: SessionRecord['kind'] | undefined;
   /**
    * The worktree the new agent runs in (its `cwd`). Must be an existing,
    * unused directory — §5a requires worktree↔session 1:1, enforced at the DB by
@@ -873,6 +906,10 @@ export interface StartOptions {
  */
 export class Conductor {
   private readonly inFlight = new Set<string>();
+  private readonly dispatchTails = new Map<string, Promise<void>>();
+  private readonly failedSteeringPersistence = new Set<string>();
+  private readonly pendingUserDispatches = new Map<string, number>();
+  private readonly runningPlanning = new Map<string, boolean>();
   /** Stop-watchdog waiters woken by {@link releaseInFlight} — how the cancel path
    * observes "the session is actually free again" regardless of WHICH settle path
    * (launch run loop, reattached tail, force-settle) released it. */
@@ -1007,7 +1044,10 @@ export class Conductor {
   // a genuine retry can run; successes stay so a late re-flush is a no-op. Bounded
   // per session by {@link MAX_SEEN_REPLIES_PER_SESSION} — process-local, so a
   // restart at worst re-runs a mid-flight reply (still ordered by the durable queue).
-  private readonly seenReplies = new Map<string, Map<string, Promise<{ queued: boolean }>>>();
+  private readonly seenReplies = new Map<
+    string,
+    Map<string, Promise<{ queued: boolean; accepted?: boolean }>>
+  >();
   // Whether new turns run with the permission control loop on (#27). Default off.
   private readonly permissionControl: boolean;
   // The default backend each turn runs through (ADR 0001 / #143). Default: the
@@ -1318,6 +1358,7 @@ export class Conductor {
       runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
     }
     runOpts.appendSystemPrompt += this.projectKnowledgePrompt(session);
+    runOpts.appendSystemPrompt += await this.assignedTasksPrompt(session);
     runOpts.appendSystemPrompt = withBackendSystemPrompt(
       runOpts.appendSystemPrompt,
       backend,
@@ -1608,6 +1649,12 @@ export class Conductor {
     return this.inFlight.has(sessionId);
   }
 
+  /** Restricts the live turn even after the session's planning decision.
+   * Recovered turns retain restrictions until their unknown posture settles. */
+  isPlanningTurn(sessionId: string): boolean {
+    return this.inFlight.has(sessionId) && this.runningPlanning.get(sessionId) !== false;
+  }
+
   /**
    * A stateless one-shot model query — spawns the backend's `query` (e.g. `claude -p`)
    * ONCE with no session, transcript, worktree, or store writes, and returns its raw
@@ -1762,7 +1809,7 @@ export class Conductor {
         this.parkWhenIdle(sessionId, guarded);
         return;
       }
-      this.inFlight.add(sessionId);
+      this.markInFlight(sessionId);
       this.maintenanceLocks.add(sessionId);
       try {
         await fn();
@@ -1813,7 +1860,7 @@ export class Conductor {
     fn: () => Promise<T>,
   ): Promise<{ ran: true; value: T } | { ran: false }> {
     if (this.inFlight.has(sessionId)) return { ran: false };
-    this.inFlight.add(sessionId);
+    this.markInFlight(sessionId);
     this.maintenanceLocks.add(sessionId);
     try {
       return { ran: true, value: await fn() };
@@ -1882,7 +1929,7 @@ export class Conductor {
       // this barrier exists to prevent, in its least visible form. Refusing costs a
       // retriable 409 and nothing else.
       if (this.inFlight.has(sessionId)) throw new SessionBusyError(sessionId);
-      this.inFlight.add(sessionId);
+      this.markInFlight(sessionId);
       this.maintenanceLocks.add(sessionId);
       try {
         return await fn();
@@ -2028,8 +2075,22 @@ export class Conductor {
   }
 
   /** Release this session's turn lock and run actions waiting on that exact boundary. */
+  private markInFlight(sessionId: string): void {
+    this.inFlight.add(sessionId);
+    this.sessionChanged(sessionId, 'activity');
+  }
+
+  private sessionChanged(sessionId: string, change: 'activity' | 'name'): void {
+    try {
+      this.deps.onSessionChanged?.(sessionId, change);
+    } catch {
+      // An observer must never affect the turn.
+    }
+  }
+
   private releaseInFlight(sessionId: string): void {
-    this.inFlight.delete(sessionId);
+    if (this.inFlight.delete(sessionId)) this.sessionChanged(sessionId, 'activity');
+    this.runningPlanning.delete(sessionId);
     // The fence dropping IS the recovery from an unconfirmed stop, whichever path got
     // there (reaper, late run-loop settle, or the liveness sweep).
     this.clearTerminationUnconfirmed(sessionId);
@@ -2739,35 +2800,9 @@ export class Conductor {
     /** Channel stated by the caller, for a prompt that no turn carries. */
     statedChannel?: BrokeredGrantChannel,
   ): void {
-    const toolName = brokeredGrantToolName(request.toolName);
-    if (toolName === undefined) return;
-    const check = this.deps.checkBrokeredHttpGrant;
-    if (check === undefined) return;
-    const target = brokeredGrantTarget(toolName, request.input);
-    if (target === undefined) return;
-    // Which transport this prompt arrived on decides which grants may answer it
-    // (ADR 0014 D3). A prompt with no live turn to read it from is left to the card:
-    // guessing a channel here could hand a prompt grants it is not entitled to use.
-    const channel = statedChannel ?? this.turns.get(sessionId)?.grantChannel;
-    if (channel === undefined) return;
     void (async () => {
+      if (!(await this.isCoveredByBrokeredGrant(sessionId, request, statedChannel))) return;
       try {
-        const session = await this.deps.store.getSession(sessionId);
-        const projectId = session?.projectId;
-        if (projectId == null) return;
-        const covered = await Promise.all(
-          target.secretAliases.map((secretAlias) =>
-            check({
-              projectId,
-              sessionId,
-              channel,
-              secretAlias,
-              toolName: target.toolName,
-              target: target.target,
-            }),
-          ),
-        );
-        if (!covered.every(Boolean)) return;
         await this.decidePermission(
           sessionId,
           request.toolUseId,
@@ -2780,6 +2815,45 @@ export class Conductor {
     })();
   }
 
+  private async isCoveredByBrokeredGrant(
+    sessionId: string,
+    request: PermissionRequest,
+    statedChannel?: BrokeredGrantChannel,
+  ): Promise<boolean> {
+    const toolName = brokeredGrantToolName(request.toolName);
+    const check = this.deps.checkBrokeredHttpGrant;
+    if (toolName === undefined || check === undefined) return false;
+    const channel = statedChannel ?? this.turns.get(sessionId)?.grantChannel;
+    if (channel === undefined) return false;
+    try {
+      const session = await this.deps.store.getSession(sessionId);
+      const projectId = session?.projectId;
+      if (session === undefined || projectId == null) return false;
+      const target = brokeredGrantTarget(
+        toolName,
+        toolName === 'verity_secret_run'
+          ? { ...request.input, cwd: session.worktree }
+          : request.input,
+      );
+      if (target === undefined) return false;
+      const covered = await Promise.all(
+        target.secretAliases.map((secretAlias) =>
+          check({
+            projectId,
+            sessionId,
+            channel,
+            secretAlias,
+            toolName: target.toolName,
+            target: target.target,
+          }),
+        ),
+      );
+      return covered.every(Boolean);
+    } catch {
+      return false;
+    }
+  }
+
   private async persistBrokeredGrant(
     sessionId: string,
     request: PermissionRequest,
@@ -2787,12 +2861,11 @@ export class Conductor {
     /** Channel stated by the caller, for a prompt that no turn carries. */
     statedChannel?: BrokeredGrantChannel,
   ): Promise<void> {
+    if (scope === 'forever') throw new Error('permanent brokered secret grants are unsupported');
     const persist = this.deps.persistBrokeredHttpGrant;
     if (persist === undefined) throw new Error('brokered secret grant persistence is unavailable');
     const toolName = brokeredGrantToolName(request.toolName);
     if (toolName === undefined) throw new Error('tool does not support brokered secret grants');
-    const target = brokeredGrantTarget(toolName, request.input);
-    if (target === undefined) throw new Error('invalid brokered secret grant target');
     // The channel the operator answered on is recorded with the grant (ADR 0014 D3), so
     // it must come from the live turn — or, for a prompt no turn carries, from the caller
     // that raised it — rather than be assumed. Without one the allow still stands for this
@@ -2802,7 +2875,15 @@ export class Conductor {
     if (channel === undefined) throw new Error('brokered secret turn has no resolved channel');
     const session = await this.deps.store.getSession(sessionId);
     const projectId = session?.projectId;
-    if (projectId == null) throw new Error('brokered secret session has no project');
+    if (session === undefined || projectId == null)
+      throw new Error('brokered secret session has no project');
+    const target = brokeredGrantTarget(
+      toolName,
+      toolName === 'verity_secret_run'
+        ? { ...request.input, cwd: session.worktree }
+        : request.input,
+    );
+    if (target === undefined) throw new Error('invalid brokered secret grant target');
     for (const secretAlias of target.secretAliases) {
       await persist({
         projectId,
@@ -2861,7 +2942,7 @@ export class Conductor {
     toolName: string;
     input: Record<string, unknown>;
     channel: BrokeredGrantChannel;
-    /** Explicitly false for tools, such as trusted CLI, that require a fresh decision. */
+    /** Explicitly false for tools that require a fresh decision. */
     allowStandingGrant?: boolean | undefined;
     signal?: AbortSignal | undefined;
   }): Promise<ExternalPermissionAnswer> {
@@ -2904,11 +2985,25 @@ export class Conductor {
       grantChannel: channel,
     };
     try {
-      const persisted = await this.deps.store.appendEvent(sessionId, event);
-      this.deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
       if (signal?.aborted === true) onAbort();
       else signal?.addEventListener('abort', onAbort, { once: true });
-      if (params.allowStandingGrant !== false) this.maybeAutoApprove(sessionId, request, channel);
+      // A reusable grant must settle before publishing a card: publishing first
+      // briefly asks for an answer that the saved approval already provides.
+      if (
+        params.allowStandingGrant !== false &&
+        (await Promise.race([
+          this.isCoveredByBrokeredGrant(sessionId, request, channel),
+          answered.then(() => false),
+        ]))
+      ) {
+        this.settleExternalPermission(sessionId, toolUseId, {
+          decision: { behavior: 'allow' },
+          decidedBy: 'grant',
+        });
+      } else if (this.externalPermissions.has(`${sessionId}\0${toolUseId}`)) {
+        const persisted = await this.deps.store.appendEvent(sessionId, event);
+        this.deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
+      }
       return await answered;
     } finally {
       signal?.removeEventListener('abort', onAbort);
@@ -3011,14 +3106,48 @@ export class Conductor {
     prompt: string,
     opts: TurnOptions = {},
     dispatchOpts: DispatchTurnOptions = {},
-  ): Promise<{ queued: boolean }> {
+  ): Promise<{ queued: boolean; accepted?: boolean }> {
+    const run = async () => {
+      // Do not wait behind steering already delivered but not yet persisted.
+      if (
+        dispatchOpts.planningConsent !== undefined &&
+        ((this.pendingUserDispatches.get(sessionId) ?? 0) > 0 ||
+          this.failedSteeringPersistence.has(sessionId))
+      ) {
+        return { queued: false, accepted: false };
+      }
+      const previous = this.dispatchTails.get(sessionId);
+      let release!: () => void;
+      const tail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      this.dispatchTails.set(sessionId, tail);
+      const userDispatch = dispatchOpts.planningRevision === undefined;
+      if (userDispatch)
+        this.pendingUserDispatches.set(
+          sessionId,
+          (this.pendingUserDispatches.get(sessionId) ?? 0) + 1,
+        );
+      try {
+        // Acceptance and delivery of steering share an order, so a cancellation
+        // cannot reach the backend while an older approval commits.
+        await previous;
+        return await this.dispatchTurnInner(sessionId, prompt, opts, dispatchOpts);
+      } finally {
+        release();
+        if (this.dispatchTails.get(sessionId) === tail) this.dispatchTails.delete(sessionId);
+        if (userDispatch) {
+          const count = (this.pendingUserDispatches.get(sessionId) ?? 1) - 1;
+          if (count === 0) this.pendingUserDispatches.delete(sessionId);
+          else this.pendingUserDispatches.set(sessionId, count);
+        }
+      }
+    };
     const { clientReplyId } = dispatchOpts;
     if (clientReplyId === undefined) {
-      return this.dispatchTurnInner(sessionId, prompt, opts, dispatchOpts);
+      return run();
     }
-    return this.dispatchIdempotent(sessionId, clientReplyId, () =>
-      this.dispatchTurnInner(sessionId, prompt, opts, dispatchOpts),
-    );
+    return this.dispatchIdempotent(sessionId, clientReplyId, () => run());
   }
 
   /** Memoize a `clientReplyId`-keyed dispatch so a replayed quick reply returns the
@@ -3027,8 +3156,8 @@ export class Conductor {
   private dispatchIdempotent(
     sessionId: string,
     clientReplyId: string,
-    run: () => Promise<{ queued: boolean }>,
-  ): Promise<{ queued: boolean }> {
+    run: () => Promise<{ queued: boolean; accepted?: boolean }>,
+  ): Promise<{ queued: boolean; accepted?: boolean }> {
     let replies = this.seenReplies.get(sessionId);
     if (replies === undefined) {
       replies = new Map();
@@ -3060,7 +3189,7 @@ export class Conductor {
     prompt: string,
     opts: TurnOptions = {},
     dispatchOpts: DispatchTurnOptions = {},
-  ): Promise<{ queued: boolean }> {
+  ): Promise<{ queued: boolean; accepted?: boolean }> {
     const displayPrompt = dispatchOpts.displayPrompt ?? prompt;
     if (this.stopping.has(sessionId)) throw new SessionBusyError(sessionId);
     // Busy → first try to STEER the running turn (#101 Stage B): if it exposes a
@@ -3070,7 +3199,7 @@ export class Conductor {
     // check and the write) do we fall back to enqueueing behind it (#90 Stage A),
     // which runs the message as a fresh `--resume` turn the moment claude is free.
     // Validate the prompt here too so we never steer/queue a blank turn.
-    if (this.inFlight.has(sessionId)) {
+    if (this.inFlight.has(sessionId) || dispatchOpts.planningRevision !== undefined) {
       if (opts.requireStandalone === true) throw new SessionBusyError(sessionId);
       if (!turnHasContent(prompt, opts))
         throw new Error('turn must have a prompt or an attachment');
@@ -3080,7 +3209,17 @@ export class Conductor {
       // it runs as a `--resume` turn that materializes the file correctly. Images
       // still steer into the running turn as before.
       const hasFileAttachment = opts.attachments?.some((a) => a.kind === 'file') ?? false;
-      const turn = hasFileAttachment ? undefined : this.turns.get(sessionId);
+      const planning = (await this.deps.store.getSession(sessionId))?.planning === 'active';
+      // A mode change needs a fresh turn; steering retains the live permissions.
+      const runningPlanning = this.runningPlanning.get(sessionId);
+      const postureChanged = runningPlanning === undefined || planning !== runningPlanning;
+      const turn =
+        hasFileAttachment ||
+        postureChanged ||
+        dispatchOpts.queueBehindActiveTurn === true ||
+        dispatchOpts.planningRevision !== undefined
+          ? undefined
+          : this.turns.get(sessionId);
       if (
         turn &&
         (await turn.steer({
@@ -3088,15 +3227,8 @@ export class Conductor {
           ...(opts.attachments ? { attachments: opts.attachments } : {}),
         }))
       ) {
-        // Delivered into the live turn. Persist the operator's prompt event so it
-        // shows in the transcript (claude's stream doesn't echo it). Fire-and-forget
-        // so it doesn't block the 202: claude can't answer the injected message
-        // before a model round-trip, which in practice dwarfs this local append, so
-        // the prompt event almost always lands ahead of the agent's reply to it.
-        // The seq counter orders by append time, not logical time, so under extreme
-        // store contention the prompt could theoretically land just after the reply
-        // — a transcript blemish, never a lost turn (the message is already in claude).
-        void this.persistSteeredPrompt(sessionId, displayPrompt, opts, dispatchOpts.peer);
+        // Keep chat acceptance fenced until the steering prompt is durable.
+        await this.persistSteeredPrompt(sessionId, displayPrompt, opts, originFields(dispatchOpts));
         return { queued: false };
       }
       if (this.stopping.has(sessionId)) throw new SessionBusyError(sessionId);
@@ -3108,18 +3240,38 @@ export class Conductor {
       // stored content-addressed; the row carries refs (rehydrated by {@link recover}).
       // `id` is the store row key AND the operator's retract handle ({@link dequeue}).
       const id = randomUUID();
+      let accepted = true;
       const enqueue = (async (): Promise<void> => {
         const storedOpts = await this.toStorableOpts(
           opts,
           displayPrompt === prompt ? undefined : displayPrompt,
-          dispatchOpts.peer,
+          originFields(dispatchOpts),
         );
-        await this.deps.store.enqueueTurn({
-          id,
-          sessionId,
-          prompt,
-          opts: storedOpts,
-        });
+        const input = { id, sessionId, prompt, opts: storedOpts };
+        if (dispatchOpts.planningRevision !== undefined) {
+          if (
+            dispatchOpts.planningConsent !== undefined &&
+            ((this.pendingUserDispatches.get(sessionId) ?? 0) > 0 ||
+              this.failedSteeringPersistence.has(sessionId))
+          ) {
+            accepted = false;
+            return;
+          }
+
+          if (
+            !(await this.deps.store.enqueuePlanImplementation(
+              input,
+              dispatchOpts.planningRevision,
+              (event) => this.deps.bus?.publish(sessionId, event),
+              dispatchOpts.planningConsent,
+            ))
+          ) {
+            accepted = false;
+            return;
+          }
+        } else {
+          await this.deps.store.enqueueTurn(input);
+        }
         // Re-fetch the live queue AFTER the await (a concurrent enqueue may have
         // created it meanwhile) and append — the in-memory queue stays authoritative
         // for the live drain.
@@ -3129,7 +3281,7 @@ export class Conductor {
           prompt,
           opts,
           ...(displayPrompt !== prompt ? { displayPrompt } : {}),
-          ...(dispatchOpts.peer ? { peer: dispatchOpts.peer } : {}),
+          ...originFields(dispatchOpts),
           ...(storedOpts.attachments !== undefined
             ? { displayAttachments: storedOpts.attachments }
             : {}),
@@ -3148,13 +3300,14 @@ export class Conductor {
       // If the in-flight turn settled DURING the persist await, its drain already ran
       // and found the queue empty (we hadn't pushed yet) — kick one now so the item
       // isn't stranded until the next turn. If it's still in flight, its settle drains.
+      if (!accepted) return { queued: false, accepted: false };
       if (!this.inFlight.has(sessionId)) this.drainNext(sessionId);
       return { queued: true };
     }
     const session = await this.accept(sessionId, prompt, opts); // lock held on success
     this.launchAcceptedTurn(sessionId, prompt, session, opts, displayPrompt, {
       persistPrompt: true,
-      ...(dispatchOpts.peer ? { peer: dispatchOpts.peer } : {}),
+      ...originFields(dispatchOpts),
     });
     return { queued: false };
   }
@@ -3169,13 +3322,27 @@ export class Conductor {
     sessionId: string,
     prompt: string,
     opts: TurnOptions = {},
-    dispatchOpts: DispatchTurnOptions = {},
+    dispatchOpts: DispatchTurnOptions & {
+      /** Validate background work while the session admission lock is held. */
+      validateSession?: (session: SessionRecord) => Promise<boolean>;
+    } = {},
   ): Promise<{ accepted: boolean }> {
     let session: SessionRecord;
     try {
       session = await this.accept(sessionId, prompt, opts); // lock held on success
     } catch (error) {
       if (error instanceof SessionBusyError) return { accepted: false };
+      throw error;
+    }
+    try {
+      if (dispatchOpts.validateSession && !(await dispatchOpts.validateSession(session))) {
+        this.releaseInFlight(sessionId);
+        this.drainNext(sessionId);
+        return { accepted: false };
+      }
+    } catch (error) {
+      this.releaseInFlight(sessionId);
+      this.drainNext(sessionId);
       throw error;
     }
     this.launchAcceptedTurn(
@@ -3186,7 +3353,7 @@ export class Conductor {
       dispatchOpts.displayPrompt ?? prompt,
       {
         persistPrompt: true,
-        ...(dispatchOpts.peer ? { peer: dispatchOpts.peer } : {}),
+        ...originFields(dispatchOpts),
       },
     );
     return { accepted: true };
@@ -3198,10 +3365,9 @@ export class Conductor {
     session: SessionRecord,
     opts: TurnOptions,
     displayPrompt: string,
-    launchOpts: {
+    launchOpts: PromptOrigin & {
       persistPrompt: boolean;
       autoResumeCount?: number;
-      peer?: { sessionId: string; projectId: string; label: string; message: string };
     },
   ): void {
     // Register the in-flight handle synchronously so the operator can cancel/steer
@@ -3223,7 +3389,7 @@ export class Conductor {
           displayPrompt,
           await this.storeAttachments(opts.attachments),
           false,
-          launchOpts.peer,
+          originFields(launchOpts),
         );
         this.maybeAutoTitle(sessionId); // name from the prompt now, concurrently with the turn
       }
@@ -3446,18 +3612,17 @@ export class Conductor {
     sessionId: string,
   ): Promise<{ cancelled: boolean; droppedQueued: RestoredQueuedTurn[] }> {
     this.stopping.set(sessionId, (this.stopping.get(sessionId) ?? 0) + 1);
-    let droppedQueued: RestoredQueuedTurn[] = [];
-    let clearError: unknown;
     try {
-      try {
-        droppedQueued = await this.clearQueue(sessionId);
-      } catch (error) {
-        clearError = error;
-      }
-      const cancelled = await this.cancelTurn(sessionId);
-      if (clearError !== undefined)
-        throw clearError instanceof Error ? clearError : new Error('queue cleanup failed');
-      return { cancelled, droppedQueued };
+      // Durable enqueues can stall independently of the agent. Signal cancellation
+      // immediately, but hold the stop fence until both operations have settled.
+      const [cancel, clear] = await Promise.allSettled([
+        this.cancelTurn(sessionId),
+        this.clearQueue(sessionId),
+      ]);
+      if (clear.status === 'rejected')
+        throw clear.reason instanceof Error ? clear.reason : new Error('queue cleanup failed');
+      if (cancel.status === 'rejected') throw cancel.reason;
+      return { cancelled: cancel.value, droppedQueued: clear.value };
     } finally {
       const remainingStops = (this.stopping.get(sessionId) ?? 1) - 1;
       if (remainingStops === 0) {
@@ -3529,7 +3694,7 @@ export class Conductor {
           ...(row.opts.displayPrompt !== undefined
             ? { displayPrompt: row.opts.displayPrompt }
             : {}),
-          ...(row.opts.peer ? { peer: row.opts.peer } : {}),
+          ...originFields(row.opts),
         });
         this.queues.set(row.sessionId, queue);
         sessions.add(row.sessionId);
@@ -3574,7 +3739,7 @@ export class Conductor {
           // Step 5: bounded discovery — the Runner's fate is unknown, so do NOT
           // interrupt, do NOT re-run, and KEEP the marker for a later pass to resolve.
           // A surviving turn is never inferred only from the event tail.
-          this.inFlight.add(marker.sessionId);
+          this.markInFlight(marker.sessionId);
           this.uncertainRecovery.add(marker.sessionId);
           this.scheduleUncertainRecovery(marker);
           handled.add(marker.sessionId);
@@ -4172,7 +4337,7 @@ export class Conductor {
       // Claim the recovered turn BEFORE resolving its project backend. A Sandbox
       // repair consults this in-flight set; taking the lock later left a gap where
       // it could recreate the container between discovery and `runner.attach()`.
-      this.inFlight.add(marker.sessionId);
+      this.markInFlight(marker.sessionId);
       handle = new SessionTurnHandle();
       handle.markerSeq = marker.promptSeq;
       this.turns.set(marker.sessionId, handle);
@@ -4398,7 +4563,7 @@ export class Conductor {
           next.displayPrompt ?? next.prompt,
           {
             persistPrompt: false,
-            ...(next.peer ? { peer: next.peer } : {}),
+            ...originFields(next),
             ...(next.autoResumeCount === undefined
               ? {}
               : { autoResumeCount: next.autoResumeCount }),
@@ -4438,9 +4603,9 @@ export class Conductor {
                   t: 'prompt',
                   text,
                   attachments: [...attachments],
-                  ...(next.peer ? { peer: next.peer } : {}),
+                  ...originFields(next),
                 }
-              : { t: 'prompt', text, ...(next.peer ? { peer: next.peer } : {}) };
+              : { t: 'prompt', text, ...originFields(next) };
           const persisted = await this.deps.store.drainQueuedTurn(next.id, sessionId, event);
           if (!persisted) {
             // The row was already drained/retracted by a concurrent path (run-once
@@ -4451,7 +4616,7 @@ export class Conductor {
           this.deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
           this.launchAcceptedTurn(sessionId, next.prompt, session, next.opts, text, {
             persistPrompt: false,
-            ...(next.peer ? { peer: next.peer } : {}),
+            ...originFields(next),
           });
         } catch (error) {
           // The atomic drain rolled back (row still durable, prompt not persisted).
@@ -4537,7 +4702,8 @@ export class Conductor {
           const publicSessionId = opts.sessionId ?? sessionId;
           boundId = publicSessionId;
           this.starting.delete(opts.worktree); // bound → release the start lock
-          this.inFlight.add(publicSessionId); // serialize turns against the still-running spawn
+          this.markInFlight(publicSessionId); // serialize turns against the still-running spawn
+          this.runningPlanning.set(publicSessionId, false);
           this.turns.set(publicSessionId, handle); // operator can cancel/steer now (#79/#101)
           // The session row exists now (either preallocated by the server or
           // created by ingest from the backend `session` event), so persist the
@@ -4593,13 +4759,13 @@ export class Conductor {
       // the session binds has no id to park under — deny it safe immediately (matching
       // the old buildStartOpts behavior); otherwise track it under the bound id.
       void (async () => {
-        // A project/Agent Loop caller may pre-create the Verity session so its
+        // A project caller may pre-create the Verity session so its
         // project and kind are known before the backend context starts. Include
         // that project's memory on this initial turn; later resume turns already
         // carry it in their persisted backend context.
-        // A pre-created session (project/Agent Loop) carries its project id before
+        // A pre-created session (project) carries its project id before
         // the backend context starts; a truly fresh, project-less control-plane
-        // spawn (e.g. the concierge) has none. Capture it here so the runner
+        // spawn (e.g. Verity Control) has none. Capture it here so the runner
         // context reflects the real project (or `null`).
         const selected = opts.backend ?? this.modelBackend(runOpts.model);
         const backend = opts.backendWrapper?.(selected) ?? selected;
@@ -4609,6 +4775,7 @@ export class Conductor {
           if (session !== undefined) {
             runOpts.appendSystemPrompt += await this.projectMemoryPrompt(session);
             runOpts.appendSystemPrompt += this.projectKnowledgePrompt(session);
+            runOpts.appendSystemPrompt += await this.assignedTasksPrompt(session);
             contextProjectId = session.projectId;
           }
         }
@@ -4740,7 +4907,7 @@ export class Conductor {
     // (attachment, empty prompt) is valid content and passes.
     if (!turnHasContent(prompt, opts)) throw new Error('turn must have a prompt or an attachment');
     if (this.inFlight.has(sessionId)) throw new SessionBusyError(sessionId);
-    this.inFlight.add(sessionId);
+    this.markInFlight(sessionId);
     try {
       const session = await this.deps.store.getSession(sessionId);
       if (!session) throw new UnknownSessionError(sessionId);
@@ -4791,7 +4958,7 @@ export class Conductor {
   private async toStorableOpts(
     opts: TurnOptions,
     displayPrompt?: string,
-    peer?: { sessionId: string; projectId: string; label: string; message: string },
+    origin: PromptOrigin = {},
   ): Promise<QueuedTurnOpts> {
     const attachments = await this.storeAttachments(opts.attachments);
     return {
@@ -4802,7 +4969,7 @@ export class Conductor {
       ...(opts.disallowedTools !== undefined ? { disallowedTools: [...opts.disallowedTools] } : {}),
       ...(attachments !== undefined ? { attachments } : {}),
       ...(displayPrompt !== undefined ? { displayPrompt } : {}),
-      ...(peer ? { peer } : {}),
+      ...originFields(origin),
     };
   }
 
@@ -4854,7 +5021,7 @@ export class Conductor {
     text: string,
     attachments?: readonly Attachment[],
     steered = false,
-    peer?: { sessionId: string; projectId: string; label: string; message: string },
+    origin: PromptOrigin = {},
   ): Promise<void> {
     const event =
       attachments && attachments.length > 0
@@ -4863,15 +5030,16 @@ export class Conductor {
             text,
             attachments: [...attachments],
             ...(steered ? { steered } : {}),
-            ...(peer ? { peer } : {}),
+            ...originFields(origin),
           }
         : {
             t: 'prompt' as const,
             text,
             ...(steered ? { steered } : {}),
-            ...(peer ? { peer } : {}),
+            ...originFields(origin),
           };
     const { seq, ts } = await this.deps.store.appendEvent(sessionId, event);
+    this.failedSteeringPersistence.delete(sessionId);
     this.deps.bus?.publish(sessionId, { seq, ts, event });
   }
 
@@ -4880,14 +5048,14 @@ export class Conductor {
    * (#101) — store its attachments content-addressed, then append the `prompt`
    * event. Best-effort: a failure routes to {@link ConductorDeps.onTurnError}
    * rather than rejecting, because the message has already been delivered to claude
-   * (the caller returned its 202); a missing prompt event is a transcript blemish,
-   * not a lost turn.
+   * so the caller can still receive its 202. A failure revokes chat consent
+   * until a subsequent prompt is durable; the backend already saw the steering.
    */
   private async persistSteeredPrompt(
     sessionId: string,
     prompt: string,
     opts: TurnOptions,
-    peer?: { sessionId: string; projectId: string; label: string; message: string },
+    origin: PromptOrigin = {},
   ): Promise<void> {
     try {
       await this.emitPrompt(
@@ -4895,9 +5063,11 @@ export class Conductor {
         prompt,
         await this.storeAttachments(opts.attachments),
         true,
-        peer,
+        origin,
       );
     } catch (error) {
+      // Delivered steering must not leave an earlier durable approval actionable.
+      this.failedSteeringPersistence.add(sessionId);
       this.reportTurnError(sessionId, error);
     }
   }
@@ -5195,6 +5365,7 @@ export class Conductor {
             // auto-titling never clobbers a manual rename. If the operator took over the
             // name, don't auto-derive a branch either — they're driving.
             const named = await this.deps.store.renameSessionIfUnnamed(sessionId, title);
+            if (named) this.sessionChanged(sessionId, 'name');
             if (named && autoTitle.onBranchName !== undefined) {
               // Contained per the `onBranchName` contract ("the conductor never lets
               // hook failures affect turns"). The title is already persisted at this
@@ -5295,6 +5466,12 @@ export class Conductor {
     return `\n\n## Project memory (operator-curated; may be stale — verify before relying on it)\n${memory}`;
   }
 
+  /** The per-turn "Assigned tasks" section, framed like the other appended blocks. */
+  private async assignedTasksPrompt(session: SessionRecord): Promise<string> {
+    const prompt = (await this.deps.assignedTasksPrompt?.(session))?.trim();
+    return prompt ? `\n\n${prompt}` : '';
+  }
+
   private projectKnowledgePrompt(session: SessionRecord): string {
     if (session.projectId === null) return '';
     // Keep the mount instructions present on resumed turns without re-injecting
@@ -5336,8 +5513,18 @@ export class Conductor {
     includeRuntimePrompt: boolean,
     localProject: boolean,
   ): RunTurnOptions {
-    const permissionMode = opts.permissionMode ?? this.deps.permissionMode;
+    // Planning mode is the session's, not the request's: it overrides whatever
+    // posture the turn asked for, because a turn that could still change files is
+    // exactly what planning exists to prevent.
+    const planning = session.planning === 'active';
+    this.runningPlanning.set(sessionId, planning);
+    const permissionMode = planning
+      ? PLANNING_PERMISSION_MODE
+      : (opts.permissionMode ?? this.deps.permissionMode);
     const timeoutMs = opts.timeoutMs ?? this.deps.timeoutMs;
+    const systemPrompt = includeRuntimePrompt
+      ? turnSystemPrompt(localProject)
+      : RESUME_SYSTEM_PROMPT;
     // exactOptionalPropertyTypes: omit absent keys rather than assign undefined.
     return {
       store: this.deps.store,
@@ -5348,10 +5535,11 @@ export class Conductor {
       // Resumed contexts already carry the heavy runtime policy, but still receive
       // compact convergence directives that must affect existing long-lived
       // sessions: user-facing terminology and visible-media output contracts.
-      // Fresh Agent Loop contexts additionally receive their proposal contract.
-      appendSystemPrompt: includeRuntimePrompt
-        ? turnSystemPrompt(session.kind, localProject)
-        : RESUME_SYSTEM_PROMPT,
+      appendSystemPrompt: planning
+        ? `${systemPrompt}\n\n${PLANNING_ACTIVE_SYSTEM_PROMPT}`
+        : session.planning === 'discarded'
+          ? `${systemPrompt}\n\n${DISMISSED_PLAN_SYSTEM_PROMPT}`
+          : systemPrompt,
       model: opts.model ?? session.model,
       storeSessionId: sessionId,
       // Hold stdin open so a mid-turn operator message can be folded into THIS
@@ -5365,6 +5553,7 @@ export class Conductor {
       // inbound request to the conductor's `onPermissionRequest` hook).
       ...(this.permissionControl ? { permissionControl: true } : {}),
       ...(permissionMode !== undefined ? { permissionMode } : {}),
+      ...(planning ? { planning: true } : {}),
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       ...(opts.allowedTools !== undefined ? { allowedTools: opts.allowedTools } : {}),
       ...(opts.disallowedTools !== undefined ? { disallowedTools: opts.disallowedTools } : {}),
@@ -5400,8 +5589,8 @@ export class Conductor {
       // Same per-turn directives (choices #97 + delegation #138) on a fresh session.
       appendSystemPrompt:
         opts.appendSystemPrompt === undefined
-          ? turnSystemPrompt(opts.sessionKind, localProject)
-          : `${turnSystemPrompt(opts.sessionKind, localProject)}\n\n${opts.appendSystemPrompt}`,
+          ? turnSystemPrompt(localProject)
+          : `${turnSystemPrompt(localProject)}\n\n${opts.appendSystemPrompt}`,
       onSession,
       // Mid-turn permission control loop (#27) for the first turn of a fresh session.
       // The runner's `onPermissionRequest` is wired by the RunnerClient; startSession's

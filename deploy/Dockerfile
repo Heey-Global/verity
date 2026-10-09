@@ -1,8 +1,8 @@
 # Verity Server image — the standalone control-plane an operator installs to run
-# Verity on any host (ADR 0003, Phase A). API-only: the compiled Fastify server
-# (packages/server -> dist) on a minimal Node 24 base, plus the `docker` CLI and
+# Verity on any host (ADR 0003, Phase A). The compiled Fastify server
+# (packages/server -> dist) and static browser client on a minimal Node 24 base, plus the `docker` CLI and
 # `git` the runtime needs to clone repos and spawn sibling project containers.
-# The Expo mobile app is the client; no web build ships here.
+# The shared Expo client is exported for the browser and served under /app/.
 #
 # Multi-stage:
 #   builder    -> npm ci (whole monorepo) + tsc -b  => packages/*/dist
@@ -17,12 +17,13 @@
 # Stage 1: builder — compile the TypeScript monorepo.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS builder-deps
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS builder-deps
 
 WORKDIR /app
 
 # Copy the manifests first so the dependency layer caches independently of source
 # churn. The lockfile + every workspace package.json are needed for `npm ci`.
+COPY vendor/expo-router-query-string ./vendor/expo-router-query-string
 COPY package.json package-lock.json ./
 COPY tsconfig.base.json tsconfig.json ./
 COPY packages/events/package.json packages/events/
@@ -69,6 +70,13 @@ COPY features features
 # stale incremental metadata from an older source layer.
 RUN npm run build -- --force
 
+# Export only browser assets; Expo dependencies stay out of the runtime image.
+FROM builder-deps AS web-builder
+COPY packages/events packages/events
+COPY packages/mobile packages/mobile
+COPY apps/mobile apps/mobile
+RUN CI=1 EXPO_NO_TELEMETRY=1 npm run build:web --workspace @verity/mobile-app -- --max-workers 1
+
 # ---------------------------------------------------------------------------
 # Stage 2: deps — production-only node_modules, scoped to the server workspace.
 # ---------------------------------------------------------------------------
@@ -78,10 +86,11 @@ RUN npm run build -- --force
 # runtime image stays lean. --include-workspace-root keeps root-level runtime
 # deps (there are none today, but it is correct if any are added).
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS deps
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS deps
 
 WORKDIR /app
 
+COPY vendor/expo-router-query-string ./vendor/expo-router-query-string
 COPY package.json package-lock.json ./
 COPY packages/events/package.json packages/events/
 COPY packages/secret-contracts/package.json packages/secret-contracts/
@@ -106,7 +115,7 @@ RUN npm ci --omit=dev --ignore-scripts --workspace=@verity/server --include-work
 # the client binary from the static bundle and the buildx/compose CLI plugins
 # are needed — not dockerd/containerd.
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS docker-cli
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS docker-cli
 
 # The static CLI download version tracks Docker Engine (moby) releases, whose
 # GitHub tags are `docker-v<x.y.z>` — the extractVersion strips that prefix and
@@ -129,6 +138,9 @@ ARG DOCKER_COMPOSE_VERSION=2.40.3
 # Verified at author time; bump alongside DOCKER_COMPOSE_VERSION.
 ARG DOCKER_COMPOSE_SHA256=dba9d98e1ba5bfe11d88c99b9bd32fc4a0624a30fafe68eea34d61a3e42fd372
 ARG DOCKER_COMPOSE_SHA256_ARM64=d26373b19e89160546d15407516cc59f453030d9bc5b43ba7faf16f7b4980137
+ARG COSIGN_VERSION=3.1.3
+ARG COSIGN_SHA256=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+ARG COSIGN_SHA256_ARM64=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a
 ARG TARGETARCH
 
 # `--retry-all-errors` rather than `--retry-connrefused`: plain `--retry` covers
@@ -142,8 +154,8 @@ ARG TARGETARCH
 # a retry that returns something else fails the build rather than shipping it.
 RUN set -eux; \
     case "${TARGETARCH}" in \
-      amd64) docker_arch=x86_64; buildx_arch=amd64; compose_arch=x86_64; docker_sha="${DOCKER_CLI_SHA256}"; buildx_sha="${DOCKER_BUILDX_SHA256}"; compose_sha="${DOCKER_COMPOSE_SHA256}" ;; \
-      arm64) docker_arch=aarch64; buildx_arch=arm64; compose_arch=aarch64; docker_sha="${DOCKER_CLI_SHA256_ARM64}"; buildx_sha="${DOCKER_BUILDX_SHA256_ARM64}"; compose_sha="${DOCKER_COMPOSE_SHA256_ARM64}" ;; \
+      amd64) docker_arch=x86_64; buildx_arch=amd64; compose_arch=x86_64; docker_sha="${DOCKER_CLI_SHA256}"; buildx_sha="${DOCKER_BUILDX_SHA256}"; compose_sha="${DOCKER_COMPOSE_SHA256}"; cosign_sha="${COSIGN_SHA256}" ;; \
+      arm64) docker_arch=aarch64; buildx_arch=arm64; compose_arch=aarch64; docker_sha="${DOCKER_CLI_SHA256_ARM64}"; buildx_sha="${DOCKER_BUILDX_SHA256_ARM64}"; compose_sha="${DOCKER_COMPOSE_SHA256_ARM64}"; cosign_sha="${COSIGN_SHA256_ARM64}" ;; \
       *) echo "unsupported target architecture: ${TARGETARCH}" >&2; exit 64 ;; \
     esac; \
     apt-get update; \
@@ -166,6 +178,12 @@ RUN set -eux; \
       "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${compose_arch}"; \
     echo "${compose_sha}  /tmp/docker-compose" | sha256sum -c -; \
     install -m 0755 /tmp/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose; \
+    curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
+      -o /tmp/cosign \
+      "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-${TARGETARCH}"; \
+    echo "${cosign_sha}  /tmp/cosign" | sha256sum -c -; \
+    install -m 0755 /tmp/cosign /usr/local/bin/cosign; \
+    rm -f /tmp/cosign; \
     ln -s /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose; \
     rm -rf /tmp/docker.tgz /tmp/docker; \
     rm -f /tmp/docker-buildx /tmp/docker-compose; \
@@ -178,7 +196,7 @@ RUN set -eux; \
 # Stage 4: runtime — the shipped image.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS runtime
+FROM node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20 AS runtime
 
 # git: the provisioner clones project repos on the Server.
 # ca-certificates: TLS to github.com and Docker registries.
@@ -194,6 +212,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends git ca-certificates tini openssh-client openssl ffmpeg expect util-linux; \
     rm -rf /var/lib/apt/lists/*
 
+COPY --from=docker-cli /usr/local/bin/cosign /usr/local/bin/cosign
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=docker-cli /usr/local/bin/docker-compose /usr/local/bin/docker-compose
 COPY --from=docker-cli /usr/local/lib/docker/cli-plugins/docker-buildx /usr/local/lib/docker/cli-plugins/docker-buildx
@@ -211,37 +230,31 @@ RUN chmod 0755 /usr/local/bin/verity-transcribe-meeting
 # content-hash-cached derived image onto the mounted daemon. It drives the docker
 # CLI + buildx plugin copied above via DOCKER_HOST. Installed BEFORE `USER node`
 # so the global package lands in the image's root-owned prefix; pinned exactly.
-# Keep each global CLI in its own annotated RUN instruction. Renovate's regex
-# manager matches one dependency per instruction; combining these pins silently
-# hides every package after the first one from dependency updates.
-# renovate: datasource=npm depName=@devcontainers/cli
-RUN npm install -g @devcontainers/cli@0.89.0
-# renovate: datasource=npm depName=@anthropic-ai/claude-code
-RUN npm install -g @anthropic-ai/claude-code@2.1.284
-# renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-RUN npm install -g @agentclientprotocol/claude-agent-acp@0.84.0
+# Install shared CLI lockfiles with integrity checks, preserving global paths.
+COPY features/verity-sandbox-toolkit/npm /opt/verity-cli/npm
+COPY features/verity-sandbox-toolkit/bin/verity-cli-install.mjs /opt/verity-cli/bin/verity-cli-install.mjs
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs devcontainers
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs claude-code
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs claude-acp
 # Harden that install: upstream (through 0.66.0) builds tool-call titles out of
 # unvalidated model input, so one wrong-typed field throws, ends the agent
 # process, and — because loadSession replays history through the same renderer —
 # leaves the session unresumable for good. The sandbox toolkit's install.sh runs
-# the same script; it's copied on its own here so the pinned installs above keep
-# their cache layers. It no-ops on a fixed upstream and FAILS THE BUILD if it can
+# the same script; it's copied on its own here so both installation paths apply
+# the same adapter patches. It no-ops on a fixed upstream and FAILS THE BUILD if it can
 # no longer be applied, because a silently unhardened adapter is
 # indistinguishable from a hardened one until a session dies. See ADR 0012.
 COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-harden.mjs /tmp/verity-claude-acp-harden.mjs
 RUN node /tmp/verity-claude-acp-harden.mjs && rm /tmp/verity-claude-acp-harden.mjs
 COPY features/verity-sandbox-toolkit/bin/verity-claude-acp-lifecycle.mjs /tmp/verity-claude-acp-lifecycle.mjs
 RUN node /tmp/verity-claude-acp-lifecycle.mjs && rm /tmp/verity-claude-acp-lifecycle.mjs
-# renovate: datasource=npm depName=@openai/codex
-RUN npm install -g @openai/codex@0.159.2
-# renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-RUN npm install -g @agentclientprotocol/codex-acp@2.0.0
-# renovate: datasource=npm depName=opencode-ai
-RUN npm install -g opencode-ai@1.18.33
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs codex
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs codex-acp
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs opencode
 # OpenCode ships no ACP adapter package: `opencode-acp` is a wrapper around its own
 # `opencode acp` subcommand, built by the script the sandbox toolkit uses for project
 # Sandboxes so the two cannot drift. Copied on its own, like the Claude hardening
-# scripts above, to keep the pinned installs' cache layers. The pin must match
+# scripts above, to keep the pinned installs' cache layers. The shared lockfile version must match
 # `OPENCODE_VERSION` in that Feature's install.sh — `scripts/agent-cli-pins.test.ts`
 # fails the build's own test suite when it does not.
 COPY features/verity-sandbox-toolkit/bin/verity-opencode-acp-install.sh /tmp/verity-opencode-acp-install.sh
@@ -257,6 +270,14 @@ COPY features/verity-sandbox-toolkit /opt/verity-features/verity-sandbox-toolkit
 # sidecar. Keep its root-owned launch surface identical to project Sandboxes;
 # Compose selects it with an explicit entrypoint, while the Server still runs as
 # the unprivileged `node` user below.
+ARG TARGETARCH
+# The Control runner bypasses the Feature installer, so install its script
+# isolation helper explicitly from the same checksum-verified release artifacts.
+RUN set -eu; \
+    case "$TARGETARCH" in amd64|arm64) ;; *) echo "unsupported script sandbox architecture: $TARGETARCH" >&2; exit 1 ;; esac; \
+    cd /opt/verity-features/verity-sandbox-toolkit/prebuilt; \
+    grep "  linux-$TARGETARCH/verity-script-sandbox$" sha256sums.txt | sha256sum --check --strict; \
+    install -m 0755 "linux-$TARGETARCH/verity-script-sandbox" /usr/local/bin/verity-script-sandbox
 RUN install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs /usr/local/bin/verity-runner-supervisor \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-supervisor-start /usr/local/bin/verity-runner-supervisor-start \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runner-stack-start /usr/local/bin/verity-runner-stack-start \
@@ -293,9 +314,12 @@ COPY --from=builder --chown=node:node /app/packages/store/dist ./packages/store/
 COPY --from=builder --chown=node:node /app/packages/store/package.json ./packages/store/package.json
 COPY --from=builder --chown=node:node /app/packages/session/dist ./packages/session/dist
 COPY --from=builder --chown=node:node /app/packages/session/package.json ./packages/session/package.json
+COPY --from=builder --chown=node:node /app/packages/preview-tunnel/dist ./packages/preview-tunnel/dist
+COPY --from=builder --chown=node:node /app/packages/preview-tunnel/assets/verity-mark.png ./packages/preview-tunnel/assets/verity-mark.png
 COPY --from=builder --chown=node:node /app/packages/server/dist ./packages/server/dist
 COPY --from=builder --chown=node:node /app/packages/server/package.json ./packages/server/package.json
 COPY --from=builder --chown=node:node /app/package.json ./package.json
+COPY --from=web-builder --chown=node:node /app/apps/mobile/dist ./web
 
 # The shared release version, injected by release.yml (semantic-release) as a
 # build-arg, immutable file, and compatibility environment variable. The Server
@@ -366,11 +390,15 @@ LABEL org.verity.host-runtimes="{\"release\":\"release-20260714.0\",\"sha512\":{
 # back to the same official client ID compiled into the mobile app.
 ARG GOOGLE_AUTH_ID=
 ENV GOOGLE_AUTH_ID=${GOOGLE_AUTH_ID}
+ARG STAGING_GOOGLE_AUTH_ID=
+# Keep the baked default out of sealed deployment environment sources.
+ENV GOOGLE_STAGING_CLIENT_ID_DEFAULT=${STAGING_GOOGLE_AUTH_ID}
 
 # API port. PORT is read by the server (packages/server/src/main.ts). 8082 is the
 # deployment default per ADR 0003 R2.
 ENV NODE_ENV=production
 ENV PORT=8082
+ENV VERITY_WEB_APP_DIR=/app/web
 EXPOSE 8082
 
 # Data root (VERITY_ROOT). The control-plane DB is an external PostgreSQL

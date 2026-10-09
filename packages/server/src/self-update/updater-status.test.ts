@@ -16,7 +16,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { sealDeploymentSpec, type ServerDeploymentSpecBody } from './deployment-spec.js';
-import { initializeManagedDeployment } from './managed-deployment.js';
+import {
+  advanceManagedDeploymentImage,
+  initializeManagedDeployment,
+} from './managed-deployment.js';
 import {
   createKeyHandoffReceiver,
   createKeyHandoffSenderIdentity,
@@ -24,6 +27,8 @@ import {
 } from './secret-key-handoff.js';
 import {
   advanceUpdate,
+  advanceCutover,
+  advanceCompanionReconciliation,
   archiveUpdateJournal,
   failUpdate,
   readUpdateJournal,
@@ -114,7 +119,7 @@ async function fixture(
       : { onMatrixConfigured: options.onMatrixConfigured }),
   });
   servers.push(server);
-  return { socketPath, token, managedRoot, accepted };
+  return { socketPath, token, managedRoot, accepted, server };
 }
 
 describe('managed Updater status boundary', () => {
@@ -452,6 +457,62 @@ describe('managed Updater update action', () => {
     ).resolves.toEqual(operation);
     expect(accepted).toHaveLength(2);
     expect(accepted[1]?.updateId).toBe(accepted[0]?.updateId);
+  });
+
+  it('re-arms the same request after the target image has been committed', async () => {
+    const { socketPath, token, managedRoot, accepted } = await fixture({ managed: true });
+    const request = { socketPath, token, idempotencyKey: 'k1', targetDigest: image('b') };
+    const original = await requestUpdaterOperation(request);
+    const preparation = [
+      'requested',
+      'pulling',
+      'verifying-image',
+      'preflight',
+      'creating-standby',
+      'standby',
+    ] as const;
+    for (let i = 0; i < preparation.length - 1; i++) {
+      await advanceUpdate(managedRoot, preparation[i]!, preparation[i + 1]!, {
+        candidate: { containerId: 'b'.repeat(64), containerName: 'candidate' },
+      });
+    }
+    const cutover = [
+      'standby',
+      'quiescing-old',
+      'handing-off-key',
+      'activating-candidate',
+      'checking-candidate',
+      'draining-gateway',
+      'switching-gateway',
+      'observing-candidate',
+      'committed',
+    ] as const;
+    for (let i = 0; i < cutover.length - 1; i++) {
+      await advanceCutover(managedRoot, cutover[i]!, cutover[i + 1]!, {
+        previousContainerId: 'a'.repeat(64),
+      });
+    }
+    await advanceManagedDeploymentImage({
+      root: managedRoot,
+      deploymentId: 'managed-1',
+      fromImage: image('a'),
+      toImage: image('b'),
+    });
+    await advanceCompanionReconciliation(managedRoot, 'committed', 'reconciling-companions');
+
+    // The sealed image already moved, but the remaining companion work still needs an executor.
+    await expect(requestUpdaterOperation(request)).resolves.toMatchObject({
+      updateId: original.updateId,
+      phase: 'reconciling-companions',
+    });
+    expect(accepted).toHaveLength(2);
+    expect(accepted[1]?.updateId).toBe(accepted[0]?.updateId);
+    await advanceCompanionReconciliation(managedRoot, 'reconciling-companions', 'completed');
+    await expect(requestUpdaterOperation(request)).resolves.toMatchObject({ state: 'completed' });
+    expect(accepted).toHaveLength(2);
+    await expect(
+      requestUpdaterOperation({ ...request, idempotencyKey: 'another-key' }),
+    ).rejects.toMatchObject({ status: 409, code: 'already-current' });
   });
 
   it('does not re-arm execution for an operation that already finished', async () => {
@@ -1349,4 +1410,72 @@ describe('the control boundary refusing to guess', () => {
     // Past the 4 KiB request limit the boundary hangs up instead of buffering.
     expect((await post(JSON.stringify({ idempotencyKey: 'x'.repeat(8192) }))).status).toBe(0);
   });
+});
+
+describe('durable update channel preference', () => {
+  it('survives image replacement and a control socket restart without rewriting deployment settings', async () => {
+    const { socketPath, token, managedRoot, server } = await fixture({ managed: true });
+    const before = await readUpdaterDeployment({ socketPath, token });
+    const { updaterUpdateChannel } = await import('./updater-status.js');
+    expect(await updaterUpdateChannel({ socketPath, token }, 'staging')).toBe('staging');
+    expect(await readUpdaterDeployment({ socketPath, token })).toEqual(before);
+    if (!before.managed) throw new Error('managed fixture is missing its authority');
+    const { advanceManagedDeploymentImage } = await import('./managed-deployment.js');
+    await advanceManagedDeploymentImage({
+      root: managedRoot,
+      deploymentId: before.marker.deploymentId,
+      fromImage: before.spec.image,
+      toImage: image('b'),
+    });
+    await server.close();
+    servers.splice(servers.indexOf(server), 1);
+    servers.push(await startUpdaterStatusServer({ socketPath, token, managedRoot }));
+    expect(await updaterUpdateChannel({ socketPath, token })).toBe('staging');
+    expect(await updaterUpdateChannel({ socketPath, token }, 'stable')).toBe('stable');
+  });
+
+  it('refuses unauthorized, unmanaged, invalid and in-progress channel changes', async () => {
+    const { updaterUpdateChannel } = await import('./updater-status.js');
+    const managed = await fixture({ managed: true });
+    await expect(
+      updaterUpdateChannel({ ...managed, token: 'wrong' }, 'staging'),
+    ).rejects.toMatchObject({ status: 401 });
+    await expect(updaterUpdateChannel(managed, 'beta' as 'staging')).rejects.toMatchObject({
+      status: 400,
+    });
+    await requestUpdaterOperation({ ...managed, idempotencyKey: 'busy', targetDigest: image('b') });
+    await expect(updaterUpdateChannel(managed, 'staging')).rejects.toMatchObject({ status: 409 });
+    const unmanaged = await fixture();
+    await expect(updaterUpdateChannel(unmanaged, 'staging')).rejects.toMatchObject({ status: 503 });
+  });
+});
+
+it('fences update admission against a channel switch after target resolution', async () => {
+  const { updaterUpdateChannel } = await import('./updater-status.js');
+  const managed = await fixture({ managed: true });
+  await updaterUpdateChannel(managed, 'staging');
+  const resolvedChannel = await updaterUpdateChannel(managed);
+  await updaterUpdateChannel(managed, 'stable');
+  await expect(
+    requestUpdaterOperation({
+      ...managed,
+      channel: resolvedChannel,
+      idempotencyKey: 'paused-request',
+      targetDigest: image('b'),
+    }),
+  ).rejects.toMatchObject({ status: 409, code: 'channel-changed' });
+  expect(await readUpdaterOperation(managed)).toBeNull();
+  await updaterUpdateChannel(managed, 'staging');
+  // Legacy Servers resolve only their environment channel, not the stored preference.
+  await expect(
+    requestUpdaterOperation({ ...managed, idempotencyKey: 'legacy', targetDigest: image('b') }),
+  ).rejects.toMatchObject({ status: 409, code: 'channel-changed' });
+  expect(
+    await requestUpdaterOperation({
+      ...managed,
+      channel: 'staging',
+      idempotencyKey: 'matching-request',
+      targetDigest: image('b'),
+    }),
+  ).toMatchObject({ state: 'preparing' });
 });

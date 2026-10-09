@@ -12,8 +12,9 @@ import {
 } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
-import type { ContainerSpec, DockerClient } from '../docker.js';
+import { DockerError, type ContainerSpec, type DockerClient } from '../docker.js';
 import type { UpdateJournal } from './update-journal.js';
+import { localPreviewIngressMigration } from './local-preview-ingress.js';
 import { readAgentSeedStamp } from './agent-seed-stamp.js';
 import { reconcileManagedControlPlaneRunner } from './managed-control-plane-runner.js';
 import { reconcileManagedMatrixConnector } from './managed-matrix-connector.js';
@@ -123,6 +124,16 @@ export interface ReconcileManagedCompanionsOptions {
  * that never once succeeded was implying.
  */
 
+async function inspectListedContainer(docker: CompanionDocker, id: string) {
+  try {
+    return await docker.inspectContainer(id);
+  } catch (error) {
+    // A list snapshot can still name a predecessor that its successor removed.
+    if (error instanceof DockerError && error.kind === 'container_not_found') return undefined;
+    throw error;
+  }
+}
+
 const oneService = async (
   docker: CompanionDocker,
   summaries: Awaited<ReturnType<NonNullable<DockerClient['listContainers']>>>,
@@ -137,7 +148,8 @@ const oneService = async (
       item.labels?.[MANAGED_ROLE_LABEL] === role &&
       item.labels?.[MANAGED_DEPLOYMENT_LABEL] === deploymentId;
     if (!managed && item.labels?.[COMPOSE_SERVICE_LABEL] !== service) continue;
-    const inspect = await docker.inspectContainer(item.id);
+    const inspect = await inspectListedContainer(docker, item.id);
+    if (inspect === undefined) continue;
     const compose =
       (composeProject !== undefined && item.labels?.[COMPOSE_PROJECT_LABEL] === composeProject) ||
       inspect.env?.includes(`VERITY_MANAGED_DEPLOYMENT_ID=${deploymentId}`) === true;
@@ -253,6 +265,25 @@ async function waitForHandoffOrFailure(
 export async function reconcileManagedCompanions(
   options: ReconcileManagedCompanionsOptions,
 ): Promise<void> {
+  // The handoff starts the successor before deleting the predecessor. A snapshot
+  // can therefore lose a container during discovery or subsequent readiness work.
+  // Re-enter reconciliation with fresh discovery rather than strand the journal
+  // until another Updater restart; persistent failures still reach the caller.
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await reconcileManagedCompanionsOnce(options);
+      return;
+    } catch (error) {
+      if (!(error instanceof DockerError) || error.kind !== 'container_not_found' || attempt >= 2)
+        throw error;
+      await (options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(500);
+    }
+  }
+}
+
+async function reconcileManagedCompanionsOnce(
+  options: ReconcileManagedCompanionsOptions,
+): Promise<void> {
   if (options.docker.listContainers === undefined)
     throw new Error('managed companion reconciliation requires container listing');
   if (options.docker.replaceContainerImage === undefined)
@@ -294,12 +325,40 @@ export async function reconcileManagedCompanions(
     await ensureRunning(options.docker, replacement, 'replacement Agent Gateway', options.sleep);
   } else await ensureRunning(options.docker, agentGateway.item.id, 'Agent Gateway', options.sleep);
 
-  if (gatewayInspect.image !== options.journal.targetDigest) {
+  const serverRanges = new Set<string>();
+  for (const item of summaries) {
+    if (
+      item.labels?.[MANAGED_ROLE_LABEL] !== 'server' ||
+      item.labels?.[MANAGED_DEPLOYMENT_LABEL] !== options.journal.deploymentId
+    )
+      continue;
+    const server = await inspectListedContainer(options.docker, item.id);
+    if (server === undefined || !server.running) continue;
+    const range = server.env?.find((entry) => entry.startsWith('VERITY_LOCAL_PREVIEW_PORT_RANGE='));
+    serverRanges.add(range?.slice('VERITY_LOCAL_PREVIEW_PORT_RANGE='.length) ?? '8100-8119');
+  }
+  if (serverRanges.size > 1)
+    throw new Error('managed Servers disagree on local preview port range');
+  const previewMigration = localPreviewIngressMigration(
+    gatewayInspect,
+    [...serverRanges][0] ?? options.environment?.VERITY_LOCAL_PREVIEW_PORT_RANGE,
+    options.environment?.VERITY_LOCAL_PREVIEW_BIND_ADDRESS,
+  );
+  if (gatewayInspect.image !== options.journal.targetDigest || previewMigration !== undefined) {
     const replacement = await options.docker.replaceContainerImage(
       gateway.item.id,
       options.journal.targetDigest,
+      undefined,
+      previewMigration,
     );
     await ensureRunning(options.docker, replacement, 'replacement managed Gateway', options.sleep);
+    if (
+      localPreviewIngressMigration(
+        await options.docker.inspectContainer(replacement),
+        previewMigration?.env.VERITY_LOCAL_PREVIEW_PORT_RANGE,
+      ) !== undefined
+    )
+      throw new Error('replacement managed Gateway has incomplete local preview ingress');
   } else await ensureRunning(options.docker, gateway.item.id, 'managed Gateway', options.sleep);
   if (options.environment !== undefined)
     // Three stable running samples are not proof that a container without a
@@ -341,33 +400,36 @@ export async function reconcileManagedCompanions(
         item.labels?.[MANAGED_DEPLOYMENT_LABEL] === options.journal.deploymentId,
     );
     if (existing !== undefined) {
-      const state = await options.docker.inspectContainer(existing.id);
-      const exact =
-        state.image === options.journal.targetDigest &&
-        state.labels?.[MANAGED_DEPLOYMENT_LABEL] === options.journal.deploymentId &&
-        state.labels?.[MANAGED_ROLE_LABEL] === HANDOFF_ROLE &&
-        state.labels?.['verity.update-generation'] === String(options.journal.generation) &&
-        state.command?.length === 1 &&
-        state.command[0] === 'managed-companion-handoff' &&
-        state.env?.length === expectedEnv.length &&
-        expectedEnv.every((entry) => state.env?.includes(entry)) &&
-        state.user === '0:0' &&
-        state.networkMode === 'none' &&
-        state.restartPolicy === 'on-failure' &&
-        state.securityOpt?.includes('no-new-privileges:true') === true &&
-        state.mounts?.length === expectedMounts.size &&
-        state.mounts.every(
-          (mount) =>
-            mount.type === 'bind' &&
-            mount.readWrite === true &&
-            typeof mount.source === 'string' &&
-            typeof mount.destination === 'string' &&
-            expectedMounts.has(`${mount.source}\0${mount.destination}`),
-        );
-      if (!exact || !state.running) {
-        if (state.running) await options.docker.stopContainer(existing.id);
-        await options.docker.removeContainer(existing.id);
-        existing = undefined;
+      const state = await inspectListedContainer(options.docker, existing.id);
+      if (state === undefined) existing = undefined;
+      else {
+        const exact =
+          state.image === options.journal.targetDigest &&
+          state.labels?.[MANAGED_DEPLOYMENT_LABEL] === options.journal.deploymentId &&
+          state.labels?.[MANAGED_ROLE_LABEL] === HANDOFF_ROLE &&
+          state.labels?.['verity.update-generation'] === String(options.journal.generation) &&
+          state.command?.length === 1 &&
+          state.command[0] === 'managed-companion-handoff' &&
+          state.env?.length === expectedEnv.length &&
+          expectedEnv.every((entry) => state.env?.includes(entry)) &&
+          state.user === '0:0' &&
+          state.networkMode === 'none' &&
+          state.restartPolicy === 'on-failure' &&
+          state.securityOpt?.includes('no-new-privileges:true') === true &&
+          state.mounts?.length === expectedMounts.size &&
+          state.mounts.every(
+            (mount) =>
+              mount.type === 'bind' &&
+              mount.readWrite === true &&
+              typeof mount.source === 'string' &&
+              typeof mount.destination === 'string' &&
+              expectedMounts.has(`${mount.source}\0${mount.destination}`),
+          );
+        if (!exact || !state.running) {
+          if (state.running) await options.docker.stopContainer(existing.id);
+          await options.docker.removeContainer(existing.id);
+          existing = undefined;
+        }
       }
     }
     let helperId = existing?.id;
@@ -430,7 +492,11 @@ export async function reconcileManagedCompanions(
       entry.labels?.[MANAGED_ROLE_LABEL] === HANDOFF_ROLE &&
       entry.labels?.[MANAGED_DEPLOYMENT_LABEL] === options.journal.deploymentId,
   )) {
-    await options.docker.removeContainer(item.id);
+    try {
+      await options.docker.removeContainer(item.id);
+    } catch (error) {
+      if (!(error instanceof DockerError) || error.kind !== 'container_not_found') throw error;
+    }
   }
 }
 

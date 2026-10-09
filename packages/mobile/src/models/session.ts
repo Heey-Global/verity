@@ -1,3 +1,8 @@
+import {
+  markSessionSwitch,
+  sessionSwitchTiming,
+  type SwitchTiming,
+} from '../sessionSwitchTiming.js';
 import type { AgentEvent, Attachment } from '@verity/events';
 import {
   VerityApiError,
@@ -7,15 +12,13 @@ import {
   type QueuedItem,
   type SessionDetail,
   type SessionHistoryPage,
+  type SessionPlanning,
   type TurnRequest,
 } from '../api.js';
 import type { SessionState } from '../reducer.js';
 import { SessionReducer } from '../reducer.js';
-import {
-  SessionStream,
-  type SessionStreamConnectionState,
-  type StreamSocketFactory,
-} from '../stream.js';
+import type { LiveSessionTransport } from '../live/connection.js';
+import { SessionStream, type SessionStreamConnectionState } from '../stream.js';
 import { engineLabel } from '../ui/modelPicker.js';
 
 /** How many of the most recent events to open a session from (the tail). One turn
@@ -24,6 +27,7 @@ import { engineLabel } from '../ui/modelPicker.js';
  * turns load on scroll-up. Stays within the server's 200 page cap. */
 const HISTORY_PAGE = 150;
 const HISTORY_VISIBLE_SCAN_MAX_PAGES = 5;
+export const DEFAULT_ACTIVITY_POLL_MS = 10_000;
 
 /**
  * An operator message shown IMMEDIATELY on send, before the server has echoed it
@@ -85,8 +89,6 @@ export interface SessionModelState {
    * `undefined` until the detail loads. The engine picker hides non-Claude/Codex
    * models for project sessions (the server enforces the same constraint). */
   projectId: string | null | undefined;
-  /** Whether this is an ordinary session or the durable home of an Agent Loop. */
-  kind: 'normal' | 'agent_loop' | undefined;
   /** A {@link SessionModel.switchModel} POST is in flight (the picker disables while
    * the switch resolves). */
   switchingModel: boolean;
@@ -138,6 +140,8 @@ export interface SessionModelState {
    * stick ON after the turn truly ended, so it agrees with the overview's server
    * `status` dot. */
   working: boolean;
+  /** Pulse only for active work; a turn awaiting your input remains cancellable. */
+  activityAnimating: boolean;
   /** Server-authoritative turns queued behind the in-flight one (#90), shown as
    * persistent "waiting to send" bubbles (not lost on navigation), MINUS any already
    * delivered (matching a `user-text` in the transcript) — so a sent message never
@@ -150,6 +154,15 @@ export interface SessionModelState {
    * (branch switching unconfigured / older server) — the header then falls back to
    * the load-once branch from `useBranches`. */
   branch: string | undefined;
+  /** Planning mode (`active`) or how the last planning round ended; `undefined`
+   * when the session never planned. Drives the planning bar and plan buttons. */
+  planning: SessionPlanning | undefined;
+  planningRevision: number | undefined;
+  planningPlan: string | null | undefined;
+  /** True while an "implement" / "discard" decision is in flight. */
+  decidingPlanning: boolean;
+  /** Why the last planning decision failed, if it did. */
+  planningError: string | undefined;
   /** True when older history exists before the loaded tail — the screen shows a
    * "load earlier" affordance / triggers {@link SessionModel.loadOlder} on scroll. */
   hasOlder: boolean;
@@ -186,12 +199,12 @@ export interface RestoredQueuedTurn {
 export interface SessionModelOptions {
   client: VerityClient;
   sessionId: string;
-  /** Control-plane base URL (http/https); the stream switches it to ws/wss. */
-  baseUrl: string;
-  /** Opens the WS socket (inject the platform `WebSocket` / a fake). */
-  connect: StreamSocketFactory;
-  /** Mints a one-use stream ticket over the authenticated API. */
-  getStreamTicket?: () => Promise<string>;
+  /** The app's live connection; the session subscribes to it. */
+  transport: LiveSessionTransport;
+  /** Safety-net interval for the activity snapshot. Live hints refresh it at
+   * once ({@link SessionModel.refreshActivity}); the poll only covers a change
+   * that produced no hint. */
+  activityPollMs?: number;
   /** Notified with a fresh state snapshot on every change. */
   onChange?: (state: SessionModelState) => void;
   /** Lets sibling overview state retire the same permission id immediately.
@@ -199,8 +212,6 @@ export interface SessionModelOptions {
   onPermissionSettled?: (toolUseId: string, accepted: boolean) => void;
   /** Notifies sibling overview state only when an active turn was actually stopped. */
   onTurnCancelled?: () => void;
-  /** Reconnect scheduler passed through to {@link SessionStream}. */
-  scheduleReconnect?: (retry: () => void, delayMs: number) => void;
   /**
    * Gates every server call on the session actually existing, for a screen that
    * renders the chat BEFORE `POST /sessions` has answered: the operator taps "+",
@@ -245,7 +256,6 @@ export class SessionModel {
   private _model: string | undefined;
   private _modelSwitched = false;
   private _projectId: string | null | undefined;
-  private _kind: 'normal' | 'agent_loop' | undefined;
   private _switchingModel = false;
   private _modelSwitchPending = false;
   private _modelSwitchPendingAfterActivityRequest = 0;
@@ -275,6 +285,10 @@ export class SessionModel {
   // reducer is running AHEAD of the poll on a fresh turn, not stuck BEHIND a finished
   // one. See the `working` field in `state`. Starts at -1 (no settled poll yet).
   private _settledAtSeq = -1;
+  private _busyAtSeq = 0;
+  private _activityAnimating: boolean | undefined;
+  private _activityAnimatingAtSeq = 0;
+  private _permissionChangedAfterActivityRequest = 0;
   private _waiting: QueuedItem[] = [];
   /** Stream watermark when each server queue id was first observed. An older
    * identical prompt must not consume a newly queued item (common for "ok"). */
@@ -283,12 +297,21 @@ export class SessionModel {
   // tracks an external/agent `git checkout` without a remount. undefined until the
   // first poll resolves (or when the server doesn't report it).
   private _branch: string | undefined;
+  // Planning mode from the session detail and the activity poll. undefined = the
+  // session never planned (or an older server).
+  private _planning: SessionPlanning | undefined;
+  private _planningRevision: number | undefined;
+  private _planningPlan: string | null | undefined;
+  private _decidingPlanning = false;
+  private _planningError: string | undefined;
   private _activityTimer: ReturnType<typeof setInterval> | undefined;
   // Guards against overlapping polls: the interval fires on a fixed cadence
   // regardless of whether the prior `loadActivity` resolved, and the poll now does a
   // server-side git read (#110), so a slow tick must not let requests stack up.
   private _activityInFlight = false;
+  private _activityRefreshPending = false;
   private _activityRequest = 0;
+  private _planningDecisionAfterActivityRequest = 0;
   // Backward-pagination state: whether older history exists before the loaded
   // tail, and whether a fetch for it is in flight.
   private _hasOlder = false;
@@ -319,14 +342,28 @@ export class SessionModel {
   private _opened = false;
   private _historyAttemptComplete = false;
 
+  private readonly timing: SwitchTiming | undefined;
+
   constructor(private readonly opts: SessionModelOptions) {
+    this.timing = sessionSwitchTiming(opts.sessionId);
     this.stream = new SessionStream({
-      baseUrl: opts.baseUrl,
       sessionId: opts.sessionId,
-      connect: opts.connect,
-      ...(opts.getStreamTicket ? { getStreamTicket: opts.getStreamTicket } : {}),
+      transport: opts.transport,
       onUpdate: (session) => {
+        if (session.pendingPermission?.toolUseId !== this._session.pendingPermission?.toolUseId) {
+          this._activityAnimating = undefined;
+          this._permissionChangedAfterActivityRequest = this._activityRequest;
+        }
         this._session = session;
+        // A live turn-end must not wait for polling, or a slow older busy response.
+        // Keep the server's termination fence until it confirms the process stopped.
+        if (
+          !session.running &&
+          !this._terminationUnconfirmed &&
+          this.stream.settledSeq > this._busyAtSeq
+        ) {
+          this._busy = false;
+        }
         // The canonical message may have just landed — hand the bubble over from the
         // local echo to the transcript before the screen re-renders, so it never
         // shows both (the echo's whole job ends here).
@@ -344,7 +381,6 @@ export class SessionModel {
         this._connectionState = state;
         this.emit();
       },
-      ...(opts.scheduleReconnect ? { scheduleReconnect: opts.scheduleReconnect } : {}),
     });
     this._session = this.stream.state; // empty transcript until the stream opens
     this._ready =
@@ -372,6 +408,17 @@ export class SessionModel {
   }
 
   get state(): SessionModelState {
+    const working =
+      this._busy || (this._session.running && this.stream.activitySeq > this._settledAtSeq);
+    const awaiting =
+      this._session.pendingPermission !== undefined ||
+      this._session.status === 'awaiting_input' ||
+      this._session.status === 'awaiting_dependency';
+    const activityAnimating =
+      this._activityAnimating !== undefined &&
+      this.stream.activitySeq <= this._activityAnimatingAtSeq
+        ? this._activityAnimating
+        : !awaiting || this.stream.hasOpenTasks;
     const currentProvider = engineLabel(this._model ?? this._session.model);
     const streamRateLimit =
       this._session.rateLimit !== undefined &&
@@ -394,7 +441,6 @@ export class SessionModel {
       name: this._name,
       model: this._model,
       projectId: this._projectId,
-      kind: this._kind,
       switchingModel: this._switchingModel,
       modelSwitchPending: this._modelSwitchPending,
       terminationUnconfirmed: this._terminationUnconfirmed,
@@ -419,13 +465,19 @@ export class SessionModel {
       // (running AHEAD of the poll) but can't keep the indicator lit after the turn
       // truly ended (a stuck-ON reducer running BEHIND a settled server). Keeps the
       // overview dot (server `status`) and this in-session indicator in agreement.
-      working: this._busy || (this._session.running && this.stream.newestSeq > this._settledAtSeq),
+      working,
+      activityAnimating: working && activityAnimating,
       // Filter the server's queued list against the transcript too: the instant a
       // queued message is delivered (its `prompt` event lands as a user-text), drop
       // its "waiting to send" bubble — don't wait for the next activity poll, which
       // left it showing as a duplicate alongside the solid sent bubble.
       waitingMessages: this.subtractDeliveredWaiting(),
       branch: this._branch,
+      planning: this._planning,
+      planningRevision: this._planningRevision,
+      planningPlan: this._planningPlan,
+      decidingPlanning: this._decidingPlanning,
+      planningError: this._planningError,
       hasOlder: this._hasOlder,
       oldestHistorySeq: this.stream.oldestSeq,
       loadingOlder: this._loadingOlder,
@@ -569,7 +621,24 @@ export class SessionModel {
     void this.loadDetail();
   }
 
-  /** Suspend the socket + activity poll while the app is backgrounded. */
+  /** Whether the session is on screen (focused). While it is, the server sends
+   * this user no notification about it. */
+  setView(view: boolean): void {
+    this.stream.setView(view);
+  }
+
+  /** Refresh the activity snapshot now — on a live hint that the session's
+   * activity, status or pending requests changed. */
+  refreshActivity(): void {
+    if (!this._running || this._paused || !this._historyAttemptComplete) return;
+    if (this._activityInFlight) {
+      this._activityRefreshPending = true;
+      return;
+    }
+    void this.loadActivity();
+  }
+
+  /** Leave the live subscription + stop the activity poll while backgrounded. */
   pause(): void {
     this._paused = true;
     this.stream.pause();
@@ -620,9 +689,14 @@ export class SessionModel {
     if (this._activityTimer !== undefined) return;
     // Poll the lightweight activity endpoint so the working indicator + waiting
     // messages are server-authoritative (reliable + survive navigation). Fetch
-    // once immediately, then every 1.5s while open.
+    // once immediately; live hints refresh it as things change, and the interval
+    // is only the safety net for a change that produced no hint.
     void this.loadActivity();
-    this._activityTimer = setInterval(() => void this.loadActivity(), 1500);
+    if (this.opts.activityPollMs === 0) return;
+    this._activityTimer = setInterval(
+      () => void this.loadActivity(),
+      this.opts.activityPollMs ?? DEFAULT_ACTIVITY_POLL_MS,
+    );
   }
 
   private stopActivityPoll(): void {
@@ -640,20 +714,25 @@ export class SessionModel {
    * On any failure before a snapshot is seeded, fall back to a full replay.
    */
   private async openStreamFromTail(): Promise<void> {
-    this.stream.prepareConnection();
+    const timing = this.timing;
+    markSessionSwitch(timing, 'history-load-start');
     try {
-      let page = await this.opts.client.getHistory(this.opts.sessionId, { limit: HISTORY_PAGE });
+      let page = await this.opts.client.getHistory(this.opts.sessionId, {
+        limit: HISTORY_PAGE,
+        timing,
+      });
       const pages = [page.events];
       const newest = page.events.at(-1)?.seq;
       let oldest = page.events[0]?.seq;
       while (
         page.hasMore &&
         oldest !== undefined &&
-        !this.historyPageRendersMessages(page.events)
+        !this.historyPageRendersMessages(page.events, timing)
       ) {
         page = await this.opts.client.getHistory(this.opts.sessionId, {
           beforeSeq: oldest,
           limit: HISTORY_PAGE,
+          timing,
         });
         pages.push(page.events);
         oldest = page.events[0]?.seq;
@@ -662,9 +741,12 @@ export class SessionModel {
       if (newest !== undefined) {
         this._hasOlder = page.hasMore;
         this.stream.setSinceSeq(newest);
+        markSessionSwitch(timing, 'history-install-start', pages.length);
         this.stream.seedHistory(pages.reverse().flat());
+        markSessionSwitch(timing, 'history-install-end');
       }
     } catch {
+      markSessionSwitch(timing, 'history-fallback-replay');
       // No complete REST snapshot was installed, so seq 0 remains the safe cursor.
     }
     if (!this._running) return;
@@ -677,7 +759,9 @@ export class SessionModel {
 
   private historyPageRendersMessages(
     events: readonly { seq: number; ts?: number | undefined; event: AgentEvent }[],
+    timing?: SwitchTiming,
   ): boolean {
+    markSessionSwitch(timing, 'history-page-reduce-start');
     const reducer = new SessionReducer();
     for (const e of events) {
       reducer.applyFrame({
@@ -687,6 +771,7 @@ export class SessionModel {
         event: e.event,
       });
     }
+    markSessionSwitch(timing, 'history-page-reduce-end');
     return reducer.state.messages.length > 0;
   }
 
@@ -718,6 +803,7 @@ export class SessionModel {
         const page = await this.opts.client.getHistory(this.opts.sessionId, {
           beforeSeq: cursor,
           limit: HISTORY_PAGE,
+          timing: this.timing,
         });
         fetchedPages.push(page.events);
         fetchedHasMore = page.hasMore;
@@ -787,6 +873,7 @@ export class SessionModel {
       const page = await this.opts.client.getHistory(this.opts.sessionId, {
         beforeSeq,
         limit: beforeSeq - targetSeq,
+        timing: this.timing,
       });
       this.installOlderHistory(page.events);
       this._hasOlder = page.hasMore;
@@ -816,6 +903,23 @@ export class SessionModel {
     try {
       const rateLimitPruned = this.pruneExpiredRateLimit();
       const activity = await this.opts.client.getActivity(this.opts.sessionId);
+      const animationBefore = this.state.activityAnimating;
+      if (activityRequest > this._permissionChangedAfterActivityRequest) {
+        this._activityAnimating = activity.activityAnimating;
+        this._activityAnimatingAtSeq = seqAtRequest;
+      }
+      // The response cannot override a lifecycle transition received while it was
+      // in flight. Ordinary text/metadata updates do not invalidate the busy snapshot.
+      if (
+        this.stream.activitySeq > seqAtRequest &&
+        (this._session.running || this.stream.settledSeq > seqAtRequest) &&
+        activity.terminationUnconfirmed !== true
+      ) {
+        activity.busy = this._session.running;
+      }
+      this._busyAtSeq = seqAtRequest;
+      // Ending planning keeps the same revision: an older poll must not reactivate it.
+      const acceptPlanning = activityRequest > this._planningDecisionAfterActivityRequest;
       if (activity.pendingPermissions !== undefined) {
         this.stream.reconcilePendingPermissions(activity.pendingPermissions, seqAtRequest);
       }
@@ -873,12 +977,19 @@ export class SessionModel {
         activity.busy === this._busy &&
         terminationUnconfirmed === this._terminationUnconfirmed &&
         activity.branch === this._branch &&
+        (!acceptPlanning ||
+          activity.planning === undefined ||
+          activity.planning === this._planning) &&
+        (!acceptPlanning ||
+          activity.planningRevision === undefined ||
+          activity.planningRevision === this._planningRevision) &&
         sameItems(activity.queued, this._waiting) &&
         !nameChanged &&
         !modelSwitchPendingChanged &&
         !rateLimitPruned &&
         !pendingRetired &&
-        this.state.working === workingBefore
+        this.state.working === workingBefore &&
+        this.state.activityAnimating === animationBefore
       ) {
         return;
       }
@@ -886,6 +997,18 @@ export class SessionModel {
       this._terminationUnconfirmed = terminationUnconfirmed;
       this._waiting = activity.queued;
       this._branch = activity.branch;
+      // Absent means "not reported" (an older server, or a poll whose session read
+      // failed), not "never planned": keep the last known value then.
+      if (acceptPlanning && activity.planning !== undefined) this._planning = activity.planning;
+      if (
+        acceptPlanning &&
+        activity.planningRevision !== undefined &&
+        (this._planningRevision === undefined ||
+          activity.planningRevision >= this._planningRevision)
+      ) {
+        this._planningRevision = activity.planningRevision;
+        this._planningPlan = activity.planningPlan;
+      }
       if (nameChanged) this._name = activity.name;
       // A freshly reported queue entry may cover a local echo — reconcile before
       // emitting.
@@ -895,6 +1018,10 @@ export class SessionModel {
       // transient — keep the last values
     } finally {
       this._activityInFlight = false;
+      if (this._activityRefreshPending) {
+        this._activityRefreshPending = false;
+        this.refreshActivity();
+      }
     }
   }
 
@@ -920,13 +1047,12 @@ export class SessionModel {
   private async loadDetail(): Promise<void> {
     const seqAtRequest = this.stream.newestSeq;
     try {
-      const detail = await this.opts.client.getSession(this.opts.sessionId);
+      const detail = await this.opts.client.getSession(this.opts.sessionId, { trace: this.timing });
       if (detail.pendingPermissions !== undefined) {
         this.stream.reconcilePendingPermissions(detail.pendingPermissions, seqAtRequest);
       }
       this._name = detail.name;
       this._projectId = detail.projectId ?? null;
-      this._kind = detail.kind ?? 'normal';
       // Seed the working indicator so the Stop button + activity line are correct on
       // mount, without waiting for the first activity poll. Mirror the poll's `busy`
       // (in-flight OR log-derived running): `detail.busy` is the conductor's `isBusy`
@@ -952,6 +1078,12 @@ export class SessionModel {
       // (that would briefly re-enable a session the send proved dead).
       if (this._resumable === undefined) {
         this._resumable = detail.resumable;
+      }
+      // Seed only: the activity poll and the operator's own decision are fresher.
+      if (!this._activityLoaded) {
+        this._planning = detail.planning;
+        this._planningRevision = detail.planningRevision;
+        this._planningPlan = detail.planningPlan;
       }
       this.emit();
     } catch {
@@ -1160,8 +1292,42 @@ export class SessionModel {
    * retryable. The `_decidingPermission` guard drops a double-tap so one intent never
    * double-POSTs.
    */
+  /** End planning mode from the app: implement the latest plan, or discard it. A
+   * 409 means another decision already ended planning; the next poll shows how. */
+  async decidePlanning(action: 'implement' | 'discard', planningRevision?: number): Promise<void> {
+    if (this._decidingPlanning) return;
+    this._decidingPlanning = true;
+    this._planningError = undefined;
+    this.emit();
+    try {
+      const result = await this.opts.client.decidePlanning(
+        this.opts.sessionId,
+        action,
+        planningRevision,
+      );
+      this._planning = result.planning;
+      this._planningDecisionAfterActivityRequest = this._activityRequest;
+    } catch (error) {
+      this._planningError =
+        error instanceof VerityApiError && error.status === 409 && error.code === 'stalePlan'
+          ? 'The plan was updated. Please review it again.'
+          : error instanceof VerityApiError && error.status === 409
+            ? 'Planning already ended.'
+            : 'Could not end planning. Try again.';
+    } finally {
+      this._decidingPlanning = false;
+      this.emit();
+    }
+    void this.loadActivity();
+  }
+
   async decidePermission(toolUseId: string, decision: PermissionDecision): Promise<void> {
     if (this._decidingPermission !== undefined) return; // a decision is already in flight
+    const allowTiming =
+      decision.behavior === 'allow'
+        ? sessionSwitchTiming(this.opts.sessionId, 'permission')
+        : undefined;
+    markSessionSwitch(allowTiming, 'allow-model-handler');
     this._decidingPermission = toolUseId;
     this._permissionError = undefined;
     this.emit();
@@ -1170,14 +1336,17 @@ export class SessionModel {
         this.opts.sessionId,
         toolUseId,
         decision,
+        ...(allowTiming ? ([{ trace: allowTiming }] as const) : []),
       );
       if (result.scopeSaved === false) {
         this._permissionError =
           'Request allowed, but the reusable permission could not be saved. Future requests will ask again.';
       }
+      markSessionSwitch(allowTiming, 'allow-model-response');
       this.stream.resolvePermission(toolUseId);
       this.opts.onPermissionSettled?.(toolUseId, true);
     } catch (error) {
+      markSessionSwitch(allowTiming, 'allow-model-error');
       // 404 = no pending prompt under that id (already stale): not an error — the
       // prompt is gone server-side, so drop the card here too rather than waiting
       // for a stream event that may never come. Any other failure is surfaced and

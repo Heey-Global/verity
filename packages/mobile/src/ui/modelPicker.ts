@@ -11,6 +11,7 @@
  * rewrites the strings - it only orders them and picks a default - so whatever the
  * server returns flows through unchanged to `createSession`.
  */
+import { PROJECT_AGENTS, type ProjectAgent } from '../api.js';
 
 /**
  * Order the picker's models alphabetically while de-duplicating. Pure - does not
@@ -62,7 +63,7 @@ export function groupModelsByEngine(
  *     product name, so keep it verbatim (`deepinfra/zai-org/GLM-5.2` → `GLM-5.2`).
  *   - Claude bare id: title-case the words and fuse the trailing numeric version parts
  *     with dots, dropping an 8-digit date stamp (`claude-opus-4-8` → `Claude Opus 4.8`,
- *     `claude-haiku-4-5-20251001` → `Claude Haiku 4.5`).
+ *     `claude-haiku-5-5` → `Claude Haiku 5.5`).
  *
  * `undefined` (no explicit model → the server's Claude default) reads as `Claude`.
  */
@@ -127,4 +128,39 @@ export function defaultModel(
 ): string | undefined {
   if (serverDefault !== undefined && models.includes(serverDefault)) return serverDefault;
   return models[0];
+}
+
+/** The agent behind a model id, in the project-settings vocabulary. */
+export function modelAgent(model: string): ProjectAgent {
+  const engine = engineLabel(model);
+  return engine === 'Codex' ? 'codex' : engine === 'OpenCode' ? 'opencode' : 'claude';
+}
+
+export function agentLabel(agent: ProjectAgent): string {
+  return agent === 'claude' ? 'Claude' : agent === 'codex' ? 'Codex' : 'OpenCode';
+}
+
+function joinLabels(labels: readonly string[]): string {
+  return labels.length <= 1
+    ? (labels[0] ?? '')
+    : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+}
+
+/** Project-settings subtitle: "All agents", "Claude only", or "Claude, Codex". */
+export function allowedAgentsSummary(allowed: readonly ProjectAgent[] | null | undefined): string {
+  if (allowed == null || PROJECT_AGENTS.every((agent) => allowed.includes(agent))) {
+    return 'All agents';
+  }
+  const labels = PROJECT_AGENTS.filter((agent) => allowed.includes(agent)).map(agentLabel);
+  return labels.length === 1 ? `${labels[0]} only` : labels.join(', ');
+}
+
+/** The model sheet's footer for a restricted project; undefined when nothing is excluded. */
+export function excludedAgentsNote(
+  allowed: readonly ProjectAgent[] | null | undefined,
+): string | undefined {
+  if (allowed == null) return undefined;
+  const excluded = PROJECT_AGENTS.filter((agent) => !allowed.includes(agent)).map(agentLabel);
+  if (excluded.length === 0) return undefined;
+  return `${joinLabels(excluded)} ${excluded.length === 1 ? 'is' : 'are'} turned off for this project.`;
 }

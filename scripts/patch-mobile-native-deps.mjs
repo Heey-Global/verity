@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Apply backported upstream fixes to the mobile app's native dependencies, in the
+// Apply guarded native fixes to the mobile app's native dependencies, in the
 // installed node_modules tree, before the sources are copied into the generated
 // Xcode/Gradle project.
 //
@@ -10,9 +10,10 @@
 // after `npm ci` and before prebuild/pod install. A local `npm ci` restores the
 // unpatched sources, so a local native build needs `patch:native` again.
 //
-// Each patch is written to retire itself: it is skipped once the dependency
+// Upstream backports are written to retire themselves: it is skipped once the dependency
 // reaches the release that carries the fix, so a version bump removes the patch's
-// effect without anyone remembering it exists. It is *not* written to be lenient
+// effect without anyone remembering it exists. Local fixes without a known
+// upstream release instead require an exact supported version. It is *not* written to be lenient
 // otherwise — if the dependency is still on an unfixed version but its source no
 // longer matches, the script fails rather than shipping a binary that silently
 // kept the bug.
@@ -39,7 +40,8 @@ const MOBILE_WORKSPACE = 'apps/mobile';
  * @typedef {{
  *   package: string,
  *   file: string,
- *   fixedFrom: string,
+ *   fixedFrom: string | null,
+ *   supportedVersion?: string,
  *   reference: string,
  *   why: string,
  *   requires: string[],
@@ -50,6 +52,171 @@ const MOBILE_WORKSPACE = 'apps/mobile';
 
 /** @type {NativePatch[]} */
 export const NATIVE_PATCHES = [
+  {
+    package: 'react-native-unistyles',
+    file: 'ios/UnistylesModuleOnLoad.mm',
+    fixedFrom: null,
+    supportedVersion: '3.3.0',
+    reference: 'Unistyles iOS runtime registry ownership during reload',
+    why: 'An old runtime can invalidate the registry after the new runtime initializes.',
+    requires: ['- (void)invalidate', '- (void)createHybrids:'],
+    before: `#import "UnistylesModuleOnLoad.h"
+#import <NitroModules/HybridObjectRegistry.hpp>
+#import "HybridUnistylesRuntime.h"
+#import "HybridStyleSheet.h"
+#import "HybridShadowRegistry.h"
+
+using namespace margelo::nitro;
+
+@implementation UnistylesModule
+
+RCT_EXPORT_MODULE(Unistyles)
+
++ (BOOL)requiresMainQueueSetup {
+    return YES;
+}
+
+- (void)installJSIBindingsWithRuntime:(jsi::Runtime&)rt callInvoker:(const std::shared_ptr<facebook::react::CallInvoker> &)callInvoker {
+    // function is called on: first init and every live reload
+    // check if this is live reload, if so let's replace UnistylesRuntime with new runtime
+    auto hasUnistylesRuntime = HybridObjectRegistry::hasHybridObject("UnistylesRuntime");
+
+    if (hasUnistylesRuntime) {
+        HybridObjectRegistry::unregisterHybridObjectConstructor("UnistylesRuntime");
+        HybridObjectRegistry::unregisterHybridObjectConstructor("UnistylesStyleSheet");
+        HybridObjectRegistry::unregisterHybridObjectConstructor("UnistylesShadowRegistry");
+    }
+
+    [self createHybrids:rt callInvoker:callInvoker];
+}
+
+- (void)createHybrids:(jsi::Runtime&)rt callInvoker:(const std::shared_ptr<facebook::react::CallInvoker> &)callInvoker {
+    auto runOnJSThread = [callInvoker](std::function<void(jsi::Runtime& rt)> &&callback){
+        callInvoker->invokeAsync(std::move(callback));
+    };
+
+    auto nativePlatform = Unistyles::NativePlatform::create().getCxxPart();
+    auto unistylesRuntime = std::make_shared<HybridUnistylesRuntime>(nativePlatform, runOnJSThread);
+    auto styleSheet = std::make_shared<HybridStyleSheet>(unistylesRuntime);
+
+    HybridObjectRegistry::registerHybridObjectConstructor("UnistylesRuntime", [unistylesRuntime]() -> std::shared_ptr<HybridObject>{
+        return unistylesRuntime;
+    });
+    HybridObjectRegistry::registerHybridObjectConstructor("UnistylesStyleSheet", [styleSheet]() -> std::shared_ptr<HybridObject>{
+        return styleSheet;
+    });
+    HybridObjectRegistry::registerHybridObjectConstructor("UnistylesShadowRegistry", [unistylesRuntime]() -> std::shared_ptr<HybridObject>{
+        return std::make_shared<HybridShadowRegistry>(unistylesRuntime);
+    });
+}
+
+- (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:(const facebook::react::ObjCTurboModule::InitParams &)params {
+    return std::make_shared<facebook::react::NativeTurboUnistylesSpecJSI>(params);
+}
+
+- (void)invalidate {
+    core::UnistylesRegistry::get().destroy();
+
+    [super invalidate];
+}
+
+@end
+`,
+    after: `#import "UnistylesModuleOnLoad.h"
+#import <NitroModules/HybridObjectRegistry.hpp>
+#import "HybridUnistylesRuntime.h"
+#import "HybridStyleSheet.h"
+#import "HybridShadowRegistry.h"
+
+using namespace margelo::nitro;
+
+#include <mutex>
+
+// A retired React runtime must not clear the next runtime's global registry.
+class VerityUnistylesLifecycle {
+    std::mutex mutex;
+    const void* owner = nullptr;
+public:
+    template <typename Install, typename Destroy>
+    void install(const void* nextOwner, Install install, Destroy destroy) {
+        std::lock_guard<std::mutex> lock(mutex);
+        // Drop JSI styles and shadow entries before the next runtime can use them.
+        if (owner != nullptr && owner != nextOwner) destroy();
+        install();
+        owner = nextOwner;
+    }
+    template <typename Destroy>
+    void invalidate(const void* retiringOwner, Destroy destroy) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (owner != retiringOwner) return;
+        destroy();
+        owner = nullptr;
+    }
+};
+static VerityUnistylesLifecycle verityUnistylesLifecycle;
+
+@implementation UnistylesModule
+
+RCT_EXPORT_MODULE(Unistyles)
+
++ (BOOL)requiresMainQueueSetup {
+    return YES;
+}
+
+- (void)installJSIBindingsWithRuntime:(jsi::Runtime&)rt callInvoker:(const std::shared_ptr<facebook::react::CallInvoker> &)callInvoker {
+    // function is called on: first init and every live reload
+    // check if this is live reload, if so let's replace UnistylesRuntime with new runtime
+    auto hasUnistylesRuntime = HybridObjectRegistry::hasHybridObject("UnistylesRuntime");
+
+    if (hasUnistylesRuntime) {
+        HybridObjectRegistry::unregisterHybridObjectConstructor("UnistylesRuntime");
+        HybridObjectRegistry::unregisterHybridObjectConstructor("UnistylesStyleSheet");
+        HybridObjectRegistry::unregisterHybridObjectConstructor("UnistylesShadowRegistry");
+    }
+
+    [self createHybrids:rt callInvoker:callInvoker];
+}
+
+- (void)createHybrids:(jsi::Runtime&)rt callInvoker:(const std::shared_ptr<facebook::react::CallInvoker> &)callInvoker {
+    verityUnistylesLifecycle.install((__bridge const void*)self, [&] {
+        auto runOnJSThread = [callInvoker](std::function<void(jsi::Runtime& rt)> &&callback){
+            callInvoker->invokeAsync(std::move(callback));
+        };
+
+        auto nativePlatform = Unistyles::NativePlatform::create().getCxxPart();
+        auto unistylesRuntime = std::make_shared<HybridUnistylesRuntime>(nativePlatform, runOnJSThread);
+        auto styleSheet = std::make_shared<HybridStyleSheet>(unistylesRuntime);
+
+        HybridObjectRegistry::registerHybridObjectConstructor("UnistylesRuntime", [unistylesRuntime]() -> std::shared_ptr<HybridObject>{
+            return unistylesRuntime;
+        });
+        HybridObjectRegistry::registerHybridObjectConstructor("UnistylesStyleSheet", [styleSheet]() -> std::shared_ptr<HybridObject>{
+            return styleSheet;
+        });
+        HybridObjectRegistry::registerHybridObjectConstructor("UnistylesShadowRegistry", [unistylesRuntime]() -> std::shared_ptr<HybridObject>{
+            return std::make_shared<HybridShadowRegistry>(unistylesRuntime);
+        });
+    }, [] {
+        core::UnistylesRegistry::get().destroy();
+    });
+}
+
+- (std::shared_ptr<facebook::react::TurboModule>)getTurboModule:(const facebook::react::ObjCTurboModule::InitParams &)params {
+    return std::make_shared<facebook::react::NativeTurboUnistylesSpecJSI>(params);
+}
+
+- (void)invalidate {
+    verityUnistylesLifecycle.invalidate((__bridge const void*)self, [] {
+        core::UnistylesRegistry::get().destroy();
+    });
+
+    [super invalidate];
+}
+
+@end
+`,
+  },
+
   {
     package: 'react-native-reanimated',
     file: 'apple/reanimated/apple/REANodesManager.mm',
@@ -320,9 +487,14 @@ export function runPatch(patch, repoRoot) {
   if (typeof version !== 'string' || version === '') {
     throw new Error(`${patch.package}: installed package.json has no version.`);
   }
+  if (patch.fixedFrom === null && version !== patch.supportedVersion) {
+    throw new Error(
+      `${patch.package}@${version}: unsupported version; inspect ${patch.reference} before upgrading from ${patch.supportedVersion}.`,
+    );
+  }
   let fixed;
   try {
-    fixed = isFixedUpstream(version, patch.fixedFrom);
+    fixed = patch.fixedFrom !== null && isFixedUpstream(version, patch.fixedFrom);
   } catch (cause) {
     // Naked, this reads as a bare "Cannot compare version" on the EAS builder,
     // naming neither the dependency nor what to do about it.

@@ -17,6 +17,19 @@ function userText(messages: readonly { kind: string }[]): UserTextMessage[] {
 }
 
 describe('SessionReducer — sub-agent attribution', () => {
+  it.each<AgentEvent>([
+    { t: 'status', state: 'running' },
+    { t: 'task', id: 'bg', phase: 'started' },
+  ])('shows working when a lifecycle start arrives without its prompt (%j)', (event) => {
+    const r = new SessionReducer();
+    r.apply(1, { t: 'status', state: 'completed' });
+    r.apply(2, event);
+    expect(r.running).toBe(true);
+    expect(r.activitySeq).toBe(2);
+    r.apply(3, { t: 'dev_servers_changed', devServers: [] });
+    expect(r.activitySeq).toBe(2);
+  });
+
   it('tags sub-agent text/tool events with parentToolId and keeps contexts separate', () => {
     const r = new SessionReducer();
     r.apply(1, { t: 'tool_call', id: 'agent1', name: 'Agent', input: { description: 'map it' } });
@@ -524,21 +537,20 @@ describe('SessionReducer', () => {
     }
   });
 
-  it('renders an Agent Loop proposal as its own interactive message', () => {
+  it('renders an automation proposal as its own interactive message', () => {
     const r = new SessionReducer();
     r.apply(1, {
-      t: 'agent_loop_proposal',
+      t: 'automation_proposal',
       proposal: {
-        loopId: '11111111-1111-4111-8111-111111111111',
-        name: 'Dependency audit',
-        script: 'exit 0',
-        schedule: { kind: 'daily', hour: 3, minute: 0 },
+        name: 'Morning review',
+        schedule: { kind: 'daily', hour: 9, minute: 0 },
+        prompt: 'Summarize the open pull requests.',
       },
     });
     expect(r.messages[0]).toMatchObject({
-      kind: 'agent-loop-proposal',
-      id: 'agent-loop-proposal-1',
-      proposal: { name: 'Dependency audit' },
+      kind: 'automation-proposal',
+      id: 'automation-proposal-1',
+      proposal: { name: 'Morning review' },
     });
   });
 
@@ -1291,4 +1303,53 @@ describe('SessionReducer replay snapshot sharing', () => {
     expect(toolCalls(tools.messages)[0]?.tool.state).toBe('completed');
     expect(tools.messages[2]).not.toBe(oldTools[2]);
   });
+});
+
+describe('listener discovery snapshots', () => {
+  it('replaces listener state and removes stopped listeners without adding transcript messages', () => {
+    const reducer = new SessionReducer();
+    const listener = {
+      port: 5173,
+      reachable: true,
+      pid: 42,
+      name: 'Vite',
+      command: 'vite',
+      workdir: '.',
+      scope: 'session' as const,
+    };
+    reducer.apply(1, { t: 'dev_servers_changed', devServers: [listener] });
+    const first = reducer.state;
+    expect(first.devServers).toEqual([listener]);
+    expect(first.messages).toEqual([]);
+    reducer.apply(2, { t: 'dev_servers_changed', devServers: [] });
+    expect(reducer.state.devServers).toEqual([]);
+    expect(first.devServers).toEqual([listener]);
+    expect(reducer.state.messages).toEqual([]);
+  });
+});
+
+it('renders durable task updates without ending the running turn', () => {
+  const reducer = new SessionReducer();
+  reducer.apply(1, { t: 'session', id: 's', model: 'm', worktree: '/work/s' });
+  reducer.apply(2, { t: 'tasks_updated', origin: 'agent', change: 'added', taskIds: ['one'] });
+  expect(reducer.running).toBe(true);
+  expect(reducer.messages.at(-1)).toMatchObject({
+    kind: 'agent-event',
+    event: { t: 'tasks_updated' },
+  });
+  // The operator ticking a task off in the panel is not transcript content.
+  reducer.apply(3, { t: 'tasks_updated', origin: 'user', change: 'completed', taskIds: ['one'] });
+  expect(reducer.messages).toHaveLength(1);
+});
+
+it('preserves background work across steering and clears it for a fresh turn', () => {
+  const reducer = new SessionReducer();
+  reducer.apply(1, { t: 'prompt', text: 'Start' });
+  reducer.apply(2, { t: 'task', id: 'background', phase: 'started' });
+  reducer.apply(3, { t: 'prompt', text: 'Continue', steered: true });
+  reducer.apply(4, { t: 'status', state: 'awaiting_input' });
+  // Steering must not hide background work while the main agent waits for input.
+  expect(reducer.hasOpenTasks).toBe(true);
+  reducer.apply(5, { t: 'prompt', text: 'New turn' });
+  expect(reducer.hasOpenTasks).toBe(false);
 });

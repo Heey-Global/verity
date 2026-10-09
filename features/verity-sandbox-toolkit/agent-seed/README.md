@@ -36,6 +36,14 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   by that marker or each pending commit is explicitly tagged `[skip review]`. It
   also runs the secret gate over every ref being pushed, before any other check
   and on protected branches too, where the review gate itself is skipped.
+- `bin/verity-review-base.sh` resolves the common ancestor used by review and
+  push checks. If it is missing in a shallow clone, it fetches only the configured
+  base branch and a remote-tracking ancestor of the pushed tip, in up to three
+  requests of 128 additional commits each. Each request has a ten-second timeout
+  plus one second to terminate. Recovery requires `timeout`; it never changes local commits or
+  loads the entire history. Lint and formatting fall back to full checks when
+  recovery fails, and shared configuration changes still require full checks.
+  Review requires a usable boundary and reports how to restore one when missing.
 - `hooks/pre-commit` refuses a commit whose staged diff contains a secret. Both
   hooks delegate to `bin/verity-secret-scan`, which wraps the pinned `gitleaks`
   binary: findings are redacted, the reported fingerprint is what goes into
@@ -44,3 +52,12 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   scanner means: fail closed where the repo declares scanning, stay silent in a
   container that was never provisioned for it. Bypass in a real emergency with
   `git commit --no-verify` / `git push --no-verify`.
+
+- `bin/verity-dev-server` manages dev servers that Verity runs for the agent.
+  `add`, `update` and `remove` maintain a project-wide entry (name, command,
+  subdirectory); `start`, `stop`, `restart`, `status` and `logs` act on the
+  entry in the current session. The command receives its port in `$PORT` or
+  through a `{port}` placeholder. The operator approves an entry's command once
+  before it is published on the network. `announce --port <port> --name <name>`
+  labels a server started outside Verity, and `scan` requests an immediate
+  refresh for post-tool hooks.

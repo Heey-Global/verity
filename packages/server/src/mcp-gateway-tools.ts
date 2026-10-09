@@ -76,12 +76,22 @@ export function createMcpGatewayToolExecutor(options: {
         turnId: string;
         invocationId: string;
         request: unknown;
+        approvedByCard?: boolean;
       }) => Promise<unknown>)
     | undefined;
 }): McpGatewayDeps['invokeTool'] {
   const runTrustedCli = options.runTrustedCli ?? runSupervisorTrustedCli;
   const runnerRoot = options.runnerRoot;
-  return async ({ projectId, sessionId, turnId, callId, invocationId, toolName, request }) => {
+  return async ({
+    projectId,
+    sessionId,
+    turnId,
+    callId,
+    invocationId,
+    toolName,
+    request,
+    approvedByCard,
+  }) => {
     if (toolName === 'verity_secret_run') {
       if (runnerRoot === undefined) throw new Error('trusted CLI execution is unavailable');
       return await options.trustedCliTool(
@@ -125,23 +135,38 @@ export function createMcpGatewayToolExecutor(options: {
     }
     if (toolName === 'verity_google_drive') {
       if (options.googleDrive === undefined) throw new Error('Google Drive is unavailable');
-      return options.googleDrive({ projectId, sessionId, turnId, invocationId, request });
+      return options.googleDrive({
+        projectId,
+        sessionId,
+        turnId,
+        invocationId,
+        request,
+        ...(approvedByCard === undefined ? {} : { approvedByCard }),
+      });
     }
     if (toolName === 'verity_knowledge') {
       throw new Error('knowledge tools are unavailable');
     }
     if (
+      toolName === 'verity_diagnostics' ||
       toolName === 'verity_list_sessions' ||
       toolName === 'verity_session_handoff' ||
       toolName === 'verity_session_progress' ||
       toolName === 'verity_recent_session_messages' ||
       toolName === 'verity_publish_session_progress' ||
       toolName === 'verity_send_session_message' ||
-      toolName === 'verity_list_linked_sessions'
+      toolName === 'verity_list_linked_sessions' ||
+      toolName === 'verity_start_planning' ||
+      toolName === 'verity_present_plan' ||
+      toolName === 'verity_end_planning' ||
+      toolName === 'verity_tasks' ||
+      toolName === 'verity_app_help'
     ) {
-      // Not served from here. Both need the conductor and the route's session projection,
+      // Not served from here. Most need the conductor and the route's session projection,
       // neither of which exists in the composition that builds this executor, so `buildServer`
-      // intercepts them ahead of it — the same reason `requestApproval` is bound there. A call
+      // intercepts them ahead of it — the same reason `requestApproval` is bound there.
+      // `verity_app_help` needs neither, but is answered there next to the tasks tool so all
+      // session-scoped Verity tools share one authorization and invocation path. A call
       // reaching this branch means that seam is missing, which is a composition fault and not
       // something a retry fixes.
       throw new Error('control-plane session tools are unavailable');

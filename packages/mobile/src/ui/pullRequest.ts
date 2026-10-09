@@ -35,6 +35,24 @@ export function isPullRequestConflicted(pr: PullRequestStatusView): boolean {
   return pr.phase === 'open' && pr.mergeState === 'dirty';
 }
 
+/**
+ * Whether GitHub is still computing mergeability for a PR whose checks are green.
+ *
+ * Right after a push (or a base-branch move) GitHub answers `mergeable: null` until
+ * its background merge test finishes — the "Checking for the ability to merge
+ * automatically…" box on github.com. The merge button must stay off until it
+ * settles, and without naming the wait it reads as a dead green button next to
+ * "all checks passed".
+ */
+export function isPullRequestCheckingMergeability(pr: PullRequestStatusView): boolean {
+  return (
+    pr.phase === 'open' &&
+    pr.pipeline === 'success' &&
+    pr.mergeable === null &&
+    !isPullRequestConflicted(pr)
+  );
+}
+
 /** The status line's second half ("open · <this>"). */
 export function pullRequestStatusText(pr: PullRequestStatusView): string {
   const merged = pr.phase === 'merged';
@@ -53,5 +71,63 @@ export function pullRequestStatusText(pr: PullRequestStatusView): string {
   if (pr.pipeline === 'pending' || pr.pipeline === 'running') {
     return `${String(checks.completed)}/${String(checks.total)} ${unit} run`;
   }
+  if (isPullRequestCheckingMergeability(pr)) return 'checks passed · checking mergeability';
   return `${String(checks.total)}/${String(checks.total)} ${unit} passed`;
+}
+
+export type PullRequestBlockReason = 'rejected' | 'conflict' | 'ci_failed' | 'blocked';
+
+/**
+ * What the merge button shows. `waiting` covers every state that resolves on its
+ * own (checks pending or running, GitHub computing mergeability): the button carries
+ * the spinner, so nothing else on the screen has to pulse. `blocked` names its cause
+ * so the button never just says "no" while the reason sits in a different line.
+ * `closed` is a terminal PR, which has nothing left to merge.
+ */
+export type PullRequestMergeButton =
+  | { kind: 'merge'; label: 'Merge' }
+  | { kind: 'merging' }
+  | { kind: 'waiting'; label: string }
+  | { kind: 'blocked'; reason: PullRequestBlockReason; label: string }
+  | { kind: 'refresh'; label: 'Refresh' }
+  | { kind: 'closed' };
+
+const BLOCK_LABELS: Record<PullRequestBlockReason, string> = {
+  rejected: 'Blocked',
+  conflict: 'Conflict',
+  ci_failed: 'CI failed',
+  blocked: 'Blocked',
+};
+
+const blocked = (reason: PullRequestBlockReason): PullRequestMergeButton => ({
+  kind: 'blocked',
+  reason,
+  label: BLOCK_LABELS[reason],
+});
+
+export function pullRequestMergeButton(
+  pr: PullRequestStatusView,
+  state: { merging: boolean; mergeRejected: boolean },
+): PullRequestMergeButton {
+  if (state.merging) return { kind: 'merging' };
+  if (pr.phase !== 'open') return { kind: 'closed' };
+  if (state.mergeRejected) return blocked('rejected');
+  if (isPullRequestConflicted(pr)) return blocked('conflict');
+  // A failing check that is not required leaves the PR `unstable`, and GitHub still
+  // merges it; only a failure GitHub enforces blocks the button.
+  if (pr.pipeline === 'failure' && !(pr.mergeable === true && pr.mergeState === 'unstable')) {
+    return blocked('ci_failed');
+  }
+  if (pr.pipeline === 'pending' || pr.pipeline === 'running') {
+    // The count already sits in the status line beside the button, so the button
+    // only names the phase instead of repeating it.
+    return { kind: 'waiting', label: pr.checks.total === 0 ? 'Waiting…' : 'Running…' };
+  }
+  // GitHub's own merge verdict outranks a CI status it could not report: a repository
+  // without checks still merges. Anything short of that with no status is a status to
+  // re-read, not a block to explain.
+  if (pr.mergeable === true) return { kind: 'merge', label: 'Merge' };
+  if (pr.mergeable === false) return blocked('blocked');
+  if (pr.pipeline === 'unknown') return { kind: 'refresh', label: 'Refresh' };
+  return { kind: 'waiting', label: 'Checking…' };
 }

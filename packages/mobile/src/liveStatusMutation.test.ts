@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  publishAgentLoopMutation,
   publishDevServerStatusMutation,
   publishProjectStatusMutation,
+  publishSessionAutomationMutation,
   publishSessionStatusMutation,
   publishServerUpdateStatusMutation,
-  subscribeAgentLoopMutations,
   subscribeDevServerStatusMutations,
   subscribeProjectStatusMutations,
+  subscribeSessionAutomationMutations,
   subscribeSessionStatusMutations,
   subscribeServerUpdateStatusMutations,
 } from './liveStatusMutation.js';
@@ -34,23 +34,22 @@ describe('live status mutations', () => {
     unsubscribeUpdate();
   });
 
-  it('publishes loop, dev-server, and session action projections', () => {
-    const loopListener = vi.fn();
+  it('publishes automation, dev-server, and session action projections', () => {
+    const automationListener = vi.fn();
     const serverListener = vi.fn();
     const sessionListener = vi.fn();
     const unsubscribes = [
-      subscribeAgentLoopMutations(loopListener),
+      subscribeSessionAutomationMutations(automationListener),
       subscribeDevServerStatusMutations(serverListener),
       subscribeSessionStatusMutations(sessionListener),
     ];
-    const loop = { id: 'loop-1' } as Parameters<typeof publishAgentLoopMutation>[0];
     const server = { id: 'dev-1', projectId: 'p1', running: true };
 
-    publishAgentLoopMutation(loop);
+    publishSessionAutomationMutation('s1', null);
     publishDevServerStatusMutation(server);
     publishSessionStatusMutation('s1', 'running');
 
-    expect(loopListener).toHaveBeenCalledWith(loop);
+    expect(automationListener).toHaveBeenCalledWith('s1', null);
     expect(serverListener).toHaveBeenCalledWith(server);
     expect(sessionListener).toHaveBeenCalledWith('s1', 'running');
     for (const unsubscribe of unsubscribes) unsubscribe();

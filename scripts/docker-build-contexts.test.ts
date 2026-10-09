@@ -1,7 +1,30 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 describe('selective Docker build contexts', () => {
+  it('ships the browser export at the configured server path', () => {
+    const dockerfile = readFileSync('deploy/Dockerfile', 'utf8');
+    const webStage = dockerfile.split('FROM builder-deps AS web-builder\n')[1]?.split('FROM ')[0];
+    expect(webStage).toBeDefined();
+    for (const source of ['apps/mobile', 'packages/mobile', 'packages/events'])
+      expect(webStage).toContain(`COPY ${source} ${source}`);
+    const manifest = JSON.parse(readFileSync('apps/mobile/package.json', 'utf8')) as {
+      scripts: Record<string, string>;
+    };
+    const exportScript = Object.entries(manifest.scripts).find(([, command]) =>
+      command.includes('expo export --platform web'),
+    )?.[0];
+    expect(exportScript).toBeDefined();
+    expect(webStage).toContain(`npm run ${exportScript} --workspace @verity/mobile-app`);
+    const runtime = dockerfile.split(' AS runtime\n')[1]!;
+    const directory = runtime.match(/^ENV VERITY_WEB_APP_DIR=(\S+)$/mu)?.[1];
+    expect(directory).toBeDefined();
+    // Exporting successfully is insufficient if the runtime never receives the assets.
+    expect(runtime).toContain(
+      `COPY --from=web-builder --chown=node:node /app/apps/mobile/dist .${directory!.slice('/app'.length)}`,
+    );
+  });
+
   it('ships production dependencies nested below workspace packages', () => {
     for (const dockerfilePath of ['deploy/Dockerfile', 'deploy/secret-job-worker.Dockerfile']) {
       const dockerfile = readFileSync(dockerfilePath, 'utf8');
@@ -13,6 +36,35 @@ describe('selective Docker build contexts', () => {
         /COPY --from=deps[^\n]* \/app\/node_modules \.\/node_modules\n(?:#[^\n]*\n)*COPY --from=deps[^\n]* \/app\/packages \.\/packages/,
       );
     }
+  });
+
+  it('ships compiled output for the server workspace dependency closure', () => {
+    const packages = new Map(
+      readdirSync('packages').map((directory) => {
+        const manifest = JSON.parse(readFileSync(`packages/${directory}/package.json`, 'utf8')) as {
+          name: string;
+          dependencies?: Record<string, string>;
+        };
+        return [manifest.name, { directory, manifest }] as const;
+      }),
+    );
+    const dockerfile = readFileSync('deploy/Dockerfile', 'utf8');
+    const visited = new Set<string>();
+    const visit = (name: string) => {
+      if (visited.has(name)) return;
+      visited.add(name);
+      const workspace = packages.get(name);
+      if (!workspace) return;
+      // A successful builder can hide missing workspace output in the final image.
+      expect(dockerfile, `missing runtime output for ${name}`).toMatch(
+        new RegExp(
+          `COPY --from=builder[^\\n]* /app/packages/${workspace.directory}/dist \\./packages/${workspace.directory}/dist`,
+        ),
+      );
+      for (const dependency of Object.keys(workspace.manifest.dependencies ?? {}))
+        visit(dependency);
+    };
+    visit('@verity/server');
   });
 
   it('includes every root TypeScript project in builders that run the root build', () => {
@@ -57,13 +109,33 @@ describe('selective Docker build contexts', () => {
     }
   });
 
-  it('packages a PNG logo into the public preview edge', () => {
-    const dockerfile = readFileSync('deploy/preview-edge.Dockerfile', 'utf8');
-    const asset = dockerfile.match(
-      /^COPY (packages\/preview-tunnel\/assets\/\S+) \.\/assets\/verity-mark\.png$/mu,
-    )?.[1];
-    expect(asset).toBeDefined();
-    expect([...readFileSync(asset!).subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+  it.each(['deploy/preview-edge.Dockerfile', 'deploy/preview-connector.Dockerfile'])(
+    'packages a PNG logo into %s',
+    (dockerfilePath) => {
+      const dockerfile = readFileSync(dockerfilePath, 'utf8');
+      const asset = dockerfile.match(
+        /^COPY (packages\/preview-tunnel\/assets\/\S+) \.\/assets\/verity-mark\.png$/mu,
+      )?.[1];
+      expect(asset).toBeDefined();
+      expect([...readFileSync(asset!).subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+    },
+  );
+
+  it('ships preview branding beside the compiled module in the server runtime', () => {
+    const module = readFileSync('packages/preview-tunnel/src/static-server.ts', 'utf8');
+    const assetPath = module.match(/new URL\('([^']+)', import\.meta\.url\)/u)?.[1];
+    expect(assetPath).toBeDefined();
+    const asset = new URL(
+      assetPath!,
+      new URL('../packages/preview-tunnel/dist/static-server.js', import.meta.url),
+    );
+    const relativeAsset = asset.pathname.slice(new URL('../', import.meta.url).pathname.length);
+    const runtime = readFileSync('deploy/Dockerfile', 'utf8').split(' AS runtime\n')[1]!;
+    // Local previews run in the server image, which does not inherit connector assets.
+    expect(runtime).toContain(
+      `COPY --from=builder --chown=node:node /app/${relativeAsset} ./${relativeAsset}`,
+    );
+    expect([...readFileSync(asset).subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
   });
 
   it('installs and probes the shared libraries required by copied Python', () => {

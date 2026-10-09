@@ -8,12 +8,13 @@
 import type { ProjectDetail, VerityClient } from '@verity/mobile';
 
 /** A neutral project-detail payload. The project is `absent` (paused) so the
- *  Environment screen makes no lifecycle calls on mount. */
+ *  Sandbox screen makes no lifecycle calls on mount. */
 export function makeDetail(
   overrides: {
     dopplerProject?: string | null;
     dopplerConfig?: string | null;
     defaultModel?: string | null;
+    allowedAgents?: ('claude' | 'codex' | 'opencode')[] | null;
     kind?: 'github' | 'local';
   } = {},
 ): ProjectDetail {
@@ -36,6 +37,7 @@ export function makeDetail(
       dopplerConfig: overrides.dopplerConfig ?? null,
       defaultBranch: 'main',
       defaultModel: overrides.defaultModel ?? null,
+      allowedAgents: overrides.allowedAgents ?? null,
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     },
@@ -51,6 +53,10 @@ export const healthWithRebuild = (): jest.Mock =>
 
 export type ProjectClientOverrides = {
   detail?: ProjectDetail;
+  getVeritySettings?: jest.Mock;
+  getGoogleDriveConnection?: jest.Mock;
+  getProjectGoogleConnection?: jest.Mock;
+  listIntegrations?: jest.Mock;
   getHealth?: jest.Mock;
   setProjectSetupStatus?: jest.Mock;
   updateProjectSettings?: jest.Mock;
@@ -79,6 +85,21 @@ export function makeClient(opts: ProjectClientOverrides = {}): VerityClient {
   };
   const detail = opts.detail ?? makeDetail();
   return {
+    getVeritySettings:
+      opts.getVeritySettings ??
+      jest.fn().mockResolvedValue({
+        dopplerServiceTokenConfigured: true,
+        githubAppId: '123',
+        githubAppInstallationId: '456',
+        githubAppPrivateKeyConfigured: true,
+      }),
+    getGoogleDriveConnection:
+      opts.getGoogleDriveConnection ?? jest.fn().mockResolvedValue({ connected: true }),
+    getProjectGoogleConnection:
+      opts.getProjectGoogleConnection ??
+      jest.fn().mockResolvedValue({ connected: false, enabled: false }),
+    listIntegrations:
+      opts.listIntegrations ?? jest.fn().mockResolvedValue({ accounts: [], sources: [] }),
     // The default health answer deliberately omits `imageRebuildSupported`, so
     // every test that wants the Rebuild button has to say so via
     // `healthWithRebuild()` — the capability gate is opt-in, like the server's.

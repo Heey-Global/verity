@@ -1,3 +1,4 @@
+import { subscribeLiveRefresh } from '../lib/liveConnection';
 import {
   VerityApiError,
   type VerityClient,
@@ -9,14 +10,14 @@ import { useFocusEffect } from 'expo-router';
 import { AppState } from 'react-native';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { takePrefetchedBranches } from '../lib/branchesPrefetch';
-
-const ACTIVE_PR_POLL_MS = 2_000;
-// Still discovering: no PR yet, so poll briskly to surface one the agent opens
-// after mount (the server keeps a "no PR" answer for only ~4s, so this converges
-// within a few seconds without hammering GitHub).
-const DISCOVER_PR_POLL_MS = 5_000;
-const SETTLED_PR_POLL_MS = 15_000;
+import {
+  branchesSnapshotWriter,
+  cachedBranches,
+  invalidateBranches,
+  rememberBranches,
+  takePrefetchedBranches,
+} from '../lib/branchesPrefetch';
+import { hasLocalSaveChanges } from '../lib/localSaveVisibility';
 
 export interface UseBranches {
   /** The branch currently checked out in the session's worktree (undefined until loaded). */
@@ -58,6 +59,7 @@ export interface UseBranches {
    * when the project has a repository (merging goes through its PR) or the server is
    * older. Drives the local merge bar. */
   localMergeBase: string | undefined;
+  localMergeHasChanges: boolean;
   /** Ask the agent to commit this session's work, then add it to the local project. */
   saveToProject: () => Promise<{ ok: true } | { ok: false; message: string }>;
 }
@@ -70,18 +72,25 @@ export interface UseBranches {
  * {@link useSessionList}.
  */
 export function useBranches(client: VerityClient, sessionId: string, enabled = true): UseBranches {
-  const [current, setCurrent] = useState<string | undefined>(undefined);
-  const [switchable, setSwitchable] = useState<string[]>([]);
-  const [previewable, setPreviewable] = useState<string[]>([]);
-  const [currentPr, setCurrentPr] = useState<number | null>(null);
+  const cached = cachedBranches(client, sessionId);
+  const [identity, setIdentity] = useState({ client, sessionId });
+  const [current, setCurrent] = useState<string | undefined>(cached?.current);
+  const [switchable, setSwitchable] = useState<string[]>(cached?.switchable ?? []);
+  const [previewable, setPreviewable] = useState<string[]>(cached?.previewable ?? []);
+  const [currentPr, setCurrentPr] = useState<number | null>(cached?.currentPr ?? null);
   const [pullRequest, setPullRequest] = useState<NonNullable<BranchList['pullRequest']> | null>(
-    null,
+    cached?.pullRequest ?? null,
   );
-  const [owner, setOwner] = useState<string | undefined>(undefined);
-  const [repo, setRepo] = useState<string | undefined>(undefined);
-  const [localMergeBase, setLocalMergeBase] = useState<string | undefined>(undefined);
-  const [loading, setLoading] = useState(true);
-  const [workspaceMissing, setWorkspaceMissing] = useState(false);
+  const [owner, setOwner] = useState<string | undefined>(cached?.owner);
+  const [repo, setRepo] = useState<string | undefined>(cached?.repo);
+  const [localMergeBase, setLocalMergeBase] = useState<string | undefined>(
+    cached?.localMerge?.base,
+  );
+  const [localMergeHasChanges, setLocalMergeHasChanges] = useState(
+    hasLocalSaveChanges(cached?.localMerge),
+  );
+  const [loading, setLoading] = useState(cached === undefined);
+  const [workspaceMissing, setWorkspaceMissing] = useState(cached?.workspaceMissing === true);
   const [error, setError] = useState<string | undefined>(undefined);
 
   // Race/unmount guard (mirrors SessionListModel): only the LATEST load writes
@@ -96,31 +105,92 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     };
   }, []);
 
-  const load = useCallback(async () => {
-    const id = ++reqId.current;
-    const fresh = (): boolean => mounted.current && id === reqId.current;
-    setLoading(true);
-    try {
-      const prefetched = takePrefetchedBranches(client, sessionId);
-      const res = await (prefetched ?? client.getBranches(sessionId));
-      if (!fresh()) return;
-      setCurrent(res.current);
-      setSwitchable(res.switchable);
-      setPreviewable(res.previewable ?? []);
-      setCurrentPr(res.currentPr ?? null);
-      setPullRequest(res.pullRequest ?? null);
-      setOwner(res.owner);
-      setRepo(res.repo);
-      setLocalMergeBase(res.localMerge?.base);
-      setWorkspaceMissing(res.workspaceMissing === true);
-      setError(undefined);
-    } catch (err) {
-      if (!fresh()) return;
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (fresh()) setLoading(false);
-    }
-  }, [client, sessionId]);
+  // All triggers share the request. Explicit refreshes queue one fresh read so
+  // a response started before a mutation cannot become its final projection.
+  const pending = useRef<{
+    client: VerityClient;
+    sessionId: string;
+    promise: Promise<void>;
+    followup: boolean;
+    silent: boolean;
+  } | null>(null);
+
+  // A reused split-view pane must never show the previous session's PR, even for
+  // one frame before focus effects run.
+  if (identity.client !== client || identity.sessionId !== sessionId) {
+    setIdentity({ client, sessionId });
+    reqId.current += 1;
+    if (pending.current) pending.current.followup = false;
+    pending.current = null;
+    setCurrent(cached?.current);
+    setSwitchable(cached?.switchable ?? []);
+    setPreviewable(cached?.previewable ?? []);
+    setCurrentPr(cached?.currentPr ?? null);
+    setPullRequest(cached?.pullRequest ?? null);
+    setOwner(cached?.owner);
+    setRepo(cached?.repo);
+    setLocalMergeBase(cached?.localMerge?.base);
+    setLocalMergeHasChanges(hasLocalSaveChanges(cached?.localMerge));
+    setLoading(cached === undefined);
+    setWorkspaceMissing(cached?.workspaceMissing === true);
+    setError(undefined);
+  }
+
+  const load = useCallback(
+    (opts: { silent?: boolean; force?: boolean } = {}) => {
+      const existing = pending.current;
+      if (existing?.client === client && existing.sessionId === sessionId) {
+        if (opts.force !== false) {
+          existing.followup = true;
+          existing.silent = existing.silent && opts.silent === true;
+        }
+        return existing.promise;
+      }
+      const request = {
+        client,
+        sessionId,
+        promise: Promise.resolve(),
+        followup: false,
+        silent: opts.silent === true,
+      };
+      pending.current = request;
+      request.promise = (async () => {
+        do {
+          request.followup = false;
+          const id = ++reqId.current;
+          const fresh = (): boolean => mounted.current && id === reqId.current;
+          if (!request.silent) setLoading(true);
+          try {
+            const publishSnapshot = branchesSnapshotWriter(client, sessionId);
+            const prefetched = takePrefetchedBranches(client, sessionId);
+            const res = await (prefetched ?? client.getBranches(sessionId));
+            if (fresh()) {
+              publishSnapshot(res);
+              setCurrent(res.current);
+              setSwitchable(res.switchable);
+              setPreviewable(res.previewable ?? []);
+              setCurrentPr(res.currentPr ?? null);
+              setPullRequest(res.pullRequest ?? null);
+              setOwner(res.owner);
+              setRepo(res.repo);
+              setLocalMergeBase(res.localMerge?.base);
+              setLocalMergeHasChanges(hasLocalSaveChanges(res.localMerge));
+              setWorkspaceMissing(res.workspaceMissing === true);
+              setError(undefined);
+            }
+          } catch (err) {
+            if (fresh()) setError(err instanceof Error ? err.message : String(err));
+          } finally {
+            if (fresh()) setLoading(false);
+          }
+        } while (request.followup && mounted.current && pending.current === request);
+      })().finally(() => {
+        if (pending.current === request) pending.current = null;
+      });
+      return request.promise;
+    },
+    [client, sessionId],
+  );
 
   // Fetch on focus — opening the session OR returning to it — and pause between
   // visits so a session left in the background (another one opened on top) fires no
@@ -131,8 +201,12 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   useFocusEffect(
     useCallback(() => {
       setFocused(true);
-      if (appActive && enabled) void load();
-      return () => setFocused(false);
+      if (appActive && enabled) void load({ silent: true });
+      return () => {
+        setFocused(false);
+        reqId.current += 1;
+        if (pending.current) pending.current.followup = false;
+      };
     }, [appActive, load, enabled]),
   );
 
@@ -140,7 +214,10 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     const subscription = AppState.addEventListener('change', (nextState) => {
       const active = nextState === 'active';
       setAppActive(active);
-      if (!active) reqId.current += 1; // stale in-flight response must not write in background
+      if (!active) {
+        reqId.current += 1; // stale in-flight response must not write in background
+        if (pending.current) pending.current.followup = false;
+      }
       // Changing appActive reruns the focus effect (immediate load) and recreates
       // the polling interval; native timers are not guaranteed to resume themselves.
     });
@@ -148,36 +225,17 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   }, []);
 
   useEffect(() => {
-    // Only poll while the screen is focused (see above).
-    if (!focused || !appActive || !enabled) return undefined;
-    if (workspaceMissing) return undefined;
-    // Poll even with no PR yet: one the agent opens AFTER this screen mounts must
-    // surface without a full app reload (the activity poll carries only the branch
-    // name, not PR status). Cadence: fast (2s) while a pipeline runs, brisk (5s)
-    // while still discovering a PR, relaxed (15s) once it has settled.
-    const active =
-      pullRequest !== null &&
-      (pullRequest.pipeline === 'running' ||
-        pullRequest.pipeline === 'pending' ||
-        (pullRequest.phase === 'open' &&
-          pullRequest.checks.failed === 0 &&
-          pullRequest.checks.total === 0));
-    const intervalMs = active
-      ? ACTIVE_PR_POLL_MS
-      : pullRequest === null
-        ? DISCOVER_PR_POLL_MS
-        : SETTLED_PR_POLL_MS;
-    let inFlight = false;
-    const poll = (): void => {
-      if (inFlight) return;
-      inFlight = true;
-      void load().finally(() => {
-        inFlight = false;
-      });
-    };
-    const timer = setInterval(poll, intervalMs);
-    return () => clearInterval(timer);
-  }, [load, pullRequest, focused, appActive, workspaceMissing, enabled]);
+    if (!focused || !appActive || !enabled || workspaceMissing) return undefined;
+    const path = `/sessions/${encodeURIComponent(sessionId)}/branches`;
+    // A prefetch from another client does not register this client's read observation.
+    // Live hints queue a fresh read behind any request already in flight.
+    return subscribeLiveRefresh(
+      client,
+      () => load({ silent: true }),
+      (resourcePath) => resourcePath.split('?')[0] === path,
+      [{ path }],
+    );
+  }, [client, sessionId, load, focused, appActive, workspaceMissing, enabled]);
 
   const refresh = useCallback(() => {
     if (enabled) void load();
@@ -187,6 +245,8 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     async (opts) => {
       try {
         await client.switchBranch(sessionId, opts);
+        invalidateBranches(client, sessionId);
+        reqId.current += 1;
         await load();
         return { ok: true };
       } catch (err) {
@@ -210,6 +270,20 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     async (number) => {
       try {
         await client.mergePullRequest(sessionId, number);
+        const snapshot = cachedBranches(client, sessionId);
+        invalidateBranches(client, sessionId);
+        reqId.current += 1;
+        if (snapshot?.pullRequest?.number === number) {
+          rememberBranches(client, sessionId, {
+            ...snapshot,
+            pullRequest: {
+              ...snapshot.pullRequest,
+              phase: 'merged',
+              mergeable: false,
+              mergeState: undefined,
+            },
+          });
+        }
         setPullRequest((current) =>
           current?.number === number
             ? { ...current, phase: 'merged', mergeable: false, mergeState: undefined }
@@ -262,6 +336,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     switchTo,
     mergePullRequest,
     localMergeBase,
+    localMergeHasChanges,
     saveToProject,
   };
 }

@@ -1,3 +1,7 @@
+import {
+  configureManagedUpdateChannel,
+  MANAGED_DEPLOYMENT_ROOT,
+} from './self-update/managed-deployment.js';
 // Deployment entrypoint (concept §, issue #25). Thin composition root: read the
 // environment, build the embedded control-plane server, listen, and shut down
 // cleanly on a signal. The testable wiring lives in ./embedded.ts; this file is
@@ -54,12 +58,18 @@ import { runManagedBootstrap } from './self-update/managed-bootstrap.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import {
   createReleaseChannelResolver,
+  releaseChannelFromEnv,
   type ReleaseArchitecture,
   type ReleaseChannelResolver,
 } from './self-update/release-channel.js';
 import { createReleaseChannelArtifactLoader } from './self-update/release-channel-artifact.js';
 import { createReleaseChannelVerifier } from './self-update/release-channel-verify.js';
+import { createSelectableReleaseChannelResolver } from './self-update/selectable-release-channel.js';
 import { releaseChannelMetadataFromEnv } from './self-update/release-channel-publish.js';
+import {
+  MANAGED_BROWSER_ORIGIN_HEADER,
+  verifyManagedBrowserOrigin,
+} from './managed-browser-origin.js';
 import {
   MANAGED_CLIENT_IDENTITY_HEADER,
   verifyManagedClientIdentity,
@@ -189,23 +199,30 @@ function hostReleaseArchitecture(): ReleaseArchitecture | null {
 function buildReleaseChannelResolver(
   architecture: ReleaseArchitecture | null,
   verityRoot: string,
+  controller?: import('./server-update-routes.js').ServerUpdateController,
 ): ReleaseChannelResolver {
   if (architecture === null) {
     const reason = `no release channel is published for ${process.arch}`;
     return { resolve: () => Promise.resolve({ state: 'unsupported', reason, operation: null }) };
   }
-  return createReleaseChannelResolver({
-    managed: Boolean(process.env.VERITY_MANAGED_DEPLOYMENT_ID?.trim()),
-    current: SERVER_COMPAT,
-    architecture,
-    load: createReleaseChannelArtifactLoader({ architecture }),
-    verify: createReleaseChannelVerifier({
-      // Persisted on the data volume so the Sigstore trusted root survives a
-      // restart and the first update check after a cutover is not a cold TUF
-      // bootstrap.
-      tufCachePath: join(verityRoot, 'sigstore'),
-      onReject: (reason) => console.warn(`[self-update] release channel rejected: ${reason}`),
-    }),
+  return createSelectableReleaseChannelResolver({
+    initialChannel: releaseChannelFromEnv(process.env),
+    readChannel: controller?.readChannel?.bind(controller),
+    create: (channel) =>
+      createReleaseChannelResolver({
+        channel,
+        managed: Boolean(process.env.VERITY_MANAGED_DEPLOYMENT_ID?.trim()),
+        current: SERVER_COMPAT,
+        architecture,
+        load: createReleaseChannelArtifactLoader({ architecture, channel }),
+        verify: createReleaseChannelVerifier({
+          // Persisted on the data volume so the Sigstore trusted root survives a
+          // restart and the first update check after a cutover is not a cold TUF
+          // bootstrap.
+          tufCachePath: join(verityRoot, 'sigstore'),
+          onReject: (reason) => console.warn(`[self-update] release channel rejected: ${reason}`),
+        }),
+      }),
   });
 }
 
@@ -452,6 +469,11 @@ async function main(): Promise<void> {
       image,
       process.env.VERITY_SERVER_VERSION ?? '0.0.0-dev',
     );
+    return;
+  }
+  if (process.argv[2] === 'configure-update-channel') {
+    releaseChannelFromEnv(process.env);
+    await configureManagedUpdateChannel(MANAGED_DEPLOYMENT_ROOT);
     return;
   }
   if (process.argv[2] === 'managed-bootstrap') {
@@ -798,6 +820,12 @@ async function main(): Promise<void> {
       ...(managedTls === undefined
         ? {}
         : {
+            browserRequestOrigin: (request) =>
+              verifyManagedBrowserOrigin(
+                managedClientIdentitySecret(managedTls.key),
+                request.headers[MANAGED_BROWSER_ORIGIN_HEADER],
+                { method: request.method, url: request.raw.url ?? '/' },
+              ),
             unlockClientIdentity: (request) =>
               verifyManagedClientIdentity(
                 managedClientIdentitySecret(managedTls.key),
@@ -806,6 +834,9 @@ async function main(): Promise<void> {
               ),
           }),
       ...(https === undefined ? {} : { https }),
+      ...(process.env.VERITY_WEB_APP_DIR?.trim()
+        ? { webAppDir: process.env.VERITY_WEB_APP_DIR.trim() }
+        : {}),
       ...(devicePairing === undefined ? {} : { devicePairing }),
       ...(controlPlane === undefined ? {} : { controlPlaneFence: controlPlane.held }),
       ...(adoptedSecretKeyMaterial === undefined ? {} : { adoptedSecretKeyMaterial }),
@@ -825,6 +856,19 @@ async function main(): Promise<void> {
       // (optionally `…:/v1.41`). A `unix://` value selects the mounted-socket
       // transport in createDockerClient (ADR 0003 R2). Passed through unchanged.
       dockerBaseUrl: process.env.VERITY_DOCKER_BASE_URL,
+      diagnosticServerContainerId:
+        process.env.VERITY_DIAGNOSTIC_SERVER_CONTAINER_ID ?? process.env.HOSTNAME,
+      hostDiagnosticSnapshotPath:
+        process.env.VERITY_HOST_DIAGNOSTIC_SNAPSHOT ?? '/run/verity-host-diagnostics/snapshot.json',
+      resolvePreviewConnectorImage: () =>
+        resolveWithTimeout(
+          () =>
+            resolvePublicOciTagDigest(
+              releasePinnedRef(PREVIEW_CONNECTOR_IMAGE_REPO, 'v') ??
+                `${PREVIEW_CONNECTOR_IMAGE_REPO}:latest`,
+            ),
+          10_000,
+        ).catch(() => undefined),
       publicPreviews: {
         resolveConnectorImage: () =>
           resolveWithTimeout(
@@ -952,10 +996,18 @@ async function main(): Promise<void> {
       // Official builds share the iOS OAuth client registered by the mobile app.
       // Forks can override both sides with GOOGLE_AUTH_ID.
       googleDriveClientId: resolveGoogleOAuthClientId(process.env.GOOGLE_AUTH_ID),
+      stagingGoogleClientId:
+        process.env.STAGING_GOOGLE_AUTH_ID?.trim() ||
+        process.env.GOOGLE_STAGING_CLIENT_ID_DEFAULT?.trim() ||
+        undefined,
       // Signed stable release channel (ADR 0008 D4). On a host architecture no
       // release is published for, the resolver reports `unsupported` with that as
       // the reason rather than advertising a release this machine could not run.
-      serverUpdateResolver: buildReleaseChannelResolver(releaseArchitecture, verityRoot),
+      serverUpdateResolver: buildReleaseChannelResolver(
+        releaseArchitecture,
+        verityRoot,
+        serverUpdateController,
+      ),
       // Announcing a release is what makes anyone look; D11 keeps the decision.
       serverUpdateNotifierStatePath: serverUpdateNotifierStatePath(verityRoot),
       // The action side of the same feature: present when the sealed spec gave

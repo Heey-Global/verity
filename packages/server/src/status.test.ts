@@ -17,7 +17,22 @@ import {
   deriveSessionStatusFromProjection,
   permissionEventAwaitsInput,
   projectionTailIsSelfContained,
+  sessionHasOpenTasks,
 } from './status.js';
+
+it('keeps current background tasks through input waits but clears terminal and old-turn tasks', () => {
+  const start: AgentEvent = { t: 'task', id: 'child', phase: 'started' };
+  expect(sessionHasOpenTasks([start, { t: 'status', state: 'awaiting_input' }])).toBe(true);
+  for (const end of [
+    { t: 'task', id: 'child', phase: 'ended' },
+    { t: 'status', state: 'completed' },
+    { t: 'status', state: 'crashed' },
+    { t: 'interrupted' },
+    { t: 'prompt', text: 'next turn' },
+  ] as const)
+    expect(sessionHasOpenTasks([start, end])).toBe(false);
+  expect(sessionHasOpenTasks([start, { t: 'prompt', text: 'steer', steered: true }])).toBe(true);
+});
 
 const text: AgentEvent = { t: 'text', delta: 'hi' };
 const running: AgentEvent = { t: 'status', state: 'running' };
@@ -235,10 +250,12 @@ describe('projectionTailIsSelfContained', () => {
  * interesting on the day they were written.
  */
 const SAMPLES: Record<AgentEventType, AgentEvent> = {
+  dev_servers_changed: { t: 'dev_servers_changed', devServers: [] },
   session: { t: 'session', id: 's1', model: 'claude-opus-5', worktree: '/wt/s1' },
   status: running,
   text,
   notice: { t: 'notice', text: 'transcribing…' },
+  tasks_updated: { t: 'tasks_updated', origin: 'user', change: 'completed', taskIds: ['t1'] },
   prompt: { t: 'prompt', text: 'do the thing' },
   thinking: { t: 'thinking', blockId: 'b1', delta: 'hmm' },
   skill: { t: 'skill', text: '/code-review' },
@@ -259,13 +276,12 @@ const SAMPLES: Record<AgentEventType, AgentEvent> = {
   },
   task: taskStarted,
   choices: { t: 'choices', options: [{ label: 'yes' }] },
-  agent_loop_proposal: {
-    t: 'agent_loop_proposal',
+  automation_proposal: {
+    t: 'automation_proposal',
     proposal: {
-      loopId: '8d2b7f16-3a2e-4a29-9f0c-7b6b1c5a0d11',
-      name: 'nightly sweep',
-      script: 'run the sweep',
+      name: 'Nightly sweep',
       schedule: { kind: 'interval', everyMinutes: 60 },
+      prompt: 'Run the sweep.',
     },
   },
   interrupted: { t: 'interrupted' },

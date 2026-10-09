@@ -463,7 +463,7 @@ describe('statusForInspect', () => {
     // `unknown` also puts such a container out of the auto-update scheduler's
     // reach: startSandboxAutoUpdateScheduler in server.ts skips anything whose
     // `status.state !== 'available'`. Recreating it by hand stays possible either
-    // way — POST /concierge/projects/:id/recreate-container never reads the
+    // way — POST /verity-control/projects/:id/recreate-container never reads the
     // update state.
     // The security label is in the list deliberately: it is the one input that
     // used to change this answer. The removed branch read `updateKind(labels)`,

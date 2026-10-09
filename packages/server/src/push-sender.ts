@@ -17,6 +17,10 @@ export interface PushNotification {
   categoryId: string;
   data: Record<string, unknown>;
   priority?: 'default' | 'normal' | 'high';
+  /** iOS plays no sound and no haptic for an alert without one: a push that
+   * leaves it out lands silently in Notification Center. Set it for the pushes
+   * that block on the operator. */
+  sound?: 'default';
   ttl?: number;
 }
 
@@ -68,7 +72,12 @@ export interface PushLogger {
 }
 
 export interface PushSender {
-  send(notification: PushNotification): Promise<PushSendResult>;
+  /** Send to the given devices, or to every registered device when `tokens` is
+   * omitted (announcements that belong to no session). */
+  send(
+    notification: PushNotification,
+    tokens?: readonly DevicePushTokenRecord[],
+  ): Promise<PushSendResult>;
   processDueReceipts(): Promise<PushReceiptResult>;
   start(): void;
   close(): Promise<void>;
@@ -106,8 +115,11 @@ class DefaultPushSender implements PushSender {
     this.maxReceiptAttempts = options.maxReceiptAttempts ?? DEFAULT_MAX_RECEIPT_ATTEMPTS;
   }
 
-  async send(notification: PushNotification): Promise<PushSendResult> {
-    const tokens = await this.options.store.listDevicePushTokens();
+  async send(
+    notification: PushNotification,
+    targets?: readonly DevicePushTokenRecord[],
+  ): Promise<PushSendResult> {
+    const tokens = targets ?? (await this.options.store.listDevicePushTokens());
     const result: PushSendResult = {
       targets: tokens.length,
       ticketsAccepted: 0,
@@ -126,6 +138,7 @@ class DefaultPushSender implements PushSender {
       // re-pairing to another Verity server.
       data: { ...notification.data, deviceId: token.authTokenId },
       priority: notification.priority ?? 'high',
+      ...(notification.sound === undefined ? {} : { sound: notification.sound }),
       ...(notification.ttl === undefined ? {} : { ttl: notification.ttl }),
     }));
 

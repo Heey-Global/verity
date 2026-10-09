@@ -5,6 +5,32 @@ class VerityRemoteControlTunnel: Module {
   private var tunnel: AnyObject?
   private var retired: [AnyObject] = []
   private var lastStartFailure: String?
+  private let captureWindow = RemoteDataCaptureWindow()
+  private var diagnosticRecords: [RemoteDataDiagnostics] = []
+
+  @available(iOS 17.0, macOS 14.0, *)
+  private func capture(_ tunnel: RemoteAppTunnel) -> Bool {
+    let remaining = captureWindow.remaining
+    guard remaining > 0, tunnel.enableDataDiagnostics(duration: remaining) else { return false }
+    if !diagnosticRecords.contains(where: { $0 === tunnel.dataDiagnostics }) {
+      diagnosticRecords.append(tunnel.dataDiagnostics)
+      if diagnosticRecords.count > 3 { diagnosticRecords.removeFirst() }
+    }
+    return true
+  }
+
+  @available(iOS 17.0, macOS 14.0, *)
+  private func stopTunnels(_ cause: RemoteDataDiagnostics.Cause) {
+    if let tunnel = tunnel as? RemoteAppTunnel {
+      tunnel.stop(cause: cause)
+      _ = tunnel.exportDataDiagnostics()
+    }
+    tunnel = nil
+    for old in retired {
+      (old as? RemoteAppTunnel)?.stop(cause: cause)
+    }
+    retired.removeAll()
+  }
 
   public func definition() -> ModuleDefinition {
     Name("VerityRemoteControlTunnel")
@@ -25,16 +51,20 @@ class VerityRemoteControlTunnel: Module {
         if previous.isExhausted && !previous.isStopped {
           // Existing streams keep their original listener until they drain.
           if self.retired.count >= 3 {
-            (self.retired.removeFirst() as? RemoteAppTunnel)?.stop()
+            (self.retired.removeFirst() as? RemoteAppTunnel)?.stop(cause: .replacement)
           }
           self.retired.append(previous)
-        } else { previous.stop() }
+        } else { previous.stop(cause: .replacement); _ = previous.exportDataDiagnostics() }
       }
       let tunnel = try RemoteAppTunnel(dataURL: dataURL, coreURL: coreURL)
       self.tunnel = tunnel
+      // Keep the selected test's intent through automatic stall replacements;
+      // each generation gets only the time remaining in the original window.
+      _ = self.capture(tunnel)
       self.lastStartFailure = nil
       do { return try await tunnel.start(ticket: ticket, sessionId: sessionId) }
       catch {
+        _ = tunnel.exportDataDiagnostics()
         self.tunnel = nil
         self.lastStartFailure = tunnel.stopReason ?? "attachment failed: \(error)"
         throw error
@@ -52,6 +82,43 @@ class VerityRemoteControlTunnel: Module {
       return (self.tunnel as? RemoteAppTunnel)?.diagnosticSummary
     }
 
+    AsyncFunction("captureDataDiagnostics") { () -> Bool in
+      guard #available(iOS 17.0, macOS 14.0, *) else { return false }
+      let tunnel = self.tunnel as? RemoteAppTunnel
+      return self.captureWindow.begin(existingIsActive: tunnel?.isActive == true) {
+        guard let tunnel else { return false }
+        return self.capture(tunnel)
+      }
+    }
+
+    AsyncFunction("clearPendingDataDiagnostics") { self.captureWindow.clear() }
+
+    AsyncFunction("disableDataDiagnostics") {
+      self.captureWindow.clear()
+      guard #available(iOS 17.0, macOS 14.0, *) else { return }
+      (self.tunnel as? RemoteAppTunnel)?.disableDataDiagnostics()
+      for record in self.diagnosticRecords { record.disable() }
+    }
+
+    AsyncFunction("exportDataDiagnostics") { () -> [String] in
+      guard #available(iOS 17.0, macOS 14.0, *) else { return [] }
+      _ = (self.tunnel as? RemoteAppTunnel)?.exportDataDiagnostics()
+      return self.diagnosticRecords.compactMap { $0.export() }
+    }
+
+    AsyncFunction("recordDataDiagnosticEvent") { (event: String) in
+      guard #available(iOS 17.0, macOS 14.0, *),
+        let value = RemoteDataDiagnostics.Event(rawValue: event),
+        [.probeStarted, .probeSucceeded, .probeFailed, .appActive, .appBackground, .appInactive].contains(value)
+      else { return }
+      (self.tunnel as? RemoteAppTunnel)?.dataDiagnostics.record(value)
+    }
+
+    AsyncFunction("stopWithCause") { (cause: String) in
+      guard #available(iOS 17.0, macOS 14.0, *) else { return }
+      self.stopTunnels(RemoteDataDiagnostics.Cause(rawValue: cause) ?? .appStop)
+    }
+
     AsyncFunction("isActive") { () -> Bool in
       guard #available(iOS 17.0, macOS 14.0, *) else { return false }
       return (self.tunnel as? RemoteAppTunnel)?.isActive == true
@@ -59,10 +126,7 @@ class VerityRemoteControlTunnel: Module {
 
     AsyncFunction("stop") {
       guard #available(iOS 17.0, macOS 14.0, *) else { return }
-      (self.tunnel as? RemoteAppTunnel)?.stop()
-      self.tunnel = nil
-      for old in self.retired { (old as? RemoteAppTunnel)?.stop() }
-      self.retired.removeAll()
+      self.stopTunnels(.appStop)
     }
   }
 }

@@ -30,6 +30,7 @@ MANAGED_DEPLOYMENT_VOLUME='verity-managed-deployment'
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/../.." && pwd)"
+source "$script_dir/verity-pairing-addresses"
 
 opt_image=''
 opt_deployment_id=''
@@ -181,7 +182,7 @@ valid_project_name() {
 select_pairing_host() {
   local configured="${VERITY_PAIRING_HOST:-}" ips choice default_choice=1 index=1 custom_choice ip
   [ -z "$configured" ] || { printf '%s' "$configured"; return; }
-  ips="$(hostname -I 2>/dev/null || true)"
+  ips="$(verity_pairing_ipv4_addresses)"
   # curl | bash consumes stdin, so an interactive install must talk to the terminal
   # directly. Automation and hosts without a terminal retain automatic detection.
   ( : </dev/tty && : >/dev/tty ) 2>/dev/null || return 0
@@ -946,6 +947,51 @@ VERITY_HOST_RUNTIME_DIR="$HOST_RUNTIME_DIR" \
   "$HOST_RUNTIME_LIBEXEC/verity-host-runtime" apply-pins "$repo_root/deploy/gvisor/versions.env" \
   || die 'the gVisor runtimes could not be registered (see the reason above); the running installation was not changed'
 
+# Publish only classified, bounded journal evidence to the Server. Raw journals
+# remain on the host, outside project containers and the Control tool surface.
+install -m 0755 -o root -g root "$repo_root/deploy/host/verity-host-diagnostics" \
+  "$HOST_RUNTIME_LIBEXEC/verity-host-diagnostics"
+diagnostic_dir="${VERITY_HOST_DIAGNOSTIC_DIR:-/var/lib/verity/host-diagnostics}"
+# This path becomes both a Docker bind source and a systemd writable path.
+[[ $diagnostic_dir == /* && $diagnostic_dir != / && $diagnostic_dir != */ &&
+   $diagnostic_dir != *:* && $diagnostic_dir != *//* &&
+   ! $diagnostic_dir =~ (^|/)\.\.?(/|$) &&
+   ! $diagnostic_dir =~ [[:cntrl:]] ]] || die 'host diagnostic directory must be a normalized absolute directory'
+install -d -m 0755 -o root -g root "$diagnostic_dir"
+export VERITY_HOST_DIAGNOSTIC_DIR="$diagnostic_dir"
+if [ -d "$SYSTEMD_RUN_DIR" ] && command -v systemctl >/dev/null; then
+  for unit in verity-host-diagnostics.service verity-host-diagnostics.timer; do
+    install -m 0644 -o root -g root "$repo_root/deploy/host/$unit" "$SYSTEMD_UNIT_DIR/$unit"
+  done
+  # systemd does not inherit the installer's environment. Keep exporter output,
+  # capability receipts and the sealed Server bind on the same configured paths.
+  diagnostic_override_dir="$SYSTEMD_UNIT_DIR/verity-host-diagnostics.service.d"
+  install -d -m 0755 -o root -g root "$diagnostic_override_dir"
+  systemd_quote() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//%/%%}"
+    printf '"%s"' "$value"
+  }
+  diagnostic_override="$(mktemp "$diagnostic_override_dir/.paths.XXXXXX")"
+  {
+    printf '[Service]\nExecStart=\nExecStart=%s\n' "$(systemd_quote "$HOST_RUNTIME_LIBEXEC/verity-host-diagnostics")"
+    printf 'Environment=%s\n' "$(systemd_quote "VERITY_HOST_DIAGNOSTIC_DIR=$diagnostic_dir")"
+    printf 'Environment=%s\n' "$(systemd_quote "VERITY_HOST_RUNTIME_DIR=$HOST_RUNTIME_DIR")"
+    printf 'ReadWritePaths=%s %s\n' "$(systemd_quote "$diagnostic_dir")" "$(systemd_quote "$HOST_RUNTIME_DIR")"
+  } >"$diagnostic_override"
+  chmod 0644 "$diagnostic_override"
+  mv -f "$diagnostic_override" "$diagnostic_override_dir/paths.conf"
+  systemctl daemon-reload
+  systemctl enable --now verity-host-diagnostics.timer >/dev/null 2>&1 \
+    || die 'could not enable the host diagnostics timer'
+else
+  note 'No systemd: schedule /usr/local/libexec/verity/verity-host-diagnostics to refresh historical host evidence'
+fi
+VERITY_HOST_RUNTIME_DIR="$HOST_RUNTIME_DIR" "$HOST_RUNTIME_LIBEXEC/verity-host-diagnostics" \
+  || note 'Host diagnostic collection unavailable; Control will report missing or stale evidence'
+
 # ── hand over to the guarded migration ─────────────────────────────────────
 heading 'Starting Verity'
 note 'Running the guarded migration'
@@ -1000,6 +1046,12 @@ printf '%s\n' "$pairing_uri" | docker run --rm -i --entrypoint node "$server_ima
 heading 'Cannot scan the QR code?'
 hint 'In the app, tap "Paste pairing code", then copy the entire line below.'
 printf '  %s\n\n' "$pairing_uri"
+heading 'Keep Verity off the public internet'
+printf '  Do not open or forward port %s or the preview ports %s\n' \
+  "${VERITY_API_HOST_PORT:-8082}" "${VERITY_LOCAL_PREVIEW_PORT_RANGE:-8100-8119}"
+printf '%s\n' '  to the internet on your router or cloud firewall.'
+hint 'Connect from your local network or through a VPN such as WireGuard or Tailscale.'
+hint 'Docker-published ports can bypass ufw; verify from a network that should be denied.'
 heading "$([ "$first_install" = 1 ] && printf '✓ Installation complete' || printf '✓ Update complete')"
 printf '%s\n' '  Verity is ready.'
 hint 'Run this installer again only to repair this host or pair another device.'

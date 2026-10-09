@@ -88,6 +88,10 @@ function makeHost({
 
   writeFileSync(join(binDir, 'verity-install'), readFileSync(join(here, 'verity-install')));
   chmodSync(join(binDir, 'verity-install'), 0o755);
+  writeFileSync(
+    join(binDir, 'verity-pairing-addresses'),
+    readFileSync(join(here, 'verity-pairing-addresses')),
+  );
   const pairingHandoff = join(root, 'pairing.env');
   // Pairing material has its own tests against the real OpenSSL implementation.
   // This installer suite runs in a deliberately minimal, network-isolated Node
@@ -128,12 +132,23 @@ function makeHost({
       `exit ${String(hostRuntimeStatus)}\n`,
     { mode: 0o755 },
   );
-  for (const unit of ['verity-host-runtime.path', 'verity-host-runtime.service']) {
+  writeFileSync(
+    join(checkout, 'deploy', 'host', 'verity-host-diagnostics'),
+    '#!/usr/bin/env bash\nexit 0\n',
+    { mode: 0o755 },
+  );
+  for (const unit of [
+    'verity-host-runtime.path',
+    'verity-host-runtime.service',
+    'verity-host-diagnostics.service',
+    'verity-host-diagnostics.timer',
+  ]) {
     writeFileSync(join(checkout, 'deploy', 'host', unit), `# ${unit}\n`);
   }
   const hostRuntime = {
     VERITY_HOST_RUNTIME_LIBEXEC: join(root, 'libexec'),
     VERITY_HOST_RUNTIME_DIR: join(root, 'host-runtime'),
+    VERITY_HOST_DIAGNOSTIC_DIR: join(root, 'host-diagnostics'),
     VERITY_SYSTEMD_UNIT_DIR: join(root, 'systemd'),
     VERITY_SYSTEMD_RUN_DIR: systemd ? join(root, 'run-systemd') : join(root, 'no-systemd'),
   };
@@ -157,6 +172,14 @@ function makeHost({
   writeFileSync(join(stubDir, 'hostname'), "#!/bin/sh\nprintf '%s\\n' '10.0.0.10 192.168.1.20'\n", {
     mode: 0o755,
   });
+
+  writeFileSync(
+    join(stubDir, 'ip'),
+    `#!/bin/sh
+printf '%s\\n' '2: eth0 inet 10.0.0.10/24 scope global eth0' '3: eth1 inet 192.168.1.20/24 scope global eth1'
+`,
+    { mode: 0o755 },
+  );
 
   // Records the handover instead of performing it, so a test can assert on exactly
   // the variables verity-compose would have been given.
@@ -398,6 +421,10 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     assert.match(result.output, /━━ Starting Verity ━━/);
     assert.match(result.output, /━━ Pair your device ━━/);
     assert.match(result.output, /━━ Cannot scan the QR code\? ━━/);
+    // Dropping the exposure warning would leave a public-facing host
+    // without any notice during setup.
+    assert.match(result.output, /━━ Keep Verity off the public internet ━━/);
+    assert.match(result.output, /Do not open or forward port 8082 or the preview ports 8100-8119/);
     assert.doesNotMatch(result.output, /Control token|Compose project|Deployment ID/);
     assert.match(result.output, /verity:\/\/pair\?payload=test/);
     assert.match(
@@ -462,6 +489,12 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
         0o100,
     );
     assert.equal(statSync(host.hostRuntime.VERITY_HOST_RUNTIME_DIR).mode & 0o777, 0o700);
+    assert.equal(statSync(host.hostRuntime.VERITY_HOST_DIAGNOSTIC_DIR).mode & 0o777, 0o755);
+    assert.ok(
+      statSync(
+        join(host.hostRuntime.VERITY_HOST_RUNTIME_LIBEXEC, 'verity-host-diagnostics'),
+      ).isFile(),
+    );
     // Without systemd the Updater must be told nothing can answer a request, rather than wait.
     assert.deepEqual(
       JSON.parse(
@@ -479,7 +512,41 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
     const calls = readFileSync(host.hostRuntimeLog, 'utf8');
     assert.match(calls, /^systemctl daemon-reload$/m);
     assert.match(calls, /^systemctl enable --now verity-host-runtime\.path$/m);
-    for (const unit of ['verity-host-runtime.path', 'verity-host-runtime.service']) {
+    assert.match(calls, /^systemctl enable --now verity-host-diagnostics\.timer$/m);
+    const override = readFileSync(
+      join(
+        host.hostRuntime.VERITY_SYSTEMD_UNIT_DIR,
+        'verity-host-diagnostics.service.d',
+        'paths.conf',
+      ),
+      'utf8',
+    );
+    assert.ok(
+      override.includes(
+        `Environment="VERITY_HOST_DIAGNOSTIC_DIR=${host.hostRuntime.VERITY_HOST_DIAGNOSTIC_DIR}"`,
+      ),
+    );
+    assert.ok(
+      override.includes(
+        `Environment="VERITY_HOST_RUNTIME_DIR=${host.hostRuntime.VERITY_HOST_RUNTIME_DIR}"`,
+      ),
+    );
+    assert.ok(
+      override.includes(
+        `ReadWritePaths="${host.hostRuntime.VERITY_HOST_DIAGNOSTIC_DIR}" "${host.hostRuntime.VERITY_HOST_RUNTIME_DIR}"`,
+      ),
+    );
+    assert.ok(
+      override.includes(
+        `ExecStart="${host.hostRuntime.VERITY_HOST_RUNTIME_LIBEXEC}/verity-host-diagnostics"`,
+      ),
+    );
+    for (const unit of [
+      'verity-host-runtime.path',
+      'verity-host-runtime.service',
+      'verity-host-diagnostics.service',
+      'verity-host-diagnostics.timer',
+    ]) {
       assert.ok(statSync(join(host.hostRuntime.VERITY_SYSTEMD_UNIT_DIR, unit)).isFile());
     }
     assert.deepEqual(
@@ -529,6 +596,22 @@ describe('verity-install', { skip: canFakeRoot ? false : 'user namespaces unavai
         .map((line) => line.split('=', 2)),
     );
     assert.equal(pairingEnv.VERITY_PAIRING_HOST, 'verity.home.example');
+  });
+
+  test('omits Docker interfaces without rejecting private LAN or Tailscale addresses', () => {
+    const host = makeHost({ docker: [{ match: 'image inspect', out: DIGEST_A }] });
+    writeFileSync(
+      join(host.stubDir, 'ip'),
+      `#!/bin/sh
+printf '%s\\n' '2: docker0 inet 172.17.0.1/16 scope global docker0' '3: br-abcdef inet 172.18.0.1/16 scope global br-abcdef' '4: veth123@if5 inet 172.19.0.1/16 scope global veth123' '5: eth0 inet 172.17.10.20/24 scope global eth0' '6: tailscale0 inet 100.64.0.1/32 scope global tailscale0'
+`,
+      { mode: 0o755 },
+    );
+    const result = runInteractive(host, '\n');
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /1\) 172\.17\.10\.20 \(recommended\)/);
+    assert.match(result.output, /2\) 100\.64\.0\.1/);
+    assert.doesNotMatch(result.output, /\) 172\.(17\.0\.1|18\.0\.1|19\.0\.1)/);
   });
 
   test('fresh installs always seal the ACP Runner supervisor', () => {

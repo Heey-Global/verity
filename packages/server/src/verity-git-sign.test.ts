@@ -172,7 +172,7 @@ describeWrapper('verity-git-sign wrapper (commit-signing broker)', () => {
   // silently broke it instead: it must address the agent by NUMERIC uid. The agent
   // user's NAME comes from the project's own devcontainer.json `remoteUser`, so it
   // is `vscode` on the common base images, `node` on others, and `dev` only on
-  // verity-sandbox. A hardcoded `--user dev` made both wrappers die with "unable to
+  // verity-sandbox. A hardcoded `--user dev` made signing wrappers die with "unable to
   // find user dev" on every neutral-path container. Verity owns the uid, not the
   // name. Both seed copies are shipped (repo root + the toolkit Feature), so both
   // are checked.
@@ -180,9 +180,7 @@ describeWrapper('verity-git-sign wrapper (commit-signing broker)', () => {
     const seedRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
     const wrappers = [
       'agent-seed/bin/verity-git-sign',
-      'agent-seed/bin/verity-gh-token',
       'features/verity-sandbox-toolkit/agent-seed/bin/verity-git-sign',
-      'features/verity-sandbox-toolkit/agent-seed/bin/verity-gh-token',
     ];
     for (const rel of wrappers) {
       const source = readFileSync(join(seedRoot, rel), 'utf8');

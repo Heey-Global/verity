@@ -153,11 +153,20 @@ describe('POST /devices/:id/push-token', () => {
     };
     const factory = vi.fn(() => sender);
     const bus = new InMemoryEventBus();
+    // A session outside any project notifies its administrators.
+    const device = await pairedDevice();
+    await ctx.store.upsertDevicePushToken({
+      authTokenId: device.id,
+      expoToken: 'ExpoPushToken[phone]',
+      platform: 'ios',
+    });
+    await ctx.store.createSession({ sessionId: 'session-1', worktree: '/wt/s1', model: 'm' });
 
     app = buildServer({
       eventStore: ctx.store,
       bus,
       conductor: {} as Conductor,
+      authRegistry: registry,
       pushEnabled: true,
       pushSender: factory,
       pushFirePointDebounceMs: 0,
@@ -175,11 +184,22 @@ describe('POST /devices/:id/push-token', () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it('suppresses every device while a session WebSocket is open, then sends after close', async () => {
+  it('routes per user: silent while viewed, in-app on the foreground device, then escalated', async () => {
     await app.close();
-    const device = await pairedDevice();
+    const phone = await pairedDevice();
+    const tablet = await registry.mint('iPad');
+    for (const [device, name] of [
+      [phone, 'phone'],
+      [tablet, 'tablet'],
+    ] as const) {
+      await ctx.store.upsertDevicePushToken({
+        authTokenId: device.id,
+        expoToken: `ExpoPushToken[${name}]`,
+        platform: 'ios',
+      });
+    }
     await ctx.store.createSession({ sessionId: 'session-1', worktree: '/wt/s1', model: 'm' });
-    const send = vi.fn().mockResolvedValue({
+    const send = vi.fn<PushSender['send']>().mockResolvedValue({
       targets: 1,
       ticketsAccepted: 1,
       ticketErrors: 0,
@@ -202,59 +222,68 @@ describe('POST /devices/:id/push-token', () => {
       pushEnabled: true,
       pushSender: sender,
       pushFirePointDebounceMs: 0,
+      pushEscalationMs: 50,
     });
     await app.listen({ port: 0, host: '127.0.0.1' });
     const port = (app.server.address() as AddressInfo).port;
-    const ticketResponse = await app.inject({
-      method: 'POST',
-      url: '/sessions/session-1/stream-ticket',
-      headers: { authorization: `Bearer ${device.token}` },
-    });
-    const ticket = ticketResponse.json<{ ticket: string }>().ticket;
+    const ticket = (
+      await app.inject({
+        method: 'POST',
+        url: '/live/ticket',
+        headers: { authorization: `Bearer ${phone.token}` },
+      })
+    ).json<{ ticket: string }>().ticket;
     const socket = new WebSocket(
-      `ws://127.0.0.1:${String(port)}/sessions/session-1/stream`,
-      `verity-stream-ticket.${ticket}`,
+      `ws://127.0.0.1:${String(port)}/live`,
+      `verity-live-ticket.${ticket}`,
     );
-    await new Promise<void>((resolve, reject) => {
-      socket.addEventListener('open', () => resolve(), { once: true });
-      socket.addEventListener('error', () => reject(new Error('ws connect failed')), {
-        once: true,
+    const frames: { k: string; alert?: { toolUseId?: string } }[] = [];
+    socket.addEventListener('message', (event) => {
+      frames.push(JSON.parse(String(event.data)) as { k: string });
+    });
+    await vi.waitFor(() => expect(frames.some((frame) => frame.k === 'ready')).toBe(true));
+    socket.send(JSON.stringify({ k: 'state', foreground: true }));
+    socket.send(JSON.stringify({ k: 'sub', ch: 'session', id: 'session-1', view: true }));
+    await vi.waitFor(() => expect(frames.some((frame) => frame.k === 'caught_up')).toBe(true));
+    const permission = (id: string, seq: number): void => {
+      bus.publish('session-1', {
+        seq,
+        ts: seq * 1_000,
+        event: { t: 'permission', id, tool: 'Bash', input: {}, riskClass: 'ask' },
       });
-    });
+    };
+    const pushedTo = (call: number): string[] =>
+      (send.mock.calls[call]?.[1] ?? []).map((token) => token.expoToken);
 
-    bus.publish('session-1', {
-      seq: 1,
-      ts: 1_000,
-      event: { t: 'permission', id: 'tool-1', tool: 'Bash', input: {}, riskClass: 'ask' },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Looking at the session: no alert, no push.
+    permission('p1', 1);
+    await new Promise((resolve) => setTimeout(resolve, 100));
     expect(send).not.toHaveBeenCalled();
+    expect(frames.some((frame) => frame.k === 'alert')).toBe(false);
 
+    // In the app but elsewhere: the phone shows it, the tablet hears after the escalation.
+    socket.send(JSON.stringify({ k: 'view', id: 'session-1', view: false }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    permission('p2', 2);
+    await vi.waitFor(() =>
+      expect(frames.find((frame) => frame.k === 'alert')?.alert?.toolUseId).toBe('p2'),
+    );
+    expect(send).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+    expect(pushedTo(0)).toEqual(['ExpoPushToken[tablet]']);
+
+    // Nothing in the foreground: every device is pushed.
     const closed = new Promise<void>((resolve) => {
       socket.addEventListener('close', () => resolve(), { once: true });
     });
     socket.close();
     await closed;
-    // The server releases foreground presence in its own socket 'close' handler,
-    // which is not ordered against the client-observed 'close' event awaited above.
-    // With a 0ms debounce the next fire point can therefore still see a viewer and
-    // stay suppressed. Re-drive a fresh permission fire point until presence has
-    // actually cleared, rather than assuming a single post-close publish lands.
-    let seq = 2;
+    let seq = 3;
     await vi.waitFor(() => {
-      bus.publish('session-1', {
-        seq,
-        ts: seq * 1_000,
-        event: {
-          t: 'permission',
-          id: `tool-${String(seq)}`,
-          tool: 'Bash',
-          input: {},
-          riskClass: 'ask',
-        },
-      });
+      permission(`p${String(seq)}`, seq);
       seq += 1;
-      expect(send).toHaveBeenCalled();
+      expect(send.mock.calls.length).toBeGreaterThan(1);
     });
+    expect(pushedTo(1).sort()).toEqual(['ExpoPushToken[phone]', 'ExpoPushToken[tablet]']);
   });
 });

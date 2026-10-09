@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createGoogleDriveAgentTool, type GoogleDriveAgentApi } from './google-drive-agent-tool.js';
+import { googleDriveRequestSchema, googleDriveIsMutation } from './google-drive-request.js';
 import { GoogleDriveError, type DriveFile } from './google-drive.js';
 
 const input = { projectId: 'p1', sessionId: 's1', turnId: 't1', invocationId: 'i1' };
@@ -34,11 +35,21 @@ function setup(files: Record<string, DriveFile> = {}) {
     download,
     export: exportFile,
     create,
+    mutate: vi.fn(async (_token, id, value) => ({
+      ...all[id]!,
+      name: value.name ?? all[id]!.name,
+      version: 'next',
+    })),
   };
   const eventStore = {
+    getCompletedGoogleWorkspaceInvocation: vi.fn(
+      async (): Promise<{ result: unknown } | undefined> => undefined,
+    ),
     getSession: vi.fn(async () => ({ projectId: 'p1' })),
     getProjectSettings: vi.fn(async () => ({ googleDriveFolderId: 'root' }) as never),
     setSessionWorkspaceFile: vi.fn(async () => undefined),
+    claimGoogleWorkspaceInvocation: vi.fn(async () => ({ status: 'claimed' as const })),
+    completeGoogleWorkspaceInvocation: vi.fn(async () => undefined),
   };
   const tool = createGoogleDriveAgentTool({
     eventStore,
@@ -155,7 +166,7 @@ describe('project Google Drive agent tool', () => {
       blocked: { id: 'blocked', name: 'Plan', mimeType: 'text/plain', parents: ['hidden'] },
       allowed: { id: 'allowed', name: 'Plan', mimeType: 'text/plain', parents: ['root'] },
     });
-    const originalGet = drive.get.bind(drive);
+    const originalGet = drive.get;
     drive.get = vi.fn(async (token: string, fileId: string) => {
       if (fileId === 'hidden') throw new GoogleDriveError('forbidden', 'http_403');
       return originalGet(token, fileId);
@@ -165,4 +176,328 @@ describe('project Google Drive agent tool', () => {
       tool.invoke({ ...input, request: { action: 'read', name: 'Plan' } }),
     ).resolves.toMatchObject({ file: { id: 'allowed' } });
   });
+});
+
+describe('Drive file mutations', () => {
+  const file = {
+    id: 'file',
+    name: 'Note',
+    mimeType: 'text/plain',
+    parents: ['root'],
+    version: 'v1',
+  };
+  const request = {
+    action: 'overwrite',
+    fileId: 'file',
+    name: 'Note',
+    expectedVersion: 'v1',
+    content: 'updated',
+  };
+  it('requires a separate approval and a current version before overwriting', async () => {
+    const { tool, drive } = setup({ file });
+    await expect(tool.invoke({ ...input, request })).rejects.toThrow('explicit approval');
+    await expect(
+      tool.invoke({
+        ...input,
+        approvedByCard: true,
+        request: { ...request, expectedVersion: 'old' },
+      }),
+    ).rejects.toThrow('changed');
+    expect(drive.mutate).not.toHaveBeenCalled();
+    await tool.invoke({ ...input, approvedByCard: true, request });
+    expect(drive.mutate).toHaveBeenCalledWith('token', 'file', {
+      expectedVersion: 'v1',
+      bytes: Buffer.from('updated'),
+      mimeType: 'text/plain',
+    });
+  });
+  it.each([
+    { action: 'upload', name: 'New', mimeType: 'text/plain', content: '' },
+    { action: 'create_folder', name: 'New' },
+    request,
+    { action: 'rename', fileId: 'file', name: 'Note', newName: 'Next', expectedVersion: 'v1' },
+    { action: 'move', fileId: 'file', name: 'Note', folderId: 'root', expectedVersion: 'v1' },
+    { action: 'trash', fileId: 'file', name: 'Note', expectedVersion: 'v1' },
+  ])('rejects $action in a read-only project', async (request) => {
+    const { tool, drive, eventStore } = setup({ file });
+    eventStore.getProjectSettings.mockResolvedValue({
+      googleDriveFolderId: 'root',
+      googleDriveAccessMode: 'read-only',
+    } as never);
+    await expect(tool.invoke({ ...input, approvedByCard: true, request })).rejects.toThrow(
+      'read-only',
+    );
+    expect(drive.mutate).not.toHaveBeenCalled();
+    expect(drive.create).not.toHaveBeenCalled();
+  });
+  it('checks both move endpoints and prevents moving a folder into its own descendants', async () => {
+    const nested = {
+      id: 'nested',
+      name: 'Nested',
+      mimeType: root.mimeType,
+      parents: ['root'],
+      version: 'v1',
+    };
+    const { tool, drive } = setup({
+      nested,
+      child: { id: 'child', name: 'Child', mimeType: root.mimeType, parents: ['nested'] },
+      outside: { id: 'outside', name: 'Outside', mimeType: root.mimeType, parents: [] },
+    });
+    for (const folderId of ['outside', 'child', 'nested'])
+      await expect(
+        tool.invoke({
+          ...input,
+          approvedByCard: true,
+          request: {
+            action: 'move',
+            name: 'Nested',
+            fileId: 'nested',
+            folderId,
+            expectedVersion: 'v1',
+          },
+        }),
+      ).rejects.toThrow();
+    expect(drive.mutate).not.toHaveBeenCalled();
+  });
+  it('trashes an entire folder after approval without permanently deleting it', async () => {
+    const folder = {
+      id: 'nested',
+      name: 'Nested',
+      mimeType: root.mimeType,
+      parents: ['root'],
+      version: 'v1',
+    };
+    const { tool, drive } = setup({ nested: folder, child: { ...file, parents: ['nested'] } });
+    await tool.invoke({
+      ...input,
+      approvedByCard: true,
+      request: { action: 'trash', name: 'Nested', fileId: 'nested', expectedVersion: 'v1' },
+    });
+    expect(drive.mutate).toHaveBeenCalledWith('token', 'nested', {
+      expectedVersion: 'v1',
+      trashed: true,
+    });
+  });
+  it('does not overwrite native contents or mutate the linked root', async () => {
+    const { tool, drive } = setup({
+      native: { ...file, id: 'native', mimeType: 'application/vnd.google-apps.document' },
+    });
+    await expect(
+      tool.invoke({ ...input, approvedByCard: true, request: { ...request, fileId: 'native' } }),
+    ).rejects.toThrow('Native');
+    await expect(
+      tool.invoke({
+        ...input,
+        approvedByCard: true,
+        request: { action: 'trash', fileId: 'root', name: 'Project', expectedVersion: 'v1' },
+      }),
+    ).rejects.toThrow('linked project folder');
+    expect(drive.mutate).not.toHaveBeenCalled();
+  });
+  it('rechecks revoked folder access before sending any mutation', async () => {
+    const { tool, drive, eventStore } = setup({ file });
+    eventStore.getProjectSettings
+      .mockResolvedValueOnce({ googleDriveFolderId: 'root' } as never)
+      .mockResolvedValue({ googleDriveFolderId: null } as never);
+    await expect(tool.invoke({ ...input, approvedByCard: true, request })).rejects.toThrow(
+      'access changed',
+    );
+    expect(drive.mutate).not.toHaveBeenCalled();
+  });
+  it('returns completed retries and refuses uncertain pending writes', async () => {
+    const { tool, drive, eventStore } = setup();
+    eventStore.claimGoogleWorkspaceInvocation
+      .mockResolvedValueOnce({ status: 'completed', result: { id: 'saved' } } as never)
+      .mockResolvedValueOnce({ status: 'pending' } as never);
+    await expect(
+      tool.invoke({ ...input, request: { action: 'create_folder', name: 'New' } }),
+    ).resolves.toEqual({ id: 'saved' });
+    await expect(
+      tool.invoke({ ...input, request: { action: 'create_folder', name: 'New' } }),
+    ).rejects.toThrow('may already have happened');
+    expect(drive.create).not.toHaveBeenCalled();
+  });
+});
+
+it('invalidates writes if the connected account changes during metadata lookup', async () => {
+  const { tool, drive, eventStore } = setup({
+    file: { id: 'file', name: 'Note', mimeType: 'text/plain', parents: ['root'], version: 'v1' },
+  });
+  Object.assign(eventStore, {
+    getVeritySettings: vi
+      .fn()
+      .mockResolvedValueOnce({
+        googleDriveAccountEmail: 'old@example.test',
+        googleDriveRefreshToken: 'old',
+      })
+      .mockResolvedValue({
+        googleDriveAccountEmail: 'new@example.test',
+        googleDriveRefreshToken: 'new',
+      }),
+  });
+  await expect(
+    tool.invoke({
+      ...input,
+      approvedByCard: true,
+      request: { action: 'trash', fileId: 'file', name: 'Note', expectedVersion: 'v1' },
+    }),
+  ).rejects.toThrow('account changed');
+  expect(drive.mutate).not.toHaveBeenCalled();
+});
+it('invalidates a mutation if the calling session is moved to another project', async () => {
+  const { tool, drive, eventStore } = setup();
+  eventStore.getSession
+    .mockResolvedValueOnce({ projectId: 'p1' })
+    .mockResolvedValue({ projectId: 'other' });
+  await expect(
+    tool.invoke({ ...input, request: { action: 'create_folder', name: 'New' } }),
+  ).rejects.toThrow('session changed');
+  expect(drive.create).not.toHaveBeenCalled();
+});
+
+it.each(['application/vnd.google-apps.document', ' application/vnd.google-apps.document '])(
+  'rejects native conversion through an upload with MIME type %s',
+  async (mimeType) => {
+    const { tool, create } = setup();
+    await expect(
+      tool.invoke({
+        ...input,
+        request: { action: 'upload', name: 'New', mimeType, content: 'text' },
+      }),
+    ).rejects.toThrow('dedicated Workspace tools');
+    expect(create).not.toHaveBeenCalled();
+  },
+);
+
+it.each(['overwrite', 'rename', 'move', 'trash'])(
+  'returns completed %s without consulting mutated target state',
+  async (action) => {
+    const { tool, drive, eventStore } = setup();
+    eventStore.getCompletedGoogleWorkspaceInvocation.mockResolvedValue({ result: { id: 'saved' } });
+    await expect(
+      tool.invoke({
+        ...input,
+        approvedByCard: true,
+        request: {
+          action,
+          fileId: 'missing',
+          name: 'Before',
+          expectedVersion: 'old',
+          ...(action === 'overwrite' ? { content: 'new' } : {}),
+          ...(action === 'rename' ? { newName: 'After' } : {}),
+          ...(action === 'move' ? { folderId: 'root' } : {}),
+        },
+      }),
+    ).resolves.toEqual({ id: 'saved' });
+    expect(drive.get).not.toHaveBeenCalled();
+    expect(drive.mutate).not.toHaveBeenCalled();
+  },
+);
+
+const documentUrl = 'https://docs.google.com/document/d/shared/edit?usp=drivesdk';
+it('reads a shared document URL without a linked folder and without selecting it for editing', async () => {
+  const { tool, eventStore, exportFile, drive } = setup({
+    shared: { id: 'shared', name: 'Shared', mimeType: 'application/vnd.google-apps.document' },
+  });
+  eventStore.getProjectSettings.mockResolvedValue({ googleDriveFolderId: null } as never);
+  await expect(
+    tool.invoke({
+      ...input,
+      approvedByCard: true,
+      request: { action: 'read_document_url', url: documentUrl },
+    }),
+  ).resolves.toMatchObject({ content: '# doc', encoding: 'utf8' });
+  expect(exportFile).toHaveBeenCalledWith('token', 'shared', 'text/markdown');
+  expect(vi.spyOn(drive, 'list')).not.toHaveBeenCalled();
+  expect(eventStore.setSessionWorkspaceFile).not.toHaveBeenCalled();
+  await expect(tool.invoke({ ...input, request: { action: 'list' } })).rejects.toThrow(
+    'No Google Drive folder',
+  );
+  await expect(
+    tool.invoke({
+      ...input,
+      projectId: 'other',
+      request: { action: 'read_document_url', url: documentUrl },
+    }),
+  ).rejects.toThrow('calling session');
+});
+it.each([
+  'http://docs.google.com/document/d/shared/edit',
+  'https://docs.google.com.evil.test/document/d/shared/edit',
+  'https://evil.test/document/d/shared/edit',
+  'https://docs.google.com/spreadsheets/d/shared/edit',
+  'https://user@docs.google.com/document/d/shared/edit',
+  'https://docs.google.com/document/d/',
+])('rejects unsupported document links before calling Google: %s', async (url) => {
+  const { tool, drive } = setup();
+  await expect(
+    tool.invoke({ ...input, request: { action: 'read_document_url', url } }),
+  ).rejects.toThrow();
+  expect(drive.get).not.toHaveBeenCalled();
+});
+it.each([
+  ['application/vnd.google-apps.folder', false],
+  ['application/vnd.google-apps.document', true],
+])('does not export unavailable or non-document files', async (mimeType, trashed) => {
+  const { tool, exportFile } = setup({
+    shared: { id: 'shared', name: 'Shared', mimeType, trashed },
+  });
+  await expect(
+    tool.invoke({ ...input, request: { action: 'read_document_url', url: documentUrl } }),
+  ).rejects.toThrow('available Google Docs');
+  expect(exportFile).not.toHaveBeenCalled();
+});
+it('preserves the URL across gateway and executor parsing and classifies link reads as read-only', () => {
+  const parsed = googleDriveRequestSchema.parse({ action: 'read_document_url', url: documentUrl });
+  expect(googleDriveRequestSchema.parse(parsed)).toEqual(parsed);
+  expect(googleDriveIsMutation(parsed)).toBe(false);
+});
+
+it.each([null, 'root'])(
+  'requires explicit approval for external documents with folder %s',
+  async (folderId) => {
+    const { tool, eventStore, exportFile } = setup({
+      shared: { id: 'shared', name: 'Shared', mimeType: 'application/vnd.google-apps.document' },
+    });
+    eventStore.getProjectSettings.mockResolvedValue({ googleDriveFolderId: folderId } as never);
+    expect(await tool.canReadDocumentWithoutApproval({ ...input, url: documentUrl })).toBe(false);
+    await expect(
+      tool.invoke({ ...input, request: { action: 'read_document_url', url: documentUrl } }),
+    ).rejects.toThrow('explicit approval');
+    expect(exportFile).not.toHaveBeenCalled();
+    await expect(
+      tool.invoke({
+        ...input,
+        approvedByCard: true,
+        request: { action: 'read_document_url', url: documentUrl },
+      }),
+    ).resolves.toMatchObject({ content: '# doc' });
+  },
+);
+it('automatically reads nested project documents but rejects files moved outside before execution', async () => {
+  const shared: DriveFile = {
+    id: 'shared',
+    name: 'Shared',
+    mimeType: 'application/vnd.google-apps.document',
+    parents: ['nested'],
+  };
+  const { tool, exportFile } = setup({
+    shared,
+    nested: {
+      id: 'nested',
+      name: 'Nested',
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: ['root'],
+    },
+  });
+  expect(await tool.canReadDocumentWithoutApproval({ ...input, url: documentUrl })).toBe(true);
+  await expect(
+    tool.invoke({ ...input, request: { action: 'read_document_url', url: documentUrl } }),
+  ).resolves.toMatchObject({ content: '# doc' });
+  exportFile.mockClear();
+  shared.parents = [];
+  await expect(
+    tool.invoke({ ...input, request: { action: 'read_document_url', url: documentUrl } }),
+  ).rejects.toThrow('explicit approval');
+  expect(exportFile).not.toHaveBeenCalled();
 });

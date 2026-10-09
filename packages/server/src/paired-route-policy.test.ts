@@ -22,6 +22,20 @@ it('resolves project and session reads while keeping undeclared routes administr
   expect(await authorizePairedRoute(store, 'member', 'GET', '/sessions/:id', {})).toBe('not_found');
   expect(await authorizePairedRoute(store, 'member', 'GET', '/settings', {})).toBe('forbidden');
   expect(await authorizePairedRoute(store, 'member', 'GET', '/projects', {})).toBe('allow');
+  // Tasks are scoped by owner inside the handler, so any active user reaches the routes.
+  expect(await authorizePairedRoute(store, 'member', 'PUT', '/tasks/:id', { id: 't' })).toBe(
+    'allow',
+  );
+  expect(await authorizePairedRoute(store, 'disabled', 'GET', '/tasks', {})).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(store, 'member', 'GET', '/tasks/:id/attachments/:hash', {}),
+  ).toBe('allow');
+  expect(
+    await authorizePairedRoute(store, 'disabled', 'GET', '/tasks/:id/attachments/:hash', {}),
+  ).toBe('forbidden');
+  expect(await authorizePairedRoute(store, 'member', 'GET', '/attachments/:hash', {})).toBe(
+    'forbidden',
+  );
   expect(await authorizePairedRoute(store, 'disabled', 'GET', '/projects', {})).toBe('forbidden');
   expect(await authorizePairedRoute(store, 'admin', 'GET', '/settings', {})).toBe('allow');
 });
@@ -72,6 +86,16 @@ it('allows live meeting viewing with read access and remote controls only with e
       'viewer',
       'POST',
       '/sessions/:id/live-meetings/:meetingId/addressed',
+      { id: 'session', meetingId: 'meeting' },
+    ),
+  ).toBe('forbidden');
+  // A name check spends a model call on the session, like a spoken request check.
+  expect(
+    await authorizePairedRoute(
+      store,
+      'viewer',
+      'POST',
+      '/sessions/:id/live-meetings/:meetingId/speaker-name',
       { id: 'session', meetingId: 'meeting' },
     ),
   ).toBe('forbidden');

@@ -65,6 +65,7 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
       },
     },
   });
+  const recover = vi.spyOn(conductor, 'recover');
   const preview = await ctx.store.createDevServer({
     projectId: projects[0]!.id,
     command: 'npm start',
@@ -98,6 +99,9 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
     } as unknown as Provisioner,
   });
   await app.ready();
+  expect(recover).toHaveBeenCalledOnce();
+  // Recovery must not mistake newly seeded history for an abandoned turn and replay it.
+  await recover.mock.results[0]!.value;
   await ctx.store.appendEvent('moved', {
     t: 'session',
     id: 'moved',
@@ -139,17 +143,15 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
     const originalSession = await ctx.store.getSession('moved');
     const payload = { project: projects[1]!.id, operationId: randomUUID() };
     const response = await app.inject({ method: 'POST', url: '/sessions/moved/project', payload });
-    expect(response.statusCode, response.body).toBe(500);
-    expect(await ctx.store.listMovePreviewRestarts()).toHaveLength(1);
+    expect(response.statusCode, response.body).toBe(200);
+    expect(await ctx.store.listMovePreviewRestarts()).toHaveLength(0);
     expect((await ctx.store.getDevServer(preview.id))?.previewSessionId).toBeNull();
     const recovered = await app.inject({ method: 'POST', url: '/sessions/moved/project', payload });
     expect(recovered.statusCode, recovered.body).toBe(200);
     expect(await ctx.store.listMovePreviewRestarts()).toHaveLength(0);
-    expect(stop).toHaveBeenCalledTimes(1);
-    expect(start).toHaveBeenLastCalledWith(
-      expect.anything(),
-      expect.objectContaining({ devServerCheckoutRoot: null }),
-    );
+    // Historical configurations must never restart processes after a session move.
+    expect(stop).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
     const moved = recovered.json<{ worktree: string; retainedWorktree: string }>();
     expect(await readFile(join(moved.worktree, 'new.txt'), 'utf8')).toBe('uncommitted');
     expect(await readFile(join(moved.retainedWorktree, 'new.txt'), 'utf8')).toBe('uncommitted');
@@ -197,7 +199,7 @@ it('moves real Git work and history, retries once, and cold-starts a Claude-orig
   }
 });
 
-it('starts the server when a pending preview restart still fails', async () => {
+it('discards retired configured-server restart work during startup', async () => {
   for (const id of ['recovery-source', 'recovery-target']) {
     await ctx.store.upsertProject({
       id,
@@ -244,7 +246,7 @@ it('starts the server when a pending preview restart still fails', async () => {
     await app.ready();
     expect(
       (await ctx.store.getSessionMove('recovery', 'recover'))?.preview_restart_json,
-    ).not.toBeNull();
+    ).toBeNull();
   } finally {
     await app.close();
   }

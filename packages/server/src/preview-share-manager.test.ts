@@ -43,6 +43,7 @@ function fixture(
     inspectArtifact?: PreviewShareManagerOptions['inspectArtifact'];
     listArtifactDirectory?: PreviewShareManagerOptions['listArtifactDirectory'];
     agentSeedHostPath?: string | undefined;
+    onShareEnded?: PreviewShareManagerOptions['onShareEnded'];
   } = {},
 ) {
   const record = {
@@ -134,6 +135,7 @@ function fixture(
     wait: vi.fn(async () => undefined),
     log,
     ...(options.inspectArtifact === undefined ? {} : { inspectArtifact: options.inspectArtifact }),
+    ...(options.onShareEnded === undefined ? {} : { onShareEnded: options.onShareEnded }),
     ...(options.listArtifactDirectory === undefined
       ? {}
       : { listArtifactDirectory: options.listArtifactDirectory }),
@@ -212,7 +214,6 @@ describe('PreviewShareManager', () => {
       worktree: '/data/repo/sessions/s1',
       model: 'test',
       name: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     store.listPublicPreviewShares.mockResolvedValueOnce([
@@ -242,7 +243,6 @@ describe('PreviewShareManager', () => {
       worktree,
       model: 'test',
       name: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     const options = (
@@ -293,7 +293,6 @@ describe('PreviewShareManager', () => {
       worktree,
       model: 'test',
       name: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     const options = (
@@ -334,7 +333,6 @@ describe('PreviewShareManager', () => {
       worktree: outside,
       model: 'test',
       name: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     const options = (
@@ -885,10 +883,7 @@ describe('PreviewShareManager', () => {
     const { manager, docker, inspect } = fixture({ inspectArtifact });
     docker.inspectContainer.mockResolvedValueOnce({
       ...inspect,
-      env: [
-        'VERITY_GH_TOKEN_URL=http://relay/internal/github/token',
-        'VERITY_GH_BROKER_CAPABILITY_FILE=/run/verity/gh-token-capability',
-      ],
+      env: ['VERITY_GH_BROKER_CAPABILITY_FILE=/run/verity/gh-token-capability'],
       mountCount: 1,
       mounts: [
         {
@@ -905,6 +900,39 @@ describe('PreviewShareManager', () => {
       manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
     ).resolves.toMatchObject({ state: 'active' });
     expect(inspectArtifact).toHaveBeenCalledWith('/data/secrets/git/gh_token_capability.p1', false);
+  });
+
+  it('allows the forge proxy public CA only at its reviewed source and destination', async () => {
+    const inspectArtifact = vi.fn(async () => ({
+      uid: 1000,
+      gid: process.getgid?.() ?? 1000,
+      mode: 0o644,
+      kind: 'file' as const,
+    }));
+    const { manager, docker, inspect } = fixture({ inspectArtifact });
+    docker.inspectContainer.mockResolvedValueOnce({
+      ...inspect,
+      env: [
+        'VERITY_FORGE_MODE=proxy-test',
+        'VERITY_FORGE_PROXY_URL=http://relay:8080',
+        'VERITY_FORGE_PROXY_CA_FILE=/run/verity/forge-proxy/ca.crt',
+      ],
+      mountCount: 1,
+      mounts: [
+        {
+          type: 'volume',
+          name: 'verity-data',
+          source: '/var/lib/docker/volumes/verity-data/_data/secrets/git/forge_proxy_ca.p1.crt',
+          subpath: 'secrets/git/forge_proxy_ca.p1.crt',
+          destination: '/run/verity/forge-proxy/ca.crt',
+          readWrite: false,
+        },
+      ],
+    });
+    await expect(
+      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+    ).resolves.toMatchObject({ state: 'active' });
+    expect(inspectArtifact).toHaveBeenCalledWith('/data/secrets/git/forge_proxy_ca.p1.crt', false);
   });
 
   it('allows the agent-gateway identity only with its exact paths and permissions', async () => {
@@ -1188,6 +1216,7 @@ describe('PreviewShareManager', () => {
       'share-id',
       ['creating', 'active'],
       'revoking',
+      { revokedAt: new Date('2030-01-01T00:00:00Z') },
     );
     expect(store.transitionPublicPreviewShare).not.toHaveBeenCalledWith(
       'share-id',
@@ -1303,7 +1332,7 @@ describe('PreviewShareManager', () => {
       'share-id',
       ['creating'],
       'revoking',
-      { failure: 'database interrupted' },
+      { failure: 'database interrupted', revokedAt: new Date('2030-01-01T00:00:00Z') },
     );
   });
 
@@ -1436,6 +1465,56 @@ describe('PreviewShareManager', () => {
       ['revoking'],
       'expired',
       expect.objectContaining({ connectorContainerId: null }),
+    );
+  });
+
+  // A managed dev server with Local off stops once its last link ends; without
+  // this notice an expired link would leave it running unnoticed.
+  it('reports an ended managed link on Uplink expiry, revocation, and disabling', async () => {
+    const onShareEnded = vi.fn();
+    const { manager, store, record } = fixture({ onShareEnded });
+    const active = {
+      ...record,
+      state: 'active' as const,
+      connectorContainerId: 'connector-id',
+      managedInstanceId: 'instance-1',
+    };
+    store.getPublicPreviewShare.mockResolvedValueOnce(active);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({ ...active, state: 'revoking' });
+    await manager.finishExpiredByUplink(record.id);
+    expect(onShareEnded).toHaveBeenLastCalledWith({
+      id: record.id,
+      managedInstanceId: 'instance-1',
+    });
+
+    store.getPublicPreviewShare.mockResolvedValueOnce(active);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({ ...active, state: 'revoking' });
+    await manager.stop(record.id);
+    expect(onShareEnded).toHaveBeenCalledTimes(2);
+
+    // Losing the Uplink or Premium ends every link at once.
+    store.listPublicPreviewShares.mockResolvedValueOnce([active]);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({ ...active, state: 'revoking' });
+    await manager.disableAll('lease expired');
+    expect(onShareEnded).toHaveBeenCalledTimes(3);
+  });
+
+  it('preserves revocation intent time when delayed cleanup finishes', async () => {
+    const { manager, store, record } = fixture();
+    const began = new Date('2029-12-01T00:00:00Z');
+    const active = { ...record, state: 'active' as const };
+    store.getPublicPreviewShare.mockResolvedValueOnce(active);
+    store.transitionPublicPreviewShare.mockResolvedValueOnce({
+      ...active,
+      state: 'revoking',
+      revokedAt: began,
+    });
+    await manager.stop(record.id);
+    expect(store.transitionPublicPreviewShare).toHaveBeenLastCalledWith(
+      record.id,
+      ['revoking'],
+      expect.any(String),
+      expect.objectContaining({ revokedAt: began }),
     );
   });
 
@@ -1575,7 +1654,6 @@ describe('PreviewShareManager', () => {
       worktree,
       model: 'test',
       name: null,
-      kind: 'normal',
       lastSeenEventCount: null,
     });
     const options = (
@@ -1715,16 +1793,28 @@ describe('sweepOrphanedPreviewShares', () => {
   it('kills the connector and revokes every non-terminal share', async () => {
     const { store, docker, record } = fixture();
     store.listPublicPreviewShares.mockResolvedValueOnce([
-      { ...record, state: 'active', connectorContainerId: 'connector-id' },
+      {
+        ...record,
+        state: 'active',
+        connectorContainerId: 'connector-id',
+        managedInstanceId: 'managed-1',
+      },
       { ...record, id: 'other', state: 'creating', connectorContainerName: 'verity-preview-other' },
       { ...record, id: 'done', state: 'revoked' },
     ]);
+    const onShareEnded = vi.fn();
     const swept = await sweepOrphanedPreviewShares({
       store: store as unknown as EventStore,
       docker: docker as unknown as DockerClient,
       now: () => new Date('2030-01-01T00:00:00Z'),
+      onShareEnded,
     });
     expect(swept).toBe(2);
+    expect(onShareEnded).toHaveBeenCalledTimes(2);
+    expect(onShareEnded).toHaveBeenCalledWith({
+      id: record.id,
+      managedInstanceId: 'managed-1',
+    });
     expect(docker.removeContainer).toHaveBeenNthCalledWith(1, 'connector-id');
     expect(docker.removeContainer).toHaveBeenNthCalledWith(2, 'verity-preview-other');
     expect(store.transitionPublicPreviewShare.mock.calls.map(([id, , to]) => [id, to])).toEqual([
@@ -1735,6 +1825,25 @@ describe('sweepOrphanedPreviewShares', () => {
       connectorContainerId: null,
       revokedAt: new Date('2030-01-01T00:00:00Z'),
     });
+  });
+
+  it('preserves the original revocation time during orphan cleanup', async () => {
+    const { store, docker, record } = fixture();
+    const began = new Date('2029-12-01T00:00:00Z');
+    store.listPublicPreviewShares.mockResolvedValueOnce([
+      { ...record, state: 'revoking', revokedAt: began },
+    ]);
+    await sweepOrphanedPreviewShares({
+      store: store as unknown as EventStore,
+      docker: docker as unknown as DockerClient,
+      now: () => new Date('2030-01-01T00:00:00Z'),
+    });
+    expect(store.transitionPublicPreviewShare).toHaveBeenLastCalledWith(
+      record.id,
+      ['creating', 'active', 'revoking'],
+      'revoked',
+      expect.objectContaining({ revokedAt: began }),
+    );
   });
 
   it('closes out the remaining shares when one connector cannot be removed', async () => {
@@ -1790,7 +1899,6 @@ describe('session port previews', () => {
     worktree: '/data/repo/sessions/s1',
     model: 'test',
     name: null,
-    kind: 'normal' as const,
     lastSeenEventCount: null,
   };
   const listener = (port: number, bind: 'any' | 'loopback', cwd = '/work/sessions/s1/web') => ({
@@ -2311,5 +2419,160 @@ describe('OpenCode ancillary file validation', () => {
       manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
     ).rejects.toThrow(/mounted credentials/);
     expect(edge.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('managed public links', () => {
+  function managedFixture() {
+    const f = fixture();
+    let share: Awaited<ReturnType<EventStore['getPublicPreviewShare']>> = {
+      ...f.record,
+      devServerId: null,
+      sessionId: 's1',
+      managedInstanceId: 'instance-1',
+      state: 'active',
+      connectorContainerId: 'connector-id',
+    };
+    let instance: Awaited<ReturnType<EventStore['managedDevServers']['getInstance']>> = {
+      id: 'instance-1',
+      serverId: 'entry-1',
+      projectId: 'p1',
+      sessionId: 's1',
+      localAccess: true,
+      sandboxPort: 41000,
+      networkPort: 8100,
+      state: 'stopped',
+      desired: 'stopped',
+      detail: null,
+      lastRunCommand: 'node server.mjs',
+      lastRunWorkdir: '.',
+      startedAt: null,
+      accessStartedAt: null,
+      lastRanAt: null,
+    };
+    let running = false;
+    let tag = 'instance-1';
+    const getInstance = vi.fn(async () => instance);
+    const store = {
+      ...f.store,
+      managedDevServers: { getInstance },
+      getSession: vi.fn<EventStore['getSession']>(
+        async () =>
+          ({ sessionId: 's1', projectId: 'p1', worktree: '/wt/s1' }) as Awaited<
+            ReturnType<EventStore['getSession']>
+          >,
+      ),
+      listPublicPreviewShares: vi.fn(async () => (share ? [share] : [])),
+      getPublicPreviewShare: vi.fn(async () => share),
+      transitionPublicPreviewShare: vi.fn<EventStore['transitionPublicPreviewShare']>(
+        async (_id, from, state, patch = {}) => {
+          if (!share || !from.includes(share.state)) return undefined;
+          share = { ...share, ...patch, state };
+          return share;
+        },
+      ),
+    };
+    let connectorEnv: string[] = [];
+    const docker = {
+      ...f.docker,
+      inspectContainer: vi.fn(async (id: string) =>
+        id === 'verity-project'
+          ? { ...f.inspect, labels: { 'verity.container-generation': 'generation-2' } }
+          : { ...f.inspect, env: connectorEnv },
+      ),
+      createContainer: vi.fn<DockerClient['createContainer']>(async (spec) => {
+        connectorEnv = spec.env ?? [];
+        return { id: 'connector-id', warnings: [] };
+      }),
+    };
+    const manager = new PreviewShareManager({
+      store: store as unknown as EventStore,
+      docker: docker as unknown as DockerClient,
+      edge: f.edge,
+      resolveConnectorImage: f.resolveConnectorImage,
+      isDevServerRunning: async () => false,
+      listListeningProcesses: async () =>
+        running
+          ? [
+              {
+                port: instance!.sandboxPort,
+                bind: 'any',
+                instanceId: tag,
+                pid: 42,
+                cwd: '/wt/s1',
+                command: 'node server.mjs',
+              },
+            ]
+          : [],
+      now: () => new Date('2030-01-01T00:00:00Z'),
+    });
+    return {
+      manager,
+      docker,
+      edge: f.edge,
+      store,
+      share: () => share!,
+      run: (port = 41001, marker = 'instance-1') => {
+        instance = { ...instance!, sandboxPort: port, state: 'running', desired: 'running' };
+        running = true;
+        tag = marker;
+      },
+      remove: () => {
+        instance = undefined;
+      },
+    };
+  }
+
+  // A port-based link used to be revoked here, silently changing both its URL and PIN.
+  it('keeps the link offline and retargets the same link after restart and sandbox recreation', async () => {
+    const f = managedFixture();
+    const original = f.share();
+    await f.manager.reconcile();
+    expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        env: expect.arrayContaining(['VERITY_PREVIEW_OFFLINE=1']),
+        network: 'verity-net',
+      }),
+    );
+    expect(f.share()).toMatchObject({
+      state: 'active',
+      publicOrigin: original.publicOrigin,
+      pin: original.pin,
+    });
+    const count = f.docker.createContainer.mock.calls.length;
+    await f.manager.reconcile();
+    expect(f.docker.createContainer).toHaveBeenCalledTimes(count);
+    f.run();
+    await f.manager.reconcile();
+    expect(f.share()).toMatchObject({
+      targetPort: 41001,
+      containerGeneration: 'generation-2',
+      publicOrigin: original.publicOrigin,
+      pin: original.pin,
+    });
+    expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        env: expect.arrayContaining(['VERITY_PREVIEW_TARGET_ORIGIN=http://verity-project:41001']),
+      }),
+    );
+    expect(f.edge.create).not.toHaveBeenCalled();
+    expect(f.edge.remove).not.toHaveBeenCalled();
+  });
+
+  it('keeps a foreign listener offline instead of exposing it on the retained link', async () => {
+    const f = managedFixture();
+    f.run(41000, 'foreign');
+    await f.manager.reconcile();
+    expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+      expect.objectContaining({ env: expect.arrayContaining(['VERITY_PREVIEW_OFFLINE=1']) }),
+    );
+  });
+
+  it('revokes the link when its instance has been deleted', async () => {
+    const f = managedFixture();
+    f.remove();
+    await f.manager.reconcile();
+    expect(f.edge.remove).toHaveBeenCalledWith('share-id');
+    expect(f.share().state).toBe('revoked');
   });
 });

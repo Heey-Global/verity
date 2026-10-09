@@ -10,7 +10,7 @@ import type {
   RequestPermissionResponse,
   SessionUpdate,
 } from '@agentclientprotocol/sdk';
-import type { AgentEvent, Usage } from '@verity/events';
+import { planningToolName, type AgentEvent, type Usage } from '@verity/events';
 import type { PermissionDecision, PermissionRequest } from './index.js';
 import type {
   RunResult,
@@ -26,6 +26,7 @@ import {
   toolName,
   type AcpEventAdapterOptions,
 } from './acp-adapter.js';
+import { redactProcessStderr } from '@verity/store';
 import { SessionWriter } from './ingest.js';
 import { assertSafeArgs, nodeSpawner } from './runner.js';
 
@@ -149,6 +150,8 @@ export interface AcpBackendProfile {
    *  mode-carrying permission request asks which posture an approval implies.
    *  Agents that do not advertise the mode keep their own clamped current mode. */
   sessionMode?(opts: RunTurnOptions): string | undefined;
+  /** The profile verifies restrictive planning through configureSession instead. */
+  readonly planningViaConfig?: boolean;
   /** The one tool whose approval legitimately also picks a permission posture
    *  (Claude's `ExitPlanMode`). Profiles that name none never have a permission
    *  request read as a posture, whatever its options look like. */
@@ -557,11 +560,16 @@ export async function runAcpTurn(
   if (opts.toolless === true && profile.enforcesToolless !== true) {
     throw new Error(`${profile.telemetryBackend} cannot run a turn without tools`);
   }
-  const child = spawner(opts.command ?? profile.defaultCommand, args, {
-    cwd: opts.cwd,
-    env: opts.env ?? process.env,
-    keepStdinOpen: true,
-  });
+  const spawn = (): SpawnedProcess =>
+    spawner(opts.command ?? profile.defaultCommand, args, {
+      cwd: opts.cwd,
+      env: opts.env ?? process.env,
+      keepStdinOpen: true,
+    });
+  let child = spawn();
+  const startupRecoveryDeadline = Date.now() + 16 * 60_000;
+  let stopped = false;
+  let wakeRetry: (() => void) | undefined;
   const writer = new SessionWriter(
     opts.store,
     {
@@ -588,6 +596,9 @@ export async function runAcpTurn(
   // pointer that will be refused again on every future turn.
   let loadRefused = false;
   let diagnosticPhase: 'spawn' | 'initialize' | 'session_load' | 'session_new' | 'prompt' = 'spawn';
+  const isInitializing = (): boolean => diagnosticPhase === 'initialize';
+  let promptDispatched = false;
+  const isPrompting = (): boolean => promptDispatched;
   const topLevelText = new AcpTextStream();
   let updateTail: Promise<void> = Promise.resolve();
   let updateError: unknown;
@@ -641,6 +652,8 @@ export async function runAcpTurn(
     return true;
   });
   const stop = (operatorCancel: boolean): void => {
+    stopped = true;
+    wakeRetry?.();
     if (operatorCancel) aborted = true;
     if (cancelSession === undefined) {
       killAgent(child);
@@ -695,7 +708,21 @@ export async function runAcpTurn(
       }
       return response;
     };
-    if (opts.permissionControl !== true || opts.onPermissionRequest === undefined) {
+    // A planning turn refuses every request without asking. Whatever an agent asks
+    // for here is a step beyond reading — an edit, a command outside its read-only
+    // sandbox, Claude's own `ExitPlanMode` — and approving it would carry out part
+    // of a plan the operator has not accepted yet. The operator leaves planning
+    // through Verity instead, which ends it for every agent the same way.
+    const planning = opts.planning === true;
+    // Planning may start mid-turn, before opts.planning reflects the new posture.
+    // Let these calls reach the gateway in either posture: presenting only shows
+    // text, and ending planning still requires the gateway's implementation approval.
+    if (planningToolName(name) !== undefined) {
+      const allow = request.options.find((option) => option.kind === 'allow_once');
+      if (allow !== undefined)
+        return { outcome: { outcome: 'selected', optionId: allow.optionId } };
+    }
+    if (planning || opts.permissionControl !== true || opts.onPermissionRequest === undefined) {
       // No approval UI is wired, so every request is refused. On a mode picker
       // the refusal IS "no, keep planning" and lands the session in `plan`;
       // pulling it back to the configured posture would turn a turn Verity
@@ -771,330 +798,400 @@ export async function runAcpTurn(
   };
 
   try {
-    const result = await acp
-      .client({ name: 'verity' })
-      .onRequest(acp.methods.client.session.requestPermission, ({ params }) => onPermission(params))
-      .onNotification(acp.methods.client.session.update, ({ params }) => {
-        // Suppressed history replay is NOT this turn's content, so it must not
-        // arm steering. Arm on decode rather than inside `onUpdate`, so the
-        // channel opens as soon as the agent has spoken instead of trailing the
-        // persist queue.
-        if (loadingSession) return Promise.resolve();
-        if (isAgentContent(params.update)) turnHasAgentContent = true;
-        return queueUpdate(params.update);
-      })
-      .connectWith(processStream(child, opts.worktree), async (agent) => {
-        diagnosticPhase = 'initialize';
-        const initialized = await agent.request(acp.methods.agent.initialize, {
-          protocolVersion: acp.PROTOCOL_VERSION,
-          ...(profile.clientCapabilitiesMeta !== undefined
-            ? {
-                clientCapabilities: {
-                  session: { compaction: {} },
-                  _meta: profile.clientCapabilitiesMeta,
-                },
-              }
-            : { clientCapabilities: { session: { compaction: {} } } }),
-        });
-        // ADR 0014 D1: an ACP agent has no attested native tool channel, so the
-        // brokered Verity tools are offered to it as an HTTP MCP server on the
-        // Server's project-bound broker endpoint, authenticated with this turn's
-        // bearer. Offered only when the agent advertises HTTP MCP support — an
-        // agent that cannot reach the server would otherwise be handed tools it
-        // can never call. Every call is still approval-gated server-side; the
-        // bearer identifies the turn, it does not authorize anything.
-        const gateway = opts.mcpGateway;
-        const advertisedHttpMcp = initialized.agentCapabilities?.mcpCapabilities?.http;
-        const agentSpeaksHttpMcp =
-          advertisedHttpMcp === true ||
-          (advertisedHttpMcp === undefined && profile.httpMcpWhenUnspecified === true);
-        const mcpServers: McpServer[] =
-          agentSpeaksHttpMcp && opts.toolless !== true
-            ? [
-                ...(gateway === undefined
-                  ? []
-                  : [
-                      {
-                        type: 'http' as const,
-                        name: 'verity',
-                        url: gateway.url,
-                        headers: [{ name: 'Authorization', value: `Bearer ${gateway.token}` }],
-                      },
-                    ]),
-                ...(opts.mcpServers ?? []).map((server) => ({
-                  type: 'http' as const,
-                  name: server.name,
-                  url: server.url,
-                  headers: server.headers.map((header) => ({ ...header })),
-                })),
-              ]
-            : [];
-        // A bearer was minted but no server was offered, so tell the turn through the
-        // channel its profile supports. Claude carries this in `sessionMeta`; Codex and
-        // OpenCode have no native system-prompt slot and receive it in `promptBlocks`.
-        let turnOpts = opts;
-        if (!agentSpeaksHttpMcp && gateway !== undefined) {
-          turnOpts = withSystemDirective(turnOpts, GATEWAY_UNAVAILABLE_DIRECTIVE);
-        }
-        if (!agentSpeaksHttpMcp && (opts.mcpServers?.length ?? 0) > 0) {
-          turnOpts = withSystemDirective(turnOpts, MCP_SERVERS_UNAVAILABLE_DIRECTIVE);
-        }
-        const request = {
-          cwd: opts.cwd,
-          mcpServers,
-          _meta: profile.sessionMeta(turnOpts),
-        };
-        let session: NewSessionResponse;
-        if (opts.resumeSessionId !== undefined) {
-          diagnosticPhase = 'session_load';
-          if (initialized.agentCapabilities?.loadSession !== true) {
-            throw new Error(profile.loadSessionUnsupported);
+    const connect = () =>
+      acp
+        .client({ name: 'verity' })
+        .onRequest(acp.methods.client.session.requestPermission, ({ params }) =>
+          onPermission(params),
+        )
+        .onNotification(acp.methods.client.session.update, ({ params }) => {
+          // Suppressed history replay is NOT this turn's content, so it must not
+          // arm steering. Arm on decode rather than inside `onUpdate`, so the
+          // channel opens as soon as the agent has spoken instead of trailing the
+          // persist queue.
+          if (loadingSession) return Promise.resolve();
+          if (isAgentContent(params.update)) turnHasAgentContent = true;
+          return queueUpdate(params.update);
+        })
+        .connectWith(processStream(child, opts.worktree), async (agent) => {
+          diagnosticPhase = 'initialize';
+          const initialized = await agent.request(acp.methods.agent.initialize, {
+            protocolVersion: acp.PROTOCOL_VERSION,
+            ...(profile.clientCapabilitiesMeta !== undefined
+              ? {
+                  clientCapabilities: {
+                    session: { compaction: {} },
+                    _meta: profile.clientCapabilitiesMeta,
+                  },
+                }
+              : { clientCapabilities: { session: { compaction: {} } } }),
+          });
+          // ADR 0014 D1: an ACP agent has no attested native tool channel, so the
+          // brokered Verity tools are offered to it as an HTTP MCP server on the
+          // Server's project-bound broker endpoint, authenticated with this turn's
+          // bearer. Offered only when the agent advertises HTTP MCP support — an
+          // agent that cannot reach the server would otherwise be handed tools it
+          // can never call. Every call is still approval-gated server-side; the
+          // bearer identifies the turn, it does not authorize anything.
+          const gateway = opts.mcpGateway;
+          const advertisedHttpMcp = initialized.agentCapabilities?.mcpCapabilities?.http;
+          const agentSpeaksHttpMcp =
+            advertisedHttpMcp === true ||
+            (advertisedHttpMcp === undefined && profile.httpMcpWhenUnspecified === true);
+          const mcpServers: McpServer[] =
+            agentSpeaksHttpMcp && opts.toolless !== true
+              ? [
+                  ...(gateway === undefined
+                    ? []
+                    : [
+                        {
+                          type: 'http' as const,
+                          name: 'verity',
+                          url: gateway.url,
+                          headers: [{ name: 'Authorization', value: `Bearer ${gateway.token}` }],
+                        },
+                      ]),
+                  ...(opts.mcpServers ?? []).map((server) => ({
+                    type: 'http' as const,
+                    name: server.name,
+                    url: server.url,
+                    headers: server.headers.map((header) => ({ ...header })),
+                  })),
+                ]
+              : [];
+          // A bearer was minted but no server was offered, so tell the turn through the
+          // channel its profile supports. Claude carries this in `sessionMeta`; Codex and
+          // OpenCode have no native system-prompt slot and receive it in `promptBlocks`.
+          let turnOpts = opts;
+          if (!agentSpeaksHttpMcp && gateway !== undefined) {
+            turnOpts = withSystemDirective(turnOpts, GATEWAY_UNAVAILABLE_DIRECTIVE);
           }
-          // Each Verity turn starts a fresh ACP adapter process. `session/resume`
-          // addresses a live resource in one adapter process, whereas
-          // `session/load` restores the agent's persisted conversation in a new
-          // process. Loading replays history through session/update; Verity's
-          // canonical event store already contains it, so discard only those
-          // replay notifications.
-          loadingSession = true;
-          const loaded = await agent
-            .request(acp.methods.agent.session.load, {
-              ...request,
-              sessionId: opts.resumeSessionId,
-            })
-            .catch((error: unknown) => {
-              // An ANSWERED "that conversation does not exist" only, and nothing
-              // else. Two narrowings, each load-bearing:
-              //
-              // A JSON-RPC error object means the agent received the load and
-              // answered it. A transport failure (the adapter died, the pipe broke)
-              // says nothing about the conversation, so it must not disarm the
-              // binding: the next turn should resume the same id against a healthy
-              // adapter.
-              //
-              // And of the answers, only `resourceNotFound` is about the
-              // conversation. An agent may equally refuse a load because it is not
-              // authenticated (-32000), because its own state store failed
-              // (-32603), or because the request was malformed — every one of those
-              // is a condition of the moment, and dropping a live binding on one
-              // would discard a conversation the agent still has, permanently.
-              if (error instanceof acp.RequestError && error.code === RESOURCE_NOT_FOUND) {
-                loadRefused = true;
-              }
-              throw error;
-            });
-          session = { sessionId: opts.resumeSessionId, ...loaded };
-        } else {
-          diagnosticPhase = 'session_new';
-          session = await agent.request(acp.methods.agent.session.new, request);
-        }
-        sessionId = session.sessionId;
-        diagnosticPhase = 'prompt';
-        boundSessionId = session.sessionId;
-        cancelSession = () => {
-          void agent
-            .notify(acp.methods.agent.session.cancel, { sessionId: session.sessionId })
-            .catch(() => killAgent(child));
-        };
-        // `model` is the REQUESTED id, not necessarily the one that serves the turn.
-        // This event has to be written here — it carries the agent's session id, which
-        // downstream state binds to, and it precedes `configureSession`, which is where
-        // a profile learns whether the session's vocabulary even contains the requested
-        // model. A profile that cannot select it says so with a notice naming the model
-        // that does run (see `acp-codex-backend.ts` and `acp-opencode-backend.ts`); the
-        // event, and the usage attribution derived from it, keep the requested id.
-        // Correcting them would mean a second, later `session` event or a mutable
-        // model field on the session record — worth doing when attribution has to be
-        // exact, and deliberately not part of the OpenCode migration.
-        await writer.write({
-          t: 'session',
-          id: session.sessionId,
-          model: opts.model ?? profile.defaultModelLabel(opts),
-          worktree: opts.worktree,
-        });
-        await writer.write({ t: 'status', state: 'running' });
-        sessionModes = new Set(session.modes?.availableModes.map((mode) => mode.id) ?? []);
-        let setMode: (() => Promise<unknown>) | undefined;
-        if (activeMode !== undefined && sessionModes.has(activeMode)) {
-          const pin = (): Promise<unknown> =>
-            agent.request(acp.methods.agent.session.setMode, {
-              sessionId: session.sessionId,
-              modeId: activeMode,
-            });
-          setMode = pin;
-          restoreMode = () => {
-            restoresPending += 1;
-            restoreTail = restoreTail
-              .then(pin)
-              .then(() => undefined)
-              .catch(() => {
-                // A refused pull-back is not worth failing the turn over, but it
-                // must not pass silently either: the rest of the turn then runs
-                // in a posture nobody chose, and the transcript is the only
-                // place the operator can see that. Queued with the session's
-                // other events so the note lands in wire order — and only while
-                // there is still a turn to write it into.
-                if (closedOut) return;
-                const mode = activeMode;
-                updateTail = updateTail
-                  .then(() =>
-                    writer.write({
-                      t: 'notice',
-                      text: `Could not restore the "${mode ?? 'configured'}" permission mode; this turn continues in the mode the agent switched to.`,
-                    }),
-                  )
-                  .catch(() => undefined);
-              })
-              .finally(() => {
-                restoresPending -= 1;
-              });
+          if (!agentSpeaksHttpMcp && (opts.mcpServers?.length ?? 0) > 0) {
+            turnOpts = withSystemDirective(turnOpts, MCP_SERVERS_UNAVAILABLE_DIRECTIVE);
+          }
+          const request = {
+            cwd: opts.cwd,
+            mcpServers,
+            _meta: profile.sessionMeta(turnOpts),
           };
-        } else {
-          // A mode the session never offered stays unarmed: the adapter omits
-          // `auto` for models that cannot run it, and its own clamped mode is
-          // the safe one to keep.
-          activeMode = undefined;
-        }
-        await profile.configureSession?.(
-          {
-            sessionId: session.sessionId,
-            session,
-            request: (method, params) => agent.request(method, params),
-            notice: async (text) => {
-              await writer.write({ t: 'notice', text });
-            },
-          },
-          opts,
-        );
-        // Pinned after the profile's own setup, and unconditionally: selecting a
-        // model can clamp the session into a mode that model supports, and on a
-        // loaded session the `current_mode_update` announcing it is suppressed
-        // along with the replayed history. The mode the session reported at
-        // creation is therefore not evidence of the mode it is in now — assert
-        // it rather than trust it. Awaited, unlike the drift pull-back: the mode
-        // has to hold before the prompt goes out, or the turn's first tool call
-        // runs in a posture nobody chose.
-        if (setMode !== undefined) {
-          try {
-            await setMode();
-          } catch {
-            // The mode catalogue is reported once, at session creation, and ACP
-            // offers no way to re-read it: `session/set_config_option` answers
-            // with config options only. So a model selected just above can have
-            // narrowed the modes out from under the pin — the adapter drops
-            // `auto` for models that cannot run it — and the assertion is the
-            // first place that shows. The agent's clamped mode is the safe one
-            // to keep, and a posture Verity never got is not worth failing a
-            // turn over. Disarm rather than retry: a pull-back to a mode this
-            // session refuses would fail identically for the rest of the turn,
-            // and with no posture of our own an `ExitPlanMode` picker falls
-            // back to the agent's default choice.
-            const wanted = activeMode;
+          let session: NewSessionResponse;
+          if (opts.resumeSessionId !== undefined) {
+            diagnosticPhase = 'session_load';
+            if (initialized.agentCapabilities?.loadSession !== true) {
+              throw new Error(profile.loadSessionUnsupported);
+            }
+            // Each Verity turn starts a fresh ACP adapter process. `session/resume`
+            // addresses a live resource in one adapter process, whereas
+            // `session/load` restores the agent's persisted conversation in a new
+            // process. Loading replays history through session/update; Verity's
+            // canonical event store already contains it, so discard only those
+            // replay notifications.
+            loadingSession = true;
+            const loaded = await agent
+              .request(acp.methods.agent.session.load, {
+                ...request,
+                sessionId: opts.resumeSessionId,
+              })
+              .catch((error: unknown) => {
+                // An ANSWERED "that conversation does not exist" only, and nothing
+                // else. Two narrowings, each load-bearing:
+                //
+                // A JSON-RPC error object means the agent received the load and
+                // answered it. A transport failure (the adapter died, the pipe broke)
+                // says nothing about the conversation, so it must not disarm the
+                // binding: the next turn should resume the same id against a healthy
+                // adapter.
+                //
+                // And of the answers, only `resourceNotFound` is about the
+                // conversation. An agent may equally refuse a load because it is not
+                // authenticated (-32000), because its own state store failed
+                // (-32603), or because the request was malformed — every one of those
+                // is a condition of the moment, and dropping a live binding on one
+                // would discard a conversation the agent still has, permanently.
+                if (error instanceof acp.RequestError && error.code === RESOURCE_NOT_FOUND) {
+                  loadRefused = true;
+                }
+                throw error;
+              });
+            session = { sessionId: opts.resumeSessionId, ...loaded };
+          } else {
+            diagnosticPhase = 'session_new';
+            session = await agent.request(acp.methods.agent.session.new, request);
+          }
+          sessionId = session.sessionId;
+          diagnosticPhase = 'prompt';
+          boundSessionId = session.sessionId;
+          cancelSession = () => {
+            void agent
+              .notify(acp.methods.agent.session.cancel, { sessionId: session.sessionId })
+              .catch(() => killAgent(child));
+          };
+          // `model` is the REQUESTED id, not necessarily the one that serves the turn.
+          // This event has to be written here — it carries the agent's session id, which
+          // downstream state binds to, and it precedes `configureSession`, which is where
+          // a profile learns whether the session's vocabulary even contains the requested
+          // model. A profile that cannot select it says so with a notice naming the model
+          // that does run (see `acp-codex-backend.ts` and `acp-opencode-backend.ts`); the
+          // event, and the usage attribution derived from it, keep the requested id.
+          // Correcting them would mean a second, later `session` event or a mutable
+          // model field on the session record — worth doing when attribution has to be
+          // exact, and deliberately not part of the OpenCode migration.
+          await writer.write({
+            t: 'session',
+            id: session.sessionId,
+            model: opts.model ?? profile.defaultModelLabel(opts),
+            worktree: opts.worktree,
+          });
+          await writer.write({ t: 'status', state: 'running' });
+          sessionModes = new Set(session.modes?.availableModes.map((mode) => mode.id) ?? []);
+          let setMode: (() => Promise<unknown>) | undefined;
+          if (activeMode !== undefined && sessionModes.has(activeMode)) {
+            const pin = (): Promise<unknown> =>
+              agent.request(acp.methods.agent.session.setMode, {
+                sessionId: session.sessionId,
+                modeId: activeMode,
+              });
+            setMode = pin;
+            restoreMode = () => {
+              restoresPending += 1;
+              restoreTail = restoreTail
+                .then(pin)
+                .then(() => undefined)
+                .catch(() => {
+                  // A refused pull-back is not worth failing the turn over, but it
+                  // must not pass silently either: the rest of the turn then runs
+                  // in a posture nobody chose, and the transcript is the only
+                  // place the operator can see that. Queued with the session's
+                  // other events so the note lands in wire order — and only while
+                  // there is still a turn to write it into.
+                  if (closedOut) return;
+                  const mode = activeMode;
+                  updateTail = updateTail
+                    .then(() =>
+                      writer.write({
+                        t: 'notice',
+                        text: `Could not restore the "${mode ?? 'configured'}" permission mode; this turn continues in the mode the agent switched to.`,
+                      }),
+                    )
+                    .catch(() => undefined);
+                })
+                .finally(() => {
+                  restoresPending -= 1;
+                });
+            };
+          } else {
+            // A mode the session never offered stays unarmed: the adapter omits
+            // `auto` for models that cannot run it, and its own clamped mode is
+            // the safe one to keep.
             activeMode = undefined;
-            restoreMode = undefined;
+          }
+          await profile.configureSession?.(
+            {
+              sessionId: session.sessionId,
+              session,
+              request: (method, params) => agent.request(method, params),
+              notice: async (text) => {
+                await writer.write({ t: 'notice', text });
+              },
+            },
+            opts,
+          );
+          // Pinned after the profile's own setup, and unconditionally: selecting a
+          // model can clamp the session into a mode that model supports, and on a
+          // loaded session the `current_mode_update` announcing it is suppressed
+          // along with the replayed history. The mode the session reported at
+          // creation is therefore not evidence of the mode it is in now — assert
+          // it rather than trust it. Awaited, unlike the drift pull-back: the mode
+          // has to hold before the prompt goes out, or the turn's first tool call
+          // runs in a posture nobody chose.
+          if (
+            opts.planning === true &&
+            setMode === undefined &&
+            profile.planningViaConfig !== true
+          ) {
+            throw new Error('The agent does not support the required planning permission mode.');
+          }
+          if (setMode !== undefined) {
+            try {
+              await setMode();
+            } catch {
+              if (opts.planning === true)
+                throw new Error('The agent refused the required planning permission mode.');
+              // The mode catalogue is reported once, at session creation, and ACP
+              // offers no way to re-read it: `session/set_config_option` answers
+              // with config options only. So a model selected just above can have
+              // narrowed the modes out from under the pin — the adapter drops
+              // `auto` for models that cannot run it — and the assertion is the
+              // first place that shows. The agent's clamped mode is the safe one
+              // to keep, and a posture Verity never got is not worth failing a
+              // turn over. Disarm rather than retry: a pull-back to a mode this
+              // session refuses would fail identically for the rest of the turn,
+              // and with no posture of our own an `ExitPlanMode` picker falls
+              // back to the agent's default choice.
+              const wanted = activeMode;
+              activeMode = undefined;
+              restoreMode = undefined;
+              await writer.write({
+                t: 'notice',
+                text: `The agent refused the "${wanted ?? 'configured'}" permission mode; this turn runs in the mode it chose instead.`,
+              });
+            }
+          }
+          sendSteering = (message) => {
+            void agent
+              .request('_session/steering', {
+                sessionId: session.sessionId,
+                prompt: [{ type: 'text', text: message.text }, ...imageBlocks(message.attachments)],
+                _meta: { steering: { idleBehavior: 'promptRequired' } },
+              })
+              .catch(() => undefined);
+          };
+          // Keep load-history suppression active through all session setup. The
+          // new prompt is the first point after which an agent_message_chunk can
+          // belong to this turn rather than ACP's replay of canonical history.
+          loadingSession = false;
+          promptDispatched = true;
+          const prompt = await agent.request(acp.methods.agent.session.prompt, {
+            sessionId: session.sessionId,
+            prompt: promptBlocks(turnOpts, profile),
+          });
+          acceptingSteering = false;
+          // Drain first: a `current_mode_update` decoded alongside the prompt
+          // response only fires its pull-back once the queue admits it, so a tail
+          // sampled before the drain would miss the restore the drain itself
+          // starts. Then wait for that pull-back — its failure note is queued only
+          // once it settles, and it belongs in THIS turn's transcript — bounded,
+          // because an agent that never answers `session/set_mode` must not hold a
+          // turn whose prompt has already returned. The second drain flushes a
+          // note the restore queued while settling.
+          //
+          // Re-sampled rather than awaited once: a drift announced while the
+          // pull-back was settling queues another one behind it, and the tail
+          // sampled before that is already stale — the turn would close out with
+          // the newest restore still in flight and `closedOut` swallowing its
+          // note. Settled means a pull-back finished with nothing new behind it.
+          let modeSettled = false;
+          let modeAnswered = true;
+          for (let pass = 0; pass < MODE_SETTLE_PASSES; pass += 1) {
+            await drainUpdates();
+            const tail = restoreTail;
+            if (!(await settled(tail))) {
+              modeAnswered = false;
+              break;
+            }
+            if (tail === restoreTail) {
+              modeSettled = true;
+              break;
+            }
+          }
+          await drainUpdates();
+          closedOut = true;
+          await writeAll(writer, adapter.flush());
+          await writeAll(writer, topLevelText.flush());
+          if (!modeSettled) {
+            // Giving up on the pull-back leaves the same blind spot a refused one
+            // would: the turn ran on in a posture nobody chose. Unknown rather
+            // than failed, and said so either way — separating the agent that
+            // never answered from the one that answered and switched away again,
+            // because only the second is still changing modes as the turn ends.
             await writer.write({
               t: 'notice',
-              text: `The agent refused the "${wanted ?? 'configured'}" permission mode; this turn runs in the mode it chose instead.`,
+              text: modeAnswered
+                ? `The agent kept switching away from the "${activeMode ?? 'configured'}" permission mode; this turn may have continued in another one.`
+                : `The agent never answered the change back to the "${activeMode ?? 'configured'}" permission mode; this turn may have continued in another one.`,
             });
           }
-        }
-        sendSteering = (message) => {
-          void agent
-            .request('_session/steering', {
-              sessionId: session.sessionId,
-              prompt: [{ type: 'text', text: message.text }, ...imageBlocks(message.attachments)],
-              _meta: { steering: { idleBehavior: 'promptRequired' } },
-            })
-            .catch(() => undefined);
-        };
-        // Keep load-history suppression active through all session setup. The
-        // new prompt is the first point after which an agent_message_chunk can
-        // belong to this turn rather than ACP's replay of canonical history.
-        loadingSession = false;
-        const prompt = await agent.request(acp.methods.agent.session.prompt, {
-          sessionId: session.sessionId,
-          prompt: promptBlocks(turnOpts, profile),
-        });
-        acceptingSteering = false;
-        // Drain first: a `current_mode_update` decoded alongside the prompt
-        // response only fires its pull-back once the queue admits it, so a tail
-        // sampled before the drain would miss the restore the drain itself
-        // starts. Then wait for that pull-back — its failure note is queued only
-        // once it settles, and it belongs in THIS turn's transcript — bounded,
-        // because an agent that never answers `session/set_mode` must not hold a
-        // turn whose prompt has already returned. The second drain flushes a
-        // note the restore queued while settling.
-        //
-        // Re-sampled rather than awaited once: a drift announced while the
-        // pull-back was settling queues another one behind it, and the tail
-        // sampled before that is already stale — the turn would close out with
-        // the newest restore still in flight and `closedOut` swallowing its
-        // note. Settled means a pull-back finished with nothing new behind it.
-        let modeSettled = false;
-        let modeAnswered = true;
-        for (let pass = 0; pass < MODE_SETTLE_PASSES; pass += 1) {
-          await drainUpdates();
-          const tail = restoreTail;
-          if (!(await settled(tail))) {
-            modeAnswered = false;
-            break;
-          }
-          if (tail === restoreTail) {
-            modeSettled = true;
-            break;
-          }
-        }
-        await drainUpdates();
-        closedOut = true;
-        await writeAll(writer, adapter.flush());
-        await writeAll(writer, topLevelText.flush());
-        if (!modeSettled) {
-          // Giving up on the pull-back leaves the same blind spot a refused one
-          // would: the turn ran on in a posture nobody chose. Unknown rather
-          // than failed, and said so either way — separating the agent that
-          // never answered from the one that answered and switched away again,
-          // because only the second is still changing modes as the turn ends.
           await writer.write({
-            t: 'notice',
-            text: modeAnswered
-              ? `The agent kept switching away from the "${activeMode ?? 'configured'}" permission mode; this turn may have continued in another one.`
-              : `The agent never answered the change back to the "${activeMode ?? 'configured'}" permission mode; this turn may have continued in another one.`,
+            t: 'result',
+            usage: usage(prompt.usage),
+            stopReason: prompt.stopReason,
+            telemetry: {
+              backend: profile.telemetryBackend,
+              mode: opts.resumeSessionId === undefined ? 'new' : 'resume',
+              resumed: opts.resumeSessionId !== undefined,
+            },
           });
-        }
-        await writer.write({
-          t: 'result',
-          usage: usage(prompt.usage),
-          stopReason: prompt.stopReason,
-          telemetry: {
+          // An operator cancel is not a crash. A settled-by-cancel turn carries NO
+          // terminal `status`; the conductor appends the canonical `interrupted`
+          // marker instead. Writing `crashed` here badges every stopped turn as
+          // failed: the mobile reducer keeps the last `status` and never
+          // revisits it on `interrupted`, so client and server would disagree
+          // (`deriveSessionStatus` settles on the later `interrupted`). A
+          // cancellation Verity did not ask for — the turn timeout, which stops
+          // the session without setting `aborted` — stays a crash.
+          if (prompt.stopReason !== 'cancelled') {
+            await writer.write({ t: 'status', state: 'completed' });
+          } else if (!aborted) {
+            await writer.write({ t: 'status', state: 'crashed' });
+          }
+          await writer.write({
+            t: 'diagnostic',
+            source: 'agent',
+            outcome:
+              prompt.stopReason === 'cancelled' ? (aborted ? 'cancelled' : 'failed') : 'completed',
+            phase: diagnosticPhase,
             backend: profile.telemetryBackend,
-            mode: opts.resumeSessionId === undefined ? 'new' : 'resume',
-            resumed: opts.resumeSessionId !== undefined,
-          },
+          });
+          await writer.finish();
+          return prompt;
         });
-        // An operator cancel is not a crash. A settled-by-cancel turn carries NO
-        // terminal `status`; the conductor appends the canonical `interrupted`
-        // marker instead. Writing `crashed` here badges every stopped turn as
-        // failed: the mobile reducer keeps the last `status` and never
-        // revisits it on `interrupted`, so client and server would disagree
-        // (`deriveSessionStatus` settles on the later `interrupted`). A
-        // cancellation Verity did not ask for — the turn timeout, which stops
-        // the session without setting `aborted` — stays a crash.
-        if (prompt.stopReason !== 'cancelled') {
-          await writer.write({ t: 'status', state: 'completed' });
-        } else if (!aborted) {
-          await writer.write({ t: 'status', state: 'crashed' });
-        }
-        await writer.write({
-          t: 'diagnostic',
-          source: 'agent',
-          outcome:
-            prompt.stopReason === 'cancelled' ? (aborted ? 'cancelled' : 'failed') : 'completed',
-          phase: diagnosticPhase,
-          backend: profile.telemetryBackend,
+    // Codex waits only 30s for a backfill whose interrupted lease can last 15m.
+    // Retry only initialization: replaying session setup or a prompt is unsafe.
+    let result;
+    for (;;) {
+      try {
+        result = await connect();
+        break;
+      } catch (error) {
+        if (
+          profile.telemetryBackend !== 'codex-acp' ||
+          !isInitializing() ||
+          boundSessionId !== undefined ||
+          stopped ||
+          Date.now() >= startupRecoveryDeadline ||
+          !/timed out waiting for state db backfill after 30s\s*\(status: running\)/.test(
+            child.stderr(),
+          )
+        )
+          throw error;
+        child.closeStdin?.();
+        killAgent(child);
+        // Wait for teardown before another adapter shares the same runtime home.
+        const exited = await new Promise<boolean>((resolve) => {
+          let settled = false;
+          const timer = setTimeout(
+            () => done(false),
+            Math.max(0, Math.min(10_000, startupRecoveryDeadline - Date.now())),
+          );
+          function done(didExit: boolean): void {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            wakeRetry = undefined;
+            resolve(didExit);
+          }
+          wakeRetry = () => done(false);
+          void child.exited.then(
+            () => done(true),
+            () => done(false),
+          );
+          if (stopped) done(false);
         });
-        await writer.finish();
-        return prompt;
-      });
+        if (!exited || stopped) throw error;
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(done, Math.min(5_000, startupRecoveryDeadline - Date.now()));
+          function done(): void {
+            clearTimeout(timer);
+            wakeRetry = undefined;
+            resolve();
+          }
+          wakeRetry = done;
+          if (stopped) done();
+        });
+        if (stopped || Date.now() >= startupRecoveryDeadline) throw error;
+        child = spawn();
+      }
+    }
     return {
       sessionId: boundSessionId,
       exitCode: result.stopReason === 'cancelled' && !aborted ? 1 : 0,
@@ -1102,6 +1199,7 @@ export async function runAcpTurn(
       aborted,
     };
   } catch (error) {
+    const turnActive = isPrompting() && !closedOut;
     acceptingSteering = false;
     const message = error instanceof Error ? error.message : String(error);
     await drainUpdates().catch(() => undefined);
@@ -1110,7 +1208,33 @@ export async function runAcpTurn(
     // when the ACP process disconnects before returning PromptResponse.
     await writeAll(writer, adapter.flush()).catch(() => undefined);
     await writeAll(writer, topLevelText.flush()).catch(() => undefined);
+    // EOF can precede the process close event; wait briefly for drained stderr and
+    // exit metadata, without stalling a failure on a wedged remote channel.
+    let exitTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      child.exited.then(
+        () => true,
+        () => false,
+      ),
+      new Promise<boolean>((resolve) => {
+        exitTimer = setTimeout(() => resolve(false), 250);
+      }),
+    ]);
+    if (exitTimer !== undefined) clearTimeout(exitTimer);
+    const exitDetails = child.exitDetails?.();
     const stderr = `${child.stderr()}\n${message}`;
+    const processFailure =
+      !aborted &&
+      exitDetails !== undefined &&
+      (exitDetails.code !== 0 || exitDetails.signal !== null || turnActive)
+        ? {
+            ...(opts.model === undefined ? {} : { model: opts.model.slice(0, 200) }),
+            exitCode: exitDetails.code,
+            signal: exitDetails.signal,
+            turnActive,
+            stderrTail: redactProcessStderr(child.stderr(), opts.env ?? process.env).slice(-65_536),
+          }
+        : {};
     // The ACP analogue of Codex's `thread.started` gate. `session/prompt` is
     // dispatched only after `session/new` or `session/load` has ANSWERED, and
     // that answer is the only thing that assigns `boundSessionId` — so an
@@ -1159,6 +1283,7 @@ export async function runAcpTurn(
         phase: diagnosticPhase,
         backend: profile.telemetryBackend,
         ...(error instanceof acp.RequestError ? { code: error.code } : {}),
+        ...processFailure,
       } as const;
       if (writer.currentSessionId !== undefined) {
         await writer.write(diagnostic).catch(() => undefined);
