@@ -30463,11 +30463,11 @@ async function runAcpTurn(opts, profile) {
     const stderr = `${child.stderr()}
 ${message}`;
     const processFailure = !aborted && exitDetails !== void 0 && (exitDetails.code !== 0 || exitDetails.signal !== null || turnActive) ? {
+      ...opts.model === void 0 ? {} : { model: opts.model.slice(0, 200) },
       exitCode: exitDetails.code,
       signal: exitDetails.signal,
       turnActive,
-      stderrTail: redactProcessStderr(child.stderr(), opts.env ?? process.env).slice(-65536),
-      ...opts.model === void 0 ? {} : { model: opts.model.slice(0, 200) }
+      stderrTail: redactProcessStderr(child.stderr(), opts.env ?? process.env).slice(-65536)
     } : {};
     const failedBeforeExecution = !aborted && boundSessionId === void 0 && isExplicitPreExecutionRejection(stderr);
     if (sessionId2 !== void 0 && !aborted && !failedBeforeExecution) {
