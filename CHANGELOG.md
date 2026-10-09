@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.33.0](https://github.com/Heey-Global/verity/compare/v4.32.0...v4.33.0) (2026-10-09)
+
+
+### Features
+
+* **agent:** add verity_app_help tool with shared app help catalog ([#1415](https://github.com/Heey-Global/verity/issues/1415)) ([3db7e07](https://github.com/Heey-Global/verity/commit/3db7e0774cf3254c98212096d8612ba34ba2f7d1))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1403](https://github.com/Heey-Global/verity/issues/1403)) ([abcecd4](https://github.com/Heey-Global/verity/commit/abcecd426c58d144b9e31859086295fe28295598))
+* **release:** register tags before builds and guard workflow merges ([#1417](https://github.com/Heey-Global/verity/issues/1417)) ([45f0c8a](https://github.com/Heey-Global/verity/commit/45f0c8a573e251f54684b48eca00888ce36b1c59))
+* **session:** verify runner hashes against original frame payloads ([#1420](https://github.com/Heey-Global/verity/issues/1420)) ([162942f](https://github.com/Heey-Global/verity/commit/162942f566586a78d5310a33e76208a14efe609e))
+
 ## [4.32.0](https://github.com/Heey-Global/verity/compare/v4.31.0...v4.32.0) (2026-10-09)
 
 
