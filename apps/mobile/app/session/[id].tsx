@@ -4234,6 +4234,16 @@ export function SessionChat({
       {permissionError ? (
         <Banner tone="danger" text={`Decision failed: ${permissionError}`} />
       ) : null}
+      {voice.preparation ? (
+        <Banner
+          tone="attention"
+          text={
+            voice.preparation === 'downloading'
+              ? 'Downloading speech recognition model…'
+              : 'Preparing voice input…'
+          }
+        />
+      ) : null}
       {voice.error ? <Banner tone="danger" text={`Voice: ${voice.error}`} /> : null}
       {!loaded && !locallyCreated && messages.length === 0 && !streamError ? (
         // Still coming up: transcript hasn't drained yet and nothing has streamed in.
