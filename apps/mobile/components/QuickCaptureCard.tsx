@@ -255,6 +255,13 @@ export function QuickCaptureCard({
                 <Icon name="x" size={18} color={theme.colors.textMuted} />
               </Pressable>
             </View>
+            {voice.preparation ? (
+              <Text>
+                {voice.preparation === 'downloading'
+                  ? 'Downloading speech recognition model…'
+                  : 'Preparing voice input…'}
+              </Text>
+            ) : null}
             {voice.error ? (
               <Text accessibilityRole="alert" style={styles.error}>
                 {voice.error}
