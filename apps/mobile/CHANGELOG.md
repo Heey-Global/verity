@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.63.0](https://github.com/Heey-Global/verity/compare/mobile-v1.62.0...mobile-v1.63.0) (2026-10-09)
+
+
+### Features
+
+* **mobile:** add bounded DATA lifecycle recordings ([#1408](https://github.com/Heey-Global/verity/issues/1408)) ([ae8fcc2](https://github.com/Heey-Global/verity/commit/ae8fcc2a090e7d12554f4aaabb4bfff87a2e3db4))
+* **mobile:** measure bounded session switch thread stalls ([#1418](https://github.com/Heey-Global/verity/issues/1418)) ([e49f7fc](https://github.com/Heey-Global/verity/commit/e49f7fc723ced50f754544e34235379acf900fff))
+* **mobile:** open verity:// app links from chat messages ([#1410](https://github.com/Heey-Global/verity/issues/1410)) ([7ddc100](https://github.com/Heey-Global/verity/commit/7ddc100a737d7f1d0cc748ce92013e87b492dfdc))
+
+
+### Bug Fixes
+
+* **mobile:** allow session dragging from free row space ([#1416](https://github.com/Heey-Global/verity/issues/1416)) ([e190f9f](https://github.com/Heey-Global/verity/commit/e190f9f0e64f6ff469eca3218ab130be8948e123))
+* **mobile:** attribute live meeting speakers per word and suggest names from introductions ([#1395](https://github.com/Heey-Global/verity/issues/1395)) ([3593a03](https://github.com/Heey-Global/verity/commit/3593a0391c1703b441cba3da60aacddb475f7d67))
+* **mobile:** defer initial history paging and measure render work ([#1397](https://github.com/Heey-Global/verity/issues/1397)) ([205ec2b](https://github.com/Heey-Global/verity/commit/205ec2b71d24960e7e371b5d6e8e4ec1315500a3))
+* **mobile:** open a new session after project setup ([#1414](https://github.com/Heey-Global/verity/issues/1414)) ([7019ffb](https://github.com/Heey-Global/verity/commit/7019ffb6041207bc3252a05b4fdb84c20bfa116c))
+* **mobile:** simplify PR waiting button and slow its indicator ([#1399](https://github.com/Heey-Global/verity/issues/1399)) ([458b29a](https://github.com/Heey-Global/verity/commit/458b29aa5ab06b375d2c33d7a410f1a7b51c9788))
+* **mobile:** stop passing null as a whole style prop ([#1419](https://github.com/Heey-Global/verity/issues/1419)) ([e60b6f4](https://github.com/Heey-Global/verity/commit/e60b6f4e5a077bf25e43d2004d7a8c260401c6fc))
+* **mobile:** use Control voice shortcuts and cancel task capture ([#1396](https://github.com/Heey-Global/verity/issues/1396)) ([dd98c5b](https://github.com/Heey-Global/verity/commit/dd98c5b4e36a1138198f06a2ea4f029d5bae0411))
+
 ## [1.62.0](https://github.com/Heey-Global/verity/compare/mobile-v1.61.0...mobile-v1.62.0) (2026-10-09)
 
 
