@@ -127,7 +127,7 @@ export interface PremiumFeatureSwitches {
   remoteAccess: boolean;
 }
 
-export interface PremiumFeatureState {
+interface PremiumFeatureState {
   /** The Uplink included the feature in the current lease. */
   granted: boolean;
   /** The operator left the feature switched on. */
