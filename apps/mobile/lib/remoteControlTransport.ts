@@ -10,6 +10,10 @@ interface NativeTunnel {
   start(dataUrl: string, ticket: string, sessionId: string, coreUrl: string): Promise<number>;
   isActive(): Promise<boolean>;
   stop(): Promise<void>;
+  stopWithCause?(cause: string): Promise<void>;
+  captureDataDiagnostics?(): Promise<boolean>;
+  clearPendingDataDiagnostics?(): Promise<void>;
+  recordDataDiagnosticEvent?(event: string): Promise<void>;
   /** Absent in native builds older than the JavaScript bundle. */
   lastStopReason?(): Promise<string | null>;
   /** Available in builds with native stream diagnostics. */
@@ -84,8 +88,11 @@ async function probeCoreThroughEitherProxy(
     proxyModeSynced = true;
   }
   try {
+    await dataDiagnosticEvent('probe_started');
     await probeCore(coreUrl, tlsPin, port);
+    await dataDiagnosticEvent('probe_succeeded');
   } catch (error) {
+    await dataDiagnosticEvent('probe_failed');
     // Only a handshake the client abandoned after Core had answered points at
     // the proxy path. A rejected pin, an HTTP failure or a Core that never
     // replied through the tunnel would cost a second full probe for nothing.
@@ -102,8 +109,11 @@ async function probeCoreThroughEitherProxy(
       throw error;
     }
     try {
+      await dataDiagnosticEvent('probe_started');
       await probeCore(coreUrl, tlsPin, port);
+      await dataDiagnosticEvent('probe_succeeded');
     } catch (otherError) {
+      await dataDiagnosticEvent('probe_failed');
       await transport.setProxyMode(proxyMode).catch(() => {
         // Native may still be on the trial dialect; sync again before the next probe.
         proxyModeSynced = false;
@@ -160,6 +170,7 @@ const DIRECT_ROUTE_TTL_MS = 30_000;
 let directRoute: { key: string; reachable: boolean; checkedAt: number } | null = null;
 let directRefusal: { key: string; reason: string } | null = null;
 let routeGeneration = 0;
+let diagnosticCaptureUntil = 0;
 let previousAppState = AppState.currentState;
 AppState.addEventListener('change', (state) => {
   if (state === 'active' && previousAppState !== 'active') {
@@ -167,6 +178,9 @@ AppState.addEventListener('change', (state) => {
     routeGeneration += 1;
     directRoute = null;
     directProbe = null;
+  }
+  if (state === 'active' || state === 'background' || state === 'inactive') {
+    void dataDiagnosticEvent(`app_${state}`);
   }
   previousAppState = state;
 });
@@ -334,6 +348,30 @@ export function reportDirectRouteFailure(url: string): void {
   if (key !== null) directRoute = { key, reachable: false, checkedAt: Date.now() };
 }
 
+async function stopNativeTunnel(cause: 'profile_changed' | 'probe_failure'): Promise<void> {
+  const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+  if (typeof native.stopWithCause === 'function') await native.stopWithCause(cause);
+  else await native.stop();
+}
+
+async function dataDiagnosticEvent(
+  event:
+    | 'probe_started'
+    | 'probe_succeeded'
+    | 'probe_failed'
+    | 'app_active'
+    | 'app_background'
+    | 'app_inactive',
+): Promise<void> {
+  if (Date.now() >= diagnosticCaptureUntil) return;
+  try {
+    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+    await native.recordDataDiagnosticEvent?.(event);
+  } catch {
+    /* Diagnostic availability does not decide transport success. */
+  }
+}
+
 async function probeCore(
   coreUrl: string,
   tlsPin: string,
@@ -439,6 +477,7 @@ export async function remoteControlPortForUrl(url: string, replayable = false): 
 /** An explicit diagnostic uses Uplink even when the direct route is healthy. */
 export async function testRemoteControlForUrl(
   url: string,
+  capture = false,
 ): Promise<{ ready: boolean; detail: string }> {
   const selected = operation.then(async () => {
     const target = new URL(url).origin;
@@ -446,29 +485,46 @@ export async function testRemoteControlForUrl(
     if (key === null) {
       return { ready: false, detail: remoteControlFailureForUrl(target) ?? 'route unavailable' };
     }
-    const attachment = active;
-    if (attachment?.key === key) {
-      try {
-        if (await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive()) {
-          const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
-          if (pin !== undefined) {
-            await probeCoreThroughEitherProxy(target, pin, attachment.port);
-            return { ready: true, detail: 'Core health check passed through Uplink' };
-          }
-        }
-      } catch (error) {
-        // A diagnostic must not replace a tunnel that may be carrying transfers.
-        const summary = await tunnelDiagnosticSummary();
+    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+    if (capture) {
+      if (typeof native.captureDataDiagnostics !== 'function') {
+        return { ready: false, detail: 'update the app to record connection diagnostics' };
+      }
+      if (!(await native.captureDataDiagnostics())) {
         return {
           ready: false,
-          detail: `probe (${probeFailureDetail(error) ?? 'Core did not answer'}${summary ? `; tunnel ${summary}` : ''})`,
+          detail: 'the recording window ended; reconnect before recording another test',
         };
       }
+      diagnosticCaptureUntil = Date.now() + 120_000;
     }
-    const port = await open(target, key);
-    return port > 0
-      ? { ready: true, detail: 'Core health check passed through Uplink' }
-      : { ready: false, detail: remoteControlFailureForUrl(target) ?? 'connection failed' };
+    try {
+      const attachment = active;
+      if (attachment?.key === key) {
+        try {
+          if (await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive()) {
+            const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
+            if (pin !== undefined) {
+              await probeCoreThroughEitherProxy(target, pin, attachment.port);
+              return { ready: true, detail: 'Core health check passed through Uplink' };
+            }
+          }
+        } catch (error) {
+          // A diagnostic must not replace a tunnel that may be carrying transfers.
+          const summary = await tunnelDiagnosticSummary();
+          return {
+            ready: false,
+            detail: `probe (${probeFailureDetail(error) ?? 'Core did not answer'}${summary ? `; tunnel ${summary}` : ''})`,
+          };
+        }
+      }
+      const port = await open(target, key);
+      return port > 0
+        ? { ready: true, detail: 'Core health check passed through Uplink' }
+        : { ready: false, detail: remoteControlFailureForUrl(target) ?? 'connection failed' };
+    } finally {
+      if (capture) await native.clearPendingDataDiagnostics?.().catch(() => undefined);
+    }
   });
   operation = selected.then(
     () => undefined,
@@ -547,7 +603,7 @@ async function selectPort(url: string): Promise<number> {
     if (active !== null) {
       active = null;
       try {
-        await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').stop();
+        await stopNativeTunnel('profile_changed');
       } catch {
         // The direct path remains usable if the native module is unavailable.
       }
@@ -558,7 +614,7 @@ async function selectPort(url: string): Promise<number> {
     if (active !== null && active.key !== key) {
       active = null;
       try {
-        await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').stop();
+        await stopNativeTunnel('profile_changed');
       } catch {
         // A missing native module leaves the direct route usable.
       }
@@ -568,7 +624,7 @@ async function selectPort(url: string): Promise<number> {
   if (active !== null && active.key !== key) {
     active = null;
     try {
-      await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').stop();
+      await stopNativeTunnel('profile_changed');
     } catch {
       // A missing native module leaves the direct route usable.
     }
@@ -593,7 +649,7 @@ async function selectPort(url: string): Promise<number> {
   }
   if (keyFor(target) !== key) {
     try {
-      await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').stop();
+      await stopNativeTunnel('profile_changed');
     } catch {
       // A missing native module leaves the direct route usable.
     }
@@ -696,13 +752,13 @@ async function open(
     admission.finish();
     admission = undefined;
     if (port < 1 || port > 65_535 || keyFor(coreUrl) !== key) {
-      await native.stop();
+      await stopNativeTunnel('profile_changed');
       return 0;
     }
     // Attachment alone does not prove that the proxied stream reaches the pinned Core.
     await probeCoreThroughEitherProxy(coreUrl, tlsPin, port);
     if (keyFor(coreUrl) !== key) {
-      await native.stop();
+      await stopNativeTunnel('profile_changed');
       return 0;
     }
     active = { key, port };
@@ -736,7 +792,7 @@ async function open(
       (await tunnelStopReason())?.startsWith('stall') === true;
     if (tunnelStarted) {
       try {
-        await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').stop();
+        await stopNativeTunnel('probe_failure');
       } catch {
         // A failed probe still falls back to the direct pinned connection.
       }

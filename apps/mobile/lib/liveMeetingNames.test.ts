@@ -1,0 +1,83 @@
+import { nextSpeakerNameCheck, type SpeakerNameHistory } from './liveMeetingNames';
+import type { SpeakerLine } from './liveMeetingSpeakers';
+
+const line = (speaker: number | null, text: string, start: number, end: number): SpeakerLine => ({
+  speaker,
+  text,
+  start,
+  end,
+});
+
+test('checks an introduction phrase as soon as it is attributed, with the sentence after it', () => {
+  const lines = [
+    line(0, 'Hi, ich bin', 0, 1),
+    line(0, 'Holger.', 1, 1.5),
+    line(1, 'Guten Morgen.', 2, 3),
+  ];
+  expect(nextSpeakerNameCheck(lines, new Set(), new Map(), 0)).toEqual({
+    speaker: 0,
+    text: 'Hi, ich bin Holger.',
+    through: 1,
+    opening: false,
+  });
+});
+
+// The phrases only pick the moment: a speaker who never says one is still asked once,
+// so an introduction in other words is not missed.
+test('checks a speaker’s opening words once after fifteen seconds of speech', () => {
+  const opening = [
+    line(1, 'Morning everyone, Anna from design.', 0, 9),
+    line(1, 'Shall we?', 10, 16),
+  ];
+  expect(nextSpeakerNameCheck(opening.slice(0, 1), new Set(), new Map(), 0)).toBeNull();
+  expect(nextSpeakerNameCheck(opening, new Set(), new Map(), 0)).toMatchObject({
+    speaker: 1,
+    text: 'Morning everyone, Anna from design. Shall we?',
+    opening: true,
+  });
+  const done = new Map<number, SpeakerNameHistory>([
+    [1, { openingChecked: true, checkedThrough: 16, checks: 1, lastAt: 0 }],
+  ]);
+  expect(nextSpeakerNameCheck(opening, new Set(), done, 60_000)).toBeNull();
+});
+
+test('never checks a named speaker, pending or unknown words, or the same phrase twice', () => {
+  const lines = [
+    line(0, 'Ich bin Holger.', 0, 1),
+    line(null, "I'm Anna.", 2, 3),
+    { ...line(1, "I'm Ben.", 4, 5), pending: true },
+  ];
+  expect(nextSpeakerNameCheck(lines, new Set([0]), new Map(), 0)).toBeNull();
+  const asked = new Map<number, SpeakerNameHistory>([
+    [0, { openingChecked: false, checkedThrough: 1, checks: 1, lastAt: 0 }],
+  ]);
+  expect(nextSpeakerNameCheck(lines, new Set(), asked, 60_000)).toBeNull();
+  // A later introduction by the same speaker is checked, but not within ten seconds.
+  const later = [...lines, line(0, 'Mein Name ist Holger Teske.', 20, 22)];
+  expect(nextSpeakerNameCheck(later, new Set(), asked, 5_000)).toBeNull();
+  expect(nextSpeakerNameCheck(later, new Set(), asked, 60_000)).toMatchObject({
+    speaker: 0,
+    through: 22,
+  });
+});
+
+// Every check is a model call, and "I'm" or "this is" come up constantly in English.
+test('stops checking a speaker after three attempts', () => {
+  const lines = [line(0, "I'm not sure this is right.", 0, 2)];
+  const spent = new Map<number, SpeakerNameHistory>([
+    [0, { openingChecked: true, checkedThrough: -Infinity, checks: 3, lastAt: 0 }],
+  ]);
+  expect(nextSpeakerNameCheck(lines, new Set(), spent, 60_000)).toBeNull();
+  spent.set(0, { ...spent.get(0)!, checks: 2 });
+  expect(nextSpeakerNameCheck(lines, new Set(), spent, 60_000)).toMatchObject({ speaker: 0 });
+});
+
+// German "im" is everywhere; read as "I'm" it would spend a speaker's checks before
+// anyone introduced themselves.
+test('does not read German "im" as an introduction', () => {
+  const lines = [line(0, 'Wir sind im Büro.', 0, 2)];
+  expect(nextSpeakerNameCheck(lines, new Set(), new Map(), 0)).toBeNull();
+  expect(nextSpeakerNameCheck([line(0, 'I’m Anna.', 0, 2)], new Set(), new Map(), 0)).toMatchObject(
+    { speaker: 0, opening: false },
+  );
+});

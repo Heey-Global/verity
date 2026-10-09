@@ -143,6 +143,13 @@ describe('history paging', () => {
     expect(shouldContinueUserJump(false, false, 500, 1000)).toBe(false);
   });
 
+  it('holds automatic pages until initial list measurement even for stalled retries', () => {
+    // Appending before onLoad competes with the first transcript layout.
+    expect(shouldRequestOlderHistory(true, false, false, false, false, false)).toBe(false);
+    expect(shouldRequestOlderHistory(true, false, true, true, false, false)).toBe(false);
+    expect(shouldRequestOlderHistory(true, false, false, false, false, true)).toBe(true);
+  });
+
   it('loads older rows when history exists and nothing is in flight', () => {
     expect(shouldRequestOlderHistory(true, false)).toBe(true);
   });

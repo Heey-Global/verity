@@ -1,6 +1,7 @@
 import { Image } from 'react-native';
 import { act, fireEvent, render } from '@testing-library/react-native';
 import { QuickCaptureCard } from './QuickCaptureCard';
+import { KeyCommands } from './KeyCommands';
 import { captureTask } from '../lib/tasksStore';
 import {
   screenshotAccess,
@@ -223,4 +224,26 @@ it('restores the remembered project when capturing outside a session', async () 
   fireEvent.changeText(ui.getByLabelText('Task text'), 'Restored project capture');
   await act(async () => fireEvent.press(ui.getByText('Save')));
   expect(captureTask).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'remembered' }));
+});
+
+it('cancels task dictation through the shortcut inside the native modal', () => {
+  const ui = render(<QuickCaptureCard {...props} />);
+  expect(toggle).toHaveBeenCalledTimes(1);
+  act(() => {
+    ui.UNSAFE_getByType(KeyCommands).props.onVoice('task');
+  });
+  expect(voice.abort).toHaveBeenCalledTimes(1);
+  expect(props.onClose).toHaveBeenCalledTimes(1);
+  expect(captureTask).not.toHaveBeenCalled();
+});
+
+it('does not cancel an explicit save already waiting for the final transcript', () => {
+  const ui = render(<QuickCaptureCard {...props} />);
+  fireEvent.changeText(ui.getByLabelText('Task text'), 'Task to save');
+  fireEvent.press(ui.getByText('Save'));
+  act(() => {
+    ui.UNSAFE_getByType(KeyCommands).props.onVoice('task');
+  });
+  expect(voice.abort).not.toHaveBeenCalled();
+  expect(props.onClose).not.toHaveBeenCalled();
 });

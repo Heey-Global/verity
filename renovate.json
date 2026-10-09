@@ -158,17 +158,6 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Track globally-installed CLIs pinned via `RUN npm install -g pkg@ver` in the deploy Dockerfiles — the stock dockerfile manager only parses FROM/ARG image lines, not RUN, so without this the pin silently freezes. Covers deploy/Dockerfile (Server image) and deploy/verity-sandbox.Dockerfile (Sandbox base).",
-      "managerFilePatterns": [
-        "/(^|/)deploy/Dockerfile$/",
-        "/(^|/)deploy/verity-sandbox\\.Dockerfile$/"
-      ],
-      "matchStrings": [
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+RUN npm install -g \\S+@(?<currentValue>\\S+)"
-      ]
-    },
-    {
-      "customType": "regex",
       "description": "Track version pins declared as shell `VAR=\"${OVERRIDE:-VERSION}\"` in features/verity-sandbox-toolkit/install.sh (the single source of truth for the gh/doppler/claude-code/codex/opencode versions). The stock managers don't parse shell-default expansions, so without this the annotated pins silently freeze. The captured value is the literal default after `:-`.",
       "managerFilePatterns": ["/(^|/)features/verity-sandbox-toolkit/install\\.sh$/"],
       "matchStrings": [

@@ -1,5 +1,6 @@
 import { parseBranchIssue, githubRefUrl, type RepoIdentity } from '@verity/mobile';
-import { Linking, Pressable, Text } from 'react-native';
+import type { RefCallback } from 'react';
+import { Linking, Pressable, Text, type View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 /**
@@ -12,7 +13,9 @@ import { StyleSheet } from 'react-native-unistyles';
 export function SessionIssueRef({
   branch,
   repo,
+  dragExcludedRef,
 }: {
+  dragExcludedRef?: RefCallback<View>;
   branch: string | undefined;
   repo: RepoIdentity | undefined;
 }) {
@@ -29,6 +32,8 @@ export function SessionIssueRef({
   }
   return (
     <Pressable
+      ref={dragExcludedRef}
+      collapsable={false}
       hitSlop={8}
       accessibilityRole="link"
       accessibilityLabel={`Issue ${String(issue)}. Open on GitHub.`}

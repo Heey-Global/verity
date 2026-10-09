@@ -45,7 +45,7 @@ for _ in {1..100}; do
 done
 relay_port="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["relayPort"])' "$tmp/fixture.json")"
 outer_url="wss://127.0.0.1:${relay_port}/tunnel"
-sources=(apps/mobile/native/RemoteAppTunnel.swift apps/mobile/native/RemoteSmokeTunnel.swift apps/mobile/native/CertificatePinDelegate.swift scripts/remote-control-tunnel/NativeTunnel.swift scripts/remote-control-tunnel/Smoke.swift)
+sources=(apps/mobile/native/RemoteDataDiagnostics.swift apps/mobile/native/RemoteAppTunnel.swift apps/mobile/native/RemoteSmokeTunnel.swift apps/mobile/native/CertificatePinDelegate.swift scripts/remote-control-tunnel/NativeTunnel.swift scripts/remote-control-tunnel/Smoke.swift)
 if [[ "$platform" == macos ]]; then
   xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macosx14.0" "${sources[@]}" -o "$tmp/smoke"
   "$tmp/smoke" "$outer_url" "$pin" "$pin"

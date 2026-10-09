@@ -5,6 +5,7 @@ import { router } from 'expo-router';
 import MeetingScreen from '../app/meeting/[sessionId]';
 import { createVerityClient, getActiveMeetingServerId } from '../lib/client';
 import {
+  clearSpeakerNameSuggestion,
   currentMeeting,
   endMeeting,
   pauseMeeting,
@@ -59,6 +60,7 @@ jest.mock('../lib/liveMeetingSession', () => ({
   pauseMeeting: jest.fn().mockResolvedValue(undefined),
   resumeMeeting: jest.fn().mockResolvedValue(undefined),
   updateSpeakerEdits: jest.fn().mockResolvedValue(undefined),
+  clearSpeakerNameSuggestion: jest.fn(),
 }));
 jest.mock('../lib/liveMeetingStore', () => ({
   listMeetings: jest.fn().mockResolvedValue([]),
@@ -357,7 +359,41 @@ it('keeps the unfinished transcript visible after timed words', async () => {
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Open full transcript'));
   expect(screen.getByText('Speaker 1: Hello,')).toBeOnTheScreen();
-  expect(screen.getByText('Speaker pending: from the meeting')).toBeOnTheScreen();
+  expect(screen.getByText('from the meeting')).toBeOnTheScreen();
+});
+
+// Words the diarizer had not reached yet were labelled Unknown speaker for about a
+// second; open turns now attribute them live and the rest wait without a label.
+it('attributes live words from open diarizer turns and leaves unreached words pending', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-pending',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hello there. Still talking',
+    error: null,
+    speakerStatus: 'ready',
+    speakerTurns: [{ speaker: 0, start: 0, end: 0.6 }],
+    tentativeSpeakerTurns: [{ speaker: 1, start: 0.8, end: 1.4 }],
+    speakerHorizon: 1.5,
+    timedWords: [
+      { text: 'Hello', start: 0, end: 0.4 },
+      { text: 'there.', start: 0.9, end: 1.3 },
+      { text: 'Still', start: 2, end: 2.3 },
+      { text: 'talking', start: 2.4, end: 2.8 },
+    ],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('Open full transcript'));
+  expect(screen.getByText('Speaker 1: Hello')).toBeOnTheScreen();
+  expect(screen.getByText('Speaker 2: there.')).toBeOnTheScreen();
+  expect(screen.getByText('Still talking')).toBeOnTheScreen();
+  expect(screen.queryByText(/Unknown speaker/)).toBeNull();
 });
 
 it('shows the transcript once when its text no longer matches the timed words', async () => {
@@ -419,6 +455,103 @@ it('saves a correction for one speaker segment without changing the other', asyn
     ),
   );
   alert.mockRestore();
+});
+
+it('names a speaker only after the suggestion is confirmed', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-suggest',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hallo, ich bin Holger. Hi',
+    error: null,
+    ownerToken: 'owner',
+    speakerTurns: [
+      { speaker: 0, start: 0, end: 2 },
+      { speaker: 1, start: 3, end: 4 },
+    ],
+    timedWords: [
+      { text: 'Hallo, ich bin Holger.', start: 0, end: 2 },
+      { text: 'Hi', start: 3, end: 3.5 },
+    ],
+    speakerNameSuggestions: [
+      { speaker: 0, name: 'Holger', quote: 'Hallo, ich bin Holger.' },
+      { speaker: 1, name: 'Anna', quote: 'Hi' },
+    ],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Speaker 1 is Holger?')).toBeOnTheScreen();
+  expect(updateSpeakerEdits).not.toHaveBeenCalled();
+  // A failed save keeps the suggestion in the recording, so it is offered again.
+  jest.mocked(updateSpeakerEdits).mockRejectedValueOnce(new Error('disk full'));
+  fireEvent.press(screen.getByLabelText('Yes, Holger'));
+  expect(await screen.findByText(/Could not save speaker correction/)).toBeOnTheScreen();
+  expect(clearSpeakerNameSuggestion).not.toHaveBeenCalled();
+  expect(screen.getByLabelText('Yes, Holger')).toBeOnTheScreen();
+  expect(updateSpeakerEdits).toHaveBeenCalledWith(meeting.id, { '0': 'Holger' }, [], {});
+
+  fireEvent.press(screen.getByLabelText('Not Anna'));
+  expect(clearSpeakerNameSuggestion).toHaveBeenCalledWith(meeting.id, 1, true);
+  expect(updateSpeakerEdits).toHaveBeenCalledTimes(1);
+});
+
+it('clears a confirmed name suggestion once the name is saved', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-suggest',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hallo, ich bin Holger. Hi',
+    error: null,
+    ownerToken: 'owner',
+    speakerTurns: [
+      { speaker: 0, start: 0, end: 2 },
+      { speaker: 1, start: 3, end: 4 },
+    ],
+    timedWords: [
+      { text: 'Hallo, ich bin Holger.', start: 0, end: 2 },
+      { text: 'Hi', start: 3, end: 3.5 },
+    ],
+    speakerNameSuggestions: [
+      { speaker: 0, name: 'Holger', quote: 'Hallo, ich bin Holger.' },
+      { speaker: 1, name: 'Anna', quote: 'Hi' },
+    ],
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  let finish!: () => void;
+  jest.mocked(updateSpeakerEdits).mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('Yes, Holger'));
+  await waitFor(() => expect(updateSpeakerEdits).toHaveBeenCalledTimes(1));
+  fireEvent.press(screen.getByLabelText('Yes, Anna'));
+  expect(updateSpeakerEdits).toHaveBeenCalledTimes(1);
+  await act(async () => finish());
+  await waitFor(() =>
+    expect(clearSpeakerNameSuggestion).toHaveBeenCalledWith(meeting.id, 0, false),
+  );
+  fireEvent.press(screen.getByLabelText('Yes, Anna'));
+  await waitFor(() =>
+    expect(updateSpeakerEdits).toHaveBeenLastCalledWith(
+      meeting.id,
+      { '0': 'Holger', '1': 'Anna' },
+      [],
+      {},
+    ),
+  );
 });
 
 it('renames a speaker across the current meeting', async () => {

@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.62.0](https://github.com/Heey-Global/verity/compare/mobile-v1.61.0...mobile-v1.62.0) (2026-10-09)
+
+
+### Features
+
+* **mobile:** use SpeechTranscriber with local vocabulary correction ([#1393](https://github.com/Heey-Global/verity/issues/1393)) ([e28551c](https://github.com/Heey-Global/verity/commit/e28551cf683597cf363104cf542f2e3f5d25433e))
+
+
+### Bug Fixes
+
+* **mobile:** keep pairing link failures from crashing and match the devices design ([#1391](https://github.com/Heey-Global/verity/issues/1391)) ([50abcee](https://github.com/Heey-Global/verity/commit/50abcee3ab75f1427d8e2e2c370607bb4e3146ba))
+
 ## [1.61.0](https://github.com/Heey-Global/verity/compare/mobile-v1.60.0...mobile-v1.61.0) (2026-10-08)
 
 

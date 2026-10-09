@@ -1,7 +1,9 @@
-import type { ReactNode, RefCallback } from 'react';
+import { useMemo, type ReactNode, type RefCallback } from 'react';
 import type { View } from 'react-native';
-import Reanimated from 'react-native-reanimated';
+import Reanimated, { useAnimatedRef } from 'react-native-reanimated';
 import { StyleSheet } from 'react-native-unistyles';
+
+import { projectHandleRef } from '../lib/projectHandleRef';
 
 import { useProjectRowDrag, type ProjectReorderController } from './useProjectReorder';
 
@@ -19,14 +21,24 @@ export function SessionDragSlot({
   order: readonly string[];
   reorder: ProjectReorderController;
   enabled: boolean;
-  children: (handle: RefCallback<View>) => ReactNode;
+  children: (
+    handle: RefCallback<View>,
+    issue: RefCallback<View>,
+    markers: RefCallback<View>,
+  ) => ReactNode;
 }) {
+  const issueRef = useAnimatedRef<View>();
+  const markersRef = useAnimatedRef<View>();
+  const excluded = useMemo(() => [issueRef, markersRef], [issueRef, markersRef]);
+  const issueCallback = useMemo(() => projectHandleRef(issueRef), [issueRef]);
+  const markersCallback = useMemo(() => projectHandleRef(markersRef), [markersRef]);
   const { slotRef, rowRef, handleCallbackRef, style, placeholderStyle } = useProjectRowDrag({
     id,
     scope,
     reorder,
     renderedOrder: order,
     enabled,
+    excluded,
   });
   return (
     <Reanimated.View
@@ -38,7 +50,7 @@ export function SessionDragSlot({
         <Reanimated.View pointerEvents="none" style={[styles.placeholder, placeholderStyle]} />
       ) : null}
       <Reanimated.View ref={rowRef} collapsable={false} style={style}>
-        {children(handleCallbackRef)}
+        {children(handleCallbackRef, issueCallback, markersCallback)}
       </Reanimated.View>
     </Reanimated.View>
   );
