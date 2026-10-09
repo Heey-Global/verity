@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
 const source = (name: string) =>
@@ -46,4 +47,46 @@ describe('native switch transport diagnostic contract', () => {
       transport.indexOf('var result = pinnedHTTPResponse'),
     );
   });
+});
+
+// The tunnel typecheck must include the actual provider of the delegate's timing type.
+it('includes the delegate timing dependency in all native probe compilation units', () => {
+  const workflow = parse(
+    readFileSync(new URL('../.github/workflows/mobile-native-verify.yml', import.meta.url), 'utf8'),
+  ) as {
+    jobs: Record<string, { steps?: { run?: string }[] }>;
+  };
+  const command = Object.values(workflow.jobs)
+    .flatMap((job) => job.steps ?? [])
+    .find(
+      (step) =>
+        step.run?.includes('swiftc -typecheck') &&
+        step.run.includes('CertificatePinDelegate.swift'),
+    )?.run;
+  expect(command).toBeDefined();
+  const dependency = delegate.match(/var transportTiming: (\w+)/u)?.[1];
+  expect(dependency).toBeDefined();
+  const native = new URL('../apps/mobile/native/', import.meta.url);
+  const provider = readdirSync(native)
+    .filter((file) => file.endsWith('.swift'))
+    .find((file) =>
+      new RegExp(`(?:class|struct|enum) ${dependency}\\b`, 'u').test(
+        readFileSync(new URL(file, native), 'utf8'),
+      ),
+    );
+  expect(provider).toBeDefined();
+  expect(command?.split('xcrun swiftc -parse-as-library')[0]).toContain(
+    `apps/mobile/native/${provider}`,
+  );
+  const scriptRoot = new URL('../scripts/', import.meta.url);
+  for (const file of readdirSync(scriptRoot, { recursive: true })) {
+    if (typeof file !== 'string' || !file.endsWith('.sh')) continue;
+    const text = readFileSync(new URL(file, scriptRoot), 'utf8');
+    // Source arrays feed both simulator and macOS compilers; inspect each unit.
+    const units = [...text.matchAll(/(?:swiftc|sources=\()[\s\S]*?(?=\n[^ \t]|$)/gu)];
+    for (const [unit] of units) {
+      if (unit.includes('apps/mobile/native/CertificatePinDelegate.swift'))
+        expect(unit, file).toContain(`apps/mobile/native/${provider}`);
+    }
+  }
 });
