@@ -22,16 +22,21 @@ export function useSwitchFrameTiming(trace: SwitchTiming | undefined, completed 
     },
     [trace],
   );
-  const frame = useFrameCallback((info) => {
-    const gap = info.timeSincePreviousFrame;
-    if (gap === null) return;
-    elapsed.value += gap;
-    maximum.value = Math.max(maximum.value, gap);
-    if (elapsed.value >= 500) {
-      runOnJS(report)(maximum.value);
-      elapsed.value = 0;
-    }
-  }, false);
+  const onFrame = useCallback(
+    (info: { timeSincePreviousFrame: number | null }) => {
+      'worklet';
+      const gap = info.timeSincePreviousFrame;
+      if (gap === null) return;
+      elapsed.value += gap;
+      maximum.value = Math.max(maximum.value, gap);
+      if (elapsed.value >= 500) {
+        runOnJS(report)(maximum.value);
+        elapsed.value = 0;
+      }
+    },
+    [elapsed, maximum, report],
+  );
+  const frame = useFrameCallback(onFrame, false);
   useEffect(() => {
     const flush = () => {
       frame.setActive(false);

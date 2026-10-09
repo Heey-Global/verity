@@ -62,3 +62,14 @@ it('flushes a gap before the first periodic report', () => {
   hook.unmount();
   jest.useRealTimers();
 });
+
+it('retains the UI frame callback across unrelated chat renders', () => {
+  jest.useFakeTimers();
+  const trace = beginSessionSwitch('stable');
+  const hook = renderHook(() => useSwitchFrameTiming(trace));
+  const before = mockCallback;
+  hook.rerender(undefined);
+  expect(mockCallback).toBe(before);
+  hook.unmount();
+  jest.useRealTimers();
+});
