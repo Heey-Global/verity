@@ -234,7 +234,7 @@ test('aligns timed words across punctuation that stands as its own token', () =>
   ).toEqual({
     words: [
       { text: 'alles', start: 0, end: 0.4 },
-      { text: 'erkennt', start: 0.5, end: 1 },
+      { text: 'erkennt .', start: 0.5, end: 1 },
       { text: '', start: 1, end: 1.1 },
       { text: 'Das', start: 2, end: 2.3 },
       { text: 'klappt', start: 2.4, end: 2.8 },

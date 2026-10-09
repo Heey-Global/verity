@@ -38,7 +38,6 @@ export function reconcileTimedTranscript(
   const aligned = words.map((word) => {
     const spoken = (word.text.match(/\S+/gu) ?? []).filter((token) => comparable(token));
     if (!spoken.length) return { ...word, text: '' };
-    index = skipPunctuation(index);
     const first = transcriptWords[index];
     for (const token of spoken) {
       index = skipPunctuation(index);
@@ -46,6 +45,8 @@ export function reconcileTimedTranscript(
         return null;
       index++;
     }
+    // Preserve untimed punctuation in the adjacent timed text, including sentence ends.
+    index = skipPunctuation(index);
     const last = transcriptWords[index - 1];
     return first && last
       ? { ...word, text: transcript.slice(first.index, last.index + last[0].length) }
