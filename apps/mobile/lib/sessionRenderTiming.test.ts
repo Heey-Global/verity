@@ -6,6 +6,7 @@ import {
 } from '@verity/mobile';
 import {
   beginRenderWork,
+  beginClientActivity,
   markInitialListLoad,
   rowPress,
   type RenderWorkStage,
@@ -117,4 +118,49 @@ it('stops existing aggregates when list completion cannot fit in the phase buffe
   finish();
   beginRenderWork('chat-body', 'a')();
   expect(JSON.stringify(trace.phases)).toBe(before);
+});
+
+it('bounds client activity and locates its longest interval without exporting content', () => {
+  rowPress('private-activity-session');
+  for (let i = 0; i < 100; i++) {
+    const finish = beginClientActivity('socket-message');
+    clock += i === 50 ? 500 : 1;
+    finish();
+    finish();
+  }
+  const trace = sessionSwitchTiming('private-activity-session')!;
+  expect(
+    trace.phases
+      .filter((p) => p.phase.startsWith('activity-'))
+      .map(({ phase, value }) => ({ phase, value })),
+  ).toEqual([
+    { phase: 'activity-socket-message-total-ms', value: 599 },
+    { phase: 'activity-socket-message-count', value: 100 },
+    { phase: 'activity-socket-message-peak-start-ms', value: 50 },
+    { phase: 'activity-socket-message-peak-end-ms', value: 550 },
+  ]);
+  expect(JSON.stringify(exportSessionSwitchTimings())).not.toContain('private-activity-session');
+  const finish = beginClientActivity('anchor-read');
+  rowPress('other');
+  clock += 1000;
+  finish();
+  expect(sessionSwitchTiming('other')!.phases.some((p) => p.phase.startsWith('activity-'))).toBe(
+    false,
+  );
+});
+
+it('does not collect client activity after list completion or beyond the phase budget', () => {
+  rowPress('bounded');
+  const trace = sessionSwitchTiming('bounded')!;
+  const finish = beginClientActivity('anchor-read');
+  markInitialListLoad(trace);
+  clock += 100;
+  finish();
+  beginClientActivity('socket-message')();
+  expect(trace.phases.some((p) => p.phase.startsWith('activity-'))).toBe(false);
+  rowPress('full');
+  const full = sessionSwitchTiming('full')!;
+  for (let i = 0; i < 61; i++) markSessionSwitch(full, 'existing');
+  beginClientActivity('socket-message')();
+  expect(full.phases).toHaveLength(62);
 });

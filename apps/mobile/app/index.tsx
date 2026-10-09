@@ -1,3 +1,4 @@
+import { beginClientActivity } from '../lib/sessionSwitchTiming';
 import { useSessionRowCallbacks } from '../hooks/useSessionRowCallbacks';
 import {
   beginRenderWork,
@@ -1030,24 +1031,33 @@ function useProjects(client: VerityClient) {
           projectIds,
           localResults,
         );
-        const now = Date.now();
-        setPreviewUrls(
-          mergeSessionPreviewUrls(publicPreviewLinksRef.current, localPreviewLinksRef.current, now),
-        );
-        setPublicPreviews(publicPreviewSessionIds(publicPreviewLinksRef.current, now));
-        const pending = new Map(
-          [...pendingProjectMutations.current].filter(
-            ([, entry]) => entry.generation >= generation,
-          ),
-        );
-        const seen = new Set(nextProjects.map((project) => project.id));
-        setProjects([
-          ...nextProjects.map((project) => pending.get(project.id)?.project ?? project),
-          ...[...pending.values()]
-            .map(({ project }) => project)
-            .filter((project) => !seen.has(project.id)),
-        ]);
-        pendingProjectMutations.current.clear();
+        const finishPublish = beginClientActivity('project-list-publish');
+        try {
+          const now = Date.now();
+          setPreviewUrls(
+            mergeSessionPreviewUrls(
+              publicPreviewLinksRef.current,
+              localPreviewLinksRef.current,
+              now,
+            ),
+          );
+          setPublicPreviews(publicPreviewSessionIds(publicPreviewLinksRef.current, now));
+          const pending = new Map(
+            [...pendingProjectMutations.current].filter(
+              ([, entry]) => entry.generation >= generation,
+            ),
+          );
+          const seen = new Set(nextProjects.map((project) => project.id));
+          setProjects([
+            ...nextProjects.map((project) => pending.get(project.id)?.project ?? project),
+            ...[...pending.values()]
+              .map(({ project }) => project)
+              .filter((project) => !seen.has(project.id)),
+          ]);
+          pendingProjectMutations.current.clear();
+        } finally {
+          finishPublish();
+        }
         setError(undefined); // recovered — clear any stale banner
       } catch (caught) {
         if (generation !== loadGeneration.current) return;
