@@ -438,6 +438,42 @@ describe('pinned native file transport', () => {
     await Promise.all([first, second]);
   });
 
+  it('releases direct admission while recovered Uplink reads remain pending', async () => {
+    mockDirectVerdict.mockReturnValue(Promise.resolve('unknown'));
+    mockRemotePort.mockResolvedValueOnce(0).mockResolvedValueOnce(0).mockResolvedValue(4321);
+    const completions: Array<() => void> = [];
+    mockRequest.mockImplementation(
+      (
+        _id: string,
+        url: string,
+        _method: string,
+        _headers: unknown,
+        _body: unknown,
+        _pin: string,
+        port: number,
+      ) => {
+        if (url.includes('/recover') && port === 0)
+          return Promise.reject(new Error('direct failed'));
+        return new Promise((resolve) =>
+          completions.push(() => resolve({ status: 200, headers: {}, bodyText: '' })),
+        );
+      },
+    );
+    const remote = createPinnedFetch('pin', true);
+    const recovering = [
+      remote('https://release.test/recover1'),
+      remote('https://release.test/recover2'),
+    ];
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const direct = createPinnedFetch('pin')('https://release.test/direct');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(
+      mockRequest.mock.calls.some((call: unknown[]) => call[1] === 'https://release.test/direct'),
+    ).toBe(true);
+    completions.forEach((finish) => finish());
+    await Promise.all([...recovering, direct]);
+  });
+
   it('recovers a read that the untested direct route lost through Uplink', async () => {
     mockDirectVerdict.mockReturnValue(Promise.resolve('unknown'));
     const pin = `sha256-${'a'.repeat(43)}`;

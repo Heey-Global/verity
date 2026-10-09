@@ -453,6 +453,8 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
             throw new DOMException('The operation was aborted.', 'AbortError');
           }
           if (remotePort > 0) {
+            releaseLane?.();
+            releaseLane = undefined;
             remoteAttempted = true;
             try {
               response = await requestNative(
