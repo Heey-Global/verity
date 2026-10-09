@@ -18,6 +18,7 @@ import {
 import {
   listMeetings,
   listNotes,
+  loadDraftNote,
   finalizeNote,
   saveNote,
   type MeetingNote,
@@ -2157,4 +2158,35 @@ it('hides recording controls while the full-screen transcript is open', async ()
   expect(screen.queryByLabelText('End meeting')).toBeNull();
   fireEvent.press(screen.getByLabelText('Collapse transcript'));
   expect(await screen.findByLabelText('Pause meeting')).toBeTruthy();
+});
+
+it('recovers a persisted unfinished note on a fresh offline entry without showing the ended meeting', async () => {
+  const old: MeetingRecord = {
+    id: 'persisted-offline',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: 1,
+    endedAt: 2,
+    state: 'ended',
+    transcript: 'Old transcript',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([old]);
+  jest
+    .mocked(loadDraftNote)
+    .mockResolvedValueOnce({
+      id: 'persisted-note',
+      meetingId: old.id,
+      atSeconds: 1,
+      text: 'Finish this offline note',
+    });
+  render(<MeetingScreen />);
+  expect(await screen.findByText('“Finish this offline note”')).toBeOnTheScreen();
+  expect(screen.getByText('New meeting')).toBeOnTheScreen();
+  expect(screen.queryByText('Old transcript')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Save recovered note'));
+  await waitFor(() =>
+    expect(finalizeNote).toHaveBeenCalledWith('persisted-note', 'Finish this offline note'),
+  );
+  await waitFor(() => expect(screen.queryByTestId('unsaved-note')).toBeNull());
 });

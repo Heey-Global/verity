@@ -303,6 +303,21 @@ export function liveMeetingSavedMessage(
   return details ? `${notice}\n<!-- verity-meeting: ${JSON.stringify(details)} -->` : notice;
 }
 
+/** Use the same resolved speaker identities as the native meeting summary. */
+export function liveMeetingPeopleCount(
+  meeting: Pick<Meeting, 'speakerTurns' | 'speakerCorrections' | 'speakerMerges'>,
+): number {
+  const merges = meeting.speakerMerges ?? {};
+  return new Set(
+    [
+      ...(meeting.speakerTurns ?? []).map((turn) => resolvedSpeaker(turn.speaker, merges)),
+      ...(meeting.speakerCorrections ?? []).map((correction) =>
+        resolvedSpeaker(correction.speaker, merges),
+      ),
+    ].filter((speaker) => speaker !== null),
+  ).size;
+}
+
 /** Counts completed meeting replies, excluding progress before tools and steered requests. */
 export function liveMeetingAnswerCount(
   events: readonly {

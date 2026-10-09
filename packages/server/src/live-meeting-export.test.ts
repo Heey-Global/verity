@@ -7,6 +7,7 @@ import {
   liveMeetingTitle,
   liveMeetingLinkLabel,
   liveMeetingAnswerCount,
+  liveMeetingPeopleCount,
 } from './live-meeting-export.js';
 
 const meeting = {
@@ -157,4 +158,22 @@ it('keeps title punctuation literal in saved links', () => {
   expect(liveMeetingSavedMessage('/knowledge/meeting.md', title)).toBe(
     `Meeting saved to the knowledge base: [${label}](/knowledge/meeting.md)`,
   );
+});
+
+it('counts resolved people after speaker merges and manual corrections', () => {
+  const turns = [
+    { speaker: 0, start: 0, end: 1 },
+    { speaker: 1, start: 1, end: 2 },
+  ];
+  expect(liveMeetingPeopleCount({ speakerTurns: turns, speakerMerges: { '1': 0 } })).toBe(1);
+  expect(
+    liveMeetingPeopleCount({
+      speakerTurns: turns,
+      speakerMerges: { '1': 0 },
+      speakerCorrections: [
+        { start: 3, end: 4, speaker: 2 },
+        { start: 4, end: 5, speaker: null },
+      ],
+    }),
+  ).toBe(2);
 });

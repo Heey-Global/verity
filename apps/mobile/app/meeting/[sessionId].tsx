@@ -265,13 +265,18 @@ export default function MeetingScreen() {
       currentMeeting()?.state !== 'active' &&
       !saved.some((item) => item.state === 'active')
     ) {
-      const recovery = saved.find(
-        (item) => pendingNoteErrors.has(item.id) && pendingDrafts.has(item.id),
-      );
-      if (recovery) {
-        recoveryMeetingId.current = recovery.id;
-        setDraft(pendingDrafts.get(recovery.id)!);
-        setNoteSaveError({ meetingId: recovery.id, message: pendingNoteErrors.get(recovery.id)! });
+      for (const item of saved) {
+        const recovered = pendingDrafts.get(item.id) ?? (await loadDraftNote(item.id));
+        if (!recovered || (!recovered.text.trim() && !pendingNoteErrors.has(item.id))) continue;
+        // A slow storage read must not replace a draft in a newly started meeting.
+        if (displayedMeetingId.current || currentMeeting()?.state === 'active') break;
+        pendingDrafts.set(item.id, recovered);
+        recoveryMeetingId.current = item.id;
+        setDraft(recovered);
+        const message = pendingNoteErrors.get(item.id) ?? null;
+        noteSaveErrorRef.current = message;
+        setNoteSaveError(message ? { meetingId: item.id, message } : null);
+        break;
       }
     }
     setMeeting((current) => {
@@ -1559,27 +1564,30 @@ export default function MeetingScreen() {
             </Pressable>
           </View>
           {error ? <Text style={styles.error}>{error}</Text> : null}
-          {noteUnsaved ? (
-            // The note is the only part of the last meeting at risk: the device could not
-            // write it to its own storage. Show it and let it be saved again from here.
+          {noteUnsaved || draft?.text.trim() ? (
             <View style={styles.recoveryCard} testID="unsaved-note">
-              <Text style={styles.recoveryTitle}>A note from your last meeting isn’t saved</Text>
+              <Text style={styles.recoveryTitle}>
+                {noteUnsaved
+                  ? 'A note from your last meeting isn’t saved'
+                  : 'Finish a note from your last meeting'}
+              </Text>
               {draft?.text.trim() ? <Text style={styles.body}>“{draft.text.trim()}”</Text> : null}
               <Text style={styles.hint}>
-                The meeting itself is kept. The note is still on screen and will be saved when you
-                retry.
+                The meeting itself is kept. Save this note to finish it.
                 {noteSaveError?.message
                   ? ` (${noteSaveError.message.replace(/^Note could not be saved: /, '')})`
                   : ''}
               </Text>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Retry saving note"
+                accessibilityLabel={noteUnsaved ? 'Retry saving note' : 'Save recovered note'}
                 onPress={submitNote}
                 style={styles.recoveryButton}
               >
                 <Icon name="rotate-cw" size={16} color={colors.primary} />
-                <Text style={styles.recoveryButtonText}>Retry save</Text>
+                <Text style={styles.recoveryButtonText}>
+                  {noteUnsaved ? 'Retry save' : 'Save note'}
+                </Text>
               </Pressable>
             </View>
           ) : null}

@@ -307,6 +307,7 @@ import {
   liveMeetingSavedMessage,
   liveMeetingLinkLabel,
   liveMeetingAnswerCount,
+  liveMeetingPeopleCount,
   liveMeetingTitle,
   renderLiveMeetingMarkdown,
 } from './live-meeting-export.js';
@@ -2244,7 +2245,7 @@ async function fileLiveMeeting(input: {
               60_000,
           ),
         ),
-        people: new Set((current.meeting.speakerTurns ?? []).map((turn) => turn.speaker)).size,
+        people: liveMeetingPeopleCount(current.meeting),
         notes: current.notes.length,
         answers: liveMeetingAnswerCount(events, current.meeting.id),
       };

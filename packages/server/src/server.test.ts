@@ -1428,7 +1428,11 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
       state: 'ended',
       transcript: 'We ship on Friday.',
       timedWords: [{ text: 'We ship on Friday.', start: 4, end: 6 }],
-      speakerTurns: [{ speaker: 0, start: 3, end: 7 }],
+      speakerTurns: [
+        { speaker: 0, start: 3, end: 7 },
+        { speaker: 1, start: 8, end: 9 },
+      ],
+      speakerMerges: { '1': 0 },
       captureStatus: 'listening',
       ownerToken: 'o'.repeat(64),
       revision: 2,
