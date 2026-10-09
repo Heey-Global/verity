@@ -676,7 +676,7 @@ export function SessionChat({
   const switchTiming = useMemo(() => sessionSwitchTiming(sessionId), [sessionId]);
   const [loadedListSessionId, setLoadedListSessionId] = useState<string | null>(null);
   const initialListLoaded = loadedListSessionId === sessionId;
-  useSwitchFrameTiming(switchTiming);
+  useSwitchFrameTiming(switchTiming, initialListLoaded);
   useEffect(() => {
     markSessionSwitch(switchTiming, 'session-screen-react-commit');
     return () => markSessionSwitch(switchTiming, 'session-screen-cleanup');

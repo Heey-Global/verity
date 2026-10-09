@@ -50,3 +50,12 @@ it('stops on background and at the bounded sampling deadline', () => {
   jest.advanceTimersByTime(100);
   expect(jest.getTimerCount()).toBe(0);
 });
+
+it('captures overdue timer lag when loading completes before the timer callback', () => {
+  const trace = beginSessionSwitch('completion');
+  startStallSampling(trace);
+  clock = 900;
+  markInitialListLoad(trace);
+  expect(trace.phases.find((p) => p.phase === 'js-timer-lag-max-ms')?.value).toBe(800);
+  expect(jest.getTimerCount()).toBe(0);
+});

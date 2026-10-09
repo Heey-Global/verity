@@ -1,16 +1,21 @@
-import { markSessionSwitch, type SwitchTiming } from '@verity/mobile';
+import { markSessionSwitch, sessionSwitchTiming, type SwitchTiming } from '@verity/mobile';
 import { useEffect, useCallback } from 'react';
 import { AppState } from 'react-native';
-import { runOnJS, useFrameCallback, useSharedValue } from 'react-native-reanimated';
+import { runOnJS, runOnUI, useFrameCallback, useSharedValue } from 'react-native-reanimated';
 import { switchMeasurementOpen } from '../lib/sessionSwitchTiming';
 
 /** UI frame callbacks are independent of JS timers, but do not prove a visible paint. */
-export function useSwitchFrameTiming(trace: SwitchTiming | undefined): void {
+export function useSwitchFrameTiming(trace: SwitchTiming | undefined, completed = false): void {
   const elapsed = useSharedValue(0);
   const maximum = useSharedValue(0);
   const report = useCallback(
     (gap: number) => {
-      if (!switchMeasurementOpen(trace)) return;
+      if (
+        !trace ||
+        sessionSwitchTiming(trace.sessionId) !== trace ||
+        AppState.currentState !== 'active'
+      )
+        return;
       const existing = trace!.phases.find((phase) => phase.phase === 'ui-frame-gap-max-ms');
       if (existing) existing.value = Math.max(existing.value ?? 0, gap);
       else markSessionSwitch(trace, 'ui-frame-gap-max-ms', gap);
@@ -28,12 +33,23 @@ export function useSwitchFrameTiming(trace: SwitchTiming | undefined): void {
     }
   }, false);
   useEffect(() => {
+    const flush = () => {
+      frame.setActive(false);
+      runOnUI(() => {
+        'worklet';
+        if (maximum.value > 0) runOnJS(report)(maximum.value);
+      })();
+    };
+    if (completed) {
+      flush();
+      return;
+    }
     elapsed.value = 0;
     maximum.value = 0;
     frame.setActive(switchMeasurementOpen(trace) && AppState.currentState === 'active');
     const timer = setInterval(() => {
       if (!switchMeasurementOpen(trace)) {
-        frame.setActive(false);
+        flush();
         clearInterval(timer);
       }
     }, 250);
@@ -43,5 +59,5 @@ export function useSwitchFrameTiming(trace: SwitchTiming | undefined): void {
       subscription.remove();
       frame.setActive(false);
     };
-  }, [trace, frame, elapsed, maximum]);
+  }, [trace, frame, elapsed, maximum, completed, report]);
 }

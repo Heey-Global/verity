@@ -60,6 +60,7 @@ const noop = () => undefined;
 /** Completion must survive a full phase buffer, which can drop the visible marker. */
 export function markInitialListLoad(trace: SwitchTiming | undefined): void {
   if (!trace || completedLists.has(trace)) return;
+  if (sessionSwitchTiming(trace.sessionId) === trace) stopSampling?.(true);
   completedLists.add(trace);
   markSessionSwitch(trace, 'flash-list-on-load');
 }
@@ -111,7 +112,7 @@ export function beginRenderWork(
   };
 }
 
-let stopSampling: (() => void) | undefined;
+let stopSampling: ((flush?: boolean) => void) | undefined;
 /** Timer lateness includes JS scheduling and GC; it does not identify the blocking function. */
 export function startStallSampling(trace: SwitchTiming): void {
   stopSampling?.();
@@ -120,7 +121,23 @@ export function startStallSampling(trace: SwitchTiming): void {
   let maximum = 0;
   let samples = 0;
   let entry: SwitchTiming['phases'][number] | undefined;
-  const stop = () => {
+  const sample = () => {
+    maximum = Math.max(maximum, performance.now() - expected, 0);
+    if (!entry) {
+      const before = trace.phases.length;
+      markSessionSwitch(trace, 'js-timer-lag-max-ms', maximum);
+      if (trace.phases.length > before) entry = trace.phases.at(-1);
+    }
+    if (entry) entry.value = Math.round(maximum * 10) / 10;
+  };
+  const stop = (flush = false) => {
+    if (
+      flush &&
+      AppState.currentState === 'active' &&
+      sessionSwitchTiming(trace.sessionId) === trace &&
+      performance.now() - trace.started < 10_000
+    )
+      sample();
     clearInterval(timer);
     subscription.remove();
     if (stopSampling === stop) stopSampling = undefined;
@@ -135,15 +152,9 @@ export function startStallSampling(trace: SwitchTiming): void {
       stop();
       return;
     }
-    maximum = Math.max(maximum, now - expected, 0);
+    sample();
     expected = now + 100;
     samples++;
-    if (!entry) {
-      const before = trace.phases.length;
-      markSessionSwitch(trace, 'js-timer-lag-max-ms', maximum);
-      if (trace.phases.length > before) entry = trace.phases.at(-1);
-    }
-    if (entry) entry.value = Math.round(maximum * 10) / 10;
     if (samples >= 100) stop();
   }, 100);
   const subscription = AppState.addEventListener('change', (state) => {
