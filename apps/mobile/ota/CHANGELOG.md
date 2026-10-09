@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.64.1](https://github.com/Heey-Global/verity/compare/mobile-v1.64.0...mobile-v1.64.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **mobile:** preserve session switch readiness diagnostics ([#1438](https://github.com/Heey-Global/verity/issues/1438)) ([396c63f](https://github.com/Heey-Global/verity/commit/396c63fb7b72e5914dc25a0fde88ce4fc9a71815))
+
 ## [1.63.1](https://github.com/Heey-Global/verity/compare/mobile-v1.63.0...mobile-v1.63.1) (2026-10-09)
 
 
