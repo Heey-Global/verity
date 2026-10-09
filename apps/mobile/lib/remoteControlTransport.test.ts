@@ -21,6 +21,9 @@ const mockRequest = jest.fn();
 const mockCancelRequest = jest.fn();
 const mockLastStopReason = jest.fn();
 const mockDiagnosticSummary = jest.fn();
+const mockCaptureDiagnostics = jest.fn().mockResolvedValue(true);
+const mockClearPendingDiagnostics = jest.fn().mockResolvedValue(undefined);
+const mockRecordDiagnosticEvent = jest.fn().mockResolvedValue(undefined);
 // Undefined models a native build that only speaks SOCKS; tests opt into the fallback.
 let mockSetProxyMode: jest.Mock | undefined;
 
@@ -40,6 +43,9 @@ jest.mock('expo-modules-core', () => ({
           stop: mockStop,
           lastStopReason: mockLastStopReason,
           diagnosticSummary: mockDiagnosticSummary,
+          captureDataDiagnostics: mockCaptureDiagnostics,
+          clearPendingDataDiagnostics: mockClearPendingDiagnostics,
+          recordDataDiagnosticEvent: mockRecordDiagnosticEvent,
         },
 }));
 
@@ -1424,5 +1430,41 @@ describe('direct routing across background and diagnostics', () => {
     resolveProbe({ status: 200 });
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(4321);
+  });
+});
+
+describe('opt-in DATA capture', () => {
+  it('records a selected test without replacing a live tunnel and clears pending capture', async () => {
+    jest.resetModules();
+    mockProfile.mockReturnValue(profile);
+    mockToken.mockReturnValue('auth');
+    mockAdmission.mockResolvedValue({
+      ticket: 'test-ticket',
+      sessionId: 'test-session',
+      finish: jest.fn(),
+      cancel: jest.fn(),
+    });
+    mockStart.mockResolvedValue(12345);
+    mockIsActive.mockResolvedValue(true);
+    mockCaptureDiagnostics.mockClear();
+    mockClearPendingDiagnostics.mockClear();
+    mockRecordDiagnosticEvent.mockClear();
+    mockRequest.mockImplementation(async (...args: unknown[]) =>
+      args[6] === 0 ? Promise.reject(new Error('offline')) : { status: 200 },
+    );
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    await transport.testRemoteControlForUrl(coreUrl);
+    expect(mockCaptureDiagnostics).not.toHaveBeenCalled();
+    expect(mockRecordDiagnosticEvent).not.toHaveBeenCalled();
+    mockStart.mockClear();
+    await transport.testRemoteControlForUrl(coreUrl, true);
+    expect(mockCaptureDiagnostics).toHaveBeenCalledTimes(1);
+    expect(mockStart).not.toHaveBeenCalled();
+    expect(mockRecordDiagnosticEvent.mock.calls.map((call: unknown[]) => call[0])).toEqual([
+      'probe_started',
+      'probe_succeeded',
+    ]);
+    expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(1);
   });
 });

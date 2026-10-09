@@ -27,7 +27,19 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) 
     let outerDelegate = try CertificatePinDelegate(pin: outerPin, origin: outerOrigin.url!)
     let outer = URLSession(configuration: .ephemeral, delegate: outerDelegate, delegateQueue: nil)
     let tunnel = try RemoteAppTunnel(dataURL: dataURL, coreURL: origin, outerSession: outer)
-    defer { tunnel.stop(); outer.invalidateAndCancel() }
+    tunnel.enableDataDiagnostics()
+    defer {
+      tunnel.stop()
+      tunnel.stop()
+      let snapshot = try! JSONSerialization.jsonObject(with: Data(tunnel.exportDataDiagnostics()!.utf8)) as! [String: Any]
+      let events = snapshot["events"] as! [[String: Any]]
+      precondition(events.filter { $0["event"] as? String == "cancel_requested" }.count == 1)
+      precondition(events.filter { $0["event"] as? String == "socket_cancel" }.count == 1)
+      precondition(snapshot["sessionHash"] as? String != "fixture-session")
+      precondition(snapshot["delegateAvailable"] as? Bool == false)
+      tunnel.disableDataDiagnostics()
+      outer.invalidateAndCancel()
+    }
     let port = try await tunnel.start(ticket: "fixture-ticket", sessionId: "fixture-session")
     if connect {
       // Any local process can dial the listener; only the host and port check
