@@ -11,8 +11,8 @@ platform="${1:-macos}"
 # Exercise negotiation against both fixture protocols, including the H1 fallback.
 protocol="${2:-}"
 if [[ -z "$protocol" ]]; then
-  "$0" "$platform" h1
-  "$0" "$platform" h2
+  bash scripts/remote-control-tunnel/run-apple.sh "$platform" h1
+  bash scripts/remote-control-tunnel/run-apple.sh "$platform" h2
   exit 0
 fi
 [[ "$protocol" == h1 || "$protocol" == h2 ]] || { echo 'Expected h1 or h2 fixture protocol.' >&2; exit 2; }

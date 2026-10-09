@@ -145,6 +145,8 @@ describe('public gateway HTTP/2', () => {
     const { session, port } = await setup((request, response) => {
       received = request.headers;
       response.setHeader('connection', 'close');
+      // A legacy upstream header must not crash the HTTP/2 listener.
+      response.setHeader('proxy-connection', 'keep-alive');
       response.end('ok');
     });
     const result = await read(session, '/identity', {

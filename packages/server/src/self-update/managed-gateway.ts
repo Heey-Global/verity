@@ -118,6 +118,7 @@ export interface ManagedGatewayRuntime {
 
 const HOP_BY_HOP = new Set([
   'connection',
+  'proxy-connection',
   'keep-alive',
   'proxy-authenticate',
   'proxy-authorization',
