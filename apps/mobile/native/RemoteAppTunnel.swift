@@ -860,6 +860,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
         lock.withLock {
           stream.outgoingEnded = true
           if stream.endedBy == "open" { stream.endedBy = "local"; stream.endedAt = Date() }
+          retainDiagnosticStream(stream)
         }
         try await writer.send(["type": "stream.end", "streamId": id])
         finish(id, stream)
