@@ -1142,6 +1142,16 @@ jobs:
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Check out the immutable OTA candidate for mobile verification
+        if: startsWith(github.head_ref, 'automation/promote-mobile-ota-') || startsWith(github.ref, 'refs/heads/automation/promote-mobile-ota-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$(node -e 'const c = require("./apps/mobile/ota-promotion.json"); if (!/^[a-f0-9]{40}$/.test(c.commit)) throw new Error("Invalid candidate source"); process.stdout.write(c.commit)')"
+          git merge-base --is-ancestor "$source" HEAD
+          git checkout --detach "$source"
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:

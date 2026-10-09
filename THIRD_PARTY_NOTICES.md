@@ -61,7 +61,7 @@ separately by `TRADEMARKS.md`.
 | CC0-1.0 | 2 |
 | ISC | 66 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 1045 |
+| MIT | 1040 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -642,7 +642,6 @@ separately by `TRADEMARKS.md`.
 | decamelize-keys | MIT | [source](https://www.npmjs.com/package/decamelize-keys) |
 | decamelize | MIT | [source](https://www.npmjs.com/package/decamelize) |
 | decimal.js | MIT | [source](https://www.npmjs.com/package/decimal.js) |
-| decode-uri-component | MIT | [source](https://www.npmjs.com/package/decode-uri-component) |
 | dedent | MIT | [source](https://www.npmjs.com/package/dedent) |
 | deep-is | MIT | [source](https://www.npmjs.com/package/deep-is) |
 | deepmerge | MIT | [source](https://www.npmjs.com/package/deepmerge) |
@@ -784,7 +783,6 @@ separately by `TRADEMARKS.md`.
 | figures | MIT | [source](https://www.npmjs.com/package/figures) |
 | file-entry-cache | MIT | [source](https://www.npmjs.com/package/file-entry-cache) |
 | fill-range | MIT | [source](https://www.npmjs.com/package/fill-range) |
-| filter-obj | MIT | [source](https://www.npmjs.com/package/filter-obj) |
 | finalhandler | MIT | [source](https://www.npmjs.com/package/finalhandler) |
 | find-my-way | MIT | [source](https://www.npmjs.com/package/find-my-way) |
 | find-up | MIT | [source](https://www.npmjs.com/package/find-up) |
@@ -1102,7 +1100,6 @@ separately by `TRADEMARKS.md`.
 | qified | MIT | [source](https://www.npmjs.com/package/qified) |
 | qrcode | MIT | [source](https://www.npmjs.com/package/qrcode) |
 | qs | BSD-3-Clause | [source](https://www.npmjs.com/package/qs) |
-| query-string | MIT | [source](https://www.npmjs.com/package/query-string) |
 | querystringify | MIT | [source](https://www.npmjs.com/package/querystringify) |
 | quick-format-unescaped | MIT | [source](https://www.npmjs.com/package/quick-format-unescaped) |
 | quick-lru | MIT | [source](https://www.npmjs.com/package/quick-lru) |
@@ -1215,7 +1212,6 @@ separately by `TRADEMARKS.md`.
 | spdx-exceptions | CC-BY-3.0 | [source](https://www.npmjs.com/package/spdx-exceptions) |
 | spdx-expression-parse | MIT | [source](https://www.npmjs.com/package/spdx-expression-parse) |
 | spdx-license-ids | CC0-1.0 | [source](https://www.npmjs.com/package/spdx-license-ids) |
-| split-on-first | MIT | [source](https://www.npmjs.com/package/split-on-first) |
 | split2 | ISC | [source](https://www.npmjs.com/package/split2) |
 | split | MIT | [source](https://www.npmjs.com/package/split) |
 | sprintf-js | BSD-3-Clause | [source](https://www.npmjs.com/package/sprintf-js) |
@@ -1232,7 +1228,6 @@ separately by `TRADEMARKS.md`.
 | std-env | MIT | [source](https://www.npmjs.com/package/std-env) |
 | stream-buffers | Unlicense | [source](https://www.npmjs.com/package/stream-buffers) |
 | stream-shift | MIT | [source](https://www.npmjs.com/package/stream-shift) |
-| strict-uri-encode | MIT | [source](https://www.npmjs.com/package/strict-uri-encode) |
 | string_decoder | MIT | [source](https://www.npmjs.com/package/string_decoder) |
 | string-length | MIT | [source](https://www.npmjs.com/package/string-length) |
 | string-width | MIT | [source](https://www.npmjs.com/package/string-width) |

@@ -267,6 +267,7 @@ function HydratedRoot() {
                 name="settings/server-update-channel"
                 options={{ title: 'Update channel' }}
               />
+              <Stack.Screen name="settings/voice-input" options={{ title: 'Voice input' }} />
               <Stack.Screen name="settings/live-meeting-stt" options={{ title: 'Live STT test' }} />
               <Stack.Screen name="devices" options={{ title: 'Devices' }} />
               <Stack.Screen name="github-connect" options={{ title: 'GitHub' }} />

@@ -282,12 +282,12 @@ function releaseRows(): Release[] {
     .map((row) => JSON.parse(row) as Release);
 }
 
-function reserve(tag: string, candidate: Candidate) {
+function reserve(tag: string, candidate: Candidate, target = candidate.commit) {
   const remote = git('ls-remote', '--tags', 'origin', `refs/tags/${tag}`);
   if (remote) {
     git('fetch', 'origin', `refs/tags/${tag}:refs/tags/${tag}`);
     if (
-      git('rev-list', '-n', '1', tag) !== candidate.commit ||
+      git('rev-list', '-n', '1', tag) !== target ||
       git('for-each-ref', '--format=%(contents)', `refs/tags/${tag}`) !== JSON.stringify(candidate)
     )
       throw new Error('Immutable candidate reservation changed');
@@ -301,7 +301,7 @@ function reserve(tag: string, candidate: Candidate) {
     'tag',
     '-a',
     tag,
-    candidate.commit,
+    target,
     '-m',
     JSON.stringify(candidate),
   );
@@ -370,8 +370,17 @@ function assertBaseline(candidate: Candidate) {
     `repos/${repository()}/contents/${manifestPath}?ref=main`,
   );
   const merged = validateCandidate(JSON.parse(Buffer.from(approved.content, 'base64').toString()));
-  if (merged.tag.localeCompare(delivered, 'en', { numeric: true }) > 0)
-    throw new Error('An approved promotion is undelivered; stage again once it publishes');
+  const pending = merged.tag.localeCompare(delivered, 'en', { numeric: true }) > 0;
+  if (pending && merged.tag.localeCompare(candidate.tag, 'en', { numeric: true }) >= 0)
+    throw new Error('An approved promotion owns this version; stage a later version');
+  return pending;
+}
+
+export function proposalBaseForSource(source: string, execute = git): string {
+  execute('fetch', 'origin', 'main:refs/remotes/origin/main');
+  const base = execute('rev-parse', 'origin/main');
+  execute('merge-base', '--is-ancestor', source, base);
+  return base;
 }
 
 function stage(runtime: string, version: string) {
@@ -499,7 +508,17 @@ function stage(runtime: string, version: string) {
     git('push', 'origin', `refs/tags/${candidate.tag}`);
   }
   finishRelease(candidate, true);
+  if (published(runtime) === candidate.tag) return;
 
+  // Delivery reads the merged approval, while the rolling branch remains its
+  // audit evidence. Publish Staging now and refresh the proposal after delivery.
+  if (assertBaseline(candidate)) {
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, 'deferred=true\n');
+    console.log('Staging published; Production proposal waits for approved delivery');
+    return;
+  }
+
+  const proposalBase = proposalBaseForSource(candidate.commit);
   const branch = `automation/promote-mobile-ota-${runtime}`;
   const open = json<Pull[]>(
     'pr',
@@ -524,22 +543,26 @@ function stage(runtime: string, version: string) {
     // A prior run can stop after resetting this branch to the source but before
     // GraphQL creates its metadata commit. That source may have no manifest (or
     // an older schema). Only the immutable artifact record authorizes recovery.
-    const interruptedRecord = `ota-artifact/${candidate.tag}/${expectedHead}`;
-    const recorded = git('for-each-ref', '--format=%(contents)', `refs/tags/${interruptedRecord}`);
+    let interruptedRecord = `ota-proposal-base/${candidate.tag}/${expectedHead}`;
+    let recorded = git('for-each-ref', '--format=%(contents)', `refs/tags/${interruptedRecord}`);
+    if (!recorded) {
+      interruptedRecord = `ota-artifact/${candidate.tag}/${expectedHead}`;
+      recorded = git('for-each-ref', '--format=%(contents)', `refs/tags/${interruptedRecord}`);
+    }
     const previous = validateCandidate(
       JSON.parse(recorded || git('show', `FETCH_HEAD:${manifestPath}`)),
     );
     if (
       recorded &&
-      (previous.commit !== expectedHead ||
-        previous.runtime !== runtime ||
+      (previous.runtime !== runtime ||
         git('rev-list', '-n', '1', interruptedRecord) !== expectedHead)
     )
       throw new Error('Interrupted rolling reset does not match its immutable artifact');
     git('merge-base', '--is-ancestor', previous.commit, commit);
+    if (recorded) git('merge-base', '--is-ancestor', previous.commit, expectedHead);
   }
-  // Reset the rolling branch onto the candidate source before writing metadata;
-  // otherwise its CI would check the previous candidate's application code.
+  // The proposal changes only metadata on current main; mobile CI checks the
+  // immutable artifact source explicitly instead of this proposal base.
   const remote = git('ls-remote', 'origin', `refs/heads/${branch}`).split(/\s/)[0];
   const ownerTag = `ota-rolling/${runtime}`;
   const ownerRecord = git('for-each-ref', '--format=%(contents)', `refs/tags/${ownerTag}`);
@@ -569,11 +592,12 @@ function stage(runtime: string, version: string) {
         throw new Error('Invalid rolling branch ownership reservation');
       git('merge-base', '--is-ancestor', owner.commit, commit);
       git('fetch', 'origin', branch);
-      const sourceRecord = git(
-        'for-each-ref',
-        '--format=%(contents)',
-        `refs/tags/ota-artifact/${candidate.tag}/${remote}`,
-      );
+      let baseTag = `ota-proposal-base/${candidate.tag}/${remote}`;
+      let sourceRecord = git('for-each-ref', '--format=%(contents)', `refs/tags/${baseTag}`);
+      if (!sourceRecord) {
+        baseTag = `ota-artifact/${candidate.tag}/${remote}`;
+        sourceRecord = git('for-each-ref', '--format=%(contents)', `refs/tags/${baseTag}`);
+      }
       const previous = validateCandidate(
         JSON.parse(sourceRecord || git('show', `FETCH_HEAD:${manifestPath}`)),
       );
@@ -587,18 +611,19 @@ function stage(runtime: string, version: string) {
         throw new Error('Orphaned rolling branch has no matching immutable artifact');
       git('merge-base', '--is-ancestor', previous.commit, commit);
       if (sourceRecord) {
-        if (previous.commit !== remote)
+        if (git('rev-list', '-n', '1', baseTag) !== remote)
           throw new Error('Orphaned rolling source differs from its reservation');
+        git('merge-base', '--is-ancestor', previous.commit, remote);
       } else {
+        git('merge-base', '--is-ancestor', previous.commit, remote);
         const parents = git('rev-list', '--parents', '-n', '1', remote).split(' ');
         const metadata = api<{ verification: { verified: boolean } }>(
           `repos/${repository()}/git/commits/${remote}`,
         );
         if (
           parents.length !== 2 ||
-          parents[1] !== previous.commit ||
           !metadata.verification.verified ||
-          git('diff', '--name-only', previous.commit, remote) !== manifestPath
+          git('diff', '--name-only', parents[1], remote) !== manifestPath
         )
           throw new Error(
             'Orphaned rolling metadata commit is not a verified candidate-only change',
@@ -608,12 +633,16 @@ function stage(runtime: string, version: string) {
   }
   if (!remote && !ownerRecord) reserve(ownerTag, candidate);
   if (open[0] && remote !== expectedHead) throw new Error('Rolling PR changed during staging');
-  assertBaseline(candidate);
+  if (assertBaseline(candidate)) {
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, 'deferred=true\n');
+    return;
+  }
+  reserve(`ota-proposal-base/${candidate.tag}/${proposalBase}`, candidate, proposalBase);
   git(
     'push',
     `--force-with-lease=refs/heads/${branch}:${remote}`,
     'origin',
-    `${commit}:refs/heads/${branch}`,
+    `${proposalBase}:refs/heads/${branch}`,
   );
   const contents = Buffer.from(`${JSON.stringify(candidate, null, 2)}\n`).toString('base64');
   const query =
@@ -627,7 +656,7 @@ function stage(runtime: string, version: string) {
     '-f',
     `branch=${branch}`,
     '-f',
-    `expected=${commit}`,
+    `expected=${proposalBase}`,
     '-f',
     `message=chore(release): production mobile OTA ${candidate.version}`,
     '-f',
@@ -642,7 +671,18 @@ function stage(runtime: string, version: string) {
   const bodyFile = `${process.env.RUNNER_TEMP}/mobile-ota-pr.md`;
   writeFileSync(bodyFile, body);
   let number = open[0]?.number;
-  if (number) gh('pr', 'edit', String(number), '--title', title, '--body-file', bodyFile);
+  if (number)
+    gh(
+      'pr',
+      'edit',
+      String(number),
+      '--title',
+      title,
+      '--body-file',
+      bodyFile,
+      '--add-label',
+      'production',
+    );
   else
     number = Number(
       gh(
@@ -656,6 +696,8 @@ function stage(runtime: string, version: string) {
         title,
         '--body-file',
         bodyFile,
+        '--label',
+        'production',
       )
         .split('/')
         .at(-1),
@@ -716,6 +758,13 @@ function stage(runtime: string, version: string) {
       continue;
     }
     gh('pr', 'close', String(pr.number));
+  }
+  // An approval can merge after the last check. Keep recovery durable even
+  // when the proposal was written against a main tip that has since moved.
+  git('fetch', 'origin', 'main:refs/remotes/origin/main');
+  if (git('rev-parse', 'origin/main') !== proposalBase || assertBaseline(candidate)) {
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, 'deferred=true\n');
+    gh('workflow', 'run', 'mobile-ota.yml', '--ref', 'main');
   }
   appendFileSync(
     process.env.GITHUB_STEP_SUMMARY ?? '/dev/null',
@@ -813,6 +862,26 @@ function finishRelease(candidate: Artifact, staging = false) {
     `${candidate.notes.map((note) => `- ${note}`).join('\n')}\n\nEAS group: ${candidate.group}\nSource: ${candidate.commit}\nRuntime: ${candidate.runtime}\n`,
   );
   const releases = releaseRows();
+  // Creating a published prerelease is atomic. Editing an existing release
+  // could race with Production delivery and demote it back to Staging.
+  if (staging) {
+    const existing = releases.find((release) => release.tag_name === candidate.tag);
+    if (existing?.draft)
+      throw new Error('Existing OTA draft requires reconciliation before Staging can complete');
+    if (!existing)
+      gh(
+        'release',
+        'create',
+        candidate.tag,
+        '--prerelease',
+        '--title',
+        `Mobile ${candidate.version} (OTA)`,
+        '--notes-file',
+        notesFile,
+        '--latest=false',
+      );
+    return;
+  }
   if (!releases.some((release) => release.tag_name === candidate.tag))
     gh(
       'release',

@@ -1,19 +1,14 @@
 {
   "schema": 1,
-  "version": "1.60.2",
+  "version": "1.60.3",
   "runtime": "1.60.0",
   "channel": "production",
-  "commit": "bf704a734bb0fcf2001521c71e34d68ede02ce7a",
-  "tag": "mobile-v1.60.2",
-  "branch": "staging-mobile-v1.60.2-bf704a734bb0fcf2001521c71e34d68ede02ce7a",
-  "baseline": "mobile-v1.60.1",
-  "group": "ce05a6d7-16a3-47c8-aaee-a523acd0d4c7",
+  "commit": "91e5b3c820ccb86504405d55f86415c6a477e239",
+  "tag": "mobile-v1.60.3",
+  "branch": "staging-mobile-v1.60.3-91e5b3c820ccb86504405d55f86415c6a477e239",
+  "baseline": "mobile-v1.60.2",
+  "group": "89272843-458d-44e7-84da-554ff4f61e9e",
   "notes": [
-    "append new sessions after manual ordering (#1368)",
-    "show feedback while starting task sessions (#1369)",
-    "add bounded interaction timing diagnostics (#1365)",
-    "keep task dictation active until save (#1366)",
-    "replace Haiku 4.5 with Haiku 5.5 (#1363)",
-    "unify plan approval and label accepted proposals (#1352)"
+    "save agent settings without shifting the screen (#1372)"
   ]
 }
