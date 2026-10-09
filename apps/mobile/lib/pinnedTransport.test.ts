@@ -93,6 +93,96 @@ import {
 } from './pinnedTransport';
 
 describe('pinned native file transport', () => {
+  it('admits two direct background reads, preserves FIFO, and lets interactive reads bypass', async () => {
+    const completions: Array<() => void> = [];
+    mockRequest.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          completions.push(() => resolve({ status: 200, headers: {}, bodyText: '' }));
+        }),
+    );
+    const fetch = createPinnedFetch('pin');
+    const requests = [1, 2, 3, 4].map((id) => fetch(`https://gate.test/${id}`));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const interactive = fetch('https://gate.test/events', {
+      transportLane: 'interactive',
+    } as RequestInit);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockRequest.mock.calls.map((call: unknown[]) => call[1])).toEqual([
+      'https://gate.test/1',
+      'https://gate.test/2',
+      'https://gate.test/events',
+    ]);
+    completions[0]!();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockRequest.mock.calls[3]![1]).toBe('https://gate.test/3');
+    completions[1]!();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockRequest.mock.calls[4]![1]).toBe('https://gate.test/4');
+    for (const finish of completions.slice(2)) finish();
+    await Promise.all([...requests, interactive]);
+  });
+
+  it('removes aborted queued reads and shares admission with downloads', async () => {
+    const completions: Array<() => void> = [];
+    mockRequest.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          completions.push(() => resolve({ status: 200, headers: {}, bodyText: '' }));
+        }),
+    );
+    mockDownload.mockResolvedValue({ status: 200, uri: 'file:///saved' });
+    const fetch = createPinnedFetch('pin');
+    const first = fetch('https://abort-gate.test/1');
+    const second = fetch('https://abort-gate.test/2');
+    const controller = new AbortController();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const queued = fetch('https://abort-gate.test/3', { signal: controller.signal });
+    const rejected = expect(queued).rejects.toHaveProperty('name', 'AbortError');
+    const download = downloadPinnedFile({
+      url: 'https://abort-gate.test/file',
+      destination: 'file:///saved',
+      tlsPin: 'pin',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockDownload).not.toHaveBeenCalled();
+    controller.abort();
+    await rejected;
+    completions[0]!();
+    await expect(download).resolves.toBe('file:///saved');
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+    completions[1]!();
+    await Promise.all([first, second]);
+  });
+
+  it('keeps host queues independent and releases admission after native failure', async () => {
+    const finish: Array<(failed?: boolean) => void> = [];
+    mockRequest.mockImplementation(
+      () =>
+        new Promise((resolve, reject) => {
+          finish.push((failed) =>
+            failed
+              ? reject(new Error('failed read'))
+              : resolve({ status: 200, headers: {}, bodyText: '' }),
+          );
+        }),
+    );
+    const fetch = createPinnedFetch('pin');
+    const failed = fetch('https://release-gate.test/1');
+    const failure = expect(failed).rejects.toHaveProperty('name', 'VerityConnectionError');
+    const second = fetch('https://release-gate.test/2');
+    const queued = fetch('https://release-gate.test/3');
+    const other = fetch('https://other-gate.test/1');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockRequest).toHaveBeenCalledTimes(3);
+    finish[0]!(true);
+    await failure;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockRequest.mock.calls[3]![1]).toBe('https://release-gate.test/3');
+    for (const complete of finish.slice(1)) complete();
+    await Promise.all([second, queued, other]);
+  });
+
   beforeEach(() => {
     mockRequest.mockReset();
     mockRequestV2.mockReset();
@@ -258,6 +348,57 @@ describe('pinned native file transport', () => {
 
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     expect(mockRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains a cold route verdict that clears while a background read waits for admission', async () => {
+    const occupied: Array<() => void> = [];
+    let cancelRead!: () => void;
+    let finishProbe!: (outcome: string) => void;
+    const probe = new Promise<string>((resolve) => {
+      finishProbe = resolve;
+    });
+    mockRemotePort.mockResolvedValueOnce(0).mockResolvedValueOnce(4321);
+    mockDirectVerdict.mockReturnValue(probe);
+    mockRequest.mockImplementation(
+      (
+        _id: string,
+        url: string,
+        _method: string,
+        _headers: unknown,
+        _body: unknown,
+        _pin: string,
+        port: number,
+      ) => {
+        if (url.endsWith('/occupied'))
+          return new Promise((resolve) => {
+            occupied.push(() => resolve({ status: 200, headers: {}, bodyText: '' }));
+          });
+        if (port > 0) return Promise.resolve({ status: 200, headers: {}, bodyText: '' });
+        return new Promise((_resolve, reject) => {
+          cancelRead = () =>
+            reject(new Error('Pinned TLS transport failed [NSURLErrorDomain:-1003]'));
+        });
+      },
+    );
+    mockCancelRequest.mockImplementation(() => {
+      cancelRead();
+      return Promise.resolve();
+    });
+    const direct = createPinnedFetch('pin');
+    const first = direct('https://cold-queue.test/occupied');
+    const second = direct('https://cold-queue.test/occupied');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const queued = createPinnedFetch('pin', true)('https://cold-queue.test/branches');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockRequest).toHaveBeenCalledTimes(2);
+    finishProbe('dead');
+    mockDirectVerdict.mockReturnValue(null);
+    occupied[0]!();
+    await expect(queued).resolves.toMatchObject({ status: 200 });
+    expect(mockCancelRequest).not.toHaveBeenCalled();
+    expect(mockRequest.mock.calls[2]![6]).toBe(4321);
+    occupied[1]!();
+    await Promise.all([first, second]);
   });
 
   it('recovers a read that the untested direct route lost through Uplink', async () => {
@@ -495,33 +636,23 @@ describe('pinned native file transport', () => {
     }
   });
 
-  it('reports the probe refusal for a read it cancelled', async () => {
+  it('reports an already-completed probe refusal without dispatching a doomed native read', async () => {
     mockDirectVerdict.mockReturnValue(Promise.resolve('dead'));
     mockDirectRefusal.mockReturnValue(
       'Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]',
     );
-    let failDirect!: (error: Error) => void;
-    mockRequest.mockImplementationOnce(
-      () =>
-        new Promise((_resolve, reject) => {
-          failDirect = reject;
-        }),
-    );
-    mockCancelRequest.mockImplementation(async () => {
-      failDirect(
-        new Error('Pinned TLS transport failed [NSURLErrorDomain:-999:NO_AUTH_CHALLENGE]'),
-      );
-    });
     mockRemotePort.mockResolvedValue(0);
     mockRemoteFailure.mockReturnValue('admission (Remote admission failed: unavailable.)');
 
-    // The cancellation is the app's own doing; the screen must name the refusal.
+    // An expired probe still supplies its refusal instead of a generic transport error.
     await expect(
       createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://verity.example/sessions'),
     ).rejects.toMatchObject({
       message:
         'Uplink admission (Remote admission failed: unavailable.) and direct Core request failed: Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE]',
     });
+    expect(mockRequest).not.toHaveBeenCalled();
+    expect(mockCancelRequest).not.toHaveBeenCalled();
   });
 
   it('never replays a failed direct mutation through Uplink', async () => {
@@ -846,6 +977,7 @@ it('correlates pinned dispatch and native return with the originating switch', a
     'pinned-entry',
     'body-encoded',
     'route-ready',
+    'lane-admitted',
     'native-dispatch',
     'native-return',
   ]);
