@@ -17,6 +17,7 @@ type NativeResponse = {
 } & ({ bodyBase64: string; bodyText?: never } | { bodyText: string; bodyBase64?: never });
 
 interface NativePinnedTransport {
+  supportsTransportLanes?: () => boolean;
   exportTransportTimings?: () => { records: unknown[]; omitted: number };
   request(
     requestId: string,
@@ -235,6 +236,11 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       throw new Error('Request objects are not supported by the pinned transport.');
     const url = String(input);
     const headers = Object.fromEntries(new Headers(init.headers).entries());
+    // Older native bridges forward every header, so only send lane metadata to
+    // builds that strip it before creating the network request.
+    if (native().supportsTransportLanes?.()) {
+      headers['x-verity-transport-lane'] = init.transportLane ?? 'background';
+    }
     const fileUri =
       typeof init.body === 'object' &&
       init.body !== null &&

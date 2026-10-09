@@ -81,11 +81,14 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
   private func performRequest(
     id: String, request: URLRequest, tlsPin: String, proxyPort: Int, upload: URL? = nil, timing: PinnedTransportTiming? = nil
   ) async throws -> (Data, HTTPURLResponse) {
+    let lane = PinnedHTTPTransportLane(headers: request.allHTTPHeaderFields ?? [:])
+    var request = request
+    PinnedHTTPTransportLane.removeHeader(from: &request)
     guard let origin = request.url else { throw PinnedTransportError.invalidURL }
     let delegate = try CertificatePinDelegate(pin: tlsPin, origin: origin)
     delegate.transportTiming = timing
     let lease = try httpPool.acquire(
-      origin: origin, pin: tlsPin, proxyPort: proxyPort, proxyMode: currentProxyMode())
+      origin: origin, pin: tlsPin, proxyPort: proxyPort, proxyMode: currentProxyMode(), lane: lane)
     defer { lease.release() }
     let record = PinnedHTTPRequest(delegate: delegate)
     let result: (Data, URLResponse)
@@ -211,6 +214,8 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
         tlsPin: tlsPin, proxyPort: proxyPort, preferText: true)
     }
 
+    Function("supportsTransportLanes") { true }
+
     AsyncFunction("download") {
       (url: String, headers: [String: String], destination: String, tlsPin: String, proxyPort: Int) async throws
         -> [String: Any] in
@@ -221,9 +226,11 @@ class VerityPinnedTransport: Module, @unchecked Sendable {
       else { throw PinnedTransportError.invalidURL }
       var request = URLRequest(url: target)
       for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+      let lane = PinnedHTTPTransportLane(headers: headers)
+      PinnedHTTPTransportLane.removeHeader(from: &request)
       let delegate = try CertificatePinDelegate(pin: tlsPin, origin: target)
       let lease = try self.httpPool.acquire(
-        origin: target, pin: tlsPin, proxyPort: proxyPort, proxyMode: self.currentProxyMode())
+        origin: target, pin: tlsPin, proxyPort: proxyPort, proxyMode: self.currentProxyMode(), lane: lane)
       defer { lease.release() }
       let (temporaryURL, response) = try await lease.session.download(for: request, delegate: delegate)
       guard let http = response as? HTTPURLResponse else { throw PinnedTransportError.nonHTTPResponse }
