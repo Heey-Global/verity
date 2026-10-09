@@ -46,6 +46,7 @@ export function meetingQuestionChecks(options: {
     controller?: AbortController | undefined;
     running: boolean;
     checked: string;
+    reconciled: string;
     attempts: Map<string, number>;
   };
   const states = new Map<string, State>();
@@ -53,8 +54,12 @@ export function meetingQuestionChecks(options: {
   let running = 0;
   const schedule = (state: State, delay = options.delayMs ?? 1500) => {
     if (closed || state.timer || state.running || !options.query) return;
-    const text = questionWindow(state.meeting.transcript);
-    if (!text || text === state.checked || (state.attempts.get(text) ?? 0) >= 3) return;
+    const text = questionWindow(state.meeting.transcript) ?? '';
+    if (
+      (text === state.checked && state.meeting.transcript === state.reconciled) ||
+      (state.attempts.get(text) ?? 0) >= 3
+    )
+      return;
     state.timer = setTimeout(() => {
       state.timer = undefined;
       void run(state);
@@ -67,8 +72,8 @@ export function meetingQuestionChecks(options: {
       return;
     }
     const meeting = state.meeting;
-    const text = questionWindow(meeting.transcript);
-    if (!text || !options.query || closed) return;
+    const text = questionWindow(meeting.transcript) ?? '';
+    if (!options.query || closed) return;
     state.running = true;
     running += 1;
     state.attempts.set(text, (state.attempts.get(text) ?? 0) + 1);
@@ -79,6 +84,20 @@ export function meetingQuestionChecks(options: {
     const timeout = setTimeout(() => controller.abort(), 20_000);
     timeout.unref();
     try {
+      if (!text || text === state.checked) {
+        await options.store.liveMeetings.reconcileQuestions(
+          meeting.sessionId,
+          meeting.id,
+          meeting.revision,
+        );
+        if (!closed) {
+          state.reconciled = meeting.transcript;
+          state.checked = text;
+          state.attempts.delete(text);
+          await options.onUpdated?.(state.meeting);
+        }
+        return;
+      }
       const known = (
         (await options.store.liveMeetings.insights(meeting.sessionId, meeting.id)) ?? []
       )
@@ -97,7 +116,11 @@ export function meetingQuestionChecks(options: {
       ].join('\n\n');
       const queryAt = Date.now();
       const raw = await options.query(meeting.sessionId, prompt, controller.signal);
-      if (closed || controller.signal.aborted || questionWindow(state.meeting.transcript) !== text)
+      if (
+        closed ||
+        controller.signal.aborted ||
+        (questionWindow(state.meeting.transcript) ?? '') !== text
+      )
         return;
       if (!raw || raw.length > 100_000) throw new Error('Invalid question check response');
       const { questions } = resultSchema.parse(
@@ -128,9 +151,16 @@ export function meetingQuestionChecks(options: {
           true,
         );
       }
+      await options.store.liveMeetings.reconcileQuestions(
+        meeting.sessionId,
+        meeting.id,
+        meeting.revision,
+      );
+      state.reconciled = meeting.transcript;
       await options.onUpdated?.(state.meeting);
       options.onTiming?.({ queueMs: queryAt - state.queuedAt, modelMs: Date.now() - queryAt });
       state.checked = text;
+      state.attempts.delete(text);
     } catch (error) {
       if (!closed) options.onError(error);
     } finally {
@@ -153,11 +183,25 @@ export function meetingQuestionChecks(options: {
           if (!removable) return;
           states.delete(removable[0]);
         }
-        state = { meeting, queuedAt: Date.now(), running: false, checked: '', attempts: new Map() };
+        state = {
+          meeting,
+          queuedAt: Date.now(),
+          running: false,
+          checked: '',
+          reconciled: '',
+          attempts: new Map(),
+        };
         states.set(meeting.id, state);
       } else {
+        const changed =
+          questionWindow(state.meeting.transcript) !== questionWindow(meeting.transcript) ||
+          !meeting.transcript.startsWith(state.meeting.transcript);
+        if (changed && state.timer) {
+          clearTimeout(state.timer);
+          state.timer = undefined;
+        }
         state.meeting = meeting;
-        state.queuedAt = Date.now();
+        if (changed) state.queuedAt = Date.now();
       }
       schedule(state);
     },

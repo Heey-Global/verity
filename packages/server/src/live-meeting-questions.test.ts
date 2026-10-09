@@ -26,7 +26,13 @@ function setup(
   const addInsight = vi.fn().mockResolvedValue(true);
   const onError = vi.fn();
   const controller = meetingQuestionChecks({
-    store: { liveMeetings: { insights, addInsight } } as unknown as EventStore,
+    store: {
+      liveMeetings: {
+        insights,
+        addInsight,
+        reconcileQuestions: vi.fn().mockResolvedValue(undefined),
+      },
+    } as unknown as EventStore,
     query,
     delayMs: 10,
     onError,
@@ -167,4 +173,17 @@ it('bounds concurrent checks across meetings and resumes queued work', async () 
   s.controller.close();
   for (const finish of finishes) finish(JSON.stringify({ questions: [] }));
   await vi.advanceTimersByTimeAsync(1);
+});
+
+it('postpones classification until changed transcript text settles', async () => {
+  vi.useFakeTimers();
+  const s = setup();
+  s.controller.ingest(meeting('Was kostet.'));
+  await vi.advanceTimersByTimeAsync(9);
+  s.controller.ingest(meeting('Was kostet. Der Plan?', 2));
+  await vi.advanceTimersByTimeAsync(9);
+  expect(s.query).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(s.query).toHaveBeenCalledTimes(1);
+  s.controller.close();
 });

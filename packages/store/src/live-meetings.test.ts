@@ -268,3 +268,34 @@ describe('live meeting sync', () => {
     expect(await ctx.store.liveMeetings.putNote('session-2', { ...note, revision: 2 })).toBe(false);
   });
 });
+
+it('retracts corrected question evidence without removing claims or another session’s insights', async () => {
+  await ctx.store.liveMeetings.putMeeting({
+    ...meeting,
+    transcript: 'What is the price? A factual claim.',
+  });
+  for (const id of ['question-price', 'claim-price'])
+    await ctx.store.liveMeetings.addInsight('session-1', {
+      id,
+      meetingId: meeting.id,
+      kind: 'research',
+      summary: 'Check the price',
+      evidenceA: 'What is the price?',
+      evidenceB: null,
+      sourcePath: null,
+      createdAt: 1,
+    });
+  await ctx.store.liveMeetings.putMeeting({
+    ...meeting,
+    revision: 2,
+    transcript: 'The price is settled. A factual claim.',
+  });
+  await ctx.store.liveMeetings.reconcileQuestions('session-2', meeting.id, 2);
+  expect(await ctx.store.liveMeetings.insights('session-1', meeting.id)).toHaveLength(2);
+  await ctx.store.liveMeetings.reconcileQuestions('session-1', meeting.id, 1);
+  expect(await ctx.store.liveMeetings.insights('session-1', meeting.id)).toHaveLength(2);
+  await ctx.store.liveMeetings.reconcileQuestions('session-1', meeting.id, 2);
+  expect(await ctx.store.liveMeetings.insights('session-1', meeting.id)).toEqual([
+    expect.objectContaining({ id: 'claim-price' }),
+  ]);
+});

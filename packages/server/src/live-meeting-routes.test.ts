@@ -711,6 +711,17 @@ it('persists immediate question checks and reuses their identity after recogniti
     expect(all).toHaveLength(1);
     expect(all[0]?.id).toBe(first.id);
     expect(query).toHaveBeenCalledTimes(2);
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, revision: 3, transcript: 'Der Preis steht bereits fest.' },
+    });
+    await vi.waitFor(
+      async () =>
+        expect(await ctx.store.liveMeetings.insights('session-1', 'meeting-1')).toHaveLength(0),
+      { timeout: 5000 },
+    );
+    expect(query).toHaveBeenCalledTimes(2);
   } finally {
     await checked.close();
   }

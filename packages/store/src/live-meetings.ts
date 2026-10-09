@@ -87,6 +87,35 @@ export class LiveMeetingStore {
     return true;
   }
 
+  /** Remove question suggestions invalidated by recognition corrections, under the meeting lock. */
+  async reconcileQuestions(sessionId: string, meetingId: string, revision: number): Promise<void> {
+    await this.db.transaction().execute(async (trx) => {
+      const meeting = await trx
+        .selectFrom('live_meetings')
+        .select(['transcript', 'revision'])
+        .where('id', '=', meetingId)
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!meeting || Number(meeting.revision) !== revision) return;
+      const questions = await trx
+        .selectFrom('live_meeting_insights')
+        .select(['id', 'evidence_a'])
+        .where('meeting_id', '=', meetingId)
+        .where('id', 'like', 'question-%')
+        .execute();
+      const removed = questions
+        .filter((question) => !meeting.transcript.includes(question.evidence_a))
+        .map(({ id }) => id);
+      if (removed.length)
+        await trx
+          .deleteFrom('live_meeting_insights')
+          .where('meeting_id', '=', meetingId)
+          .where('id', 'in', removed)
+          .execute();
+    });
+  }
+
   async insights(sessionId: string, meetingId: string): Promise<LiveMeetingInsight[] | null> {
     const meeting = await this.db
       .selectFrom('live_meetings')
