@@ -551,6 +551,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       lock.withLock {
         stream.incomingEnded = true
         if stream.endedBy == "open" { stream.endedBy = "remote"; stream.endedAt = Date() }
+        retainDiagnosticStream(stream)
       }
       enqueue(Data(), to: stream, id: id, complete: true)
     case "stream.reset":

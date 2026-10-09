@@ -105,11 +105,15 @@ struct DiagnosticsTest {
     precondition(streamEvents[3]["event"] as? String == "stream_stalled")
     // An idle remote half must not leave a local EOF reported as open at expiry.
     streamRecorder.retainStream(stream(id, sent: 1526, endedBy: .local))
+    // Remote EOF must survive expiry even while local delivery remains blocked.
+    let remoteId = String(format: "%032X", 1)
+    streamRecorder.retainStream(stream(remoteId, endedBy: .remote))
     time += 121
     streamRecorder.retainStream(stream(id, sent: 9999))
     let expiredState = try JSONSerialization.jsonObject(with: Data(streamRecorder.export()!.utf8)) as! [String: Any]
     precondition((expiredState["streams"] as! [[String: Any]])[0]["sentBytes"] as? Int == 1526)
     precondition((expiredState["streams"] as! [[String: Any]])[0]["endedBy"] as? String == "local")
+    precondition((expiredState["streams"] as! [[String: Any]])[1]["endedBy"] as? String == "remote")
     let invalidRecorder = RemoteDataDiagnostics()
     invalidRecorder.enable(startedLate: false, delegateAvailable: true)
     invalidRecorder.retainStream(stream("private-url?ticket=secret"))
