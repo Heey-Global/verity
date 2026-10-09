@@ -1,9 +1,22 @@
+import { VerityApiError } from '@verity/mobile';
 import { liveMeetingSTT, type STTEvent, type STTEngineId } from './liveMeetingSTT';
 import { createVerityClient, getVerityBaseUrl } from './client';
 import { isDemoMode, isEnteringDemoMode } from './demoMode';
 import { registerMeetingCaptureStatus } from './meetingCaptureStatus';
 import { meetingRequestId, meetingRequestPrompt, researchPrompt } from './liveMeetingInsights';
 import { VoiceMeetingCommandDetector, type VoiceMeetingCommand } from './liveMeetingVoice';
+import {
+  meetingTranscriptRows,
+  resolvedSpeaker,
+  wordsFromRuns,
+  type SpeakerLine,
+} from './liveMeetingSpeakers';
+import {
+  MAX_CHECKS,
+  MIN_INTERVAL_MS,
+  nextSpeakerNameCheck,
+  type SpeakerNameHistory,
+} from './liveMeetingNames';
 import {
   applySTTEvent,
   emptySTTTranscript,
@@ -139,6 +152,170 @@ async function sendVoiceRequest(
   }
 }
 
+// Speaker name suggestions: one model check at a time, per meeting.
+const nameHistory = new Map<number, SpeakerNameHistory>();
+const rejectedSpeakers = new Set<number>();
+let nameCheckTimer: ReturnType<typeof setTimeout> | null = null;
+let nameCheckRunning = false;
+let nameCheckGeneration = 0;
+let nameChecksUnavailable = false;
+let lastNameScanAt = 0;
+
+function resetSpeakerNameChecks() {
+  nameCheckGeneration += 1;
+  nameCheckRunning = false;
+  nameHistory.clear();
+  rejectedSpeakers.clear();
+  if (nameCheckTimer) clearTimeout(nameCheckTimer);
+  nameCheckTimer = null;
+  nameChecksUnavailable = false;
+  lastNameScanAt = 0;
+}
+
+function scheduleSpeakerNameCheck(delayMs = 1500) {
+  if (nameCheckTimer || nameCheckRunning || nameChecksUnavailable) return;
+  // Word events arrive every few seconds; one transcript scan per five seconds is enough.
+  delayMs = Math.max(delayMs, lastNameScanAt + 5_000 - Date.now());
+  // Settles a burst of word and turn events into one look at the transcript.
+  nameCheckTimer = setTimeout(() => {
+    nameCheckTimer = null;
+    void runSpeakerNameCheck();
+  }, delayMs);
+}
+
+async function runSpeakerNameCheck(): Promise<void> {
+  const meeting = active;
+  if (
+    !meeting ||
+    meeting.state !== 'active' ||
+    meeting.engine === 'attendee' ||
+    meeting.serverId === null ||
+    !recordingServerUrl ||
+    getVerityBaseUrl() !== recordingServerUrl
+  )
+    return;
+  const client = createVerityClient();
+  if (!client) return;
+  lastNameScanAt = Date.now();
+  // A named speaker is never checked again: a name typed or confirmed by the operator
+  // stays, whatever anyone says later.
+  const skip = new Set([
+    ...Object.keys(meeting.speakerNames ?? {}).map(Number),
+    ...(meeting.speakerNameSuggestions ?? []).map((suggestion) => suggestion.speaker),
+    ...rejectedSpeakers,
+  ]);
+  // Rebuilding the transcript costs time on the JS thread in a long meeting; skip it
+  // once every speaker heard so far is named, waiting, rejected or out of checks.
+  const resolve = (speaker: number) => resolvedSpeaker(speaker, meeting.speakerMerges ?? {});
+  if (
+    (meeting.speakerTurns ?? []).every((turn) => {
+      const speaker = resolve(turn.speaker);
+      return (
+        speaker === null ||
+        skip.has(speaker) ||
+        (nameHistory.get(speaker)?.checks ?? 0) >= MAX_CHECKS
+      );
+    })
+  )
+    return;
+  // Open turns may still be reassigned; a name card must not follow a guess.
+  const finalizedThrough = Math.max(0, ...(meeting.speakerTurns ?? []).map((turn) => turn.end));
+  const lines = meetingTranscriptRows({
+    ...meeting,
+    tentativeSpeakerTurns: [],
+    speakerHorizon: finalizedThrough,
+  }).filter((row): row is SpeakerLine => 'start' in row);
+  const now = Date.now();
+  const check = nextSpeakerNameCheck(lines, skip, nameHistory, now);
+  if (!check) {
+    // A speaker held back by the interval would otherwise wait for the next word event,
+    // which may never come once the meeting falls quiet.
+    const waits = [...nameHistory.values()]
+      .map((entry) => entry.lastAt + MIN_INTERVAL_MS - now)
+      .filter((wait) => wait > 0);
+    if (waits.length) scheduleSpeakerNameCheck(Math.min(...waits) + 100);
+    return;
+  }
+  const previous = nameHistory.get(check.speaker);
+  nameHistory.set(check.speaker, {
+    openingChecked: (previous?.openingChecked ?? false) || check.opening,
+    checkedThrough: Math.max(previous?.checkedThrough ?? -Infinity, check.through),
+    checks: (previous?.checks ?? 0) + 1,
+    lastAt: Date.now(),
+  });
+  const generation = nameCheckGeneration;
+  nameCheckRunning = true;
+  try {
+    const result = await client.checkMeetingSpeakerName(meeting.sessionId, meeting.id, {
+      text: check.text,
+      hints: [],
+    });
+    const name = result.name;
+    if (
+      generation !== nameCheckGeneration ||
+      !name ||
+      !result.quote ||
+      active?.id !== meeting.id ||
+      active.state !== 'active'
+    )
+      return;
+    if (active.speakerNames?.[check.speaker] !== undefined) return;
+    if (rejectedSpeakers.has(check.speaker)) return;
+    active = {
+      ...active,
+      speakerNameSuggestions: [
+        ...(active.speakerNameSuggestions ?? []).filter(
+          (suggestion) => suggestion.speaker !== check.speaker,
+        ),
+        { speaker: check.speaker, name, quote: result.quote },
+      ],
+    };
+    publish();
+  } catch (error) {
+    // A check answered after the next meeting started must not touch its state.
+    if (generation !== nameCheckGeneration || active?.id !== meeting.id) return;
+    const status = error instanceof VerityApiError ? error.status : null;
+    // No model, an older server without the route, or no right to spend one: stop.
+    if (status === 403 || status === 404 || status === 503) {
+      nameChecksUnavailable = true;
+      return;
+    }
+    // Ask about the same words again after the interval rather than losing them. Only
+    // a check refused for being concurrent is free; other failures spend the budget,
+    // so a persistent one cannot repeat for the whole meeting.
+    nameHistory.set(check.speaker, {
+      openingChecked: previous?.openingChecked ?? false,
+      checkedThrough: previous?.checkedThrough ?? -Infinity,
+      checks: (previous?.checks ?? 0) + (status === 429 ? 0 : 1),
+      lastAt: Date.now(),
+    });
+  } finally {
+    if (generation === nameCheckGeneration) nameCheckRunning = false;
+    // Another speaker may be waiting.
+    if (generation === nameCheckGeneration && active?.id === meeting.id) scheduleSpeakerNameCheck();
+  }
+}
+
+/** Removes a name suggestion; after a rejection that speaker is not checked again. */
+export function clearSpeakerNameSuggestion(
+  meetingId: string,
+  speaker: number,
+  rejected: boolean,
+): void {
+  if (active?.id !== meetingId) return;
+  const suggestion = active.speakerNameSuggestions?.find((item) => item.speaker === speaker);
+  if (!suggestion) return;
+  // After a rejection the operator names this speaker; asking again would only repeat it.
+  if (rejected) rejectedSpeakers.add(speaker);
+  active = {
+    ...active,
+    speakerNameSuggestions: (active.speakerNameSuggestions ?? []).filter(
+      (item) => item.speaker !== speaker,
+    ),
+  };
+  publish();
+}
+
 function publish() {
   for (const listener of listeners) listener(active);
 }
@@ -222,6 +399,7 @@ function onEvent(event: STTEvent) {
     const id = active.id;
     active = { ...active, timedWords: next };
     publish();
+    scheduleSpeakerNameCheck();
     void enqueueWrite(() => saveTimedWords(id, next)).catch(() => {
       if (active?.id === id) {
         active = { ...active, speakerStatus: 'unavailable' };
@@ -265,12 +443,47 @@ function onEvent(event: STTEvent) {
       lastSpeakerAt: Date.now(),
     };
     publish();
+    scheduleSpeakerNameCheck();
     void enqueueWrite(() => saveSpeakerTurns(id, next)).catch(() => {
       if (active?.id === id) {
         active = { ...active, speakerStatus: 'unavailable' };
         publish();
       }
     });
+    return;
+  }
+  if (event.kind === 'speaker-tentative') {
+    const limit = (active.expectedParticipants ?? 4) > 4 ? 10 : 4;
+    const turns = event.turns.filter(
+      (turn) =>
+        Number.isInteger(turn.speaker) &&
+        turn.speaker >= 0 &&
+        turn.speaker < limit &&
+        Number.isFinite(turn.start) &&
+        Number.isFinite(turn.end) &&
+        turn.start >= 0 &&
+        turn.end > turn.start,
+    );
+    const current = turns.reduce<(typeof turns)[number] | undefined>(
+      (latest, turn) => (!latest || turn.end > latest.end ? turn : latest),
+      undefined,
+    );
+    const previousHorizon = active.speakerHorizon ?? -Infinity;
+    const horizon = Number.isFinite(event.through) ? event.through : previousHorizon;
+    // This arrives with every diarizer chunk. Redraw only when it changes what the
+    // transcript shows: different open turns, or the horizon reaching a waiting word.
+    const changed =
+      JSON.stringify(turns) !== JSON.stringify(active.tentativeSpeakerTurns ?? []) ||
+      (active.timedWords ?? []).some(
+        (word) => word.start >= previousHorizon && word.start < horizon,
+      );
+    active = {
+      ...active,
+      tentativeSpeakerTurns: turns,
+      ...(Number.isFinite(horizon) ? { speakerHorizon: horizon } : {}),
+      ...(current && changed ? { activeSpeaker: current.speaker, lastSpeakerAt: Date.now() } : {}),
+    };
+    if (changed) publish();
     return;
   }
   if (event.kind === 'words') {
@@ -330,8 +543,12 @@ function onEvent(event: STTEvent) {
     }
     return;
   }
-  if (event.kind === 'segment' && event.final)
-    recordWords([{ text: event.text, start: event.start, end: event.end }]);
+  if (event.kind === 'segment' && event.final) {
+    // Per-word timing lets a phrase spoken with pauses keep its speaker; older native
+    // builds send only the phrase range.
+    const words = event.runs ? wordsFromRuns(event.runs) : [];
+    recordWords(words.length ? words : [{ text: event.text, start: event.start, end: event.end }]);
+  }
   transcript = applySTTEvent(transcript, event);
   const text = transcriptText(transcript);
   const id = active.id;
@@ -371,17 +588,20 @@ export async function updateSpeakerEdits(
   corrections: SpeakerCorrection[],
   merges: Record<string, number>,
 ): Promise<void> {
+  await enqueueWrite(() => saveSpeakerEdits(meetingId, names, corrections, merges));
   if (active?.id === meetingId) {
     active = {
       ...active,
       speakerNames: names,
       speakerCorrections: corrections,
       speakerMerges: merges,
+      // A name given by the operator supersedes any suggestion for that speaker.
+      speakerNameSuggestions: (active.speakerNameSuggestions ?? []).filter(
+        (suggestion) =>
+          names[suggestion.speaker] === undefined && merges[suggestion.speaker] === undefined,
+      ),
     };
     publish();
-    await enqueueWrite(() => saveSpeakerEdits(meetingId, names, corrections, merges));
-  } else {
-    await saveSpeakerEdits(meetingId, names, corrections, merges);
   }
 }
 
@@ -442,6 +662,7 @@ async function startMeetingUnlocked(
   }
   const meeting = await createMeeting(sessionId, engine, expectedParticipants);
   active = meeting;
+  resetSpeakerNameChecks();
   transcript = emptySTTTranscript;
   stopVoiceDetector();
   recordingServerUrl = getVerityBaseUrl();

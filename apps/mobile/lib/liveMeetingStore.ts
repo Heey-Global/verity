@@ -23,10 +23,22 @@ export interface MeetingRecord {
   speakerStatus?: 'loading' | 'ready' | 'unavailable';
   activeSpeaker?: number;
   lastSpeakerAt?: number;
+  /** In memory only: open diarizer turns that may still change. */
+  tentativeSpeakerTurns?: SpeakerTurn[];
+  /** In memory only: audio seconds the diarizer has processed through. */
+  speakerHorizon?: number;
+  /** In memory only: names speakers introduced themselves with, awaiting confirmation. */
+  speakerNameSuggestions?: SpeakerNameSuggestion[];
   error: string | null;
   ownerToken?: string | null;
   revision?: number;
   syncedRevision?: number;
+}
+
+interface SpeakerNameSuggestion {
+  speaker: number;
+  name: string;
+  quote: string;
 }
 
 export interface SpeakerTurn {

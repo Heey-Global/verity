@@ -86,3 +86,45 @@ first render entry for the active gesture. They can include an interrupted rende
 that never commits. The interval to the existing React effect markers includes
 rendering, child work, scheduling and effect execution; it is not isolated CPU
 render time or native paint. These markers share the existing collection limits.
+
+
+Render work aggregates (`render-<stage>-total-ms` and `render-<stage>-count`)
+measure synchronous work in the home body, sidebar group/row bodies, chat body,
+transcript row reconciliation and list-item element construction. Each pair takes
+two phase entries regardless of render count. `value` holds the cumulative duration
+in milliseconds or invocation count; `elapsedMs` is the first recorded sample's
+completion time, not the aggregate duration. Collection stops at the first
+`flash-list-on-load` or the existing 30-second trace limit. List completion is
+tracked independently, so a full phase buffer cannot prolong collection.
+
+Component-body intervals end before their return expression and exclude rendering
+of descendants, native layout and paint. List-item construction measures creation
+of React elements, not execution of their child components. Chat-body time includes
+transcript reconciliation, so these totals overlap and must not be added together.
+Interrupted attempts are included; renders that throw before reaching their end
+marker are not. Compare these totals with the entry/effect intervals to distinguish
+measured synchronous work from unmeasured child work and scheduling. This uses
+ordinary JavaScript clocks and works without a React profiling build.
+
+Automatic history pagination waits for the initial list's `onLoad` signal. Explicit
+message jumps can still load required pages before that signal. Saved-anchor
+restoration is unchanged: anchors outside the loaded tail fall back to latest. Verify on a device by opening a long session at the newest edge: automatic
+follow-up `events-request-start` should follow `flash-list-on-load`, and scrolling
+backwards should continue loading history. Also verify a deep saved anchor and an
+explicit message jump. Only explicit jumps may legitimately request earlier pages.
+
+### Thread scheduling probes
+
+`js-timer-lag-max-ms` records the maximum lateness of a 100 ms JavaScript timer
+from the row touch callback. It includes scheduling and garbage collection and
+does not identify the blocking function. `ui-frame-gap-max-ms` records maximum
+Reanimated UI-thread frame callback spacing from chat mount; reporting crosses
+to JavaScript at most twice per second. Its phase timestamp is report delivery,
+not the time of the delayed frame. Neither probe proves native paint completion.
+Both stop after initial list completion, supersession, backgrounding or ten
+seconds. Backgrounding ends collection rather than counting the suspended time.
+The UI probe cannot cover the interval before the chat mounts.
+
+`render-transcript-row-body` measures the synchronous row content factory;
+`render-markdown-body` includes Markdown parsing and element creation. Descendant
+components and native text layout remain outside these body measurements.

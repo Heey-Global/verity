@@ -13,8 +13,8 @@ private enum LiveSTTError: LocalizedError {
   var errorDescription: String? {
     switch self {
     case .unavailable(let reason): return reason
-    case .alreadyRunning: return "A transcription test is already running."
-    case .microphoneDenied: return "Microphone access is required for the STT test."
+    case .alreadyRunning: return "Another voice recording is active."
+    case .microphoneDenied: return "Microphone access is required for speech recognition."
     case .audioFormat: return "The microphone format could not be converted for speech recognition."
     }
   }
@@ -23,7 +23,7 @@ private enum LiveSTTError: LocalizedError {
 class VerityLiveSTT: Module {
   public func definition() -> ModuleDefinition {
     Name("VerityLiveSTT")
-    Events("onSTTEvent")
+    Events("onSTTEvent", "onDictationEvent")
 
     AsyncFunction("engines") { () async -> [[String: Any]] in
       guard #available(iOS 26.0, *) else { return [] }
@@ -41,19 +41,43 @@ class VerityLiveSTT: Module {
       }
     }
 
+    AsyncFunction("dictationLocales") { () async -> [String] in
+      guard #available(iOS 26.0, *), SpeechTranscriber.isAvailable else { return [] }
+      return await SpeechTranscriber.supportedLocales.map { $0.identifier }
+    }
+
+    AsyncFunction("startDictation") { (session: String, locale: String, vocabulary: [String]) async throws in
+      guard #available(iOS 26.0, *) else {
+        throw LiveSTTError.unavailable("Voice input requires a supported iOS device.")
+      }
+      try await LiveSTTService.shared.start(
+        engine: "apple-speech", locale: locale, vocabulary: vocabulary, participants: 0,
+        owner: session
+      ) { [weak self] event in
+        var scoped = event
+        scoped["session"] = session
+        self?.sendEvent("onDictationEvent", scoped)
+      }
+    }
+
+    AsyncFunction("stopDictation") { (session: String, abort: Bool) async throws in
+      guard #available(iOS 26.0, *) else { return }
+      try await LiveSTTService.shared.finishDictation(session: session, abort: abort)
+    }
+
     AsyncFunction("stop") { () async throws in
       guard #available(iOS 26.0, *) else { return }
-      try await LiveSTTService.shared.stop()
+      try await LiveSTTService.shared.stopMeeting()
     }
 
     AsyncFunction("pause") { () async throws in
       guard #available(iOS 26.0, *) else { return }
-      try await LiveSTTService.shared.pause()
+      try await LiveSTTService.shared.pauseMeeting()
     }
 
     AsyncFunction("resume") { () async throws in
       guard #available(iOS 26.0, *) else { return }
-      try await LiveSTTService.shared.resume()
+      try await LiveSTTService.shared.resumeMeeting()
     }
   }
 }
@@ -61,6 +85,14 @@ class VerityLiveSTT: Module {
 private struct SpeakerAudio: Sendable {
   let samples: [Float]
   let sampleRate: Double
+}
+
+private struct SpeakerUpdate: Sendable {
+  let finalized: [DiarizerSegment]
+  /// Turns still open at the end of the processed audio; replaced by the next update.
+  let tentative: [DiarizerSegment]
+  /// Audio seconds the diarizer has processed through, finalized or not.
+  let through: Double
 }
 
 private actor LiveSpeakerProcessor {
@@ -71,27 +103,62 @@ private actor LiveSpeakerProcessor {
 
   private let model: Model
 
+  // FluidAudio's default timeline turns raw frame decisions into segments with no
+  // smoothing, so every breath split a turn and words in the gaps lost their speaker.
+  // These are NeMo's CALLHOME-tuned post-processing values for streaming Sortformer
+  // v2 (diar_streaming_sortformer_4spk-v2_callhome-part1.yaml), except the minimum
+  // speech length, shortened from 0.51 s so a brief "yes" keeps its speaker.
+  private static func timelineConfig(frameDuration: Float) -> DiarizerTimelineConfig {
+    DiarizerTimelineConfig(
+      frameDurationSeconds: frameDuration,
+      onsetThreshold: 0.641,
+      offsetThreshold: 0.561,
+      onsetPadSeconds: 0.229,
+      offsetPadSeconds: 0.079,
+      minDurationOn: 0.16,
+      minDurationOff: 0.296)
+  }
+
   init(participants: Int) async throws {
+    // Frame durations come from the model and library defaults, so the smoothing
+    // values in seconds map to the right number of frames for each variant.
     if participants > 4 {
-      model = .lsEend(try await LSEENDDiarizer(variant: .dihard3))
+      let lsEend = try await LSEENDModel.loadFromHuggingFace(
+        variant: .dihard3, stepSize: .step100ms)
+      model = .lsEend(
+        try LSEENDDiarizer(
+          model: lsEend,
+          timelineConfig: Self.timelineConfig(
+            frameDuration: lsEend.metadata.frameDurationSeconds)))
     } else {
       let config = SortformerConfig.default
       let models = try await SortformerModels.loadFromHuggingFace(config: config)
-      let diarizer = SortformerDiarizer(config: config)
+      let diarizer = SortformerDiarizer(
+        config: config,
+        timelineConfig: Self.timelineConfig(
+          frameDuration: DiarizerTimelineConfig.sortformerDefault.frameDurationSeconds))
       diarizer.initialize(models: models)
       model = .sortformer(diarizer)
     }
   }
 
-  func process(_ audio: SpeakerAudio) throws -> [DiarizerSegment] {
+  func process(_ audio: SpeakerAudio) throws -> SpeakerUpdate? {
     let update: DiarizerTimelineUpdate?
+    let frameDuration: Float
     switch model {
     case .sortformer(let diarizer):
       update = try diarizer.process(samples: audio.samples, sourceSampleRate: audio.sampleRate)
+      frameDuration = diarizer.timeline.config.frameDurationSeconds
     case .lsEend(let diarizer):
       update = try diarizer.process(samples: audio.samples, sourceSampleRate: audio.sampleRate)
+      frameDuration = diarizer.timeline.config.frameDurationSeconds
     }
-    return update?.finalizedSegments ?? []
+    guard let update else { return nil }
+    let chunk = update.chunkResult
+    let frames = chunk.startFrame + chunk.finalizedFrameCount + chunk.tentativeFrameCount
+    return SpeakerUpdate(
+      finalized: update.finalizedSegments, tentative: update.tentativeSegments,
+      through: Double(Float(frames) * frameDuration))
   }
 
   func finish() throws -> [DiarizerSegment] {
@@ -126,6 +193,7 @@ private final class LiveSTTService {
   private var speakerUnavailable = false
   private var emit: (([String: Any]) -> Void)?
   private var activeEngine: String?
+  private var dictationOwner: String?
   private var generation = 0
   private var reportedOverflow = false
   private var paused = false
@@ -142,16 +210,14 @@ private final class LiveSTTService {
   }
 
   func start(
-    engine: String, locale: String, vocabulary: [String], participants: Int,
+    engine: String, locale: String, vocabulary: [String], participants: Int, owner: String? = nil,
     emit: @escaping ([String: Any]) -> Void
   ) async throws {
     guard activeEngine == nil else { throw LiveSTTError.alreadyRunning }
-    guard await AVAudioApplication.requestRecordPermission() else {
-      throw LiveSTTError.microphoneDenied
-    }
     generation += 1
     let startGeneration = generation
     activeEngine = engine
+    dictationOwner = owner
     paused = false
     reportedOverflow = false
     speakerUnavailable = false
@@ -160,6 +226,10 @@ private final class LiveSTTService {
     emit(["kind": "status", "state": "preparing", "engine": engine])
 
     do {
+      guard await AVAudioApplication.requestRecordPermission() else {
+        throw LiveSTTError.microphoneDenied
+      }
+      try ensureActive(startGeneration)
       if participants > 0 {
         emit(["kind": "speaker-status", "state": "loading"])
         speakerModelTask = Task { [weak self] in
@@ -186,7 +256,7 @@ private final class LiveSTTService {
       }
       switch engine {
       case "apple-speech":
-        try await startSpeechTranscriber(locale: locale, generation: startGeneration)
+        try await startSpeechTranscriber(locale: locale, vocabulary: vocabulary, generation: startGeneration)
       case "apple-dictation":
         try await startDictationTranscriber(
           locale: locale, vocabulary: vocabulary, generation: startGeneration)
@@ -202,17 +272,47 @@ private final class LiveSTTService {
     } catch {
       if generation == startGeneration {
         stopMicrophone()
-        await analyzer?.cancelAndFinishNow()
-        await parakeet?.cancel()
-        clear()
+        let failedAnalyzer = analyzer
+        let failedParakeet = parakeet
+        await failedAnalyzer?.cancelAndFinishNow()
+        await failedParakeet?.cancel()
+        if generation == startGeneration { clear() }
       }
       throw error
     }
   }
 
+  func stopMeeting() async throws {
+    guard dictationOwner == nil else { return }
+    try await stop()
+  }
+
+  func pauseMeeting() throws {
+    guard dictationOwner == nil else { return }
+    try pause()
+  }
+
+  func resumeMeeting() throws {
+    guard dictationOwner == nil else { return }
+    try resume()
+  }
+
+  func finishDictation(session: String, abort: Bool) async throws {
+    guard dictationOwner == session else { return }
+    if !abort { try await stop(); return }
+    generation += 1
+    stopMicrophone()
+    let currentAnalyzer = analyzer
+    resultsTask?.cancel()
+    processingTask?.cancel()
+    clear()
+    await currentAnalyzer?.cancelAndFinishNow()
+  }
+
   func stop() async throws {
     guard let engine = activeEngine else { return }
     generation += 1
+    let stopGeneration = generation
     let wasCapturing = audioEngine != nil
     stopMicrophone()
     if speakerProcessor == nil {
@@ -220,15 +320,18 @@ private final class LiveSTTService {
       speakerTask?.cancel()
     }
     if !wasCapturing {
-      await analyzer?.cancelAndFinishNow()
-      await parakeet?.cancel()
+      let stoppingAnalyzer = analyzer
+      let stoppingParakeet = parakeet
       resultsTask?.cancel()
-      clear()
+      await stoppingAnalyzer?.cancelAndFinishNow()
+      await stoppingParakeet?.cancel()
+      if generation == stopGeneration { clear() }
       return
     }
     do {
       // Drain every captured buffer before asking the recognizer to finalize.
       try await processingTask?.value
+      guard generation == stopGeneration else { return }
       if speakerProcessor != nil { await speakerTask?.value }
       if let speakerProcessor, !speakerUnavailable {
         if let segments = try? await speakerProcessor.finish() { emitSpeakerSegments(segments) }
@@ -246,12 +349,16 @@ private final class LiveSTTService {
         await parakeet.cancel()
       }
       try await resultsTask?.value
+      guard generation == stopGeneration else { return }
       emit?(["kind": "status", "state": "stopped", "engine": engine])
       clear()
     } catch {
-      await analyzer?.cancelAndFinishNow()
-      await parakeet?.cancel()
-      clear()
+      guard generation == stopGeneration else { throw error }
+      let stoppingAnalyzer = analyzer
+      let stoppingParakeet = parakeet
+      await stoppingAnalyzer?.cancelAndFinishNow()
+      await stoppingParakeet?.cancel()
+      if generation == stopGeneration { clear() }
       throw error
     }
   }
@@ -305,11 +412,12 @@ private final class LiveSTTService {
     speakerTask = nil
     speakerUnavailable = false
     activeEngine = nil
+    dictationOwner = nil
     paused = false
     emit = nil
   }
 
-  private func startSpeechTranscriber(locale: String, generation: Int) async throws {
+  private func startSpeechTranscriber(locale: String, vocabulary: [String], generation: Int) async throws {
     guard SpeechTranscriber.isAvailable,
       let supported = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: locale))
     else {
@@ -319,12 +427,26 @@ private final class LiveSTTService {
     try await prepareApple(transcriber, generation: generation)
     try ensureActive(generation)
     let analyzer = SpeechAnalyzer(modules: [transcriber])
+    if dictationOwner != nil && !vocabulary.isEmpty {
+      // SpeechTranscriber currently ignores contextual strings; local correction
+      // handles vocabulary until the framework supports recognition hints.
+      let context = AnalysisContext()
+      context.contextualStrings[.general] = Array(vocabulary.prefix(100))
+      try await analyzer.setContext(context)
+      try ensureActive(generation)
+    }
     self.analyzer = analyzer
     resultsTask = Task {
-      for try await result in transcriber.results {
-        self.emitAppleResult(
-          text: String(result.text.characters), start: result.range.start,
-          end: CMTimeRangeGetEnd(result.range), final: result.isFinal)
+      do {
+        for try await result in transcriber.results {
+          guard self.analyzer === analyzer else { return }
+          self.emitAppleResult(
+            text: result.text, start: result.range.start,
+            end: CMTimeRangeGetEnd(result.range), final: result.isFinal)
+        }
+      } catch {
+        if self.analyzer === analyzer { await self.failCapture(error) }
+        throw error
       }
     }
     try await startAppleMicrophone(
@@ -355,7 +477,7 @@ private final class LiveSTTService {
     resultsTask = Task {
       for try await result in transcriber.results {
         self.emitAppleResult(
-          text: String(result.text.characters), start: result.range.start,
+          text: result.text, start: result.range.start,
           end: CMTimeRangeGetEnd(result.range), final: result.isFinal)
       }
     }
@@ -393,6 +515,7 @@ private final class LiveSTTService {
     guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]) else {
       throw LiveSTTError.audioFormat
     }
+    try ensureActive(generation)
     let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
     analyzerInput = continuation
     try await analyzer.start(inputSequence: stream)
@@ -433,18 +556,33 @@ private final class LiveSTTService {
             }
           }
         } catch {
-          await self.failCapture(error)
+          if self.analyzer === analyzer { await self.failCapture(error) }
           throw error
         }
       }
     }
   }
 
-  private func emitAppleResult(text: String, start: CMTime, end: CMTime, final: Bool) {
-    emit?([
-      "kind": "segment", "text": text, "final": final,
+  private func emitAppleResult(text: AttributedString, start: CMTime, end: CMTime, final: Bool) {
+    var event: [String: Any] = [
+      "kind": "segment", "text": String(text.characters), "final": final,
       "start": CMTimeGetSeconds(start), "end": CMTimeGetSeconds(end),
-    ])
+    ]
+    // One range for the whole phrase includes its pauses, which the diarizer does not
+    // mark as anyone's speech; per-run ranges let each word find its speaker.
+    if final {
+      event["runs"] = text.runs.map { run -> [String: Any] in
+        var entry: [String: Any] = ["text": String(text[run.range].characters)]
+        if let range = run[AttributeScopes.SpeechAttributes.TimeRangeAttribute.self],
+          range.isValid, CMTimeGetSeconds(range.duration) > 0
+        {
+          entry["start"] = CMTimeGetSeconds(range.start)
+          entry["end"] = CMTimeGetSeconds(CMTimeRangeGetEnd(range))
+        }
+        return entry
+      }
+    }
+    emit?(event)
   }
 
   private func startNemotron(
@@ -528,8 +666,10 @@ private final class LiveSTTService {
         for await chunk in speakerStream {
           if speakerUnavailable { break }
           do {
-            let segments = try await speakerProcessor.process(chunk)
-            emitSpeakerSegments(segments)
+            if let update = try await speakerProcessor.process(chunk) {
+              emitSpeakerSegments(update.finalized)
+              emitTentativeSpeakers(update)
+            }
           } catch {
             speakerUnavailable = true
             speakerInput?.finish()
@@ -540,8 +680,19 @@ private final class LiveSTTService {
       }
     }
     let speakerContinuation = speakerInput
+    let captureGeneration = generation
+    let reportLevel = dictationOwner != nil
     input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
       guard let copy = Self.copyBuffer(buffer) else { return }
+      if reportLevel, let channel = copy.floatChannelData?.pointee, copy.frameLength > 0 {
+        let samples = UnsafeBufferPointer(start: channel, count: Int(copy.frameLength))
+        let rms = sqrt(samples.reduce(Float(0)) { $0 + $1 * $1 } / Float(copy.frameLength))
+        let level = min(1, max(0, rms * 10))
+        Task { @MainActor [weak self] in
+          guard let self, self.generation == captureGeneration else { return }
+          self.emit?(["kind": "level", "value": level])
+        }
+      }
       if let channel = copy.floatChannelData?.pointee, let speakerContinuation {
         let samples = Array(UnsafeBufferPointer(start: channel, count: Int(copy.frameLength)))
         if case .dropped = speakerContinuation.yield(
@@ -557,7 +708,7 @@ private final class LiveSTTService {
       }
       if case .dropped = continuation.yield(copy) {
         Task { @MainActor [weak self] in
-          guard let self, !self.reportedOverflow else { return }
+          guard let self, self.generation == captureGeneration, !self.reportedOverflow else { return }
           self.reportedOverflow = true
           await self.failCapture(LiveSTTError.unavailable("Audio capture fell behind and part of the test was lost."))
         }
@@ -603,6 +754,16 @@ private final class LiveSTTService {
         "start": segment.startTime, "end": segment.endTime,
       ])
     }
+  }
+
+  private func emitTentativeSpeakers(_ update: SpeakerUpdate) {
+    emit?([
+      "kind": "speaker-tentative",
+      "turns": update.tentative.filter { $0.endTime > $0.startTime }.map {
+        ["speaker": $0.speakerIndex, "start": $0.startTime, "end": $0.endTime] as [String: Any]
+      },
+      "through": update.through,
+    ])
   }
 
   private func emitWords(_ words: [WordTiming], includeLast: Bool) {

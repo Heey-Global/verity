@@ -33,7 +33,22 @@ type Header = {
   row: AnimatedRef<View>;
   handle: AnimatedRef<View>;
   slot: AnimatedRef<View>;
+  excluded?: readonly AnimatedRef<View>[];
 };
+function hitsExcluded(header: Header, x: number, y: number) {
+  'worklet';
+  return (header.excluded ?? []).some((ref) => {
+    const bounds = measure(ref);
+    // Include the issue link's touch padding so a near-edge press stays a link.
+    return (
+      bounds !== null &&
+      x >= bounds.pageX - 8 &&
+      x <= bounds.pageX + bounds.width + 8 &&
+      y >= bounds.pageY - 8 &&
+      y <= bounds.pageY + bounds.height + 8
+    );
+  });
+}
 type Pickup = {
   hostTop: number;
   token: number;
@@ -229,7 +244,11 @@ export function useProjectReorder({
                 header.scope === undefined
                   ? source.value.sortable
                   : (source.value.sessionOrders[header.scope] ?? []);
-              if (!allowed.includes(header.id)) return false;
+              if (
+                !allowed.includes(header.id) ||
+                hitsExcluded(header, touch.absoluteX, touch.absoluteY)
+              )
+                return false;
               const bounds = measure(header.handle);
               return (
                 bounds !== null &&
@@ -255,7 +274,11 @@ export function useProjectReorder({
               header.scope === undefined
                 ? source.value.sortable
                 : (source.value.sessionOrders[header.scope] ?? []);
-            if (!allowed.includes(header.id)) continue;
+            if (
+              !allowed.includes(header.id) ||
+              hitsExcluded(header, event.absoluteX, event.absoluteY)
+            )
+              continue;
             const handle = measure(header.handle);
             if (
               !handle ||
@@ -405,6 +428,7 @@ export function useProjectRowDrag({
   enabled,
   floating = false,
   scope,
+  excluded,
 }: {
   id: string;
   reorder: ProjectReorderController;
@@ -412,6 +436,7 @@ export function useProjectRowDrag({
   enabled: boolean;
   floating?: boolean;
   scope?: string;
+  excluded?: readonly AnimatedRef<View>[];
 }) {
   const slotRef = useAnimatedRef<View>();
   const rowRef = useAnimatedRef<View>();
@@ -426,9 +451,10 @@ export function useProjectRowDrag({
         row: rowRef,
         handle: handleRef,
         slot: slotRef,
+        ...(excluded ? { excluded } : {}),
         ...(scope !== undefined ? { scope } : {}),
       });
-  }, [enabled, floating, id, register, rowRef, handleRef, slotRef, scope]);
+  }, [enabled, floating, id, register, rowRef, handleRef, slotRef, scope, excluded]);
   const visual = useDerivedValue(() => {
     const current = drag.value;
     if (!current || floating || current.scope !== scope) return 0;

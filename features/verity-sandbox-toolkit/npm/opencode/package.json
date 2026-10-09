@@ -1,0 +1,8 @@
+{
+  "name": "verity-cli-opencode",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "opencode-ai": "1.18.34"
+  }
+}

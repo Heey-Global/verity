@@ -545,3 +545,40 @@ it('preserves the controller identity on unrelated renders, but publishes drag c
   expect(test.hook.result.current).not.toBe(controller);
   expect(test.hook.result.current.draggingSessionId).toBe('session:b');
 });
+
+it('rejects link touches at pickup and start while allowing free row space', () => {
+  const test = setup('a', 160);
+  const excluded = {} as AnimatedRef<View>;
+  const row = {} as AnimatedRef<View>;
+  const handle = {} as AnimatedRef<View>;
+  const slot = {} as AnimatedRef<View>;
+  act(() => {
+    test.hook.result.current.register({ id: 'b', row, handle, slot, excluded: [excluded] });
+  });
+  const previous = jest.mocked(measure).getMockImplementation()!;
+  jest.mocked(measure).mockImplementation((ref) => {
+    if (Object.is(ref, excluded)) return { ...rect(280), pageX: 200, width: 30, height: 20 };
+    if ([handle, row, slot].some((candidate) => Object.is(ref, candidate))) return rect(280);
+    return previous(ref);
+  });
+  const fail = jest.fn();
+  act(() => {
+    test.hook.result.current.gesture.handlers.onTouchesDown?.(
+      { allTouches: [{ absoluteX: 195, absoluteY: 290 }] } as never,
+      { fail } as never,
+    );
+    test.hook.result.current.gesture.handlers.onStart?.({
+      absoluteX: 195,
+      absoluteY: 290,
+    } as never);
+  });
+  expect(fail).toHaveBeenCalledTimes(1);
+  expect(test.hook.result.current.draggingId).toBeNull();
+  act(() => {
+    test.hook.result.current.gesture.handlers.onStart?.({
+      absoluteX: 270,
+      absoluteY: 330,
+    } as never);
+  });
+  expect(test.hook.result.current.draggingId).toBe('b');
+});

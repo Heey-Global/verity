@@ -17,9 +17,10 @@ import { Alert } from 'react-native';
  * `confirmProvisionWarnings`).
  *
  * Resolves once the session exists. Rejects when it never will — the operator
- * cancelled at the warnings, the project is still provisioning (202: there is no
- * session to hand back), or the request failed. The caller's chat is waiting on
- * this promise, so a rejection is what turns its "Opening session…" into the
+ * cancelled at the warnings, project preparation failed or timed out, or the
+ * request failed. A provisioning response keeps the chat waiting until the
+ * project is ready, then retries with the same session id. The caller's chat
+ * waits on this promise, so a rejection turns its "Opening session…" into the
  * actual reason.
  *
  * `existing` is true when the server answered from a session that was already
@@ -31,6 +32,7 @@ export async function createSessionConfirmingWarnings(
   client: VerityClient,
   body: SpawnRequest,
 ): Promise<{ existing: boolean }> {
+  const deadline = Date.now() + 15 * 60_000;
   const attempt = async (confirmProvisionWarnings: boolean): Promise<{ existing: boolean }> => {
     try {
       const result = await client.createSession({
@@ -38,9 +40,18 @@ export async function createSessionConfirmingWarnings(
         ...(confirmProvisionWarnings ? { confirmProvisionWarnings: true } : {}),
       });
       if ('awaitingProvisioning' in result) {
-        throw new Error(
-          `Provisioning ${result.project.owner}/${result.project.repo}. Try again shortly.`,
-        );
+        // Poll readiness rather than repeatedly starting background provisioning.
+        for (;;) {
+          if (Date.now() >= deadline)
+            throw new Error('Project preparation timed out. Try opening a new session again.');
+          const { project } = await client.getProject(result.project.id);
+          if (project.archived) throw new Error('The project was archived during preparation.');
+          if (project.state === 'failed')
+            throw new Error(project.provisionError ?? 'Could not prepare project.');
+          if (project.state === 'active') break;
+          await new Promise<void>((resolve) => setTimeout(resolve, 1000));
+        }
+        return await attempt(confirmProvisionWarnings);
       }
       return { existing: result.existing === true };
     } catch (caught) {
