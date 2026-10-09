@@ -220,19 +220,24 @@ function acceptedDataDiagnostics(value: unknown): string | null {
   return JSON.stringify(snapshot);
 }
 
-/** Safe local export; unavailable builds never fall back to unrestricted logs. */
-export async function exportRemoteDataDiagnostics(): Promise<string | null> {
+export type RemoteDataDiagnosticsExport =
+  | { status: 'ready'; recording: string }
+  | { status: 'unsupported' | 'empty' | 'invalid' | 'failed' };
+
+/** Report only fixed failure categories; rejected native data never reaches the clipboard. */
+export async function exportRemoteDataDiagnostics(): Promise<RemoteDataDiagnosticsExport> {
   try {
     const native = requireNativeModule<{ exportDataDiagnostics?: () => Promise<unknown> }>(
       'VerityRemoteControlTunnel',
     );
-    if (typeof native.exportDataDiagnostics !== 'function') return null;
+    if (typeof native.exportDataDiagnostics !== 'function') return { status: 'unsupported' };
     const raw = await native.exportDataDiagnostics();
-    if (!Array.isArray(raw) || raw.length === 0 || raw.length > 3) return null;
+    if (!Array.isArray(raw) || raw.length > 3) return { status: 'invalid' };
+    if (raw.length === 0) return { status: 'empty' };
     const snapshots = raw.map(acceptedDataDiagnostics);
-    if (snapshots.some((snapshot) => snapshot === null)) return null;
-    return `[${snapshots.join(',')}]`;
+    if (snapshots.some((snapshot) => snapshot === null)) return { status: 'invalid' };
+    return { status: 'ready', recording: `[${snapshots.join(',')}]` };
   } catch {
-    return null;
+    return { status: 'failed' };
   }
 }
