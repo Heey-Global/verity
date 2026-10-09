@@ -95,6 +95,7 @@ export class LiveMeetingStore {
     classified?: {
       text: string;
       acceptedIds: readonly string[];
+      resolvedIds: readonly string[];
       insights?: readonly LiveMeetingInsight[];
     },
   ): Promise<boolean> {
@@ -152,6 +153,7 @@ export class LiveMeetingStore {
             !meeting.transcript.includes(question.evidence_a) ||
             (classified !== undefined &&
               classified.text.includes(question.evidence_a) &&
+              classified.resolvedIds.includes(question.id) &&
               !classified.acceptedIds.includes(question.id)),
         )
         .map(({ id }) => id);

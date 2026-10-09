@@ -334,7 +334,7 @@ export default function MeetingScreen() {
               if (mounted && displayedMeetingId.current === shown) {
                 answerEvents.current = { meetingId: shown, events: kept };
                 const historyCards = meetingAnswerCards(kept, shown);
-                setAnswers(historyCards.slice(-4));
+                setAnswers(historyCards);
                 setLocalAnswers((current) => unacknowledgedMeetingAnswers(current, historyCards));
               }
               if (client.getActivity) {

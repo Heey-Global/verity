@@ -323,6 +323,7 @@ it('reconciles only classified question evidence and preserves accepted identiti
   await ctx.store.liveMeetings.reconcileQuestions('session-1', meeting.id, 1, {
     text: 'What is the price? It costs ten euros. When is delivery?',
     acceptedIds: ['question-delivery'],
+    resolvedIds: ['question-price'],
   });
   expect(
     (await ctx.store.liveMeetings.insights('session-1', meeting.id))?.map(({ id }) => id).sort(),
@@ -353,6 +354,7 @@ it('removes a periodic question finding published before classification while pr
   await ctx.store.liveMeetings.reconcileQuestions('session-1', meeting.id, 1, {
     text: question,
     acceptedIds: ['question-plan'],
+    resolvedIds: [],
   });
   expect(
     (await ctx.store.liveMeetings.insights('session-1', meeting.id))?.map(({ id }) => id).sort(),
@@ -380,8 +382,40 @@ it('rejects stale question publication without replacing valid evidence', async 
     await ctx.store.liveMeetings.reconcileQuestions('session-1', meeting.id, 1, {
       text: 'What is the price?',
       acceptedIds: [insight.id],
+      resolvedIds: [],
       insights: [{ ...insight, evidenceA: 'What is the price?' }],
     }),
   ).toBe(false);
   expect(await ctx.store.liveMeetings.insights('session-1', meeting.id)).toEqual([insight]);
+});
+
+it('preserves questions omitted by the output limit and retracts only explicit resolutions', async () => {
+  const questions = Array.from({ length: 5 }, (_, index) => ({
+    id: `question-${index}`,
+    meetingId: meeting.id,
+    kind: 'research' as const,
+    summary: `What is item ${index}?`,
+    evidenceA: `What is item ${index}?`,
+    evidenceB: null,
+    sourcePath: null,
+    createdAt: index,
+  }));
+  const text = questions.map(({ evidenceA }) => evidenceA).join(' ');
+  await ctx.store.liveMeetings.putMeeting({ ...meeting, transcript: text });
+  for (const question of questions) await ctx.store.liveMeetings.addInsight('session-1', question);
+  const classified = {
+    text,
+    acceptedIds: questions.slice(0, 4).map(({ id }) => id),
+    resolvedIds: [] as string[],
+    insights: questions.slice(0, 4),
+  };
+  await ctx.store.liveMeetings.reconcileQuestions('session-1', meeting.id, 1, classified);
+  expect(await ctx.store.liveMeetings.insights('session-1', meeting.id)).toHaveLength(5);
+  await ctx.store.liveMeetings.reconcileQuestions('session-1', meeting.id, 1, {
+    ...classified,
+    resolvedIds: [questions[4]!.id],
+  });
+  expect(
+    (await ctx.store.liveMeetings.insights('session-1', meeting.id))?.map(({ id }) => id).sort(),
+  ).toEqual(classified.acceptedIds);
 });

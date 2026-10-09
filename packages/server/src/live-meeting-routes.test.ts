@@ -767,6 +767,11 @@ it('retracts a published question when an answer follows an intervening sentence
   const checked = Fastify();
   const query = vi.fn().mockImplementation(async (_session: string, prompt: string) =>
     JSON.stringify({
+      resolvedIds: prompt.includes('Er kostet zehn Euro.')
+        ? (
+            JSON.parse(prompt.match(/Known questions: (\[[^\n]*\])/u)![1]!) as Array<{ id: string }>
+          ).map(({ id }) => id)
+        : [],
       questions: prompt.includes('Er kostet zehn Euro.')
         ? []
         : [{ question: 'Was kostet der Plan?', quote: 'Was kostet der Plan?' }],

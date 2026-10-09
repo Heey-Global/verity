@@ -221,6 +221,7 @@ it('reconciles classification against the current revision when its window is un
   expect(s.reconcileQuestions).toHaveBeenCalledWith('session', 'meeting', 2, {
     text,
     acceptedIds: [],
+    resolvedIds: [],
     insights: [],
   });
   s.controller.close();
@@ -250,8 +251,11 @@ it('rechecks an open question when an answer arrives without final punctuation',
         questions: [{ question: 'What is the price?', quote: 'What is the price?' }],
       }),
     )
-    .mockResolvedValueOnce(JSON.stringify({ questions: [] }));
+    .mockResolvedValueOnce(
+      JSON.stringify({ questions: [], resolvedIds: ['question-price', 'foreign-question'] }),
+    );
   const s = setup(query);
+  s.insights.mockResolvedValue([{ id: 'question-price', summary: 'What is the price?' }]);
   s.controller.ingest(meeting('What is the price?'));
   await vi.advanceTimersByTimeAsync(20);
   const text = 'What is the price? It costs ten euros';
@@ -262,6 +266,7 @@ it('rechecks an open question when an answer arrives without final punctuation',
   expect(s.reconcileQuestions).toHaveBeenLastCalledWith('session', 'meeting', 2, {
     text,
     acceptedIds: [],
+    resolvedIds: ['question-price'],
     insights: [],
   });
   s.controller.close();
@@ -276,6 +281,7 @@ it('retains earlier question evidence when a later topic precedes its answer', a
   const query = vi.fn().mockResolvedValue(
     JSON.stringify({
       questions: [{ question: 'When is delivery?', quote: 'When is delivery?' }],
+      resolvedIds: ['question-price'],
     }),
   );
   const s = setup(query);
@@ -289,6 +295,7 @@ it('retains earlier question evidence when a later topic precedes its answer', a
     1,
     expect.objectContaining({
       text,
+      resolvedIds: ['question-price'],
       insights: [expect.objectContaining({ evidenceA: 'When is delivery?' })],
     }),
   );
