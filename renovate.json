@@ -276,6 +276,21 @@
       "datasourceTemplate": "node-version",
       "depNameTemplate": "node",
       "versioningTemplate": "node"
+    },
+    {
+      "customType": "regex",
+      "description": "Track digest-pinned Node images used by CI installer fixtures and container smoke scripts.",
+      "managerFilePatterns": [
+        "/^deploy/bin/verity-project-relay-.*smoke$/",
+        "/^scripts/test-runner-claude-live-.*\\.sh$/",
+        "/^\\.github/workflows/ci\\.yml$/"
+      ],
+      "matchStrings": [
+        "node:(?<currentValue>\\d+\\.\\d+\\.\\d+-bookworm(?:-slim)?)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "node",
+      "versioningTemplate": "docker"
     }
   ]
 }

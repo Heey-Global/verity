@@ -5,7 +5,7 @@
 # --additional-features. Single source of truth, no drift between the baked base
 # and per-user builds (ADR migration #299, PR-A).
 #
-# Layout mirrors the legacy dev-server dev-base: node:26.11.1-bookworm@sha256:f1233c415b41ffcf237c717b3dea92e9d4ea006e0e4c71edcb790605d74f5404 runtime with
+# Layout mirrors the legacy dev-server dev-base: Node Bookworm runtime with
 # Python 3.14 multi-stage-copied from python:3.14-bookworm (both debian-bookworm,
 # so OS-level shared libs match and Python's C extensions link without rebuild).
 #
