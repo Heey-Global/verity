@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.65.0](https://github.com/Heey-Global/verity/compare/mobile-v1.64.0...mobile-v1.65.0) (2026-10-09)
+
+
+### Features
+
+* **diagnostics:** correlate session switch transport phases ([#1444](https://github.com/Heey-Global/verity/issues/1444)) ([063bed3](https://github.com/Heey-Global/verity/commit/063bed3d9a2efeefb520852488ae74c32d1d82ab))
+
+
+### Bug Fixes
+
+* **mobile:** preserve session switch readiness diagnostics ([#1438](https://github.com/Heey-Global/verity/issues/1438)) ([396c63f](https://github.com/Heey-Global/verity/commit/396c63fb7b72e5914dc25a0fde88ce4fc9a71815))
+
 ## [1.64.0](https://github.com/Heey-Global/verity/compare/mobile-v1.63.0...mobile-v1.64.0) (2026-10-09)
 
 

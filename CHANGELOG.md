@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.35.0](https://github.com/Heey-Global/verity/compare/v4.34.0...v4.35.0) (2026-10-09)
+
+
+### Features
+
+* **diagnostics:** correlate session switch transport phases ([#1444](https://github.com/Heey-Global/verity/issues/1444)) ([063bed3](https://github.com/Heey-Global/verity/commit/063bed3d9a2efeefb520852488ae74c32d1d82ab))
+
+
+### Bug Fixes
+
+* **sandbox:** make staged entry directories traversable ([#1440](https://github.com/Heey-Global/verity/issues/1440)) ([9617c48](https://github.com/Heey-Global/verity/commit/9617c48928d904dca2a2ac97a7c2074636a20500))
+
 ## [4.34.0](https://github.com/Heey-Global/verity/compare/v4.33.0...v4.34.0) (2026-10-09)
 
 

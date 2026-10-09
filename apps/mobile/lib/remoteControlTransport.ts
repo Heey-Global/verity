@@ -348,7 +348,9 @@ export function reportDirectRouteFailure(url: string): void {
   if (key !== null) directRoute = { key, reachable: false, checkedAt: Date.now() };
 }
 
-async function stopNativeTunnel(cause: 'profile_changed' | 'probe_failure'): Promise<void> {
+async function stopNativeTunnel(
+  cause: 'profile_changed' | 'probe_failure' | 'replacement',
+): Promise<void> {
   const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
   if (typeof native.stopWithCause === 'function') await native.stopWithCause(cause);
   else await native.stop();
@@ -437,6 +439,25 @@ function keyFor(url: string): string | null {
   return `${profile.serverId}:${url}:${remote.installationId}:${remote.installationHandle}:${remote.uplinkOrigin}`;
 }
 
+/** A disabled descriptor removes Remote Control from selectable routes. */
+export async function remoteControlAvailableForUrl(url: string): Promise<boolean> {
+  const target = new URL(url);
+  if (target.protocol === 'wss:') target.protocol = 'https:';
+  if (keyFor(target.origin) !== null) return true;
+  const cleanup = operation.then(async () => {
+    if (active === null || keyFor(target.origin) !== null) return;
+    active = null;
+    try {
+      await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').stop();
+    } catch {
+      // Direct Core requests remain usable if native cleanup fails.
+    }
+  });
+  operation = cleanup;
+  await cleanup;
+  return false;
+}
+
 /**
  * Return zero for a direct pinned connection. Admission failure never replays an
  * API request. `replayable` says the caller can repeat the request through
@@ -490,6 +511,9 @@ export async function testRemoteControlForUrl(
       if (typeof native.captureDataDiagnostics !== 'function') {
         return { ready: false, detail: 'update the app to record connection diagnostics' };
       }
+      // Arm on a fresh socket: recording an active tunnel misses its first sends.
+      await stopNativeTunnel('replacement');
+      active = null;
       if (!(await native.captureDataDiagnostics())) {
         return {
           ready: false,

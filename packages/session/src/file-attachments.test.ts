@@ -1,12 +1,17 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { constants, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtemp, open, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import type { AttachmentUpload } from '@verity/events';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { materializeFileAttachments } from './file-attachments.js';
+import {
+  cleanupTurnImageAttachments,
+  stageImageAttachments,
+  materializeFileAttachments,
+} from './file-attachments.js';
 
 const b64 = (s: string): string => Buffer.from(s).toString('base64');
 
@@ -120,4 +125,65 @@ describe('materializeFileAttachments', () => {
     expect(readdirSync(moved)).toEqual([]);
     await rm(outside, { recursive: true, force: true });
   });
+});
+
+describe('staged image transport', () => {
+  it('preserves multiple large originals in compact, retry-stable references', async () => {
+    const images: AttachmentUpload[] = [1, 2, 3].map((value) => ({
+      kind: 'image',
+      mediaType: 'image/png',
+      data: Buffer.alloc(2 * 1024 * 1024, value).toString('base64'),
+    }));
+    const refs = await stageImageAttachments(cwd, 'test-turn', images);
+    expect(Buffer.byteLength(JSON.stringify(refs))).toBeLessThan(2048);
+    expect(refs).toHaveLength(images.length);
+    for (const [index, ref] of (refs ?? []).entries()) {
+      expect(readFileSync(ref.filePath).toString('base64')).toBe(images[index]?.data);
+    }
+    expect(await stageImageAttachments(cwd, 'test-turn', images)).toEqual(refs);
+    await cleanupTurnImageAttachments(cwd, 'test-turn');
+    await cleanupTurnImageAttachments(cwd, 'test-turn');
+    expect(existsSync(refs?.[0]?.filePath ?? '')).toBe(false);
+  });
+
+  it('rejects modified retry files and symlinked turn directories', async () => {
+    const image: AttachmentUpload = {
+      kind: 'image',
+      mediaType: 'image/png',
+      data: b64('original'),
+    };
+    const refs = await stageImageAttachments(cwd, 'test-turn', [image]);
+    await writeFile(refs?.[0]?.filePath ?? '', 'modified');
+    await expect(stageImageAttachments(cwd, 'test-turn', [image])).rejects.toThrow(
+      'staged image content changed',
+    );
+    await symlink(cwd, join(cwd, '.verity-sessions', 'attachments', 'turn-other'));
+    await expect(stageImageAttachments(cwd, 'other', [image])).rejects.toThrow();
+  });
+});
+
+it('rejects FIFO retry targets without waiting for a writer', async () => {
+  const image: AttachmentUpload = { kind: 'image', mediaType: 'image/png', data: b64('original') };
+  const refs = await stageImageAttachments(cwd, 'fifo-turn', [image]);
+  const path = refs?.[0]?.filePath ?? '';
+  await rm(path);
+  execFileSync('mkfifo', [path]);
+  const attempt = stageImageAttachments(cwd, 'fifo-turn', [image]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await expect(
+      Promise.race([
+        attempt,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('FIFO staging blocked')), 2000);
+        }),
+      ]),
+    ).rejects.toThrow('staged image content changed');
+  } finally {
+    clearTimeout(timer);
+    // Release a blocked reader when the regression is deliberately reintroduced.
+    const writer = await open(path, constants.O_RDWR | constants.O_NONBLOCK);
+    await attempt.catch(() => undefined);
+    await writer.close();
+  }
 });

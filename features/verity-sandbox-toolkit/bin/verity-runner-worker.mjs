@@ -4847,7 +4847,7 @@ var require_memoizer = __commonJS({
     var NONE = 0;
     var ASSUMED = 1;
     var PROVEN = 2;
-    function isRecursive(inst, stack, resolve3) {
+    function isRecursive(inst, stack, resolve4) {
       const cached = recursive.get(inst);
       if (cached !== void 0)
         return cached ? PROVEN : NONE;
@@ -4857,7 +4857,7 @@ var require_memoizer = __commonJS({
       let result3 = NONE;
       const check = (child) => {
         if (result3 !== PROVEN && child?._zod) {
-          const answer = isRecursive(child, stack, resolve3);
+          const answer = isRecursive(child, stack, resolve4);
           if (answer > result3)
             result3 = answer;
         }
@@ -4868,7 +4868,7 @@ var require_memoizer = __commonJS({
           const desc = Object.getOwnPropertyDescriptor(sh, key);
           if (spread && !desc.enumerable)
             continue;
-          const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve3) : NONE;
+          const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve4) : NONE;
           if (child > answer)
             answer = child;
         }
@@ -4932,7 +4932,7 @@ var require_memoizer = __commonJS({
           break;
         // `$ZodLazy` caches its inner on the def, so a resolved edge is followed exactly
         case "lazy": {
-          const inner = def._cachedInner ?? (resolve3 ? inst._zod.innerType : void 0);
+          const inner = def._cachedInner ?? (resolve4 ? inst._zod.innerType : void 0);
           merge(inner ? isRecursive(inner, stack, false) : ASSUMED);
           break;
         }
@@ -4996,7 +4996,7 @@ var require_memoizer = __commonJS({
       return bucket;
     }
     var handoff;
-    var open6 = [];
+    var open7 = [];
     var memo = {
       alloc(_inst, payload, empty) {
         const bucket = handoff;
@@ -5005,7 +5005,7 @@ var require_memoizer = __commonJS({
         handoff = void 0;
         const entry = { value: empty, issues: null };
         bucket.set(payload.value, entry);
-        open6.push(entry);
+        open7.push(entry);
         return empty;
       },
       guard(inst) {
@@ -5076,10 +5076,10 @@ var require_memoizer = __commonJS({
               return payload;
             }
             handoff = bucket;
-            const depth = open6.length;
+            const depth = open7.length;
             const result3 = base(payload, ctx);
             handoff = void 0;
-            const entry = open6.length > depth ? open6.pop() : void 0;
+            const entry = open7.length > depth ? open7.pop() : void 0;
             if (result3 instanceof Promise) {
               return result3.then((r) => {
                 if (entry)
@@ -21837,7 +21837,7 @@ var require_from_json_schema = __commonJS({
     var _checks = __importStar(require_checks2());
     var _iso = __importStar(require_iso());
     var _schemas = __importStar(require_schemas2());
-    var z13 = {
+    var z14 = {
       ..._schemas,
       ..._checks,
       iso: _iso
@@ -21951,7 +21951,7 @@ var require_from_json_schema = __commonJS({
       throw new Error(`Reference not found: ${ref}`);
     }
     function checkObjectGuards(objectSchema, guards) {
-      const guard = z13.transform((value) => value).check((payload) => {
+      const guard = z14.transform((value) => value).check((payload) => {
         const value = payload.value;
         if (typeof value !== "object" || value === null || Array.isArray(value))
           return;
@@ -22080,7 +22080,7 @@ var require_from_json_schema = __commonJS({
       return n === 1 ? "element" : "elements";
     }
     function checkArrayGuards(arraySchema, guards) {
-      const guard = z13.transform((value) => value).check((payload) => {
+      const guard = z14.transform((value) => value).check((payload) => {
         const items = payload.value;
         if (!Array.isArray(items))
           return;
@@ -22137,7 +22137,7 @@ var require_from_json_schema = __commonJS({
         return void 0;
       }
       if (restSchema === void 0 || restSchema === true) {
-        return z13.any();
+        return z14.any();
       }
       return convertSchema(restSchema, ctx);
     }
@@ -22145,7 +22145,7 @@ var require_from_json_schema = __commonJS({
     function convertBaseSchema(schema, ctx) {
       if (schema.not !== void 0) {
         if (typeof schema.not === "object" && Object.keys(schema.not).length === 0) {
-          return z13.never();
+          return z14.never();
         }
         throw new Error("not is not supported in Zod (except { not: {} } for never)");
       }
@@ -22167,7 +22167,7 @@ var require_from_json_schema = __commonJS({
           return ctx.refs.get(refPath);
         }
         if (ctx.processing.has(refPath)) {
-          return z13.lazy(() => {
+          return z14.lazy(() => {
             if (!ctx.refs.has(refPath)) {
               throw new Error(`Circular reference not resolved: ${refPath}`);
             }
@@ -22184,25 +22184,25 @@ var require_from_json_schema = __commonJS({
       if (schema.enum !== void 0) {
         const enumValues = schema.enum;
         if (ctx.version === "openapi-3.0" && schema.nullable === true && enumValues.length === 1 && enumValues[0] === null) {
-          return z13.null();
+          return z14.null();
         }
         if (enumValues.length === 0) {
-          return z13.never();
+          return z14.never();
         }
         if (enumValues.length === 1) {
-          return z13.literal(enumValues[0]);
+          return z14.literal(enumValues[0]);
         }
         if (enumValues.every((v) => typeof v === "string")) {
-          return z13.enum(enumValues);
+          return z14.enum(enumValues);
         }
-        const literalSchemas = enumValues.map((v) => z13.literal(v));
+        const literalSchemas = enumValues.map((v) => z14.literal(v));
         if (literalSchemas.length < 2) {
           return literalSchemas[0];
         }
-        return z13.union([literalSchemas[0], literalSchemas[1], ...literalSchemas.slice(2)]);
+        return z14.union([literalSchemas[0], literalSchemas[1], ...literalSchemas.slice(2)]);
       }
       if (schema.const !== void 0) {
-        return z13.literal(schema.const);
+        return z14.literal(schema.const);
       }
       const type = schema.type;
       if (Array.isArray(type)) {
@@ -22211,74 +22211,74 @@ var require_from_json_schema = __commonJS({
           return convertBaseSchema(typeSchema, ctx);
         });
         if (typeSchemas.length === 0) {
-          return z13.never();
+          return z14.never();
         }
         if (typeSchemas.length === 1) {
           return typeSchemas[0];
         }
-        return z13.union(typeSchemas);
+        return z14.union(typeSchemas);
       }
       if (!type) {
-        return z13.any();
+        return z14.any();
       }
       let zodSchema;
       switch (type) {
         case "string": {
-          let stringSchema = z13.string();
+          let stringSchema = z14.string();
           if (schema.format) {
             const format = schema.format;
             if (format === "email") {
-              stringSchema = stringSchema.check(z13.email());
+              stringSchema = stringSchema.check(z14.email());
             } else if (format === "uri" || format === "uri-reference") {
-              stringSchema = stringSchema.check(z13.url());
+              stringSchema = stringSchema.check(z14.url());
             } else if (format === "uuid" || format === "guid") {
-              stringSchema = stringSchema.check(z13.uuid());
+              stringSchema = stringSchema.check(z14.uuid());
             } else if (format === "date-time") {
-              stringSchema = stringSchema.check(z13.iso.datetime({ offset: true }));
+              stringSchema = stringSchema.check(z14.iso.datetime({ offset: true }));
             } else if (format === "date") {
-              stringSchema = stringSchema.check(z13.iso.date());
+              stringSchema = stringSchema.check(z14.iso.date());
             } else if (format === "time") {
-              stringSchema = stringSchema.check(z13.regex(fullTime));
+              stringSchema = stringSchema.check(z14.regex(fullTime));
             } else if (format === "duration") {
-              stringSchema = stringSchema.check(z13.iso.duration());
+              stringSchema = stringSchema.check(z14.iso.duration());
             } else if (format === "hostname") {
-              stringSchema = stringSchema.check(z13.hostname());
+              stringSchema = stringSchema.check(z14.hostname());
             } else if (format === "ipv4") {
-              stringSchema = stringSchema.check(z13.ipv4());
+              stringSchema = stringSchema.check(z14.ipv4());
             } else if (format === "ipv6") {
-              stringSchema = stringSchema.check(z13.ipv6());
+              stringSchema = stringSchema.check(z14.ipv6());
             } else if (format === "mac") {
-              stringSchema = stringSchema.check(z13.mac());
+              stringSchema = stringSchema.check(z14.mac());
             } else if (format === "cidr") {
-              stringSchema = stringSchema.check(z13.cidrv4());
+              stringSchema = stringSchema.check(z14.cidrv4());
             } else if (format === "cidr-v6") {
-              stringSchema = stringSchema.check(z13.cidrv6());
+              stringSchema = stringSchema.check(z14.cidrv6());
             } else if (format === "base64") {
-              stringSchema = stringSchema.check(z13.base64());
+              stringSchema = stringSchema.check(z14.base64());
             } else if (format === "base64url") {
-              stringSchema = stringSchema.check(z13.base64url());
+              stringSchema = stringSchema.check(z14.base64url());
             } else if (format === "e164") {
-              stringSchema = stringSchema.check(z13.e164());
+              stringSchema = stringSchema.check(z14.e164());
             } else if (format === "credit_card") {
-              stringSchema = stringSchema.check(z13.creditCard());
+              stringSchema = stringSchema.check(z14.creditCard());
             } else if (format === "iban") {
-              stringSchema = stringSchema.check(z13.iban());
+              stringSchema = stringSchema.check(z14.iban());
             } else if (format === "jwt") {
-              stringSchema = stringSchema.check(z13.jwt());
+              stringSchema = stringSchema.check(z14.jwt());
             } else if (format === "emoji") {
-              stringSchema = stringSchema.check(z13.emoji());
+              stringSchema = stringSchema.check(z14.emoji());
             } else if (format === "nanoid") {
-              stringSchema = stringSchema.check(z13.nanoid());
+              stringSchema = stringSchema.check(z14.nanoid());
             } else if (format === "cuid") {
-              stringSchema = stringSchema.check(z13.cuid());
+              stringSchema = stringSchema.check(z14.cuid());
             } else if (format === "cuid2") {
-              stringSchema = stringSchema.check(z13.cuid2());
+              stringSchema = stringSchema.check(z14.cuid2());
             } else if (format === "ulid") {
-              stringSchema = stringSchema.check(z13.ulid());
+              stringSchema = stringSchema.check(z14.ulid());
             } else if (format === "xid") {
-              stringSchema = stringSchema.check(z13.xid());
+              stringSchema = stringSchema.check(z14.xid());
             } else if (format === "ksuid") {
-              stringSchema = stringSchema.check(z13.ksuid());
+              stringSchema = stringSchema.check(z14.ksuid());
             }
           }
           if (typeof schema.minLength === "number") {
@@ -22295,7 +22295,7 @@ var require_from_json_schema = __commonJS({
         }
         case "number":
         case "integer": {
-          let numberSchema = type === "integer" ? z13.number().int() : z13.number();
+          let numberSchema = type === "integer" ? z14.number().int() : z14.number();
           if (typeof schema.minimum === "number" && schema.exclusiveMinimum !== true) {
             numberSchema = numberSchema.min(schema.minimum);
           }
@@ -22319,11 +22319,11 @@ var require_from_json_schema = __commonJS({
           break;
         }
         case "boolean": {
-          zodSchema = z13.boolean();
+          zodSchema = z14.boolean();
           break;
         }
         case "null": {
-          zodSchema = z13.null();
+          zodSchema = z14.null();
           break;
         }
         case "object": {
@@ -22341,22 +22341,22 @@ var require_from_json_schema = __commonJS({
             const looseRecords = [];
             for (const pattern of patternKeys) {
               const patternValue = convertSchema(patternProps[pattern], ctx);
-              const keySchema = z13.string().regex(new RegExp(pattern));
-              looseRecords.push(z13.looseRecord(keySchema, patternValue));
+              const keySchema = z14.string().regex(new RegExp(pattern));
+              looseRecords.push(z14.looseRecord(keySchema, patternValue));
             }
             const schemasToIntersect = [];
             if (Object.keys(shape).length > 0) {
-              schemasToIntersect.push(z13.object(shape).passthrough());
+              schemasToIntersect.push(z14.object(shape).passthrough());
             }
             schemasToIntersect.push(...looseRecords);
             if (schemasToIntersect.length === 0) {
-              zodSchema = z13.object({}).passthrough();
+              zodSchema = z14.object({}).passthrough();
             } else if (schemasToIntersect.length === 1) {
               zodSchema = schemasToIntersect[0];
             } else {
-              let result3 = z13.intersection(schemasToIntersect[0], schemasToIntersect[1]);
+              let result3 = z14.intersection(schemasToIntersect[0], schemasToIntersect[1]);
               for (let i = 2; i < schemasToIntersect.length; i++) {
-                result3 = z13.intersection(result3, schemasToIntersect[i]);
+                result3 = z14.intersection(result3, schemasToIntersect[i]);
               }
               zodSchema = result3;
             }
@@ -22386,7 +22386,7 @@ var require_from_json_schema = __commonJS({
               });
             }
           } else {
-            const objectSchema = z13.object(shape);
+            const objectSchema = z14.object(shape);
             if (schema.additionalProperties === false) {
               zodSchema = objectSchema.strict();
             } else if (additionalSchema) {
@@ -22416,30 +22416,30 @@ var require_from_json_schema = __commonJS({
             const tupleItems = prefixItems.map((item) => convertSchema(item, ctx));
             const positionalItems = applyMinItems(tupleItems, minItems);
             const rest = !Array.isArray(items) ? getTupleRest(items, ctx) : void 0;
-            const tupleSchema = z13.tuple(positionalItems);
+            const tupleSchema = z14.tuple(positionalItems);
             zodSchema = rest ? tupleSchema.rest(rest) : tupleSchema;
             if (typeof schema.minItems === "number") {
-              zodSchema = zodSchema.check(z13.minLength(schema.minItems));
+              zodSchema = zodSchema.check(z14.minLength(schema.minItems));
             }
             if (typeof schema.maxItems === "number") {
-              zodSchema = zodSchema.check(z13.maxLength(schema.maxItems));
+              zodSchema = zodSchema.check(z14.maxLength(schema.maxItems));
             }
           } else if (Array.isArray(items)) {
             const minItems = typeof schema.minItems === "number" ? schema.minItems : 0;
             const tupleItems = items.map((item) => convertSchema(item, ctx));
             const positionalItems = applyMinItems(tupleItems, minItems);
             const rest = getTupleRest(schema.additionalItems, ctx);
-            const tupleSchema = z13.tuple(positionalItems);
+            const tupleSchema = z14.tuple(positionalItems);
             zodSchema = rest ? tupleSchema.rest(rest) : tupleSchema;
             if (typeof schema.minItems === "number") {
-              zodSchema = zodSchema.check(z13.minLength(schema.minItems));
+              zodSchema = zodSchema.check(z14.minLength(schema.minItems));
             }
             if (typeof schema.maxItems === "number") {
-              zodSchema = zodSchema.check(z13.maxLength(schema.maxItems));
+              zodSchema = zodSchema.check(z14.maxLength(schema.maxItems));
             }
           } else if (items !== void 0) {
             const element = convertSchema(items, ctx);
-            let arraySchema = z13.array(element);
+            let arraySchema = z14.array(element);
             if (typeof schema.minItems === "number") {
               arraySchema = arraySchema.min(schema.minItems);
             }
@@ -22448,7 +22448,7 @@ var require_from_json_schema = __commonJS({
             }
             zodSchema = arraySchema;
           } else {
-            zodSchema = z13.array(z13.any());
+            zodSchema = z14.array(z14.any());
           }
           if (schema.uniqueItems === true || schema.contains !== void 0) {
             zodSchema = checkArrayGuards(zodSchema, {
@@ -22467,37 +22467,37 @@ var require_from_json_schema = __commonJS({
     }
     function convertSchema(schema, ctx) {
       if (typeof schema === "boolean") {
-        return schema ? z13.any() : z13.never();
+        return schema ? z14.any() : z14.never();
       }
       let baseSchema = convertBaseSchema(schema, ctx);
       const hasExplicitType = schema.type || schema.enum !== void 0 || schema.const !== void 0;
       if (schema.anyOf && Array.isArray(schema.anyOf)) {
         const options = schema.anyOf.map((s) => convertSchema(s, ctx));
-        const anyOfUnion = z13.union(options);
-        baseSchema = hasExplicitType ? z13.intersection(baseSchema, anyOfUnion) : anyOfUnion;
+        const anyOfUnion = z14.union(options);
+        baseSchema = hasExplicitType ? z14.intersection(baseSchema, anyOfUnion) : anyOfUnion;
       }
       if (schema.oneOf && Array.isArray(schema.oneOf)) {
         const options = schema.oneOf.map((s) => convertSchema(s, ctx));
-        const oneOfUnion = z13.xor(options);
-        baseSchema = hasExplicitType ? z13.intersection(baseSchema, oneOfUnion) : oneOfUnion;
+        const oneOfUnion = z14.xor(options);
+        baseSchema = hasExplicitType ? z14.intersection(baseSchema, oneOfUnion) : oneOfUnion;
       }
       if (schema.allOf && Array.isArray(schema.allOf)) {
         if (schema.allOf.length === 0) {
-          baseSchema = hasExplicitType ? baseSchema : z13.any();
+          baseSchema = hasExplicitType ? baseSchema : z14.any();
         } else {
           let result3 = hasExplicitType ? baseSchema : convertSchema(schema.allOf[0], ctx);
           const startIdx = hasExplicitType ? 0 : 1;
           for (let i = startIdx; i < schema.allOf.length; i++) {
-            result3 = z13.intersection(result3, convertSchema(schema.allOf[i], ctx));
+            result3 = z14.intersection(result3, convertSchema(schema.allOf[i], ctx));
           }
           baseSchema = result3;
         }
       }
       if (schema.nullable === true && ctx.version === "openapi-3.0") {
-        baseSchema = z13.nullable(baseSchema);
+        baseSchema = z14.nullable(baseSchema);
       }
       if (schema.readOnly === true) {
-        baseSchema = z13.readonly(baseSchema);
+        baseSchema = z14.readonly(baseSchema);
       }
       if (schema.default !== void 0) {
         baseSchema = baseSchema.default(schema.default);
@@ -22548,7 +22548,7 @@ var require_from_json_schema = __commonJS({
     }
     function fromJSONSchema(schema, params) {
       if (typeof schema === "boolean") {
-        return schema ? z13.any() : z13.never();
+        return schema ? z14.any() : z14.never();
       }
       let normalized;
       try {
@@ -23217,9 +23217,9 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = exports.z = void 0;
-    var z13 = __importStar(require_external());
-    exports.z = z13;
-    exports.default = z13;
+    var z14 = __importStar(require_external());
+    exports.z = z14;
+    exports.default = z14;
     __exportStar(require_external(), exports);
     (function() {
       var keys = Object.getOwnPropertyNames(exports);
@@ -23276,9 +23276,9 @@ var require_classic = __commonJS({
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = exports.z = void 0;
-    var z13 = __importStar(require_external());
-    exports.z = z13;
-    exports.default = z13;
+    var z14 = __importStar(require_external());
+    exports.z = z14;
+    exports.default = z14;
     __exportStar(require_external(), exports);
     (function() {
       var keys = Object.getOwnPropertyNames(exports);
@@ -23358,9 +23358,9 @@ var require_v4 = __commonJS({
 });
 
 // packages/session/dist/runner-worker-entry.js
-import { constants as constants3 } from "node:fs";
-import { open as open5, unlink } from "node:fs/promises";
-import { join as join3, resolve as resolve2 } from "node:path";
+import { constants as constants4 } from "node:fs";
+import { open as open6, unlink } from "node:fs/promises";
+import { join as join3, resolve as resolve3 } from "node:path";
 
 // node_modules/@verity/events/dist/events.js
 var import_zod = __toESM(require_zod(), 1);
@@ -24970,8 +24970,84 @@ var liveServerFrameSchema = import_zod8.z.discriminatedUnion("k", [
   import_zod8.z.object({ k: import_zod8.z.literal("error"), message: import_zod8.z.string() })
 ]);
 
-// packages/session/dist/runner-worker-entry.js
+// packages/session/dist/image-references.js
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { lstat, open } from "node:fs/promises";
+import { relative, resolve, sep } from "node:path";
 var import_zod9 = __toESM(require_zod(), 1);
+var MAX_REFERENCED_IMAGE_BYTES = 75e5;
+var imageReferenceSchema = import_zod9.z.strictObject({
+  kind: import_zod9.z.literal("image"),
+  mediaType: imageMediaTypeSchema,
+  filePath: import_zod9.z.string().min(1).max(4096).refine((path) => path.startsWith("/")),
+  byteSize: import_zod9.z.number().int().min(1).max(MAX_REFERENCED_IMAGE_BYTES),
+  sha256: import_zod9.z.string().regex(/^[a-f0-9]{64}$/u)
+});
+async function loadImage(cwd, turnId, reference) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(turnId))
+    throw new Error("invalid image turn");
+  const root = resolve(cwd);
+  const path = resolve(reference.filePath);
+  const parts = relative(root, path).split(sep);
+  if (parts.length !== 4 || parts[0] !== ".verity-sessions" || parts[1] !== "attachments" || parts[2] !== `turn-${turnId}` || !parts[3] || parts[3] === "." || parts[3] === "..")
+    throw new Error("image reference outside turn directory");
+  const handles = [];
+  try {
+    if ((await lstat(root)).isSymbolicLink())
+      throw new Error("symlinked image root");
+    let handle = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    handles.push(handle);
+    for (const [index, component] of parts.entries()) {
+      if ((await lstat(`/proc/self/fd/${handle.fd}/${component}`)).isSymbolicLink())
+        throw new Error("symlinked image reference");
+      handle = await open(`/proc/self/fd/${handle.fd}/${component}`, constants.O_RDONLY | constants.O_NOFOLLOW | (index < parts.length - 1 ? constants.O_DIRECTORY : constants.O_NONBLOCK));
+      handles.push(handle);
+    }
+    const stats = await handle.stat();
+    if (!stats.isFile() || stats.size !== reference.byteSize)
+      throw new Error("image reference size mismatch");
+    const bytes = Buffer.alloc(reference.byteSize + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const result3 = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (result3.bytesRead === 0)
+        break;
+      offset += result3.bytesRead;
+    }
+    if (offset !== reference.byteSize)
+      throw new Error("image reference size mismatch");
+    const content2 = bytes.subarray(0, offset);
+    if (createHash("sha256").update(content2).digest("hex") !== reference.sha256)
+      throw new Error("image reference checksum mismatch");
+    return content2.toString("base64");
+  } finally {
+    for (const handle of handles.reverse())
+      await handle.close();
+  }
+}
+async function hydrateImageAttachments(cwd, turnId, attachments) {
+  if (attachments === void 0)
+    return void 0;
+  if (attachments.length > 20)
+    throw new Error("too many image attachments");
+  const result3 = [];
+  for (const attachment of attachments) {
+    if (typeof attachment === "object" && attachment !== null && "filePath" in attachment) {
+      const reference = imageReferenceSchema.parse(attachment);
+      result3.push({
+        kind: "image",
+        mediaType: reference.mediaType,
+        data: await loadImage(cwd, turnId, reference)
+      });
+    } else
+      result3.push(attachmentUploadSchema.parse(attachment));
+  }
+  return result3;
+}
+
+// packages/session/dist/runner-worker-entry.js
+var import_zod10 = __toESM(require_zod(), 1);
 
 // packages/session/dist/backend-contract.js
 function isUsageLimitError(message) {
@@ -25106,364 +25182,364 @@ function vecSkipError(itemSchema) {
 }
 
 // node_modules/@agentclientprotocol/sdk/dist/schema/zod.gen.js
-var z10 = __toESM(require_v4(), 1);
-var zRequestId = z10.union([z10.number(), z10.string()]).nullable();
-var zSessionId = z10.string();
-var zWriteTextFileRequest = z10.object({
+var z11 = __toESM(require_v4(), 1);
+var zRequestId = z11.union([z11.number(), z11.string()]).nullable();
+var zSessionId = z11.string();
+var zWriteTextFileRequest = z11.object({
   sessionId: zSessionId,
-  path: z10.string(),
-  content: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  path: z11.string(),
+  content: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zReadTextFileRequest = z10.object({
+var zReadTextFileRequest = z11.object({
   sessionId: zSessionId,
-  path: z10.string(),
-  line: defaultOnError(z10.int().gte(0).max(4294967295, {
+  path: z11.string(),
+  line: defaultOnError(z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  limit: defaultOnError(z10.int().gte(0).max(4294967295, {
+  limit: defaultOnError(z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zToolCallId = z10.string();
-var zToolKind = z10.union([
-  z10.literal("read"),
-  z10.literal("edit"),
-  z10.literal("delete"),
-  z10.literal("move"),
-  z10.literal("search"),
-  z10.literal("execute"),
-  z10.literal("think"),
-  z10.literal("fetch"),
-  z10.literal("switch_mode"),
-  z10.literal("other")
+var zToolCallId = z11.string();
+var zToolKind = z11.union([
+  z11.literal("read"),
+  z11.literal("edit"),
+  z11.literal("delete"),
+  z11.literal("move"),
+  z11.literal("search"),
+  z11.literal("execute"),
+  z11.literal("think"),
+  z11.literal("fetch"),
+  z11.literal("switch_mode"),
+  z11.literal("other")
 ]);
-var zToolCallStatus = z10.union([
-  z10.literal("pending"),
-  z10.literal("in_progress"),
-  z10.literal("completed"),
-  z10.literal("failed")
+var zToolCallStatus = z11.union([
+  z11.literal("pending"),
+  z11.literal("in_progress"),
+  z11.literal("completed"),
+  z11.literal("failed")
 ]);
-var zRole = z10.union([z10.literal("assistant"), z10.literal("user")]);
-var zAnnotations = z10.object({
+var zRole = z11.union([z11.literal("assistant"), z11.literal("user")]);
+var zAnnotations = z11.object({
   audience: defaultOnError(vecSkipError(zRole).nullish(), () => void 0),
-  lastModified: defaultOnError(z10.string().nullish(), () => void 0),
-  priority: defaultOnError(z10.number().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  lastModified: defaultOnError(z11.string().nullish(), () => void 0),
+  priority: defaultOnError(z11.number().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zTextContent = z10.object({
+var zTextContent = z11.object({
   annotations: defaultOnError(zAnnotations.nullish(), () => void 0),
-  text: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  text: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zImageContent = z10.object({
+var zImageContent = z11.object({
   annotations: defaultOnError(zAnnotations.nullish(), () => void 0),
-  data: z10.string(),
-  mimeType: z10.string(),
-  uri: defaultOnError(z10.string().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  data: z11.string(),
+  mimeType: z11.string(),
+  uri: defaultOnError(z11.string().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zAudioContent = z10.object({
+var zAudioContent = z11.object({
   annotations: defaultOnError(zAnnotations.nullish(), () => void 0),
-  data: z10.string(),
-  mimeType: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  data: z11.string(),
+  mimeType: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zResourceLink = z10.object({
+var zResourceLink = z11.object({
   annotations: defaultOnError(zAnnotations.nullish(), () => void 0),
-  description: defaultOnError(z10.string().nullish(), () => void 0),
-  mimeType: defaultOnError(z10.string().nullish(), () => void 0),
-  name: z10.string(),
-  size: defaultOnError(z10.number().nullish(), () => void 0),
-  title: defaultOnError(z10.string().nullish(), () => void 0),
-  uri: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  description: defaultOnError(z11.string().nullish(), () => void 0),
+  mimeType: defaultOnError(z11.string().nullish(), () => void 0),
+  name: z11.string(),
+  size: defaultOnError(z11.number().nullish(), () => void 0),
+  title: defaultOnError(z11.string().nullish(), () => void 0),
+  uri: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zTextResourceContents = z10.object({
-  mimeType: defaultOnError(z10.string().nullish(), () => void 0),
-  text: z10.string(),
-  uri: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zTextResourceContents = z11.object({
+  mimeType: defaultOnError(z11.string().nullish(), () => void 0),
+  text: z11.string(),
+  uri: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zBlobResourceContents = z10.object({
-  blob: z10.string(),
-  mimeType: defaultOnError(z10.string().nullish(), () => void 0),
-  uri: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zBlobResourceContents = z11.object({
+  blob: z11.string(),
+  mimeType: defaultOnError(z11.string().nullish(), () => void 0),
+  uri: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zEmbeddedResourceResource = z10.union([
+var zEmbeddedResourceResource = z11.union([
   zTextResourceContents,
   zBlobResourceContents
 ]);
-var zEmbeddedResource = z10.object({
+var zEmbeddedResource = z11.object({
   annotations: defaultOnError(zAnnotations.nullish(), () => void 0),
   resource: zEmbeddedResourceResource,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zContentBlock = z10.union([
-  zTextContent.and(z10.object({
-    type: z10.literal("text")
+var zContentBlock = z11.union([
+  zTextContent.and(z11.object({
+    type: z11.literal("text")
   })),
-  zImageContent.and(z10.object({
-    type: z10.literal("image")
+  zImageContent.and(z11.object({
+    type: z11.literal("image")
   })),
-  zAudioContent.and(z10.object({
-    type: z10.literal("audio")
+  zAudioContent.and(z11.object({
+    type: z11.literal("audio")
   })),
-  zResourceLink.and(z10.object({
-    type: z10.literal("resource_link")
+  zResourceLink.and(z11.object({
+    type: z11.literal("resource_link")
   })),
-  zEmbeddedResource.and(z10.object({
-    type: z10.literal("resource")
+  zEmbeddedResource.and(z11.object({
+    type: z11.literal("resource")
   }))
 ]);
-var zContent = z10.object({
+var zContent = z11.object({
   content: zContentBlock,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zDiff = z10.object({
-  path: z10.string(),
-  oldText: defaultOnError(z10.string().nullish(), () => void 0),
-  newText: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zDiff = z11.object({
+  path: z11.string(),
+  oldText: defaultOnError(z11.string().nullish(), () => void 0),
+  newText: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zTerminalId = z10.string();
-var zTerminal = z10.object({
+var zTerminalId = z11.string();
+var zTerminal = z11.object({
   terminalId: zTerminalId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zToolCallContent = z10.union([
-  zContent.and(z10.object({
-    type: z10.literal("content")
+var zToolCallContent = z11.union([
+  zContent.and(z11.object({
+    type: z11.literal("content")
   })),
-  zDiff.and(z10.object({
-    type: z10.literal("diff")
+  zDiff.and(z11.object({
+    type: z11.literal("diff")
   })),
-  zTerminal.and(z10.object({
-    type: z10.literal("terminal")
+  zTerminal.and(z11.object({
+    type: z11.literal("terminal")
   }))
 ]);
-var zToolCallLocation = z10.object({
-  path: z10.string(),
-  line: defaultOnError(z10.int().gte(0).max(4294967295, {
+var zToolCallLocation = z11.object({
+  path: z11.string(),
+  line: defaultOnError(z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zToolCallUpdate = z10.object({
+var zToolCallUpdate = z11.object({
   toolCallId: zToolCallId,
   kind: defaultOnError(zToolKind.nullish(), () => void 0),
   status: defaultOnError(zToolCallStatus.nullish(), () => void 0),
-  title: defaultOnError(z10.string().nullish(), () => void 0),
-  name: defaultOnError(z10.string().nullish(), () => void 0),
+  title: defaultOnError(z11.string().nullish(), () => void 0),
+  name: defaultOnError(z11.string().nullish(), () => void 0),
   content: defaultOnError(vecSkipError(zToolCallContent).nullish(), () => void 0),
   locations: defaultOnError(vecSkipError(zToolCallLocation).nullish(), () => void 0),
-  rawInput: defaultOnError(z10.unknown().optional(), () => void 0),
-  rawOutput: defaultOnError(z10.unknown().optional(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  rawInput: defaultOnError(z11.unknown().optional(), () => void 0),
+  rawOutput: defaultOnError(z11.unknown().optional(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zPermissionOptionId = z10.string();
-var zPermissionOptionKind = z10.union([
-  z10.literal("allow_once"),
-  z10.literal("allow_always"),
-  z10.literal("reject_once"),
-  z10.literal("reject_always")
+var zPermissionOptionId = z11.string();
+var zPermissionOptionKind = z11.union([
+  z11.literal("allow_once"),
+  z11.literal("allow_always"),
+  z11.literal("reject_once"),
+  z11.literal("reject_always")
 ]);
-var zPermissionOption = z10.object({
+var zPermissionOption = z11.object({
   optionId: zPermissionOptionId,
-  name: z10.string(),
+  name: z11.string(),
   kind: zPermissionOptionKind,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zRequestPermissionRequest = z10.object({
+var zRequestPermissionRequest = z11.object({
   sessionId: zSessionId,
   toolCall: zToolCallUpdate,
-  options: z10.array(zPermissionOption),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  options: z11.array(zPermissionOption),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zEnvVariable = z10.object({
-  name: z10.string(),
-  value: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zEnvVariable = z11.object({
+  name: z11.string(),
+  value: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zCreateTerminalRequest = z10.object({
+var zCreateTerminalRequest = z11.object({
   sessionId: zSessionId,
-  command: z10.string(),
-  args: defaultOnError(vecSkipError(z10.string()).optional(), () => []),
+  command: z11.string(),
+  args: defaultOnError(vecSkipError(z11.string()).optional(), () => []),
   env: defaultOnError(vecSkipError(zEnvVariable).optional(), () => []),
-  cwd: defaultOnError(z10.string().nullish(), () => void 0),
-  outputByteLimit: defaultOnError(z10.number().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  cwd: defaultOnError(z11.string().nullish(), () => void 0),
+  outputByteLimit: defaultOnError(z11.number().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zTerminalOutputRequest = z10.object({
+var zTerminalOutputRequest = z11.object({
   sessionId: zSessionId,
   terminalId: zTerminalId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zReleaseTerminalRequest = z10.object({
+var zReleaseTerminalRequest = z11.object({
   sessionId: zSessionId,
   terminalId: zTerminalId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zWaitForTerminalExitRequest = z10.object({
+var zWaitForTerminalExitRequest = z11.object({
   sessionId: zSessionId,
   terminalId: zTerminalId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zKillTerminalRequest = z10.object({
+var zKillTerminalRequest = z11.object({
   sessionId: zSessionId,
   terminalId: zTerminalId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zElicitationSessionScope = z10.object({
+var zElicitationSessionScope = z11.object({
   sessionId: zSessionId,
   toolCallId: defaultOnError(zToolCallId.nullish(), () => void 0)
 });
-var zElicitationRequestScope = z10.object({
+var zElicitationRequestScope = z11.object({
   requestId: zRequestId
 });
-var zElicitationSchemaType = z10.literal("object");
-var zStringFormat = z10.union([
-  z10.literal("email"),
-  z10.literal("uri"),
-  z10.literal("date"),
-  z10.literal("date-time")
+var zElicitationSchemaType = z11.literal("object");
+var zStringFormat = z11.union([
+  z11.literal("email"),
+  z11.literal("uri"),
+  z11.literal("date"),
+  z11.literal("date-time")
 ]);
-var zEnumOption = z10.object({
-  const: z10.string(),
-  title: z10.string(),
-  description: defaultOnError(z10.string().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zEnumOption = z11.object({
+  const: z11.string(),
+  title: z11.string(),
+  description: defaultOnError(z11.string().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zStringPropertySchema = z10.object({
-  title: defaultOnError(z10.string().nullish(), () => void 0),
-  description: defaultOnError(z10.string().nullish(), () => void 0),
-  minLength: z10.int().gte(0).max(4294967295, {
+var zStringPropertySchema = z11.object({
+  title: defaultOnError(z11.string().nullish(), () => void 0),
+  description: defaultOnError(z11.string().nullish(), () => void 0),
+  minLength: z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(),
-  maxLength: z10.int().gte(0).max(4294967295, {
+  maxLength: z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(),
-  pattern: z10.string().nullish(),
+  pattern: z11.string().nullish(),
   format: zStringFormat.nullish(),
-  default: defaultOnError(z10.string().nullish(), () => void 0),
-  enum: z10.array(z10.string()).nullish(),
-  oneOf: z10.array(zEnumOption).nullish(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  default: defaultOnError(z11.string().nullish(), () => void 0),
+  enum: z11.array(z11.string()).nullish(),
+  oneOf: z11.array(zEnumOption).nullish(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNumberPropertySchema = z10.object({
-  title: defaultOnError(z10.string().nullish(), () => void 0),
-  description: defaultOnError(z10.string().nullish(), () => void 0),
-  minimum: z10.number().nullish(),
-  maximum: z10.number().nullish(),
-  default: defaultOnError(z10.number().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNumberPropertySchema = z11.object({
+  title: defaultOnError(z11.string().nullish(), () => void 0),
+  description: defaultOnError(z11.string().nullish(), () => void 0),
+  minimum: z11.number().nullish(),
+  maximum: z11.number().nullish(),
+  default: defaultOnError(z11.number().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zIntegerPropertySchema = z10.object({
-  title: defaultOnError(z10.string().nullish(), () => void 0),
-  description: defaultOnError(z10.string().nullish(), () => void 0),
-  minimum: z10.number().nullish(),
-  maximum: z10.number().nullish(),
-  default: defaultOnError(z10.number().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zIntegerPropertySchema = z11.object({
+  title: defaultOnError(z11.string().nullish(), () => void 0),
+  description: defaultOnError(z11.string().nullish(), () => void 0),
+  minimum: z11.number().nullish(),
+  maximum: z11.number().nullish(),
+  default: defaultOnError(z11.number().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zBooleanPropertySchema = z10.object({
-  title: defaultOnError(z10.string().nullish(), () => void 0),
-  description: defaultOnError(z10.string().nullish(), () => void 0),
-  default: defaultOnError(z10.boolean().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zBooleanPropertySchema = z11.object({
+  title: defaultOnError(z11.string().nullish(), () => void 0),
+  description: defaultOnError(z11.string().nullish(), () => void 0),
+  default: defaultOnError(z11.boolean().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zStringMultiSelectItems = z10.object({
-  enum: z10.array(z10.string()),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zStringMultiSelectItems = z11.object({
+  enum: z11.array(z11.string()),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zTitledMultiSelectItems = z10.object({
-  anyOf: z10.array(zEnumOption),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zTitledMultiSelectItems = z11.object({
+  anyOf: z11.array(zEnumOption),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zMultiSelectItems = preserveCustomPayload(z10.union([
-  zStringMultiSelectItems.and(z10.object({
-    type: z10.literal("string")
+var zMultiSelectItems = preserveCustomPayload(z11.union([
+  zStringMultiSelectItems.and(z11.object({
+    type: z11.literal("string")
   })),
-  excludeKnownTags(z10.object({
-    type: z10.string()
+  excludeKnownTags(z11.object({
+    type: z11.string()
   }), "type", ["string"]),
   zTitledMultiSelectItems
 ]), "type", ["string"]);
-var zMultiSelectPropertySchema = z10.object({
-  title: defaultOnError(z10.string().nullish(), () => void 0),
-  description: defaultOnError(z10.string().nullish(), () => void 0),
-  minItems: z10.number().nullish(),
-  maxItems: z10.number().nullish(),
+var zMultiSelectPropertySchema = z11.object({
+  title: defaultOnError(z11.string().nullish(), () => void 0),
+  description: defaultOnError(z11.string().nullish(), () => void 0),
+  minItems: z11.number().nullish(),
+  maxItems: z11.number().nullish(),
   items: zMultiSelectItems,
-  default: defaultOnError(vecSkipError(z10.string()).nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  default: defaultOnError(vecSkipError(z11.string()).nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zElicitationPropertySchema = preserveCustomPayload(z10.union([
-  zStringPropertySchema.and(z10.object({
-    type: z10.literal("string")
+var zElicitationPropertySchema = preserveCustomPayload(z11.union([
+  zStringPropertySchema.and(z11.object({
+    type: z11.literal("string")
   })),
-  zNumberPropertySchema.and(z10.object({
-    type: z10.literal("number")
+  zNumberPropertySchema.and(z11.object({
+    type: z11.literal("number")
   })),
-  zIntegerPropertySchema.and(z10.object({
-    type: z10.literal("integer")
+  zIntegerPropertySchema.and(z11.object({
+    type: z11.literal("integer")
   })),
-  zBooleanPropertySchema.and(z10.object({
-    type: z10.literal("boolean")
+  zBooleanPropertySchema.and(z11.object({
+    type: z11.literal("boolean")
   })),
-  zMultiSelectPropertySchema.and(z10.object({
-    type: z10.literal("array")
+  zMultiSelectPropertySchema.and(z11.object({
+    type: z11.literal("array")
   })),
-  excludeKnownTags(z10.object({
-    type: z10.string()
+  excludeKnownTags(z11.object({
+    type: z11.string()
   }), "type", ["array", "boolean", "integer", "number", "string"])
 ]), "type", ["array", "boolean", "integer", "number", "string"]);
-var zElicitationSchema = z10.object({
+var zElicitationSchema = z11.object({
   type: defaultOnError(zElicitationSchemaType.optional().default("object"), () => "object"),
-  title: defaultOnError(z10.string().nullish(), () => void 0),
-  properties: z10.record(z10.string(), zElicitationPropertySchema).optional().default({}),
-  required: z10.array(z10.string()).nullish(),
-  description: defaultOnError(z10.string().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  title: defaultOnError(z11.string().nullish(), () => void 0),
+  properties: z11.record(z11.string(), zElicitationPropertySchema).optional().default({}),
+  required: z11.array(z11.string()).nullish(),
+  description: defaultOnError(z11.string().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zElicitationFormMode = z10.intersection(z10.union([zElicitationSessionScope, zElicitationRequestScope]), z10.object({
+var zElicitationFormMode = z11.intersection(z11.union([zElicitationSessionScope, zElicitationRequestScope]), z11.object({
   requestedSchema: zElicitationSchema
 }));
-var zElicitationId = z10.string();
-var zElicitationUrlMode = z10.intersection(z10.union([zElicitationSessionScope, zElicitationRequestScope]), z10.object({
+var zElicitationId = z11.string();
+var zElicitationUrlMode = z11.intersection(z11.union([zElicitationSessionScope, zElicitationRequestScope]), z11.object({
   elicitationId: zElicitationId,
-  url: z10.url()
+  url: z11.url()
 }));
-var zCreateElicitationRequest = preserveCustomPayload(z10.intersection(z10.union([
-  zElicitationFormMode.and(z10.object({
-    mode: z10.literal("form")
+var zCreateElicitationRequest = preserveCustomPayload(z11.intersection(z11.union([
+  zElicitationFormMode.and(z11.object({
+    mode: z11.literal("form")
   })),
-  zElicitationUrlMode.and(z10.object({
-    mode: z10.literal("url")
+  zElicitationUrlMode.and(z11.object({
+    mode: z11.literal("url")
   })),
-  excludeKnownTags(z10.intersection(z10.union([zElicitationSessionScope, zElicitationRequestScope]), z10.object({
-    mode: z10.string()
+  excludeKnownTags(z11.intersection(z11.union([zElicitationSessionScope, zElicitationRequestScope]), z11.object({
+    mode: z11.string()
   })), "mode", ["form", "url"])
-]), z10.object({
-  message: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+]), z11.object({
+  message: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 })), "mode", ["form", "url"]);
-var zMcpServerAcpId = z10.string();
-var zMcpRequestId = z10.string();
-var zMessageMcpRequest = z10.object({
+var zMcpServerAcpId = z11.string();
+var zMcpRequestId = z11.string();
+var zMessageMcpRequest = z11.object({
   serverId: zMcpServerAcpId,
   requestId: zMcpRequestId,
-  method: z10.string(),
-  params: z10.record(z10.string(), z10.unknown()).nullish(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  method: z11.string(),
+  params: z11.record(z11.string(), z11.unknown()).nullish(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zExtRequest = z10.unknown();
-var zAgentRequest = z10.object({
+var zExtRequest = z11.unknown();
+var zAgentRequest = z11.object({
   id: zRequestId,
-  method: z10.string(),
-  params: z10.union([
+  method: z11.string(),
+  params: z11.union([
     zWriteTextFileRequest,
     zReadTextFileRequest,
     zRequestPermissionRequest,
@@ -25477,136 +25553,136 @@ var zAgentRequest = z10.object({
     zExtRequest
   ]).nullish()
 });
-var zProtocolVersion = z10.int().gte(0).lte(65535);
-var zPromptCapabilities = z10.object({
-  image: defaultOnError(z10.boolean().optional().default(false), () => false),
-  audio: defaultOnError(z10.boolean().optional().default(false), () => false),
-  embeddedContext: defaultOnError(z10.boolean().optional().default(false), () => false),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zProtocolVersion = z11.int().gte(0).lte(65535);
+var zPromptCapabilities = z11.object({
+  image: defaultOnError(z11.boolean().optional().default(false), () => false),
+  audio: defaultOnError(z11.boolean().optional().default(false), () => false),
+  embeddedContext: defaultOnError(z11.boolean().optional().default(false), () => false),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zMcpCapabilities = z10.object({
-  http: defaultOnError(z10.boolean().optional().default(false), () => false),
-  sse: defaultOnError(z10.boolean().optional().default(false), () => false),
-  acp: defaultOnError(z10.boolean().optional().default(false), () => false),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zMcpCapabilities = z11.object({
+  http: defaultOnError(z11.boolean().optional().default(false), () => false),
+  sse: defaultOnError(z11.boolean().optional().default(false), () => false),
+  acp: defaultOnError(z11.boolean().optional().default(false), () => false),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionListCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zSessionListCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionDeleteCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zSessionDeleteCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionAdditionalDirectoriesCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zSessionAdditionalDirectoriesCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionForkCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zSessionForkCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionResumeCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zSessionResumeCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionCloseCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zSessionCloseCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionCapabilities = z10.object({
+var zSessionCapabilities = z11.object({
   list: defaultOnError(zSessionListCapabilities.nullish(), () => void 0),
   delete: defaultOnError(zSessionDeleteCapabilities.nullish(), () => void 0),
   additionalDirectories: defaultOnError(zSessionAdditionalDirectoriesCapabilities.nullish(), () => void 0),
   fork: defaultOnError(zSessionForkCapabilities.nullish(), () => void 0),
   resume: defaultOnError(zSessionResumeCapabilities.nullish(), () => void 0),
   close: defaultOnError(zSessionCloseCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zLogoutCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zLogoutCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zAgentAuthCapabilities = z10.object({
+var zAgentAuthCapabilities = z11.object({
   logout: defaultOnError(zLogoutCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zProvidersCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zProvidersCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesDocumentDidOpenCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNesDocumentDidOpenCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zTextDocumentSyncKind = z10.union([
-  z10.literal("full"),
-  z10.literal("incremental")
+var zTextDocumentSyncKind = z11.union([
+  z11.literal("full"),
+  z11.literal("incremental")
 ]);
-var zNesDocumentDidChangeCapabilities = z10.object({
+var zNesDocumentDidChangeCapabilities = z11.object({
   syncKind: zTextDocumentSyncKind,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesDocumentDidCloseCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNesDocumentDidCloseCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesDocumentDidSaveCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNesDocumentDidSaveCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesDocumentDidFocusCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNesDocumentDidFocusCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesDocumentEventCapabilities = z10.object({
+var zNesDocumentEventCapabilities = z11.object({
   didOpen: defaultOnError(zNesDocumentDidOpenCapabilities.nullish(), () => void 0),
   didChange: defaultOnError(zNesDocumentDidChangeCapabilities.nullish(), () => void 0),
   didClose: defaultOnError(zNesDocumentDidCloseCapabilities.nullish(), () => void 0),
   didSave: defaultOnError(zNesDocumentDidSaveCapabilities.nullish(), () => void 0),
   didFocus: defaultOnError(zNesDocumentDidFocusCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesEventCapabilities = z10.object({
+var zNesEventCapabilities = z11.object({
   document: defaultOnError(zNesDocumentEventCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesRecentFilesCapabilities = z10.object({
-  maxCount: defaultOnError(z10.int().gte(0).max(4294967295, {
+var zNesRecentFilesCapabilities = z11.object({
+  maxCount: defaultOnError(z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesRelatedSnippetsCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNesRelatedSnippetsCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesEditHistoryCapabilities = z10.object({
-  maxCount: defaultOnError(z10.int().gte(0).max(4294967295, {
+var zNesEditHistoryCapabilities = z11.object({
+  maxCount: defaultOnError(z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesUserActionsCapabilities = z10.object({
-  maxCount: defaultOnError(z10.int().gte(0).max(4294967295, {
+var zNesUserActionsCapabilities = z11.object({
+  maxCount: defaultOnError(z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesOpenFilesCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNesOpenFilesCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesDiagnosticsCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNesDiagnosticsCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesContextCapabilities = z10.object({
+var zNesContextCapabilities = z11.object({
   recentFiles: defaultOnError(zNesRecentFilesCapabilities.nullish(), () => void 0),
   relatedSnippets: defaultOnError(zNesRelatedSnippetsCapabilities.nullish(), () => void 0),
   editHistory: defaultOnError(zNesEditHistoryCapabilities.nullish(), () => void 0),
   userActions: defaultOnError(zNesUserActionsCapabilities.nullish(), () => void 0),
   openFiles: defaultOnError(zNesOpenFilesCapabilities.nullish(), () => void 0),
   diagnostics: defaultOnError(zNesDiagnosticsCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesCapabilities = z10.object({
+var zNesCapabilities = z11.object({
   events: defaultOnError(zNesEventCapabilities.nullish(), () => void 0),
   context: defaultOnError(zNesContextCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zPositionEncodingKind = z10.union([
-  z10.literal("utf-16"),
-  z10.literal("utf-32"),
-  z10.literal("utf-8")
+var zPositionEncodingKind = z11.union([
+  z11.literal("utf-16"),
+  z11.literal("utf-32"),
+  z11.literal("utf-8")
 ]);
-var zAgentCapabilities = z10.object({
-  loadSession: defaultOnError(z10.boolean().optional().default(false), () => false),
+var zAgentCapabilities = z11.object({
+  loadSession: defaultOnError(z11.boolean().optional().default(false), () => false),
   promptCapabilities: defaultOnError(zPromptCapabilities.optional().default({
     image: false,
     audio: false,
@@ -25630,36 +25706,36 @@ var zAgentCapabilities = z10.object({
   providers: defaultOnError(zProvidersCapabilities.nullish(), () => void 0),
   nes: defaultOnError(zNesCapabilities.nullish(), () => void 0),
   positionEncoding: defaultOnError(zPositionEncodingKind.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zAuthMethodId = z10.string();
-var zAuthMethodTerminal = z10.object({
+var zAuthMethodId = z11.string();
+var zAuthMethodTerminal = z11.object({
   id: zAuthMethodId,
-  name: z10.string(),
-  description: defaultOnError(z10.string().nullish(), () => void 0),
-  args: defaultOnError(vecSkipError(z10.string()).optional(), () => []),
-  env: defaultOnError(z10.record(z10.string(), z10.string()).optional(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  name: z11.string(),
+  description: defaultOnError(z11.string().nullish(), () => void 0),
+  args: defaultOnError(vecSkipError(z11.string()).optional(), () => []),
+  env: defaultOnError(z11.record(z11.string(), z11.string()).optional(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zAuthMethodAgent = z10.object({
+var zAuthMethodAgent = z11.object({
   id: zAuthMethodId,
-  name: z10.string(),
-  description: defaultOnError(z10.string().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  name: z11.string(),
+  description: defaultOnError(z11.string().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zAuthMethod = z10.union([
-  zAuthMethodTerminal.and(z10.object({
-    type: z10.literal("terminal")
+var zAuthMethod = z11.union([
+  zAuthMethodTerminal.and(z11.object({
+    type: z11.literal("terminal")
   })),
   zAuthMethodAgent
 ]);
-var zImplementation = z10.object({
-  name: z10.string(),
-  title: defaultOnError(z10.string().nullish(), () => void 0),
-  version: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zImplementation = z11.object({
+  name: z11.string(),
+  title: defaultOnError(z11.string().nullish(), () => void 0),
+  version: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zInitializeResponse = z10.object({
+var zInitializeResponse = z11.object({
   protocolVersion: zProtocolVersion,
   agentCapabilities: defaultOnError(zAgentCapabilities.optional().default({
     loadSession: false,
@@ -25692,271 +25768,271 @@ var zInitializeResponse = z10.object({
   })),
   authMethods: defaultOnError(vecSkipError(zAuthMethod).optional().default([]), () => []),
   agentInfo: defaultOnError(zImplementation.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zAuthenticateResponse = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zAuthenticateResponse = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zProviderId = z10.string();
-var zLlmProtocol = z10.union([
-  z10.literal("anthropic"),
-  z10.literal("openai"),
-  z10.literal("azure"),
-  z10.literal("vertex"),
-  z10.literal("bedrock"),
-  z10.string()
+var zProviderId = z11.string();
+var zLlmProtocol = z11.union([
+  z11.literal("anthropic"),
+  z11.literal("openai"),
+  z11.literal("azure"),
+  z11.literal("vertex"),
+  z11.literal("bedrock"),
+  z11.string()
 ]);
-var zProviderCurrentConfig = z10.object({
+var zProviderCurrentConfig = z11.object({
   apiType: zLlmProtocol,
-  baseUrl: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  baseUrl: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zProviderInfo = z10.object({
+var zProviderInfo = z11.object({
   providerId: zProviderId,
   supported: requiredDefaultOnError(vecSkipError(zLlmProtocol), () => []),
-  required: z10.boolean(),
+  required: z11.boolean(),
   current: zProviderCurrentConfig.nullish(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zListProvidersResponse = z10.object({
-  providers: z10.array(zProviderInfo),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zListProvidersResponse = z11.object({
+  providers: z11.array(zProviderInfo),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSetProviderResponse = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zSetProviderResponse = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zDisableProviderResponse = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zDisableProviderResponse = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zLogoutResponse = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zLogoutResponse = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionModeId = z10.string();
-var zSessionMode = z10.object({
+var zSessionModeId = z11.string();
+var zSessionMode = z11.object({
   id: zSessionModeId,
-  name: z10.string(),
-  description: defaultOnError(z10.string().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  name: z11.string(),
+  description: defaultOnError(z11.string().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionModeState = z10.object({
+var zSessionModeState = z11.object({
   currentModeId: zSessionModeId,
   availableModes: requiredDefaultOnError(vecSkipError(zSessionMode), () => []),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionConfigId = z10.string();
-var zSessionConfigOptionCategory = z10.union([
-  z10.literal("mode"),
-  z10.literal("model"),
-  z10.literal("model_config"),
-  z10.literal("thought_level"),
-  z10.string()
+var zSessionConfigId = z11.string();
+var zSessionConfigOptionCategory = z11.union([
+  z11.literal("mode"),
+  z11.literal("model"),
+  z11.literal("model_config"),
+  z11.literal("thought_level"),
+  z11.string()
 ]);
-var zSessionConfigValueId = z10.string();
-var zSessionConfigSelectOption = z10.object({
+var zSessionConfigValueId = z11.string();
+var zSessionConfigSelectOption = z11.object({
   value: zSessionConfigValueId,
-  name: z10.string(),
-  description: defaultOnError(z10.string().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  name: z11.string(),
+  description: defaultOnError(z11.string().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionConfigGroupId = z10.string();
-var zSessionConfigSelectGroup = z10.object({
+var zSessionConfigGroupId = z11.string();
+var zSessionConfigSelectGroup = z11.object({
   group: zSessionConfigGroupId,
-  name: z10.string(),
+  name: z11.string(),
   options: requiredDefaultOnError(vecSkipError(zSessionConfigSelectOption), () => []),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionConfigSelectOptions = z10.union([
-  z10.array(zSessionConfigSelectOption),
-  z10.array(zSessionConfigSelectGroup)
+var zSessionConfigSelectOptions = z11.union([
+  z11.array(zSessionConfigSelectOption),
+  z11.array(zSessionConfigSelectGroup)
 ]);
-var zSessionConfigSelect = z10.object({
+var zSessionConfigSelect = z11.object({
   currentValue: zSessionConfigValueId,
   options: zSessionConfigSelectOptions
 });
-var zSessionConfigBoolean = z10.object({
-  currentValue: z10.boolean()
+var zSessionConfigBoolean = z11.object({
+  currentValue: z11.boolean()
 });
-var zSessionConfigOption = z10.intersection(z10.union([
-  zSessionConfigSelect.and(z10.object({
-    type: z10.literal("select")
+var zSessionConfigOption = z11.intersection(z11.union([
+  zSessionConfigSelect.and(z11.object({
+    type: z11.literal("select")
   })),
-  zSessionConfigBoolean.and(z10.object({
-    type: z10.literal("boolean")
+  zSessionConfigBoolean.and(z11.object({
+    type: z11.literal("boolean")
   }))
-]), z10.object({
+]), z11.object({
   id: zSessionConfigId,
-  name: z10.string(),
-  description: defaultOnError(z10.string().nullish(), () => void 0),
+  name: z11.string(),
+  description: defaultOnError(z11.string().nullish(), () => void 0),
   category: defaultOnError(zSessionConfigOptionCategory.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 }));
-var zNewSessionResponse = z10.object({
+var zNewSessionResponse = z11.object({
   sessionId: zSessionId,
   modes: defaultOnError(zSessionModeState.nullish(), () => void 0),
   configOptions: defaultOnError(vecSkipError(zSessionConfigOption).nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zLoadSessionResponse = z10.object({
+var zLoadSessionResponse = z11.object({
   modes: defaultOnError(zSessionModeState.nullish(), () => void 0),
   configOptions: defaultOnError(vecSkipError(zSessionConfigOption).nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionInfo = z10.object({
+var zSessionInfo = z11.object({
   sessionId: zSessionId,
-  cwd: z10.string(),
-  additionalDirectories: defaultOnError(vecSkipError(z10.string()).optional(), () => []),
-  title: defaultOnError(z10.string().nullish(), () => void 0),
-  updatedAt: defaultOnError(z10.string().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  cwd: z11.string(),
+  additionalDirectories: defaultOnError(vecSkipError(z11.string()).optional(), () => []),
+  title: defaultOnError(z11.string().nullish(), () => void 0),
+  updatedAt: defaultOnError(z11.string().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zListSessionsResponse = z10.object({
+var zListSessionsResponse = z11.object({
   sessions: requiredDefaultOnError(vecSkipError(zSessionInfo), () => []),
-  nextCursor: defaultOnError(z10.string().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  nextCursor: defaultOnError(z11.string().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zDeleteSessionResponse = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zDeleteSessionResponse = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zForkSessionResponse = z10.object({
+var zForkSessionResponse = z11.object({
   sessionId: zSessionId,
   modes: defaultOnError(zSessionModeState.nullish(), () => void 0),
   configOptions: defaultOnError(vecSkipError(zSessionConfigOption).nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zResumeSessionResponse = z10.object({
+var zResumeSessionResponse = z11.object({
   modes: defaultOnError(zSessionModeState.nullish(), () => void 0),
   configOptions: defaultOnError(vecSkipError(zSessionConfigOption).nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zCloseSessionResponse = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zCloseSessionResponse = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSetSessionModeResponse = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zSetSessionModeResponse = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSetSessionConfigOptionResponse = z10.object({
+var zSetSessionConfigOptionResponse = z11.object({
   configOptions: requiredDefaultOnError(vecSkipError(zSessionConfigOption), () => []),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zStopReason = z10.union([
-  z10.literal("end_turn"),
-  z10.literal("max_tokens"),
-  z10.literal("max_turn_requests"),
-  z10.literal("refusal"),
-  z10.literal("cancelled")
+var zStopReason = z11.union([
+  z11.literal("end_turn"),
+  z11.literal("max_tokens"),
+  z11.literal("max_turn_requests"),
+  z11.literal("refusal"),
+  z11.literal("cancelled")
 ]);
-var zUsage = z10.object({
-  totalTokens: z10.number(),
-  inputTokens: z10.number(),
-  outputTokens: z10.number(),
-  thoughtTokens: defaultOnError(z10.number().nullish(), () => void 0),
-  cachedReadTokens: defaultOnError(z10.number().nullish(), () => void 0),
-  cachedWriteTokens: defaultOnError(z10.number().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zUsage = z11.object({
+  totalTokens: z11.number(),
+  inputTokens: z11.number(),
+  outputTokens: z11.number(),
+  thoughtTokens: defaultOnError(z11.number().nullish(), () => void 0),
+  cachedReadTokens: defaultOnError(z11.number().nullish(), () => void 0),
+  cachedWriteTokens: defaultOnError(z11.number().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zPromptResponse = z10.object({
+var zPromptResponse = z11.object({
   stopReason: zStopReason,
   usage: defaultOnError(zUsage.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zStartNesResponse = z10.object({
+var zStartNesResponse = z11.object({
   sessionId: zSessionId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesSuggestionId = z10.string();
-var zPosition = z10.object({
-  line: z10.int().gte(0).max(4294967295, {
+var zNesSuggestionId = z11.string();
+var zPosition = z11.object({
+  line: z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }),
-  character: z10.int().gte(0).max(4294967295, {
+  character: z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zRange = z10.object({
+var zRange = z11.object({
   start: zPosition,
   end: zPosition,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesTextEdit = z10.object({
+var zNesTextEdit = z11.object({
   range: zRange,
-  newText: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  newText: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesEditSuggestion = z10.object({
+var zNesEditSuggestion = z11.object({
   id: zNesSuggestionId,
-  uri: z10.string(),
-  edits: z10.array(zNesTextEdit),
+  uri: z11.string(),
+  edits: z11.array(zNesTextEdit),
   cursorPosition: defaultOnError(zPosition.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesJumpSuggestion = z10.object({
+var zNesJumpSuggestion = z11.object({
   id: zNesSuggestionId,
-  uri: z10.string(),
+  uri: z11.string(),
   position: zPosition,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesRenameSuggestion = z10.object({
+var zNesRenameSuggestion = z11.object({
   id: zNesSuggestionId,
-  uri: z10.string(),
+  uri: z11.string(),
   position: zPosition,
-  newName: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  newName: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesSearchAndReplaceSuggestion = z10.object({
+var zNesSearchAndReplaceSuggestion = z11.object({
   id: zNesSuggestionId,
-  uri: z10.string(),
-  search: z10.string(),
-  replace: z10.string(),
-  isRegex: z10.boolean().nullish(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  uri: z11.string(),
+  search: z11.string(),
+  replace: z11.string(),
+  isRegex: z11.boolean().nullish(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesSuggestion = z10.union([
-  zNesEditSuggestion.and(z10.object({
-    kind: z10.literal("edit")
+var zNesSuggestion = z11.union([
+  zNesEditSuggestion.and(z11.object({
+    kind: z11.literal("edit")
   })),
-  zNesJumpSuggestion.and(z10.object({
-    kind: z10.literal("jump")
+  zNesJumpSuggestion.and(z11.object({
+    kind: z11.literal("jump")
   })),
-  zNesRenameSuggestion.and(z10.object({
-    kind: z10.literal("rename")
+  zNesRenameSuggestion.and(z11.object({
+    kind: z11.literal("rename")
   })),
-  zNesSearchAndReplaceSuggestion.and(z10.object({
-    kind: z10.literal("searchAndReplace")
+  zNesSearchAndReplaceSuggestion.and(z11.object({
+    kind: z11.literal("searchAndReplace")
   }))
 ]);
-var zSuggestNesResponse = z10.object({
-  suggestions: z10.array(zNesSuggestion),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zSuggestNesResponse = z11.object({
+  suggestions: z11.array(zNesSuggestion),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zCloseNesResponse = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zCloseNesResponse = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zExtResponse = z10.unknown();
-var zErrorCode = z10.union([
-  z10.literal(-32700),
-  z10.literal(-32600),
-  z10.literal(-32601),
-  z10.literal(-32602),
-  z10.literal(-32603),
-  z10.literal(-32800),
-  z10.literal(-32e3),
-  z10.literal(-32002),
-  z10.int().min(-2147483648, {
+var zExtResponse = z11.unknown();
+var zErrorCode = z11.union([
+  z11.literal(-32700),
+  z11.literal(-32600),
+  z11.literal(-32601),
+  z11.literal(-32602),
+  z11.literal(-32603),
+  z11.literal(-32800),
+  z11.literal(-32e3),
+  z11.literal(-32002),
+  z11.int().min(-2147483648, {
     error: "Invalid value: Expected int32 to be >= -2147483648"
   }).max(2147483647, {
     error: "Invalid value: Expected int32 to be <= 2147483647"
   })
 ]);
-var zError = z10.object({
+var zError = z11.object({
   code: zErrorCode,
-  message: z10.string(),
-  data: defaultOnError(z10.unknown().optional(), () => void 0)
+  message: z11.string(),
+  data: defaultOnError(z11.unknown().optional(), () => void 0)
 });
-var zAgentResponse = z10.union([
-  z10.object({
+var zAgentResponse = z11.union([
+  z11.object({
     id: zRequestId,
-    result: z10.union([
+    result: z11.union([
       zInitializeResponse,
       zAuthenticateResponse,
       zListProvidersResponse,
@@ -25979,351 +26055,351 @@ var zAgentResponse = z10.union([
       zExtResponse
     ])
   }),
-  z10.object({
+  z11.object({
     id: zRequestId,
     error: zError
   })
 ]);
-var zMessageId = z10.string();
-var zContentChunk = z10.object({
+var zMessageId = z11.string();
+var zContentChunk = z11.object({
   content: zContentBlock,
   messageId: defaultOnError(zMessageId.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zToolCall = z10.object({
+var zToolCall = z11.object({
   toolCallId: zToolCallId,
-  title: z10.string(),
-  name: defaultOnError(z10.string().nullish(), () => void 0),
+  title: z11.string(),
+  name: defaultOnError(z11.string().nullish(), () => void 0),
   kind: defaultOnError(zToolKind.optional(), () => void 0),
   status: defaultOnError(zToolCallStatus.optional(), () => void 0),
   content: defaultOnError(vecSkipError(zToolCallContent).optional(), () => []),
   locations: defaultOnError(vecSkipError(zToolCallLocation).optional(), () => []),
-  rawInput: defaultOnError(z10.unknown().optional(), () => void 0),
-  rawOutput: defaultOnError(z10.unknown().optional(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  rawInput: defaultOnError(z11.unknown().optional(), () => void 0),
+  rawOutput: defaultOnError(z11.unknown().optional(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zPlanEntryPriority = z10.union([
-  z10.literal("high"),
-  z10.literal("medium"),
-  z10.literal("low")
+var zPlanEntryPriority = z11.union([
+  z11.literal("high"),
+  z11.literal("medium"),
+  z11.literal("low")
 ]);
-var zPlanEntryStatus = z10.union([
-  z10.literal("pending"),
-  z10.literal("in_progress"),
-  z10.literal("completed")
+var zPlanEntryStatus = z11.union([
+  z11.literal("pending"),
+  z11.literal("in_progress"),
+  z11.literal("completed")
 ]);
-var zPlanEntry = z10.object({
-  content: z10.string(),
+var zPlanEntry = z11.object({
+  content: z11.string(),
   priority: zPlanEntryPriority,
   status: zPlanEntryStatus,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zPlan = z10.object({
+var zPlan = z11.object({
   entries: requiredDefaultOnError(vecSkipError(zPlanEntry), () => []),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zPlanId = z10.string();
-var zPlanItems = z10.object({
+var zPlanId = z11.string();
+var zPlanItems = z11.object({
   planId: zPlanId,
   entries: requiredDefaultOnError(vecSkipError(zPlanEntry), () => []),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zPlanFile = z10.object({
+var zPlanFile = z11.object({
   planId: zPlanId,
-  uri: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  uri: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zPlanMarkdown = z10.object({
+var zPlanMarkdown = z11.object({
   planId: zPlanId,
-  content: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  content: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zPlanUpdateContent = z10.union([
-  zPlanItems.and(z10.object({
-    type: z10.literal("items")
+var zPlanUpdateContent = z11.union([
+  zPlanItems.and(z11.object({
+    type: z11.literal("items")
   })),
-  zPlanFile.and(z10.object({
-    type: z10.literal("file")
+  zPlanFile.and(z11.object({
+    type: z11.literal("file")
   })),
-  zPlanMarkdown.and(z10.object({
-    type: z10.literal("markdown")
+  zPlanMarkdown.and(z11.object({
+    type: z11.literal("markdown")
   }))
 ]);
-var zPlanUpdate = z10.object({
+var zPlanUpdate = z11.object({
   plan: zPlanUpdateContent,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zPlanRemoved = z10.object({
+var zPlanRemoved = z11.object({
   planId: zPlanId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zUnstructuredCommandInput = z10.object({
-  hint: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zUnstructuredCommandInput = z11.object({
+  hint: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
 var zAvailableCommandInput = zUnstructuredCommandInput;
-var zAvailableCommand = z10.object({
-  name: z10.string(),
-  description: z10.string(),
+var zAvailableCommand = z11.object({
+  name: z11.string(),
+  description: z11.string(),
   input: defaultOnError(zAvailableCommandInput.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zAvailableCommandsUpdate = z10.object({
+var zAvailableCommandsUpdate = z11.object({
   availableCommands: requiredDefaultOnError(vecSkipError(zAvailableCommand), () => []),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zCurrentModeUpdate = z10.object({
+var zCurrentModeUpdate = z11.object({
   currentModeId: zSessionModeId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zConfigOptionUpdate = z10.object({
+var zConfigOptionUpdate = z11.object({
   configOptions: requiredDefaultOnError(vecSkipError(zSessionConfigOption), () => []),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionInfoUpdate = z10.object({
-  title: defaultOnError(z10.string().nullish(), () => void 0),
-  updatedAt: defaultOnError(z10.string().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zSessionInfoUpdate = z11.object({
+  title: defaultOnError(z11.string().nullish(), () => void 0),
+  updatedAt: defaultOnError(z11.string().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zCost = z10.object({
-  amount: z10.number(),
-  currency: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zCost = z11.object({
+  amount: z11.number(),
+  currency: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zUsageUpdate = z10.object({
-  used: z10.number(),
-  size: z10.number(),
+var zUsageUpdate = z11.object({
+  used: z11.number(),
+  size: z11.number(),
   cost: defaultOnError(zCost.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNoticeSeverity = z10.union([
-  z10.literal("info"),
-  z10.literal("warning"),
-  z10.literal("error"),
-  z10.string()
+var zNoticeSeverity = z11.union([
+  z11.literal("info"),
+  z11.literal("warning"),
+  z11.literal("error"),
+  z11.string()
 ]);
-var zNotice = z10.object({
+var zNotice = z11.object({
   severity: zNoticeSeverity,
-  title: z10.string().min(1),
-  description: defaultOnError(z10.string().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  title: z11.string().min(1),
+  description: defaultOnError(z11.string().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zCompactionId = z10.string();
-var zCompactionStatus = z10.union([
-  z10.literal("in_progress"),
-  z10.literal("completed"),
-  z10.literal("failed"),
-  z10.literal("cancelled"),
-  z10.string()
+var zCompactionId = z11.string();
+var zCompactionStatus = z11.union([
+  z11.literal("in_progress"),
+  z11.literal("completed"),
+  z11.literal("failed"),
+  z11.literal("cancelled"),
+  z11.string()
 ]);
-var zCompactionUpdate = z10.object({
+var zCompactionUpdate = z11.object({
   compactionId: zCompactionId,
   status: zCompactionStatus,
   summary: defaultOnError(vecSkipError(zContentBlock).nullish(), () => void 0),
-  error: defaultOnError(z10.string().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  error: defaultOnError(z11.string().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zCompactionSummaryChunk = z10.object({
+var zCompactionSummaryChunk = z11.object({
   compactionId: zCompactionId,
   content: zContentBlock,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionCancelCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zSessionCancelCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSubagentSessionCapabilities = z10.object({
+var zSubagentSessionCapabilities = z11.object({
   cancel: defaultOnError(zSessionCancelCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zRunningStateUpdate = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zRunningStateUpdate = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zIdleStateUpdate = z10.object({
+var zIdleStateUpdate = z11.object({
   stopReason: defaultOnError(zStopReason.nullish(), () => void 0),
   usage: defaultOnError(zUsage.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zRequiresActionStateUpdate = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zRequiresActionStateUpdate = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zUnknownStateUpdate = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zUnknownStateUpdate = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zStateUpdate = preserveCustomPayload(z10.union([
-  zRunningStateUpdate.and(z10.object({
-    state: z10.literal("running")
+var zStateUpdate = preserveCustomPayload(z11.union([
+  zRunningStateUpdate.and(z11.object({
+    state: z11.literal("running")
   })),
-  zIdleStateUpdate.and(z10.object({
-    state: z10.literal("idle")
+  zIdleStateUpdate.and(z11.object({
+    state: z11.literal("idle")
   })),
-  zRequiresActionStateUpdate.and(z10.object({
-    state: z10.literal("requires_action")
+  zRequiresActionStateUpdate.and(z11.object({
+    state: z11.literal("requires_action")
   })),
-  zUnknownStateUpdate.and(z10.object({
-    state: z10.literal("unknown")
+  zUnknownStateUpdate.and(z11.object({
+    state: z11.literal("unknown")
   })),
-  excludeKnownTags(z10.object({
-    state: z10.string()
+  excludeKnownTags(z11.object({
+    state: z11.string()
   }), "state", ["idle", "requires_action", "running", "unknown"])
 ]), "state", ["idle", "requires_action", "running", "unknown"]);
-var zSubagentUpdate = z10.object({
+var zSubagentUpdate = z11.object({
   sessionId: zSessionId,
-  title: defaultOnError(z10.string().nullish(), () => void 0),
-  description: defaultOnError(z10.string().nullish(), () => void 0),
+  title: defaultOnError(z11.string().nullish(), () => void 0),
+  description: defaultOnError(z11.string().nullish(), () => void 0),
   capabilities: defaultOnError(zSubagentSessionCapabilities.nullish(), () => void 0),
   state: defaultOnError(zStateUpdate.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionMessage = z10.object({
+var zSessionMessage = z11.object({
   messageId: zMessageId,
   senderSessionId: defaultOnError(zSessionId.nullish(), () => void 0),
   recipientSessionId: defaultOnError(zSessionId.nullish(), () => void 0),
   content: defaultOnError(vecSkipError(zContentBlock).nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionMessageChunk = z10.object({
+var zSessionMessageChunk = z11.object({
   messageId: zMessageId,
   senderSessionId: defaultOnError(zSessionId.nullish(), () => void 0),
   recipientSessionId: defaultOnError(zSessionId.nullish(), () => void 0),
   content: zContentBlock,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionUpdate = z10.union([
-  zContentChunk.and(z10.object({
-    sessionUpdate: z10.literal("user_message_chunk")
+var zSessionUpdate = z11.union([
+  zContentChunk.and(z11.object({
+    sessionUpdate: z11.literal("user_message_chunk")
   })),
-  zContentChunk.and(z10.object({
-    sessionUpdate: z10.literal("agent_message_chunk")
+  zContentChunk.and(z11.object({
+    sessionUpdate: z11.literal("agent_message_chunk")
   })),
-  zContentChunk.and(z10.object({
-    sessionUpdate: z10.literal("agent_thought_chunk")
+  zContentChunk.and(z11.object({
+    sessionUpdate: z11.literal("agent_thought_chunk")
   })),
-  zToolCall.and(z10.object({
-    sessionUpdate: z10.literal("tool_call")
+  zToolCall.and(z11.object({
+    sessionUpdate: z11.literal("tool_call")
   })),
-  zToolCallUpdate.and(z10.object({
-    sessionUpdate: z10.literal("tool_call_update")
+  zToolCallUpdate.and(z11.object({
+    sessionUpdate: z11.literal("tool_call_update")
   })),
-  zPlan.and(z10.object({
-    sessionUpdate: z10.literal("plan")
+  zPlan.and(z11.object({
+    sessionUpdate: z11.literal("plan")
   })),
-  zPlanUpdate.and(z10.object({
-    sessionUpdate: z10.literal("plan_update")
+  zPlanUpdate.and(z11.object({
+    sessionUpdate: z11.literal("plan_update")
   })),
-  zPlanRemoved.and(z10.object({
-    sessionUpdate: z10.literal("plan_removed")
+  zPlanRemoved.and(z11.object({
+    sessionUpdate: z11.literal("plan_removed")
   })),
-  zAvailableCommandsUpdate.and(z10.object({
-    sessionUpdate: z10.literal("available_commands_update")
+  zAvailableCommandsUpdate.and(z11.object({
+    sessionUpdate: z11.literal("available_commands_update")
   })),
-  zCurrentModeUpdate.and(z10.object({
-    sessionUpdate: z10.literal("current_mode_update")
+  zCurrentModeUpdate.and(z11.object({
+    sessionUpdate: z11.literal("current_mode_update")
   })),
-  zConfigOptionUpdate.and(z10.object({
-    sessionUpdate: z10.literal("config_option_update")
+  zConfigOptionUpdate.and(z11.object({
+    sessionUpdate: z11.literal("config_option_update")
   })),
-  zSessionInfoUpdate.and(z10.object({
-    sessionUpdate: z10.literal("session_info_update")
+  zSessionInfoUpdate.and(z11.object({
+    sessionUpdate: z11.literal("session_info_update")
   })),
-  zUsageUpdate.and(z10.object({
-    sessionUpdate: z10.literal("usage_update")
+  zUsageUpdate.and(z11.object({
+    sessionUpdate: z11.literal("usage_update")
   })),
-  zNotice.and(z10.object({
-    sessionUpdate: z10.literal("notice")
+  zNotice.and(z11.object({
+    sessionUpdate: z11.literal("notice")
   })),
-  zCompactionUpdate.and(z10.object({
-    sessionUpdate: z10.literal("compaction_update")
+  zCompactionUpdate.and(z11.object({
+    sessionUpdate: z11.literal("compaction_update")
   })),
-  zCompactionSummaryChunk.and(z10.object({
-    sessionUpdate: z10.literal("compaction_summary_chunk")
+  zCompactionSummaryChunk.and(z11.object({
+    sessionUpdate: z11.literal("compaction_summary_chunk")
   })),
-  zSubagentUpdate.and(z10.object({
-    sessionUpdate: z10.literal("subagent_update")
+  zSubagentUpdate.and(z11.object({
+    sessionUpdate: z11.literal("subagent_update")
   })),
-  zSessionMessage.and(z10.object({
-    sessionUpdate: z10.literal("session_message")
+  zSessionMessage.and(z11.object({
+    sessionUpdate: z11.literal("session_message")
   })),
-  zSessionMessageChunk.and(z10.object({
-    sessionUpdate: z10.literal("session_message_chunk")
+  zSessionMessageChunk.and(z11.object({
+    sessionUpdate: z11.literal("session_message_chunk")
   }))
 ]);
-var zSessionNotification = z10.object({
+var zSessionNotification = z11.object({
   sessionId: zSessionId,
   update: zSessionUpdate,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zCompleteElicitationNotification = z10.object({
+var zCompleteElicitationNotification = z11.object({
   elicitationId: zElicitationId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zExtNotification = z10.unknown();
-var zAgentNotification = z10.object({
-  method: z10.string(),
-  params: z10.union([
+var zExtNotification = z11.unknown();
+var zAgentNotification = z11.object({
+  method: z11.string(),
+  params: z11.union([
     zSessionNotification,
     zCompleteElicitationNotification,
     zExtNotification
   ]).nullish()
 });
-var zFileSystemCapabilities = z10.object({
-  readTextFile: defaultOnError(z10.boolean().optional().default(false), () => false),
-  writeTextFile: defaultOnError(z10.boolean().optional().default(false), () => false),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zFileSystemCapabilities = z11.object({
+  readTextFile: defaultOnError(z11.boolean().optional().default(false), () => false),
+  writeTextFile: defaultOnError(z11.boolean().optional().default(false), () => false),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zCompactionCapabilities = z10.record(z10.string(), z10.unknown());
-var zBooleanConfigOptionCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zCompactionCapabilities = z11.record(z11.string(), z11.unknown());
+var zBooleanConfigOptionCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSessionConfigOptionsCapabilities = z10.object({
+var zSessionConfigOptionsCapabilities = z11.object({
   boolean: defaultOnError(zBooleanConfigOptionCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNoticeCapabilities = z10.record(z10.string(), z10.unknown());
-var zClientSessionCapabilities = z10.object({
+var zNoticeCapabilities = z11.record(z11.string(), z11.unknown());
+var zClientSessionCapabilities = z11.object({
   compaction: defaultOnError(zCompactionCapabilities.nullish(), () => void 0),
   configOptions: defaultOnError(zSessionConfigOptionsCapabilities.nullish(), () => void 0),
   notices: defaultOnError(zNoticeCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSubagentCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zSubagentCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zPlanCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zPlanCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zAuthCapabilities = z10.object({
-  terminal: defaultOnError(z10.boolean().optional().default(false), () => false),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zAuthCapabilities = z11.object({
+  terminal: defaultOnError(z11.boolean().optional().default(false), () => false),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zElicitationFormCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zElicitationFormCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zElicitationUrlCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zElicitationUrlCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zElicitationCapabilities = z10.object({
+var zElicitationCapabilities = z11.object({
   form: defaultOnError(zElicitationFormCapabilities.nullish(), () => void 0),
   url: defaultOnError(zElicitationUrlCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesJumpCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNesJumpCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesRenameCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNesRenameCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesSearchAndReplaceCapabilities = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNesSearchAndReplaceCapabilities = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zClientNesCapabilities = z10.object({
+var zClientNesCapabilities = z11.object({
   jump: defaultOnError(zNesJumpCapabilities.nullish(), () => void 0),
   rename: defaultOnError(zNesRenameCapabilities.nullish(), () => void 0),
   searchAndReplace: defaultOnError(zNesSearchAndReplaceCapabilities.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zClientCapabilities = z10.object({
+var zClientCapabilities = z11.object({
   fs: defaultOnError(zFileSystemCapabilities.optional().default({ readTextFile: false, writeTextFile: false }), () => ({ readTextFile: false, writeTextFile: false })),
-  terminal: defaultOnError(z10.boolean().optional().default(false), () => false),
+  terminal: defaultOnError(z11.boolean().optional().default(false), () => false),
   session: defaultOnError(zClientSessionCapabilities.nullish(), () => void 0),
   subagents: defaultOnError(zSubagentCapabilities.nullish(), () => void 0),
   plan: defaultOnError(zPlanCapabilities.nullish(), () => void 0),
@@ -26331,9 +26407,9 @@ var zClientCapabilities = z10.object({
   elicitation: defaultOnError(zElicitationCapabilities.nullish(), () => void 0),
   nes: defaultOnError(zClientNesCapabilities.nullish(), () => void 0),
   positionEncodings: defaultOnError(vecSkipError(zPositionEncodingKind).optional(), () => []),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zInitializeRequest = z10.object({
+var zInitializeRequest = z11.object({
   protocolVersion: zProtocolVersion,
   clientCapabilities: defaultOnError(zClientCapabilities.optional().default({
     fs: { readTextFile: false, writeTextFile: false },
@@ -26345,235 +26421,235 @@ var zInitializeRequest = z10.object({
     auth: { terminal: false }
   })),
   clientInfo: defaultOnError(zImplementation.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zAuthenticateRequest = z10.object({
+var zAuthenticateRequest = z11.object({
   methodId: zAuthMethodId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zListProvidersRequest = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zListProvidersRequest = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSetProviderRequest = z10.object({
+var zSetProviderRequest = z11.object({
   providerId: zProviderId,
   apiType: zLlmProtocol,
-  baseUrl: z10.string(),
-  headers: z10.record(z10.string(), z10.string()).optional(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  baseUrl: z11.string(),
+  headers: z11.record(z11.string(), z11.string()).optional(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zDisableProviderRequest = z10.object({
+var zDisableProviderRequest = z11.object({
   providerId: zProviderId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zLogoutRequest = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zLogoutRequest = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zHttpHeader = z10.object({
-  name: z10.string(),
-  value: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zHttpHeader = z11.object({
+  name: z11.string(),
+  value: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zMcpServerHttp = z10.object({
-  name: z10.string(),
-  url: z10.string(),
-  headers: z10.array(zHttpHeader),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zMcpServerHttp = z11.object({
+  name: z11.string(),
+  url: z11.string(),
+  headers: z11.array(zHttpHeader),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zMcpServerSse = z10.object({
-  name: z10.string(),
-  url: z10.string(),
-  headers: z10.array(zHttpHeader),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zMcpServerSse = z11.object({
+  name: z11.string(),
+  url: z11.string(),
+  headers: z11.array(zHttpHeader),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zMcpServerAcp = z10.object({
-  name: z10.string(),
+var zMcpServerAcp = z11.object({
+  name: z11.string(),
   serverId: zMcpServerAcpId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zMcpServerStdio = z10.object({
-  name: z10.string(),
-  command: z10.string(),
-  args: z10.array(z10.string()),
-  env: z10.array(zEnvVariable),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zMcpServerStdio = z11.object({
+  name: z11.string(),
+  command: z11.string(),
+  args: z11.array(z11.string()),
+  env: z11.array(zEnvVariable),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zMcpServer = z10.union([
-  zMcpServerHttp.and(z10.object({
-    type: z10.literal("http")
+var zMcpServer = z11.union([
+  zMcpServerHttp.and(z11.object({
+    type: z11.literal("http")
   })),
-  zMcpServerSse.and(z10.object({
-    type: z10.literal("sse")
+  zMcpServerSse.and(z11.object({
+    type: z11.literal("sse")
   })),
-  zMcpServerAcp.and(z10.object({
-    type: z10.literal("acp")
+  zMcpServerAcp.and(z11.object({
+    type: z11.literal("acp")
   })),
   zMcpServerStdio
 ]);
-var zNewSessionRequest = z10.object({
-  cwd: z10.string(),
-  additionalDirectories: defaultOnError(vecSkipError(z10.string()).optional(), () => []),
+var zNewSessionRequest = z11.object({
+  cwd: z11.string(),
+  additionalDirectories: defaultOnError(vecSkipError(z11.string()).optional(), () => []),
   mcpServers: requiredDefaultOnError(vecSkipError(zMcpServer), () => []),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zLoadSessionRequest = z10.object({
+var zLoadSessionRequest = z11.object({
   mcpServers: requiredDefaultOnError(vecSkipError(zMcpServer), () => []),
-  cwd: z10.string(),
-  additionalDirectories: defaultOnError(vecSkipError(z10.string()).optional(), () => []),
+  cwd: z11.string(),
+  additionalDirectories: defaultOnError(vecSkipError(z11.string()).optional(), () => []),
   sessionId: zSessionId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zListSessionsRequest = z10.object({
-  cwd: z10.string().nullish(),
-  cursor: z10.string().nullish(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zListSessionsRequest = z11.object({
+  cwd: z11.string().nullish(),
+  cursor: z11.string().nullish(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zDeleteSessionRequest = z10.object({
+var zDeleteSessionRequest = z11.object({
   sessionId: zSessionId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zForkSessionRequest = z10.object({
+var zForkSessionRequest = z11.object({
   sessionId: zSessionId,
-  cwd: z10.string(),
-  additionalDirectories: defaultOnError(vecSkipError(z10.string()).optional(), () => []),
+  cwd: z11.string(),
+  additionalDirectories: defaultOnError(vecSkipError(z11.string()).optional(), () => []),
   mcpServers: defaultOnError(vecSkipError(zMcpServer).optional(), () => []),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zResumeSessionRequest = z10.object({
+var zResumeSessionRequest = z11.object({
   sessionId: zSessionId,
-  cwd: z10.string(),
-  additionalDirectories: defaultOnError(vecSkipError(z10.string()).optional(), () => []),
+  cwd: z11.string(),
+  additionalDirectories: defaultOnError(vecSkipError(z11.string()).optional(), () => []),
   mcpServers: defaultOnError(vecSkipError(zMcpServer).optional(), () => []),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zCloseSessionRequest = z10.object({
+var zCloseSessionRequest = z11.object({
   sessionId: zSessionId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSetSessionModeRequest = z10.object({
+var zSetSessionModeRequest = z11.object({
   sessionId: zSessionId,
   modeId: zSessionModeId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSetSessionConfigOptionRequest = z10.intersection(z10.union([
-  z10.object({
-    value: z10.boolean(),
-    type: z10.literal("boolean")
+var zSetSessionConfigOptionRequest = z11.intersection(z11.union([
+  z11.object({
+    value: z11.boolean(),
+    type: z11.literal("boolean")
   }),
-  z10.object({
+  z11.object({
     value: zSessionConfigValueId
   })
-]), z10.object({
+]), z11.object({
   sessionId: zSessionId,
   configId: zSessionConfigId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 }));
-var zPromptRequest = z10.object({
+var zPromptRequest = z11.object({
   sessionId: zSessionId,
-  prompt: z10.array(zContentBlock),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  prompt: z11.array(zContentBlock),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zWorkspaceFolder = z10.object({
-  uri: z10.string(),
-  name: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zWorkspaceFolder = z11.object({
+  uri: z11.string(),
+  name: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesRepository = z10.object({
-  name: z10.string(),
-  owner: z10.string(),
-  remoteUrl: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNesRepository = z11.object({
+  name: z11.string(),
+  owner: z11.string(),
+  remoteUrl: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zStartNesRequest = z10.object({
-  workspaceUri: defaultOnError(z10.string().nullish(), () => void 0),
-  workspaceFolders: z10.array(zWorkspaceFolder).nullish(),
+var zStartNesRequest = z11.object({
+  workspaceUri: defaultOnError(z11.string().nullish(), () => void 0),
+  workspaceFolders: z11.array(zWorkspaceFolder).nullish(),
   repository: defaultOnError(zNesRepository.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesTriggerKind = z10.union([
-  z10.literal("automatic"),
-  z10.literal("diagnostic"),
-  z10.literal("manual")
+var zNesTriggerKind = z11.union([
+  z11.literal("automatic"),
+  z11.literal("diagnostic"),
+  z11.literal("manual")
 ]);
-var zNesRecentFile = z10.object({
-  uri: z10.string(),
-  languageId: z10.string(),
-  text: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNesRecentFile = z11.object({
+  uri: z11.string(),
+  languageId: z11.string(),
+  text: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesExcerpt = z10.object({
-  startLine: z10.int().gte(0).max(4294967295, {
+var zNesExcerpt = z11.object({
+  startLine: z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }),
-  endLine: z10.int().gte(0).max(4294967295, {
+  endLine: z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }),
-  text: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  text: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesRelatedSnippet = z10.object({
-  uri: z10.string(),
-  excerpts: z10.array(zNesExcerpt),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNesRelatedSnippet = z11.object({
+  uri: z11.string(),
+  excerpts: z11.array(zNesExcerpt),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesEditHistoryEntry = z10.object({
-  uri: z10.string(),
-  diff: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNesEditHistoryEntry = z11.object({
+  uri: z11.string(),
+  diff: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesUserAction = z10.object({
-  action: z10.string(),
-  uri: z10.string(),
+var zNesUserAction = z11.object({
+  action: z11.string(),
+  uri: z11.string(),
   position: zPosition,
-  timestampMs: z10.number(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  timestampMs: z11.number(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesOpenFile = z10.object({
-  uri: z10.string(),
-  languageId: z10.string(),
+var zNesOpenFile = z11.object({
+  uri: z11.string(),
+  languageId: z11.string(),
   visibleRange: defaultOnError(zRange.nullish(), () => void 0),
-  lastFocusedMs: defaultOnError(z10.number().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  lastFocusedMs: defaultOnError(z11.number().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesDiagnosticSeverity = z10.union([
-  z10.literal("error"),
-  z10.literal("warning"),
-  z10.literal("information"),
-  z10.literal("hint")
+var zNesDiagnosticSeverity = z11.union([
+  z11.literal("error"),
+  z11.literal("warning"),
+  z11.literal("information"),
+  z11.literal("hint")
 ]);
-var zNesDiagnostic = z10.object({
-  uri: z10.string(),
+var zNesDiagnostic = z11.object({
+  uri: z11.string(),
   range: zRange,
   severity: zNesDiagnosticSeverity,
-  message: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  message: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesSuggestContext = z10.object({
-  recentFiles: z10.array(zNesRecentFile).nullish(),
-  relatedSnippets: z10.array(zNesRelatedSnippet).nullish(),
-  editHistory: z10.array(zNesEditHistoryEntry).nullish(),
-  userActions: z10.array(zNesUserAction).nullish(),
-  openFiles: z10.array(zNesOpenFile).nullish(),
-  diagnostics: z10.array(zNesDiagnostic).nullish(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zNesSuggestContext = z11.object({
+  recentFiles: z11.array(zNesRecentFile).nullish(),
+  relatedSnippets: z11.array(zNesRelatedSnippet).nullish(),
+  editHistory: z11.array(zNesEditHistoryEntry).nullish(),
+  userActions: z11.array(zNesUserAction).nullish(),
+  openFiles: z11.array(zNesOpenFile).nullish(),
+  diagnostics: z11.array(zNesDiagnostic).nullish(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSuggestNesRequest = z10.object({
+var zSuggestNesRequest = z11.object({
   sessionId: zSessionId,
-  uri: z10.string(),
-  version: z10.number(),
+  uri: z11.string(),
+  version: z11.number(),
   position: zPosition,
   selection: zRange.nullish(),
   triggerKind: zNesTriggerKind,
   context: zNesSuggestContext.nullish(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zCloseNesRequest = z10.object({
+var zCloseNesRequest = z11.object({
   sessionId: zSessionId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zClientRequest = z10.object({
+var zClientRequest = z11.object({
   id: zRequestId,
-  method: z10.string(),
-  params: z10.union([
+  method: z11.string(),
+  params: z11.union([
     zInitializeRequest,
     zAuthenticateRequest,
     zListProvidersRequest,
@@ -26596,108 +26672,108 @@ var zClientRequest = z10.object({
     zExtRequest
   ]).nullish()
 });
-var zWriteTextFileResponse = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zWriteTextFileResponse = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zReadTextFileResponse = z10.object({
-  content: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zReadTextFileResponse = z11.object({
+  content: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zSelectedPermissionOutcome = z10.object({
+var zSelectedPermissionOutcome = z11.object({
   optionId: zPermissionOptionId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zRequestPermissionOutcome = z10.union([
-  z10.object({
-    outcome: z10.literal("cancelled")
+var zRequestPermissionOutcome = z11.union([
+  z11.object({
+    outcome: z11.literal("cancelled")
   }),
-  zSelectedPermissionOutcome.and(z10.object({
-    outcome: z10.literal("selected")
+  zSelectedPermissionOutcome.and(z11.object({
+    outcome: z11.literal("selected")
   }))
 ]);
-var zRequestPermissionResponse = z10.object({
+var zRequestPermissionResponse = z11.object({
   outcome: zRequestPermissionOutcome,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zCreateTerminalResponse = z10.object({
+var zCreateTerminalResponse = z11.object({
   terminalId: zTerminalId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zTerminalExitStatus = z10.object({
-  exitCode: defaultOnError(z10.int().gte(0).max(4294967295, {
+var zTerminalExitStatus = z11.object({
+  exitCode: defaultOnError(z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  signal: defaultOnError(z10.string().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  signal: defaultOnError(z11.string().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zTerminalOutputResponse = z10.object({
-  output: z10.string(),
-  truncated: z10.boolean(),
+var zTerminalOutputResponse = z11.object({
+  output: z11.string(),
+  truncated: z11.boolean(),
   exitStatus: defaultOnError(zTerminalExitStatus.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zReleaseTerminalResponse = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zReleaseTerminalResponse = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zWaitForTerminalExitResponse = z10.object({
-  exitCode: defaultOnError(z10.int().gte(0).max(4294967295, {
+var zWaitForTerminalExitResponse = z11.object({
+  exitCode: defaultOnError(z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
   }).nullish(), () => void 0),
-  signal: defaultOnError(z10.string().nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  signal: defaultOnError(z11.string().nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zKillTerminalResponse = z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zKillTerminalResponse = z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zElicitationContentValue = z10.union([
-  z10.string(),
-  z10.number(),
-  z10.number(),
-  z10.boolean(),
-  z10.array(z10.string())
+var zElicitationContentValue = z11.union([
+  z11.string(),
+  z11.number(),
+  z11.number(),
+  z11.boolean(),
+  z11.array(z11.string())
 ]);
-var zElicitationAcceptAction = z10.object({
-  content: z10.record(z10.string(), zElicitationContentValue).nullish()
+var zElicitationAcceptAction = z11.object({
+  content: z11.record(z11.string(), zElicitationContentValue).nullish()
 });
-var zCreateElicitationResponse = preserveCustomPayload(z10.intersection(z10.union([
-  zElicitationAcceptAction.and(z10.object({
-    action: z10.literal("accept")
+var zCreateElicitationResponse = preserveCustomPayload(z11.intersection(z11.union([
+  zElicitationAcceptAction.and(z11.object({
+    action: z11.literal("accept")
   })),
-  z10.object({
-    action: z10.literal("decline")
+  z11.object({
+    action: z11.literal("decline")
   }),
-  z10.object({
-    action: z10.literal("cancel")
+  z11.object({
+    action: z11.literal("cancel")
   }),
-  excludeKnownTags(z10.object({
-    action: z10.string()
+  excludeKnownTags(z11.object({
+    action: z11.string()
   }), "action", ["accept", "cancel", "decline"])
-]), z10.object({
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+]), z11.object({
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 })), "action", ["accept", "cancel", "decline"]);
-var zMcpError = z10.looseObject({
-  code: z10.int().min(-2147483648, {
+var zMcpError = z11.looseObject({
+  code: z11.int().min(-2147483648, {
     error: "Invalid value: Expected int32 to be >= -2147483648"
   }).max(2147483647, {
     error: "Invalid value: Expected int32 to be <= 2147483647"
   }),
-  message: z10.string(),
-  data: z10.unknown().optional()
+  message: z11.string(),
+  data: z11.unknown().optional()
 });
-var zMessageMcpResponse = z10.union([
-  z10.object({
-    result: z10.unknown(),
-    _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+var zMessageMcpResponse = z11.union([
+  z11.object({
+    result: z11.unknown(),
+    _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
   }),
-  z10.object({
+  z11.object({
     error: zMcpError,
-    _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+    _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
   })
 ]);
-var zClientResponse = z10.union([
-  z10.object({
+var zClientResponse = z11.union([
+  z11.object({
     id: zRequestId,
-    result: z10.union([
+    result: z11.union([
       zWriteTextFileResponse,
       zReadTextFileResponse,
       zRequestPermissionResponse,
@@ -26711,80 +26787,80 @@ var zClientResponse = z10.union([
       zExtResponse
     ])
   }),
-  z10.object({
+  z11.object({
     id: zRequestId,
     error: zError
   })
 ]);
-var zCancelNotification = z10.object({
+var zCancelNotification = z11.object({
   sessionId: zSessionId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zDidOpenDocumentNotification = z10.object({
+var zDidOpenDocumentNotification = z11.object({
   sessionId: zSessionId,
-  uri: z10.string(),
-  languageId: z10.string(),
-  version: z10.number(),
-  text: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  uri: z11.string(),
+  languageId: z11.string(),
+  version: z11.number(),
+  text: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zTextDocumentContentChangeEvent = z10.object({
+var zTextDocumentContentChangeEvent = z11.object({
   range: zRange.nullish(),
-  text: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  text: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zDidChangeDocumentNotification = z10.object({
+var zDidChangeDocumentNotification = z11.object({
   sessionId: zSessionId,
-  uri: z10.string(),
-  version: z10.number(),
+  uri: z11.string(),
+  version: z11.number(),
   contentChanges: requiredDefaultOnError(vecSkipError(zTextDocumentContentChangeEvent), () => []),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zDidCloseDocumentNotification = z10.object({
+var zDidCloseDocumentNotification = z11.object({
   sessionId: zSessionId,
-  uri: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  uri: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zDidSaveDocumentNotification = z10.object({
+var zDidSaveDocumentNotification = z11.object({
   sessionId: zSessionId,
-  uri: z10.string(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  uri: z11.string(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zDidFocusDocumentNotification = z10.object({
+var zDidFocusDocumentNotification = z11.object({
   sessionId: zSessionId,
-  uri: z10.string(),
-  version: z10.number(),
+  uri: z11.string(),
+  version: z11.number(),
   position: zPosition,
   visibleRange: zRange,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zAcceptNesNotification = z10.object({
+var zAcceptNesNotification = z11.object({
   sessionId: zSessionId,
   id: zNesSuggestionId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zNesRejectReason = z10.union([
-  z10.literal("rejected"),
-  z10.literal("ignored"),
-  z10.literal("replaced"),
-  z10.literal("cancelled")
+var zNesRejectReason = z11.union([
+  z11.literal("rejected"),
+  z11.literal("ignored"),
+  z11.literal("replaced"),
+  z11.literal("cancelled")
 ]);
-var zRejectNesNotification = z10.object({
+var zRejectNesNotification = z11.object({
   sessionId: zSessionId,
   id: zNesSuggestionId,
   reason: defaultOnError(zNesRejectReason.nullish(), () => void 0),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zMessageMcpNotification = z10.object({
+var zMessageMcpNotification = z11.object({
   serverId: zMcpServerAcpId,
   requestId: zMcpRequestId,
-  method: z10.string(),
-  params: z10.record(z10.string(), z10.unknown()).nullish(),
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  method: z11.string(),
+  params: z11.record(z11.string(), z11.unknown()).nullish(),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zClientNotification = z10.object({
-  method: z10.string(),
-  params: z10.union([
+var zClientNotification = z11.object({
+  method: z11.string(),
+  params: z11.union([
     zCancelNotification,
     zDidOpenDocumentNotification,
     zDidChangeDocumentNotification,
@@ -26797,9 +26873,9 @@ var zClientNotification = z10.object({
     zExtNotification
   ]).nullish()
 });
-var zCancelRequestNotification = z10.object({
+var zCancelRequestNotification = z11.object({
   requestId: zRequestId,
-  _meta: defaultOnError(z10.record(z10.string(), z10.unknown()).nullish(), () => void 0)
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
 
 // node_modules/@agentclientprotocol/sdk/dist/jsonrpc.js
@@ -27238,11 +27314,11 @@ var Connection = class {
     const id2 = this.nextRequestId++;
     let cancel = () => {
     };
-    const response = new Promise((resolve3, reject) => {
+    const response = new Promise((resolve4, reject) => {
       const pendingResponse = {
         resolve: (value) => {
           try {
-            resolve3(mapResponse ? mapResponse(value) : value);
+            resolve4(mapResponse ? mapResponse(value) : value);
           } catch (error) {
             reject(error);
           }
@@ -27299,8 +27375,8 @@ var Connection = class {
     this.stream = stream;
     this.staticHandlers = handlers;
     this.allowBatches = options?.allowBatches ?? true;
-    this.closedPromise = new Promise((resolve3) => {
-      this.abortController.signal.addEventListener("abort", () => resolve3());
+    this.closedPromise = new Promise((resolve4) => {
+      this.abortController.signal.addEventListener("abort", () => resolve4());
     });
     void this.receive();
   }
@@ -27950,26 +28026,26 @@ function ndJsonStream(output, input, options = {}) {
 }
 
 // node_modules/@agentclientprotocol/sdk/dist/schema/guards.gen.js
-var z11 = __toESM(require_v4(), 1);
-var zGuardCreateElicitationRequestForm = zElicitationFormMode.and(z11.object({ mode: z11.literal("form") })).and(z11.object({ message: z11.string() }));
-var zGuardCreateElicitationRequestUrl = zElicitationUrlMode.and(z11.object({ mode: z11.literal("url") })).and(z11.object({ message: z11.string() }));
-var zGuardCreateElicitationRequestCustom = z11.union([zElicitationSessionScope, zElicitationRequestScope]).and(z11.object({ message: z11.string() }));
-var zGuardElicitationPropertySchemaString = zStringPropertySchema.and(z11.object({ type: z11.literal("string") }));
-var zGuardElicitationPropertySchemaNumber = zNumberPropertySchema.and(z11.object({ type: z11.literal("number") }));
-var zGuardElicitationPropertySchemaInteger = zIntegerPropertySchema.and(z11.object({ type: z11.literal("integer") }));
-var zGuardElicitationPropertySchemaBoolean = zBooleanPropertySchema.and(z11.object({ type: z11.literal("boolean") }));
-var zGuardElicitationPropertySchemaArray = zMultiSelectPropertySchema.and(z11.object({ type: z11.literal("array") }));
-var zGuardMultiSelectItemsString = zStringMultiSelectItems.and(z11.object({ type: z11.literal("string") }));
-var zGuardStateUpdateRunning = zRunningStateUpdate.and(z11.object({ state: z11.literal("running") }));
-var zGuardStateUpdateIdle = zIdleStateUpdate.and(z11.object({ state: z11.literal("idle") }));
-var zGuardStateUpdateRequiresAction = zRequiresActionStateUpdate.and(z11.object({ state: z11.literal("requires_action") }));
-var zGuardStateUpdateUnknown = zUnknownStateUpdate.and(z11.object({ state: z11.literal("unknown") }));
-var zGuardCreateElicitationResponseAccept = zElicitationAcceptAction.and(z11.object({ action: z11.literal("accept") }));
-var zGuardCreateElicitationResponseDecline = z11.object({
-  action: z11.literal("decline")
+var z12 = __toESM(require_v4(), 1);
+var zGuardCreateElicitationRequestForm = zElicitationFormMode.and(z12.object({ mode: z12.literal("form") })).and(z12.object({ message: z12.string() }));
+var zGuardCreateElicitationRequestUrl = zElicitationUrlMode.and(z12.object({ mode: z12.literal("url") })).and(z12.object({ message: z12.string() }));
+var zGuardCreateElicitationRequestCustom = z12.union([zElicitationSessionScope, zElicitationRequestScope]).and(z12.object({ message: z12.string() }));
+var zGuardElicitationPropertySchemaString = zStringPropertySchema.and(z12.object({ type: z12.literal("string") }));
+var zGuardElicitationPropertySchemaNumber = zNumberPropertySchema.and(z12.object({ type: z12.literal("number") }));
+var zGuardElicitationPropertySchemaInteger = zIntegerPropertySchema.and(z12.object({ type: z12.literal("integer") }));
+var zGuardElicitationPropertySchemaBoolean = zBooleanPropertySchema.and(z12.object({ type: z12.literal("boolean") }));
+var zGuardElicitationPropertySchemaArray = zMultiSelectPropertySchema.and(z12.object({ type: z12.literal("array") }));
+var zGuardMultiSelectItemsString = zStringMultiSelectItems.and(z12.object({ type: z12.literal("string") }));
+var zGuardStateUpdateRunning = zRunningStateUpdate.and(z12.object({ state: z12.literal("running") }));
+var zGuardStateUpdateIdle = zIdleStateUpdate.and(z12.object({ state: z12.literal("idle") }));
+var zGuardStateUpdateRequiresAction = zRequiresActionStateUpdate.and(z12.object({ state: z12.literal("requires_action") }));
+var zGuardStateUpdateUnknown = zUnknownStateUpdate.and(z12.object({ state: z12.literal("unknown") }));
+var zGuardCreateElicitationResponseAccept = zElicitationAcceptAction.and(z12.object({ action: z12.literal("accept") }));
+var zGuardCreateElicitationResponseDecline = z12.object({
+  action: z12.literal("decline")
 });
-var zGuardCreateElicitationResponseCancel = z11.object({
-  action: z11.literal("cancel")
+var zGuardCreateElicitationResponseCancel = z12.object({
+  action: z12.literal("cancel")
 });
 
 // node_modules/@agentclientprotocol/sdk/dist/acp.js
@@ -28271,8 +28347,8 @@ var AsyncQueue = class {
     if (this.failed) {
       return Promise.reject(this.failure);
     }
-    return new Promise((resolve3, reject) => {
-      this.waiters.push({ resolve: resolve3, reject });
+    return new Promise((resolve4, reject) => {
+      this.waiters.push({ resolve: resolve4, reject });
     });
   }
 };
@@ -28891,9 +28967,9 @@ var legacyClientNotificationMethods = /* @__PURE__ */ new Set([
 ]);
 
 // packages/session/dist/acp-backend.js
-import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
-import { join, sep } from "node:path";
+import { createHash as createHash2 } from "node:crypto";
+import { lstat as lstat2, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { join, sep as sep2 } from "node:path";
 
 // packages/session/dist/acp-adapter.js
 import { randomUUID } from "node:crypto";
@@ -29567,7 +29643,7 @@ var StderrTail = class {
 };
 
 // packages/session/dist/runner.js
-import { constants } from "node:os";
+import { constants as constants2 } from "node:os";
 
 // packages/session/dist/process-tree.js
 import { readdirSync, readFileSync } from "node:fs";
@@ -29680,7 +29756,7 @@ function exitCodeFromClose(code, signal) {
   if (code !== null)
     return code;
   if (signal !== null) {
-    const signum = constants.signals[signal] ?? 0;
+    const signum = constants2.signals[signal] ?? 0;
     return signum > 0 ? 128 + signum : 1;
   }
   return 1;
@@ -29766,11 +29842,11 @@ var nodeSpawner = (command, args, options) => {
   child.once("exit", (code, signal) => {
     exitDetails = { code, signal };
   });
-  const exited = new Promise((resolve3, reject) => {
+  const exited = new Promise((resolve4, reject) => {
     child.once("error", reject);
     child.once("close", (code, signal) => {
       exitDetails = { code, signal };
-      resolve3(exitCodeFromClose(code, signal));
+      resolve4(exitCodeFromClose(code, signal));
     });
   });
   exited.catch(() => void 0);
@@ -29875,7 +29951,7 @@ async function externalizeImageFrame(line, worktree) {
   const bytes = Buffer.from(encoded, "base64");
   if (bytes.toString("base64") !== encoded || !bytes.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex")))
     throw new Error("ACP frame is too large");
-  const id2 = createHash("sha256").update(bytes).digest("hex");
+  const id2 = createHash2("sha256").update(bytes).digest("hex");
   const directory = join(worktree, ".agents", "generated-images");
   const agentDirectory = join(worktree, ".agents");
   for (const path2 of [agentDirectory, directory]) {
@@ -29885,20 +29961,20 @@ async function externalizeImageFrame(line, worktree) {
       if (error.code !== "EEXIST")
         throw error;
     }
-    if (!(await lstat(path2)).isDirectory())
+    if (!(await lstat2(path2)).isDirectory())
       throw new Error("ACP image directory is not a directory");
   }
   const [realWorktree, realDirectory] = await Promise.all([
     realpath(worktree),
     realpath(directory)
   ]);
-  if (!realDirectory.startsWith(`${realWorktree}${sep}`))
+  if (!realDirectory.startsWith(`${realWorktree}${sep2}`))
     throw new Error("ACP image directory escapes the worktree");
   const path = join(directory, `${id2}.png`);
   await writeFile(path, bytes, { flag: "wx" }).catch(async (error) => {
     if (error.code !== "EEXIST")
       throw error;
-    const stat = await lstat(path);
+    const stat = await lstat2(path);
     if (!stat.isFile() || !(await readFile(path)).equals(bytes))
       throw new Error("ACP image file collision");
   });
@@ -29971,7 +30047,7 @@ function processStream(process2, worktree) {
 }
 function imageBlocks(attachments) {
   return (attachments ?? []).filter((attachment) => attachment.kind === "image").flatMap((attachment) => {
-    const attachmentId = createHash("sha256").update(Buffer.from(attachment.data, "base64")).digest("hex");
+    const attachmentId = createHash2("sha256").update(Buffer.from(attachment.data, "base64")).digest("hex");
     return [
       {
         type: "text",
@@ -30044,8 +30120,8 @@ async function settled(work) {
   try {
     return await Promise.race([
       work.then(() => true, () => true),
-      new Promise((resolve3) => {
-        timer = setTimeout(() => resolve3(false), MODE_SETTLE_MS);
+      new Promise((resolve4) => {
+        timer = setTimeout(() => resolve4(false), MODE_SETTLE_MS);
         timer.unref?.();
       })
     ]);
@@ -30174,9 +30250,9 @@ async function runAcpTurn(opts, profile) {
     }
     const neutral = permissionRequest(request2, name2);
     await writer.writePermission(neutral, "acp");
-    return await new Promise((resolve3) => {
+    return await new Promise((resolve4) => {
       opts.onPermissionRequest?.(neutral, (decision) => {
-        resolve3(adopt(permissionOption(request2, decision, activeMode, modePicker)));
+        resolve4(adopt(permissionOption(request2, decision, activeMode, modePicker)));
       });
     });
   };
@@ -30202,7 +30278,7 @@ async function runAcpTurn(opts, profile) {
     return queued;
   };
   const drainUpdates = async () => {
-    await new Promise((resolve3) => setImmediate(resolve3));
+    await new Promise((resolve4) => setImmediate(resolve4));
     await updateTail;
     if (updateError !== void 0) {
       throw updateError instanceof Error ? updateError : new Error("ACP session update persistence failed", { cause: updateError });
@@ -30415,7 +30491,7 @@ async function runAcpTurn(opts, profile) {
           throw error;
         child.closeStdin?.();
         killAgent(child);
-        const exited = await new Promise((resolve3) => {
+        const exited = await new Promise((resolve4) => {
           let settled2 = false;
           const timer = setTimeout(() => done(false), Math.max(0, Math.min(1e4, startupRecoveryDeadline - Date.now())));
           function done(didExit) {
@@ -30424,7 +30500,7 @@ async function runAcpTurn(opts, profile) {
             settled2 = true;
             clearTimeout(timer);
             wakeRetry = void 0;
-            resolve3(didExit);
+            resolve4(didExit);
           }
           wakeRetry = () => done(false);
           void child.exited.then(() => done(true), () => done(false));
@@ -30433,12 +30509,12 @@ async function runAcpTurn(opts, profile) {
         });
         if (!exited || stopped)
           throw error;
-        await new Promise((resolve3) => {
+        await new Promise((resolve4) => {
           const timer = setTimeout(done, Math.min(5e3, startupRecoveryDeadline - Date.now()));
           function done() {
             clearTimeout(timer);
             wakeRetry = void 0;
-            resolve3();
+            resolve4();
           }
           wakeRetry = done;
           if (stopped)
@@ -30466,8 +30542,8 @@ async function runAcpTurn(opts, profile) {
     let exitTimer;
     await Promise.race([
       child.exited.then(() => true, () => false),
-      new Promise((resolve3) => {
-        exitTimer = setTimeout(() => resolve3(false), 250);
+      new Promise((resolve4) => {
+        exitTimer = setTimeout(() => resolve4(false), 250);
       })
     ]);
     if (exitTimer !== void 0)
@@ -30867,7 +30943,7 @@ var AsyncTextQueue = class {
         }
         if (this.ended)
           return { done: true, value: void 0 };
-        return await new Promise((resolve3) => this.waiters.push(resolve3));
+        return await new Promise((resolve4) => this.waiters.push(resolve4));
       }
     };
   }
@@ -30901,7 +30977,7 @@ function createBrokerSpawner(socketPath) {
     const pendingInput = options.stdin === void 0 ? [] : [options.stdin];
     let stdinClosed = options.keepStdinOpen !== true;
     let resolveExited = () => void 0;
-    const exited = new Promise((resolve3) => resolveExited = resolve3);
+    const exited = new Promise((resolve4) => resolveExited = resolve4);
     const settle = (code) => {
       if (settled2)
         return;
@@ -31051,8 +31127,8 @@ function createBrokerSpawner(socketPath) {
 }
 
 // packages/session/dist/runner-server.js
-import { createHash as createHash3, randomUUID as randomUUID3, timingSafeEqual } from "node:crypto";
-import { mkdir as mkdir3, open as open4 } from "node:fs/promises";
+import { createHash as createHash4, randomUUID as randomUUID3, timingSafeEqual } from "node:crypto";
+import { mkdir as mkdir3, open as open5 } from "node:fs/promises";
 import { dirname as dirname3 } from "node:path";
 
 // packages/session/dist/runner-contract.js
@@ -31124,11 +31200,11 @@ ${this.runtimeNotice}`.trim();
 };
 
 // packages/session/dist/runner-transport.js
-import { createHash as createHash2 } from "node:crypto";
-import { open } from "node:fs/promises";
+import { createHash as createHash3 } from "node:crypto";
+import { open as open2 } from "node:fs/promises";
 var MAX_FRAME_BYTES = 8 * 1024 * 1024;
 function frameBodyHash(body) {
-  return createHash2("sha256").update(JSON.stringify(body)).digest("hex");
+  return createHash3("sha256").update(JSON.stringify(body)).digest("hex");
 }
 function stampFrame(body, meta) {
   return {
@@ -31150,7 +31226,7 @@ async function writeFrame(handle, frame) {
     await handle.appendFile(line, "utf8");
     return;
   }
-  const fh = await open(handle.path, "a");
+  const fh = await open2(handle.path, "a");
   try {
     await fh.appendFile(line, "utf8");
   } finally {
@@ -31159,10 +31235,10 @@ async function writeFrame(handle, frame) {
 }
 
 // packages/session/dist/runner-control.js
-import { constants as constants2 } from "node:fs";
-import { mkdir as mkdir2, mkdtemp, open as open2, rm, symlink } from "node:fs/promises";
+import { constants as constants3 } from "node:fs";
+import { mkdir as mkdir2, mkdtemp, open as open3, rm, symlink } from "node:fs/promises";
 import { createConnection as createConnection2, createServer } from "node:net";
-import { dirname, join as join2, resolve } from "node:path";
+import { dirname, join as join2, resolve as resolve2 } from "node:path";
 var LF = 10;
 var MAX_CONTROL_LINE_BYTES = 1024 * 1024;
 function defaultAttachSnapshot() {
@@ -31278,9 +31354,9 @@ function isControlReply(value, expectedCommandId, commandKey2) {
   return record3.kind === "ack" && record3.commandId === expectedCommandId && (commandKind === "steer" && typeof record3.injected === "boolean" && record3.applied === void 0 || (commandKind === "cancel" || commandKind === "answer-permission") && typeof record3.applied === "boolean" && record3.injected === void 0) || record3.kind === "reject" && record3.commandId === expectedCommandId && ["stale-lease", "wrong-turn", "command-conflict", "ambiguous", "handler-error"].includes(String(record3.reason));
 }
 async function openControlJournal(journalPath) {
-  const handle = await open2(journalPath, constants2.O_RDWR | constants2.O_CREAT | constants2.O_APPEND | constants2.O_NOFOLLOW, 384);
+  const handle = await open3(journalPath, constants3.O_RDWR | constants3.O_CREAT | constants3.O_APPEND | constants3.O_NOFOLLOW, 384);
   try {
-    const parent = await open2(dirname(journalPath), constants2.O_RDONLY | constants2.O_DIRECTORY);
+    const parent = await open3(dirname(journalPath), constants3.O_RDONLY | constants3.O_DIRECTORY);
     try {
       await parent.sync();
     } finally {
@@ -31565,9 +31641,9 @@ async function serveControl(socketPath, handlers, opts = {}) {
       }
     }
     const requestEpoch = msg.leaseEpoch;
-    const delivery = reply.then((value) => new Promise((resolve3) => {
+    const delivery = reply.then((value) => new Promise((resolve4) => {
       if (socket.destroyed) {
-        resolve3();
+        resolve4();
         return;
       }
       const response = requestEpoch < currentLeaseEpoch ? {
@@ -31575,12 +31651,12 @@ async function serveControl(socketPath, handlers, opts = {}) {
         commandId: msg.commandId,
         reason: "stale-lease"
       } : value;
-      socket.write(encodeLine(response), () => resolve3());
+      socket.write(encodeLine(response), () => resolve4());
     })).catch(() => void 0);
     pendingDeliveries.add(delivery);
     void delivery.finally(() => pendingDeliveries.delete(delivery));
   };
-  await new Promise((resolve3, reject) => {
+  await new Promise((resolve4, reject) => {
     server2 = createServer((socket) => {
       sockets.add(socket);
       socket.on("data", makeLineReader(dispatch(socket), () => socket.destroy()));
@@ -31590,12 +31666,12 @@ async function serveControl(socketPath, handlers, opts = {}) {
     server2.once("error", reject);
     server2.listen(socketPath, () => {
       server2.removeListener("error", reject);
-      resolve3();
+      resolve4();
     });
   });
   let resolveClosed;
-  const closed = new Promise((resolve3) => {
-    resolveClosed = resolve3;
+  const closed = new Promise((resolve4) => {
+    resolveClosed = resolve4;
   });
   const close = async () => {
     if (closing) {
@@ -31603,13 +31679,13 @@ async function serveControl(socketPath, handlers, opts = {}) {
       return;
     }
     closing = true;
-    const serverClosed = new Promise((resolve3) => server2.close(() => resolve3()));
+    const serverClosed = new Promise((resolve4) => server2.close(() => resolve4()));
     let drainTimer;
     try {
       await Promise.race([
         Promise.allSettled([...pendingDeliveries]),
-        new Promise((resolve3) => {
-          drainTimer = setTimeout(resolve3, 1e3);
+        new Promise((resolve4) => {
+          drainTimer = setTimeout(resolve4, 1e3);
         })
       ]);
     } finally {
@@ -31634,21 +31710,21 @@ async function serveControl(socketPath, handlers, opts = {}) {
 }
 
 // packages/session/dist/runner-state.js
-import { chmod, open as open3, rename, readFile as readFile2, writeFile as writeFile2 } from "node:fs/promises";
+import { chmod, open as open4, rename, readFile as readFile2, writeFile as writeFile2 } from "node:fs/promises";
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { dirname as dirname2 } from "node:path";
 async function writeRunnerState(path, state) {
   const tmp = `${path}.${randomUUID2()}.tmp`;
   await writeFile2(tmp, JSON.stringify(state), "utf8");
   await chmod(tmp, 416);
-  const file = await open3(tmp, "r");
+  const file = await open4(tmp, "r");
   try {
     await file.sync();
   } finally {
     await file.close();
   }
   await rename(tmp, path);
-  const directory = await open3(dirname2(path), "r");
+  const directory = await open4(dirname2(path), "r");
   try {
     await directory.sync();
   } finally {
@@ -31762,7 +31838,7 @@ var RunnerServer = class {
    */
   async run(eventFilePath, opts) {
     await mkdir3(dirname3(eventFilePath), { recursive: true });
-    const handle = await open4(eventFilePath, opts.exclusiveEventFile === true ? "wx" : "w", 416);
+    const handle = await open5(eventFilePath, opts.exclusiveEventFile === true ? "wx" : "w", 416);
     try {
       await handle.chmod(416);
     } catch (error) {
@@ -31812,7 +31888,15 @@ var RunnerServer = class {
     let controlServer;
     if (controlSocketPath !== void 0) {
       controlServer = await serveControl(controlSocketPath, {
-        steer: (message) => turn2.steer(message),
+        steer: async (message) => {
+          if (message.attachments === void 0)
+            return turn2.steer(message);
+          const attachments = await hydrateImageAttachments(runOpts.cwd, turnId, message.attachments);
+          return turn2.steer({
+            text: message.text,
+            ...attachments === void 0 ? {} : { attachments }
+          });
+        },
         cancel: () => turn2.cancel(),
         answerPermission
       }, {
@@ -31888,8 +31972,8 @@ var RunnerServer = class {
 function sameCapability(candidate, expected) {
   if (candidate === void 0)
     return false;
-  const left = createHash3("sha256").update(candidate).digest();
-  const right = createHash3("sha256").update(expected).digest();
+  const left = createHash4("sha256").update(candidate).digest();
+  const right = createHash4("sha256").update(expected).digest();
   return timingSafeEqual(left, right);
 }
 
@@ -31921,9 +32005,9 @@ function resolveRunnerMcpServers(input) {
 }
 
 // packages/session/dist/runner-worker-entry.js
-var safeIdSchema = import_zod9.z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u);
-var boundedString = (max) => import_zod9.z.string().max(max);
-var httpMcpServerSchema = import_zod9.z.strictObject({
+var safeIdSchema = import_zod10.z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u);
+var boundedString = (max) => import_zod10.z.string().max(max);
+var httpMcpServerSchema = import_zod10.z.strictObject({
   name: boundedString(128).min(1),
   url: boundedString(4096).min(1).refine((value) => {
     if (value === "verity-internal://mcp-proxy")
@@ -31934,48 +32018,48 @@ var httpMcpServerSchema = import_zod9.z.strictObject({
       return false;
     }
   }, "MCP server URL must use HTTP"),
-  headers: import_zod9.z.array(import_zod9.z.strictObject({ name: boundedString(256).min(1), value: boundedString(4096) })).max(32)
+  headers: import_zod10.z.array(import_zod10.z.strictObject({ name: boundedString(256).min(1), value: boundedString(4096) })).max(32)
 });
-var startTurnRequestSchema = import_zod9.z.strictObject({
-  protocolVersion: import_zod9.z.literal(1),
-  kind: import_zod9.z.literal("start-turn"),
+var startTurnRequestSchema = import_zod10.z.strictObject({
+  protocolVersion: import_zod10.z.literal(1),
+  kind: import_zod10.z.literal("start-turn"),
   turnId: safeIdSchema,
   startCommandId: safeIdSchema,
   sessionId: safeIdSchema,
-  backend: import_zod9.z.enum(["claude-acp", "codex-acp", "opencode-acp"]),
+  backend: import_zod10.z.enum(["claude-acp", "codex-acp", "opencode-acp"]),
   worktree: boundedString(4096).refine((value) => value.startsWith("/")),
   cwd: boundedString(4096).refine((value) => value.startsWith("/")),
   prompt: boundedString(1024 * 1024),
-  attachments: import_zod9.z.array(attachmentUploadSchema).max(20).optional(),
+  attachments: import_zod10.z.array(import_zod10.z.union([imageReferenceSchema, attachmentUploadSchema.options[1]])).max(20).optional(),
   model: boundedString(256).optional(),
-  steerable: import_zod9.z.boolean(),
-  permissionControl: import_zod9.z.boolean(),
+  steerable: import_zod10.z.boolean(),
+  permissionControl: import_zod10.z.boolean(),
   appendSystemPrompt: boundedString(1024 * 1024).optional(),
   resumeSessionId: boundedString(256).optional(),
   permissionMode: boundedString(128).optional(),
-  planning: import_zod9.z.literal(true).optional(),
-  allowedTools: import_zod9.z.array(boundedString(4096)).max(256).optional(),
-  disallowedTools: import_zod9.z.array(boundedString(4096)).max(256).optional(),
-  toolless: import_zod9.z.boolean().optional(),
-  timeoutMs: import_zod9.z.number().int().min(1).max(864e5).optional(),
-  trustedCliExecution: import_zod9.z.boolean().optional(),
+  planning: import_zod10.z.literal(true).optional(),
+  allowedTools: import_zod10.z.array(boundedString(4096)).max(256).optional(),
+  disallowedTools: import_zod10.z.array(boundedString(4096)).max(256).optional(),
+  toolless: import_zod10.z.boolean().optional(),
+  timeoutMs: import_zod10.z.number().int().min(1).max(864e5).optional(),
+  trustedCliExecution: import_zod10.z.boolean().optional(),
   mcpGatewayToken: boundedString(512).min(1).optional(),
   mcpProxyToken: boundedString(512).min(1).optional(),
-  mcpServers: import_zod9.z.array(httpMcpServerSchema).max(16).optional(),
-  sessionEnv: import_zod9.z.strictObject({
+  mcpServers: import_zod10.z.array(httpMcpServerSchema).max(16).optional(),
+  sessionEnv: import_zod10.z.strictObject({
     VERITY_SESSION_BACKEND: boundedString(256).optional(),
     VERITY_SESSION_MODEL: boundedString(256).optional(),
     VERITY_SESSION_ID: boundedString(256).optional()
   }).optional()
 }).superRefine((request2, context) => {
-  const worktree = resolve2(request2.worktree);
-  const cwd = resolve2(request2.cwd);
+  const worktree = resolve3(request2.worktree);
+  const cwd = resolve3(request2.cwd);
   if (cwd !== worktree && !cwd.startsWith(`${worktree}/`)) {
     context.addIssue({ code: "custom", message: "cwd outside worktree", path: ["cwd"] });
   }
 });
 async function consumeStartRequest(path) {
-  const handle = await open5(path, constants3.O_RDONLY | constants3.O_NOFOLLOW);
+  const handle = await open6(path, constants4.O_RDONLY | constants4.O_NOFOLLOW);
   try {
     const stats = await handle.stat();
     const uid = process.getuid?.();
@@ -31997,7 +32081,11 @@ var turnDir = process.env.VERITY_RUNNER_TURN_DIR;
 if (requestPath === void 0 || turnDir === void 0) {
   throw new Error("runner worker requires request path and turn directory");
 }
-var request = await consumeStartRequest(requestPath);
+var wireRequest = await consumeStartRequest(requestPath);
+var request = {
+  ...wireRequest,
+  attachments: await hydrateImageAttachments(wireRequest.cwd, wireRequest.turnId, wireRequest.attachments)
+};
 if (!isRunnerSupervisorBackend(request.backend))
   throw new Error("unsupported runner backend");
 var originalConsoleError = console.error.bind(console);
@@ -32045,7 +32133,7 @@ var turn = await server.run(join3(turnDir, "events.jsonl"), {
   cwd: request.cwd,
   prompt: request.prompt,
   storeSessionId: request.sessionId,
-  // Inline image attachments ride the backend's prompt path as one image content
+  // Hydrated image attachments ride the backend's prompt path as one image content
   // block per upload. Omitted entirely when absent so an attachment-free turn is
   // unchanged.
   ...request.attachments !== void 0 ? { attachments: request.attachments } : {},

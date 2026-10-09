@@ -5,6 +5,7 @@ import {
   lastDirectRefusal,
   pendingDirectVerdict,
   recoverRemoteControlRead,
+  remoteControlAvailableForUrl,
   remoteControlFailureForUrl,
   remoteControlPortForUrl,
   reportDirectRouteFailure,
@@ -78,7 +79,10 @@ export async function downloadPinnedFile(input: {
   tlsPin: string;
   useRemote?: boolean;
 }): Promise<string> {
-  const port = input.useRemote ? await remoteControlPortForUrl(input.url) : 0;
+  const port =
+    input.useRemote && (await remoteControlAvailableForUrl(input.url))
+      ? await remoteControlPortForUrl(input.url)
+      : 0;
   const response = await native().download(
     input.url,
     input.headers ?? {},
@@ -187,6 +191,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
     if (input instanceof Request)
       throw new Error('Request objects are not supported by the pinned transport.');
     const url = String(input);
+    const remoteEnabled = useRemote && (await remoteControlAvailableForUrl(url));
     const headers = Object.fromEntries(new Headers(init.headers).entries());
     const fileUri =
       typeof init.body === 'object' &&
@@ -211,7 +216,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       markSwitchTransportRequest(diagnosticRequestId, 'body-encoded');
       const replayable =
         !fileUri && (init.method ?? 'GET').toUpperCase() === 'GET' && encodedBody === null;
-      const port = useRemote ? await remoteControlPortForUrl(url, replayable) : 0;
+      const port = remoteEnabled ? await remoteControlPortForUrl(url, replayable) : 0;
       markSwitchTransportRequest(diagnosticRequestId, 'route-ready', port > 0 ? 1 : 0);
       if (init.signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError');
@@ -225,7 +230,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       let grace: ReturnType<typeof setTimeout> | undefined;
       // Non-null only for a read sent while the route was untested; a read the
       // known-good direct route loses fails as before, without an Uplink detour.
-      const verdict = useRemote && replayable && port === 0 ? pendingDirectVerdict(url) : null;
+      const verdict = remoteEnabled && replayable && port === 0 ? pendingDirectVerdict(url) : null;
       if (verdict !== null) {
         void verdict.then(
           (outcome) => {
@@ -266,7 +271,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
               port,
             );
         settled = true;
-        if (useRemote && port === 0 && !init.signal?.aborted) reportDirectRouteSuccess(url);
+        if (remoteEnabled && port === 0 && !init.signal?.aborted) reportDirectRouteSuccess(url);
       } catch (error) {
         settled = true;
         let directFailed = port === 0;
@@ -337,14 +342,14 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
             directFailed = true;
           }
         }
-        if (useRemote && directFailed && !init.signal?.aborted) reportDirectRouteFailure(url);
+        if (remoteEnabled && directFailed && !init.signal?.aborted) reportDirectRouteFailure(url);
         let remoteAttempted = false;
         let remoteReason: string | null = null;
         if (
           !recovered &&
           verdict !== null &&
           port === 0 &&
-          useRemote &&
+          remoteEnabled &&
           directFailed &&
           replayable &&
           !init.signal?.aborted
@@ -391,7 +396,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           }
         }
         if (!recovered) {
-          const skipped = port === 0 && useRemote ? remoteControlFailureForUrl(url) : null;
+          const skipped = port === 0 && remoteEnabled ? remoteControlFailureForUrl(url) : null;
           const route =
             port > 0
               ? replayable
@@ -488,7 +493,10 @@ export function createPinnedWebSocket(
     if (event.type === 'close') subscription.remove();
   });
   void (async () => {
-    const port = useRemote ? await remoteControlPortForUrl(url) : 0;
+    const port =
+      useRemote && (await remoteControlAvailableForUrl(url))
+        ? await remoteControlPortForUrl(url)
+        : 0;
     return native().openWebSocket(
       url,
       tlsPin,
