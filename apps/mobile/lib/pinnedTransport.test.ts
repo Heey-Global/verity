@@ -15,6 +15,7 @@ const mockAddSocketListener = jest.fn(
 const mockRequest = jest.fn();
 const mockRequestV2 = jest.fn();
 let mockRequestV2Enabled = false;
+let mockTransportLanesEnabled = false;
 let mockNativeTimings: (() => unknown) | undefined;
 const mockUpload = jest.fn();
 const mockDownload = jest.fn();
@@ -42,6 +43,9 @@ jest.mock('./remoteControlTransport', () => ({
 jest.mock('expo-modules-core', () => ({
   requireNativeModule: () => ({
     request: mockRequest,
+    get supportsTransportLanes() {
+      return mockTransportLanesEnabled ? () => true : undefined;
+    },
     get exportTransportTimings() {
       return mockNativeTimings;
     },
@@ -183,10 +187,27 @@ describe('pinned native file transport', () => {
     await Promise.all([second, queued, other]);
   });
 
+  it('sends lane metadata only to native builds that strip it before networking', async () => {
+    mockRequest.mockResolvedValue({ status: 200, headers: {}, bodyText: '' });
+    const fetch = createPinnedFetch('pin');
+    await fetch('https://lane-capability.test/events', {
+      transportLane: 'interactive',
+    } as RequestInit);
+    expect(mockRequest.mock.calls[0]![3]).not.toHaveProperty('x-verity-transport-lane');
+    mockTransportLanesEnabled = true;
+    await fetch('https://lane-capability.test/events', {
+      transportLane: 'interactive',
+    } as RequestInit);
+    expect(mockRequest.mock.calls[1]![3]).toHaveProperty('x-verity-transport-lane', 'interactive');
+    await fetch('https://lane-capability.test/branches');
+    expect(mockRequest.mock.calls[2]![3]).toHaveProperty('x-verity-transport-lane', 'background');
+  });
+
   beforeEach(() => {
     mockRequest.mockReset();
     mockRequestV2.mockReset();
     mockRequestV2Enabled = false;
+    mockTransportLanesEnabled = false;
     mockUpload.mockReset();
     mockDownload.mockReset();
     mockCancelRequest.mockReset();
