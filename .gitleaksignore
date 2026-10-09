@@ -171,3 +171,6 @@ afdd6b2463a82e17e1f853efdc219ea3a3821300:scripts/enrollment-proof/wire-fixtures.
 afdd6b2463a82e17e1f853efdc219ea3a3821300:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2618
 afdd6b2463a82e17e1f853efdc219ea3a3821300:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2628
 afdd6b2463a82e17e1f853efdc219ea3a3821300:scripts/enrollment-proof/wire-fixtures.json:generic-api-key:2638
+
+# Public AsyncStorage namespace for voice vocabulary preferences; not a credential.
+80a5cd36450a6019a725dbd3acd16fa7f601da70:apps/mobile/lib/voiceVocabulary.ts:generic-api-key:12
