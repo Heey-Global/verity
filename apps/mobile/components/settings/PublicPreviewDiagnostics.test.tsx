@@ -169,3 +169,26 @@ it('does not copy when a safe recording is unavailable', async () => {
   );
   expect(mockCopy).not.toHaveBeenCalled();
 });
+
+it('copies retained stream diagnostics after leaving and reopening settings without rerunning the test', async () => {
+  mockGetServerProfile.mockReturnValue({
+    activeUrl: 'https://verity.example',
+    remoteControl: { installationHandle: 'saved' },
+  });
+  mockTestRemoteControl.mockClear().mockResolvedValue({ ready: false, detail: 'probe timed out' });
+  const retained = '[{"version":1,"streams":[{"streamId":"0123456789ABCDEF0123456789ABCDEF"}]}]';
+  mockExportData.mockResolvedValue(retained);
+  mockCopy.mockClear().mockResolvedValue(undefined);
+  const client = { getUplinkDiagnostics: jest.fn().mockResolvedValue(null) } as never;
+  const first = render(<PublicPreviewDiagnostics client={client} keyConfigured />);
+  fireEvent.press(screen.getByRole('button', { name: 'Record Remote Control connection test' }));
+  await waitFor(() =>
+    expect(screen.getByText('Remote Control failed at probe timed out.')).toBeOnTheScreen(),
+  );
+  first.unmount();
+  render(<PublicPreviewDiagnostics client={client} keyConfigured />);
+  expect(screen.queryByText('Remote Control failed at probe timed out.')).toBeNull();
+  fireEvent.press(screen.getByText('Copy connection recording'));
+  await waitFor(() => expect(mockCopy).toHaveBeenCalledWith(retained));
+  expect(mockTestRemoteControl).toHaveBeenCalledTimes(1);
+});

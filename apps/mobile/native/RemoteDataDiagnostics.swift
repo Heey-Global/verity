@@ -38,6 +38,9 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
     case socketClose = "socket_close", taskCompleted = "task_completed"
     case appActive = "app_active", appBackground = "app_background", appInactive = "app_inactive"
     case networkPath = "network_path", counters
+    case streamOpenRequested = "stream_open_requested", streamOpened = "stream_opened"
+    case streamSendRequested = "stream_send_requested", streamSendCompleted = "stream_send_completed"
+    case streamStalled = "stream_stalled"
   }
   enum Cause: String, Codable {
     case appStop = "app_stop", replacement, attachmentDeadline = "attachment_deadline"
@@ -47,11 +50,27 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
     case probeFailure = "probe_failure", profileChanged = "profile_changed"
   }
   enum Path: String, Codable { case satisfied, unsatisfied, requiresConnection, unknown }
+  enum Proxy: String, Codable { case socks, connect }
+  enum End: String, Codable { case open, local, remote, reset, stopped }
+  struct StreamSnapshot: Codable {
+    let streamId: String
+    let proxy: Proxy
+    let endedBy: End
+    let sentBytes: Int
+    let receivedBytes: Int
+    let deliveredBytes: Int
+    let outgoingFrames: Int
+    let incomingFrames: Int
+    let outgoingTLSRecords: [UInt8]
+    let incomingTLSRecords: [UInt8]
+    let firstHandshake: String
+  }
   struct Entry: Codable {
     let sequence: Int
     let utc: String
     let elapsedMs: Int
     let event: Event
+    let streamId: String?
     let cause: Cause?
     let errorDomain: String?
     let errorCode: Int?
@@ -73,6 +92,8 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
     let expired: Bool
     let dropped: Int
     let events: [Entry]
+    let streams: [StreamSnapshot]
+    let streamUpdatesDropped: Int
   }
   let generation = UUID().uuidString.lowercased()
   private let lock = NSLock()
@@ -81,6 +102,9 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
   private var sessionHash: String?
   private var start: TimeInterval?
   private var entries: [Entry] = []
+  private var streams: [StreamSnapshot] = []
+  private var streamUpdatesDropped = 0
+  static let streamCapacity = 16
   private var sequence = 0
   private var dropped = 0
   private var startedLate = false
@@ -122,7 +146,7 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
 
   func disable() { lock.lock(); disabled = true; lock.unlock() }
 
-  func record(_ event: Event, cause: Cause? = nil, error: Error? = nil,
+  func record(_ event: Event, streamId: String? = nil, cause: Cause? = nil, error: Error? = nil,
     closeCode: Int? = nil, path: Path? = nil,
     sentBytes: Int? = nil, receivedBytes: Int? = nil, deliveredBytes: Int? = nil) {
     lock.lock(); defer { lock.unlock() }
@@ -136,7 +160,7 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     let entry = Entry(sequence: sequence, utc: formatter.string(from: utc()),
-      elapsedMs: Int(elapsed * 1000), event: event, cause: cause,
+      elapsedMs: Int(elapsed * 1000), event: event, streamId: streamId, cause: cause,
       errorDomain: value.map { domains.contains($0.domain) ? $0.domain : "OtherErrorDomain" },
       errorCode: value?.code, closeCode: closeCode, path: path,
       sentBytes: sentBytes, receivedBytes: receivedBytes, deliveredBytes: deliveredBytes)
@@ -145,13 +169,34 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
     if entries.count < Self.capacity { entries.append(entry) } else { dropped += 1 }
   }
 
+  // The recorder owns value snapshots, never live streams or payload buffers.
+  // Freeze at the same deadline as events, including exports made after teardown.
+  func retainStream(_ stream: StreamSnapshot) {
+    lock.lock(); defer { lock.unlock() }
+    guard let start, !disabled, clock() - start <= captureDuration,
+      stream.streamId.range(of: "^[A-F0-9]{32}$", options: .regularExpression) != nil,
+      stream.outgoingTLSRecords.count <= 8, stream.incomingTLSRecords.count <= 8,
+      (stream.outgoingTLSRecords + stream.incomingTLSRecords).allSatisfy({ (20...23).contains($0) }),
+      stream.firstHandshake == "none" || stream.firstHandshake == "hrr"
+        || UInt8(stream.firstHandshake) != nil
+    else { return }
+    if let index = streams.firstIndex(where: { $0.streamId == stream.streamId }) {
+      streams[index] = stream
+    } else if streams.count < Self.streamCapacity {
+      streams.append(stream)
+    } else {
+      streamUpdatesDropped += 1
+    }
+  }
+
   func export() -> String? {
     lock.lock(); defer { lock.unlock() }
     guard let start else { return nil }
     let snapshot = Snapshot(generation: generation, sessionHash: sessionHash,
       startedLate: startedLate, delegateAvailable: delegateAvailable,
       captureLimitMs: Int(captureDuration * 1000),
-      expired: clock() - start > captureDuration, dropped: dropped, events: entries)
+      expired: clock() - start > captureDuration, dropped: dropped, events: entries,
+      streams: streams, streamUpdatesDropped: streamUpdatesDropped)
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
     guard let data = try? encoder.encode(snapshot) else { return nil }
