@@ -93,8 +93,8 @@ export class LiveMeetingStore {
     meetingId: string,
     revision: number,
     classified?: { text: string; acceptedIds: readonly string[] },
-  ): Promise<void> {
-    await this.db.transaction().execute(async (trx) => {
+  ): Promise<boolean> {
+    return this.db.transaction().execute(async (trx) => {
       const meeting = await trx
         .selectFrom('live_meetings')
         .select(['transcript', 'revision'])
@@ -102,7 +102,7 @@ export class LiveMeetingStore {
         .where('session_id', '=', sessionId)
         .forUpdate()
         .executeTakeFirst();
-      if (!meeting || Number(meeting.revision) !== revision) return;
+      if (!meeting || Number(meeting.revision) !== revision) return false;
       const insights = await trx
         .selectFrom('live_meeting_insights')
         .select(['id', 'kind', 'evidence_a'])
@@ -141,6 +141,7 @@ export class LiveMeetingStore {
           .where('meeting_id', '=', meetingId)
           .where('id', 'in', removed)
           .execute();
+      return true;
     });
   }
 

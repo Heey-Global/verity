@@ -153,15 +153,19 @@ export function meetingQuestionChecks(options: {
           true,
         );
       }
-      await options.store.liveMeetings.reconcileQuestions(
-        meeting.sessionId,
-        meeting.id,
-        meeting.revision,
+      const current = state.meeting;
+      if ((questionWindow(current.transcript) ?? '') !== text) return;
+      const reconciled = await options.store.liveMeetings.reconcileQuestions(
+        current.sessionId,
+        current.id,
+        current.revision,
         questions.every((question) => text.includes(question.quote))
           ? { text, acceptedIds }
           : undefined,
       );
-      state.reconciled = meeting.transcript;
+      // A concurrent revision must not turn a rejected classification into a checked window.
+      if (reconciled === false) throw new Error('Meeting revision changed during reconciliation');
+      state.reconciled = current.transcript;
       await options.onUpdated?.(state.meeting);
       options.onTiming?.({ queueMs: queryAt - state.queuedAt, modelMs: Date.now() - queryAt });
       state.checked = text;

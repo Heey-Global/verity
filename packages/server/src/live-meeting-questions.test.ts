@@ -25,19 +25,20 @@ function setup(
   const insights = vi.fn().mockResolvedValue([]);
   const addInsight = vi.fn().mockResolvedValue(true);
   const onError = vi.fn();
+  const reconcileQuestions = vi.fn().mockResolvedValue(true);
   const controller = meetingQuestionChecks({
     store: {
       liveMeetings: {
         insights,
         addInsight,
-        reconcileQuestions: vi.fn().mockResolvedValue(undefined),
+        reconcileQuestions,
       },
     } as unknown as EventStore,
     query,
     delayMs: 10,
     onError,
   });
-  return { controller, query, insights, addInsight, onError };
+  return { controller, query, insights, addInsight, onError, reconcileQuestions };
 }
 it('settles a burst and joins recognition fragments with verified evidence', async () => {
   vi.useFakeTimers();
@@ -194,5 +195,38 @@ it('postpones classification until changed transcript text settles', async () =>
   expect(s.query).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(1);
   expect(s.query).toHaveBeenCalledTimes(1);
+  s.controller.close();
+});
+
+it('reconciles classification against the current revision when its window is unchanged', async () => {
+  vi.useFakeTimers();
+  let finish!: (text: string) => void;
+  const s = setup(
+    vi.fn().mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+    ),
+  );
+  const text = 'Was kostet der Plan? Danke. Ein weiterer Satz. Noch ein Satz.';
+  s.controller.ingest(meeting(text));
+  await vi.advanceTimersByTimeAsync(20);
+  s.controller.ingest(meeting(text + ' Weiter geht es.', 2));
+  finish(JSON.stringify({ questions: [] }));
+  await vi.advanceTimersByTimeAsync(1);
+  expect(s.reconcileQuestions).toHaveBeenCalledWith('session', 'meeting', 2, {
+    text,
+    acceptedIds: [],
+  });
+  s.controller.close();
+});
+it('retries classification when the database rejects its revision', async () => {
+  vi.useFakeTimers();
+  const s = setup();
+  s.reconcileQuestions.mockResolvedValueOnce(false);
+  s.controller.ingest(meeting('Was kostet. Der Plan?'));
+  await vi.advanceTimersByTimeAsync(5020);
+  expect(s.query).toHaveBeenCalledTimes(2);
   s.controller.close();
 });
