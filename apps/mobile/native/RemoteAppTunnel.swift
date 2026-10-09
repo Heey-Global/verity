@@ -54,6 +54,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     // the stream. On a device this is the only view of a handshake that the
     // app's TLS client abandons without reporting why.
     let proxy: String
+    let id: String
     /** First characters of the stream ID, so Core's record of the same stream can be matched. */
     let key: String
     let openedAt = Date()
@@ -63,10 +64,11 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var outgoing = RecordTrace()
     var incoming = RecordTrace()
 
-    init(_ connection: NWConnection, proxy: String, key: String) {
+    init(_ connection: NWConnection, proxy: String, id: String) {
       self.connection = connection
       self.proxy = proxy
-      self.key = key
+      self.id = id
+      self.key = String(id.prefix(8))
     }
 
     func noteRecord(_ data: Data, incoming isIncoming: Bool) {
@@ -336,7 +338,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
   @discardableResult
   func enableDataDiagnostics(duration: TimeInterval = RemoteDataDiagnostics.duration) -> Bool {
     let enabled = lock.withLock {
-      dataDiagnostics.enable(startedLate: diagnosticsStarted, delegateAvailable: ownsOuterSession, duration: duration)
+      let enabled = dataDiagnostics.enable(startedLate: diagnosticsStarted, delegateAvailable: ownsOuterSession, duration: duration)
+      if enabled { retainDiagnosticStreams() }
+      return enabled
     }
     guard enabled else { return false }
     let monitor = lock.withLock { () -> NWPathMonitor? in
@@ -372,6 +376,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     lock.withLock {
       dataDiagnostics.record(.counters, sentBytes: sentBytes, receivedBytes: receivedBytes,
         deliveredBytes: deliveredBytes)
+      retainDiagnosticStreams()
     }
     return dataDiagnostics.export()
   }
@@ -392,10 +397,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
     stopReasonText = reason
     let connections = streams.values.map(\.connection)
     for (id, stream) in streams {
-      logStream(id, stream, event: "session_stopped")
       stream.closed = true
       stream.stallWatch?.cancel()
       if stream.endedBy == "open" { stream.endedBy = "stopped"; stream.endedAt = Date() }
+      logStream(id, stream, event: "session_stopped")
     }
     streams.removeAll()
     sessionPendingBytes = 0
@@ -522,9 +527,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
         stream.noteRecord(data, incoming: true)
         stream.receivedBytes += data.count
         receivedBytes += data.count
+        stream.incomingSequence += 1
         if first { logStream(id, stream, event: "first_remote_data") }
+        else { retainDiagnosticStream(stream) }
       }
-      stream.incomingSequence += 1
       let accepted = lock.withLock {
         guard !stream.closed,
           stream.pendingBytes + data.count <= 256 * 1024,
@@ -545,6 +551,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       lock.withLock {
         stream.incomingEnded = true
         if stream.endedBy == "open" { stream.endedBy = "remote"; stream.endedAt = Date() }
+        retainDiagnosticStream(stream)
       }
       enqueue(Data(), to: stream, id: id, complete: true)
     case "stream.reset":
@@ -583,6 +590,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
             stream.deliveredBytes += data.count
             deliveredBytes += data.count
             if first { logStream(id, stream, event: "first_local_data_delivered") }
+            else { retainDiagnosticStream(stream) }
             stream.pendingBytes -= data.count
             sessionPendingBytes -= data.count
           }
@@ -604,7 +612,32 @@ final class RemoteAppTunnel: @unchecked Sendable {
   }
 
   // Called under lock; events and reset codes are fixed locally, never payload text.
+  private func retainDiagnosticStream(_ stream: Stream) {
+    dataDiagnostics.retainStream(.init(streamId: stream.id,
+      proxy: stream.proxy == "connect" ? .connect : .socks,
+      endedBy: RemoteDataDiagnostics.End(rawValue: stream.endedBy) ?? .stopped,
+      sentBytes: stream.sentBytes, receivedBytes: stream.receivedBytes,
+      deliveredBytes: stream.deliveredBytes, outgoingFrames: stream.outgoingSequence,
+      incomingFrames: stream.incomingSequence, outgoingTLSRecords: stream.outgoing.types,
+      incomingTLSRecords: stream.incoming.types, firstHandshake: stream.incoming.firstHandshake))
+  }
+
+  // Called under the tunnel lock; seed late captures and refresh before export.
+  private func retainDiagnosticStreams() {
+    for stream in streams.values.sorted(by: { $0.id < $1.id }) { retainDiagnosticStream(stream) }
+    for stream in recentStreams { retainDiagnosticStream(stream) }
+  }
+
   private func logStream(_ id: String, _ stream: Stream, event: String) {
+    retainDiagnosticStream(stream)
+    let diagnosticEvent: RemoteDataDiagnostics.Event?
+    switch event {
+    case "opened": diagnosticEvent = .streamOpened
+    case "first_local_data_sent": diagnosticEvent = .streamSendCompleted
+    case "stalled": diagnosticEvent = .streamStalled
+    default: diagnosticEvent = nil
+    }
+    if let diagnosticEvent { dataDiagnostics.record(diagnosticEvent, streamId: id) }
     NSLog("Verity remote stream session=%@ stream=%@ event=%@ sentBytes=%ld receivedBytes=%ld deliveredBytes=%ld",
       diagnosticSession, id, event, stream.sentBytes, stream.receivedBytes, stream.deliveredBytes)
   }
@@ -722,7 +755,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       try await reserveStreamSlot()
       reserved = true
       let id = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-      let stream = Stream(connection, proxy: proxy, key: String(id.prefix(8)))
+      let stream = Stream(connection, proxy: proxy, id: id)
       let available = lock.withLock {
         reservedSlots -= 1
         reserved = false
@@ -742,6 +775,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
           ? Data([5, 0, 0, 1, 127, 0, 0, 1, 0, 0])
           : Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8),
         to: connection)
+      lock.withLock {
+        retainDiagnosticStream(stream)
+        dataDiagnostics.record(.streamOpenRequested, streamId: id)
+      }
       try await writer.send(["type": "stream.open", "streamId": id, "channel": "remote", "meta": [:]])
       lock.withLock {
         openedStreams += 1
@@ -824,10 +861,16 @@ final class RemoteAppTunnel: @unchecked Sendable {
         lock.withLock {
           stream.outgoingEnded = true
           if stream.endedBy == "open" { stream.endedBy = "local"; stream.endedAt = Date() }
+          retainDiagnosticStream(stream)
         }
         try await writer.send(["type": "stream.end", "streamId": id])
         finish(id, stream)
         return
+      }
+      lock.withLock {
+        if stream.sentBytes == 0 {
+          dataDiagnostics.record(.streamSendRequested, streamId: id)
+        }
       }
       try await writer.send(["type": "stream.data", "streamId": id,
         "seq": stream.outgoingSequence, "payload": bytes.base64EncodedString()])
@@ -840,7 +883,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
         return first
       }
       if first { armStallWatch(stream, id: id) }
-      stream.outgoingSequence += 1
+      lock.withLock {
+        stream.outgoingSequence += 1
+        retainDiagnosticStream(stream)
+      }
     }
   }
 
