@@ -120,14 +120,17 @@ export async function downloadPinnedFile(input: {
   destination: string;
   tlsPin: string;
   useRemote?: boolean;
+  /** Cancels routing/admission before dispatch; the legacy native download is not cancellable. */
   signal?: AbortSignal;
 }): Promise<string> {
+  if (input.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
   const port =
     input.useRemote && (await remoteControlAvailableForUrl(input.url))
       ? await remoteControlPortForUrl(input.url)
       : 0;
   const release = port === 0 ? await admitBackground(input.url, input.signal) : undefined;
   try {
+    if (input.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
     const response = await native().download(
       input.url,
       input.headers ?? {},
