@@ -280,7 +280,7 @@ it('retracts corrected question evidence without removing claims or another sess
       meetingId: meeting.id,
       kind: 'research',
       summary: 'Check the price',
-      evidenceA: 'What is the price?',
+      evidenceA: id === 'claim-price' ? 'A factual claim.' : 'What is the price?',
       evidenceB: null,
       sourcePath: null,
       createdAt: 1,
@@ -308,7 +308,7 @@ it('reconciles only classified question evidence and preserves accepted identiti
     ['question-price', 'What is the price?'],
     ['question-delivery', 'When is delivery?'],
     ['question-sky', 'Why is the sky blue?'],
-    ['claim-price', 'What is the price?'],
+    ['claim-price', 'It costs ten euros.'],
   ] as const)
     await ctx.store.liveMeetings.addInsight('session-1', {
       id,
@@ -420,7 +420,7 @@ it('preserves questions omitted by the output limit and retracts only explicit r
   ).toEqual(classified.acceptedIds);
 });
 
-it('resolves a known question even when its evidence precedes the current answer excerpt', async () => {
+it('resolves a known question and its batch duplicate beyond the current answer excerpt', async () => {
   const question = {
     id: 'question-price',
     meetingId: meeting.id,
@@ -437,6 +437,7 @@ it('resolves a known question even when its evidence precedes the current answer
     transcript: question.evidenceA + ' ' + 'Other discussion. '.repeat(200) + text,
   });
   await ctx.store.liveMeetings.addInsight('session-1', question);
+  await ctx.store.liveMeetings.addInsight('session-1', { ...question, id: 'batch-price' });
   await ctx.store.liveMeetings.reconcileQuestions('session-1', meeting.id, 1, {
     text,
     acceptedIds: [],
@@ -501,4 +502,39 @@ it('keeps older unresolved identities eligible beyond forty open questions', asy
   expect(
     (await ctx.store.liveMeetings.questions('session-1', meeting.id))?.map(({ id }) => id),
   ).not.toContain(questions[0]!.id);
+});
+
+it('rejects stale batch publication after a question is resolved at a newer revision', async () => {
+  const question = {
+    id: 'question-price',
+    meetingId: meeting.id,
+    kind: 'research' as const,
+    summary: 'What is the price?',
+    evidenceA: 'What is the price?',
+    evidenceB: null,
+    sourcePath: null,
+    createdAt: 1,
+  };
+  await ctx.store.liveMeetings.putMeeting({ ...meeting, transcript: question.evidenceA });
+  await ctx.store.liveMeetings.addInsight('session-1', question);
+  await ctx.store.liveMeetings.putMeeting({
+    ...meeting,
+    revision: 2,
+    transcript: question.evidenceA + ' Ten euros.',
+  });
+  await ctx.store.liveMeetings.reconcileQuestions('session-1', meeting.id, 2, {
+    text: 'Ten euros.',
+    acceptedIds: [],
+    resolvedIds: [question.id],
+    insights: [],
+  });
+  expect(
+    await ctx.store.liveMeetings.addInsight(
+      'session-1',
+      { ...question, id: 'batch-price' },
+      false,
+      1,
+    ),
+  ).toBe(false);
+  expect(await ctx.store.liveMeetings.insights('session-1', meeting.id)).toEqual([]);
 });

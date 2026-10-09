@@ -56,35 +56,43 @@ export class LiveMeetingStore {
     sessionId: string,
     insight: LiveMeetingInsight,
     replace = false,
+    revision?: number,
   ): Promise<boolean> {
-    const meeting = await this.db
-      .selectFrom('live_meetings')
-      .select('session_id')
-      .where('id', '=', insight.meetingId)
-      .executeTakeFirst();
-    if (meeting?.session_id !== sessionId) return false;
-    await this.db
-      .insertInto('live_meeting_insights')
-      .values({
-        id: insight.id,
-        meeting_id: insight.meetingId,
-        kind: insight.kind,
-        summary: insight.summary,
-        evidence_a: insight.evidenceA,
-        evidence_b: insight.evidenceB,
-        source_path: insight.sourcePath,
-        created_at: insight.createdAt,
-      })
-      .onConflict((conflict) =>
-        replace
-          ? conflict
-              .column('id')
-              .doUpdateSet({ summary: insight.summary, evidence_a: insight.evidenceA })
-              .where('live_meeting_insights.meeting_id', '=', insight.meetingId)
-          : conflict.column('id').doNothing(),
+    return this.db.transaction().execute(async (trx) => {
+      const meeting = await trx
+        .selectFrom('live_meetings')
+        .select(['session_id', 'revision'])
+        .where('id', '=', insight.meetingId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (
+        meeting?.session_id !== sessionId ||
+        (revision !== undefined && Number(meeting.revision) !== revision)
       )
-      .execute();
-    return true;
+        return false;
+      await trx
+        .insertInto('live_meeting_insights')
+        .values({
+          id: insight.id,
+          meeting_id: insight.meetingId,
+          kind: insight.kind,
+          summary: insight.summary,
+          evidence_a: insight.evidenceA,
+          evidence_b: insight.evidenceB,
+          source_path: insight.sourcePath,
+          created_at: insight.createdAt,
+        })
+        .onConflict((conflict) =>
+          replace
+            ? conflict
+                .column('id')
+                .doUpdateSet({ summary: insight.summary, evidence_a: insight.evidenceA })
+                .where('live_meeting_insights.meeting_id', '=', insight.meetingId)
+            : conflict.column('id').doNothing(),
+        )
+        .execute();
+      return true;
+    });
   }
 
   /** Remove question suggestions invalidated by recognition corrections, under the meeting lock. */
@@ -163,9 +171,7 @@ export class LiveMeetingStore {
         .map(({ id }) => id);
       const evidenceKey = (text: string) => text.trim().replace(/[.!?]+$/u, '');
       const acceptedEvidence = new Set(
-        questions
-          .filter(({ id }) => !removed.includes(id))
-          .map((question) => evidenceKey(question.evidence_a)),
+        questions.map((question) => evidenceKey(question.evidence_a)),
       );
       // A batch result can land before classification; once validated, the question owns that evidence.
       removed.push(

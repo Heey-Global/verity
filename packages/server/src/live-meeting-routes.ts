@@ -370,16 +370,21 @@ export function registerLiveMeetingRoutes(
                 `${meetingId}\0${candidate.kind}\0${candidate.evidenceA}\0${evidenceB ?? ''}${sourcePath ? `\0${sourcePath}` : ''}`,
               )
               .digest('hex');
-            await store.liveMeetings.addInsight(current.sessionId, {
-              id,
-              meetingId,
-              kind: candidate.kind,
-              summary: candidate.summary,
-              evidenceA: candidate.evidenceA,
-              evidenceB,
-              sourcePath: sourcePath ?? null,
-              createdAt: Date.now(),
-            });
+            await store.liveMeetings.addInsight(
+              current.sessionId,
+              {
+                id,
+                meetingId,
+                kind: candidate.kind,
+                summary: candidate.summary,
+                evidenceA: candidate.evidenceA,
+                evidenceB,
+                sourcePath: sourcePath ?? null,
+                createdAt: Date.now(),
+              },
+              false,
+              current.revision,
+            );
           }
           // Both writers reconcile so either completion order leaves one question suggestion.
           await store.liveMeetings.reconcileQuestions(current.sessionId, meetingId, undefined);
