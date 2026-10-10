@@ -5425,9 +5425,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
   registerProjectMemoryRoute(app, {
-    ...(deps.mcpProxyResolveCaller === undefined
+    ...(deps.mcpGateway === undefined
       ? {}
-      : { resolveControlCaller: deps.mcpProxyResolveCaller }),
+      : { resolveControlCaller: deps.mcpGateway.resolveCaller }),
     append: async (projectId, text) => {
       if (deps.dataRoot !== undefined) {
         await readOrMigrateProjectOverview(deps.dataRoot, projectId, async () => {
