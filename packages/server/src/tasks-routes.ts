@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { TaskTitleJobs } from './task-titles.js';
+import { TaskTitleJobs, TASK_TITLE_RECOVERY_MS } from './task-titles.js';
 
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
@@ -75,7 +75,15 @@ const putBody = z
     status: taskStatus.optional(),
     sort: z.number().int().min(0).max(1_000_000).optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (body) =>
+      !body.generateTitle ||
+      (!!body.detail?.trim() &&
+        !body.sessionId &&
+        (body.status === undefined || body.status === 'open')),
+    { message: 'title generation requires an open, unassigned task with a description' },
+  );
 
 const patchBody = z
   .object({
@@ -149,8 +157,31 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
         },
       })
     : undefined;
+  let recoveryTimer: ReturnType<typeof setInterval> | undefined;
+  let recovering: Promise<void> | undefined;
+  const recover = (): Promise<void> => {
+    if (recovering) return recovering;
+    recovering = (async () => {
+      const expired = await tasks.expirePendingTitles(
+        new Date(Date.now() - TASK_TITLE_RECOVERY_MS),
+      );
+      if (expired.length) deps.tasksChanged?.();
+    })().finally(() => {
+      recovering = undefined;
+    });
+    return recovering;
+  };
+  app.addHook('onReady', async () => {
+    await recover();
+    recoveryTimer = setInterval(() => {
+      void recover().catch(() => undefined);
+    }, 30_000);
+    recoveryTimer.unref();
+  });
   app.addHook('onClose', async () => {
+    clearInterval(recoveryTimer);
     await titles?.close();
+    await recovering;
   });
 
   async function canUseProject(

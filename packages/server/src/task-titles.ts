@@ -1,6 +1,8 @@
 import type { TaskRecord } from '@verity/store';
 
 export const TASK_TITLE_TIMEOUT_MS = 15_000;
+// A full queue takes at most nine timeout windows; allow headroom before recovery.
+export const TASK_TITLE_RECOVERY_MS = 5 * 60_000;
 
 export async function taskTitleModel(
   sourceSessionId: string | null,
@@ -76,15 +78,24 @@ export class TaskTitleJobs {
       const timer = setTimeout(() => controller.abort(), TASK_TITLE_TIMEOUT_MS);
       timer.unref();
       void (async () => {
+        let cancel!: () => void;
+        const cancelled = new Promise<undefined>((resolve) => {
+          cancel = () => resolve(undefined);
+          controller.signal.addEventListener('abort', cancel, { once: true });
+        });
         try {
           const title = parseTaskTitle(
-            await this.deps.query(task, taskTitlePrompt(task.detail!), controller.signal),
+            await Promise.race([
+              this.deps.query(task, taskTitlePrompt(task.detail!), controller.signal),
+              cancelled,
+            ]),
           );
           if (!this.closed) await this.persist(task, controller.signal.aborted ? undefined : title);
         } catch {
           // Keep the complete description visible when title generation fails.
           if (!this.closed) await this.persist(task, undefined);
         } finally {
+          controller.signal.removeEventListener('abort', cancel);
           clearTimeout(timer);
           this.active.delete(controller);
           this.drain();

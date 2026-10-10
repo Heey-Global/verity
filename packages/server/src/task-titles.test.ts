@@ -98,3 +98,16 @@ it('marks queued and active captures failed on graceful shutdown', async () => {
   for (const id of ['one', 'two', 'three'])
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ id }), undefined);
 });
+
+it('frees slots after timeout even when inference completely ignores cancellation', async () => {
+  vi.useFakeTimers();
+  const query = vi.fn(() => new Promise<string>(() => {}));
+  const save = vi.fn(async () => undefined);
+  const jobs = new TaskTitleJobs({ query, save });
+  for (const id of ['one', 'two', 'three']) jobs.enqueue({ ...task, id });
+  expect(query).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(TASK_TITLE_TIMEOUT_MS);
+  expect(query).toHaveBeenCalledTimes(3);
+  expect(save).toHaveBeenCalledTimes(2);
+  await jobs.close();
+});

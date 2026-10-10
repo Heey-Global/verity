@@ -386,6 +386,31 @@ export class TaskStore {
     return this.record(row);
   }
 
+  /** Expired assists are safe to settle across server instances: fresh jobs stay pending. */
+  async expirePendingTitles(before: Date): Promise<TaskRecord[]> {
+    const expired = this.db
+      .selectFrom('tasks')
+      .select('id')
+      .where('title_generation_status', '=', 'pending')
+      .where('updated_at', '<=', before)
+      .orderBy('updated_at')
+      .limit(100);
+    const rows = await this.db
+      .updateTable('tasks')
+      .set({
+        title_generation_status: 'failed',
+        revision: sql<number>`revision + 1`,
+        generated_title_revision: sql<number>`revision + 1`,
+        updated_at: new Date().toISOString(),
+      })
+      .where('id', 'in', expired)
+      .where('title_generation_status', '=', 'pending')
+      .where('updated_at', '<=', before)
+      .returningAll()
+      .execute();
+    return rows.map((row) => this.record(row));
+  }
+
   /** A generated title must not outlive an edit or a change in task state. */
   async setGeneratedTitle(
     task: TaskRecord,

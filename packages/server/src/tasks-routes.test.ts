@@ -972,3 +972,62 @@ describe('background voice task titles', () => {
     expect(queryTitle).not.toHaveBeenCalled();
   });
 });
+
+it('settles interrupted old title requests on startup while leaving fresh work untouched', async () => {
+  await store.tasks.upsert({
+    id: T1,
+    ownerUserId: ADMIN,
+    origin: 'user',
+    projectId: 'p1',
+    title: 'Internal fallback',
+    detail: 'Original spoken description',
+    generateTitle: true,
+  });
+  await store.tasks.upsert({
+    id: T2,
+    ownerUserId: ADMIN,
+    origin: 'user',
+    projectId: 'p1',
+    title: 'Fresh capture',
+    detail: 'Fresh description',
+    generateTitle: true,
+  });
+  await ctx.db
+    .updateTable('tasks')
+    .set({ updated_at: new Date(Date.now() - 10 * 60_000).toISOString() })
+    .where('id', '=', T1)
+    .execute();
+  await app.ready();
+  expect(await store.tasks.get(T1, ADMIN)).toMatchObject({
+    titleGenerationStatus: 'failed',
+    detail: 'Original spoken description',
+    revision: 2,
+    generatedTitleRevision: 2,
+  });
+  expect(await store.tasks.get(T2, ADMIN)).toMatchObject({
+    titleGenerationStatus: 'pending',
+    revision: 1,
+  });
+  expect(tasksChanged).toHaveBeenCalledTimes(1);
+  expect(queryTitle).not.toHaveBeenCalled();
+});
+
+it.each([{ detail: null }, { detail: '' }, { sessionId: 's1' }, { status: 'done' }])(
+  'rejects title requests that cannot enter the background queue: %j',
+  async (invalid) => {
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/tasks/${T1}`,
+      payload: {
+        projectId: 'p1',
+        title: 'Fallback',
+        detail: 'Spoken description',
+        generateTitle: true,
+        ...invalid,
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(await store.tasks.get(T1, ADMIN)).toBeUndefined();
+    expect(queryTitle).not.toHaveBeenCalled();
+  },
+);
