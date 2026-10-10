@@ -1,3 +1,4 @@
+import { taskContext } from '@verity/mobile';
 import { Image } from 'react-native';
 import { act, fireEvent, render } from '@testing-library/react-native';
 import { QuickCaptureCard } from './QuickCaptureCard';
@@ -267,3 +268,57 @@ it('ignores root shortcuts while an explicit save waits for the transcript', () 
   expect(voice.abort).not.toHaveBeenCalled();
   expect(props.onClose).not.toHaveBeenCalled();
 });
+
+it.each([
+  [false, false],
+  [false, true],
+  [true, true],
+])(
+  'adopts delayed session context while preserving explicit selection (chosen=%s, cached=%s)',
+  async (chooseProject, cachedProjects) => {
+    jest
+      .mocked(useVoiceInput)
+      .mockReturnValue({ ...voice, state: 'idle' } as unknown as ReturnType<typeof useVoiceInput>);
+    const projects = [
+      {
+        id: 'remembered',
+        owner: 'local',
+        repo: 'Remembered',
+        kind: 'local' as const,
+        containerName: 'remembered',
+        imageRef: null,
+        state: 'active' as const,
+        provisionError: null,
+        createdAt: '',
+        updatedAt: '',
+      },
+    ];
+    const ui = render(
+      <QuickCaptureCard
+        {...props}
+        projects={cachedProjects ? projects : []}
+        context={taskContext('/session/s', { id: 's' }, [])}
+      />,
+    );
+    fireEvent.changeText(ui.getByLabelText('Task text'), 'Cold session capture');
+    if (chooseProject) fireEvent.press(ui.getByText('Remembered'));
+    else {
+      await act(async () => fireEvent.press(ui.getByText('Save')));
+      expect(captureTask).not.toHaveBeenCalled();
+    }
+    ui.rerender(
+      <QuickCaptureCard
+        {...props}
+        projects={projects}
+        context={taskContext('/session/s', { id: 's' }, [{ sessionId: 's', projectId: 'p' }])}
+      />,
+    );
+    await act(async () => fireEvent.press(ui.getByText('Save')));
+    expect(captureTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: chooseProject ? 'remembered' : 'p',
+        sourceSessionId: 's',
+      }),
+    );
+  },
+);
