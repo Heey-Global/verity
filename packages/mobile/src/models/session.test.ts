@@ -980,6 +980,13 @@ describe('SessionModel — cancel (#79)', () => {
         finishCancel = resolve;
       }),
     );
+    client.getHistory = vi
+      .fn()
+      .mockResolvedValueOnce({ events: [], hasMore: true })
+      .mockResolvedValue({
+        events: [{ seq: 0, event: { t: 'prompt', text: 'older' } }],
+        hasMore: false,
+      });
     client.getActivity = vi.fn().mockResolvedValue({ busy: true, queued: [] });
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     try {
@@ -1002,11 +1009,21 @@ describe('SessionModel — cancel (#79)', () => {
 
       finishCancel({ sessionId: 's1', cancelled: true });
       await cancellation;
-      sockets[0]?.emitEvent(4, { t: 'status', state: 'completed' });
+      sockets[0]?.emitEvent(4, { t: 'interrupted' });
       expect(agentTexts(model.state)).toEqual(['visible']);
       expect(model.state.activityAnimating).toBe(false);
+      expect(
+        model.state.session.messages.some(
+          (message) => message.kind === 'agent-event' && message.event.t === 'interrupted',
+        ),
+      ).toBe(true);
       sockets[0]?.emitEvent(5, { t: 'prompt', text: 'next' });
       expect(model.state.working).toBe(true);
+      expect(agentTexts(model.state)).toEqual(['visible']);
+      await model.loadOlder();
+      expect(agentTexts(model.state)).toEqual(['visible']);
+      sockets[0]?.emitEvent(6, { t: 'text', delta: 'new turn' });
+      expect(agentTexts(model.state)).toEqual(['visible', 'new turn']);
     } finally {
       model.stop();
     }

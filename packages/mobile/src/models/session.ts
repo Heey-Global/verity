@@ -358,8 +358,6 @@ export class SessionModel {
             this._cancelRequested = false;
           } else {
             if (this.stream.settledSeq > this._cancelAtSeq) this._cancelSettled = true;
-            // Already-buffered output must not keep changing the transcript after Stop.
-            session = { ...session, messages: this._session.messages };
           }
         }
         if (session.pendingPermission?.toolUseId !== this._session.pendingPermission?.toolUseId) {
@@ -1245,6 +1243,7 @@ export class SessionModel {
     this._cancelRequested = true;
     this._cancelSettled = !this._session.running && !this._busy;
     this._cancelAtSeq = this.stream.newestSeq;
+    this.stream.freezeOutput();
     this.emit();
     try {
       const result = await this.opts.client.cancelTurn(this.opts.sessionId, opts);
@@ -1258,6 +1257,7 @@ export class SessionModel {
       }));
     } catch (error) {
       this._cancelRequested = false;
+      this.stream.restoreOutput();
       this._session = this.stream.state;
       this._cancelError = error instanceof VerityApiError ? error.message : 'failed to stop turn';
       this.emit();
