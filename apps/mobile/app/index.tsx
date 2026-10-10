@@ -26,8 +26,6 @@ import {
   type AttentionFlag,
   VerityApiError,
   type VerityClient,
-  type DevServer,
-  type DevServerDetection,
   type ProjectRecord,
   type ProviderLimitRow,
   type ProviderLimitState,
@@ -87,7 +85,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { AttentionMarkers, drawsAttentionMarker } from '../components/AttentionMarkers';
 import { Icon } from '../components/Icon';
-import { ProjectPortChip, type ProjectPortLink } from '../components/ProjectPortChip';
+import { ProjectPortChip } from '../components/ProjectPortChip';
 import { ProjectOverviewList } from '../components/ProjectOverviewList';
 import { ProjectSessionsCollapse } from '../components/ProjectSessionsCollapse';
 import {
@@ -113,30 +111,12 @@ import {
 import { newSessionId, registerPendingSession } from '../lib/pendingSessions';
 import { createProjectCollapseQueue } from '../lib/projectCollapseQueue';
 import { createSessionConfirmingWarnings } from '../lib/startSession';
-import { devServerUrl } from '../lib/devServerUrl';
 import { repairProject } from '../lib/projectRepair';
 import { sessionLoadError } from '../lib/sessionLoadError';
-import { projectOverviewStatus, type ProjectOverviewStatus } from '../lib/projectSetup';
+import type { ProjectOverviewStatus } from '../lib/projectSetup';
+import { projectGroups, type SessionProjectGroup } from '../lib/projectGroups';
 import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
-
-type SessionProjectGroup = {
-  id: string;
-  title: string;
-  subtitle: string;
-  /** The single line the row says about what is happening to this project — a
-   *  transition in flight, a failure, or an attention line. Shown INSTEAD of
-   *  `subtitle`, which is metadata and can wait. */
-  status?: ProjectOverviewStatus;
-  portLinks: ProjectPortLink[];
-  project?: ProjectRecord;
-  // Set on an "orphan" group — sessions whose project is INACTIVE (`absent`, so
-  // filtered out of `GET /projects`). We still hold its id, so the overview can
-  // offer the "…" action into the detail screen (where Repair lives) instead of
-  // stranding the sessions with no way back.
-  inactiveProjectId?: string;
-  sessions: SessionSummary[];
-};
 
 export default function SessionsScreen() {
   const client = useMemo(() => createVerityClient(), []);
@@ -262,10 +242,19 @@ function SessionList({ client }: { client: VerityClient }) {
       sessionsLoadedOnce.current = true;
     }, [refresh]),
   );
-  const groups = useMemo(
-    () => projectGroups(projects, sessions, devServersByProject, detectionsByProject, baseUrl),
-    [baseUrl, detectionsByProject, devServersByProject, projects, sessions],
-  );
+  const previousGroups = useRef<SessionProjectGroup[]>([]);
+  const groups = useMemo(() => {
+    const next = projectGroups(
+      projects,
+      sessions,
+      devServersByProject,
+      detectionsByProject,
+      baseUrl,
+      previousGroups.current,
+    );
+    previousGroups.current = next;
+    return next;
+  }, [baseUrl, detectionsByProject, devServersByProject, projects, sessions]);
   // The order a drop chose, applied until a poll confirms the server has it.
   const [dragOrder, setDragOrder] = useState<string[] | null>(null);
   const orderedGroups = useMemo(() => applyProjectOrder(groups, dragOrder), [groups, dragOrder]);
@@ -959,65 +948,6 @@ function RightPanePlaceholder() {
   );
 }
 
-function projectGroups(
-  projects: ProjectRecord[],
-  sessions: SessionSummary[],
-  devServersByProject: Map<string, DevServer[]>,
-  detectionsByProject: Map<string, DevServerDetection>,
-  baseUrl: string | null,
-): SessionProjectGroup[] {
-  const byProject = new Map<string | null, SessionSummary[]>();
-  for (const session of sessions) {
-    const key = session.projectId ?? null;
-    const bucket = byProject.get(key) ?? [];
-    bucket.push(session);
-    byProject.set(key, bucket);
-  }
-
-  const groups: SessionProjectGroup[] = projects.map((project) => {
-    const detection = detectionsByProject.get(project.id);
-    const portLinks = (devServersByProject.get(project.id) ?? []).flatMap((server) => {
-      const url = baseUrl ? devServerUrl(baseUrl, server) : null;
-      return server.running && server.hostPort && url
-        ? [{ id: server.id, label: server.hostPort, url }]
-        : [];
-    });
-    return {
-      id: project.id,
-      title: projectTitle(project),
-      subtitle: project.latestReleaseTag ?? '',
-      status: projectOverviewStatus(project, detection),
-      portLinks,
-      project,
-      sessions: byProject.get(project.id) ?? [],
-    };
-  });
-  const defaultSessions = byProject.get(null) ?? [];
-  if (defaultSessions.length > 0 || groups.length === 0) {
-    groups.unshift({
-      id: 'default',
-      title: 'Default repository',
-      subtitle: 'Verity server workspace',
-      portLinks: [],
-      sessions: defaultSessions,
-    });
-  }
-
-  const knownProjects = new Set(projects.map((p) => p.id));
-  for (const [projectId, projectSessions] of byProject) {
-    if (projectId === null || knownProjects.has(projectId)) continue;
-    groups.push({
-      id: `orphan:${projectId}`,
-      title: 'Inactive project',
-      subtitle: 'Project unavailable',
-      portLinks: [],
-      inactiveProjectId: projectId,
-      sessions: projectSessions,
-    });
-  }
-  return groups;
-}
-
 function applyProjectOrder(
   groups: SessionProjectGroup[],
   orderedProjectIds: string[] | null,
@@ -1424,7 +1354,7 @@ function ProjectGroup({
                         previewActive={previewUrls.has(session.sessionId)}
                         previewPublic={publicPreviews.has(session.sessionId)}
                         previewUrl={previewUrls.get(session.sessionId) ?? null}
-                        repo={group.project?.kind === 'github' ? group.project : undefined}
+                        repo={group.repo}
                         selected={selectedId === session.sessionId}
                         renaming={renamingId === session.sessionId}
                       />
@@ -1492,10 +1422,6 @@ function confirmDeleteSession(
 
 function isVerityControlPlaneProject(project: ProjectRecord): boolean {
   return project.kind === 'control_plane';
-}
-
-function projectTitle(project: ProjectRecord): string {
-  return isVerityControlPlaneProject(project) ? 'Verity Control' : project.repo;
 }
 
 const WIDE_PROVIDER_LIMIT_MIN_WIDTH = 700;
