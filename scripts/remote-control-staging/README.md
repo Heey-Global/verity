@@ -34,6 +34,37 @@ probe requires macOS 14+, Xcode, and the four workflow inputs above.
 
 ## Diagnosing a device connection
 
+### Selecting an isolated Uplink endpoint
+
+The server entrypoint accepts two optional deployment environment settings:
+`VERITY_DIAGNOSTIC_UPLINK_ORIGIN` (an HTTPS origin without credentials, query,
+fragment or path) and `VERITY_DIAGNOSTIC_UPLINK_INSTALLATION_ID` (the existing
+installation ID). Both are required together. A stored ID mismatch prevents
+dialling; a different ID in the Uplink welcome closes the diagnostic connection
+before persisting the replacement. Other servers with neither setting retain
+the standard endpoint.
+
+Set these only on the selected Core deployment after approving the isolated
+endpoint and its access controls. This redirects that Core's entire Uplink
+control connection, including public previews. The selected hostname must route
+control, admission and DATA WebSocket upgrades to the same Uplink process. A
+shared database alone cannot preserve in-memory admission ownership. Verify
+DNS, certificate trust, protocol compatibility and connection mapping before a
+device capture. Deployment tooling must explicitly preserve these settings
+across a recreation; the application does not modify deployment specifications.
+
+The connector DATA URL and advertised mobile origin derive from the selected
+control URL. Refresh the mobile descriptor after switching, and start fresh
+admission and tickets; existing sessions are not migrated. The paired Core URL
+and inner TLS pin remain unchanged. Roll back by removing both settings,
+restarting the selected Core, checking its renewed standard-endpoint lease,
+refreshing the mobile descriptor and discarding diagnostic sessions.
+
+An isolated path does not reproduce the production Gateway automatically. A
+successful isolated run cannot establish why a production connection failed.
+Keep endpoint metadata private and enforce the diagnostic capture's time,
+storage and retention bounds in the collector.
+
 The displayed paired Core URL remains the TLS identity for both direct and
 Uplink routes. Its presence does not establish which route was attempted.
 

@@ -94,6 +94,8 @@ interface RemoteSession {
 
 export interface UplinkControlClientOptions {
   url: string;
+  /** Diagnostic endpoint selection is restricted to an already admitted installation. */
+  expectedInstallationId?: string;
   store: SettingsStore;
   serverVersion: string;
   webSocketFactory?: (url: string, options: { maxPayload: number }) => WebSocket;
@@ -451,6 +453,15 @@ export class UplinkControlClient implements PreviewEdgeControl {
     }
     if (this.stopped || generation !== this.generation || this.socket) return;
     if (settings !== undefined) this.switches = premiumFeatureSwitches(settings);
+    if (
+      this.options.expectedInstallationId !== undefined &&
+      settings?.uplinkInstallationId !== this.options.expectedInstallationId
+    ) {
+      this.clearAuthority('diagnostic Uplink installation does not match');
+      this.options.log?.warn({}, 'diagnostic Uplink installation does not match; not dialling');
+      this.scheduleReconnect(RECONNECT_CAPACITY_MS);
+      return;
+    }
     const key: string | undefined = settings?.uplinkSubscriptionKey?.trim();
     if (!key) {
       this.clearAuthority('Uplink subscription key is not configured');
@@ -657,6 +668,14 @@ export class UplinkControlClient implements PreviewEdgeControl {
       const currentWelcome = () =>
         !this.stopped && this.socket === welcomeSocket && this.generation === welcomeGeneration;
       const installationId = stringField(frame, 'installationId');
+      if (
+        this.options.expectedInstallationId !== undefined &&
+        installationId !== this.options.expectedInstallationId
+      ) {
+        this.clearAuthority('diagnostic Uplink installation changed');
+        this.socket?.close(1008, 'diagnostic installation mismatch');
+        return;
+      }
       const installationHandle = validInstallationHandle(frame.handle) ? frame.handle : undefined;
       const negotiation = remoteNegotiation(frame);
       this.retryMs = 1_000;
