@@ -323,6 +323,7 @@ export function TasksPanel({
               </Text>
             ) : descriptionFirst ? (
               <TaskTitleInput
+                key="description"
                 task={{ ...task, title: task.detail! }}
                 onSave={(detail) => patchTask(task, { detail })}
               />
@@ -330,6 +331,7 @@ export function TasksPanel({
               <Text style={[styles.title, styles.titleDone]}>{task.title}</Text>
             ) : (
               <TaskTitleInput
+                key="title"
                 task={task}
                 onSave={(title) =>
                   patchTask(task, { title }).catch((error: unknown) => {

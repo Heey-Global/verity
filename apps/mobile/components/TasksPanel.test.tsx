@@ -429,3 +429,32 @@ it.each(['pending', 'failed'] as const)(
     expect(ui.getByText(detail)).toBeTruthy();
   },
 );
+
+it('preserves a focused description edit when generation switches to a title', () => {
+  const detail = 'Please improve spoken task capture and preserve every detail.';
+  const pendingTask = {
+    ...task,
+    title: 'Internal fallback',
+    detail,
+    titleGenerationStatus: 'pending' as const,
+  };
+  jest.mocked(useTasks).mockReturnValue({ tasks: [pendingTask], pending: [], conflicts: [] });
+  jest.mocked(patchTask).mockResolvedValue(undefined as never);
+  const ui = render(<TasksPanel {...props} />);
+  fireEvent(ui.getByLabelText('Task text'), 'focus');
+  fireEvent.changeText(ui.getByLabelText('Task text'), 'Edited description');
+  const readyTask = {
+    ...pendingTask,
+    title: 'Improve spoken capture',
+    titleGenerationStatus: 'ready' as const,
+  };
+  jest.mocked(useTasks).mockReturnValue({ tasks: [readyTask], pending: [], conflicts: [] });
+  ui.rerender(<TasksPanel {...props} />);
+  expect(ui.getByDisplayValue(readyTask.title)).toBeTruthy();
+  expect(patchTask).toHaveBeenCalledWith(pendingTask, { detail: 'Edited description' });
+  jest.mocked(patchTask).mockClear();
+  fireEvent(ui.getByLabelText('Task text'), 'focus');
+  fireEvent.changeText(ui.getByLabelText('Task text'), 'Better title');
+  fireEvent(ui.getByLabelText('Task text'), 'blur');
+  expect(patchTask).toHaveBeenCalledWith(readyTask, { title: 'Better title' });
+});
