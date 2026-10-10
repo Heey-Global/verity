@@ -44,6 +44,7 @@ const ALL_ACTIONS: ReadonlySet<ForgeAction> = new Set([
   'actions-write',
   'releases-write',
   'checks-read',
+  'repository-rules-read',
   'packages-read',
 ]);
 export const FORGE_PROXY_CA_FILE = '/run/verity/forge-proxy/ca.crt';

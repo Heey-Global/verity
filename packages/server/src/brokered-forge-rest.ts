@@ -5,6 +5,14 @@ export function githubRestAction(method: string, suffix: string): ForgeAction | 
   const read = method === 'GET' || method === 'HEAD';
   if (read) {
     if (
+      /^\/branches\/[^/]+\/protection(?:\/(?:required_status_checks|enforce_admins|required_pull_request_reviews|restrictions))?$/.test(
+        suffix,
+      ) ||
+      /^\/rulesets(?:\/\d+)?$/.test(suffix) ||
+      /^\/rules\/branches\/[^/]+$/.test(suffix)
+    )
+      return 'repository-rules-read';
+    if (
       suffix === '' ||
       /^\/(branches|commits|compare)(\/[^/]+)?$/.test(suffix) ||
       /^\/contents(?:\/[^/]+)*$/.test(suffix) ||
@@ -68,6 +76,8 @@ export function githubRestAction(method: string, suffix: string): ForgeAction | 
       : ['POST', 'PATCH', 'DELETE'].includes(method)
         ? 'issues-write'
         : undefined;
+  if (/^\/pulls\/\d+\/update-branch$/.test(suffix))
+    return method === 'PUT' ? 'pulls-write' : undefined;
   if (
     /^\/pulls(?:\/\d+)?(?:\/(?:commits|files|merge|reviews|comments))?$/.test(suffix) ||
     /^\/pulls\/\d+\/reviews\/\d+(?:\/dismissals)?$/.test(suffix)

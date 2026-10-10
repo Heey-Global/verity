@@ -3107,8 +3107,19 @@ export async function buildEmbeddedServer(
   const forgePackageMap = projectRelayEnabled
     ? await loadForgePackageMap(secretRoot)
     : new Map<string, readonly string[]>();
+  // Separate caches prevent optional diagnostic permissions from breaking Git access.
+  const diagnosticMints = Object.fromEntries(
+    (['statuses', 'administration', 'contents'] as const).map((permission) => [
+      permission,
+      createCachedProjectTokenMint(
+        createGitHubAppProjectTokenMint({ ...baseMintOpts, permissions: { [permission]: 'read' } }),
+        { authorityKey: githubAppAuthorityKey },
+      ),
+    ]),
+  );
   const githubForgeAdapter = createGitHubForgeAdapter({
     mint: cachedProjectTokenMint,
+    mintDiagnostic: (binding, permission) => diagnosticMints[permission]!(binding),
     transport: brokeredHttpStreamTransport,
   });
   const ghcrForgeAdapter = createGhcrForgeAdapter({

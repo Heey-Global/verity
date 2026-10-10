@@ -55,6 +55,7 @@ const allActions = new Set<ForgeAction>([
   'pulls-read',
   'pulls-write',
   'checks-read',
+  'repository-rules-read',
   'actions-read',
   'actions-write',
   'releases-read',

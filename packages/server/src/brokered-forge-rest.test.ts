@@ -5,11 +5,18 @@ describe('repository workflow API policy', () => {
   it.each([
     ['GET', '/commits/abc/check-runs', 'checks-read'],
     ['GET', '/commits/abc/status', 'checks-read'],
+    ['GET', '/commits/abc/statuses', 'checks-read'],
+    ['GET', '/branches/main/protection', 'repository-rules-read'],
+    ['HEAD', '/branches/main/protection/required_status_checks', 'repository-rules-read'],
+    ['GET', '/rulesets', 'repository-rules-read'],
+    ['GET', '/rulesets/123', 'repository-rules-read'],
+    ['GET', '/rules/branches/main', 'repository-rules-read'],
     ['GET', '/contents/releases/server-production.json', 'git-read'],
     ['POST', '/git/refs', 'git-write'],
     ['PATCH', '/git/refs/heads/automation/promote', 'git-write'],
     ['GET', '/pulls/12/reviews', 'pulls-read'],
     ['PUT', '/pulls/12/reviews/45/dismissals', 'pulls-write'],
+    ['PUT', '/pulls/12/update-branch', 'pulls-write'],
     ['POST', '/actions/workflows/ci.yml/dispatches', 'actions-write'],
     ['POST', '/actions/runs/123/rerun', 'actions-write'],
     ['POST', '/actions/runs/123/cancel', 'actions-write'],
@@ -25,6 +32,10 @@ describe('repository workflow API policy', () => {
     async (method, path, action) => {
       let mints = 0;
       const adapter = createGitHubForgeAdapter({
+        mintDiagnostic: async () => {
+          mints++;
+          return 'diagnostic-token';
+        },
         mint: async () => {
           mints++;
           return 'server-token';
@@ -124,3 +135,185 @@ describe('repository workflow API policy', () => {
     }
   });
 });
+
+// A diagnostic grant must never become authority to relax merge requirements.
+describe('repository rules mutations', () => {
+  it.each(['POST', 'PUT', 'PATCH', 'DELETE'])('rejects %s before minting', async (method) => {
+    let mints = 0;
+    const adapter = createGitHubForgeAdapter({
+      mint: async () => {
+        mints++;
+        return 'token';
+      },
+      transport: async () => {
+        throw new Error('unexpected');
+      },
+    });
+    for (const suffix of [
+      '/branches/main/protection',
+      '/rulesets',
+      '/rulesets/123',
+      '/rules/branches/main',
+    ]) {
+      await expect(
+        adapter.authorize(
+          { hostname: 'api.github.com', method, path: '/repos/acme/app' + suffix },
+          binding,
+          new Set<ForgeAction>(['repository-rules-read']),
+          AbortSignal.timeout(1000),
+        ),
+      ).rejects.toThrow();
+    }
+    expect(mints).toBe(0);
+  });
+});
+
+// Missing optional grants must not disable the project's normal Git credentials.
+describe('isolated diagnostic credentials', () => {
+  it('selects minimal diagnostic grants and keeps Git usable after denied issuance', async () => {
+    const permissions: string[] = [];
+    let ordinaryMints = 0;
+    const adapter = createGitHubForgeAdapter({
+      mint: async () => {
+        ordinaryMints++;
+        return 'ordinary-token';
+      },
+      mintDiagnostic: async (_binding, permission) => {
+        permissions.push(permission);
+        return undefined;
+      },
+      transport: async () => {
+        throw new Error('unexpected');
+      },
+    });
+    const actions = new Set<ForgeAction>(['checks-read', 'repository-rules-read', 'git-read']);
+    for (const suffix of [
+      '/commits/abc/status',
+      '/commits/abc/statuses',
+      '/branches/main/protection',
+      '/rulesets',
+      '/rules/branches/main',
+    ]) {
+      await expect(
+        adapter.authorize(
+          { hostname: 'api.github.com', method: 'GET', path: '/repos/acme/app' + suffix },
+          binding,
+          actions,
+          AbortSignal.timeout(1000),
+        ),
+      ).rejects.toThrow();
+    }
+    expect(permissions).toEqual(['statuses', 'statuses', 'administration', 'contents', 'contents']);
+    expect(ordinaryMints).toBe(0);
+    await expect(
+      adapter.authorize(
+        {
+          hostname: 'github.com',
+          method: 'GET',
+          path: '/acme/app.git/info/refs?service=git-upload-pack',
+        },
+        binding,
+        actions,
+        AbortSignal.timeout(1000),
+      ),
+    ).resolves.toMatchObject({ action: 'git-read' });
+    expect(ordinaryMints).toBe(1);
+    const before = permissions.length;
+    await expect(
+      adapter.authorize(
+        {
+          hostname: 'api.github.com',
+          method: 'GET',
+          path: '/repos/acme/other/branches/main/protection',
+        },
+        binding,
+        actions,
+        AbortSignal.timeout(1000),
+      ),
+    ).rejects.toThrow();
+    expect(permissions).toHaveLength(before);
+  });
+});
+
+// Repository and branch names must not select a stronger diagnostic permission.
+it.each([
+  ['protection', '/rulesets', 'contents'],
+  ['app', '/rules/branches/protection-fix', 'contents'],
+  ['protection', '/branches/main/protection', 'administration'],
+])('selects the endpoint grant for %s%s', async (repo, suffix, expected) => {
+  const grants: string[] = [];
+  const adapter = createGitHubForgeAdapter({
+    mint: async () => {
+      throw new Error('unexpected ordinary mint');
+    },
+    mintDiagnostic: async (_binding, permission) => {
+      grants.push(permission);
+      return 'diagnostic-token';
+    },
+    transport: async () => {
+      throw new Error('unexpected transport');
+    },
+  });
+  await adapter.authorize(
+    { hostname: 'api.github.com', method: 'GET', path: `/repos/acme/${repo}${suffix}` },
+    { ...binding, repo },
+    new Set<ForgeAction>(['repository-rules-read']),
+    AbortSignal.timeout(1000),
+  );
+  expect(grants).toEqual([expected]);
+});
+
+// A file named status must retain contents access rather than receive a status token.
+it('keeps content paths out of status-token selection', async () => {
+  const adapter = createGitHubForgeAdapter({
+    mint: async () => 'contents-token',
+    mintDiagnostic: async () => {
+      throw new Error('unexpected diagnostic mint');
+    },
+    transport: async () => {
+      throw new Error('unexpected transport');
+    },
+  });
+  await expect(
+    adapter.authorize(
+      {
+        hostname: 'api.github.com',
+        method: 'GET',
+        path: '/repos/acme/app/contents/commits/foo/status',
+      },
+      binding,
+      new Set<ForgeAction>(['git-read']),
+      AbortSignal.timeout(1000),
+    ),
+  ).resolves.toMatchObject({ action: 'git-read', authorization: 'Bearer contents-token' });
+});
+
+// Updating a PR branch must not grant other methods or adjacent routes.
+it.each(['GET', 'HEAD', 'POST', 'PATCH', 'DELETE', 'PUT'])(
+  'rejects unsupported update-branch requests: %s',
+  async (method) => {
+    let mints = 0;
+    const adapter = createGitHubForgeAdapter({
+      mint: async () => {
+        mints++;
+        return 'token';
+      },
+      transport: async () => {
+        throw new Error('unexpected');
+      },
+    });
+    for (const path of method === 'PUT'
+      ? ['/pulls/12/update-branch/extra', '/pulls/nope/update-branch']
+      : ['/pulls/12/update-branch']) {
+      await expect(
+        adapter.authorize(
+          { hostname: 'api.github.com', method, path: '/repos/acme/app' + path },
+          binding,
+          new Set<ForgeAction>(['pulls-read', 'pulls-write']),
+          AbortSignal.timeout(1000),
+        ),
+      ).rejects.toThrow();
+    }
+    expect(mints).toBe(0);
+  },
+);
