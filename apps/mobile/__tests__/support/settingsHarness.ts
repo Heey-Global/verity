@@ -169,6 +169,8 @@ export function makeSettings(overrides: Partial<VeritySettings> = {}): VeritySet
     opencodeModels: null,
     opencodeApiKeyConfigured: false,
     uplinkSubscriptionKeyConfigured: false,
+    premiumSharingEnabled: true,
+    premiumRemoteAccessEnabled: true,
     uplinkInstallationId: null,
     googleDriveClientId: null,
     googleDriveAccountEmail: null,

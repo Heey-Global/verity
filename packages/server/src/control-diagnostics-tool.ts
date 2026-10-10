@@ -63,6 +63,16 @@ const uplinkSchema = z.object({
   remoteControl: z.enum(['ready', 'unavailable']),
   reason: z.enum(['unknown_key', 'revoked', 'expired']).optional(),
   lastCloseCode: z.number().int().optional(),
+  features: z
+    .object({
+      sharing: z.object({ granted: z.boolean(), enabled: z.boolean(), effective: z.boolean() }),
+      remoteAccess: z.object({
+        granted: z.boolean(),
+        enabled: z.boolean(),
+        effective: z.boolean(),
+      }),
+    })
+    .optional(),
 });
 
 export function createControlDiagnosticsTool(deps: {

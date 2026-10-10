@@ -718,6 +718,8 @@ export const veritySettingsSchema = z.object({
   githubAppPrivateKeyConfigured: z.boolean(),
   dopplerServiceTokenConfigured: z.boolean(),
   uplinkSubscriptionKeyConfigured: z.boolean(),
+  premiumSharingEnabled: z.boolean().optional(),
+  premiumRemoteAccessEnabled: z.boolean().optional(),
   uplinkInstallationId: z.string().nullable(),
   transcribeBaseUrl: z.string().nullable(),
   transcribeModel: z.string().nullable(),
@@ -932,6 +934,8 @@ export type VeritySettingsPatch = {
   githubAppPrivateKey?: string | null | undefined;
   dopplerServiceToken?: string | null | undefined;
   uplinkSubscriptionKey?: string | null | undefined;
+  premiumSharingEnabled?: boolean | undefined;
+  premiumRemoteAccessEnabled?: boolean | undefined;
   transcribeApiKey?: string | null | undefined;
   codexAuthJson?: string | null | undefined;
   opencodeBaseUrl?: string | null | undefined;
@@ -1023,7 +1027,19 @@ const remoteStreamRecordSchema = z.object({
 });
 export type RemoteStreamRecord = z.infer<typeof remoteStreamRecordSchema>;
 
+const premiumFeatureStateSchema = z.object({
+  granted: z.boolean(),
+  enabled: z.boolean(),
+  effective: z.boolean(),
+});
+
 export const uplinkDiagnosticsSchema = z.object({
+  features: z
+    .object({
+      sharing: premiumFeatureStateSchema,
+      remoteAccess: premiumFeatureStateSchema,
+    })
+    .optional(),
   control: z.enum(['connected', 'connecting', 'reconnecting', 'rejected', 'disabled']),
   sharing: z.enum(['ready', 'unavailable']),
   remoteControl: z.enum(['ready', 'unavailable']),
@@ -3665,11 +3681,13 @@ export class VerityClient {
   }
 
   async getPreviewCapabilities(): Promise<{
-    publicSharing: 'available' | 'premium-required' | 'unavailable';
+    publicSharing: 'available' | 'premium-required' | 'unavailable' | 'disabled';
   }> {
     const res = await this.request('/preview-capabilities', { method: 'GET' });
     return z
-      .object({ publicSharing: z.enum(['available', 'premium-required', 'unavailable']) })
+      .object({
+        publicSharing: z.enum(['available', 'premium-required', 'unavailable', 'disabled']),
+      })
       .parse(await res.json());
   }
 
