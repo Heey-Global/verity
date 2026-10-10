@@ -4,7 +4,7 @@ module.exports = {
   type: 'watch-widget',
   name: 'VerityWatchComplication',
   displayName: 'Verity',
-  bundleIdentifier: '.watchkitapp.complication',
+  bundleIdentifier: '.watchkitapp.quickcapture',
   deploymentTarget: '11.0',
   frameworks: ['SwiftUI', 'WidgetKit'],
   colors: { $accent: '#ff35da' },
