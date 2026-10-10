@@ -568,6 +568,7 @@ export {
   taskSchema,
   bubbleRestingPlace,
   taskAge,
+  provisionalTaskTitle,
   taskContext,
   projectsByRecentCapture,
   TASK_SILENCE_MS,
@@ -593,3 +594,5 @@ export {
 
 export { packageInstallSummary, packageInstallDecision } from './ui/packageInstallSummary.js';
 export type { TransportLane, TransportRequestInit } from './api.js';
+
+export { sameSnapshotValue, reuseSnapshotRecords } from './snapshotIdentity.js';

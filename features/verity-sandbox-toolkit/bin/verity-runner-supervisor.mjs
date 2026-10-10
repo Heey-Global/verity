@@ -206,7 +206,11 @@ export function installedWorkerBackends(
 export function supervisorWorkerEnv(environment) {
   const brokerSocket = environment.VERITY_AGENT_SPAWN_BROKER_SOCKET;
   const mcpGatewayUrl = environment.VERITY_MCP_GATEWAY_URL;
+  const controlMemoryUrl = environment.VERITY_CONTROL_MEMORY_URL;
   return {
+    ...(controlMemoryUrl === undefined || controlMemoryUrl === ''
+      ? {}
+      : { VERITY_CONTROL_MEMORY_URL: controlMemoryUrl }),
     ...(brokerSocket === undefined || brokerSocket === ''
       ? {}
       : { VERITY_AGENT_SPAWN_BROKER_SOCKET: brokerSocket }),

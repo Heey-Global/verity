@@ -174,3 +174,15 @@ describe('ResourceObserver', () => {
     expect(read).not.toHaveBeenCalled();
   });
 });
+
+it('invalidates account-wide task lists immediately after a background title update', async () => {
+  const observer = new ResourceObserver();
+  let body = 'provisional title';
+  const changed = vi.fn();
+  observer.watch('alice', { path: '/tasks' }, async () => ({ statusCode: 200, body }), changed);
+  await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
+  body = 'generated title';
+  observer.invalidate('/tasks');
+  await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(2));
+  observer.close();
+});

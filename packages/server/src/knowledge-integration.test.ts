@@ -1,14 +1,20 @@
 import { createAuthTokenRegistry } from './auth.js';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { request } from 'node:http';
+import { request, type Server } from 'node:http';
+import { EventEmitter } from 'node:events';
+import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InMemoryEventBus, type Conductor } from '@verity/session';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { buildServer } from './server.js';
-import { requestArrivedInternally, startProjectInternalUnixListener } from './internal-listener.js';
+import {
+  markInternalConnections,
+  requestArrivedInternally,
+  startProjectInternalUnixListener,
+} from './internal-listener.js';
 import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 
 let ctx: TestDb;
@@ -337,5 +343,56 @@ it('keeps management APIs behind device authentication and returns bounded valid
     expect(existsSync(join(h.dataRoot, 'knowledge/p/sources/meetings/transcript.md'))).toBe(false);
   } finally {
     await h.close();
+  }
+});
+
+// Separate gateway and proxy registries must not make the installed helper reject live turns.
+it('uses the worker gateway bearer for Control memory rather than the proxy bearer', async () => {
+  await ctx.store.upsertProject({
+    id: CONTROL_PLANE_PROJECT_ID,
+    owner: 'test',
+    repo: 'control',
+    containerName: 'control',
+    state: 'absent',
+  });
+  const gatewayTokens = createMcpGatewayTokens();
+  const proxyTokens = createMcpGatewayTokens();
+  const binding = { projectId: CONTROL_PLANE_PROJECT_ID, sessionId: 'control', turnId: 'turn' };
+  const token = gatewayTokens.issue(binding);
+  const proxyToken = proxyTokens.issue(binding);
+  const app = buildServer({
+    eventStore: ctx.store,
+    bus: new InMemoryEventBus(),
+    conductor: {} as Conductor,
+    mcpProxyResolveCaller: async (input) => proxyTokens.resolve(input),
+    mcpGateway: {
+      resolveCaller: async (input) => gatewayTokens.resolve(input),
+      invokeTool: async () => ({ content: [] }),
+      recordCall: async () => {},
+      requestMac: async () => ({ requestMac: 'test', macKeyId: 'test' }),
+    },
+  });
+  const connections = new EventEmitter();
+  markInternalConnections(connections as unknown as Server);
+  app.addHook('onRequest', async (req) => {
+    connections.emit('connection', req.raw.socket);
+  });
+  const append = (bearer: string) =>
+    app.inject({
+      method: 'POST',
+      url: '/internal/control-plane/memory',
+      headers: { authorization: `Bearer ${bearer}` },
+      payload: { text: 'Control fact' },
+    });
+  try {
+    expect((await append(token)).statusCode).toBe(200);
+    expect((await ctx.store.getProjectSettingsRaw(CONTROL_PLANE_PROJECT_ID))?.memory).toContain(
+      'Control fact',
+    );
+    expect((await append(proxyToken)).statusCode).toBe(401);
+    gatewayTokens.release({ projectId: CONTROL_PLANE_PROJECT_ID, token });
+    expect((await append(token)).statusCode).toBe(401);
+  } finally {
+    await app.close();
   }
 });

@@ -55,6 +55,12 @@ describe('applyStartupUpdate', () => {
     await expect(applyStartupUpdate(client)).resolves.toBe('reloading');
     expect(client.fetchUpdateAsync).toHaveBeenCalledTimes(1);
     expect(client.reloadAsync).toHaveBeenCalledTimes(1);
+    expect(client.reloadAsync).toHaveBeenCalledWith({
+      reloadScreenOptions: {
+        backgroundColor: '#06030d',
+        spinner: { enabled: false },
+      },
+    });
   });
 
   it('applies an Expo-directed rollback to the embedded update', async () => {
@@ -72,6 +78,12 @@ describe('applyStartupUpdate', () => {
 
     await expect(applyStartupUpdate(client)).resolves.toBe('reloading');
     expect(client.reloadAsync).toHaveBeenCalledTimes(1);
+    expect(client.reloadAsync).toHaveBeenCalledWith({
+      reloadScreenOptions: {
+        backgroundColor: '#06030d',
+        spinner: { enabled: false },
+      },
+    });
   });
 
   it('fails open when the update service is unavailable', async () => {

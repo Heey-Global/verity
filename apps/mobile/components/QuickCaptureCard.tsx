@@ -1,10 +1,11 @@
 import {
   projectDisplayName,
+  provisionalTaskTitle,
   type AttachmentUpload,
   type ProjectRecord,
   type TaskContext,
 } from '@verity/mobile';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -32,6 +33,7 @@ import {
 } from '../lib/taskScreenshot';
 import { saveTaskPreferences, useTaskPreferences } from '../lib/taskPreferences';
 import { captureTask } from '../lib/tasksStore';
+import { subscribeTaskVoiceShortcut } from '../lib/voiceShortcut';
 
 export function QuickCaptureCard({
   context,
@@ -75,11 +77,19 @@ export function QuickCaptureCard({
   const [uploads, setUploads] = useState<AttachmentUpload[]>([]);
   const [projectId, setProjectId] = useState(
     context.projectId ??
-      (projects.some((p) => p.id === preferences.projectId) ? preferences.projectId : null),
+      (context.sessionId === null && projects.some((p) => p.id === preferences.projectId)
+        ? preferences.projectId
+        : null),
   );
+  const projectExplicitlySelected = useRef(false);
   const [other, setOther] = useState(false);
   const [saving, setSaving] = useState(false);
-  const voice = useVoiceInput(text, setText);
+  const dictated = useRef(false);
+  const onDictation = useCallback((value: string) => {
+    if (value.trim()) dictated.current = true;
+    setText(value);
+  }, []);
+  const voice = useVoiceInput(text, onDictation);
   const started = useRef(false);
   const savingRef = useRef(false);
   const pendingSave = useRef<{ target: string | null; recording: boolean } | null>(null);
@@ -114,7 +124,8 @@ export function QuickCaptureCard({
     void (async () => {
       try {
         const task = await captureTask({
-          title: text.trim(),
+          title: dictated.current ? provisionalTaskTitle(text) : text.trim(),
+          ...(dictated.current ? { detail: text.trim(), generateTitle: true } : {}),
           projectId: target,
           sourceSessionId: context.sessionId,
           uploads,
@@ -150,6 +161,8 @@ export function QuickCaptureCard({
       onClose();
     }
   };
+  // UIKit can keep the root shortcut responder active while a transparent modal is open.
+  useEffect(() => subscribeTaskVoiceShortcut(dismiss));
   const pan = PanResponder.create({
     onMoveShouldSetPanResponder: (_, g) => g.dy > 12 && Math.abs(g.dy) > Math.abs(g.dx),
     onPanResponderRelease: (_, g) => {
@@ -169,14 +182,21 @@ export function QuickCaptureCard({
     }
   };
   useEffect(() => {
+    // Capture can mount before its session context arrives from the shared read.
+    // A delayed default must never overwrite the project the user chose.
+    if (projectExplicitlySelected.current) return;
+    if (context.projectId !== null) {
+      setProjectId(context.projectId);
+      return;
+    }
     if (
-      context.projectId === null &&
+      context.sessionId === null &&
       projectId === null &&
       preferences.projectId &&
       projects.some((project) => project.id === preferences.projectId)
     )
       setProjectId(preferences.projectId);
-  }, [context.projectId, projectId, preferences.projectId, projects]);
+  }, [context.projectId, context.sessionId, projectId, preferences.projectId, projects]);
   const recording = voice.state === 'recording';
   // The picked project always shows as a selected chip, also when it came from Other….
   const chips = [
@@ -193,6 +213,7 @@ export function QuickCaptureCard({
           projects.find((p) => p.id === id) ?? { owner: '', repo: id, kind: 'local' },
         );
   const selectProject = (id: string) => {
+    projectExplicitlySelected.current = true;
     setProjectId(id);
     void saveTaskPreferences({ projectId: id }).catch(() =>
       Alert.alert('Could not remember project', 'Try again'),

@@ -4173,6 +4173,19 @@ migrations['0153_project_package_protection'] = {
   },
 };
 
+migrations['0154_task_generated_titles'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table tasks add column generated_title_revision integer, add column title_generation_status text not null default 'none' check (title_generation_status in ('none', 'pending', 'ready', 'failed'))`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table tasks drop column generated_title_revision, drop column title_generation_status`.execute(
+      db,
+    );
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

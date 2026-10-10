@@ -43,6 +43,12 @@ read-only except for `/knowledge/insights`. Shared files are available read-only
 file tools such as `ls`, `grep`, and `cat`; there is no separate Knowledge tool
 or Wiki maintenance flow.
 
+Verity Control receives the Knowledge folder of its built-in `verity-control` project,
+plus Shared Knowledge, with the same permissions. It does not mount other projects'
+Knowledge. `verity-memory append` saves explicitly requested notes to Control's own
+project overview through its authenticated turn broker. Managed updates reconcile
+these mounts; legacy Compose deployments receive them when the updated stack is applied.
+
 Agents create or revise concise insights without asking first when their work produces a
 durable, reusable conclusion grounded in project sources. They prefer updating an existing
 insight, cite relevant source paths, and mark uncertainty. They ask before preserving sensitive

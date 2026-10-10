@@ -1,3 +1,4 @@
+import { readContextProjects } from '../lib/sharedTaskContext';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import {
@@ -23,8 +24,8 @@ import {
 // Project and preview changes arrive over the shared live connection.
 export function useProjects(client: VerityClient) {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const devServersByProject = new Map<string, DevServer[]>();
-  const detectionsByProject = new Map<string, DevServerDetection>();
+  const [devServersByProject] = useState(() => new Map<string, DevServer[]>());
+  const [detectionsByProject] = useState(() => new Map<string, DevServerDetection>());
   // Session id → the URL its preview icon opens; see mergeSessionPreviewUrls.
   const [previewUrls, setPreviewUrls] = useState<ReadonlyMap<string, string | null>>(
     () => new Map(),
@@ -73,7 +74,7 @@ export function useProjects(client: VerityClient) {
       const generation = ++loadGeneration.current;
       if (!opts?.silent) setLoading(true);
       try {
-        const nextProjects = await client.listProjects();
+        const nextProjects = await readContextProjects(client, true);
         const activeProjects = nextProjects.filter((project) => project.state === 'active');
         const projectIds = activeProjects.map((project) => project.id);
         if (generation !== loadGeneration.current) return;

@@ -591,7 +591,7 @@ describe('SessionModel — working reconciliation', () => {
       client.getActivity = vi
         .fn()
         .mockResolvedValue({ busy: true, activityAnimating: true, queued: [] });
-      model.refreshActivity();
+      void model.refreshActivity();
       await flush();
       expect(model.state.activityAnimating).toBe(true);
       expect(emitted).toContain(true);
@@ -728,7 +728,7 @@ describe('SessionModel — working reconciliation', () => {
       await flush();
       sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
       sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
-      model.refreshActivity();
+      void model.refreshActivity();
       await flush();
       expect(model.state.working).toBe(false);
       sockets[0]?.emitEvent(2, { t: 'dev_servers_changed', devServers: [] });
@@ -971,6 +971,275 @@ describe('SessionModel — sendTurn', () => {
 });
 
 describe('SessionModel — cancel (#79)', () => {
+  it('freezes text and activity immediately, including late events and busy polls', async () => {
+    const { connect, sockets } = recordingConnect();
+    let finishCancel!: (result: { sessionId: string; cancelled: boolean }) => void;
+    const client = stubClient();
+    client.sendTurn = vi.fn().mockRejectedValue(new Error('offline'));
+    client.cancelTurn = vi.fn().mockReturnValue(
+      new Promise((resolve) => {
+        finishCancel = resolve;
+      }),
+    );
+    const getHistory = vi
+      .fn()
+      .mockResolvedValueOnce({
+        events: [{ seq: 1, event: { t: 'prompt', text: 'go' } }],
+        hasMore: true,
+      })
+      .mockResolvedValue({
+        events: [{ seq: 0, event: { t: 'prompt', text: 'older' } }],
+        hasMore: false,
+      });
+    client.getHistory = getHistory;
+    client.getActivity = vi.fn().mockResolvedValue({ busy: true, queued: [] });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+      sockets[0]?.emitEvent(2, { t: 'text', delta: 'visible' });
+      expect(model.state.activityAnimating).toBe(true);
+
+      const cancellation = model.cancel();
+      expect(model.state.working).toBe(false);
+      expect(model.state.busy).toBe(false);
+      expect(model.state.activityAnimating).toBe(false);
+      sockets[0]?.emitEvent(3, { t: 'prompt', text: 'late steering', steered: true });
+      sockets[0]?.emitEvent(4, { t: 'text', delta: ' late' });
+      await model.refreshActivity();
+      await flush();
+      expect(agentTexts(model.state)).toEqual(['visible']);
+      await model.sendTurn('failed successor');
+      expect(model.state.working).toBe(false);
+      expect(model.state.activityAnimating).toBe(false);
+
+      finishCancel({ sessionId: 's1', cancelled: true });
+      await cancellation;
+      sockets[0]?.emitEvent(5, { t: 'interrupted' });
+      expect(agentTexts(model.state)).toEqual(['visible']);
+      expect(model.state.activityAnimating).toBe(false);
+      expect(
+        model.state.session.messages.some(
+          (message) => message.kind === 'agent-event' && message.event.t === 'interrupted',
+        ),
+      ).toBe(true);
+      sockets[0]?.emitEvent(6, { t: 'prompt', text: 'next' });
+      expect(model.state.working).toBe(true);
+      expect(agentTexts(model.state)).toEqual(['visible']);
+      expect(model.state.hasOlder).toBe(true);
+      await model.loadOlder();
+      expect(getHistory).toHaveBeenCalledTimes(2);
+      expect(agentTexts(model.state)).toEqual(['visible']);
+      sockets[0]?.emitEvent(7, { t: 'text', delta: 'new turn' });
+      expect(agentTexts(model.state)).toEqual(['visible', 'new turn']);
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('keeps a delayed cancelled-turn prompt from reopening output', async () => {
+    const { connect, sockets } = recordingConnect();
+    const client = stubClient();
+    client.getActivity = vi.fn().mockResolvedValue({ busy: true, queued: [] });
+    client.cancelTurn = vi.fn().mockResolvedValue({ sessionId: 's1', cancelled: true });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      await model.cancel();
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'delayed original prompt' });
+      sockets[0]?.emitEvent(2, { t: 'text', delta: 'late output' });
+      expect(agentTexts(model.state)).toEqual([]);
+      expect(model.state.working).toBe(false);
+      sockets[0]?.emitEvent(3, { t: 'interrupted' });
+      sockets[0]?.emitEvent(4, { t: 'prompt', text: 'late steering', steered: true });
+      sockets[0]?.emitEvent(5, { t: 'text', delta: 'still late' });
+      expect(agentTexts(model.state)).toEqual([]);
+      expect(model.state.working).toBe(false);
+      sockets[0]?.emitEvent(6, { t: 'prompt', text: 'successor' });
+      sockets[0]?.emitEvent(7, { t: 'text', delta: 'new output' });
+      expect(agentTexts(model.state)).toEqual(['new output']);
+      expect(model.state.working).toBe(true);
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('restores buffered output and activity when cancellation fails', async () => {
+    const { connect, sockets } = recordingConnect();
+    let rejectCancel!: (error: Error) => void;
+    const client = stubClient();
+    client.cancelTurn = vi.fn().mockReturnValue(
+      new Promise((_, reject) => {
+        rejectCancel = reject;
+      }),
+    );
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+      sockets[0]?.emitEvent(2, { t: 'text', delta: 'visible' });
+      const cancellation = model.cancel();
+      sockets[0]?.emitEvent(3, { t: 'text', delta: ' buffered' });
+      sockets[0]?.emitEvent(4, { t: 'prompt', text: 'next' });
+      rejectCancel(new Error('offline'));
+      await cancellation;
+      expect(agentTexts(model.state)).toEqual(['visible buffered']);
+      expect(model.state.activityAnimating).toBe(true);
+      expect(model.state.cancelError).toBe('failed to stop turn');
+    } finally {
+      model.stop();
+    }
+  });
+
+  it.each([false, true])(
+    'settles overlapping stops without losing output (success: %s)',
+    async (success) => {
+      const { connect, sockets } = recordingConnect();
+      let rejectFirst!: (error: Error) => void;
+      let finishSecond!: () => void;
+      const client = stubClient();
+      client.cancelTurn = vi
+        .fn()
+        .mockReturnValueOnce(
+          new Promise((_, reject) => {
+            rejectFirst = reject;
+          }),
+        )
+        .mockReturnValueOnce(
+          new Promise((resolve, reject) => {
+            finishSecond = () =>
+              success
+                ? resolve({ sessionId: 's1', cancelled: true })
+                : reject(new Error('offline'));
+          }),
+        );
+      const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+      try {
+        model.start();
+        await flush();
+        sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+        sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+        sockets[0]?.emitEvent(2, { t: 'text', delta: 'visible' });
+        const first = model.cancel();
+        sockets[0]?.emitEvent(3, { t: 'text', delta: ' first' });
+        const second = model.cancel({ force: true });
+        sockets[0]?.emitEvent(4, { t: 'text', delta: ' second' });
+        rejectFirst(new Error('offline'));
+        await first;
+        expect(agentTexts(model.state)).toEqual(['visible']);
+        finishSecond();
+        await second;
+        expect(agentTexts(model.state)).toEqual([success ? 'visible' : 'visible first second']);
+      } finally {
+        model.stop();
+      }
+    },
+  );
+
+  it('allows a successor after the interrupted event lands between overlapping Stops', async () => {
+    const { connect, sockets } = recordingConnect();
+    const finishes: Array<() => void> = [];
+    const client = stubClient();
+    client.cancelTurn = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishes.push(() => resolve({ sessionId: 's1', cancelled: true }));
+        }),
+    );
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+      const first = model.cancel();
+      sockets[0]?.emitEvent(2, { t: 'interrupted' });
+      const second = model.cancel({ force: true });
+      finishes.forEach((finish) => finish());
+      await Promise.all([first, second]);
+      sockets[0]?.emitEvent(3, { t: 'prompt', text: 'external successor' });
+      sockets[0]?.emitEvent(4, { t: 'text', delta: 'new output' });
+      expect(agentTexts(model.state)).toEqual(['new output']);
+      expect(model.state.working).toBe(true);
+      expect(model.state.activityAnimating).toBe(true);
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('restores successor output when its Stop fails despite an earlier successful Stop', async () => {
+    const { connect, sockets } = recordingConnect();
+    let finishFirst!: () => void;
+    let failSecond!: () => void;
+    const client = stubClient();
+    client.cancelTurn = vi
+      .fn()
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishFirst = () => resolve({ sessionId: 's1', cancelled: true });
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise((_, reject) => {
+          failSecond = () => reject(new Error('offline'));
+        }),
+      );
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'first' });
+      const first = model.cancel();
+      sockets[0]?.emitEvent(2, { t: 'text', delta: 'old hidden' });
+      sockets[0]?.emitEvent(3, { t: 'interrupted' });
+      sockets[0]?.emitEvent(4, { t: 'prompt', text: 'successor' });
+      sockets[0]?.emitEvent(5, { t: 'text', delta: 'visible' });
+      const second = model.cancel();
+      sockets[0]?.emitEvent(6, { t: 'text', delta: ' restored' });
+      finishFirst();
+      await first;
+      failSecond();
+      await second;
+      expect(agentTexts(model.state)).toEqual(['visible restored']);
+      expect(model.state.working).toBe(true);
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('releases a no-op Stop despite a stale busy poll before an external turn', async () => {
+    const { connect, sockets } = recordingConnect();
+    const client = stubClient();
+    client.getActivity = vi.fn().mockResolvedValue({ busy: true, queued: [] });
+    client.cancelTurn = vi.fn().mockResolvedValue({ sessionId: 's1', cancelled: false });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+      sockets[0]?.emitEvent(2, { t: 'interrupted' });
+      await model.refreshActivity();
+      await flush();
+      expect(model.state.busy).toBe(true);
+      await model.cancel();
+      expect(model.state.busy).toBe(false);
+      sockets[0]?.emitEvent(3, { t: 'prompt', text: 'external turn' });
+      expect(model.state.working).toBe(true);
+      sockets[0]?.emitEvent(4, { t: 'text', delta: 'new output' });
+      expect(agentTexts(model.state)).toEqual(['new output']);
+    } finally {
+      model.stop();
+    }
+  });
+
   it('calls cancelTurn and leaves no error on success (incl. a no-op)', async () => {
     const { connect } = recordingConnect();
     const cancelTurn = vi.fn().mockResolvedValue({ sessionId: 's1', cancelled: false });
@@ -2119,12 +2388,19 @@ describe('SessionModel — server activity + queued messages', () => {
       const model = new SessionModel({ client, sessionId: 's1', transport: connect });
       model.start();
       await vi.advanceTimersByTimeAsync(0); // first poll starts, then hangs
-      model.refreshActivity();
-      model.refreshActivity();
+      let completed = false;
+      const refresh = model.refreshActivity().then(() => {
+        completed = true;
+      });
+      void model.refreshActivity();
+      await Promise.resolve();
+      expect(completed).toBe(false);
       expect(getActivity).toHaveBeenCalledTimes(1); // overlap guard held
       resolveFirst({ busy: false, queued: [] }); // the slow poll finally resolves
       await vi.advanceTimersByTimeAsync(0); // hints must refresh without waiting for a poll
       expect(getActivity).toHaveBeenCalledTimes(2);
+      await refresh;
+      expect(completed).toBe(true);
       model.stop();
     } finally {
       vi.useRealTimers();
@@ -2854,7 +3130,7 @@ it('loads activity on demand without a recurring timer in live mode', async () =
     await flush();
     expect(getActivity).toHaveBeenCalledTimes(1);
     expect(interval).not.toHaveBeenCalled();
-    model.refreshActivity();
+    void model.refreshActivity();
     await flush();
     expect(getActivity).toHaveBeenCalledTimes(2);
   } finally {

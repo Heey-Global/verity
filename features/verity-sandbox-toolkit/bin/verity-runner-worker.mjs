@@ -29913,12 +29913,14 @@ var ZERO_USAGE = {
 var AGENT_KILL_ESCALATION_MS = 5e3;
 var COOPERATIVE_CANCEL_TIMEOUT_MS = 5e3;
 var killedAgents = /* @__PURE__ */ new WeakSet();
-function killAgent(child) {
-  if (killedAgents.has(child))
+function killAgent(child, immediate = false) {
+  if (killedAgents.has(child) && !immediate)
     return;
   killedAgents.add(child);
   try {
-    child.kill("SIGTERM");
+    child.kill(immediate ? "SIGKILL" : "SIGTERM");
+    if (immediate)
+      return;
   } catch {
   }
   const escalation = setTimeout(() => {
@@ -30207,14 +30209,19 @@ async function runAcpTurn(opts, profile) {
   });
   const stop = (operatorCancel) => {
     stopped = true;
+    acceptingSteering = false;
     wakeRetry?.();
     if (operatorCancel)
       aborted = true;
     if (cancelSession === void 0) {
-      killAgent(child);
+      killAgent(child, operatorCancel);
       return;
     }
     cancelSession();
+    if (operatorCancel) {
+      killAgent(child, true);
+      return;
+    }
     cancelKillTimer ??= setTimeout(() => killAgent(child), COOPERATIVE_CANCEL_TIMEOUT_MS);
   };
   const cancel = () => stop(true);
@@ -30226,6 +30233,8 @@ async function runAcpTurn(opts, profile) {
     timeout = setTimeout(() => stop(false), opts.timeoutMs);
   const onPermission = async (request2) => {
     await drainUpdates().catch(() => void 0);
+    if (stopped)
+      return { outcome: { outcome: "cancelled" } };
     const id2 = request2.toolCall.toolCallId;
     const name2 = adapter.knownToolName(id2) ?? toolName(request2.toolCall, metaNamespace);
     const modePicker = isModePicker(request2, sessionModes, name2, profile.modePickerTool);
@@ -30257,6 +30266,8 @@ async function runAcpTurn(opts, profile) {
     });
   };
   const onUpdate = async (update) => {
+    if (stopped)
+      return;
     if (update.sessionUpdate === "current_mode_update" && update.currentModeId !== activeMode && !closedOut) {
       restoreMode?.();
     }
@@ -30286,7 +30297,7 @@ async function runAcpTurn(opts, profile) {
   };
   try {
     const connect = () => client({ name: "verity" }).onRequest(methods.client.session.requestPermission, ({ params }) => onPermission(params)).onNotification(methods.client.session.update, ({ params }) => {
-      if (loadingSession)
+      if (loadingSession || stopped)
         return Promise.resolve();
       if (isAgentContent(params.update))
         turnHasAgentContent = true;
@@ -30432,6 +30443,8 @@ async function runAcpTurn(opts, profile) {
         prompt: promptBlocks(turnOpts, profile)
       });
       acceptingSteering = false;
+      if (aborted)
+        throw new Error("ACP turn cancelled");
       let modeSettled = false;
       let modeAnswered = true;
       for (let pass = 0; pass < MODE_SETTLE_PASSES; pass += 1) {
@@ -30447,9 +30460,13 @@ async function runAcpTurn(opts, profile) {
         }
       }
       await drainUpdates();
+      if (aborted)
+        throw new Error("ACP turn cancelled");
       closedOut = true;
-      await writeAll(writer, adapter.flush());
-      await writeAll(writer, topLevelText.flush());
+      if (!aborted) {
+        await writeAll(writer, adapter.flush());
+        await writeAll(writer, topLevelText.flush());
+      }
       if (!modeSettled) {
         await writer.write({
           t: "notice",
@@ -30537,8 +30554,10 @@ async function runAcpTurn(opts, profile) {
     const message = error instanceof Error ? error.message : String(error);
     await drainUpdates().catch(() => void 0);
     closedOut = true;
-    await writeAll(writer, adapter.flush()).catch(() => void 0);
-    await writeAll(writer, topLevelText.flush()).catch(() => void 0);
+    if (!aborted) {
+      await writeAll(writer, adapter.flush()).catch(() => void 0);
+      await writeAll(writer, topLevelText.flush()).catch(() => void 0);
+    }
     let exitTimer;
     await Promise.race([
       child.exited.then(() => true, () => false),
@@ -32151,7 +32170,11 @@ var turn = await server.run(join3(turnDir, "events.jsonl"), {
   ...request.timeoutMs !== void 0 ? { timeoutMs: request.timeoutMs } : {},
   // The Sandbox's own environment stays the base; only Verity's per-turn runtime
   // context is layered on, so in-Sandbox helpers resolve this turn's backend/model.
-  ...request.sessionEnv !== void 0 ? { env: { ...process.env, ...request.sessionEnv } } : {},
+  env: {
+    ...process.env,
+    ...request.sessionEnv,
+    ...process.env.VERITY_CONTROL_MEMORY_URL !== void 0 && request.mcpGatewayToken !== void 0 ? { VERITY_CONTROL_MEMORY_TOKEN: request.mcpGatewayToken } : {}
+  },
   // The gateway URL is the Sandbox's view of the Server's project-bound broker; it is
   // provisioned into the container, never carried by the request. A bearer without a
   // URL was refused above, so this condition can no longer make a turn run tool-less.

@@ -179,7 +179,7 @@ export async function stageImageAttachments(
   try {
     for (const component of ['.verity-sessions', 'attachments', `turn-${turnId}`]) {
       const path = join(`/proc/self/fd/${parent.fd}`, component);
-      await mkdir(path, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+      await mkdir(path, { mode: 0o755 }).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== 'EEXIST') throw error;
       });
       if ((await lstat(path)).isSymbolicLink())
@@ -190,6 +190,9 @@ export async function stageImageAttachments(
       );
       if (parent !== cwdHandle) await parent.close();
       parent = child;
+      // Server and supervisor have separate UIDs; shared attachments need read/traverse
+      // access without granting other identities write access. Repair older private dirs.
+      await parent.chmod(0o755);
     }
     const references: import('./image-references.js').ImageReference[] = [];
     for (const image of images) {
@@ -207,6 +210,7 @@ export async function stageImageAttachments(
         );
         try {
           await file.writeFile(bytes);
+          await file.chmod(0o644);
         } finally {
           await file.close();
         }
@@ -229,6 +233,7 @@ export async function stageImageAttachments(
           ) {
             throw new Error('staged image content changed', { cause: error });
           }
+          await file.chmod(0o644);
         } finally {
           await file.close();
         }

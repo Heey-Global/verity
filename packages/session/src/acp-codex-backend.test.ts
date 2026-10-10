@@ -1155,12 +1155,11 @@ describe('AcpCodexBackend', () => {
       spawner: fake.spawner,
       signal: controller.signal,
     });
-    expect(result).toMatchObject({ exitCode: 0, aborted: true });
+    expect(fake.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(result).toMatchObject({ exitCode: 143, aborted: true });
     expect((await ctx.store.getEvents('verity-codex-11')).map((event) => event.t)).toEqual([
       'session',
       'status',
-      'text',
-      'result',
       'diagnostic',
     ]);
   });

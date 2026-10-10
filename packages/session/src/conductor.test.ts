@@ -2353,6 +2353,7 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
       displayPrompt: 'queued while stopping',
     });
     await vi.waitFor(() => expect(enqueueStarted).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(turnSignal).toBeDefined());
     const stop = conductor.stopSession('s1');
     try {
       // A stalled durable enqueue must not delay signalling the active agent.
@@ -2370,6 +2371,36 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     });
     expect(conductor.queuedCount('s1')).toBe(0);
     expect(await ctx.store.listQueuedTurns()).toHaveLength(0);
+  });
+
+  it('Stop during runner acquisition never launches the cancelled turn', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    let releaseRunner!: () => void;
+    const runnerGate = new Promise<void>((resolve) => {
+      releaseRunner = resolve;
+    });
+    const startTurn = vi.fn<RunnerClient['startTurn']>();
+    const runnerRequested = vi.fn();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: scriptedBackend({ text: 'unused' }).backend,
+      worktreeExists: async () => true,
+      runner: async () => {
+        runnerRequested();
+        await runnerGate;
+        return { startTurn };
+      },
+    });
+    await conductor.dispatchTurn('s1', 'one');
+    await vi.waitFor(() => expect(runnerRequested).toHaveBeenCalledOnce());
+    try {
+      await expect(conductor.stopSession('s1')).resolves.toMatchObject({ cancelled: true });
+    } finally {
+      releaseRunner();
+    }
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect(startTurn).not.toHaveBeenCalled();
+    expect((await ctx.store.getEvents('s1')).at(-1)?.t).toBe('interrupted');
   });
 
   it('stopSession still cancels the active turn when durable queue cleanup fails', async () => {
@@ -5272,11 +5303,12 @@ describe('Conductor.cancelTurn (#79)', () => {
   // cancel, and the abort is observed the way a real backend observes it. The
   // already-aborted case is handled too: the cancel can land while the partial
   // output is still being persisted, and a listener added after that fires never.
-  function cancellableBackend(onAbort: () => void): Backend {
+  function cancellableBackend(onAbort: () => void, onReady: () => void): Backend {
     return scriptedBackend({
       text: 'hi', // partial output BEFORE the cancel
       abortable: true,
       during: (turn) => {
+        onReady();
         if (turn.opts.signal?.aborted === true) onAbort();
         else turn.opts.signal?.addEventListener('abort', onAbort, { once: true });
       },
@@ -5286,16 +5318,23 @@ describe('Conductor.cancelTurn (#79)', () => {
   it('aborts the in-flight turn, keeps partial output, and appends a terminal interrupted event', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     let aborted = false;
+    let ready = false;
     const conductor = new Conductor({
       store: ctx.store,
-      backend: cancellableBackend(() => {
-        aborted = true;
-      }),
+      backend: cancellableBackend(
+        () => {
+          aborted = true;
+        },
+        () => {
+          ready = true;
+        },
+      ),
       worktreeExists: async () => true,
     });
 
     await conductor.dispatchTurn('s1', 'go');
-    await waitFor(() => conductor.isBusy('s1')); // turn is running
+    // The lock is acquired before preparation; cancel only after partial output persisted.
+    await waitFor(() => ready);
     await expect(conductor.cancelTurn('s1')).resolves.toBe(true);
     await waitFor(() => !conductor.isBusy('s1')); // run settled after the abort
 
@@ -6600,7 +6639,8 @@ describe('Conductor.cancelTurn (#79)', () => {
     });
 
     await conductor.dispatchTurn('s1', 'first');
-    await waitFor(() => conductor.isBusy('s1'));
+    // Cancelling during preparation would skip this backend attempt entirely.
+    await waitFor(() => fake.calls.length === 1);
     await conductor.dispatchTurn('s1', 'second'); // queued behind the in-flight first
     expect(conductor.queuedCount('s1')).toBe(1);
 
