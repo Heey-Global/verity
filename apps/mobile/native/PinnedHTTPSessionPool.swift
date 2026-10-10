@@ -25,12 +25,28 @@ final class PinnedHTTPRequest: @unchecked Sendable {
   }
 }
 
+enum PinnedHTTPTransportLane: String {
+  case interactive
+  case background
+
+  /// Unknown and absent metadata retain the conservative background pool.
+  init(headers: [String: String]) {
+    let value = headers.first { $0.key.lowercased() == "x-verity-transport-lane" }?.value
+    self = value.flatMap(Self.init(rawValue:)) ?? .background
+  }
+
+  static func removeHeader(from request: inout URLRequest) {
+    request.setValue(nil, forHTTPHeaderField: "x-verity-transport-lane")
+  }
+}
+
 private struct PinnedHTTPSessionKey: Hashable {
   let host: String
   let port: Int
   let pin: String
   let proxyPort: Int
   let proxyMode: String
+  let lane: PinnedHTTPTransportLane
 }
 
 final class PinnedHTTPSessionLease: @unchecked Sendable {
@@ -73,7 +89,7 @@ final class PinnedHTTPSessionPool: @unchecked Sendable {
 
   init(capacity: Int = 8) { self.capacity = max(1, capacity) }
 
-  func acquire(origin: URL, pin: String, proxyPort: Int, proxyMode: String) throws
+  func acquire(origin: URL, pin: String, proxyPort: Int, proxyMode: String, lane: PinnedHTTPTransportLane = .background) throws
     -> PinnedHTTPSessionLease
   {
     guard origin.scheme == "https", let host = origin.host,
@@ -85,7 +101,7 @@ final class PinnedHTTPSessionPool: @unchecked Sendable {
     _ = try CertificatePinDelegate(pin: pin, origin: origin)
     let key = PinnedHTTPSessionKey(
       host: host.lowercased(), port: origin.port ?? 443, pin: pin,
-      proxyPort: proxyPort, proxyMode: proxyMode)
+      proxyPort: proxyPort, proxyMode: proxyMode, lane: lane)
     lock.lock()
     defer { lock.unlock() }
     guard !closed else { throw URLError(.cancelled) }
