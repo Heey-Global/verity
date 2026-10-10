@@ -70,7 +70,7 @@ interface CloseableDestroyable extends Destroyable {
  * the drain itself (`drainManagedGateway`), or the Updater gives up on a drain
  * the Gateway is about to report as done.
  */
-export const DEFAULT_DRAIN_CLOSE_GRACE_MS = 2_000;
+const DEFAULT_DRAIN_CLOSE_GRACE_MS = 2_000;
 
 async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
   let timer: NodeJS.Timeout | undefined;
