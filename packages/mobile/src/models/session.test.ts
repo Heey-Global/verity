@@ -1170,6 +1170,47 @@ describe('SessionModel — cancel (#79)', () => {
     }
   });
 
+  it('restores successor output when its Stop fails despite an earlier successful Stop', async () => {
+    const { connect, sockets } = recordingConnect();
+    let finishFirst!: () => void;
+    let failSecond!: () => void;
+    const client = stubClient();
+    client.cancelTurn = vi
+      .fn()
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishFirst = () => resolve({ sessionId: 's1', cancelled: true });
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise((_, reject) => {
+          failSecond = () => reject(new Error('offline'));
+        }),
+      );
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'first' });
+      const first = model.cancel();
+      sockets[0]?.emitEvent(2, { t: 'text', delta: 'old hidden' });
+      sockets[0]?.emitEvent(3, { t: 'interrupted' });
+      sockets[0]?.emitEvent(4, { t: 'prompt', text: 'successor' });
+      sockets[0]?.emitEvent(5, { t: 'text', delta: 'visible' });
+      const second = model.cancel();
+      sockets[0]?.emitEvent(6, { t: 'text', delta: ' restored' });
+      finishFirst();
+      await first;
+      failSecond();
+      await second;
+      expect(agentTexts(model.state)).toEqual(['visible restored']);
+      expect(model.state.working).toBe(true);
+    } finally {
+      model.stop();
+    }
+  });
+
   it('releases a no-op Stop despite a stale busy poll before an external turn', async () => {
     const { connect, sockets } = recordingConnect();
     const client = stubClient();

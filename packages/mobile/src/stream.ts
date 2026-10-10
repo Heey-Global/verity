@@ -48,6 +48,13 @@ export type SessionStreamConnectionState =
  * events after the cursor, so the reducer keeps accumulating with no gap or
  * duplication. {@link stop} ends the subscription.
  */
+interface OutputFreeze {
+  sequences: Set<number>;
+  pending: number;
+  succeeded: boolean;
+  atSeq: number;
+}
+
 export class SessionStream {
   // Reassigned (not readonly) when older history is prepended: the reducer is
   // forward-only, so prepending means rebuilding it over the full event list.
@@ -72,43 +79,40 @@ export class SessionStream {
   // render (see onMessage) so opening a session doesn't scroll wildly.
   private caughtUp = false;
   private readonly suppressedOutput = new Set<number>();
-  private cancellingOutput: Set<number> | undefined;
+  private outputFreeze: OutputFreeze | undefined;
   private outputFrozen = false;
-  private pendingStops = 0;
-  private stopSucceeded = false;
-  private freezeAtSeq = 0;
 
   get outputSuppressed(): boolean {
     return this.outputFrozen;
   }
 
-  freezeOutput(): void {
-    if (this.pendingStops === 0) {
-      this.cancellingOutput = new Set<number>();
-      this.stopSucceeded = false;
-      this.freezeAtSeq = this.lastSeq;
+  freezeOutput(): OutputFreeze {
+    if (!this.outputFrozen || this.outputFreeze === undefined) {
+      this.outputFreeze = {
+        sequences: new Set(),
+        pending: 0,
+        succeeded: false,
+        atSeq: this.lastSeq,
+      };
     }
-    this.pendingStops += 1;
+    this.outputFreeze.pending += 1;
     this.outputFrozen = true;
+    return this.outputFreeze;
   }
 
-  settleOutput(success: boolean): boolean {
-    this.stopSucceeded ||= success;
-    this.pendingStops -= 1;
-    if (this.pendingStops > 0) return false;
-    if (this.stopSucceeded) {
-      this.cancellingOutput = undefined;
-      return false;
-    }
-    for (const seq of this.cancellingOutput ?? []) this.suppressedOutput.delete(seq);
-    this.cancellingOutput = undefined;
-    this.outputFrozen = false;
+  settleOutput(freeze: OutputFreeze, success: boolean): boolean {
+    freeze.succeeded ||= success;
+    freeze.pending -= 1;
+    if (freeze.pending > 0 || freeze.succeeded) return false;
+    for (const seq of freeze.sequences) this.suppressedOutput.delete(seq);
+    const restoredCurrent = this.outputFreeze === freeze;
+    if (restoredCurrent) this.outputFrozen = false;
     this.reducer = new SessionReducer();
     for (const frame of this.eventFrames) {
       if (!this.suppressedOutput.has(frame.seq)) this.reducer.applyFrame(frame);
     }
     for (const id of this.resolvedPermissions) this.reducer.resolvePermission(id);
-    return true;
+    return restoredCurrent;
   }
 
   constructor(private readonly opts: SessionStreamOptions) {
@@ -355,7 +359,7 @@ export class SessionStream {
     if (
       frame.event.t === 'prompt' &&
       !frame.event.steered &&
-      this.reducer.settledSeq > this.freezeAtSeq
+      this.reducer.settledSeq > (this.outputFreeze?.atSeq ?? 0)
     )
       this.outputFrozen = false;
     if (
@@ -365,7 +369,7 @@ export class SessionStream {
       )
     ) {
       // Keep the cursor and retained history, but never replay stopped generation.
-      this.cancellingOutput?.add(frame.seq);
+      this.outputFreeze?.sequences.add(frame.seq);
       this.suppressedOutput.add(frame.seq);
     } else {
       this.reducer.applyFrame(eventFrame);

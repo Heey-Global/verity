@@ -1237,13 +1237,13 @@ export class SessionModel {
   async cancel(opts?: { force?: boolean }): Promise<RestoredQueuedTurn[]> {
     this._cancelError = undefined;
     this._cancelRequested = true;
-    this.stream.freezeOutput();
+    const outputFreeze = this.stream.freezeOutput();
     this.emit();
     try {
       const result = await this.opts.client.cancelTurn(this.opts.sessionId, opts);
       this._waiting = [];
       if (result.forceReleased) this._terminationUnconfirmed = false;
-      const restoredOutput = this.stream.settleOutput(result.cancelled);
+      const restoredOutput = this.stream.settleOutput(outputFreeze, result.cancelled);
       if (result.cancelled) this.opts.onTurnCancelled?.();
       else if (restoredOutput) {
         // An already-idle session emits no new terminal event to release Stop.
@@ -1257,7 +1257,7 @@ export class SessionModel {
         ...(item.attachments !== undefined ? { attachments: item.attachments } : {}),
       }));
     } catch (error) {
-      if (this.stream.settleOutput(false)) this._cancelRequested = false;
+      if (this.stream.settleOutput(outputFreeze, false)) this._cancelRequested = false;
       this._session = this.stream.state;
       this._cancelError = error instanceof VerityApiError ? error.message : 'failed to stop turn';
       this.emit();
