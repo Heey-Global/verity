@@ -59,6 +59,11 @@ on:
         description: Paired Core SPKI pin (sha256-...)
         required: false
         type: string
+      soak_seconds:
+        description: Keep several app-tunnel streams busy this long (0 skips the soak, max 600)
+        required: false
+        default: '180'
+        type: string
 
 permissions:
   contents: read
@@ -293,7 +298,7 @@ jobs:
 
       - name: Probe Staging Remote Control through the native tunnels
         if: github.event_name == 'workflow_dispatch' && inputs.installation_handle != ''
-        timeout-minutes: 8
+        timeout-minutes: 20
         env:
           VERITY_REMOTE_UPLINK_ORIGIN: ${{ inputs.uplink_origin }}
           VERITY_REMOTE_INSTALLATION_HANDLE: ${{ inputs.installation_handle }}
@@ -306,3 +311,7 @@ jobs:
           # that ended idle app attachments.
           VERITY_REMOTE_PROBE_MODE=app VERITY_REMOTE_PROBE_IDLE_SECONDS=40 \
             bash scripts/remote-control-staging/run.sh
+          # The device's pattern: several streams at once for minutes. This is
+          # the run that reproduces an attachment going silent mid-session.
+          VERITY_REMOTE_PROBE_MODE=app VERITY_REMOTE_PROBE_SOAK_SECONDS="${{ inputs.soak_seconds }}" \
+            VERITY_REMOTE_PROBE_SOAK_STREAMS=6 bash scripts/remote-control-staging/run.sh

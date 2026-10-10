@@ -11,6 +11,8 @@ const corePin = process.env.VERITY_REMOTE_CORE_PIN ?? '';
 const binary = process.env.VERITY_REMOTE_PROBE_BINARY ?? '';
 // The app-mode probe pauses this long between requests, as a reading user does.
 const idleSeconds = Number(process.env.VERITY_REMOTE_PROBE_IDLE_SECONDS ?? '0');
+// And keeps several streams busy this long, as the device does across a session.
+const soakSeconds = Number(process.env.VERITY_REMOTE_PROBE_SOAK_SECONDS ?? '0');
 if (
   origin.protocol !== 'https:' ||
   origin.pathname !== '/' ||
@@ -23,6 +25,9 @@ if (
   !Number.isInteger(idleSeconds) ||
   idleSeconds < 0 ||
   idleSeconds > 600 ||
+  !Number.isInteger(soakSeconds) ||
+  soakSeconds < 0 ||
+  soakSeconds > 600 ||
   !corePin.startsWith('sha256-') ||
   new URL(coreUrl).protocol !== 'https:'
 ) {
@@ -131,7 +136,7 @@ try {
   const watchdog = new Promise((_, reject) => {
     timeout = setTimeout(
       () => reject(new Error('Remote Control staging probe timed out.')),
-      45_000 + idleSeconds * 1_000,
+      45_000 + (idleSeconds + soakSeconds) * 1_000,
     );
   });
   await Promise.race([result, watchdog]);

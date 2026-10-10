@@ -20,6 +20,15 @@ HTTPS GET requests. Both must receive HTTP 200 through pinned inner TLS.
 A third app-mode run sets `VERITY_REMOTE_PROBE_IDLE_SECONDS=40` and pauses
 before its last request, longer than the 15-second data heartbeat: an app
 attachment that ends while idle fails that run with the tunnel's stop reason.
+A fourth app-mode run is the soak: `VERITY_REMOTE_PROBE_SOAK_SECONDS`
+(workflow input `soak_seconds`, default 180, max 600) keeps
+`VERITY_REMOTE_PROBE_SOAK_STREAMS` (default 4, max 8) pinned requests going at
+once, each on a fresh URLSession as the app's transport does, with half a second
+to two seconds between requests. This is the device's pattern, which the
+three-request probes never matched; an attachment that goes silent mid-session
+fails the soak with the failing worker, the request count reached, the native
+transport failure and the tunnel summary. A passing soak prints the request
+count and the slowest request.
 The ticket is passed only in the child process environment and is not logged.
 
 These are macOS command-line probes of the native transports, not an iOS App UI
