@@ -1,20 +1,15 @@
 {
   "schema": 1,
-  "version": "1.66.1",
+  "version": "1.66.2",
   "runtime": "1.66.0",
   "channel": "production",
-  "commit": "cf298252355adb5436ccf871d9e369e51ecf6d88",
-  "tag": "mobile-v1.66.1",
-  "branch": "staging-mobile-v1.66.1-cf298252355adb5436ccf871d9e369e51ecf6d88",
-  "baseline": "mobile-v1.66.0",
-  "group": "ee5f8abf-9e9e-40dc-b81b-49bc4f8b9ec5",
+  "commit": "b01e0797b813f68cef80b12068295b3762e0ac59",
+  "tag": "mobile-v1.66.2",
+  "branch": "staging-mobile-v1.66.2-b01e0797b813f68cef80b12068295b3762e0ac59",
+  "baseline": "mobile-v1.66.1",
+  "group": "557de2fc-be9c-4f5f-a9e5-f741f9648540",
   "notes": [
-    "share task capture and overview context (#1483)",
-    "coordinate activity and preview refreshes (#1482)",
-    "retain unchanged overview row snapshots (#1481)",
-    "stop agent output and activity immediately (#1480)",
-    "isolate chat rendering from unrelated interaction updates (#1478)",
-    "streamline spoken capture and scope agent tasks to sessions (#1472)",
-    "avoid white screen during OTA reload (#1473)"
+    "correlate touch diagnostics and expose route waits (#1496)",
+    "correct session keyboard visibility and overlap (#1495)"
   ]
 }
