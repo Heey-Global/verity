@@ -5,9 +5,11 @@
 import type { VerityClient, WelcomeSession } from '@verity/mobile';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 
+let mockReplay: string | undefined;
 const mockReplace = jest.fn<void, [unknown]>();
 jest.mock('expo-router', () => ({
   router: { replace: (href: unknown) => mockReplace(href) },
+  useLocalSearchParams: () => ({ replay: mockReplay }),
 }));
 
 const mockOpenWelcomeSession = jest.fn<Promise<WelcomeSession>, []>();
@@ -23,6 +25,7 @@ const preparing: WelcomeSession = { state: 'preparing', sessionId: null, project
 
 beforeEach(() => {
   jest.useFakeTimers();
+  mockReplay = undefined;
   mockReplace.mockClear();
   mockOpenWelcomeSession.mockReset();
   mockClient = { openWelcomeSession: mockOpenWelcomeSession } as unknown as VerityClient;
@@ -113,4 +116,32 @@ it('stops polling once the screen is gone', async () => {
   });
   expect(mockOpenWelcomeSession).toHaveBeenCalledTimes(1);
   expect(mockReplace).not.toHaveBeenCalled();
+});
+
+it('offers a retry on explicit replay failure without leaving the screen', async () => {
+  mockReplay = '1';
+  mockOpenWelcomeSession
+    .mockResolvedValueOnce({ state: 'failed', sessionId: null, projectId: 'p1' })
+    .mockResolvedValueOnce(ready);
+  render(<OnboardingStarter />);
+  await flush();
+  expect(mockOpenWelcomeSession).toHaveBeenCalledWith({ replay: true, retry: true });
+  expect(mockReplace).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByText('Try again'));
+  await flush();
+  expect(mockReplace).toHaveBeenCalledWith({
+    pathname: '/session/[id]',
+    params: { id: 's-welcome' },
+  });
+});
+
+it('polls replay without refreshing its retry budget', async () => {
+  mockReplay = '1';
+  mockOpenWelcomeSession.mockResolvedValueOnce(preparing).mockResolvedValueOnce(ready);
+  render(<OnboardingStarter />);
+  await flush();
+  await act(async () => {
+    jest.advanceTimersByTime(2_000);
+  });
+  expect(mockOpenWelcomeSession).toHaveBeenNthCalledWith(2, { replay: true, retry: false });
 });

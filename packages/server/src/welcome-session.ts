@@ -9,6 +9,8 @@
 // server-written greeting with a setup checklist and Quick Actions, so it shows
 // up instantly and costs no tokens. The real agent takes over on the first reply,
 // with the guide prompt attached through `sessionSystemPrompt`.
+import { randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import {
   LOCAL_PROJECT_OWNER,
   type EventStore,
@@ -138,6 +140,13 @@ async function findWelcomeSession(
   store: WelcomeStore,
   projectId: string,
 ): Promise<{ sessionId: string; needsGreeting: boolean } | undefined> {
+  const recordedId = await store.getStarterWelcomeSessionId();
+  if (recordedId !== undefined) {
+    const recorded = await store.getSession(recordedId);
+    if (recorded?.projectId !== projectId) return undefined;
+    await store.markSessionAutomation(recordedId, WELCOME_SESSION_MARKER);
+    return { sessionId: recordedId, needsGreeting: (await store.latestEventSeq(recordedId)) === 0 };
+  }
   let unmarked: string | undefined;
   for (const session of await store.listSessions()) {
     if (session.projectId !== projectId) continue;
@@ -203,6 +212,8 @@ export function registerWelcomeRoutes(
 
   const welcome = async (
     log: FastifyBaseLogger,
+    replay: boolean,
+    retry: boolean,
   ): Promise<{ statusCode: number; body: WelcomeResponse | { error: string } }> => {
     const status = await welcomeSetupStatus(deps.eventStore, deps.secretCipher);
     if (!status.complete) {
@@ -211,13 +222,25 @@ export function registerWelcomeRoutes(
     // By recorded id, never by name: an operator's own "getting-started" project
     // must not receive a welcome session.
     const starterProjectId = await deps.eventStore.getStarterProjectId();
-    const project =
-      starterProjectId === undefined
+    const project = replay
+      ? await deps.eventStore.ensureReplayStarterProject(
+          localProjectInput(
+            (await deps.eventStore.getProjectByOwnerRepo(
+              LOCAL_PROJECT_OWNER,
+              STARTER_PROJECT_SLUG,
+            )) === undefined
+              ? STARTER_PROJECT_SLUG
+              : `getting-started-tour-${randomUUID().slice(0, 8)}`,
+          ),
+        )
+      : starterProjectId === undefined
         ? undefined
         : await deps.eventStore.getProject(starterProjectId);
     if (project === undefined || project.hiddenAt !== null) {
       return { statusCode: 200, body: { state: 'none', sessionId: null, projectId: null } };
     }
+    if (retry) retriedFailedProjects.delete(project.id);
+    if (project.state === 'active') retriedFailedProjects.delete(project.id);
     if (project.state === 'failed') {
       if (retriedFailedProjects.has(project.id)) {
         return {
@@ -229,6 +252,7 @@ export function registerWelcomeRoutes(
     }
     const existing = await findWelcomeSession(deps.eventStore, project.id);
     if (existing !== undefined) {
+      await deps.eventStore.recordStarterWelcomeSession(existing.sessionId);
       if (existing.needsGreeting) {
         await seedWelcomeSession(deps.eventStore, existing.sessionId, status);
       }
@@ -236,6 +260,9 @@ export function registerWelcomeRoutes(
         statusCode: 200,
         body: { state: 'ready', sessionId: existing.sessionId, projectId: project.id },
       };
+    }
+    if (!replay && (await deps.eventStore.getStarterWelcomeSessionId()) !== undefined) {
+      return { statusCode: 200, body: { state: 'none', sessionId: null, projectId: project.id } };
     }
     // Through the request parser, so the welcome session gets the same defaults
     // and normalization as one created with POST /sessions.
@@ -245,6 +272,7 @@ export function registerWelcomeRoutes(
     );
     const result = spawned.result;
     if ('sessionId' in result) {
+      await deps.eventStore.recordStarterWelcomeSession(result.sessionId);
       if (await deps.eventStore.markSessionAutomation(result.sessionId, WELCOME_SESSION_MARKER)) {
         await seedWelcomeSession(deps.eventStore, result.sessionId, status);
       }
@@ -267,7 +295,18 @@ export function registerWelcomeRoutes(
   app.post('/onboarding/welcome', async (request, reply) => {
     // One run at a time: two concurrent first calls would otherwise both find no
     // welcome session and each create one.
-    const run = inFlight ?? welcome(request.log);
+    const parsed = z
+      .object({ replay: z.boolean().optional(), retry: z.boolean().optional() })
+      .strict()
+      .safeParse(request.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid welcome request' });
+    // A replay joining an ordinary poll must run its own explicit restoration.
+    while (inFlight) await inFlight;
+    const run = welcome(
+      request.log,
+      parsed.data.replay === true,
+      parsed.data.replay === true && parsed.data.retry === true,
+    );
     inFlight = run;
     try {
       const { statusCode, body } = await run;

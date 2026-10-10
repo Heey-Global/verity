@@ -3211,9 +3211,16 @@ export class VerityClient {
     return uplinkDiagnosticsSchema.parse(await res.json());
   }
 
-  /** Open (creating on first call) the onboarding welcome session. Idempotent. */
-  async openWelcomeSession(): Promise<WelcomeSession> {
-    const res = await this.request('/onboarding/welcome', { method: 'POST' });
+  /** Open the welcome session. Explicit replay may restore missing starter resources;
+   * retry requests one new provisioning attempt after a failure. */
+  async openWelcomeSession(options?: {
+    replay?: boolean;
+    retry?: boolean;
+  }): Promise<WelcomeSession> {
+    const res = await this.request('/onboarding/welcome', {
+      method: 'POST',
+      ...(options ? { body: JSON.stringify(options) } : {}),
+    });
     return welcomeSessionSchema.parse(await res.json());
   }
 

@@ -1,3 +1,4 @@
+import { APP_HELP_TOPICS } from '@verity/events';
 import { MasterPasswordRoute } from './onboarding/master-password';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
@@ -70,7 +71,16 @@ export default function UnlockDevice() {
     );
   }
 
-  return <MasterPasswordRoute returnTo={returnTo} />;
+  return (
+    <MasterPasswordRoute
+      returnTo={returnTo}
+      restartExplanation={
+        mustUnlockServerSecret
+          ? APP_HELP_TOPICS.find((topic) => topic.id === 'secrets-storage')?.emptyState
+          : undefined
+      }
+    />
+  );
 }
 
 const styles = StyleSheet.create(() => ({

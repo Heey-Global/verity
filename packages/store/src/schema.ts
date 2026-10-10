@@ -1247,6 +1247,7 @@ interface SecretProviderPermissionsTable {
 interface StarterProjectTable {
   singleton: boolean;
   project_id: string;
+  welcome_session_id: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, string | undefined, never>;
 }
 

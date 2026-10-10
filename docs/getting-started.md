@@ -261,3 +261,22 @@ server while the link is valid.
   limits, and securing a server that is reachable from the internet.
 - [Security policy](../SECURITY.md) describes the security model and known
   limitations of the beta.
+
+## Preview and welcome help
+
+Ask the agent to start your app as a Verity server. It appears in the session’s
+Preview sheet, where you can switch it on and off. **Local** access is for your
+trusted network and does not require a PIN. **Shared online** creates a public
+link through Uplink, protected by a PIN and an expiry; anyone with the link and
+PIN can access it until it expires or you stop sharing.
+
+Short hints appear the first time you use online sharing, the review or pull
+request bar, or live meetings. **Continue** resumes the action; **Not now** and
+**Ask in chat** cancel it. Asking in chat adds a question to your draft for you
+to send.
+
+In Settings → This app, **Show welcome tour again** resets feature hints on this
+device and opens the existing welcome session in the starter project. If you
+removed that session or project, this explicit action recreates what is missing.
+Your existing welcome transcript is preserved. The session menu also contains
+**Session settings**, for renaming, linking and managing the current session.

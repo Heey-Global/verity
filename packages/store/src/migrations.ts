@@ -4132,6 +4132,25 @@ const migrations: Record<string, Migration> = {
         .execute();
     },
   },
+  '0151_welcome_session_replay': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Keep the id after session deletion: ordinary onboarding must not recreate
+      // a tour that was deliberately removed. Only explicit replay replaces it.
+      await db.schema
+        .alterTable('starter_project')
+        .addColumn('welcome_session_id', 'text')
+        .execute();
+      await sql`update starter_project set welcome_session_id = (
+        select s.session_id from sessions s
+        join session_automation_marker m on m.session_id = s.session_id
+        where s.project_id = starter_project.project_id and m.marker = 'welcome-session'
+        order by s.created_at, s.session_id limit 1
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('starter_project').dropColumn('welcome_session_id').execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

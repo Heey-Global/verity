@@ -83,3 +83,21 @@ describe('app help catalog docs', () => {
     },
   );
 });
+
+// A resolver-only link can look valid while the chat has no handler for it.
+it('handles every catalog link target in the session screen', () => {
+  const source = readFileSync(
+    new URL('../../../../apps/mobile/app/session/[id].tsx', import.meta.url),
+    'utf8',
+  );
+  const dispatcher = source.slice(
+    source.indexOf('const openAppLink ='),
+    source.indexOf('// Index of a bookmarked message'),
+  );
+  expect(dispatcher).toContain('switch (target.kind)');
+  const handled = new Set([...dispatcher.matchAll(/case '([^']+)':/gu)].map((match) => match[1]));
+  for (const topic of APP_HELP_TOPICS) {
+    const target = parseAppLink(topic.appLink ?? '');
+    if (target) expect(handled, topic.id).toContain(target.kind);
+  }
+});
