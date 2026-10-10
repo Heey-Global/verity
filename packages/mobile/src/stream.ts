@@ -76,11 +76,13 @@ export class SessionStream {
   private outputFrozen = false;
   private pendingStops = 0;
   private stopSucceeded = false;
+  private freezeAtSeq = 0;
 
   freezeOutput(): void {
     if (this.pendingStops === 0) {
       this.cancellingOutput = new Set<number>();
       this.stopSucceeded = false;
+      this.freezeAtSeq = this.lastSeq;
     }
     this.pendingStops += 1;
     this.outputFrozen = true;
@@ -346,7 +348,12 @@ export class SessionStream {
       ...(frame.ts !== undefined ? { ts: frame.ts } : {}),
       event: frame.event,
     };
-    if (frame.event.t === 'prompt' && !frame.event.steered) this.outputFrozen = false;
+    if (
+      frame.event.t === 'prompt' &&
+      !frame.event.steered &&
+      this.reducer.settledSeq > this.freezeAtSeq
+    )
+      this.outputFrozen = false;
     if (
       this.outputFrozen &&
       ['text', 'thinking', 'tool_call', 'permission', 'choices', 'automation_proposal'].includes(

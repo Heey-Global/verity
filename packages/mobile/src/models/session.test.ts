@@ -1036,6 +1036,31 @@ describe('SessionModel — cancel (#79)', () => {
     }
   });
 
+  it('keeps a delayed cancelled-turn prompt from reopening output', async () => {
+    const { connect, sockets } = recordingConnect();
+    const client = stubClient();
+    client.getActivity = vi.fn().mockResolvedValue({ busy: true, queued: [] });
+    client.cancelTurn = vi.fn().mockResolvedValue({ sessionId: 's1', cancelled: true });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      await model.cancel();
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'delayed original prompt' });
+      sockets[0]?.emitEvent(2, { t: 'text', delta: 'late output' });
+      expect(agentTexts(model.state)).toEqual([]);
+      expect(model.state.working).toBe(false);
+      sockets[0]?.emitEvent(3, { t: 'interrupted' });
+      sockets[0]?.emitEvent(4, { t: 'prompt', text: 'successor' });
+      sockets[0]?.emitEvent(5, { t: 'text', delta: 'new output' });
+      expect(agentTexts(model.state)).toEqual(['new output']);
+      expect(model.state.working).toBe(true);
+    } finally {
+      model.stop();
+    }
+  });
+
   it('restores buffered output and activity when cancellation fails', async () => {
     const { connect, sockets } = recordingConnect();
     let rejectCancel!: (error: Error) => void;

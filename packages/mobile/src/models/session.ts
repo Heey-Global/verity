@@ -1241,7 +1241,7 @@ export class SessionModel {
   async cancel(opts?: { force?: boolean }): Promise<RestoredQueuedTurn[]> {
     this._cancelError = undefined;
     this._cancelRequested = true;
-    this._cancelSettled = !this._session.running && !this._busy;
+    this._cancelSettled = false;
     this._cancelAtSeq = this.stream.newestSeq;
     this.stream.freezeOutput();
     this.emit();
