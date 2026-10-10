@@ -35,7 +35,8 @@ describe('useModels', () => {
     const listModels = jest
       .fn()
       .mockResolvedValue({ models: ['codex/gpt-5.6-sol'], allowedAgents: ['codex'] });
-    const { result } = renderHook(() => useModels(fakeClient(listModels), true, 'p/1'));
+    const client = fakeClient(listModels);
+    const { result } = renderHook(() => useModels(client, true, 'p/1'));
     await waitFor(() => expect(result.current.allowedAgents).toEqual(['codex']));
     expect(listModels).toHaveBeenCalledWith('p/1');
   });
