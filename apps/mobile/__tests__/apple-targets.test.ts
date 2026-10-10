@@ -11,12 +11,7 @@ describe('Apple target CocoaPods integration', () => {
       const targetRoot = resolve(root, directory);
       if (!existsSync(resolve(targetRoot, 'pods.rb'))) continue;
       targets += 1;
-      const exported = require(resolve(targetRoot, 'expo-target.config.js')) as
-        { name?: string } | ((config: { ios: { bundleIdentifier: string } }) => { name?: string });
-      const config =
-        typeof exported === 'function'
-          ? exported({ ios: { bundleIdentifier: 'build.verity.app' } })
-          : exported;
+      const config = require(resolve(targetRoot, 'expo-target.config.js')) as { name?: string };
       expect(config.name ?? directory).toBe(directory);
     }
     expect(targets).toBeGreaterThan(0);

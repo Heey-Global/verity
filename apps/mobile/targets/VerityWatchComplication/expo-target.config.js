@@ -1,6 +1,6 @@
 // Embedded in VerityWatch, not in the iPhone app's PlugIns directory.
-/** @type {import('@bacons/apple-targets/app.plugin').ConfigFunction} */
-module.exports = (config) => ({
+/** @type {import('@bacons/apple-targets/app.plugin').Config} */
+module.exports = {
   type: 'watch-widget',
   name: 'VerityWatchComplication',
   displayName: 'Verity',
@@ -9,7 +9,4 @@ module.exports = (config) => ({
   frameworks: ['SwiftUI', 'WidgetKit'],
   colors: { $accent: '#ff35da' },
   images: { VerityMark: '../../assets/brand/verity-v-mark.png' },
-  entitlements: {
-    'com.apple.security.application-groups': [`group.${config.ios.bundleIdentifier}.watch-capture`],
-  },
-});
+};

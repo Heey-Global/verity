@@ -1,6 +1,6 @@
-// Companion Watch app and its complication share only the pending capture count.
-/** @type {import('@bacons/apple-targets/app.plugin').ConfigFunction} */
-module.exports = (config) => ({
+// Companion Watch app records audio and transfers it to the paired iPhone.
+/** @type {import('@bacons/apple-targets/app.plugin').Config} */
+module.exports = {
   type: 'watch',
   name: 'VerityWatch',
   displayName: 'Verity',
@@ -8,8 +8,5 @@ module.exports = (config) => ({
   deploymentTarget: '11.0',
   icon: '../../assets/brand/verity-v-app-icon-source.png',
   colors: { $accent: '#ff35da' },
-  frameworks: ['SwiftUI', 'AVFoundation', 'WatchConnectivity', 'WidgetKit'],
-  entitlements: {
-    'com.apple.security.application-groups': [`group.${config.ios.bundleIdentifier}.watch-capture`],
-  },
-});
+  frameworks: ['SwiftUI', 'AVFoundation', 'WatchConnectivity'],
+};

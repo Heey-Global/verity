@@ -3,7 +3,6 @@ import Combine
 import Foundation
 import WatchConnectivity
 import WatchKit
-import WidgetKit
 
 /// One voice capture on the watch. The audio stays on disk until the iPhone has
 /// sent back its transcript, so a capture survives an unreachable phone, a
@@ -118,7 +117,6 @@ final class CaptureStore: NSObject, ObservableObject {
       projectList = saved
     }
     recoverInterruptedRecordings()
-    updateComplication()
   }
 
   /// A recording only enters the index when it stops. If watchOS ended the app
@@ -356,16 +354,6 @@ final class CaptureStore: NSObject, ObservableObject {
     }
     guard let data = try? JSONEncoder().encode(captures) else { return }
     try? data.write(to: indexURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-    updateComplication()
-  }
-
-  private func updateComplication() {
-    let pending = captures.filter { $0.state == .queued || $0.state == .delivered }.count
-    guard let defaults = WatchCaptureComplication.defaults,
-      defaults.object(forKey: WatchCaptureComplication.pendingKey) == nil
-        || defaults.integer(forKey: WatchCaptureComplication.pendingKey) != pending else { return }
-    defaults.set(pending, forKey: WatchCaptureComplication.pendingKey)
-    WidgetCenter.shared.reloadTimelines(ofKind: WatchCaptureComplication.kind)
   }
 
   private func audioURL(_ id: String) -> URL {

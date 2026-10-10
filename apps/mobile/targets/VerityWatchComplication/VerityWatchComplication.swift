@@ -3,12 +3,11 @@ import WidgetKit
 
 private struct CaptureEntry: TimelineEntry {
   let date: Date
-  let pending: Int
 }
 
 private struct CaptureProvider: TimelineProvider {
   func placeholder(in context: Context) -> CaptureEntry {
-    CaptureEntry(date: Date(), pending: 1)
+    CaptureEntry(date: Date())
   }
 
   func getSnapshot(in context: Context, completion: @escaping (CaptureEntry) -> Void) {
@@ -16,14 +15,12 @@ private struct CaptureProvider: TimelineProvider {
   }
 
   func getTimeline(in context: Context, completion: @escaping (Timeline<CaptureEntry>) -> Void) {
-    // The Watch app requests a reload when its durable capture queue changes.
+    // The launch shortcut has no changing content.
     completion(Timeline(entries: [entry()], policy: .never))
   }
 
   private func entry() -> CaptureEntry {
-    CaptureEntry(
-      date: Date(),
-      pending: WatchCaptureComplication.defaults?.integer(forKey: WatchCaptureComplication.pendingKey) ?? 0)
+    CaptureEntry(date: Date())
   }
 }
 
@@ -31,10 +28,6 @@ private struct CaptureComplicationView: View {
   @Environment(\.widgetFamily) private var family
   @Environment(\.widgetRenderingMode) private var renderingMode
   let entry: CaptureEntry
-
-  private var pendingLabel: String {
-    entry.pending == 0 ? "Quick capture" : "\(entry.pending) recording\(entry.pending == 1 ? "" : "s") pending"
-  }
 
   private var mark: some View {
     Image("VerityMark")
@@ -62,7 +55,7 @@ private struct CaptureComplicationView: View {
             mark.frame(width: 24, height: 17)
             Text("Verity").font(.headline)
           }
-          Text(pendingLabel).font(.caption).lineLimit(1).minimumScaleFactor(0.7)
+          Text("Quick capture").font(.caption).lineLimit(1).minimumScaleFactor(0.7)
         }
       default:
         ZStack {
@@ -73,7 +66,7 @@ private struct CaptureComplicationView: View {
     }
     .containerBackground(for: .widget) { Color.clear }
     .widgetURL(WatchCaptureComplication.recordingURL)
-    .accessibilityLabel("Verity. Start recording. \(pendingLabel)")
+    .accessibilityLabel("Verity. Start recording.")
   }
 }
 

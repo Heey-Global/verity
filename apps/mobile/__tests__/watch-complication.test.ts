@@ -47,40 +47,22 @@ describe('Watch complication capture entry', () => {
       expect(families).toContain(`.${family}`);
     }
     const image = widget.match(/Image\("([^"]+)"\)/)![1];
-    const config = require(resolve(targetRoot, 'VerityWatchComplication/expo-target.config.js'))({
-      ios: { bundleIdentifier: 'build.verity.app' },
-    });
+    const config = require(resolve(targetRoot, 'VerityWatchComplication/expo-target.config.js'));
     const source = config.images[image] as string;
     expect(source).toBeDefined();
     expect(existsSync(resolve(targetRoot, 'VerityWatchComplication', source))).toBe(true);
   });
 
-  it.each(['build.verity.app', 'build.verity.app.staging'])(
-    'shares the pending count within %s only',
-    (bundleIdentifier) => {
-      const input = { ios: { bundleIdentifier } };
-      const watch = require(resolve(targetRoot, 'VerityWatch/expo-target.config.js'))(input);
-      const complication = require(
-        resolve(targetRoot, 'VerityWatchComplication/expo-target.config.js'),
-      )(input);
-      expect(complication.type).toBe('watch-widget');
-      expect(complication.bundleIdentifier.startsWith(`${watch.bundleIdentifier}.`)).toBe(true);
-      expect(complication.entitlements['com.apple.security.application-groups']).toEqual(
-        watch.entitlements['com.apple.security.application-groups'],
-      );
-      const group = watch.entitlements['com.apple.security.application-groups'][0] as string;
-      expect(group).toContain(bundleIdentifier);
-      expect(shared).toContain('bundle.range(of: ".watchkitapp")');
-      expect(shared).toContain(
-        'UserDefaults(suiteName: "group.\\(bundle[..<range.lowerBound]).watch-capture")',
-      );
-      expect(store).toContain('defaults.set(pending, forKey: WatchCaptureComplication.pendingKey)');
-      expect(widget).toContain('integer(forKey: WatchCaptureComplication.pendingKey)');
-      expect(store).toContain(
-        'WidgetCenter.shared.reloadTimelines(ofKind: WatchCaptureComplication.kind)',
-      );
-      expect(widget).toContain('StaticConfiguration(kind: WatchCaptureComplication.kind');
-      expect(store).toContain('$0.state == .queued || $0.state == .delivered');
-    },
-  );
+  it('adds only the complication target without changing Watch signing entitlements', () => {
+    const watch = require(resolve(targetRoot, 'VerityWatch/expo-target.config.js'));
+    const complication = require(
+      resolve(targetRoot, 'VerityWatchComplication/expo-target.config.js'),
+    );
+    expect(complication.type).toBe('watch-widget');
+    expect(complication.bundleIdentifier.startsWith(`${watch.bundleIdentifier}.`)).toBe(true);
+    expect(complication.entitlements?.['com.apple.security.application-groups']).toBeUndefined();
+    expect(watch.entitlements?.['com.apple.security.application-groups']).toBeUndefined();
+    expect(shared).not.toContain('UserDefaults');
+    expect(widget).toContain('Text("Quick capture")');
+  });
 });
