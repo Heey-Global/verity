@@ -85,7 +85,7 @@ export function readContextProjects(client: VerityClient, fresh = false): Promis
   target.projects = request;
   return request;
 }
-export function readContextOverview(client: VerityClient, fresh = false): Promise<Overview> {
+function readContextOverview(client: VerityClient, fresh = false): Promise<Overview> {
   const read = () =>
     typeof client.listSessionOverview === 'function'
       ? client.listSessionOverview()
