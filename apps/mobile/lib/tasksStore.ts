@@ -10,6 +10,7 @@ import {
   type TaskCapture,
   type TaskPatch,
   type TaskQueueState,
+  type VerityClient,
 } from '@verity/mobile';
 import { randomUUID } from 'expo-crypto';
 import { useSyncExternalStore } from 'react';
@@ -39,9 +40,27 @@ export function taskAccountScope(): string | null {
         : null;
   return url && token ? JSON.stringify([url, token]) : null;
 }
+function attachLiveRefresh(api: VerityClient, instance: TaskQueue): void {
+  const restored = ready;
+  detachLive = subscribeLiveRefresh(
+    api,
+    async () => {
+      await restored;
+      await instance.sync();
+    },
+    (path) => path.split('?')[0] === '/tasks',
+    [{ path: '/tasks' }],
+  );
+}
 function switchScope(): void {
   const next = taskAccountScope();
-  if (next === scope) return;
+  if (next === scope) {
+    if (queue && !detachLive) {
+      const api = createVerityClient();
+      if (api) attachLiveRefresh(api, queue);
+    }
+    return;
+  }
   detachLive?.();
   detachLive = undefined;
   scope = next;
@@ -58,15 +77,7 @@ function switchScope(): void {
   });
   queue = instance;
   ready = instance.restore();
-  detachLive = subscribeLiveRefresh(
-    api,
-    async () => {
-      await ready;
-      await instance.sync();
-    },
-    (path) => path.split('?')[0] === '/tasks',
-    [{ path: '/tasks' }],
-  );
+  attachLiveRefresh(api, instance);
   void ready.then(() => instance.sync()).catch(() => undefined);
 }
 export function startTasksStore(): () => void {

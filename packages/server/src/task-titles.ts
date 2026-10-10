@@ -32,7 +32,8 @@ export function parseTaskTitle(raw: string | undefined): string | undefined {
 /** Bounded background work: capture never waits for a provider or a runner. */
 export class TaskTitleJobs {
   private readonly waiting: TaskRecord[] = [];
-  private readonly active = new Set<AbortController>();
+  private readonly active = new Map<AbortController, TaskRecord>();
+  private readonly writes = new Set<Promise<void>>();
   private closed = false;
 
   constructor(
@@ -44,22 +45,34 @@ export class TaskTitleJobs {
 
   enqueue(task: TaskRecord): void {
     if (this.closed || !task.detail || task.status !== 'open' || task.sessionId !== null) return;
-    if (this.waiting.length >= 16) return;
+    if (this.waiting.length >= 16) {
+      void this.persist(task, undefined);
+      return;
+    }
     this.waiting.push(task);
     this.drain();
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.closed = true;
+    const unfinished = [...this.waiting, ...this.active.values()];
     this.waiting.length = 0;
-    for (const controller of this.active) controller.abort();
+    for (const controller of this.active.keys()) controller.abort();
+    await Promise.all([...this.writes, ...unfinished.map((task) => this.persist(task, undefined))]);
+  }
+
+  private persist(task: TaskRecord, title: string | undefined): Promise<void> {
+    const write = this.deps.save(task, title).catch(() => undefined);
+    this.writes.add(write);
+    void write.finally(() => this.writes.delete(write));
+    return write;
   }
 
   private drain(): void {
     while (!this.closed && this.active.size < 2 && this.waiting.length) {
       const task = this.waiting.shift()!;
       const controller = new AbortController();
-      this.active.add(controller);
+      this.active.set(controller, task);
       const timer = setTimeout(() => controller.abort(), TASK_TITLE_TIMEOUT_MS);
       timer.unref();
       void (async () => {
@@ -67,11 +80,10 @@ export class TaskTitleJobs {
           const title = parseTaskTitle(
             await this.deps.query(task, taskTitlePrompt(task.detail!), controller.signal),
           );
-          if (!this.closed)
-            await this.deps.save(task, controller.signal.aborted ? undefined : title);
+          if (!this.closed) await this.persist(task, controller.signal.aborted ? undefined : title);
         } catch {
           // Keep the complete description visible when title generation fails.
-          if (!this.closed) await this.deps.save(task, undefined).catch(() => undefined);
+          if (!this.closed) await this.persist(task, undefined);
         } finally {
           clearTimeout(timer);
           this.active.delete(controller);

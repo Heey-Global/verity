@@ -104,3 +104,17 @@ it('rejects a projectless capture before it enters the offline outbox', async ()
   );
   stop();
 });
+
+it('reattaches task updates after cleanup and restart with unchanged credentials', () => {
+  mockCredential = 'restart';
+  mockUrl = 'https://restart.test';
+  jest.mocked(subscribeLiveRefresh).mockClear();
+  const stop = startTasksStore();
+  expect(subscribeLiveRefresh).toHaveBeenCalledTimes(1);
+  const detach = jest.mocked(subscribeLiveRefresh).mock.results[0]!.value;
+  stop();
+  expect(detach).toHaveBeenCalledTimes(1);
+  const stopAgain = startTasksStore();
+  expect(subscribeLiveRefresh).toHaveBeenCalledTimes(2);
+  stopAgain();
+});

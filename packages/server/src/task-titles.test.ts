@@ -57,7 +57,9 @@ it('bounds concurrency, times out requests, and never saves results after abort'
       signal.addEventListener('abort', () => resolve('Late title'), { once: true }),
     );
   });
-  const save = vi.fn();
+  const save = vi
+    .fn<(task: TaskRecord, title: string | undefined) => Promise<void>>()
+    .mockResolvedValue(undefined);
   const jobs = new TaskTitleJobs({ query, save });
   jobs.enqueue(task);
   jobs.enqueue({ ...task, id: 'two' });
@@ -68,8 +70,31 @@ it('bounds concurrency, times out requests, and never saves results after abort'
   expect(query).toHaveBeenCalledTimes(3);
   expect(save).toHaveBeenCalledTimes(2);
   expect(save.mock.calls.every(([, title]) => title === undefined)).toBe(true);
-  jobs.close();
+  await jobs.close();
   await vi.advanceTimersByTimeAsync(1);
   expect(signals[2]!.aborted).toBe(true);
-  expect(save).toHaveBeenCalledTimes(2);
+  expect(save).toHaveBeenCalledTimes(3);
+  expect(save.mock.calls.at(-1)?.[1]).toBeUndefined();
+});
+
+it('marks overflow captures failed instead of leaving them pending forever', async () => {
+  const query = vi.fn(() => new Promise<string>(() => {}));
+  const save = vi.fn(async () => undefined);
+  const jobs = new TaskTitleJobs({ query, save });
+  for (let i = 0; i < 19; i++) jobs.enqueue({ ...task, id: String(i) });
+  await Promise.resolve();
+  expect(query).toHaveBeenCalledTimes(2);
+  expect(save).toHaveBeenCalledWith(expect.objectContaining({ id: '18' }), undefined);
+  await jobs.close();
+});
+
+it('marks queued and active captures failed on graceful shutdown', async () => {
+  const query = vi.fn(() => new Promise<string>(() => {}));
+  const save = vi.fn(async () => undefined);
+  const jobs = new TaskTitleJobs({ query, save });
+  for (const id of ['one', 'two', 'three']) jobs.enqueue({ ...task, id });
+  await jobs.close();
+  expect(save).toHaveBeenCalledTimes(3);
+  for (const id of ['one', 'two', 'three'])
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ id }), undefined);
 });

@@ -149,9 +149,8 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
         },
       })
     : undefined;
-  app.addHook('onClose', (_app, done) => {
-    titles?.close();
-    done();
+  app.addHook('onClose', async () => {
+    await titles?.close();
   });
 
   async function canUseProject(
