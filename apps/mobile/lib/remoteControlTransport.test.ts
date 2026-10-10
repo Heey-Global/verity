@@ -1,3 +1,8 @@
+import {
+  beginSessionSwitch,
+  beginSwitchTransportRequest,
+  exportSessionSwitchTimings,
+} from '@verity/mobile';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -272,7 +277,14 @@ describe('shared remote control transport', () => {
 
     // On VPN or LAN every request used to detour through the hosted Uplink,
     // which is what made the app slow exactly where it had been fast.
-    expect(await remoteControlPortForUrl(`${coreUrl}/api/sessions`)).toBe(0);
+    const trace = beginSessionSwitch('route-diagnostic');
+    const requestId = beginSwitchTransportRequest(trace, 'session')!;
+    expect(await remoteControlPortForUrl(`${coreUrl}/api/sessions`, false, requestId)).toBe(0);
+    expect(
+      exportSessionSwitchTimings()
+        .at(-1)!
+        .transportRequests[0]!.phases.map((p) => p.phase),
+    ).toEqual(['fetch-dispatch', 'route-probe-start', 'route-probe-end']);
     expect(mockRequest).toHaveBeenCalledWith(
       expect.stringMatching(/^remote-probe-/),
       `${coreUrl}/healthz`,
@@ -282,7 +294,10 @@ describe('shared remote control transport', () => {
       profile.endpoints[0]?.tlsPin,
       0,
     );
-    expect(await remoteControlPortForUrl(`${coreUrl}/api/status`)).toBe(0);
+    expect(await remoteControlPortForUrl(`${coreUrl}/api/status`, false, requestId)).toBe(0);
+    expect(exportSessionSwitchTimings().at(-1)!.transportRequests[0]!.phases.at(-1)?.phase).toBe(
+      'route-cache-hit',
+    );
     expect(mockRequest).toHaveBeenCalledTimes(1);
     expect(mockAdmission).not.toHaveBeenCalled();
 

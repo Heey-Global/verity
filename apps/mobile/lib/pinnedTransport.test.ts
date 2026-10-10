@@ -277,7 +277,7 @@ describe('pinned native file transport', () => {
 
     await createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)('https://192.0.2.1/status');
 
-    expect(mockRemotePort).toHaveBeenCalledWith('https://192.0.2.1/status', true);
+    expect(mockRemotePort).toHaveBeenCalledWith('https://192.0.2.1/status', true, undefined);
     expect(mockRequest).toHaveBeenCalledWith(
       expect.any(String),
       'https://192.0.2.1/status',
@@ -1048,6 +1048,7 @@ it('correlates pinned dispatch and native return with the originating switch', a
   expect(request.phases.map((p) => p.phase)).toEqual([
     'fetch-dispatch',
     'pinned-entry',
+    'remote-availability-ready',
     'body-encoded',
     'route-ready',
     'lane-admitted',
@@ -1056,4 +1057,31 @@ it('correlates pinned dispatch and native return with the originating switch', a
   ]);
   expect(request.phases.at(-1)?.value).toEqual(expect.any(Number));
   expect(JSON.stringify(request)).not.toContain('private');
+});
+
+it('records entry before remote availability resolves', async () => {
+  const trace = beginSessionSwitch('entry');
+  const requestId = beginSwitchTransportRequest(trace, 'events')!;
+  let resolve!: (available: boolean) => void;
+  mockRemoteAvailable.mockReturnValueOnce(
+    new Promise<boolean>((done) => {
+      resolve = done;
+    }),
+  );
+  mockRequest.mockResolvedValue({ status: 200, headers: {}, bodyBase64: 'e30=' });
+  const pending = createPinnedFetch('pin', true)('https://verity.example/events', {
+    headers: { 'x-verity-switch-request': requestId },
+  });
+  expect(
+    exportSessionSwitchTimings()
+      .at(-1)!
+      .transportRequests[0]!.phases.map((p) => p.phase),
+  ).toEqual(['fetch-dispatch', 'pinned-entry']);
+  resolve(false);
+  await pending;
+  expect(
+    exportSessionSwitchTimings()
+      .at(-1)!
+      .transportRequests[0]!.phases.map((p) => p.phase),
+  ).toContain('remote-availability-ready');
 });
