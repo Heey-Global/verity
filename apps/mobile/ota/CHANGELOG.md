@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.66.2](https://github.com/Heey-Global/verity/compare/mobile-v1.66.1...mobile-v1.66.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* **mobile:** correct session keyboard visibility and overlap ([#1495](https://github.com/Heey-Global/verity/issues/1495)) ([7a22ff0](https://github.com/Heey-Global/verity/commit/7a22ff079eede32b186fcd5cfb0aa403fb80c71c))
+* **mobile:** correlate touch diagnostics and expose route waits ([#1496](https://github.com/Heey-Global/verity/issues/1496)) ([9868bd8](https://github.com/Heey-Global/verity/commit/9868bd8c57e915dc5e0b637ed628dfe02e54fe74))
+
 ## [1.66.1](https://github.com/Heey-Global/verity/compare/mobile-v1.66.0...mobile-v1.66.1) (2026-10-10)
 
 
