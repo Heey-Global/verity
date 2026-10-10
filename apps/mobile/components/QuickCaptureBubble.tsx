@@ -319,6 +319,7 @@ export function QuickCaptureBubble() {
     () =>
       subscribeTaskVoiceShortcut(() => {
         if (
+          capture ||
           taskAccountScope() === null ||
           meeting ||
           remoteMeeting ||
@@ -330,7 +331,7 @@ export function QuickCaptureBubble() {
         setIntro(false);
         setCapture(true);
       }),
-    [meeting, remoteMeeting, pathname],
+    [capture, meeting, remoteMeeting, pathname],
   );
   const visible =
     preferences.enabled &&

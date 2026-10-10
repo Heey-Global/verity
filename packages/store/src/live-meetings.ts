@@ -2,6 +2,7 @@ import { sql, type Kysely } from 'kysely';
 import type { Database } from './schema.js';
 
 export interface LiveMeetingSyncRecord {
+  title?: string | null | undefined;
   id: string;
   sessionId: string;
   engine: string;
@@ -290,6 +291,7 @@ export class LiveMeetingStore {
           ended_at: meeting.endedAt,
           state: meeting.state,
           transcript: meeting.transcript,
+          title: meeting.title ?? null,
           expected_participants: meeting.expectedParticipants ?? null,
           speaker_turns_json: JSON.stringify(meeting.speakerTurns ?? []),
           timed_words_json: JSON.stringify(meeting.timedWords ?? []),
@@ -309,6 +311,7 @@ export class LiveMeetingStore {
               ended_at: meeting.endedAt,
               state: meeting.state,
               transcript: meeting.transcript,
+              title: meeting.title === undefined ? sql.ref('live_meetings.title') : meeting.title,
               expected_participants: meeting.expectedParticipants ?? null,
               speaker_turns_json: JSON.stringify(meeting.speakerTurns ?? []),
               timed_words_json: JSON.stringify(meeting.timedWords ?? []),
@@ -592,6 +595,7 @@ export class LiveMeetingStore {
         endedAt: row.ended_at == null ? null : Number(row.ended_at),
         state: row.state,
         transcript: row.transcript,
+        title: row.title,
         expectedParticipants: row.expected_participants,
         speakerTurns: JSON.parse(row.speaker_turns_json) as Array<{
           speaker: number;

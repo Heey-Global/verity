@@ -287,6 +287,7 @@ import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { registerGitHubTokenRoute } from './github-token-route.js';
 import { registerProjectMemoryRoute } from './project-memory-route.js';
+import { registerPackageInstallRoute } from './package-install-route.js';
 import {
   appendProjectOverview,
   markProjectOverviewAuthoritative,
@@ -306,6 +307,9 @@ import { registerMeetingTranscriptRoutes } from './meeting-transcript-routes.js'
 import { registerLiveMeetingRoutes } from './live-meeting-routes.js';
 import {
   liveMeetingSavedMessage,
+  liveMeetingLinkLabel,
+  liveMeetingAnswerCount,
+  liveMeetingPeopleCount,
   liveMeetingTitle,
   renderLiveMeetingMarkdown,
 } from './live-meeting-export.js';
@@ -2130,7 +2134,7 @@ async function withMeetingTranscriptCommitLock<T>(
   }
 }
 
-async function appendMeetingIndex(
+export async function appendMeetingIndex(
   meetingDir: string,
   relPath: string,
   title: string,
@@ -2140,11 +2144,16 @@ async function appendMeetingIndex(
   const update = previous
     .catch(() => undefined)
     .then(async () => {
-      const entry = `- [${title}](${basename(relPath)})\n`;
+      const entry = `- [${liveMeetingLinkLabel(title)}](${basename(relPath)})\n`;
       await updateMeetingIndexFile(indexAbs, (existing) => {
         let content = existing === '' ? '# Meetings\n\n' : existing;
         if (!content.endsWith('\n')) content += '\n';
-        return content.includes(entry) ? content : `${content}${entry}`;
+        const destination = `](${basename(relPath)})`;
+        const retained = content
+          .split('\n')
+          .filter((line) => !(line.startsWith('- [') && line.endsWith(destination)))
+          .join('\n');
+        return `${retained}${retained.endsWith('\n') ? '' : '\n'}${entry}`;
       });
     });
   meetingIndexUpdates.set(indexAbs, update);
@@ -2239,23 +2248,40 @@ async function fileLiveMeeting(input: {
     }
     {
       await appendMeetingIndex(meetingDir, relPath, title);
+      const events = await input.eventStore.getEvents(input.sessionId);
+      const savedLink = knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath;
+      const details = {
+        sessionId: input.sessionId,
+        meetingId: current.meeting.id,
+        durationMinutes: Math.max(
+          1,
+          Math.round(
+            ((current.meeting.endedAt ?? current.meeting.startedAt) - current.meeting.startedAt) /
+              60_000,
+          ),
+        ),
+        people: liveMeetingPeopleCount(current.meeting),
+        notes: current.notes.length,
+        answers: liveMeetingAnswerCount(events, current.meeting.id),
+      };
       const text = liveMeetingSavedMessage(
         knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath,
         title,
+        details,
       );
-      const announced = (await input.eventStore.getEvents(input.sessionId)).some(
-        (event) => event.t === 'notice' && event.text === text,
+      const announced = events.findLast(
+        (event) =>
+          event.t === 'notice' &&
+          event.text.startsWith('Meeting saved to the knowledge base: [') &&
+          event.text.split('\n')[0]?.endsWith(`](${savedLink})`),
       );
-      if (announced) return;
+      if (announced?.t === 'notice' && announced.text === text) return;
       await emitNotice({
         eventStore: input.eventStore,
         bus: input.bus,
         sessionId: input.sessionId,
         role: 'agent',
-        text: liveMeetingSavedMessage(
-          knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath,
-          title,
-        ),
+        text,
       });
     }
   });
@@ -2300,7 +2326,7 @@ async function writeMeetingTranscript(input: {
   }
 }
 
-async function removeCancelledMeetingTranscript(input: {
+export async function removeCancelledMeetingTranscript(input: {
   meetingDir: string;
   relPath: string;
   title: string;
@@ -2311,7 +2337,7 @@ async function removeCancelledMeetingTranscript(input: {
   const update = previous
     .catch(() => undefined)
     .then(async () => {
-      const entry = `- [${input.title}](${basename(input.relPath)})\n`;
+      const entry = `- [${liveMeetingLinkLabel(input.title)}](${basename(input.relPath)})\n`;
       await updateMeetingIndexFile(indexAbs, (content) => content.replace(entry, ''));
     });
   meetingIndexUpdates.set(indexAbs, update);
@@ -5385,6 +5411,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.sshSign !== undefined ? { sshSign: deps.sshSign } : {}),
   });
   registerGitHubTokenRoute(app);
+  registerPackageInstallRoute(app, {
+    store: deps.eventStore,
+    conductor,
+    appendNotice: async (sessionId, text) => {
+      await emitSessionEvent(deps.eventStore, deps.bus, sessionId, {
+        t: 'notice',
+        text,
+        role: 'agent',
+      });
+    },
+    ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
+  });
   registerProjectMemoryRoute(app, {
     append: async (projectId, text) => {
       if (deps.dataRoot !== undefined) {

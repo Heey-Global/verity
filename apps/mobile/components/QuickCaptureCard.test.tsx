@@ -3,6 +3,7 @@ import { act, fireEvent, render } from '@testing-library/react-native';
 import { QuickCaptureCard } from './QuickCaptureCard';
 import { KeyCommands } from './KeyCommands';
 import { captureTask } from '../lib/tasksStore';
+import { dispatchTaskVoiceShortcut } from '../lib/voiceShortcut';
 import {
   screenshotAccess,
   recentTaskScreenshot,
@@ -246,6 +247,23 @@ it('does not cancel an explicit save already waiting for the final transcript', 
   act(() => {
     ui.UNSAFE_getByType(KeyCommands).props.onVoice('task');
   });
+  expect(voice.abort).not.toHaveBeenCalled();
+  expect(props.onClose).not.toHaveBeenCalled();
+});
+
+it('cancels dictation when UIKit routes the shortcut through the root responder', () => {
+  render(<QuickCaptureCard {...props} />);
+  act(() => dispatchTaskVoiceShortcut());
+  expect(voice.abort).toHaveBeenCalledTimes(1);
+  expect(props.onClose).toHaveBeenCalledTimes(1);
+  expect(captureTask).not.toHaveBeenCalled();
+});
+
+it('ignores root shortcuts while an explicit save waits for the transcript', () => {
+  const ui = render(<QuickCaptureCard {...props} />);
+  fireEvent.changeText(ui.getByLabelText('Task text'), 'Task to save');
+  fireEvent.press(ui.getByText('Save'));
+  act(() => dispatchTaskVoiceShortcut());
   expect(voice.abort).not.toHaveBeenCalled();
   expect(props.onClose).not.toHaveBeenCalled();
 });

@@ -183,3 +183,13 @@ describe('welcome session texts', () => {
     }
   });
 });
+
+it('provides complete hint copy and docs for each hint-bearing catalog topic', () => {
+  const hints = APP_HELP_TOPICS.filter((topic) => topic.hint !== undefined);
+  expect(hints.length).toBeGreaterThan(0);
+  for (const topic of hints) {
+    expect(topic.hint?.text.trim(), topic.id).toBeTruthy();
+    expect(topic.hint?.question.trim(), topic.id).toBeTruthy();
+    expect(topic.docsPath, topic.id).toBeTruthy();
+  }
+});

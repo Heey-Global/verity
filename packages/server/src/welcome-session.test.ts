@@ -206,6 +206,144 @@ describe('POST /onboarding/welcome', () => {
     }
   });
 
+  async function replay(app: FastifyInstance, retry = false) {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/onboarding/welcome',
+      payload: { replay: true, retry },
+    });
+    return { statusCode: res.statusCode, body: res.json<WelcomeResponse>() };
+  }
+
+  it('replays an existing welcome session without changing its transcript', async () => {
+    const { app, store } = await setup({ starter: 'active' });
+    try {
+      const original = (await welcome(app)).body;
+      const events = await store.getEvents(original.sessionId!);
+      expect((await replay(app)).body).toEqual(original);
+      expect(await store.getEvents(original.sessionId!)).toEqual(events);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('recreates a deleted welcome session only on explicit replay', async () => {
+    const { app, store } = await setup({ starter: 'active' });
+    try {
+      const original = (await welcome(app)).body;
+      await store.deleteSession(original.sessionId!);
+      expect((await welcome(app)).body.state).toBe('none');
+      const [a, b] = await Promise.all([replay(app), replay(app)]);
+      expect(a.body.state).toBe('ready');
+      expect(a.body.sessionId).not.toBe(original.sessionId);
+      expect(a.body).toEqual(b.body);
+      expect(await store.listSessions()).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('restores a hidden starter only on explicit replay', async () => {
+    const { app, store } = await setup({ starter: 'active' });
+    try {
+      const projectId = (await store.getStarterProjectId())!;
+      await store.hideProject(projectId);
+      expect((await welcome(app)).body.state).toBe('none');
+      expect((await replay(app)).body).toMatchObject({ state: 'preparing', projectId });
+      expect((await store.getProject(projectId))?.hiddenAt).toBeNull();
+      await store.updateProjectState(projectId, 'active');
+      expect((await replay(app)).body.state).toBe('ready');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('creates one recorded starter on replay without claiming an existing similarly named project', async () => {
+    const { app, store } = await setup();
+    try {
+      const own = await store.createProject(localProjectInput(STARTER_PROJECT_SLUG));
+      const [a, b] = await Promise.all([replay(app), replay(app)]);
+      expect(a.body.projectId).not.toBe(own.id);
+      expect(a.body.projectId).toBe(b.body.projectId);
+      expect(await store.listProjects()).toHaveLength(2);
+      expect(await store.getStarterProjectId()).toBe(a.body.projectId);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('recreates a permanently deleted starter on explicit replay', async () => {
+    const { app, store } = await setup({ starter: 'active' });
+    try {
+      const oldId = (await store.getStarterProjectId())!;
+      await store.deleteProject(oldId);
+      expect((await welcome(app)).body.state).toBe('none');
+      const result = (await replay(app)).body;
+      expect(result.state).toBe('preparing');
+      expect(result.projectId).not.toBe(oldId);
+      expect(await store.getStarterProjectId()).toBe(result.projectId);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('allows one explicit retry after a replay provisioning failure', async () => {
+    const { app, store, provision } = await setup({ starter: 'absent' });
+    try {
+      const projectId = (await store.getStarterProjectId())!;
+      await store.updateProjectState(projectId, 'failed');
+      await replay(app);
+      await vi.waitFor(() => expect(provision).toHaveBeenCalledTimes(1));
+      expect((await replay(app)).body.state).toBe('failed');
+      await replay(app, true);
+      await vi.waitFor(() => expect(provision).toHaveBeenCalledTimes(2));
+      expect((await replay(app)).body.state).toBe('failed');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not refresh the retry budget while provisioning is in progress', async () => {
+    const { app, store, provision } = await setup({ starter: 'absent' });
+    try {
+      const projectId = (await store.getStarterProjectId())!;
+      await store.updateProjectState(projectId, 'failed');
+      await replay(app, true);
+      await vi.waitFor(() => expect(provision).toHaveBeenCalledTimes(1));
+      await store.updateProjectState(projectId, 'cloning');
+      expect((await replay(app)).body.state).toBe('preparing');
+      await store.updateProjectState(projectId, 'failed');
+      expect((await replay(app)).body.state).toBe('failed');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects malformed replay flags without creating a project', async () => {
+    const { app, store } = await setup();
+    try {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/onboarding/welcome',
+        payload: { replay: 'yes' },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(await store.getStarterProjectId()).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not create a replay project before onboarding is complete', async () => {
+    const { app, store } = await setup({ complete: false });
+    try {
+      expect((await replay(app)).statusCode).toBe(409);
+      expect(await store.getStarterProjectId()).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
   it('provisions a starter project that is not ready yet and answers preparing', async () => {
     const { app, store, provision } = await setup({ starter: 'absent' });
     try {

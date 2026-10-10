@@ -573,3 +573,18 @@ it('suppresses batch evidence published after resolution at the same revision', 
   ).toBe(false);
   expect(await ctx.store.liveMeetings.insights('session-1', meeting.id)).toEqual([]);
 });
+
+it('retains a meeting title through revisioned sync and restart reads', async () => {
+  await ctx.store.liveMeetings.putMeeting({ ...meeting, title: 'Pricing sync' });
+  expect((await ctx.store.liveMeetings.changes(meeting.sessionId, 0)).meetings[0]?.title).toBe(
+    'Pricing sync',
+  );
+  await ctx.store.liveMeetings.putMeeting({ ...meeting, title: 'Pricing decisions', revision: 2 });
+  expect((await ctx.store.liveMeetings.changes(meeting.sessionId, 0)).meetings[0]?.title).toBe(
+    'Pricing decisions',
+  );
+  await ctx.store.liveMeetings.putMeeting({ ...meeting, revision: 3 });
+  expect((await ctx.store.liveMeetings.changes(meeting.sessionId, 0)).meetings[0]?.title).toBe(
+    'Pricing decisions',
+  );
+});

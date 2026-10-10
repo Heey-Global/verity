@@ -389,6 +389,7 @@ describe('agent spawn broker', () => {
       expect(environments[0]?.VERITY_SESSION_BACKEND).toBe('claude');
       expect(environments[0]?.VERITY_SESSION_MODEL).toBe('opus');
       expect(environments[0]?.VERITY_SESSION_ID).toBe('session-1');
+      expect(environments[0]?.PATH?.split(':')[0]).toBe('/opt/verity/package-managers');
       expect(environments[0]?.ANTHROPIC_API_KEY).toBeUndefined();
     } finally {
       await broker.close();

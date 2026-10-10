@@ -1,11 +1,13 @@
-import type { ReactNode } from 'react';
+import { meetingPalette } from './meetingPalette';
+import { useId, type ReactNode } from 'react';
+import Svg, { Defs, LinearGradient, Rect, Stop, Text as SvgText } from 'react-native-svg';
 import { ActivityIndicator, Linking, Pressable, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { parseInline } from '@verity/mobile';
 
 import { Icon } from '../Icon';
 
-type Colors = ReturnType<typeof useUnistyles>['theme']['colors'];
+type Colors = ReturnType<typeof meetingPalette>;
 
 // Speakers keep one color for the whole meeting; accents appear only as rings and dots.
 export function speakerTone(colors: Colors, speaker: number): string {
@@ -24,6 +26,53 @@ export function SectionLabel({ children, right }: { children: ReactNode; right?:
     <View style={styles.sectionRow}>
       <Text style={styles.sectionLabel}>{children}</Text>
       {right ? <Text style={styles.sectionHint}>{right}</Text> : null}
+    </View>
+  );
+}
+
+export function MeetingMetrics({ values }: { values: { label: string; value: number }[] }) {
+  const { theme } = useUnistyles();
+  const colors = meetingPalette(theme.colors);
+  const gradient = useId();
+  return (
+    <View style={{ flexDirection: 'row', gap: 8 }}>
+      {values.map(({ label, value }, index) => (
+        <View
+          key={label}
+          accessible
+          accessibilityLabel={`${value} ${label}`}
+          style={{
+            flex: 1,
+            borderWidth: 1,
+            borderColor: colors.border,
+            borderRadius: 18,
+            backgroundColor: colors.surfaceAlt,
+            paddingVertical: 10,
+            alignItems: 'center',
+          }}
+        >
+          <Svg width="100%" height={30} viewBox="0 0 80 30" accessibilityElementsHidden>
+            <Defs>
+              <LinearGradient id={`${gradient}-${index}`} x1="0" y1="0" x2="1" y2="0">
+                <Stop offset="0" stopColor={colors.accent} />
+                <Stop offset="0.5" stopColor="#a968f3" />
+                <Stop offset="1" stopColor={colors.primary} />
+              </LinearGradient>
+            </Defs>
+            <SvgText
+              x={40}
+              y={23}
+              textAnchor="middle"
+              fontSize={22}
+              fontWeight="800"
+              fill={`url(#${gradient}-${index})`}
+            >
+              {value}
+            </SvgText>
+          </Svg>
+          <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: '600' }}>{label}</Text>
+        </View>
+      ))}
     </View>
   );
 }
@@ -158,9 +207,25 @@ export function NoticedCard({
   children?: ReactNode;
   onToggle?: () => void;
 }) {
+  const gradient = useId();
   const { theme } = useUnistyles();
+  const colors = meetingPalette(theme.colors);
   return (
     <View style={styles.card}>
+      <View
+        pointerEvents="none"
+        style={{ position: 'absolute', left: 0, top: 18, bottom: 18, width: 3 }}
+      >
+        <Svg width="3" height="100%">
+          <Defs>
+            <LinearGradient id={gradient} x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor={tone} />
+              <Stop offset="1" stopColor={colors.primary} />
+            </LinearGradient>
+          </Defs>
+          <Rect width="3" height="100%" rx="1.5" fill={`url(#${gradient})`} />
+        </Svg>
+      </View>
       <View style={styles.cardHeader}>
         <View style={[styles.dot, { backgroundColor: tone }]} />
         <Text style={[styles.cardLabel, { color: tone }]}>{label}</Text>
@@ -173,7 +238,7 @@ export function NoticedCard({
             hitSlop={10}
             onPress={onDismiss}
           >
-            <Icon name="x" size={16} color={theme.colors.textMuted} />
+            <Icon name="x" size={16} color={colors.textMuted} />
           </Pressable>
         ) : null}
       </View>
@@ -204,6 +269,7 @@ const BULLET = /^\s*(?:[-*•]|\d{1,2}[.)])\s+/;
 // never run together, and inline bold and links render instead of showing raw markup.
 export function MeetingAnswerText({ text }: { text: string }) {
   const { theme } = useUnistyles();
+  const colors = meetingPalette(theme.colors);
   const lines = text.split('\n').filter((line) => line.trim());
   return (
     <View style={styles.answer} testID="meeting-answer">
@@ -223,7 +289,7 @@ export function MeetingAnswerText({ text }: { text: string }) {
                   <Text
                     key={spanIndex}
                     accessibilityRole={span.external ? 'link' : undefined}
-                    style={{ color: theme.colors.accent }}
+                    style={{ color: colors.accent }}
                     onPress={span.external ? () => void Linking.openURL(span.url) : undefined}
                   >
                     {span.text}
@@ -241,79 +307,83 @@ export function MeetingAnswerText({ text }: { text: string }) {
   );
 }
 
-const styles = StyleSheet.create((theme) => ({
-  sectionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.sm,
-  },
-  sectionLabel: {
-    color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-  },
-  sectionHint: { color: theme.colors.textFaint, fontSize: theme.text.xs },
-  avatarColumn: { alignItems: 'center', gap: 2, minWidth: 48 },
-  avatarHalo: {
-    borderWidth: 1.5,
-    borderColor: 'transparent',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatar: {
-    borderWidth: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: theme.colors.surface,
-  },
-  avatarText: { color: theme.colors.text, fontWeight: '700' },
-  avatarCaption: { color: theme.colors.textMuted, fontSize: theme.text.xs },
-  avatarCaptionActive: { color: theme.colors.text },
-  avatarDetail: { color: theme.colors.textFaint, fontSize: theme.text.xs },
-  card: {
-    backgroundColor: theme.colors.surface,
-    borderColor: theme.colors.border,
-    borderWidth: 1,
-    borderRadius: theme.radius.lg,
-    padding: theme.spacing.lg,
-    gap: theme.spacing.sm,
-  },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  dot: { width: 7, height: 7, borderRadius: 4 },
-  cardLabel: { flex: 1, fontSize: theme.text.xs, fontWeight: '700', letterSpacing: 1.2 },
-  cardTime: { color: theme.colors.textFaint, fontSize: theme.text.xs },
-  cardQuote: { color: theme.colors.textMuted, fontSize: theme.text.sm },
-  cardTitle: { color: theme.colors.text, fontSize: theme.text.md, lineHeight: 22 },
-  cardQuestion: {
-    color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '700',
-    lineHeight: 24,
-  },
-  answer: { gap: theme.spacing.xs },
-  answerLine: { flexDirection: 'row', gap: theme.spacing.sm },
-  answerBullet: { color: theme.colors.textMuted, fontSize: theme.text.md, lineHeight: 22 },
-  answerText: { flex: 1, color: theme.colors.text, fontSize: theme.text.md, lineHeight: 22 },
-  answerStrong: { fontWeight: '700' },
-  cardBody: { color: theme.colors.text, fontSize: theme.text.sm, lineHeight: 20 },
-  cardSource: { color: theme.colors.accent, fontSize: theme.text.xs },
-  actions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    gap: theme.spacing.md,
-    marginTop: theme.spacing.xs,
-  },
-  primaryAction: {
-    borderColor: theme.colors.primary,
-    borderWidth: 1,
-    borderRadius: theme.radius.pill,
-    paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.sm,
-  },
-  primaryActionText: { color: theme.colors.primary, fontWeight: '700' },
-  quietAction: { paddingHorizontal: theme.spacing.xs, paddingVertical: theme.spacing.sm },
-  quietActionText: { color: theme.colors.textMuted },
-}));
+const styles = StyleSheet.create((theme) => {
+  const colors = meetingPalette(theme.colors);
+  return {
+    sectionRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: theme.spacing.sm,
+    },
+    sectionLabel: {
+      color: colors.textMuted,
+      fontSize: theme.text.xs,
+      fontWeight: '700',
+      letterSpacing: 1.2,
+    },
+    sectionHint: { color: colors.textFaint, fontSize: theme.text.xs },
+    avatarColumn: { alignItems: 'center', gap: 2, minWidth: 48 },
+    avatarHalo: {
+      borderWidth: 1.5,
+      borderColor: 'transparent',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    avatar: {
+      borderWidth: 2,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.surface,
+    },
+    avatarText: { color: colors.text, fontWeight: '700' },
+    avatarCaption: { color: colors.textMuted, fontSize: theme.text.xs },
+    avatarCaptionActive: { color: colors.text },
+    avatarDetail: { color: colors.textFaint, fontSize: theme.text.xs },
+    card: {
+      backgroundColor: colors.surface,
+      borderColor: colors.border,
+      borderWidth: 1,
+      borderRadius: 22,
+      padding: theme.spacing.lg,
+      gap: theme.spacing.sm,
+    },
+    cardHeader: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+    dot: { width: 7, height: 7, borderRadius: 4 },
+    cardLabel: { flex: 1, fontSize: theme.text.xs, fontWeight: '700', letterSpacing: 1.2 },
+    cardTime: { color: colors.textFaint, fontSize: theme.text.xs },
+    cardQuote: { color: colors.textMuted, fontSize: theme.text.sm },
+    cardTitle: { color: colors.text, fontSize: theme.text.md, lineHeight: 22 },
+    cardQuestion: {
+      color: colors.text,
+      fontSize: theme.text.lg,
+      fontWeight: '700',
+      lineHeight: 24,
+    },
+    answer: { gap: theme.spacing.xs },
+    answerLine: { flexDirection: 'row', gap: theme.spacing.sm },
+    answerBullet: { color: colors.textMuted, fontSize: theme.text.md, lineHeight: 22 },
+    answerText: { flex: 1, color: colors.text, fontSize: theme.text.md, lineHeight: 22 },
+    answerStrong: { fontWeight: '700' },
+    cardBody: { color: colors.text, fontSize: theme.text.sm, lineHeight: 20 },
+    cardSource: { color: colors.accent, fontSize: theme.text.xs },
+    actions: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      alignItems: 'center',
+      gap: theme.spacing.md,
+      marginTop: theme.spacing.xs,
+    },
+    primaryAction: {
+      borderColor: colors.accent,
+      backgroundColor: colors.accent,
+      borderWidth: 1,
+      borderRadius: theme.radius.pill,
+      paddingHorizontal: theme.spacing.lg,
+      paddingVertical: theme.spacing.sm,
+    },
+    primaryActionText: { color: colors.onPrimary, fontWeight: '700' },
+    quietAction: { paddingHorizontal: theme.spacing.xs, paddingVertical: theme.spacing.sm },
+    quietActionText: { color: colors.textMuted },
+  };
+});

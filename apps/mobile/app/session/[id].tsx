@@ -1,3 +1,9 @@
+import { meetingSavedCard } from '../../lib/meetingSavedCard';
+import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
+import { isLinkableSession } from '../../lib/sessionLinks';
+import { SessionSettingsDialog } from '../../components/SessionSettingsDialog';
+import { useFeatureHint } from '../../components/FeatureHint';
+import { appendHelpQuestion } from '../../lib/featureHints';
 import { TranscriptTimingContext } from '../../components/TranscriptRow';
 import { useSwitchFrameTiming } from '../../hooks/useSwitchFrameTiming';
 import {
@@ -100,6 +106,8 @@ import {
   listSessionsTitle,
   permissionInputText,
   knowledgePublishSummary,
+  packageInstallSummary,
+  packageInstallDecision,
   KNOWLEDGE_PUBLISH_EXPLANATION,
   printableFileHtml,
   sessionHandoffCaveats,
@@ -686,6 +694,7 @@ export function SessionChat({
   const { theme } = useUnistyles();
   const {
     session,
+    refreshMetadata,
     streamError,
     sending,
     sendError,
@@ -2370,6 +2379,36 @@ export function SessionChat({
   // tap-revealed action row under a message (next to Copy); recalled from the header
   // sheet, which jumps back to the message.
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
+  const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
+  const [sessionMenuAnchor, setSessionMenuAnchor] = useState<AttachAnchor | null>(null);
+  const sessionMenuRef = useRef<View>(null);
+  const openSessionMenu = useAttachmentMenuAnchor(sessionMenuRef, setSessionMenuAnchor);
+  const [settingsProjects, setSettingsProjects] = useState<
+    Awaited<ReturnType<VerityClient['listProjects']>>
+  >([]);
+  const [settingsSessions, setSettingsSessions] = useState<
+    Awaited<ReturnType<VerityClient['listSessions']>>
+  >([]);
+  useEffect(() => {
+    if (!sessionSettingsOpen) return;
+    let active = true;
+    void Promise.all([client.listProjects(), client.listSessions()])
+      .then(([projects, sessions]) => {
+        if (active) {
+          setSettingsProjects(projects);
+          setSettingsSessions(sessions);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [client, sessionSettingsOpen]);
+  const askHelp = (question: string) => {
+    voice.abort();
+    setDraft((current) => appendHelpQuestion(current, question));
+  };
+  const featureHint = useFeatureHint(askHelp, sessionId);
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesInitialPath, setFilesInitialPath] = useState<string | null>(null);
   const [filesInitialRoot, setFilesInitialRoot] = useState<SessionFileRoot>('worktree');
@@ -2384,6 +2423,8 @@ export function SessionChat({
   const openAppLink = useCallback<OpenAppLink>(
     (target) => {
       switch (target.kind) {
+        case 'session-settings':
+          return () => setSessionSettingsOpen(true);
         case 'route':
           return () => router.push(target.path);
         case 'project-settings': {
@@ -3208,9 +3249,12 @@ export function SessionChat({
   }, [uploadMeetingAudio]);
   const onLiveMeeting = useCallback(() => {
     setAttachMenuOpen(false);
-    voice.abort();
-    router.push({ pathname: '/meeting/[sessionId]', params: { sessionId } });
-  }, [sessionId, voice]);
+    void featureHint.confirm('live-meeting').then((proceed) => {
+      if (!proceed) return;
+      voice.abort();
+      router.push({ pathname: '/meeting/[sessionId]', params: { sessionId } });
+    });
+  }, [sessionId, voice, featureHint.confirm]);
   const onConnectGoogleService = useCallback(
     (service: GoogleService) => {
       setAttachMenuOpen(false);
@@ -3783,6 +3827,15 @@ export function SessionChat({
         {/* Actions sit on the title row as large round buttons, so the header needs a
             single row and the targets are big enough to hit and recognise. */}
         <View style={styles.headerActions}>
+          <View ref={sessionMenuRef} collapsable={false}>
+            <HeaderActionButton
+              icon="more-horizontal"
+              label="Session menu"
+              accessibilityLabel="Open session menu"
+              onHint={showHeaderHint}
+              onPress={openSessionMenu}
+            />
+          </View>
           {projectId ? (
             <HeaderActionButton
               icon="monitor"
@@ -4083,6 +4136,7 @@ export function SessionChat({
       ) : null}
       {staticPreviewOpen && projectId ? (
         <StaticPreviewSheet
+          onAskHelp={askHelp}
           detectedServers={session.devServers}
           initialServer={previewServer}
           onAskAgent={(prompt) => {
@@ -4101,6 +4155,92 @@ export function SessionChat({
             setPreviewServer(undefined);
             refreshStaticPreview();
           }}
+        />
+      ) : null}
+      {featureHint.sheet}
+      {sessionMenuAnchor ? (
+        <ActionMenu
+          anchor={sessionMenuAnchor}
+          label="Session menu"
+          onClose={() => setSessionMenuAnchor(null)}
+          items={[
+            {
+              icon: 'settings',
+              title: 'Session settings',
+              subtitle: 'Rename, link or manage this session',
+              onPress: () => {
+                setSessionMenuAnchor(null);
+                setSessionSettingsOpen(true);
+              },
+            },
+          ]}
+        />
+      ) : null}
+      {sessionSettingsOpen ? (
+        <SessionSettingsDialog
+          key={sessionId}
+          sessionId={sessionId}
+          sessionName={name ?? null}
+          displayName={sessionFallback}
+          projectId={projectId ?? null}
+          projectName={
+            settingsProjects.find((project) => project.id === projectId)?.repo ?? 'No project'
+          }
+          canMove={
+            !busy &&
+            settingsProjects.some((project) => project.id === projectId && project.kind === 'local')
+          }
+          moveDisabledReason={
+            busy
+              ? 'Finish the current turn before changing projects.'
+              : 'Moving is available for normal sessions in local projects.'
+          }
+          projects={settingsProjects
+            .filter((project) => project.kind === 'local')
+            .map((project) => ({ id: project.id, name: project.repo }))}
+          linkableSessions={settingsSessions
+            .filter((candidate) => isLinkableSession(candidate, sessionId, settingsProjects))
+            .map((candidate) => ({
+              id: candidate.sessionId,
+              name: candidate.name ?? candidate.sessionId,
+              projectId: candidate.projectId!,
+              projectName:
+                settingsProjects.find((project) => project.id === candidate.projectId)?.repo ??
+                candidate.projectId!,
+            }))}
+          client={client}
+          onClose={() => setSessionSettingsOpen(false)}
+          onChanged={() => {
+            refreshMetadata();
+            branchesRefresh();
+          }}
+          onDelete={() =>
+            Alert.alert(
+              'Delete session?',
+              `This permanently removes "${sessionFallback}", its history and worktree. This cannot be undone.`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Delete',
+                  style: 'destructive',
+                  onPress: () => {
+                    void client
+                      .deleteSession(sessionId)
+                      .then(() => {
+                        setSessionSettingsOpen(false);
+                        router.replace('/');
+                      })
+                      .catch((error: unknown) =>
+                        Alert.alert(
+                          'Could not delete session',
+                          error instanceof Error ? error.message : 'Please try again.',
+                        ),
+                      );
+                  },
+                },
+              ],
+            )
+          }
         />
       ) : null}
       {filesOpen ? (
@@ -4518,6 +4658,7 @@ export function SessionChat({
       {visiblePullRequest ? (
         <PullRequestBar
           key={visiblePullRequest.number}
+          confirmHint={() => featureHint.confirm('review-and-pull-requests')}
           pullRequest={visiblePullRequest}
           onMerge={onMergePullRequest}
           onRefresh={branchesRefresh}
@@ -4531,6 +4672,7 @@ export function SessionChat({
       branches.current !== branches.localMergeBase &&
       !branches.workspaceMissing ? (
         <LocalMergeBar
+          confirmHint={() => featureHint.confirm('review-and-pull-requests')}
           branch={branches.current}
           base={branches.localMergeBase}
           busy={working}
@@ -6327,6 +6469,17 @@ function SessionFilesSheet({
 // transcript rows (which live in `data`, so the header sheet can scroll back to
 // them), false for messages rendered inside a collapsed sub-agent subtree — those
 // aren't rows we can jump to, so offering a bookmark there would be a dead anchor.
+function SavedMeetingNotice({ card }: { card: NonNullable<ReturnType<typeof meetingSavedCard>> }) {
+  const openFile = useContext(SessionFileOpenContext);
+  const target = sessionFileTargetFromLocalLink(card.link);
+  return (
+    <SavedMeetingCard
+      card={card}
+      onOpenLegacy={target && openFile ? () => openFile(target.path, target.root) : undefined}
+    />
+  );
+}
+
 function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
   // Collapsible rows keep local `expanded` state and expand to many screens of detail.
   // FlashList recycles a cell renderer instance across items of the same type, so that
@@ -6370,8 +6523,11 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
   switch (item.message.kind) {
     case 'user-text':
       return <UserBubble message={item.message} />;
-    case 'agent-text':
+    case 'agent-text': {
+      const saved = meetingSavedCard(item.message.text);
+      if (saved) return <SavedMeetingNotice card={saved} />;
       return <AgentBlock message={item.message} bookmarkable={bookmarkable} />;
+    }
     case 'tool-call':
       return <ToolCard key={item.message.id} message={item.message} />; // single tool not in a run
     case 'agent-event':
@@ -8416,6 +8572,8 @@ function PermissionPrompt({
   const isGmail = pending.tool === 'verity_gmail';
   const isCalendar = pending.tool === 'verity_google_calendar';
   const isKnowledge = pending.tool === 'verity_knowledge';
+  const packageInstall =
+    pending.tool === 'verity_package_install' ? packageInstallSummary(pending.input) : null;
   const planningTool = planningToolName(pending.tool);
   const isEndPlanning = planningTool === END_PLANNING_TOOL;
   const isPresentPlan = planningTool === 'verity_present_plan';
@@ -8491,6 +8649,7 @@ function PermissionPrompt({
   // which is all that is known when no summariser recognised the input.
   const cardTitle =
     [
+      packageInstall?.title ?? null,
       !isKnowledge
         ? null
         : knowledgeSummary?.replacesExisting
@@ -8533,7 +8692,11 @@ function PermissionPrompt({
     markSessionSwitch(allowTiming.current, 'allow-js-press-handler');
     onDecide(
       pending.toolUseId,
-      scope === undefined ? { behavior: 'allow' } : { behavior: 'allow', scope },
+      packageInstall !== null
+        ? packageInstallDecision(packageInstall.supported, 'primary')
+        : scope === undefined
+          ? { behavior: 'allow' }
+          : { behavior: 'allow', scope },
     );
   };
   return (
@@ -8543,14 +8706,19 @@ function PermissionPrompt({
       // tool") is read before the operator reaches the Allow/Deny buttons.
       accessibilityRole="alert"
       accessibilityLabel={
-        isKnowledge
-          ? `${cardTitle} ${KNOWLEDGE_PUBLISH_EXPLANATION}`
-          : `${cardTitle} Allow or deny.`
+        packageInstall !== null
+          ? `${cardTitle}. ${spellOutBidiControls(packageInstall.command)}. ${spellOutBidiControls(packageInstall.explanation)} ${packageInstall.denyLabel} or ${packageInstall.allowLabel}.`
+          : isKnowledge
+            ? `${cardTitle} ${KNOWLEDGE_PUBLISH_EXPLANATION}`
+            : `${cardTitle} Allow or deny.`
       }
     >
       <View style={styles.permissionHeader}>
         <View style={[styles.permissionDot, { backgroundColor: theme.colors.tone.attention }]} />
-        <Text style={styles.permissionTitle} numberOfLines={1}>
+        <Text
+          style={styles.permissionTitle}
+          numberOfLines={packageInstall === null ? 1 : undefined}
+        >
           {cardTitle}
         </Text>
         {/* Surface the backend's risk class (#149): `ask` is the escalated case that
@@ -8558,11 +8726,13 @@ function PermissionPrompt({
             transported. (`auto` is normally pre-approved upstream, so it's rare here —
             labelled plainly if it ever arrives.) */}
         <Text style={styles.permissionRisk}>
-          {approvedForDelivery
-            ? 'delivery pending'
-            : pending.riskClass === 'ask'
-              ? 'needs approval'
-              : pending.riskClass}
+          {packageInstall !== null
+            ? 'Safety'
+            : approvedForDelivery
+              ? 'delivery pending'
+              : pending.riskClass === 'ask'
+                ? 'needs approval'
+                : pending.riskClass}
         </Text>
       </View>
       {isPresentPlan ? (
@@ -8572,7 +8742,16 @@ function PermissionPrompt({
           </Text>
         </View>
       ) : null}
-      {knowledgeSummary !== null ? (
+      {packageInstall !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          <Text style={styles.permissionSubtitle} selectable>
+            {spellOutBidiControls(packageInstall.command)}
+          </Text>
+          <Text style={styles.permissionInstallExplanation}>
+            {spellOutBidiControls(packageInstall.explanation)}
+          </Text>
+        </View>
+      ) : knowledgeSummary !== null ? (
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionSubtitle} selectable>
             Source: {spellOutBidiControls(knowledgeSummary.source)}
@@ -8801,23 +8980,40 @@ function PermissionPrompt({
       ) : null}
       <View style={styles.permissionButtons}>
         <Pressable
-          onPress={() => active && onDecide(pending.toolUseId, { behavior: 'deny' })}
+          onPress={() =>
+            active &&
+            onDecide(
+              pending.toolUseId,
+              packageInstall !== null
+                ? packageInstallDecision(packageInstall.supported, 'secondary')
+                : { behavior: 'deny' },
+            )
+          }
           disabled={!active}
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
-          accessibilityLabel={`${approvedForDelivery ? 'Cancel' : 'Deny'} ${view.title}`}
+          accessibilityLabel={
+            packageInstall?.denyLabel ?? `${approvedForDelivery ? 'Cancel' : 'Deny'} ${view.title}`
+          }
           style={({ pressed }) => [
             styles.permissionButton,
-            styles.permissionDeny,
+            packageInstall?.supported ? styles.permissionNeutral : styles.permissionDeny,
             active ? null : styles.permissionButtonDisabled,
             pressed && active ? styles.permissionButtonPressed : null,
           ]}
         >
           {deciding ? (
-            <ActivityIndicator color={theme.colors.tone.danger} />
+            <ActivityIndicator
+              color={packageInstall?.supported ? theme.colors.text : theme.colors.tone.danger}
+            />
           ) : (
-            <Text style={[styles.permissionButtonLabel, { color: theme.colors.tone.danger }]}>
-              {approvedForDelivery ? 'Cancel' : 'Deny'}
+            <Text
+              style={[
+                styles.permissionButtonLabel,
+                { color: packageInstall?.supported ? theme.colors.text : theme.colors.tone.danger },
+              ]}
+            >
+              {packageInstall?.denyLabel ?? (approvedForDelivery ? 'Cancel' : 'Deny')}
             </Text>
           )}
         </Pressable>
@@ -8833,11 +9029,13 @@ function PermissionPrompt({
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
           accessibilityLabel={
-            isKnowledge
-              ? knowledgeSummary?.replacesExisting
-                ? 'Save changes to Global Knowledge'
-                : 'Publish to Global Knowledge'
-              : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${view.title}${isScopedSecretTool ? ' once' : ''}`
+            packageInstall !== null
+              ? packageInstall.allowLabel
+              : isKnowledge
+                ? knowledgeSummary?.replacesExisting
+                  ? 'Save changes to Global Knowledge'
+                  : 'Publish to Global Knowledge'
+                : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${view.title}${isScopedSecretTool ? ' once' : ''}`
           }
           style={({ pressed }) => [
             styles.permissionButton,
@@ -8850,15 +9048,17 @@ function PermissionPrompt({
             <ActivityIndicator color={theme.colors.onPrimary} />
           ) : (
             <Text style={[styles.permissionButtonLabel, styles.permissionAllowLabel]}>
-              {isKnowledge
-                ? knowledgeSummary?.replacesExisting
-                  ? 'Save changes'
-                  : 'Publish to Global'
-                : approvedForDelivery
-                  ? 'Retry delivery'
-                  : isScopedSecretTool
-                    ? 'Allow once'
-                    : 'Allow'}
+              {packageInstall !== null
+                ? packageInstall.allowLabel
+                : isKnowledge
+                  ? knowledgeSummary?.replacesExisting
+                    ? 'Save changes'
+                    : 'Publish to Global'
+                  : approvedForDelivery
+                    ? 'Retry delivery'
+                    : isScopedSecretTool
+                      ? 'Allow once'
+                      : 'Allow'}
             </Text>
           )}
         </Pressable>
@@ -9006,11 +9206,13 @@ function QueuedMessages({
 }
 
 function PullRequestBar({
+  confirmHint,
   pullRequest,
   onMerge,
   onRefresh,
   onDismiss,
 }: {
+  confirmHint: () => Promise<boolean>;
   pullRequest: NonNullable<UseBranches['pullRequest']>;
   onMerge: UseBranches['mergePullRequest'];
   onRefresh: () => void;
@@ -9097,6 +9299,11 @@ function PullRequestBar({
       setMerging(true);
       setError(undefined);
       setMergeRejectedFor(undefined);
+      if (!(await confirmHint())) {
+        if (mounted.current) setMerging(false);
+        return;
+      }
+      if (!mounted.current) return;
       const result = await onMerge(pullRequest.number);
       if (!mounted.current) return;
       setMerging(false);
@@ -9116,7 +9323,12 @@ function PullRequestBar({
       <View style={styles.prBar}>
         <Pressable
           style={({ pressed }) => [styles.prOpenTarget, pressed ? styles.prBarPressed : null]}
-          onPress={() => void Linking.openURL(pullRequest.url).catch(() => undefined)}
+          onPress={() =>
+            void confirmHint().then((proceed) => {
+              if (proceed && mounted.current)
+                void Linking.openURL(pullRequest.url).catch(() => undefined);
+            })
+          }
           accessibilityRole="link"
           accessibilityLabel={`Open pull request ${String(pullRequest.number)} on GitHub`}
         >
@@ -9141,7 +9353,11 @@ function PullRequestBar({
               styles.prDismissButton,
               pressed ? styles.prDismissButtonPressed : null,
             ]}
-            onPress={onDismiss}
+            onPress={() =>
+              void confirmHint().then((proceed) => {
+                if (proceed && mounted.current) onDismiss();
+              })
+            }
             accessibilityRole="button"
             accessibilityLabel={`Hide pull request ${String(pullRequest.number)} status`}
           >
@@ -9162,7 +9378,14 @@ function PullRequestBar({
                 ? styles.prMergeButtonPressed
                 : null,
             ]}
-            onPress={button.kind === 'refresh' ? onRefresh : merge}
+            onPress={
+              button.kind === 'refresh'
+                ? () =>
+                    void confirmHint().then((proceed) => {
+                      if (proceed && mounted.current) onRefresh();
+                    })
+                : merge
+            }
             disabled={!mergeButtonEnabled && button.kind !== 'refresh'}
             accessibilityRole="button"
             accessibilityState={{
@@ -9193,11 +9416,13 @@ function PullRequestBar({
 /** Save a local session's work through the agent and then into the project base.
  *  The server checks the commit and merge preconditions. */
 function LocalMergeBar({
+  confirmHint,
   branch,
   base,
   busy,
   onSave,
 }: {
+  confirmHint: () => Promise<boolean>;
   branch: string;
   base: string;
   busy: boolean;
@@ -9255,7 +9480,11 @@ function LocalMergeBar({
             saving || busy ? styles.prMergeButtonDisabled : null,
             pressed && !saving && !busy ? styles.prMergeButtonPressed : null,
           ]}
-          onPress={save}
+          onPress={() =>
+            void confirmHint().then((proceed) => {
+              if (proceed && mounted.current) save();
+            })
+          }
           disabled={saving || busy}
           accessibilityRole="button"
           accessibilityState={{ disabled: saving || busy, busy: saving }}
@@ -11596,6 +11825,14 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
   },
   // Deny: an outlined (danger-toned) button — destructive, so not filled.
+  permissionNeutral: {
+    borderColor: theme.colors.border,
+    backgroundColor: 'transparent',
+  },
+  permissionInstallExplanation: {
+    color: theme.colors.text,
+    fontSize: theme.text.sm,
+  },
   permissionDeny: {
     borderColor: theme.colors.tone.danger,
     backgroundColor: 'transparent',

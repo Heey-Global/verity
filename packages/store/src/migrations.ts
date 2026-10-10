@@ -4132,17 +4132,57 @@ const migrations: Record<string, Migration> = {
         .execute();
     },
   },
-  '0151_task_generated_titles': {
+  '0151_welcome_session_replay': {
     async up(db: Kysely<unknown>): Promise<void> {
-      await sql`alter table tasks add column generated_title_revision integer, add column title_generation_status text not null default 'none' check (title_generation_status in ('none', 'pending', 'ready', 'failed'))`.execute(
-        db,
-      );
+      // Keep the id after session deletion: ordinary onboarding must not recreate
+      // a tour that was deliberately removed. Only explicit replay replaces it.
+      await db.schema
+        .alterTable('starter_project')
+        .addColumn('welcome_session_id', 'text')
+        .execute();
+      await sql`update starter_project set welcome_session_id = (
+        select s.session_id from sessions s
+        join session_automation_marker m on m.session_id = s.session_id
+        where s.project_id = starter_project.project_id and m.marker = 'welcome-session'
+        order by s.created_at, s.session_id limit 1
+      )`.execute(db);
     },
     async down(db: Kysely<unknown>): Promise<void> {
-      await sql`alter table tasks drop column generated_title_revision, drop column title_generation_status`.execute(
-        db,
-      );
+      await db.schema.alterTable('starter_project').dropColumn('welcome_session_id').execute();
     },
+  },
+  '0152_live_meeting_titles': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings add column title text`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings drop column title`.execute(db);
+    },
+  },
+};
+
+migrations['0153_project_package_protection'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table project_package_protection (
+      project_id text primary key references projects(id) on delete cascade,
+      decision text not null check (decision in ('protected', 'skipped'))
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table project_package_protection`.execute(db);
+  },
+};
+
+migrations['0154_task_generated_titles'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table tasks add column generated_title_revision integer, add column title_generation_status text not null default 'none' check (title_generation_status in ('none', 'pending', 'ready', 'failed'))`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table tasks drop column generated_title_revision, drop column title_generation_status`.execute(
+      db,
+    );
   },
 };
 

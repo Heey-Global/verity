@@ -1921,6 +1921,7 @@ export type IntegrationAccount = z.infer<typeof integrationAccountSchema>;
 export type IntegrationSource = z.infer<typeof integrationSourceSchema>;
 
 const liveMeetingSchema = z.object({
+  title: z.string().nullable().optional(),
   id: z.string(),
   sessionId: z.string(),
   engine: z.enum([
@@ -2012,13 +2013,14 @@ export class VerityClient {
     sessionId: string,
     meetingUrl: string,
     listenForVerity = true,
+    title?: string,
   ): Promise<{ meetingId: string }> {
     return z.object({ meetingId: z.string() }).parse(
       await (
         await this.request(`/sessions/${encodeURIComponent(sessionId)}/live-meetings/online`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ meetingUrl, listenForVerity }),
+          body: JSON.stringify({ meetingUrl, listenForVerity, title }),
         })
       ).json(),
     );
@@ -3211,9 +3213,16 @@ export class VerityClient {
     return uplinkDiagnosticsSchema.parse(await res.json());
   }
 
-  /** Open (creating on first call) the onboarding welcome session. Idempotent. */
-  async openWelcomeSession(): Promise<WelcomeSession> {
-    const res = await this.request('/onboarding/welcome', { method: 'POST' });
+  /** Open the welcome session. Explicit replay may restore missing starter resources;
+   * retry requests one new provisioning attempt after a failure. */
+  async openWelcomeSession(options?: {
+    replay?: boolean;
+    retry?: boolean;
+  }): Promise<WelcomeSession> {
+    const res = await this.request('/onboarding/welcome', {
+      method: 'POST',
+      ...(options ? { body: JSON.stringify(options) } : {}),
+    });
     return welcomeSessionSchema.parse(await res.json());
   }
 

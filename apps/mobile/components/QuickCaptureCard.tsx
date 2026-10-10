@@ -33,6 +33,7 @@ import {
 } from '../lib/taskScreenshot';
 import { saveTaskPreferences, useTaskPreferences } from '../lib/taskPreferences';
 import { captureTask } from '../lib/tasksStore';
+import { subscribeTaskVoiceShortcut } from '../lib/voiceShortcut';
 
 export function QuickCaptureCard({
   context,
@@ -157,6 +158,8 @@ export function QuickCaptureCard({
       onClose();
     }
   };
+  // UIKit can keep the root shortcut responder active while a transparent modal is open.
+  useEffect(() => subscribeTaskVoiceShortcut(dismiss));
   const pan = PanResponder.create({
     onMoveShouldSetPanResponder: (_, g) => g.dy > 12 && Math.abs(g.dy) > Math.abs(g.dx),
     onPanResponderRelease: (_, g) => {

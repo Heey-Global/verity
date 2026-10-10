@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.66.0](https://github.com/Heey-Global/verity/compare/mobile-v1.65.0...mobile-v1.66.0) (2026-10-10)
+
+
+### Features
+
+* **meetings:** classify questions and unify research cards ([#1436](https://github.com/Heey-Global/verity/issues/1436)) ([0661e06](https://github.com/Heey-Global/verity/commit/0661e06659c6225abd3ad69f851ec0a84952c117))
+* **mobile:** refresh meeting screens and saved cards ([#1467](https://github.com/Heey-Global/verity/issues/1467)) ([c4d92f1](https://github.com/Heey-Global/verity/commit/c4d92f1370cee350d6ce81a6c4874802fa21c917))
+* **onboarding:** add first-use hints and welcome tour replay ([#1464](https://github.com/Heey-Global/verity/issues/1464)) ([5251304](https://github.com/Heey-Global/verity/commit/525130482f58c8b210796fe74f0b0443d4bed118))
+* **onboarding:** starter project and welcome session for new installations ([#1431](https://github.com/Heey-Global/verity/issues/1431)) ([b4da113](https://github.com/Heey-Global/verity/commit/b4da113047d92d2d660a45a3903a642491ff2793))
+* **premium:** add feature switches and dedicated settings flows ([#1461](https://github.com/Heey-Global/verity/issues/1461)) ([6070c6f](https://github.com/Heey-Global/verity/commit/6070c6f9dd1946a7c8969d906650e5a3290894df))
+* **sandbox:** offer project dependency release delays ([#1443](https://github.com/Heey-Global/verity/issues/1443)) ([7a5a8ee](https://github.com/Heey-Global/verity/commit/7a5a8ee29459a2421c022815fc9cca848054e7ba))
+
+
+### Bug Fixes
+
+* **mobile:** distinguish connection recording export failures ([#1446](https://github.com/Heey-Global/verity/issues/1446)) ([df98937](https://github.com/Heey-Global/verity/commit/df98937c01e522a0ef65e030e4955bd25fc25ed2))
+* **mobile:** prioritize session reads over background requests ([#1456](https://github.com/Heey-Global/verity/issues/1456)) ([0048b27](https://github.com/Heey-Global/verity/commit/0048b27167ee89a19d1b7ed8f7ae4b242ff10cea))
+* **mobile:** record connection tests from a fresh tunnel ([#1449](https://github.com/Heey-Global/verity/issues/1449)) ([1d97933](https://github.com/Heey-Global/verity/commit/1d9793383956bfc339d478fff901084d661a4a40))
+* **mobile:** skip remote routing without enabled descriptor ([#1454](https://github.com/Heey-Global/verity/issues/1454)) ([a4c9e46](https://github.com/Heey-Global/verity/commit/a4c9e46de65b8431738606870b336f95e57f459d))
+
 ## [1.65.0](https://github.com/Heey-Global/verity/compare/mobile-v1.64.0...mobile-v1.65.0) (2026-10-09)
 
 
