@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.37.0](https://github.com/Heey-Global/verity/compare/v4.36.0...v4.37.0) (2026-10-10)
+
+
+### Features
+
+* **tasks:** streamline spoken capture and scope agent tasks to sessions ([#1472](https://github.com/Heey-Global/verity/issues/1472)) ([5b430ac](https://github.com/Heey-Global/verity/commit/5b430ac30ced9d7f2cf28f2c283a8c81cc7495f0))
+
+
+### Bug Fixes
+
+* **control:** provide advertised Knowledge and memory capabilities ([#1479](https://github.com/Heey-Global/verity/issues/1479)) ([153b1d1](https://github.com/Heey-Global/verity/commit/153b1d1ae86b6bd879b335293cec8b020220e57c))
+* **server:** detect PR merge conflicts while CI is running ([#1471](https://github.com/Heey-Global/verity/issues/1471)) ([1103167](https://github.com/Heey-Global/verity/commit/11031675652c9a98c8ca9cb428111ddc329bd432))
+* **session:** allow runner to read staged image attachments ([#1486](https://github.com/Heey-Global/verity/issues/1486)) ([0cc9a60](https://github.com/Heey-Global/verity/commit/0cc9a601d4f3f79b2961500600be2d0f893e2a28))
+* **session:** stop agent output and activity immediately ([#1480](https://github.com/Heey-Global/verity/issues/1480)) ([d80d19d](https://github.com/Heey-Global/verity/commit/d80d19dde17ce76566bea62abc0945367bafe1ea))
+
 ## [4.36.0](https://github.com/Heey-Global/verity/compare/v4.35.0...v4.36.0) (2026-10-10)
 
 
