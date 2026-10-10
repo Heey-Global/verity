@@ -24,7 +24,7 @@ const COMPOSE_SERVICE = 'verity-control-runner';
 const RUNNER_RUNTIME_VOLUME = 'verity-control-runner-runtime';
 
 /** Reuse the project sandbox's Knowledge permissions and subpaths. */
-export function controlPlaneKnowledgeMounts(): NonNullable<ContainerSpec['volumeMounts']> {
+function controlPlaneKnowledgeMounts(): NonNullable<ContainerSpec['volumeMounts']> {
   const paths = standardDataMountPaths(CONTROL_PLANE_PROJECT_ID, '');
   return (['knowledge', 'insights', 'sharedKnowledge'] as const).map((kind) => ({
     volume: 'verity-data',
