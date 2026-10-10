@@ -1,3 +1,4 @@
+import { readContextProjects } from '../lib/sharedTaskContext';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import {
@@ -73,7 +74,7 @@ export function useProjects(client: VerityClient) {
       const generation = ++loadGeneration.current;
       if (!opts?.silent) setLoading(true);
       try {
-        const nextProjects = await client.listProjects();
+        const nextProjects = await readContextProjects(client, true);
         const activeProjects = nextProjects.filter((project) => project.state === 'active');
         const projectIds = activeProjects.map((project) => project.id);
         if (generation !== loadGeneration.current) return;

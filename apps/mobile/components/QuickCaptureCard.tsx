@@ -77,8 +77,11 @@ export function QuickCaptureCard({
   const [uploads, setUploads] = useState<AttachmentUpload[]>([]);
   const [projectId, setProjectId] = useState(
     context.projectId ??
-      (projects.some((p) => p.id === preferences.projectId) ? preferences.projectId : null),
+      (context.sessionId === null && projects.some((p) => p.id === preferences.projectId)
+        ? preferences.projectId
+        : null),
   );
+  const projectExplicitlySelected = useRef(false);
   const [other, setOther] = useState(false);
   const [saving, setSaving] = useState(false);
   const dictated = useRef(false);
@@ -179,14 +182,21 @@ export function QuickCaptureCard({
     }
   };
   useEffect(() => {
+    // Capture can mount before its session context arrives from the shared read.
+    // A delayed default must never overwrite the project the user chose.
+    if (projectExplicitlySelected.current) return;
+    if (context.projectId !== null) {
+      setProjectId(context.projectId);
+      return;
+    }
     if (
-      context.projectId === null &&
+      context.sessionId === null &&
       projectId === null &&
       preferences.projectId &&
       projects.some((project) => project.id === preferences.projectId)
     )
       setProjectId(preferences.projectId);
-  }, [context.projectId, projectId, preferences.projectId, projects]);
+  }, [context.projectId, context.sessionId, projectId, preferences.projectId, projects]);
   const recording = voice.state === 'recording';
   // The picked project always shows as a selected chip, also when it came from Other….
   const chips = [
@@ -203,6 +213,7 @@ export function QuickCaptureCard({
           projects.find((p) => p.id === id) ?? { owner: '', repo: id, kind: 'local' },
         );
   const selectProject = (id: string) => {
+    projectExplicitlySelected.current = true;
     setProjectId(id);
     void saveTaskPreferences({ projectId: id }).catch(() =>
       Alert.alert('Could not remember project', 'Try again'),

@@ -1,11 +1,6 @@
+import { refreshTaskContext, startTaskContext, useTaskContext } from '../lib/sharedTaskContext';
 import { Icon } from './Icon';
-import {
-  bubbleRestingPlace,
-  projectsByRecentCapture,
-  taskContext,
-  type ProjectRecord,
-  type SessionSummary,
-} from '@verity/mobile';
+import { bubbleRestingPlace, projectsByRecentCapture, taskContext } from '@verity/mobile';
 import * as Haptics from 'expo-haptics';
 import { useGlobalSearchParams, usePathname } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -24,14 +19,12 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUnistyles } from 'react-native-unistyles';
-import { createVerityClient, subscribeVerityBaseUrl } from '../lib/client';
+import { subscribeVerityBaseUrl } from '../lib/client';
 import { subscribeAuthToken } from '../lib/authToken';
 import { subscribeBrowserSession } from '../lib/browserSession';
 import { subscribeMeeting } from '../lib/liveMeetingSession';
 import { subscribeFollowedRemoteMeeting } from '../lib/liveMeetingSync';
 import {
-  loadTaskContextData,
-  saveTaskContextData,
   taskAccountScope,
   refreshTasks,
   removeTask,
@@ -41,9 +34,6 @@ import {
 import { saveTaskPreferences, useTaskPreferences } from '../lib/taskPreferences';
 import { subscribeTaskVoiceShortcut } from '../lib/voiceShortcut';
 import { subscribeTasksPanel } from '../lib/taskPanelEvents';
-import { useLiveHints } from '../lib/liveConnection';
-import { getVerityBaseUrl } from '../lib/client';
-import { useCallback } from 'react';
 import { QuickCaptureCard } from './QuickCaptureCard';
 import { QuickCaptureIntro } from './QuickCaptureIntro';
 import { TasksPanel } from './TasksPanel';
@@ -54,21 +44,6 @@ const BUBBLE = 50;
 const EXTEND = 19;
 
 export function QuickCaptureBubble() {
-  const hintRefresh = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const refreshFromHint = useCallback(() => {
-    if (hintRefresh.current) return;
-    hintRefresh.current = setTimeout(() => {
-      hintRefresh.current = null;
-      void refreshTasks().catch(() => undefined);
-    }, 2000);
-  }, []);
-  useEffect(
-    () => () => {
-      if (hintRefresh.current) clearTimeout(hintRefresh.current);
-    },
-    [],
-  );
-  useLiveHints(getVerityBaseUrl(), refreshFromHint);
   useEffect(
     () =>
       subscribeTasksPanel(() => {
@@ -84,8 +59,7 @@ export function QuickCaptureBubble() {
   const params = useGlobalSearchParams<{ id?: string; selected?: string }>();
   const preferences = useTaskPreferences();
   const { tasks } = useTasks();
-  const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const { projects, sessions } = useTaskContext();
   const [keyboard, setKeyboard] = useState(Keyboard.isVisible());
   const [meeting, setMeeting] = useState(false);
   const [remoteMeeting, setRemoteMeeting] = useState(false);
@@ -108,7 +82,6 @@ export function QuickCaptureBubble() {
   const position = useRef(new Animated.ValueXY()).current;
   const squash = useRef(new Animated.Value(1)).current;
   const origin = useRef({ x: 0, y: 0 });
-  const loadGeneration = useRef(0);
   const context = taskContext(pathname, params, sessions);
   const recentProjects = projectsByRecentCapture(projects, tasks);
   // Only what the operator captured counts: the agent's own steps live in
@@ -216,69 +189,19 @@ export function QuickCaptureBubble() {
     [position, squash, width, height, top, bottom, preferences.side, preferences.fraction],
   );
   useEffect(() => startTasksStore(), []);
+  useEffect(() => startTaskContext(), []);
   useEffect(() => {
-    const load = async () => {
-      const generation = ++loadGeneration.current;
-      const expectedScope = taskAccountScope();
-      const client = createVerityClient();
-      if (!client || !expectedScope) {
-        setProjects([]);
-        setSessions([]);
-        return;
-      }
-      try {
-        const [nextProjects, nextSessions] = await Promise.all([
-          client.listProjects(),
-          client.listSessions(),
-        ]);
-        if (generation !== loadGeneration.current) return;
-        setProjects(nextProjects);
-        setSessions(nextSessions);
-        await saveTaskContextData(
-          { projects: nextProjects, sessions: nextSessions },
-          expectedScope,
-        );
-      } catch {
-        /* Capture remains available with cached project context. */
-      }
-    };
+    if (capture || panel) void refreshTaskContext().catch(() => undefined);
+  }, [capture, panel]);
+  useEffect(() => {
     const reset = () => {
-      ++loadGeneration.current;
-      setProjects([]);
-      setSessions([]);
       setCapture(false);
       setPanel(false);
       setSaved(null);
-      const generation = loadGeneration.current;
-      void loadTaskContextData()
-        .then((data) => {
-          if (data && loadGeneration.current === generation) {
-            setProjects(data.projects);
-            setSessions(data.sessions);
-          }
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          void load();
-        });
     };
-    const refresh = () => {
-      void load();
-      void refreshTasks().catch(() => undefined);
-    };
-    void loadTaskContextData()
-      .then((data) => {
-        if (data && loadGeneration.current === 0) {
-          setProjects(data.projects);
-          setSessions(data.sessions);
-        }
-      })
-      .catch(() => undefined)
-      .finally(refresh);
-    const timer = setInterval(refresh, 15000);
     const app = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
-        refresh();
+        void refreshTaskContext().catch(() => undefined);
         void refreshTasks(true).catch(() => undefined);
       }
     });
@@ -290,8 +213,6 @@ export function QuickCaptureBubble() {
       subscribeFollowedRemoteMeeting((value) => setRemoteMeeting(value !== null)),
     ];
     return () => {
-      ++loadGeneration.current;
-      clearInterval(timer);
       app.remove();
       for (const stop of unsubscribe) stop();
     };
