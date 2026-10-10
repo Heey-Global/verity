@@ -4134,7 +4134,7 @@ const migrations: Record<string, Migration> = {
   },
 };
 
-migrations['0148_project_package_protection'] = {
+migrations['0151_project_package_protection'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`create table project_package_protection (
       project_id text primary key references projects(id) on delete cascade,
