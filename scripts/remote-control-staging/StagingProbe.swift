@@ -32,7 +32,12 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
           config.proxyConfigurations = [
             ProxyConfiguration(socksv5Proxy: .hostPort(host: "127.0.0.1", port: localPort))
           ]
-          let delegate = try CertificatePinDelegate(pin: corePin, origin: coreURL)
+          let delegate: CertificatePinDelegate
+          do { delegate = try CertificatePinDelegate(pin: corePin, origin: coreURL) }
+          catch {
+            let completed = await counters.requests
+            throw ProbeFailure.soakFailed("worker \(worker) after \(completed) requests: \(error)")
+          }
           let client = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
           defer { client.invalidateAndCancel() }
           let started = Date()
@@ -64,6 +69,10 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
   }
   let requests = await counters.requests
   let maxMs = await counters.maxMs
+  // A soak that issued nothing proves nothing; it must not read as a pass.
+  guard requests >= streams else {
+    throw ProbeFailure.soakFailed("only \(requests) requests completed across \(streams) streams")
+  }
   print("Soak: requests=\(requests) streams=\(streams) seconds=\(seconds) maxMs=\(maxMs)")
   fflush(stdout)
 }
@@ -140,7 +149,7 @@ enum StagingProbe {
         // not run would leave the run green.
         guard let soakSeconds = UInt64(environment["VERITY_REMOTE_PROBE_SOAK_SECONDS"] ?? "0"),
           let soakStreams = Int(environment["VERITY_REMOTE_PROBE_SOAK_STREAMS"] ?? "4"),
-          soakSeconds <= 600, (1...8).contains(soakStreams)
+          soakSeconds == 0 || (30...600).contains(soakSeconds), (1...8).contains(soakStreams)
         else { throw RemoteSmokeError.invalidInput }
         if soakSeconds > 0 {
           print("soaking \(soakSeconds)s with \(soakStreams) streams")
@@ -168,6 +177,10 @@ enum StagingProbe {
       }
       guard status == 200 else { throw RemoteSmokeError.invalidFrame }
       print("Core HTTPS status: \(status)")
+    } catch ProbeFailure.soakFailed(let detail) {
+      // The worker, request count, native cause and tunnel summary, as promised.
+      fputs("Remote Control staging soak failed: \(detail)\n", stderr)
+      exit(1)
     } catch {
       fputs("Remote Control staging probe failed: \(error)\n", stderr)
       exit(1)

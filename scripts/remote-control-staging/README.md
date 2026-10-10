@@ -21,7 +21,7 @@ A third app-mode run sets `VERITY_REMOTE_PROBE_IDLE_SECONDS=40` and pauses
 before its last request, longer than the 15-second data heartbeat: an app
 attachment that ends while idle fails that run with the tunnel's stop reason.
 A fourth app-mode run is the soak: `VERITY_REMOTE_PROBE_SOAK_SECONDS`
-(workflow input `soak_seconds`, default 180, max 600) keeps
+(workflow input `soak_seconds`, default 180, 30 to 600, 0 skips it) keeps
 `VERITY_REMOTE_PROBE_SOAK_STREAMS` (default 4, max 8) pinned requests going at
 once, each on a fresh URLSession as the app's transport does, with half a second
 to two seconds between requests. This is the device's pattern, which the

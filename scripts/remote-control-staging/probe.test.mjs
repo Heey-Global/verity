@@ -125,6 +125,10 @@ test('a soak longer than the watchdog allows is refused before admission', async
   const spelled = await runProbe({ ...input, soakSeconds: '1e2' });
   assert.notEqual(spelled.code, 0);
   assert.match(spelled.stderr, /Invalid Remote Control staging probe inputs/u);
+  // Nor a soak too short to issue a single request, which would pass empty.
+  const short = await runProbe({ ...input, soakSeconds: '10' });
+  assert.notEqual(short.code, 0);
+  assert.match(short.stderr, /Invalid Remote Control staging probe inputs/u);
 });
 
 test('a ticket for a different request never reaches the native runner', async (t) => {

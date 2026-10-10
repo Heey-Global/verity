@@ -16,6 +16,8 @@ const idleSeconds = Number(process.env.VERITY_REMOTE_PROBE_IDLE_SECONDS ?? '0');
 // as zero would skip the soak and leave the run green.
 const soakText = process.env.VERITY_REMOTE_PROBE_SOAK_SECONDS ?? '0';
 const soakSeconds = /^\d{1,3}$/u.test(soakText) ? Number(soakText) : Number.NaN;
+// A soak shorter than one request timeout could issue no request and pass.
+const SOAK_MIN_SECONDS = 30;
 if (
   origin.protocol !== 'https:' ||
   origin.pathname !== '/' ||
@@ -29,7 +31,7 @@ if (
   idleSeconds < 0 ||
   idleSeconds > 600 ||
   !Number.isInteger(soakSeconds) ||
-  soakSeconds < 0 ||
+  (soakSeconds !== 0 && soakSeconds < SOAK_MIN_SECONDS) ||
   soakSeconds > 600 ||
   !corePin.startsWith('sha256-') ||
   new URL(coreUrl).protocol !== 'https:'
