@@ -73,10 +73,35 @@ it('ships and invokes the Knowledge initializer before legacy volume subpaths ar
     >;
   };
   expect(overlay.services['verity-control-runner-init']?.command?.join(' ')).toContain(
-    'setpriv --reuid=1000 --regid=1000 --clear-groups\n  /usr/local/bin/verity-control-plane-knowledge-init /data',
+    'setpriv --reuid=1000 --regid=1000 --clear-groups /usr/local/bin/verity-control-plane-knowledge-init /data',
   );
   expect(
     overlay.services['verity-control-runner']?.depends_on?.['verity-control-runner-init']
       ?.condition,
   ).toBe('service_completed_successfully');
+});
+
+// YAML folding must not detach the initializer from the uid-changing command.
+it('executes the folded initializer command through setpriv', async () => {
+  const overlay = parse(await readFile('deploy/docker-compose.runner-supervisor.yml', 'utf8')) as {
+    services: Record<string, { command: string[] }>;
+  };
+  const command = overlay.services['verity-control-runner-init']!.command[0]!;
+  const start = command.indexOf('setpriv');
+  const end = command.indexOf('&&', start);
+  const initializer = command.slice(start, end);
+  const result = await exec('/bin/sh', [
+    '-c',
+    `
+    setpriv() {
+      [ "$1" = --reuid=1000 ] && [ "$2" = --regid=1000 ] &&
+      [ "$3" = --clear-groups ] &&
+      [ "$4" = /usr/local/bin/verity-control-plane-knowledge-init ] &&
+      [ "$5" = /data ] || return 1
+      printf 'initializer-as-data-owner'
+    }
+    ${initializer}
+  `,
+  ]);
+  expect(result.stdout).toBe('initializer-as-data-owner');
 });
