@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.37.2](https://github.com/Heey-Global/verity/compare/v4.37.1...v4.37.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* **broker:** support merge diagnostics and branch updates ([#1491](https://github.com/Heey-Global/verity/issues/1491)) ([5290c2e](https://github.com/Heey-Global/verity/commit/5290c2ea0ad485f7b9fe1b0a2444f7a51f5d1ae0))
+* **release:** recover missing promotion PR associations ([#1493](https://github.com/Heey-Global/verity/issues/1493)) ([96d24af](https://github.com/Heey-Global/verity/commit/96d24af7e45012e8cbb58a22e2ecf016239a893f))
+
 ## [4.37.1](https://github.com/Heey-Global/verity/compare/v4.37.0...v4.37.1) (2026-10-10)
 
 
