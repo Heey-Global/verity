@@ -62,7 +62,7 @@ it('shares pending overview reads with capture and skips unchanged persistence a
   });
   expect(client.listProjects).toHaveBeenCalledTimes(1);
   expect(client.listSessionOverview).toHaveBeenCalledTimes(1);
-  expect(result.current).toEqual({ projects, sessions });
+  expect(result.current).toEqual({ projects, sessions, projectsReady: true });
   await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));
   const previous = result.current;
   (client.listProjects as jest.Mock).mockResolvedValue(structuredClone(projects));
@@ -91,14 +91,14 @@ it('restores offline context without network polling and refreshes on explicit d
   mockLoad.mockResolvedValue({ projects, sessions });
   const stop = startTaskContext();
   const { result, unmount } = renderHook(useTaskContext);
-  await waitFor(() => expect(result.current).toEqual({ projects, sessions }));
+  await waitFor(() => expect(result.current).toEqual({ projects, sessions, projectsReady: true }));
   expect(mockClient!.listProjects).not.toHaveBeenCalled();
   expect(mockSave).not.toHaveBeenCalled();
   (mockClient!.listProjects as jest.Mock).mockRejectedValue(new Error('offline'));
   await act(async () => {
     await expect(refreshTaskContext()).rejects.toThrow('offline');
   });
-  expect(result.current).toEqual({ projects, sessions });
+  expect(result.current).toEqual({ projects, sessions, projectsReady: true });
   unmount();
   stop();
 });
@@ -131,7 +131,7 @@ it('clears context on account/server changes and discards old read and storage c
     resolveCache({ projects, sessions });
     await read;
   });
-  expect(result.current).toEqual({ projects: [], sessions: [] });
+  expect(result.current).toEqual({ projects: [], sessions: [], projectsReady: false });
   expect(mockSave).not.toHaveBeenCalled();
   unmount();
   stop();
@@ -152,7 +152,7 @@ it('never replaces successful network data with a late offline cache', async () 
   await act(async () => {
     resolveCache({ projects: [], sessions: [] });
   });
-  expect(result.current).toEqual({ projects, sessions });
+  expect(result.current).toEqual({ projects, sessions, projectsReady: true });
   unmount();
   stop();
 });
@@ -190,7 +190,7 @@ it('lets an overview refresh supersede reads that began before a mutation', asyn
     resolveOldSessions({ ...overview, sessions: [] });
     await oldRead;
   });
-  expect(result.current).toEqual({ projects, sessions });
+  expect(result.current).toEqual({ projects, sessions, projectsReady: true });
   unmount();
   stop();
 });
@@ -207,8 +207,23 @@ it('does not publish reads from an old server client after the account has switc
     await readContextProjects(oldClient, true);
     await contextOverviewClient(oldClient).listSessionOverview();
   });
-  expect(result.current).toEqual({ projects: [], sessions: [] });
+  expect(result.current).toEqual({ projects: [], sessions: [], projectsReady: false });
   expect(mockSave).not.toHaveBeenCalled();
+  unmount();
+  stop();
+});
+
+// An unloaded empty list must not erase the Watch picker retained for offline use.
+it('distinguishes pending projects from a successfully loaded empty list', async () => {
+  const stop = startTaskContext();
+  const { result, unmount } = renderHook(useTaskContext);
+  expect(result.current.projectsReady).toBe(false);
+  (mockClient!.listProjects as jest.Mock).mockResolvedValue([]);
+  await act(async () => {
+    await readContextProjects(mockClient!);
+  });
+  expect(result.current.projects).toEqual([]);
+  expect(result.current.projectsReady).toBe(true);
   unmount();
   stop();
 });

@@ -77,7 +77,14 @@ class VeritySceneDelegate: UIResponder, UIWindowSceneDelegate {
 `;
 
 function migrateAppDelegate(contents) {
-  if (contents.includes('class VeritySceneDelegate:')) return contents;
+  if (contents.includes('class VeritySceneDelegate:')) {
+    if (contents.includes('VerityWatchInbox.shared.activate()')) return contents;
+    const launch = '    sceneLaunchOptions = launchOptions';
+    if (!contents.includes(launch)) {
+      throw new Error('Scene AppDelegate startup changed; recheck the watch inbox migration');
+    }
+    return contents.replace(launch, `${launch}\n    VerityWatchInbox.shared.activate()`);
+  }
   if (!contents.includes(LEGACY_START) || !contents.includes('  var window: UIWindow?')) {
     throw new Error('Expo AppDelegate startup changed; recheck the scene lifecycle migration');
   }
@@ -87,7 +94,13 @@ function migrateAppDelegate(contents) {
         '  var window: UIWindow?',
         '  var window: UIWindow?\n  var sceneLaunchOptions: [UIApplication.LaunchOptionsKey: Any]?',
       )
-      .replace(LEGACY_START, '    sceneLaunchOptions = launchOptions') + SCENE_DELEGATE
+      // iOS launches the app without a scene to deliver Apple Watch captures, and
+      // React Native only starts with a scene: the native inbox must be listening
+      // from launch (native/VerityWatchInbox.swift).
+      .replace(
+        LEGACY_START,
+        '    sceneLaunchOptions = launchOptions\n    VerityWatchInbox.shared.activate()',
+      ) + SCENE_DELEGATE
   );
 }
 

@@ -53,15 +53,15 @@ separately by `TRADEMARKS.md`.
 | Apache-2.0 | 57 |
 | Apache-2.0 AND LGPL-3.0-or-later | 3 |
 | Apache-2.0 AND LGPL-3.0-or-later AND MIT | 1 |
-| BlueOak-1.0.0 | 7 |
+| BlueOak-1.0.0 | 9 |
 | BSD-2-Clause | 23 |
 | BSD-3-Clause | 28 |
 | CC-BY-3.0 | 1 |
 | CC-BY-4.0 | 1 |
 | CC0-1.0 | 2 |
-| ISC | 66 |
+| ISC | 68 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 1040 |
+| MIT | 1045 |
 | MIT AND Apache-2.0 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
@@ -109,6 +109,7 @@ separately by `TRADEMARKS.md`.
 | @babel/helper-validator-option | MIT | [source](https://www.npmjs.com/package/%40babel%2Fhelper-validator-option) |
 | @babel/helper-wrap-function | MIT | [source](https://www.npmjs.com/package/%40babel%2Fhelper-wrap-function) |
 | @babel/helpers | MIT | [source](https://www.npmjs.com/package/%40babel%2Fhelpers) |
+| @babel/highlight | MIT | [source](https://www.npmjs.com/package/%40babel%2Fhighlight) |
 | @babel/parser | MIT | [source](https://www.npmjs.com/package/%40babel%2Fparser) |
 | @babel/plugin-proposal-decorators | MIT | [source](https://www.npmjs.com/package/%40babel%2Fplugin-proposal-decorators) |
 | @babel/plugin-proposal-export-default-from | MIT | [source](https://www.npmjs.com/package/%40babel%2Fplugin-proposal-export-default-from) |
@@ -171,6 +172,8 @@ separately by `TRADEMARKS.md`.
 | @babel/template | MIT | [source](https://www.npmjs.com/package/%40babel%2Ftemplate) |
 | @babel/traverse | MIT | [source](https://www.npmjs.com/package/%40babel%2Ftraverse) |
 | @babel/types | MIT | [source](https://www.npmjs.com/package/%40babel%2Ftypes) |
+| @bacons/apple-targets | MIT | [source](https://www.npmjs.com/package/%40bacons%2Fapple-targets) |
+| @bacons/xcode | MIT | [source](https://www.npmjs.com/package/%40bacons%2Fxcode) |
 | @bcoe/v8-coverage | MIT | [source](https://www.npmjs.com/package/%40bcoe%2Fv8-coverage) |
 | @cacheable/memory | MIT | [source](https://www.npmjs.com/package/%40cacheable%2Fmemory) |
 | @cacheable/utils | MIT | [source](https://www.npmjs.com/package/%40cacheable%2Futils) |
@@ -296,6 +299,7 @@ separately by `TRADEMARKS.md`.
 | @img/sharp-win32-arm64 | Apache-2.0 AND LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-win32-arm64) |
 | @img/sharp-win32-ia32 | Apache-2.0 AND LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-win32-ia32) |
 | @img/sharp-win32-x64 | Apache-2.0 AND LGPL-3.0-or-later | [source](https://www.npmjs.com/package/%40img%2Fsharp-win32-x64) |
+| @isaacs/cliui | ISC | [source](https://www.npmjs.com/package/%40isaacs%2Fcliui) |
 | @isaacs/ttlcache | ISC | [source](https://www.npmjs.com/package/%40isaacs%2Fttlcache) |
 | @istanbuljs/load-nyc-config | ISC | [source](https://www.npmjs.com/package/%40istanbuljs%2Fload-nyc-config) |
 | @istanbuljs/schema | MIT | [source](https://www.npmjs.com/package/%40istanbuljs%2Fschema) |
@@ -398,6 +402,7 @@ separately by `TRADEMARKS.md`.
 | @oxc-resolver/binding-win32-arm64-msvc | MIT | [source](https://www.npmjs.com/package/%40oxc-resolver%2Fbinding-win32-arm64-msvc) |
 | @oxc-resolver/binding-win32-x64-msvc | MIT | [source](https://www.npmjs.com/package/%40oxc-resolver%2Fbinding-win32-x64-msvc) |
 | @pinojs/redact | MIT | [source](https://www.npmjs.com/package/%40pinojs%2Fredact) |
+| @pkgjs/parseargs | MIT | [source](https://www.npmjs.com/package/%40pkgjs%2Fparseargs) |
 | @radix-ui/primitive | MIT | [source](https://www.npmjs.com/package/%40radix-ui%2Fprimitive) |
 | @radix-ui/react-collection | MIT | [source](https://www.npmjs.com/package/%40radix-ui%2Freact-collection) |
 | @radix-ui/react-compose-refs | MIT | [source](https://www.npmjs.com/package/%40radix-ui%2Freact-compose-refs) |
@@ -670,6 +675,7 @@ separately by `TRADEMARKS.md`.
 | dot-prop | MIT | [source](https://www.npmjs.com/package/dot-prop) |
 | dunder-proto | MIT | [source](https://www.npmjs.com/package/dunder-proto) |
 | duplexify | MIT | [source](https://www.npmjs.com/package/duplexify) |
+| eastasianwidth | MIT | [source](https://www.npmjs.com/package/eastasianwidth) |
 | ee-first | MIT | [source](https://www.npmjs.com/package/ee-first) |
 | electron-to-chromium | ISC | [source](https://www.npmjs.com/package/electron-to-chromium) |
 | emittery | MIT | [source](https://www.npmjs.com/package/emittery) |
@@ -790,6 +796,7 @@ separately by `TRADEMARKS.md`.
 | flatted | ISC | [source](https://www.npmjs.com/package/flatted) |
 | flow-enums-runtime | MIT | [source](https://www.npmjs.com/package/flow-enums-runtime) |
 | fontfaceobserver | BSD-2-Clause | [source](https://www.npmjs.com/package/fontfaceobserver) |
+| foreground-child | ISC | [source](https://www.npmjs.com/package/foreground-child) |
 | form-data | MIT | [source](https://www.npmjs.com/package/form-data) |
 | formatly | MIT | [source](https://www.npmjs.com/package/formatly) |
 | forwarded | MIT | [source](https://www.npmjs.com/package/forwarded) |
@@ -873,6 +880,7 @@ separately by `TRADEMARKS.md`.
 | istanbul-lib-report | BSD-3-Clause | [source](https://www.npmjs.com/package/istanbul-lib-report) |
 | istanbul-lib-source-maps | BSD-3-Clause | [source](https://www.npmjs.com/package/istanbul-lib-source-maps) |
 | istanbul-reports | BSD-3-Clause | [source](https://www.npmjs.com/package/istanbul-reports) |
+| jackspeak | BlueOak-1.0.0 | [source](https://www.npmjs.com/package/jackspeak) |
 | jest-changed-files | MIT | [source](https://www.npmjs.com/package/jest-changed-files) |
 | jest-circus | MIT | [source](https://www.npmjs.com/package/jest-circus) |
 | jest-cli | MIT | [source](https://www.npmjs.com/package/jest-cli) |
@@ -1040,6 +1048,7 @@ separately by `TRADEMARKS.md`.
 | p-locate | MIT | [source](https://www.npmjs.com/package/p-locate) |
 | p-map | MIT | [source](https://www.npmjs.com/package/p-map) |
 | p-try | MIT | [source](https://www.npmjs.com/package/p-try) |
+| package-json-from-dist | BlueOak-1.0.0 | [source](https://www.npmjs.com/package/package-json-from-dist) |
 | package-manager-detector | MIT | [source](https://www.npmjs.com/package/package-manager-detector) |
 | parse-github-repo-url | MIT | [source](https://www.npmjs.com/package/parse-github-repo-url) |
 | parse-json | MIT | [source](https://www.npmjs.com/package/parse-json) |

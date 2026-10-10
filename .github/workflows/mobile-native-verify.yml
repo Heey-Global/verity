@@ -18,6 +18,7 @@ on:
       - 'apps/mobile/package.json'
       - 'apps/mobile/patches/**'
       - 'apps/mobile/plugins/**'
+      - 'apps/mobile/targets/**'
       # OTA promotion only moves an already-published EAS branch. It neither
       # changes nor rebuilds the native app.
       - 'package.json'
@@ -230,11 +231,13 @@ jobs:
           scheme=Verity
           xcodebuild -workspace "$workspace" -list -json \
             | ruby -rjson -e 'schemes=JSON.parse(STDIN.read).dig("workspace", "schemes") || []; abort "missing #{ARGV[0]} scheme" unless schemes.include?(ARGV[0])' "$scheme"
+          # No -sdk: it would force the iOS SDK onto the embedded Apple Watch
+          # target too. The destination picks the iOS simulator for the app and
+          # lets the watch target build against its own watchOS simulator SDK.
           xcodebuild \
             -workspace "$workspace" \
             -scheme "$scheme" \
             -configuration Release \
-            -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
             ARCHS=arm64 \
             CODE_SIGNING_ALLOWED=NO \

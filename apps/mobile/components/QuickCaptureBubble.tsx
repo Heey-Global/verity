@@ -36,6 +36,7 @@ import { subscribeTaskVoiceShortcut } from '../lib/voiceShortcut';
 import { subscribeTasksPanel } from '../lib/taskPanelEvents';
 import { QuickCaptureCard } from './QuickCaptureCard';
 import { QuickCaptureIntro } from './QuickCaptureIntro';
+import { startWatchInbox, syncWatchProjects } from '../lib/watchCapture';
 import { TasksPanel } from './TasksPanel';
 
 /** Bubble diameter; half of it sits outside the screen edge. */
@@ -59,7 +60,7 @@ export function QuickCaptureBubble() {
   const params = useGlobalSearchParams<{ id?: string; selected?: string }>();
   const preferences = useTaskPreferences();
   const { tasks } = useTasks();
-  const { projects, sessions } = useTaskContext();
+  const { projects, sessions, projectsReady } = useTaskContext();
   const [keyboard, setKeyboard] = useState(Keyboard.isVisible());
   const [meeting, setMeeting] = useState(false);
   const [remoteMeeting, setRemoteMeeting] = useState(false);
@@ -189,6 +190,20 @@ export function QuickCaptureBubble() {
     [position, squash, width, height, top, bottom, preferences.side, preferences.fraction],
   );
   useEffect(() => startTasksStore(), []);
+  // Apple Watch captures land in the same queue once the store is running.
+  useEffect(() => startWatchInbox(), []);
+  // The watch picker offers the same projects, in the same order, as quick capture.
+  const accountScope = taskAccountScope();
+  useEffect(
+    () =>
+      syncWatchProjects(
+        accountScope,
+        projectsReady ? projects : null,
+        tasks,
+        preferences.projectId,
+      ),
+    [accountScope, projectsReady, projects, tasks, preferences.projectId],
+  );
   useEffect(() => startTaskContext(), []);
   useEffect(() => {
     if (capture || panel) void refreshTaskContext().catch(() => undefined);
@@ -199,6 +214,7 @@ export function QuickCaptureBubble() {
       setPanel(false);
       setSaved(null);
     };
+
     const app = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
         void refreshTaskContext().catch(() => undefined);
