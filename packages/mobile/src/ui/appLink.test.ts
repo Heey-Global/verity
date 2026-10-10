@@ -26,6 +26,7 @@ describe('parseAppLink', () => {
   });
 
   it('resolves the session sheets and the new-project screen', () => {
+    expect(parseAppLink('verity://session/settings')).toEqual({ kind: 'session-settings' });
     expect(parseAppLink('verity://session/preview')).toEqual({ kind: 'preview' });
     expect(parseAppLink('verity://session/files')).toEqual({ kind: 'files', root: 'worktree' });
     expect(parseAppLink('verity://project/knowledge')).toEqual({
@@ -72,7 +73,7 @@ describe('parseAppLink', () => {
       'verity://project/abc123/settings',
       'verity://session',
       'verity://session/abc123',
-      'verity://session/settings',
+      'verity://session/settings/other',
       'verity://session/preview/extra',
       'verity://new-project',
     ]) {

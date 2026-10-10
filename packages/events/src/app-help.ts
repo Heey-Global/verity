@@ -36,6 +36,9 @@ export interface AppHelpTopic {
   docsPath?: string;
   /** Extra words a user might ask with that the title does not contain. */
   keywords: readonly string[];
+  /** Short contextual copy shared by the app and chat help. */
+  hint?: { text: string; question: string };
+  emptyState?: string;
 }
 
 export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
@@ -71,6 +74,22 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
       'container',
       'branch',
       'parallel',
+    ],
+  },
+  {
+    id: 'session-settings',
+    title: 'Session settings',
+    summary: 'Rename, link or manage the current session.',
+    details:
+      'Open Session settings from the session menu to rename the conversation, manage linked sessions or delete it. Moving between projects is available for idle sessions in local projects.',
+    appLink: 'verity://session/settings',
+    docsPath: 'docs/getting-started.md',
+    keywords: [
+      'session settings',
+      'rename session',
+      'delete session',
+      'move session',
+      'linked sessions',
     ],
   },
   {
@@ -206,6 +225,10 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
   },
   {
     id: 'live-meeting',
+    hint: {
+      text: 'A live meeting captures audio for transcription and adds the resulting notes to this session. Check the selected transcription service and get participants’ consent before you start recording.',
+      question: 'How does live meeting recording and transcription work?',
+    },
     title: 'Live meetings',
     summary: 'Transcribe meetings and analyse them with an agent.',
     details:
@@ -226,11 +249,18 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
   },
   {
     id: 'preview-and-sharing',
+    emptyState:
+      'Ask the agent to start your app as a Verity server. It will appear here, where you can switch it on and off. Local gives access on your trusted network without a PIN; Shared online creates a public link protected by a PIN and an expiry.',
+    hint: {
+      text: 'Shared online creates a public preview link through Uplink. Anyone with the link and PIN can access it until it expires or you stop sharing; Local access is a separate switch.',
+      question: 'How does Shared online preview sharing work?',
+    },
     title: 'Preview and sharing',
     summary: 'Open a web app an agent is running, locally or online.',
     details:
       "When an agent starts a development server, it appears in the session's Preview sheet. Local opens it from your own network without a login. Shared online publishes it through Uplink at a public address protected by a PIN, so treat it as visible to anyone you give the address and PIN to.",
     appLink: 'verity://session/preview',
+    docsPath: 'docs/getting-started.md',
     keywords: ['preview', 'share', 'dev server', 'web app', 'localhost', 'public', 'link', 'url'],
   },
   {
@@ -244,6 +274,10 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
   },
   {
     id: 'review-and-pull-requests',
+    hint: {
+      text: 'This bar shows the result of your session’s work and its checks. Opening a pull request lets you inspect it; merging or saving to the project applies the changes to the base branch.',
+      question: 'How do I review and merge my session’s changes?',
+    },
     title: 'Review and pull requests',
     summary: 'How agent changes reach your repository.',
     details:
@@ -282,6 +316,8 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
   },
   {
     id: 'secrets-storage',
+    emptyState:
+      'After a server restart, enter your master password once to unlock the encrypted logins, keys and tokens stored on your server.',
     title: 'How secrets are stored',
     summary: 'Encryption, the master password and unlocking after a restart.',
     details:

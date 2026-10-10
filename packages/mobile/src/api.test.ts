@@ -4099,3 +4099,18 @@ describe('premium feature contracts', () => {
     expect(await client.getPreviewCapabilities()).toEqual({ publicSharing: 'disabled' });
   });
 });
+
+it('sends explicit replay and retry options to the welcome endpoint', async () => {
+  const { fetch, calls } = fakeFetch(
+    new Response(JSON.stringify({ state: 'preparing', sessionId: null, projectId: 'starter' })),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.openWelcomeSession({ replay: true, retry: true })).toEqual({
+    state: 'preparing',
+    sessionId: null,
+    projectId: 'starter',
+  });
+  expect(calls[0]?.url).toBe('http://host/onboarding/welcome');
+  expect(calls[0]?.init?.method).toBe('POST');
+  expect(calls[0]?.init?.body).toBe(JSON.stringify({ replay: true, retry: true }));
+});
