@@ -980,13 +980,17 @@ describe('SessionModel — cancel (#79)', () => {
         finishCancel = resolve;
       }),
     );
-    client.getHistory = vi
+    const getHistory = vi
       .fn()
-      .mockResolvedValueOnce({ events: [], hasMore: true })
+      .mockResolvedValueOnce({
+        events: [{ seq: 1, event: { t: 'prompt', text: 'go' } }],
+        hasMore: true,
+      })
       .mockResolvedValue({
         events: [{ seq: 0, event: { t: 'prompt', text: 'older' } }],
         hasMore: false,
       });
+    client.getHistory = getHistory;
     client.getActivity = vi.fn().mockResolvedValue({ busy: true, queued: [] });
     const model = new SessionModel({ client, sessionId: 's1', transport: connect });
     try {
@@ -1020,7 +1024,9 @@ describe('SessionModel — cancel (#79)', () => {
       sockets[0]?.emitEvent(5, { t: 'prompt', text: 'next' });
       expect(model.state.working).toBe(true);
       expect(agentTexts(model.state)).toEqual(['visible']);
+      expect(model.state.hasOlder).toBe(true);
       await model.loadOlder();
+      expect(getHistory).toHaveBeenCalledTimes(2);
       expect(agentTexts(model.state)).toEqual(['visible']);
       sockets[0]?.emitEvent(6, { t: 'text', delta: 'new turn' });
       expect(agentTexts(model.state)).toEqual(['visible', 'new turn']);
@@ -1047,6 +1053,7 @@ describe('SessionModel — cancel (#79)', () => {
       sockets[0]?.emitEvent(2, { t: 'text', delta: 'visible' });
       const cancellation = model.cancel();
       sockets[0]?.emitEvent(3, { t: 'text', delta: ' buffered' });
+      sockets[0]?.emitEvent(4, { t: 'prompt', text: 'next' });
       rejectCancel(new Error('offline'));
       await cancellation;
       expect(agentTexts(model.state)).toEqual(['visible buffered']);

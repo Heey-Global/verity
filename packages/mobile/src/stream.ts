@@ -73,14 +73,17 @@ export class SessionStream {
   private caughtUp = false;
   private readonly suppressedOutput = new Set<number>();
   private cancellingOutput: Set<number> | undefined;
+  private outputFrozen = false;
 
   freezeOutput(): void {
-    this.cancellingOutput ??= new Set<number>();
+    this.cancellingOutput = new Set<number>();
+    this.outputFrozen = true;
   }
 
   restoreOutput(): void {
     for (const seq of this.cancellingOutput ?? []) this.suppressedOutput.delete(seq);
     this.cancellingOutput = undefined;
+    this.outputFrozen = false;
     this.reducer = new SessionReducer();
     for (const frame of this.eventFrames) {
       if (!this.suppressedOutput.has(frame.seq)) this.reducer.applyFrame(frame);
@@ -329,8 +332,9 @@ export class SessionStream {
       ...(frame.ts !== undefined ? { ts: frame.ts } : {}),
       event: frame.event,
     };
-    if (frame.event.t === 'prompt') this.cancellingOutput = undefined;
+    if (frame.event.t === 'prompt') this.outputFrozen = false;
     if (
+      this.outputFrozen &&
       this.cancellingOutput !== undefined &&
       ['text', 'thinking', 'tool_call', 'permission', 'choices', 'automation_proposal'].includes(
         frame.event.t,
