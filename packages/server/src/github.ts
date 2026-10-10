@@ -646,36 +646,13 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
       if (!checksResult.ok) return { ok: false, status: null };
       const checks = checksResult.checks;
       const pipeline = pipelineFromChecks(checks);
-      // Ask GitHub for mergeability on every SETTLED open PR — green, red, or with no
-      // checks at all — and never while checks are still running.
-      //
-      // Green is the merge-button path: mergeability decides whether it lights up.
-      //
-      // No checks at all is the conflict trap this feature exists for: a PR that
-      // conflicts with its base gets no merge ref, so GitHub never starts the
-      // `pull_request` workflows, `checks.total` stays 0 and the pipeline reads
-      // `unknown` forever. Without this call the bar could only say "status
-      // unavailable" and nothing could react to the conflict.
-      //
-      // Red matters because a branch with `on: push` workflows keeps reporting checks
-      // even while it conflicts — the workflows run on the branch head, which needs no
-      // merge ref. Such a PR has a real conflict AND real failures at once, and it is
-      // the only way that pair can arise. Skipping it would leave the conflict
-      // invisible behind a CI failure the agent cannot fix without merging the base
-      // first, and would make the conflict-before-CI repair precedence unreachable.
-      //
-      // Running/pending stays off the path deliberately: that is the state a busy PR
-      // polls in most often, nothing can act on either signal until checks settle, and
-      // the poll right after they do picks the conflict up.
-      //
-      // Keep the raw tri-state: `openPrMergeable` returns `null` while GitHub is still
-      // computing it, which must stay `null` — coercing it to `false` here is what made
-      // a just-fixed, now-green PR read as "blocked".
+      // Push workflows can still be running when a base update introduces a
+      // conflict. Probe every open PR so background discovery can repair it
+      // without waiting for CI or for someone to open the session.
+      // Preserve null while GitHub is still computing mergeability.
       const greenPath = phase === 'open' && pipeline === 'success';
-      const conflictProbe =
-        phase === 'open' && !greenPath && (checks.total === 0 || pipeline === 'failure');
       const mergeability =
-        greenPath || conflictProbe
+        phase === 'open'
           ? await openPrMergeable(id, num, token)
           : { ok: true as const, value: null, mergeState: undefined };
       // A failed lookup is only fatal on the green path, where mergeability decides

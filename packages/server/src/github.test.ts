@@ -151,8 +151,7 @@ describe('createGitHubPrService', () => {
       phase: 'open',
       headSha: 'abc123',
       // A failed check surfaces as 'failure' immediately, even while a job is still
-      // in progress (fail-fast) — it must not read as 'running'. mergeability is not
-      // queried for a non-green pipeline, so mergeable is unknown (null).
+      // in progress (fail-fast) — it must not read as 'running'.
       pipeline: 'failure',
       checks: { completed: 2, total: 3, successful: 1, failed: 1, pending: 1 },
       mergeable: null,
@@ -385,34 +384,46 @@ describe('createGitHubPrService', () => {
     expect(calls[3]?.url).toBe('https://api.github.com/repos/Example-Org/Example-Repo/pulls/1332');
   });
 
-  it('skips the mergeability call while checks are running', async () => {
-    // The API-saving rule: mergeability is only worth a request once the pipeline has
-    // SETTLED. Running is the state a busy PR polls in most often, nothing can act on
-    // a conflict until the checks land anyway, and the poll right after they do picks
-    // it up — so this is the one open-PR state that costs no extra request.
-    const { fetch, calls } = fakeFetch(
-      ok([
-        {
-          number: 126,
-          state: 'open',
-          title: 'Still running',
-          html_url: 'https://github.com/Example-Org/Example-Repo/pull/126',
-          head: { sha: 'abc123' },
-          base: { ref: 'main' },
-        },
-      ]),
+  it.each(['in_progress', 'queued'])(
+    'detects merge conflicts while checks are %s',
+    async (checkStatus) => {
+      // Push workflows can keep running after the base moves into conflict; waiting
+      // for CI to settle hides a conflict the background monitor could repair now.
+      const { fetch, calls } = fakeFetch(
+        ok([{ number: 126, state: 'open', head: { sha: 'abc123' }, base: { ref: 'main' } }]),
+        ok({ check_runs: [{ status: checkStatus, conclusion: null }] }),
+        ok({ statuses: [] }),
+        ok({ mergeable: false, mergeable_state: 'dirty' }),
+      );
+      const svc = createGitHubPrService({ repoDir: '/r', token: 'tok', git: githubRemote, fetch });
+
+      expect(await svc.prStatusForBranch('feat/running')).toMatchObject({
+        pipeline: 'running',
+        mergeable: false,
+        mergeState: 'dirty',
+        baseRef: 'main',
+      });
+      expect(calls[3]?.url).toBe('https://api.github.com/repos/Example-Org/Example-Repo/pulls/126');
+    },
+  );
+
+  it('preserves running checks when the conflict probe fails', async () => {
+    const { fetch } = fakeFetch(
+      ok([{ number: 126, state: 'open', head: { sha: 'abc123' } }]),
       ok({ check_runs: [{ status: 'in_progress', conclusion: null }] }),
       ok({ statuses: [] }),
+      fail(503),
     );
     const svc = createGitHubPrService({ repoDir: '/r', token: 'tok', git: githubRemote, fetch });
 
-    expect(await svc.prStatusForBranch('feat/running')).toMatchObject({
+    const status = await svc.prStatusForBranch('feat/running');
+    expect(status).toMatchObject({
+      number: 126,
       pipeline: 'running',
+      checks: { total: 1, pending: 1 },
       mergeable: null,
-      baseRef: 'main',
     });
-    expect(await svc.prStatusForBranch('feat/running')).not.toHaveProperty('mergeState');
-    expect(calls).toHaveLength(3);
+    expect(status).not.toHaveProperty('mergeState');
   });
 
   it('omits mergeState while GitHub is still computing it', async () => {
@@ -596,6 +607,7 @@ describe('createGitHubPrService', () => {
       ]),
       ok({ check_runs: [{ status: 'in_progress', conclusion: null }] }),
       ok({ statuses: [] }),
+      ok({ mergeable: null }),
       ok([
         {
           number: 120,
@@ -1010,6 +1022,8 @@ describe('createGitHubPrService', () => {
       okWithEtag(pr, '"pr-v1"'),
       okWithEtag({ check_runs: [{ status: 'in_progress', conclusion: null }] }, '"checks-v1"'),
       okWithEtag({ statuses: [] }, '"statuses-v1"'),
+      okWithEtag({ mergeable: null }, '"merge-v1"'),
+      notModified(),
       notModified(),
       notModified(),
       notModified(),
@@ -1026,9 +1040,10 @@ describe('createGitHubPrService', () => {
     expect(await svc.prStatusForBranch('b')).toMatchObject({ pipeline: 'running' });
     now.mockReturnValue(1101);
     expect(await svc.prStatusForBranch('b')).toMatchObject({ pipeline: 'running' });
-    expect(calls[3]?.headers?.['If-None-Match']).toBe('"pr-v1"');
-    expect(calls[4]?.headers?.['If-None-Match']).toBe('"checks-v1"');
-    expect(calls[5]?.headers?.['If-None-Match']).toBe('"statuses-v1"');
+    expect(calls[4]?.headers?.['If-None-Match']).toBe('"pr-v1"');
+    expect(calls[5]?.headers?.['If-None-Match']).toBe('"checks-v1"');
+    expect(calls[6]?.headers?.['If-None-Match']).toBe('"statuses-v1"');
+    expect(calls[7]?.headers?.['If-None-Match']).toBe('"merge-v1"');
   });
 
   it('backs off when all check sources fail after the PR list succeeds', async () => {
@@ -1046,6 +1061,7 @@ describe('createGitHubPrService', () => {
       okWithEtag(pr, '"pr-v1"'),
       okWithEtag({ check_runs: [{ status: 'in_progress', conclusion: null }] }, '"checks-v1"'),
       okWithEtag({ statuses: [] }, '"statuses-v1"'),
+      okWithEtag({ mergeable: null }, '"merge-v1"'),
       notModified(),
       fail(403),
       fail(403),
@@ -1067,11 +1083,11 @@ describe('createGitHubPrService', () => {
       pipeline: 'unknown',
       checks: { total: 0, pending: 0 },
     });
-    expect(calls).toHaveLength(6);
+    expect(calls).toHaveLength(7);
 
     now.mockReturnValue(1500);
     await svc.prStatusForBranch('b');
-    expect(calls).toHaveLength(6); // total check-signal failure activated shared backoff
+    expect(calls).toHaveLength(7); // total check-signal failure activated shared backoff
   });
 
   it('shares a failure cooldown across session services', async () => {
@@ -1245,6 +1261,7 @@ describe('createGitHubPrService', () => {
       ]),
       ok({ check_runs: [{ status: 'in_progress', conclusion: null }] }),
       ok({ statuses: [] }),
+      ok({ mergeable: null }),
     );
     const svc = createGitHubPrService({
       repoDir: '/r',
@@ -1263,7 +1280,7 @@ describe('createGitHubPrService', () => {
       checks: { total: 0, pending: 0 },
     });
     expect(asyncToken).toHaveBeenCalledTimes(2);
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
 
     now.mockReturnValue(1500);
     await svc.prStatusForBranch('b');
@@ -1284,6 +1301,7 @@ describe('createGitHubPrService', () => {
       ]),
       ok({ check_runs: [{ status: 'in_progress', conclusion: null }] }),
       ok({ statuses: [] }),
+      ok({ mergeable: null }),
       fail(403),
       ok([]),
     );
@@ -1308,15 +1326,15 @@ describe('createGitHubPrService', () => {
       checks: { total: 0, pending: 0 },
       mergeable: null,
     });
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
 
     now.mockReturnValue(1500);
     await svc.prStatusForBranch('b');
-    expect(calls).toHaveLength(4); // still in failure backoff
+    expect(calls).toHaveLength(5); // still in failure backoff
 
     now.mockReturnValue(2102);
     expect(await svc.prStatusForBranch('b')).toBeNull();
-    expect(calls).toHaveLength(5); // backoff elapsed, lookup retried
+    expect(calls).toHaveLength(6); // backoff elapsed, lookup retried
   });
 
   it('re-resolves a token PROVIDER per lookup — inert until a token appears (#131)', async () => {

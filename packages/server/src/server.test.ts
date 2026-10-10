@@ -8936,7 +8936,7 @@ describe('GET /sessions/:id/branches', () => {
     }
   });
 
-  it.each(['ci', 'conflict'] as const)(
+  it.each(['ci', 'conflict', 'running-conflict'] as const)(
     'repairs %s in the background without app requests or push registration',
     async (failure) => {
       let now = 0;
@@ -8948,10 +8948,13 @@ describe('GET /sessions/:id/branches', () => {
         url: 'https://github.com/heey-global/verity/pull/119',
         phase: 'open' as const,
         headSha: 'abc123',
-        pipeline: 'failure' as const,
-        checks: { completed: 1, total: 1, successful: 0, failed: 1, pending: 0 },
+        pipeline: failure === 'running-conflict' ? ('running' as const) : ('failure' as const),
+        checks:
+          failure === 'running-conflict'
+            ? { completed: 0, total: 1, successful: 0, failed: 0, pending: 1 }
+            : { completed: 1, total: 1, successful: 0, failed: 1, pending: 0 },
         mergeable: false,
-        ...(failure === 'conflict' ? { mergeState: 'dirty' as const } : {}),
+        ...(failure !== 'ci' ? { mergeState: 'dirty' as const } : {}),
       }));
       const backgroundApp = buildServer({
         eventStore: ctx.store,
@@ -8972,9 +8975,7 @@ describe('GET /sessions/:id/branches', () => {
         expect(dispatchTurnWhenIdle).toHaveBeenCalledTimes(1);
         expect(dispatchTurnWhenIdle).toHaveBeenCalledWith('s1', expect.any(String), undefined, {
           displayPrompt:
-            failure === 'conflict'
-              ? 'Resolve merge conflicts for PR #119'
-              : 'Fix failing CI for PR #119',
+            failure !== 'ci' ? 'Resolve merge conflicts for PR #119' : 'Fix failing CI for PR #119',
         });
       } finally {
         await backgroundApp.close();
