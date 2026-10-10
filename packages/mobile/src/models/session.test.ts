@@ -1005,7 +1005,8 @@ describe('SessionModel — cancel (#79)', () => {
       expect(model.state.working).toBe(false);
       expect(model.state.busy).toBe(false);
       expect(model.state.activityAnimating).toBe(false);
-      sockets[0]?.emitEvent(3, { t: 'text', delta: ' late' });
+      sockets[0]?.emitEvent(3, { t: 'prompt', text: 'late steering', steered: true });
+      sockets[0]?.emitEvent(4, { t: 'text', delta: ' late' });
       model.refreshActivity();
       await flush();
       expect(agentTexts(model.state)).toEqual(['visible']);
@@ -1013,7 +1014,7 @@ describe('SessionModel — cancel (#79)', () => {
 
       finishCancel({ sessionId: 's1', cancelled: true });
       await cancellation;
-      sockets[0]?.emitEvent(4, { t: 'interrupted' });
+      sockets[0]?.emitEvent(5, { t: 'interrupted' });
       expect(agentTexts(model.state)).toEqual(['visible']);
       expect(model.state.activityAnimating).toBe(false);
       expect(
@@ -1021,14 +1022,14 @@ describe('SessionModel — cancel (#79)', () => {
           (message) => message.kind === 'agent-event' && message.event.t === 'interrupted',
         ),
       ).toBe(true);
-      sockets[0]?.emitEvent(5, { t: 'prompt', text: 'next' });
+      sockets[0]?.emitEvent(6, { t: 'prompt', text: 'next' });
       expect(model.state.working).toBe(true);
       expect(agentTexts(model.state)).toEqual(['visible']);
       expect(model.state.hasOlder).toBe(true);
       await model.loadOlder();
       expect(getHistory).toHaveBeenCalledTimes(2);
       expect(agentTexts(model.state)).toEqual(['visible']);
-      sockets[0]?.emitEvent(6, { t: 'text', delta: 'new turn' });
+      sockets[0]?.emitEvent(7, { t: 'text', delta: 'new turn' });
       expect(agentTexts(model.state)).toEqual(['visible', 'new turn']);
     } finally {
       model.stop();
@@ -1059,6 +1060,32 @@ describe('SessionModel — cancel (#79)', () => {
       expect(agentTexts(model.state)).toEqual(['visible buffered']);
       expect(model.state.activityAnimating).toBe(true);
       expect(model.state.cancelError).toBe('failed to stop turn');
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('releases a no-op Stop despite a stale busy poll before an external turn', async () => {
+    const { connect, sockets } = recordingConnect();
+    const client = stubClient();
+    client.getActivity = vi.fn().mockResolvedValue({ busy: true, queued: [] });
+    client.cancelTurn = vi.fn().mockResolvedValue({ sessionId: 's1', cancelled: false });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+      sockets[0]?.emitEvent(2, { t: 'interrupted' });
+      model.refreshActivity();
+      await flush();
+      expect(model.state.busy).toBe(true);
+      await model.cancel();
+      expect(model.state.busy).toBe(false);
+      sockets[0]?.emitEvent(3, { t: 'prompt', text: 'external turn' });
+      expect(model.state.working).toBe(true);
+      sockets[0]?.emitEvent(4, { t: 'text', delta: 'new output' });
+      expect(agentTexts(model.state)).toEqual(['new output']);
     } finally {
       model.stop();
     }

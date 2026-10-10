@@ -332,7 +332,7 @@ export class SessionStream {
       ...(frame.ts !== undefined ? { ts: frame.ts } : {}),
       event: frame.event,
     };
-    if (frame.event.t === 'prompt') this.outputFrozen = false;
+    if (frame.event.t === 'prompt' && !frame.event.steered) this.outputFrozen = false;
     if (
       this.outputFrozen &&
       this.cancellingOutput !== undefined &&

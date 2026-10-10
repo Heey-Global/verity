@@ -1250,6 +1250,13 @@ export class SessionModel {
       this._waiting = [];
       if (result.forceReleased) this._terminationUnconfirmed = false;
       if (result.cancelled) this.opts.onTurnCancelled?.();
+      else {
+        // An already-idle session emits no new terminal event to release Stop.
+        this._cancelRequested = false;
+        this._busy = false;
+        this.stream.restoreOutput();
+        this._session = this.stream.state;
+      }
       this.emit();
       return (result.droppedQueued ?? []).map((item) => ({
         prompt: item.prompt,
