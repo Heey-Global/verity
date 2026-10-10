@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.38.0](https://github.com/Heey-Global/verity/compare/v4.37.2...v4.38.0) (2026-10-10)
+
+
+### Features
+
+* **diagnostics:** restrict alternate Uplink endpoint to selected installation ([#1499](https://github.com/Heey-Global/verity/issues/1499)) ([e80ebaf](https://github.com/Heey-Global/verity/commit/e80ebafbf504616e82efc282327bbef98ad219d1))
+
 ## [4.37.2](https://github.com/Heey-Global/verity/compare/v4.37.1...v4.37.2) (2026-10-10)
 
 
