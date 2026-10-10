@@ -4,6 +4,94 @@ import Network
 
 enum ProbeFailure: Error {
   case tunnelStopped(String)
+  case soakFailed(String)
+}
+
+// The device's pattern, not the probe's: several pinned connections at once,
+// each request on a fresh URLSession as the app's transport does, for minutes.
+// A three-request probe never saw the attachment that carries one stream and
+// then goes silent in one direction while its socket stays open.
+@available(macOS 14.0, *)
+func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWEndpoint.Port,
+  seconds: UInt64, streams: Int) async throws
+{
+  let deadline = Date().addingTimeInterval(TimeInterval(seconds))
+  let counters = SoakCounters()
+  try await withThrowingTaskGroup(of: Void.self) { group in
+    for worker in 0..<streams {
+      group.addTask {
+        var own = 0
+        // No request within its own timeout of the deadline: the soak must end
+        // with its own diagnostic, not the host's watchdog.
+        while Date().addingTimeInterval(12) < deadline {
+          guard tunnel.isActive else {
+            let total = await counters.requests
+            throw ProbeFailure.soakFailed(
+              "worker \(worker) after \(own) own and \(total) total requests: tunnel stopped: "
+                + "\(tunnel.stopReason ?? "unknown"); \(tunnel.diagnosticSummary)")
+          }
+          let config = URLSessionConfiguration.ephemeral
+          // Both: the request interval is an idle timeout between bytes, and
+          // a request that trickles must still end before the soak's deadline.
+          config.timeoutIntervalForRequest = 12
+          config.timeoutIntervalForResource = 12
+          config.proxyConfigurations = [
+            ProxyConfiguration(socksv5Proxy: .hostPort(host: "127.0.0.1", port: localPort))
+          ]
+          let delegate: CertificatePinDelegate
+          do { delegate = try CertificatePinDelegate(pin: corePin, origin: coreURL) }
+          catch {
+            let total = await counters.requests
+            throw ProbeFailure.soakFailed(
+              "worker \(worker) after \(own) own and \(total) total requests: \(error)")
+          }
+          let client = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+          defer { client.invalidateAndCancel() }
+          let started = Date()
+          do {
+            let (_, response) = try await client.data(for: URLRequest(url: coreURL))
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+              let total = await counters.requests
+              throw ProbeFailure.soakFailed(
+                "worker \(worker) after \(own) own and \(total) total requests: status "
+                  + "\((response as? HTTPURLResponse)?.statusCode ?? 0); \(tunnel.diagnosticSummary)")
+            }
+            own += 1
+            await counters.record(Date().timeIntervalSince(started))
+          } catch let failure as ProbeFailure {
+            throw failure
+          } catch {
+            let total = await counters.requests
+            throw ProbeFailure.soakFailed(
+              "worker \(worker) after \(own) own and \(total) total requests: "
+                + CertificatePinDelegate.transportFailure(error: error as NSError, phase: delegate.phase)
+                + "; \(tunnel.diagnosticSummary)")
+          }
+          // A reading user, not a load test: half a second to two seconds between requests.
+          let pause = min(Double.random(in: 0.5...2), max(0, deadline.timeIntervalSinceNow))
+          try await Task.sleep(nanoseconds: UInt64(pause * 1_000_000_000))
+        }
+      }
+    }
+    try await group.waitForAll()
+  }
+  let requests = await counters.requests
+  let maxMs = await counters.maxMs
+  // A soak that issued nothing proves nothing; it must not read as a pass.
+  guard requests >= streams else {
+    throw ProbeFailure.soakFailed("only \(requests) requests completed across \(streams) streams")
+  }
+  print("Soak: requests=\(requests) streams=\(streams) seconds=\(seconds) maxMs=\(maxMs)")
+  fflush(stdout)
+}
+
+actor SoakCounters {
+  var requests = 0
+  var maxMs = 0
+  func record(_ seconds: TimeInterval) {
+    requests += 1
+    maxMs = max(maxMs, Int(seconds * 1000))
+  }
 }
 
 @available(macOS 14.0, *)
@@ -65,6 +153,18 @@ enum StagingProbe {
           else { throw ProbeFailure.tunnelStopped(tunnel.stopReason ?? "bad response") }
           lastStatus = http.statusCode
         }
+        // Unparsable values fail rather than skip: a soak that silently did
+        // not run would leave the run green.
+        guard let soakSeconds = UInt64(environment["VERITY_REMOTE_PROBE_SOAK_SECONDS"] ?? "0"),
+          let soakStreams = Int(environment["VERITY_REMOTE_PROBE_SOAK_STREAMS"] ?? "4"),
+          soakSeconds == 0 || (30...600).contains(soakSeconds), (1...8).contains(soakStreams)
+        else { throw RemoteSmokeError.invalidInput }
+        if soakSeconds > 0 {
+          print("soaking \(soakSeconds)s with \(soakStreams) streams")
+          fflush(stdout)
+          try await soak(tunnel: tunnel, coreURL: coreURL, corePin: corePin, localPort: localPort,
+            seconds: soakSeconds, streams: soakStreams)
+        }
         // An HTTP success must also exercise the production tunnel's byte accounting.
         let summary = tunnel.diagnosticSummary
         for field in ["sentBytes", "receivedBytes", "deliveredBytes"] {
@@ -85,6 +185,10 @@ enum StagingProbe {
       }
       guard status == 200 else { throw RemoteSmokeError.invalidFrame }
       print("Core HTTPS status: \(status)")
+    } catch ProbeFailure.soakFailed(let detail) {
+      // The worker, request count, native cause and tunnel summary, as promised.
+      fputs("Remote Control staging soak failed: \(detail)\n", stderr)
+      exit(1)
     } catch {
       fputs("Remote Control staging probe failed: \(error)\n", stderr)
       exit(1)

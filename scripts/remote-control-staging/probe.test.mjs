@@ -76,6 +76,9 @@ function runProbe(input) {
         VERITY_REMOTE_CORE_URL: 'https://core.example/',
         VERITY_REMOTE_CORE_PIN: `sha256-${'a'.repeat(43)}`,
         VERITY_REMOTE_PROBE_BINARY: input.binary,
+        ...(input.soakSeconds === undefined
+          ? {}
+          : { VERITY_REMOTE_PROBE_SOAK_SECONDS: input.soakSeconds }),
       },
     });
     let stdout = '';
@@ -104,6 +107,28 @@ test('admission keeps its socket through attachment and runs the native GET', as
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /Core HTTPS status: 200/u);
   assert.doesNotMatch(result.stdout, /test_ticket/u);
+});
+
+test('a soak longer than the watchdog allows is refused before admission', async (t) => {
+  const input = await fixture(t, (connect) => ({
+    type: 'connect.ready',
+    requestId: connect.requestId,
+    sessionId: 'test_session',
+    ticket: 'test_ticket',
+    expiresAt: Date.now() + 60_000,
+    capability: 'remote-control-v1',
+  }));
+  const result = await runProbe({ ...input, soakSeconds: '601' });
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /Invalid Remote Control staging probe inputs/u);
+  // A spelling the native side would read as zero must not pass here either.
+  const spelled = await runProbe({ ...input, soakSeconds: '1e2' });
+  assert.notEqual(spelled.code, 0);
+  assert.match(spelled.stderr, /Invalid Remote Control staging probe inputs/u);
+  // Nor a soak too short to issue a single request, which would pass empty.
+  const short = await runProbe({ ...input, soakSeconds: '10' });
+  assert.notEqual(short.code, 0);
+  assert.match(short.stderr, /Invalid Remote Control staging probe inputs/u);
 });
 
 test('a ticket for a different request never reaches the native runner', async (t) => {

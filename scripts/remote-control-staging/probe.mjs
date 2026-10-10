@@ -11,6 +11,15 @@ const corePin = process.env.VERITY_REMOTE_CORE_PIN ?? '';
 const binary = process.env.VERITY_REMOTE_PROBE_BINARY ?? '';
 // The app-mode probe pauses this long between requests, as a reading user does.
 const idleSeconds = Number(process.env.VERITY_REMOTE_PROBE_IDLE_SECONDS ?? '0');
+// And keeps several streams busy this long, as the device does across a session.
+// Digits only: the native side parses the same value, and a spelling it reads
+// as zero would skip the soak and leave the run green.
+const soakText = process.env.VERITY_REMOTE_PROBE_SOAK_SECONDS ?? '0';
+const soakSeconds = /^\d{1,3}$/u.test(soakText) ? Number(soakText) : Number.NaN;
+// A soak shorter than one request timeout could issue no request and pass.
+const SOAK_MIN_SECONDS = 30;
+const soakStreamsText = process.env.VERITY_REMOTE_PROBE_SOAK_STREAMS ?? '4';
+const soakStreams = /^[1-8]$/u.test(soakStreamsText) ? Number(soakStreamsText) : Number.NaN;
 if (
   origin.protocol !== 'https:' ||
   origin.pathname !== '/' ||
@@ -23,6 +32,10 @@ if (
   !Number.isInteger(idleSeconds) ||
   idleSeconds < 0 ||
   idleSeconds > 600 ||
+  !Number.isInteger(soakSeconds) ||
+  (soakSeconds !== 0 && soakSeconds < SOAK_MIN_SECONDS) ||
+  soakSeconds > 600 ||
+  !Number.isInteger(soakStreams) ||
   !corePin.startsWith('sha256-') ||
   new URL(coreUrl).protocol !== 'https:'
 ) {
@@ -131,7 +144,8 @@ try {
   const watchdog = new Promise((_, reject) => {
     timeout = setTimeout(
       () => reject(new Error('Remote Control staging probe timed out.')),
-      45_000 + idleSeconds * 1_000,
+      // Workers finish the request in flight and one pause after the deadline.
+      45_000 + (idleSeconds + soakSeconds) * 1_000 + (soakSeconds > 0 ? 15_000 : 0),
     );
   });
   await Promise.race([result, watchdog]);
