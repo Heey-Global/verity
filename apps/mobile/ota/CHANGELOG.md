@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.65.3](https://github.com/Heey-Global/verity/compare/mobile-v1.65.2...mobile-v1.65.3) (2026-10-10)
+
+
+### Features
+
+* **meetings:** classify questions and unify research cards ([#1436](https://github.com/Heey-Global/verity/issues/1436)) ([0661e06](https://github.com/Heey-Global/verity/commit/0661e06659c6225abd3ad69f851ec0a84952c117))
+* **onboarding:** starter project and welcome session for new installations ([#1431](https://github.com/Heey-Global/verity/issues/1431)) ([b4da113](https://github.com/Heey-Global/verity/commit/b4da113047d92d2d660a45a3903a642491ff2793))
+
+
+### Bug Fixes
+
+* **mobile:** skip remote routing without enabled descriptor ([#1454](https://github.com/Heey-Global/verity/issues/1454)) ([a4c9e46](https://github.com/Heey-Global/verity/commit/a4c9e46de65b8431738606870b336f95e57f459d))
+
 ## [1.65.2](https://github.com/Heey-Global/verity/compare/mobile-v1.65.1...mobile-v1.65.2) (2026-10-09)
 
 
