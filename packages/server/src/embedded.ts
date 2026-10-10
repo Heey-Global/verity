@@ -822,6 +822,7 @@ export interface EmbeddedServerConfig {
     | {
         resolveConnectorImage: () => Promise<string | undefined>;
         uplinkUrl: string;
+        expectedInstallationId?: string;
         serverVersion: string;
         /** Explicitly configured fixed ingress; absent in the production entrypoint. */
         remoteControl?: Pick<RemoteConnectorPoolOptions, 'localHost' | 'localPort'>;
@@ -2607,6 +2608,9 @@ export async function buildEmbeddedServer(
     config.publicPreviews !== undefined && projectDocker !== undefined
       ? new UplinkControlClient({
           url: config.publicPreviews.uplinkUrl,
+          ...(config.publicPreviews.expectedInstallationId === undefined
+            ? {}
+            : { expectedInstallationId: config.publicPreviews.expectedInstallationId }),
           store: eventStore,
           serverVersion: config.publicPreviews.serverVersion,
           ...(remoteConnector === undefined

@@ -48,6 +48,8 @@ function setup(
     installationId?: string;
     premiumSharingEnabled?: boolean;
     premiumRemoteAccessEnabled?: boolean;
+    expectedInstallationId?: string;
+    url?: string;
     offerRemoteControl?: boolean;
     reserveRemoteConnector?: (
       request: RemoteConnectorRequest,
@@ -88,7 +90,10 @@ function setup(
   const socketFactory = vi.fn(() => socket as unknown as WebSocket);
   const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const client = new UplinkControlClient({
-    url: UPLINK_CONTROL_URL,
+    url: options.url ?? UPLINK_CONTROL_URL,
+    ...(options.expectedInstallationId === undefined
+      ? {}
+      : { expectedInstallationId: options.expectedInstallationId }),
     store: store as unknown as EventStore & typeof store,
     serverVersion: 'test',
     webSocketFactory: socketFactory,
@@ -199,6 +204,59 @@ async function flush(): Promise<void> {
 
 describe('UplinkControlClient', () => {
   beforeEach(() => vi.useRealTimers());
+
+  it.each([undefined, 'other-installation'])(
+    'does not dial a diagnostic endpoint with unselected stored identity %s',
+    async (installationId) => {
+      const fixture = setup({
+        ...(installationId === undefined ? {} : { installationId }),
+        expectedInstallationId: 'installation-1',
+      });
+      fixture.client.start();
+      await flush();
+      try {
+        expect(fixture.socketFactory).not.toHaveBeenCalled();
+        expect(fixture.client.isAvailable()).toBe(false);
+      } finally {
+        await fixture.client.stop();
+      }
+    },
+  );
+
+  it('accepts the selected installation', async () => {
+    const fixture = await welcomed(
+      setup({ installationId: 'installation-1', expectedInstallationId: 'installation-1' }),
+    );
+    try {
+      expect(fixture.client.isAvailable()).toBe(true);
+    } finally {
+      await fixture.client.stop();
+    }
+  });
+
+  it('rejects diagnostic identity rotation before persistence', async () => {
+    const fixture = setup({
+      installationId: 'installation-1',
+      expectedInstallationId: 'installation-1',
+    });
+    fixture.client.start();
+    await flush();
+    fixture.socket.open();
+    fixture.socket.message({
+      type: 'welcome',
+      installationId: 'other-installation',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+    try {
+      expect(fixture.store.updateVeritySettings).not.toHaveBeenCalled();
+      expect(fixture.socket.close).toHaveBeenCalledWith(1008, 'diagnostic installation mismatch');
+      expect(fixture.client.isAvailable()).toBe(false);
+    } finally {
+      await fixture.client.stop();
+    }
+  });
 
   it.each(['count', 'bytes'] as const)(
     'bounds the %s backlog behind a stalled handler and discards retired socket messages',
@@ -354,51 +412,55 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
-  it('publishes the current routing handle only while remote admission is usable', async () => {
-    const handle = Buffer.alloc(16, 7).toString('base64url');
-    const { client, socket } = setup({
-      offerRemoteControl: true,
-      reserveRemoteConnector: vi.fn(async () => 'unavailable' as const),
-    });
-    expect(client.remoteControlDescriptor()).toEqual({
-      version: 1,
-      enabled: false,
-      reason: 'unavailable',
-    });
-    client.start();
-    await flush();
-    socket.open();
-    socket.message({
-      type: 'welcome',
-      installationId: 'installation-1',
-      handle,
-      features: ['remote-control'],
-      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
-      capabilities: ['remote-control-v1'],
-      channels: ['http', 'ws', 'remote'],
-    });
-    await flush();
-    expect(client.remoteControlDescriptor()).toEqual({
-      version: 1,
-      enabled: true,
-      installationId: 'installation-1',
-      installationHandle: handle,
-      uplinkOrigin: 'https://uplink.verity.build',
-      capabilities: ['remote-control-v1'],
-    });
-    socket.message({
-      type: 'renewed',
-      features: [],
-      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
-    });
-    await flush();
-    expect(client.remoteControlDescriptor()).toEqual({
-      version: 1,
-      enabled: false,
-      reason: 'disabled',
-    });
-    await client.stop();
-  });
+  it.each([UPLINK_CONTROL_URL, 'wss://diagnostic.example:8443/control'])(
+    'publishes the selected origin and current routing handle only while admission is usable: %s',
+    async (url) => {
+      const handle = Buffer.alloc(16, 7).toString('base64url');
+      const { client, socket } = setup({
+        url,
+        offerRemoteControl: true,
+        reserveRemoteConnector: vi.fn(async () => 'unavailable' as const),
+      });
+      expect(client.remoteControlDescriptor()).toEqual({
+        version: 1,
+        enabled: false,
+        reason: 'unavailable',
+      });
+      client.start();
+      await flush();
+      socket.open();
+      socket.message({
+        type: 'welcome',
+        installationId: 'installation-1',
+        handle,
+        features: ['remote-control'],
+        leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+        capabilities: ['remote-control-v1'],
+        channels: ['http', 'ws', 'remote'],
+      });
+      await flush();
+      expect(client.remoteControlDescriptor()).toEqual({
+        version: 1,
+        enabled: true,
+        installationId: 'installation-1',
+        installationHandle: handle,
+        uplinkOrigin: new URL(url).origin.replace('wss:', 'https:'),
+        capabilities: ['remote-control-v1'],
+      });
+      socket.message({
+        type: 'renewed',
+        features: [],
+        leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+      });
+      await flush();
+      expect(client.remoteControlDescriptor()).toEqual({
+        version: 1,
+        enabled: false,
+        reason: 'disabled',
+      });
+      await client.stop();
+    },
+  );
 
   it('refuses a negotiated personal session while no connector is wired', async () => {
     const { client, socket } = setup({ offerRemoteControl: true });
