@@ -53,6 +53,15 @@ DNS, certificate trust, protocol compatibility and connection mapping before a
 device capture. Deployment tooling must explicitly preserve these settings
 across a recreation; the application does not modify deployment specifications.
 
+For an already adopted managed deployment, these settings are not currently a
+supported activation procedure. Its sealed environment references are preserved
+across image updates, so adding host environment values does not add new sources.
+Image rollback also does not restore previous external source values. Activation
+requires a reviewed configuration operation that updates both settings together,
+preserves them across recreation, and explicitly restores the previous pair.
+Do not patch container environments or sealed deployment files manually, or
+discard the managed volume to introduce these settings.
+
 The connector DATA URL and advertised mobile origin derive from the selected
 control URL. Refresh the mobile descriptor after switching, and start fresh
 admission and tickets; existing sessions are not migrated. The paired Core URL
