@@ -590,3 +590,5 @@ export {
   markSessionSwitch,
   type SwitchTiming,
 } from './sessionSwitchTiming.js';
+
+export type { TransportLane, TransportRequestInit } from './api.js';

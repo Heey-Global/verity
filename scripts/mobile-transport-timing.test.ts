@@ -49,6 +49,54 @@ describe('native switch transport diagnostic contract', () => {
   });
 });
 
+describe('native transport lane contract', () => {
+  it('partitions pooled connections by validated lane and strips internal metadata', () => {
+    // Omitting the key field silently restores contention while every request succeeds.
+    const key = pool.match(/private struct PinnedHTTPSessionKey:[\s\S]*?\n\}/u)?.[0];
+    expect(key).toContain('let lane: PinnedHTTPTransportLane');
+    expect(pool.match(/let key = PinnedHTTPSessionKey\([\s\S]*?lock.lock/u)?.[0]).toContain(
+      'lane: lane',
+    );
+    expect(pool).toContain('lane: PinnedHTTPTransportLane = .background');
+    const lane = pool.match(/enum PinnedHTTPTransportLane:[\s\S]*?\n\}/u)?.[0];
+    expect(lane).toContain('x-verity-transport-lane');
+    expect(lane).toContain('$0.key.lowercased()');
+    expect(lane).toContain('Self.init(rawValue:)');
+    expect(lane).toContain('?? .background');
+    expect(lane).toContain('setValue(nil, forHTTPHeaderField: "x-verity-transport-lane")');
+    const acquisitions = [...transport.matchAll(/httpPool.acquire\([\s\S]*?\n\s*defer/gu)];
+    expect(acquisitions.length).toBeGreaterThan(0);
+    for (const [call] of acquisitions) expect(call).toContain('lane: lane');
+    const perform = transport.slice(
+      transport.indexOf('private func performRequest'),
+      transport.indexOf('private func requestResponse'),
+    );
+    const download = transport.slice(
+      transport.indexOf('AsyncFunction("download")'),
+      transport.indexOf('AsyncFunction("upload")'),
+    );
+    for (const block of [perform, download]) {
+      expect(block.indexOf('PinnedHTTPTransportLane.removeHeader(from: &request)')).toBeGreaterThan(
+        0,
+      );
+      expect(block.indexOf('PinnedHTTPTransportLane.removeHeader(from: &request)')).toBeLessThan(
+        block.indexOf('httpPool.acquire'),
+      );
+    }
+  });
+
+  it('advertises stripping support before JavaScript sends the internal header', () => {
+    const js = readFileSync(
+      new URL('../apps/mobile/lib/pinnedTransport.ts', import.meta.url),
+      'utf8',
+    );
+    expect(transport).toContain('Function("supportsTransportLanes") { true }');
+    expect(
+      js.match(/if \(native\(\).supportsTransportLanes\?\.\(\)\) \{[\s\S]*?\n {4}\}/u)?.[0],
+    ).toContain("headers['x-verity-transport-lane'] = init.transportLane ?? 'background'");
+  });
+});
+
 // The tunnel typecheck must include the actual provider of the delegate's timing type.
 it('includes the delegate timing dependency in all native probe compilation units', () => {
   const workflow = parse(
