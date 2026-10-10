@@ -12,6 +12,10 @@ struct VerityWatchApp: App {
   var body: some Scene {
     WindowGroup {
       CaptureView().environmentObject(CaptureStore.shared)
+        .onOpenURL { url in
+          guard WatchCaptureComplication.isRecordingURL(url) else { return }
+          CaptureStore.shared.start()
+        }
     }
   }
 }

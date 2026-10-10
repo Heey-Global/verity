@@ -1,14 +1,14 @@
-// Companion Watch app and its complication share only the pending capture count.
+// Embedded in VerityWatch, not in the iPhone app's PlugIns directory.
 /** @type {import('@bacons/apple-targets/app.plugin').ConfigFunction} */
 module.exports = (config) => ({
-  type: 'watch',
-  name: 'VerityWatch',
+  type: 'watch-widget',
+  name: 'VerityWatchComplication',
   displayName: 'Verity',
-  bundleIdentifier: '.watchkitapp',
+  bundleIdentifier: '.watchkitapp.complication',
   deploymentTarget: '11.0',
-  icon: '../../assets/brand/verity-v-app-icon-source.png',
+  frameworks: ['SwiftUI', 'WidgetKit'],
   colors: { $accent: '#ff35da' },
-  frameworks: ['SwiftUI', 'AVFoundation', 'WatchConnectivity', 'WidgetKit'],
+  images: { VerityMark: '../../assets/brand/verity-v-mark.png' },
   entitlements: {
     'com.apple.security.application-groups': [`group.${config.ios.bundleIdentifier}.watch-capture`],
   },

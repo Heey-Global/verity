@@ -2,6 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>build.verity.watch.capture</string>
+      <key>CFBundleURLSchemes</key><array><string>verity-watch</string></array>
+    </dict>
+  </array>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Verity records your voice on the watch so your iPhone can turn it into a task.</string>
 </dict>
