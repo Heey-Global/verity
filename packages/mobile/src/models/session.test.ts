@@ -971,6 +971,75 @@ describe('SessionModel — sendTurn', () => {
 });
 
 describe('SessionModel — cancel (#79)', () => {
+  it('freezes text and activity immediately, including late events and busy polls', async () => {
+    const { connect, sockets } = recordingConnect();
+    let finishCancel!: (result: { sessionId: string; cancelled: boolean }) => void;
+    const client = stubClient();
+    client.cancelTurn = vi.fn().mockReturnValue(
+      new Promise((resolve) => {
+        finishCancel = resolve;
+      }),
+    );
+    client.getActivity = vi.fn().mockResolvedValue({ busy: true, queued: [] });
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+      sockets[0]?.emitEvent(2, { t: 'text', delta: 'visible' });
+      expect(model.state.activityAnimating).toBe(true);
+
+      const cancellation = model.cancel();
+      expect(model.state.working).toBe(false);
+      expect(model.state.busy).toBe(false);
+      expect(model.state.activityAnimating).toBe(false);
+      sockets[0]?.emitEvent(3, { t: 'text', delta: ' late' });
+      model.refreshActivity();
+      await flush();
+      expect(agentTexts(model.state)).toEqual(['visible']);
+      expect(model.state.working).toBe(false);
+
+      finishCancel({ sessionId: 's1', cancelled: true });
+      await cancellation;
+      sockets[0]?.emitEvent(4, { t: 'status', state: 'completed' });
+      expect(agentTexts(model.state)).toEqual(['visible']);
+      expect(model.state.activityAnimating).toBe(false);
+      sockets[0]?.emitEvent(5, { t: 'prompt', text: 'next' });
+      expect(model.state.working).toBe(true);
+    } finally {
+      model.stop();
+    }
+  });
+
+  it('restores buffered output and activity when cancellation fails', async () => {
+    const { connect, sockets } = recordingConnect();
+    let rejectCancel!: (error: Error) => void;
+    const client = stubClient();
+    client.cancelTurn = vi.fn().mockReturnValue(
+      new Promise((_, reject) => {
+        rejectCancel = reject;
+      }),
+    );
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+      sockets[0]?.emitEvent(2, { t: 'text', delta: 'visible' });
+      const cancellation = model.cancel();
+      sockets[0]?.emitEvent(3, { t: 'text', delta: ' buffered' });
+      rejectCancel(new Error('offline'));
+      await cancellation;
+      expect(agentTexts(model.state)).toEqual(['visible buffered']);
+      expect(model.state.activityAnimating).toBe(true);
+      expect(model.state.cancelError).toBe('failed to stop turn');
+    } finally {
+      model.stop();
+    }
+  });
+
   it('calls cancelTurn and leaves no error on success (incl. a no-op)', async () => {
     const { connect } = recordingConnect();
     const cancelTurn = vi.fn().mockResolvedValue({ sessionId: 's1', cancelled: false });

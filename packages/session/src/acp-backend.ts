@@ -48,10 +48,10 @@ const ZERO_USAGE: Usage = {
 const AGENT_KILL_ESCALATION_MS = 5_000;
 
 /**
- * How long a cooperative `session/cancel` is given before the process boundary is used
- * instead. A different clock from {@link AGENT_KILL_ESCALATION_MS} — this one waits on
- * an adapter that is still answering JSON-RPC, that one on a process that has been
- * signalled — which currently happen to be the same length. They move independently.
+ * How long timeout cancellation is given before the process boundary is used
+ * instead. Explicit user cancellation terminates the process immediately.
+ * Unlike {@link AGENT_KILL_ESCALATION_MS}, this waits for an adapter still
+ * answering JSON-RPC rather than a process already signalled.
  */
 const COOPERATIVE_CANCEL_TIMEOUT_MS = 5_000;
 
@@ -63,20 +63,21 @@ const COOPERATIVE_CANCEL_TIMEOUT_MS = 5_000;
 const killedAgents = new WeakSet<SpawnedProcess>();
 
 /**
- * SIGTERM the agent (which {@link nodeSpawner} widens to its process group and its
- * escaped `setsid` subtrees), then SIGKILL it if it is still there. The escalation timer
- * is unref'd and cleared on exit, so a normally-settling turn neither waits on it nor
+ * Terminate the agent and its escaped tool processes through {@link nodeSpawner}.
+ * Explicit Stop uses SIGKILL immediately; ordinary teardown allows SIGTERM grace.
+ * The escalation timer is unref'd and cleared on exit, so a normally-settling turn neither waits on it nor
  * holds the event loop open. Single-shot per child: the first call's escalation stands.
  */
-function killAgent(child: SpawnedProcess): void {
-  if (killedAgents.has(child)) return;
+function killAgent(child: SpawnedProcess, immediate = false): void {
+  if (killedAgents.has(child) && !immediate) return;
   killedAgents.add(child);
   try {
-    child.kill('SIGTERM');
+    child.kill(immediate ? 'SIGKILL' : 'SIGTERM');
   } catch {
     // A pluggable/remote spawner can lose its channel while the process remains alive.
     // Keep scheduling the independent hard-kill attempt below.
   }
+  if (immediate) return;
   // Guarded: `Spawner` is a pluggable seam, and this call is the one that runs detached
   // in a timer. A throwing `kill` — a remote runner client whose channel has closed, a
   // test double — would otherwise leave the process with an uncaught exception rather
@@ -653,13 +654,20 @@ export async function runAcpTurn(
   });
   const stop = (operatorCancel: boolean): void => {
     stopped = true;
+    acceptingSteering = false;
     wakeRetry?.();
     if (operatorCancel) aborted = true;
     if (cancelSession === undefined) {
-      killAgent(child);
+      killAgent(child, operatorCancel);
       return;
     }
     cancelSession();
+    if (operatorCancel) {
+      // A cooperative adapter can keep generating and running tools after cancel.
+      // Stop its process tree immediately instead of waiting for its reply.
+      killAgent(child, true);
+      return;
+    }
     // ACP cancellation is cooperative. Keep the process boundary as a hard
     // backstop if a broken adapter never settles its prompt request.
     cancelKillTimer ??= setTimeout(() => killAgent(child), COOPERATIVE_CANCEL_TIMEOUT_MS);
@@ -682,6 +690,7 @@ export async function runAcpTurn(
     // tool name is also how a mode picker is told apart from an ordinary
     // request, and BOTH answers can move the session.
     await drainUpdates().catch(() => undefined);
+    if (stopped) return { outcome: { outcome: 'cancelled' } };
     const id = request.toolCall.toolCallId;
     const name = adapter.knownToolName(id) ?? toolName(request.toolCall, metaNamespace);
     // Decided once, from the tool name the card carried, so the answer and the
@@ -746,6 +755,7 @@ export async function runAcpTurn(
   };
 
   const onUpdate = async (update: SessionUpdate): Promise<void> => {
+    if (stopped) return;
     // The agent switches modes on its own — a model switch that clamps a mode
     // the new model cannot run, an approval Verity answered generically. Its
     // posture is the operator's, not the turn's, so pull it back rather than
@@ -809,7 +819,7 @@ export async function runAcpTurn(
           // arm steering. Arm on decode rather than inside `onUpdate`, so the
           // channel opens as soon as the agent has spoken instead of trailing the
           // persist queue.
-          if (loadingSession) return Promise.resolve();
+          if (loadingSession || stopped) return Promise.resolve();
           if (isAgentContent(params.update)) turnHasAgentContent = true;
           return queueUpdate(params.update);
         })
@@ -1056,6 +1066,9 @@ export async function runAcpTurn(
             prompt: promptBlocks(turnOpts, profile),
           });
           acceptingSteering = false;
+          // A response already queued on stdout can outlive process termination.
+          // Do not let its callback settle the stopped turn a second time.
+          if (aborted) throw new Error('ACP turn cancelled');
           // Drain first: a `current_mode_update` decoded alongside the prompt
           // response only fires its pull-back once the queue admits it, so a tail
           // sampled before the drain would miss the restore the drain itself
@@ -1085,9 +1098,12 @@ export async function runAcpTurn(
             }
           }
           await drainUpdates();
+          if (aborted) throw new Error('ACP turn cancelled');
           closedOut = true;
-          await writeAll(writer, adapter.flush());
-          await writeAll(writer, topLevelText.flush());
+          if (!aborted) {
+            await writeAll(writer, adapter.flush());
+            await writeAll(writer, topLevelText.flush());
+          }
           if (!modeSettled) {
             // Giving up on the pull-back leaves the same blind spot a refused one
             // would: the turn ran on in a posture nobody chose. Unknown rather
@@ -1204,10 +1220,12 @@ export async function runAcpTurn(
     const message = error instanceof Error ? error.message : String(error);
     await drainUpdates().catch(() => undefined);
     closedOut = true;
-    // Preserve already-streamed prose and any completed Verity contract even
-    // when the ACP process disconnects before returning PromptResponse.
-    await writeAll(writer, adapter.flush()).catch(() => undefined);
-    await writeAll(writer, topLevelText.flush()).catch(() => undefined);
+    // Unexpected disconnects preserve buffered prose and completed contracts.
+    // An explicit Stop must not publish another text fragment or action card.
+    if (!aborted) {
+      await writeAll(writer, adapter.flush()).catch(() => undefined);
+      await writeAll(writer, topLevelText.flush()).catch(() => undefined);
+    }
     // EOF can precede the process close event; wait briefly for drained stderr and
     // exit metadata, without stalling a failure on a wedged remote channel.
     let exitTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1250,9 +1268,8 @@ export async function runAcpTurn(
     const failedBeforeExecution =
       !aborted && boundSessionId === undefined && isExplicitPreExecutionRejection(stderr);
     // An operator cancel reaches this path whenever the adapter dies before
-    // answering `session/prompt` — cooperative `session/cancel` is ignored, or
-    // the 5s backstop SIGTERMs the process — and `aborted` is set ONLY by the
-    // operator signal (the turn timeout stops via `stop(false)`). The
+    // answering `session/prompt` after its process tree is killed. `aborted` is
+    // set ONLY by the operator signal (the turn timeout stops via `stop(false)`). The
     // disconnect is then self-inflicted, so record it exactly like the
     // cooperative cancel above and like the native backend: no `error` row for
     // a stop the operator asked for, and no terminal `status`, which the

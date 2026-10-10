@@ -320,6 +320,9 @@ export class SessionModel {
   private _olderLoadNeedsContinuation = false;
   private _olderLoadGeneration = 0;
   private _cancelError: string | undefined;
+  private _cancelRequested = false;
+  private _cancelSettled = false;
+  private _cancelAtSeq = 0;
   // The tool_use_id of a permission decision POST in flight (#149), or undefined.
   private _decidingPermission: string | undefined;
   private _permissionError: string | undefined;
@@ -350,6 +353,15 @@ export class SessionModel {
       sessionId: opts.sessionId,
       transport: opts.transport,
       onUpdate: (session) => {
+        if (this._cancelRequested) {
+          if (this._cancelSettled && session.running) {
+            this._cancelRequested = false;
+          } else {
+            if (this.stream.settledSeq > this._cancelAtSeq) this._cancelSettled = true;
+            // Already-buffered output must not keep changing the transcript after Stop.
+            session = { ...session, messages: this._session.messages };
+          }
+        }
         if (session.pendingPermission?.toolUseId !== this._session.pendingPermission?.toolUseId) {
           this._activityAnimating = undefined;
           this._permissionChangedAfterActivityRequest = this._activityRequest;
@@ -409,7 +421,8 @@ export class SessionModel {
 
   get state(): SessionModelState {
     const working =
-      this._busy || (this._session.running && this.stream.activitySeq > this._settledAtSeq);
+      !this._cancelRequested &&
+      (this._busy || (this._session.running && this.stream.activitySeq > this._settledAtSeq));
     const awaiting =
       this._session.pendingPermission !== undefined ||
       this._session.status === 'awaiting_input' ||
@@ -456,7 +469,7 @@ export class SessionModel {
         createdAt: p.createdAt,
         ...(p.attachments !== undefined ? { attachments: p.attachments } : {}),
       })),
-      busy: this._busy,
+      busy: !this._cancelRequested && this._busy,
       // The reconciled "agent is working" signal that drives the Stop button +
       // activity line. `_busy` is server-authoritative (it already counts open
       // background tasks via `isBusy || derived==='running'`). The reducer's eager
@@ -1158,6 +1171,7 @@ export class SessionModel {
     // async via onChange, so a fast double-tap can call this twice before the
     // re-render — without this guard both would POST a turn from one intent.
     if (this._sending) return false;
+    this._cancelRequested = false;
     this._sending = true;
     this._sendError = undefined;
     this._cancelError = undefined; // a new turn clears a stale stop-error banner
@@ -1215,8 +1229,8 @@ export class SessionModel {
 
   /**
    * Stop the in-flight turn (issue #79). Fire-and-forget like {@link sendTurn}:
-   * the `interrupted` event + the cleared `running` flag arrive over the stream,
-   * so there's no optimistic local state to flip here. A failure sets
+   * Freeze output and activity immediately while the server terminates the turn.
+   * A failure restores the live stream and sets
    * {@link SessionModelState.cancelError}; a no-op (`cancelled: false`, the
    * session was already idle) is silent.
    *
@@ -1228,6 +1242,9 @@ export class SessionModel {
    */
   async cancel(opts?: { force?: boolean }): Promise<RestoredQueuedTurn[]> {
     this._cancelError = undefined;
+    this._cancelRequested = true;
+    this._cancelSettled = !this._session.running && !this._busy;
+    this._cancelAtSeq = this.stream.newestSeq;
     this.emit();
     try {
       const result = await this.opts.client.cancelTurn(this.opts.sessionId, opts);
@@ -1240,6 +1257,8 @@ export class SessionModel {
         ...(item.attachments !== undefined ? { attachments: item.attachments } : {}),
       }));
     } catch (error) {
+      this._cancelRequested = false;
+      this._session = this.stream.state;
       this._cancelError = error instanceof VerityApiError ? error.message : 'failed to stop turn';
       this.emit();
       return [];

@@ -2353,6 +2353,7 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
       displayPrompt: 'queued while stopping',
     });
     await vi.waitFor(() => expect(enqueueStarted).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(turnSignal).toBeDefined());
     const stop = conductor.stopSession('s1');
     try {
       // A stalled durable enqueue must not delay signalling the active agent.
@@ -2370,6 +2371,36 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     });
     expect(conductor.queuedCount('s1')).toBe(0);
     expect(await ctx.store.listQueuedTurns()).toHaveLength(0);
+  });
+
+  it('Stop during runner acquisition never launches the cancelled turn', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    let releaseRunner!: () => void;
+    const runnerGate = new Promise<void>((resolve) => {
+      releaseRunner = resolve;
+    });
+    const startTurn = vi.fn<RunnerClient['startTurn']>();
+    const runnerRequested = vi.fn();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: scriptedBackend({ text: 'unused' }).backend,
+      worktreeExists: async () => true,
+      runner: async () => {
+        runnerRequested();
+        await runnerGate;
+        return { startTurn };
+      },
+    });
+    await conductor.dispatchTurn('s1', 'one');
+    await vi.waitFor(() => expect(runnerRequested).toHaveBeenCalledOnce());
+    try {
+      await expect(conductor.stopSession('s1')).resolves.toMatchObject({ cancelled: true });
+    } finally {
+      releaseRunner();
+    }
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect(startTurn).not.toHaveBeenCalled();
+    expect((await ctx.store.getEvents('s1')).at(-1)?.t).toBe('interrupted');
   });
 
   it('stopSession still cancels the active turn when durable queue cleanup fails', async () => {

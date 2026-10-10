@@ -1898,6 +1898,30 @@ describe('AcpClaudeBackend', () => {
     );
   });
 
+  it('kills a live adapter immediately on Stop', async () => {
+    const controller = new AbortController();
+    const fake = acpSpawner({ holdPrompt: true });
+    const run = new AcpClaudeBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-session-immediate-stop',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Do it',
+      spawner: fake.spawner,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() =>
+      expect(fake.writes.some((write) => write.method === 'session/prompt')).toBe(true),
+    );
+    // A cooperative cancellation ACK cannot prove tools stopped executing.
+    controller.abort();
+    expect(fake.kill).toHaveBeenCalledWith('SIGKILL');
+    fake.finishPrompt();
+    expect(await run).toMatchObject({ aborted: true });
+    const events = await ctx.store.getEvents('verity-session-immediate-stop');
+    expect(events.filter((event) => event.t === 'error')).toEqual([]);
+  });
+
   it('settles an operator cancel without badging the session crashed', async () => {
     const controller = new AbortController();
     const fake = acpSpawner({ cancel: { operator: controller } });
@@ -1910,15 +1934,13 @@ describe('AcpClaudeBackend', () => {
       spawner: fake.spawner,
       signal: controller.signal,
     });
-    expect(result).toMatchObject({ exitCode: 0, aborted: true });
-    // Like the native Claude backend, an aborted turn ends on its `result`; the
-    // conductor appends the canonical `interrupted` marker. A terminal `status`
-    // here would stick as `crashed` in the mobile reducer.
+    expect(fake.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(result).toMatchObject({ exitCode: 143, aborted: true });
+    // Queued prose is dropped on Stop. The conductor appends `interrupted`;
+    // a terminal crash status here would incorrectly badge the stopped session.
     expect((await ctx.store.getEvents('verity-session-6')).map((event) => event.t)).toEqual([
       'session',
       'status',
-      'text',
-      'result',
       'diagnostic',
     ]);
   });
@@ -1935,16 +1957,13 @@ describe('AcpClaudeBackend', () => {
       spawner: fake.spawner,
       signal: controller.signal,
     });
-    // An adapter that ignores `session/cancel` dies on the kill backstop, so the
-    // prompt never returns and the run settles through the error path. That is
-    // still the operator's stop: streamed prose is kept, but no `error` row and
-    // no terminal `status` — the diagnostic lives in `stderr` instead.
+    // Killing the adapter leaves the prompt unanswered, but must not record
+    // a crash or publish queued prose after the requested stop.
     expect(result).toMatchObject({ aborted: true, exitCode: 143 });
     expect(result.stderr).toContain('closed');
     expect((await ctx.store.getEvents('verity-session-8')).map((event) => event.t)).toEqual([
       'session',
       'status',
-      'text',
       'diagnostic',
     ]);
   });
@@ -1967,7 +1986,7 @@ describe('AcpClaudeBackend', () => {
     // settles it as an interrupt, and so must this path: no `error` row, no
     // terminal `status`, and the conductor appends `interrupted`.
     expect(result).toMatchObject({ aborted: true, exitCode: 143 });
-    expect(result.stderr).toContain('ede_diagnostic');
+    expect(result.stderr).toContain('closed');
     expect(
       (await ctx.store.getEvents('verity-session-ede-cancel')).map((event) => event.t),
     ).toEqual(['session', 'status', 'diagnostic']);
