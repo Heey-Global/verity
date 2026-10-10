@@ -79,7 +79,7 @@ function AttendeeSettings({ client, writable }: { client: VerityClient; writable
   return (
     <SettingsGroup
       title="Attendee"
-      description="Online meeting bots and live transcripts. Requires premium Uplink / Online Sharing."
+      description="Online meeting bots and live transcripts. Requires Verity Premium Online sharing."
     >
       <SettingsPanel>
         <SecretPasteField

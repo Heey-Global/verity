@@ -1,3 +1,5 @@
+import { PremiumBadge } from '../premium/PremiumBadge';
+import { premiumFeatures } from '../premium/premiumFeatures';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -147,7 +149,9 @@ function previewError(caught: unknown): string {
   return message;
 }
 
-type PublicSharing = 'available' | 'premium-required' | 'unavailable';
+const ONLINE_SHARING = premiumFeatures[0].name;
+
+type PublicSharing = 'available' | 'premium-required' | 'unavailable' | 'disabled';
 
 type PreviewTab = 'server' | 'folder';
 
@@ -1462,11 +1466,11 @@ export function StaticPreviewSheet({
       return (
         <View
           style={[styles.card, styles.cardPublicActive, stopping ? styles.cardDimmed : null]}
-          accessibilityLabel="Over the internet"
+          accessibilityLabel={ONLINE_SHARING}
         >
           {renderCardHeading({
             icon: 'globe',
-            title: 'Over the internet',
+            title: ONLINE_SHARING,
             description: share.pinLocked
               ? 'Visitors need the link and the PIN.'
               : 'Send link and PIN to whoever should see it.',
@@ -1595,10 +1599,10 @@ export function StaticPreviewSheet({
     if (publicSharing !== 'available') {
       const premium = publicSharing === 'premium-required';
       return (
-        <View style={styles.card} accessibilityLabel="Over the internet">
+        <View style={styles.card} accessibilityLabel={ONLINE_SHARING}>
           {renderCardHeading({
             icon: 'globe',
-            title: 'Over the internet',
+            title: ONLINE_SHARING,
             description: publicDescription,
             status: (
               <View style={[styles.badge, premium ? styles.badgePremium : styles.badgeMuted]}>
@@ -1606,7 +1610,11 @@ export function StaticPreviewSheet({
                   style={[styles.badgeDot, premium ? styles.badgeDotPremium : styles.badgeDotMuted]}
                 />
                 <Text style={styles.badgeText}>
-                  {premium ? 'Premium' : 'Temporarily unavailable'}
+                  {premium
+                    ? 'Premium'
+                    : publicSharing === 'disabled'
+                      ? 'Off'
+                      : 'Temporarily unavailable'}
                 </Text>
               </View>
             ),
@@ -1614,9 +1622,11 @@ export function StaticPreviewSheet({
           <Text style={styles.body}>
             {premium
               ? 'Public sharing is part of Verity Premium.'
-              : 'Uplink is not reachable right now. Public links return once it is.'}
+              : publicSharing === 'disabled'
+                ? 'Online sharing is switched off in Verity Premium settings.'
+                : 'Uplink is not reachable right now. Public links return once it is.'}
           </Text>
-          {premium && onOpenSettings ? (
+          {(premium || publicSharing === 'disabled') && onOpenSettings ? (
             <Pressable
               onPress={onOpenSettings}
               accessibilityRole="button"
@@ -1632,10 +1642,10 @@ export function StaticPreviewSheet({
     const otherFolder = conflictingFolderShare(selection);
     if (otherFolder) {
       return (
-        <View style={styles.card} accessibilityLabel="Over the internet">
+        <View style={styles.card} accessibilityLabel={ONLINE_SHARING}>
           {renderCardHeading({
             icon: 'globe',
-            title: 'Over the internet',
+            title: ONLINE_SHARING,
             description:
               'Only one folder per session can be online. Stop the existing link before sharing another folder.',
           })}
@@ -1653,10 +1663,10 @@ export function StaticPreviewSheet({
       );
     }
     return (
-      <View style={styles.card} accessibilityLabel="Over the internet">
+      <View style={styles.card} accessibilityLabel={ONLINE_SHARING}>
         {renderCardHeading({
           icon: 'globe',
-          title: 'Over the internet',
+          title: ONLINE_SHARING,
           description: publicDescription,
           status: justStopped ? (
             <Text style={styles.caption} accessibilityLiveRegion="polite">
@@ -1875,7 +1885,7 @@ export function StaticPreviewSheet({
             color={online ? theme.colors.tone.done : theme.colors.textMuted}
           />
           <View style={styles.rowText}>
-            <Text style={styles.cardTitle}>Shared online</Text>
+            <Text style={styles.cardTitle}>{ONLINE_SHARING}</Text>
             {online?.publicOrigin ? (
               <Pressable
                 onPress={() => {
@@ -1947,14 +1957,18 @@ export function StaticPreviewSheet({
               <Icon name="share" size={20} color={theme.colors.primary} />
             </Pressable>
           ) : null}
-          {publicSharing === 'premium-required' && !online ? (
+          {(publicSharing === 'premium-required' || publicSharing === 'disabled') && !online ? (
             <Pressable
               onPress={onOpenSettings}
               disabled={!onOpenSettings}
               accessibilityRole="button"
               accessibilityLabel="Open Premium settings"
             >
-              <Text style={styles.accessLink}>Premium</Text>
+              {publicSharing === 'disabled' ? (
+                <Text style={styles.accessLink}>Off · Settings</Text>
+              ) : (
+                <PremiumBadge />
+              )}
             </Pressable>
           ) : (
             <Pressable
@@ -1963,8 +1977,8 @@ export function StaticPreviewSheet({
               accessibilityRole="switch"
               accessibilityLabel={
                 overview
-                  ? `Shared online for ${selection.server.name} on port ${String(selection.server.port)}`
-                  : 'Shared online'
+                  ? `${ONLINE_SHARING} for ${selection.server.name} on port ${String(selection.server.port)}`
+                  : ONLINE_SHARING
               }
               accessibilityState={{
                 checked: !!online,

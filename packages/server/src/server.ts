@@ -330,6 +330,7 @@ import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import { claudeSubscriptionPlan, codexSubscriptionPlan } from './agent-subscription.js';
 import { registerHealthRoute } from './health-route.js';
 import type { RemoteControlDescriptor } from './uplink-control-client.js';
+import type { PreviewSharingCapability } from './preview-capability.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import { runtimeServerVersion } from './runtime-version.js';
@@ -978,6 +979,8 @@ function publicVeritySettings(
     googleDriveConnected:
       configured(googleDriveRefreshToken) && hasGoogleDriveScopes(settings.googleGrantedScopes),
     uplinkSubscriptionKeyConfigured: configured(uplinkSubscriptionKey),
+    premiumSharingEnabled: settings.premiumSharingEnabled !== false,
+    premiumRemoteAccessEnabled: settings.premiumRemoteAccessEnabled !== false,
     // The app reads this to build the OAuth request. Prefer the env-baked client
     // id (ADR 0009) so it is present even before the first connect; fall back to
     // whatever the connection persisted.
@@ -1146,12 +1149,7 @@ export interface ServerDeps {
   /** Dev servers the agent sets up and Verity runs (concept 2.6). */
   managedDevServerManager?: ManagedDevServerManager | undefined;
   previewSharingCapability?:
-    | (() =>
-        | Promise<'available' | 'premium-required' | 'unavailable'>
-        | 'available'
-        | 'premium-required'
-        | 'unavailable')
-    | undefined;
+    (() => Promise<PreviewSharingCapability> | PreviewSharingCapability) | undefined;
   previewShareManager?: PreviewShareManager | undefined;
   remoteControlDescriptor?: (() => RemoteControlDescriptor) | undefined;
   runtimeDiagnostics?: ReturnType<typeof createRuntimeDiagnostics> | undefined;
@@ -1162,6 +1160,9 @@ export interface ServerDeps {
     | undefined;
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: (() => void) | undefined;
+  /** Apply the premium feature switches after either of them changed. */
+  onPremiumFeatureSwitchesChanged?:
+    ((settings: VeritySettingsRecord) => void | Promise<void>) | undefined;
   /** Rewrite the OpenCode config directory after its central settings change. */
   onOpenCodeSettingsChanged?:
     ((settings: VeritySettingsRecord) => void | Promise<void>) | undefined;
@@ -5260,6 +5261,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.onUplinkCredentialsChanged !== undefined
       ? { onUplinkCredentialsChanged: deps.onUplinkCredentialsChanged }
       : {}),
+    ...(deps.onPremiumFeatureSwitchesChanged !== undefined
+      ? { onPremiumFeatureSwitchesChanged: deps.onPremiumFeatureSwitchesChanged }
+      : {}),
     ...(deps.onOpenCodeSettingsChanged !== undefined
       ? { onOpenCodeSettingsChanged: deps.onOpenCodeSettingsChanged }
       : {}),
@@ -7028,6 +7032,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       .optional(),
     opencodeDisabledModels: z.string().max(100_000).nullable().optional(),
     uplinkSubscriptionKey: z.string().trim().min(1).max(4096).nullable().optional(),
+    premiumSharingEnabled: z.boolean().optional(),
+    premiumRemoteAccessEnabled: z.boolean().optional(),
   });
 
   async function runProjectDelete(

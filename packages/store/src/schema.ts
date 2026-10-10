@@ -507,6 +507,9 @@ export interface VeritySettingsTable {
    * is assigned by the Uplink during the first successful handshake. */
   uplink_subscription_key: ColumnType<string | null, string | null | undefined, string | null>;
   uplink_installation_id: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Operator switches for the paid Uplink features (see VeritySettingsRecord). */
+  premium_sharing_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  premium_remote_access_enabled: ColumnType<boolean, boolean | undefined, boolean>;
   /** VESTIGIAL — no longer read or written. These were the nightly sandbox
    *  auto-update policy, removed once the relay reconciler started rebuilding
    *  every sandbox onto the current image after each Server restart: on a released
