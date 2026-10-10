@@ -4013,6 +4013,25 @@ it('does not attach continued old-model pagination to a returning gesture', asyn
   expect(original.phases).toEqual([]);
 });
 
+it.each([undefined, 'question-price'])(
+  'preserves optional spoken-question identity while accepting older servers: %s',
+  async (questionId) => {
+    const request = {
+      kind: 'research',
+      request: 'research its monthly price',
+      ...(questionId ? { questionId, questionTitle: 'What does the plan cost?' } : {}),
+    };
+    const { fetch } = fakeFetch(json({ requests: [request] }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(
+      await client.checkSpokenMeetingRequest('session', 'meeting', {
+        utterance: 'Verity, research its monthly price',
+        context: '',
+      }),
+    ).toEqual([request]);
+  },
+);
+
 it('sends correlation headers only for an explicit timed session request', async () => {
   const { fetch, calls } = fakeFetchSequence(
     json({ events: [], hasMore: false }),

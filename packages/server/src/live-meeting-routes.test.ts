@@ -663,3 +663,425 @@ it('files server-owned online meetings through the same finished-meeting hook', 
     await online.close();
   }
 });
+
+it('persists immediate question checks and reuses their identity after recognition corrections', async () => {
+  const checked = Fastify();
+  const query = vi.fn().mockResolvedValueOnce(
+    JSON.stringify({
+      questions: [{ question: 'Was kostet der Plan?', quote: 'Was kostet der Plan?' }],
+    }),
+  );
+  registerLiveMeetingRoutes(checked, ctx.store, { query, delayMs: 60_000 });
+  try {
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, transcript: 'Was kostet der Plan?' },
+    });
+    await vi.waitFor(
+      async () =>
+        expect((await ctx.store.liveMeetings.insights('session-1', 'meeting-1'))?.length).toBe(1),
+      { timeout: 5000 },
+    );
+    const first = (await ctx.store.liveMeetings.insights('session-1', 'meeting-1'))![0]!;
+    query.mockResolvedValueOnce(
+      JSON.stringify({
+        questions: [
+          {
+            question: 'Was kostet der Pro-Plan?',
+            quote: 'Was kostet der Pro-Plan?',
+            existingId: first.id,
+          },
+        ],
+      }),
+    );
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, revision: 2, transcript: 'Was kostet der Pro-Plan?' },
+    });
+    await vi.waitFor(
+      async () =>
+        expect(
+          (await ctx.store.liveMeetings.insights('session-1', 'meeting-1'))?.[0]?.summary,
+        ).toBe('Was kostet der Pro-Plan?'),
+      { timeout: 5000 },
+    );
+    const all = (await ctx.store.liveMeetings.insights('session-1', 'meeting-1'))!;
+    expect(all).toHaveLength(1);
+    expect(all[0]?.id).toBe(first.id);
+    expect(query).toHaveBeenCalledTimes(2);
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, revision: 3, transcript: 'Der Preis steht bereits fest.' },
+    });
+    await vi.waitFor(
+      async () =>
+        expect(await ctx.store.liveMeetings.insights('session-1', 'meeting-1')).toHaveLength(0),
+      { timeout: 5000 },
+    );
+    expect(query).toHaveBeenCalledTimes(2);
+  } finally {
+    await checked.close();
+  }
+});
+
+it('keeps explicit questions out of periodic claim cards even when model output includes them', async () => {
+  const checked = Fastify();
+  const question = 'What is the release budget?';
+  const query = vi.fn().mockResolvedValue(
+    JSON.stringify({
+      insights: [
+        { kind: 'research', summary: question, evidenceA: question },
+        {
+          kind: 'research',
+          summary: 'Check the budget claim.',
+          evidenceA: 'The budget is one million euros.',
+        },
+      ],
+    }),
+  );
+  registerLiveMeetingRoutes(checked, ctx.store, { query, delayMs: 1 });
+  await checked.ready();
+  try {
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: {
+        ...meeting,
+        transcript: `${question} The budget is one million euros. We need to verify the figures before approval.`,
+      },
+    });
+    await vi.waitFor(async () => {
+      const insights = await ctx.store.liveMeetings.insights('session-1', 'meeting-1');
+      expect(insights).toHaveLength(1);
+      expect(insights?.[0]?.evidenceA).toBe('The budget is one million euros.');
+    });
+  } finally {
+    await checked.close();
+  }
+});
+
+it('retracts a published question when an answer follows an intervening sentence', async () => {
+  const checked = Fastify();
+  const query = vi.fn().mockImplementation(async (_session: string, prompt: string) =>
+    JSON.stringify({
+      resolvedIds: prompt.includes('Er kostet zehn Euro.')
+        ? (
+            JSON.parse(prompt.match(/Known questions: (\[[^\n]*\])/u)![1]!) as Array<{ id: string }>
+          ).map(({ id }) => id)
+        : [],
+      questions: prompt.includes('Er kostet zehn Euro.')
+        ? []
+        : [{ question: 'Was kostet der Plan?', quote: 'Was kostet der Plan?' }],
+    }),
+  );
+  registerLiveMeetingRoutes(checked, ctx.store, { query, delayMs: 60_000 });
+  try {
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, transcript: 'Was kostet der Plan? Moment, ich prüfe das.' },
+    });
+    await vi.waitFor(
+      async () =>
+        expect(await ctx.store.liveMeetings.insights('session-1', 'meeting-1')).toHaveLength(1),
+      { timeout: 5000 },
+    );
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: {
+        ...meeting,
+        revision: 2,
+        transcript: 'Was kostet der Plan? Moment, ich prüfe das. Er kostet zehn Euro.',
+      },
+    });
+    await vi.waitFor(
+      async () =>
+        expect(await ctx.store.liveMeetings.insights('session-1', 'meeting-1')).toHaveLength(0),
+      { timeout: 5000 },
+    );
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[1]?.[1]).toContain('Er kostet zehn Euro.');
+  } finally {
+    await checked.close();
+  }
+});
+
+it('preserves declarative claims beginning with question words', async () => {
+  const checked = Fastify();
+  const statements = [
+    'What we need is ten million euros.',
+    'Was wir brauchen, sind zehn Millionen Euro.',
+  ];
+  const query = vi.fn().mockResolvedValue(
+    JSON.stringify({
+      insights: statements.map((evidenceA) => ({
+        kind: 'research',
+        summary: 'Check the stated budget.',
+        evidenceA,
+      })),
+    }),
+  );
+  registerLiveMeetingRoutes(checked, ctx.store, { query, delayMs: 1 });
+  try {
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: {
+        ...meeting,
+        transcript:
+          statements.join(' ') + ' We should verify both amounts before making a decision.',
+      },
+    });
+    await vi.waitFor(async () =>
+      expect(
+        (await ctx.store.liveMeetings.insights('session-1', 'meeting-1'))
+          ?.map(({ evidenceA }) => evidenceA)
+          .sort(),
+      ).toEqual([...statements].sort()),
+    );
+  } finally {
+    await checked.close();
+  }
+});
+
+it('does not duplicate an already classified question lacking question punctuation', async () => {
+  const checked = Fastify();
+  const question = 'What does the plan cost.';
+  const query = vi.fn().mockResolvedValue(
+    JSON.stringify({
+      insights: [{ kind: 'research', summary: 'Check the plan price.', evidenceA: question }],
+    }),
+  );
+  const onFinished = vi.fn().mockResolvedValue(undefined);
+  registerLiveMeetingRoutes(checked, ctx.store, { query, delayMs: 1, onFinished });
+  try {
+    await ctx.store.liveMeetings.putMeeting({
+      id: 'meeting-1',
+      sessionId: 'session-1',
+      ...meeting,
+      ownerTokenHash: createHash('sha256').update(ownerToken).digest('hex'),
+      state: 'active',
+      transcript:
+        question + ' We need these figures before approving the plan and making a decision.',
+    });
+    await ctx.store.liveMeetings.addInsight('session-1', {
+      id: 'question-plan',
+      meetingId: 'meeting-1',
+      kind: 'research',
+      summary: 'What does the plan cost?',
+      evidenceA: question,
+      evidenceB: null,
+      sourcePath: null,
+      createdAt: 1,
+    });
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: {
+        ...meeting,
+        revision: 2,
+        state: 'ended',
+        endedAt: 1000,
+        transcript:
+          question + ' We need these figures before approving the plan and making a decision.',
+      },
+    });
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(2));
+    expect(
+      (await ctx.store.liveMeetings.insights('session-1', 'meeting-1'))?.map(({ id }) => id),
+    ).toEqual(['question-plan']);
+  } finally {
+    await checked.close();
+  }
+});
+
+it('reconciles a question published at a newer revision before batch insertion', async () => {
+  const checked = Fastify();
+  const question = 'What does the plan cost.';
+  const query = vi.fn().mockResolvedValue(
+    JSON.stringify({
+      insights: [{ kind: 'research', summary: 'Check the plan price.', evidenceA: question }],
+    }),
+  );
+  const onFinished = vi.fn().mockResolvedValue(undefined);
+  registerLiveMeetingRoutes(checked, ctx.store, {
+    query,
+    delayMs: 1,
+    minIntervalMs: 1,
+    onFinished,
+  });
+  try {
+    await ctx.store.liveMeetings.putMeeting({
+      id: 'meeting-1',
+      sessionId: 'session-1',
+      ...meeting,
+      ownerTokenHash: createHash('sha256').update(ownerToken).digest('hex'),
+      state: 'active',
+      transcript:
+        question + ' We need these figures before approving the plan and making a decision.',
+    });
+    const addInsight = ctx.store.liveMeetings.addInsight.bind(ctx.store.liveMeetings);
+    const insertion = vi
+      .spyOn(ctx.store.liveMeetings, 'addInsight')
+      .mockImplementationOnce(async (...args) => {
+        await ctx.store.liveMeetings.putMeeting({
+          id: 'meeting-1',
+          sessionId: 'session-1',
+          ...meeting,
+          ownerTokenHash: createHash('sha256').update(ownerToken).digest('hex'),
+          revision: 3,
+          state: 'ended',
+          endedAt: 1000,
+          transcript:
+            question + ' We need these figures before approving the plan and making a decision.',
+        });
+        await addInsight('session-1', {
+          id: 'question-plan',
+          meetingId: 'meeting-1',
+          kind: 'research',
+          summary: 'What does the plan cost?',
+          evidenceA: question,
+          evidenceB: null,
+          sourcePath: null,
+          createdAt: 1,
+        });
+        return addInsight(...args);
+      });
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: {
+        ...meeting,
+        revision: 2,
+        state: 'ended',
+        endedAt: 1000,
+        transcript:
+          question + ' We need these figures before approving the plan and making a decision.',
+      },
+    });
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledTimes(2));
+    expect(insertion).toHaveBeenCalled();
+    insertion.mockRestore();
+    expect(
+      (await ctx.store.liveMeetings.insights('session-1', 'meeting-1'))?.map(({ id }) => id),
+    ).toEqual(['question-plan']);
+  } finally {
+    await checked.close();
+  }
+});
+
+it.each(['http', 'controller'] as const)(
+  'binds a paraphrased spoken request only to a question in its own meeting: %s',
+  async (path) => {
+    const checked = Fastify();
+    const query = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        requests: [
+          {
+            kind: 'research',
+            request: 'research its monthly price',
+            questionId: 'question-price',
+            questionTitle: 'Injected title',
+          },
+          { kind: 'research', request: 'check the launch date', questionId: 'question-foreign' },
+          { kind: 'opinion', request: 'explain the budget', questionId: null },
+        ],
+      }),
+    );
+    const controller = registerLiveMeetingRoutes(checked, ctx.store, { query });
+    for (const [meetingId, questionId] of [
+      ['meeting-1', 'question-price'],
+      ['meeting-other', 'question-foreign'],
+    ] as const) {
+      await ctx.store.liveMeetings.putMeeting({
+        ...meeting,
+        id: meetingId,
+        sessionId: 'session-1',
+        state: 'active',
+        ownerTokenHash: createHash('sha256').update(ownerToken).digest('hex'),
+      });
+      await ctx.store.liveMeetings.addInsight('session-1', {
+        id: questionId,
+        meetingId,
+        kind: 'research',
+        summary: 'What does the plan cost?',
+        evidenceA: 'What does the plan cost?',
+        evidenceB: null,
+        sourcePath: null,
+        createdAt: 1,
+      });
+    }
+    const utterance =
+      'Verity, research its monthly price and check the launch date and explain the budget.';
+    try {
+      const requests =
+        path === 'http'
+          ? (
+              await checked.inject({
+                method: 'POST',
+                url: `${url}/addressed`,
+                payload: { utterance, context: '' },
+              })
+            ).json().requests
+          : await controller.spoken('session-1', utterance, '', 'meeting-1');
+      expect(requests).toEqual([
+        {
+          kind: 'research',
+          request: 'research its monthly price',
+          questionId: 'question-price',
+          questionTitle: 'What does the plan cost?',
+        },
+        { kind: 'research', request: 'check the launch date' },
+        { kind: 'opinion', request: 'explain the budget' },
+      ]);
+      expect(query.mock.calls[0]?.[1]).toContain('question-price');
+      expect(query.mock.calls[0]?.[1]).not.toContain('question-foreign');
+    } finally {
+      await checked.close();
+    }
+  },
+);
+
+it('reanalyzes a short transcript update while an earlier batch query is pending', async () => {
+  const checked = Fastify();
+  let finish!: (value: string) => void;
+  const result = JSON.stringify({
+    insights: [{ kind: 'research', summary: 'Verify the date.', evidenceA: 'Delivery is Friday.' }],
+  });
+  const query = vi
+    .fn()
+    .mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockResolvedValue(result);
+  registerLiveMeetingRoutes(checked, ctx.store, { query, delayMs: 1, minIntervalMs: 1 });
+  const transcript =
+    'Delivery is Friday. We discussed the schedule in detail and need to verify the date before proceeding with the project.';
+  try {
+    await checked.inject({ method: 'PUT', url, payload: { ...meeting, transcript } });
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+    await checked.inject({
+      method: 'PUT',
+      url,
+      payload: { ...meeting, revision: 2, transcript: transcript + ' Okay.' },
+    });
+    finish(result);
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(2));
+    await vi.waitFor(async () =>
+      expect(await ctx.store.liveMeetings.insights('session-1', 'meeting-1')).toEqual([
+        expect.objectContaining({ summary: 'Verify the date.' }),
+      ]),
+    );
+  } finally {
+    await checked.close();
+  }
+});

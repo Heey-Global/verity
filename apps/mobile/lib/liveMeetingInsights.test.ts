@@ -1,15 +1,13 @@
 import { meetingRequestFromPrompt } from './liveMeetingAnswers';
-import {
-  latestResearchQuestion,
-  meetingRequestPrompt,
-  researchPrompt,
-} from './liveMeetingInsights';
+import { meetingQuestionKey, meetingRequestPrompt, researchPrompt } from './liveMeetingInsights';
 
-test('offers only a question present in the recent transcript', () => {
-  expect(latestResearchQuestion('We should check this. Is the deadline still Friday?')).toBe(
-    'Is the deadline still Friday?',
+test('uses the same identity for spoken and typed variants of a question', () => {
+  expect(meetingQuestionKey('Verity, recherchiere mal, Was kostet das?')).toBe(
+    meetingQuestionKey('was kostet das'),
   );
-  expect(latestResearchQuestion('The deadline is Friday.')).toBeNull();
+  expect(meetingQuestionKey('Was kostet das?')).not.toBe(
+    meetingQuestionKey('Was kostet etwas anderes?'),
+  );
 });
 
 test('keeps research and direct requests in the same meeting context', () => {
@@ -41,6 +39,26 @@ test.each([researchPrompt, meetingRequestPrompt])(
     expect(meetingRequestFromPrompt(prompt, 'meeting-1')).toMatchObject({
       request: 'Is Friday correct?',
       requestId: 'request-1',
+    });
+  },
+);
+
+test.each([researchPrompt, meetingRequestPrompt])(
+  'preserves the complete question title through history, independently of the spoken wording',
+  (buildPrompt) => {
+    const title = 'What is the \"monthly\" price?\nIncluding tax?';
+    const prompt = buildPrompt(
+      'meeting-1',
+      'research its monthly price',
+      'context',
+      'request-1',
+      'question-price',
+      title,
+    );
+    expect(meetingRequestFromPrompt(prompt, 'meeting-1')).toMatchObject({
+      request: 'research its monthly price',
+      questionId: 'question-price',
+      questionTitle: title,
     });
   },
 );

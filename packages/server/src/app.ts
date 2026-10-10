@@ -99,6 +99,7 @@ export interface ControlPlaneDeps {
   previewShareManager?: ServerDeps['previewShareManager'];
   listenerDiscovery?: ServerDeps['listenerDiscovery'];
   localPreviewManager?: ServerDeps['localPreviewManager'];
+  managedDevServerManager?: ServerDeps['managedDevServerManager'];
   previewSharingCapability?: ServerDeps['previewSharingCapability'];
   remoteControlDescriptor?: ServerDeps['remoteControlDescriptor'];
   uplinkDiagnostics?: ServerDeps['uplinkDiagnostics'];
@@ -364,6 +365,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
     ...(deps.pushEnabled !== undefined ? { pushEnabled: deps.pushEnabled } : {}),
+    ...(deps.managedDevServerManager !== undefined
+      ? { managedDevServerManager: deps.managedDevServerManager }
+      : {}),
     ...(deps.listenerDiscovery !== undefined ? { listenerDiscovery: deps.listenerDiscovery } : {}),
     ...(deps.localPreviewManager !== undefined
       ? { localPreviewManager: deps.localPreviewManager }

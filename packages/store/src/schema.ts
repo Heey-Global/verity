@@ -1488,6 +1488,7 @@ interface LiveMeetingNotesTable {
 }
 
 interface LiveMeetingInsightsTable {
+  resolved: Generated<boolean>;
   id: string;
   meeting_id: string;
   kind: 'contradiction' | 'research';
