@@ -94,7 +94,11 @@ export function beginRenderWork(
     let total = totals.get(stage);
     if (!total) {
       // Reserve both entries together so a full trace cannot leave a partial pair.
-      if (trace.recorded > 62) return;
+      if (
+        trace.phases.filter((p) => /^(render-|activity-|js-timer-|ui-frame-)/.test(p.phase))
+          .length > 62
+      )
+        return;
       markSessionSwitch(trace, `render-${stage}-total-ms`, 0);
       markSessionSwitch(trace, `render-${stage}-count`, 0);
       const [durationEntry, countEntry] = trace.phases.slice(-2);
@@ -113,7 +117,7 @@ export function beginRenderWork(
 }
 
 let stopSampling: ((flush?: boolean) => void) | undefined;
-/** Timer lateness includes JS scheduling and GC; it does not identify the blocking function. */
+/** Timer callback lateness is not continuous JS blockage. Completion only records pending age. */
 export function startStallSampling(trace: SwitchTiming): void {
   stopSampling?.();
   if (AppState.currentState !== 'active') return;
@@ -136,7 +140,12 @@ export function startStallSampling(trace: SwitchTiming): void {
     if (entry) entry.value = Math.round(maximum * 10) / 10;
     // A maximum updated in place otherwise loses its position among client phases.
     // The interval starts at the timer deadline, not at a known blocking function.
-    if (newPeak && !peakStart && trace.recorded <= 62) {
+    if (
+      newPeak &&
+      !peakStart &&
+      trace.phases.filter((p) => /^(render-|activity-|js-timer-|ui-frame-)/.test(p.phase)).length <=
+        62
+    ) {
       const before = trace.phases.length;
       markSessionSwitch(trace, 'js-timer-peak-deadline-ms', 0);
       markSessionSwitch(trace, 'js-timer-peak-observed-ms', 0);
@@ -157,12 +166,17 @@ export function startStallSampling(trace: SwitchTiming): void {
       sessionSwitchTiming(trace.sessionId) === trace &&
       performance.now() - trace.started < 10_000
     )
-      sample();
-    clearInterval(timer);
+      markSessionSwitch(
+        trace,
+        'js-timer-pending-at-list-load-ms',
+        Math.max(performance.now() - expected, 0),
+      );
+    clearTimeout(timer);
     subscription.remove();
     if (stopSampling === stop) stopSampling = undefined;
   };
-  const timer = setInterval(() => {
+  let timer: ReturnType<typeof setTimeout>;
+  const tick = () => {
     const now = performance.now();
     if (
       sessionSwitchTiming(trace.sessionId) !== trace ||
@@ -176,7 +190,9 @@ export function startStallSampling(trace: SwitchTiming): void {
     expected = now + 100;
     samples++;
     if (samples >= 100) stop();
-  }, 100);
+    else timer = setTimeout(tick, 100);
+  };
+  timer = setTimeout(tick, 100);
   const subscription = AppState.addEventListener('change', (state) => {
     if (state !== 'active') stop();
   });
@@ -227,7 +243,11 @@ export function beginClientActivity(stage: ClientActivity): () => void {
     }
     let total = stages.get(stage);
     if (!total) {
-      if (active.recorded > 60) return;
+      if (
+        active.phases.filter((p) => /^(render-|activity-|js-timer-|ui-frame-)/.test(p.phase))
+          .length > 60
+      )
+        return;
       const before = active.phases.length;
       for (const suffix of ['total-ms', 'count', 'peak-start-ms', 'peak-end-ms']) {
         markSessionSwitch(active, `activity-${stage}-${suffix}`, 0);

@@ -1,13 +1,27 @@
 Object.defineProperty(globalThis, 'Response', { configurable: true, value: class TestResponse {} });
 Object.defineProperty(globalThis, 'Headers', { configurable: true, value: class TestHeaders {} });
 Object.defineProperty(globalThis, 'fetch', { configurable: true, value: jest.fn() });
-const { exportRemoteDataDiagnostics } =
+const { exportRemoteDataDiagnostics: exportResult } =
   require('./remoteDataDiagnostics') as typeof import('./remoteDataDiagnostics');
 
 const mockExport = jest.fn();
+const mockNativeLookup = jest.fn(() => ({ exportDataDiagnostics: mockExport }));
 jest.mock('expo-modules-core', () => ({
-  requireNativeModule: () => ({ exportDataDiagnostics: mockExport }),
+  requireOptionalNativeModule: () => mockNativeLookup(),
 }));
+
+it.each([null, {}])(
+  'reports unsupported when the native exporter is absent: %j',
+  async (native) => {
+    mockNativeLookup.mockReturnValueOnce(native as ReturnType<typeof mockNativeLookup>);
+    expect(await exportResult()).toEqual({ status: 'unsupported' });
+  },
+);
+
+async function exportRemoteDataDiagnostics(): Promise<string | null> {
+  const result = await exportResult();
+  return result.status === 'ready' ? result.recording : null;
+}
 
 async function acceptedDataDiagnostics(value: unknown): Promise<string | null> {
   mockExport.mockResolvedValue([value]);
@@ -100,4 +114,119 @@ it('does not accept oversized exports or unrestricted native text', async () => 
   expect(await acceptedDataDiagnostics(' '.repeat(65_537))).toBeNull();
   mockExport.mockResolvedValue('private native log');
   expect(await exportRemoteDataDiagnostics()).toBeNull();
+});
+
+function streamSnapshot() {
+  return {
+    streamId: '0123456789ABCDEF0123456789ABCDEF',
+    proxy: 'socks',
+    endedBy: 'stopped',
+    sentBytes: 1526,
+    receivedBytes: 2507,
+    deliveredBytes: 2507,
+    outgoingFrames: 1,
+    incomingFrames: 1,
+    outgoingTLSRecords: [22],
+    incomingTLSRecords: [22, 20, 23],
+    firstHandshake: '2',
+  };
+}
+
+it('retains stream IDs, completed-send counters and TLS metadata through the public export', async () => {
+  const data = {
+    ...snapshot(),
+    streams: [streamSnapshot()],
+    streamUpdatesDropped: 3,
+    events: [
+      {
+        sequence: 1,
+        utc: '2026-10-08T15:23:11.100Z',
+        elapsedMs: 0,
+        event: 'stream_send_completed',
+        streamId: streamSnapshot().streamId,
+      },
+    ],
+  };
+  mockExport.mockResolvedValue([
+    JSON.stringify(data),
+    JSON.stringify({ ...data, generation: '11234567-0123-4123-8123-0123456789ab' }),
+  ]);
+  expect(JSON.parse((await exportRemoteDataDiagnostics())!)).toEqual([
+    data,
+    { ...data, generation: '11234567-0123-4123-8123-0123456789ab' },
+  ]);
+});
+
+it.each([
+  { streamId: 'private-id' },
+  { proxy: 'https://private' },
+  { endedBy: 'private reason' },
+  { sentBytes: -1 },
+  { outgoingFrames: 1.5 },
+  { incomingFrames: undefined },
+  { firstHandshake: 'secret' },
+  { firstHandshake: '256' },
+  { firstHandshake: '02' },
+  { outgoingTLSRecords: [19] },
+  { incomingTLSRecords: Array(9).fill(22) },
+  { ticket: 'secret' },
+  { payload: 'private' },
+  { headers: {} },
+])('rejects unsafe or malformed stream metadata %j', async (patch) => {
+  expect(
+    await acceptedDataDiagnostics(
+      JSON.stringify({
+        ...snapshot(),
+        streams: [{ ...streamSnapshot(), ...patch }],
+        streamUpdatesDropped: 0,
+      }),
+    ),
+  ).toBeNull();
+});
+
+it.each([
+  { streams: Array(17).fill(streamSnapshot()), streamUpdatesDropped: 0 },
+  { streams: [streamSnapshot(), streamSnapshot()], streamUpdatesDropped: 0 },
+  { streams: [streamSnapshot()] },
+  { streamUpdatesDropped: 0 },
+  { streams: [], streamUpdatesDropped: -1 },
+])('rejects incomplete, overflowing or duplicate stream tables %j', async (patch) => {
+  expect(await acceptedDataDiagnostics(JSON.stringify({ ...snapshot(), ...patch }))).toBeNull();
+});
+
+it.each([
+  { event: 'stream_opened' },
+  { event: 'stream_stalled', streamId: 'secret' },
+  { event: 'probe_failed', streamId: streamSnapshot().streamId },
+])('requires generated stream IDs only on stream events %j', async (patch) => {
+  const data = snapshot();
+  Object.assign(data.events[1]!, patch);
+  expect(await acceptedDataDiagnostics(JSON.stringify(data))).toBeNull();
+});
+
+it.each([
+  'stream_open_requested',
+  'stream_opened',
+  'stream_send_requested',
+  'stream_send_completed',
+  'stream_stalled',
+])('exports timestamped %s with its exact stream ID', async (event) => {
+  const data = snapshot();
+  Object.assign(data.events[1]!, { event, streamId: streamSnapshot().streamId });
+  mockExport.mockResolvedValue([JSON.stringify(data)]);
+  expect(JSON.parse((await exportRemoteDataDiagnostics())!)).toEqual([data]);
+});
+
+it.each([
+  [[], 'empty'],
+  ['private native log', 'invalid'],
+  [['{"ticket":"secret"}'], 'invalid'],
+])('distinguishes unavailable recordings from rejected data', async (raw, status) => {
+  mockExport.mockResolvedValue(raw);
+  expect(await exportResult()).toEqual({ status });
+});
+
+it('does not expose a native failure message in the export result', async () => {
+  mockExport.mockRejectedValue(new Error('https://private?ticket=secret'));
+  expect(await exportResult()).toEqual({ status: 'failed' });
 });

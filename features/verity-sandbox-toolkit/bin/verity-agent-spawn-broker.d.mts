@@ -11,6 +11,7 @@ export type ScriptSandboxProbe = { available: true } | { available: false; reaso
 export function probeScriptSandbox(
   helperPath?: string,
   timeoutMs?: number,
+  launchOptions?: AgentSpawnBrokerOptions,
 ): Promise<ScriptSandboxProbe>;
 export const SHARED_SESSION_ROOT: string;
 export const TRUSTED_CLI_ARGV_POLICY_SUFFIX: string;
@@ -65,11 +66,29 @@ export interface AgentSpawnBrokerOptions {
   dockerGid?: string;
   env?: NodeJS.ProcessEnv;
   connectorUrl?: string;
+  /** Internal launch option populated only from a validated root-owned lease. */
+  signalTraceSeconds?: number;
   connectorConfigPath?: string;
   shutdownGraceMs?: number;
   maxFrameBytes?: number;
   spawnChild?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 }
+
+type AgentSignalTraceRequest = {
+  command: string;
+  knowledgeIsolation?: boolean;
+  sessionEnv?: Record<string, string>;
+};
+export function agentSignalTraceSeconds(
+  controlDir: string,
+  request: AgentSignalTraceRequest,
+  now?: number,
+): Promise<number | undefined>;
+export function validateAgentSignalTraceLease(
+  text: string,
+  request: AgentSignalTraceRequest,
+  now?: number,
+): number | undefined;
 
 export function agentLaunchSpec(
   request: {

@@ -7,6 +7,9 @@ import {
   DOCS_BASE_URL,
   answerAppHelp,
   appHelpRequestSchema,
+  renderWelcomeGuidePrompt,
+  renderWelcomeOpener,
+  welcomeChoices,
 } from './app-help.js';
 
 describe('APP_HELP_TOPICS', () => {
@@ -135,5 +138,48 @@ describe('prompts', () => {
   it('names the tool and forbids invented links', () => {
     expect(APP_HELP_SYSTEM_PROMPT).toContain(APP_HELP_TOOL);
     expect(APP_HELP_SYSTEM_PROMPT).toContain('never invent');
+  });
+});
+
+describe('welcome session texts', () => {
+  const fresh = { aiProvider: true, github: false, doppler: false, google: false };
+
+  it('links every open setup item to its settings screen and ticks finished ones', () => {
+    const opener = renderWelcomeOpener(fresh);
+    expect(opener).toContain('- ✓ AI provider connected');
+    expect(opener).toContain('(verity://settings/github)');
+    expect(opener).toContain('(verity://settings/services/doppler)');
+    expect(opener).toContain('(verity://settings/google)');
+    const done = renderWelcomeOpener({ ...fresh, github: true });
+    expect(done).toContain('- ✓ GitHub connected');
+    expect(done).not.toContain('(verity://settings/github)');
+  });
+
+  // The opener is the first thing a new user reads; it has to stay a glance.
+  it('keeps the opener short', () => {
+    expect(renderWelcomeOpener(fresh).split('\n').length).toBeLessThanOrEqual(10);
+  });
+
+  it('offers to connect GitHub only while it is not connected', () => {
+    const labels = (status: typeof fresh) =>
+      welcomeChoices(status).options.map((option) => option.label);
+    expect(labels(fresh)).toEqual([
+      'What can I do here?',
+      'Connect GitHub',
+      'Try a first task',
+      'Later',
+    ]);
+    expect(labels({ ...fresh, github: true })).not.toContain('Connect GitHub');
+    expect(welcomeChoices(fresh).options.filter((option) => option.recommended)).toHaveLength(1);
+  });
+
+  // The guide prompt describes the opener the user already saw; if a Quick Action
+  // label changes there and not here, the agent answers a button that no longer exists.
+  it('names every Quick Action the opener can show and every in-app link', () => {
+    const prompt = renderWelcomeGuidePrompt();
+    for (const option of welcomeChoices(fresh).options) expect(prompt).toContain(option.label);
+    for (const topic of APP_HELP_TOPICS) {
+      if (topic.appLink !== undefined) expect(prompt).toContain(topic.appLink);
+    }
   });
 });

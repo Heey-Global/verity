@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.65.0](https://github.com/Heey-Global/verity/compare/mobile-v1.64.0...mobile-v1.65.0) (2026-10-09)
+
+
+### Features
+
+* **diagnostics:** correlate session switch transport phases ([#1444](https://github.com/Heey-Global/verity/issues/1444)) ([063bed3](https://github.com/Heey-Global/verity/commit/063bed3d9a2efeefb520852488ae74c32d1d82ab))
+
+
+### Bug Fixes
+
+* **mobile:** preserve session switch readiness diagnostics ([#1438](https://github.com/Heey-Global/verity/issues/1438)) ([396c63f](https://github.com/Heey-Global/verity/commit/396c63fb7b72e5914dc25a0fde88ce4fc9a71815))
+
+## [1.64.0](https://github.com/Heey-Global/verity/compare/mobile-v1.63.0...mobile-v1.64.0) (2026-10-09)
+
+
+### Features
+
+* **mobile:** correlate session switch stalls with client activity ([#1430](https://github.com/Heey-Global/verity/issues/1430)) ([d0894cf](https://github.com/Heey-Global/verity/commit/d0894cfbf54983c6298f00d8ae2e3366ce5ca20e))
+* **session-links:** allow linking control sessions ([#1434](https://github.com/Heey-Global/verity/issues/1434)) ([4941d84](https://github.com/Heey-Global/verity/commit/4941d84fd198a31025b9740134228ebd5ceff83c))
+
+
+### Bug Fixes
+
+* **mobile:** prepare dictation before microphone activation ([#1423](https://github.com/Heey-Global/verity/issues/1423)) ([b658103](https://github.com/Heey-Global/verity/commit/b658103bdd29505c28cedf76b2ea9b8e3ee273b6))
+* **mobile:** retain stream diagnostics in connection exports ([#1433](https://github.com/Heey-Global/verity/issues/1433)) ([6d2b9ed](https://github.com/Heey-Global/verity/commit/6d2b9ed8bd7a17f956b49c9cb6ffdad859b2102d))
+* **mobile:** skip unmounted issue refs during gesture hit testing ([#1424](https://github.com/Heey-Global/verity/issues/1424)) ([3607faa](https://github.com/Heey-Global/verity/commit/3607faa1dbf868cd1ce0a1ef2f368356cc14a680))
+
 ## [1.63.0](https://github.com/Heey-Global/verity/compare/mobile-v1.62.0...mobile-v1.63.0) (2026-10-09)
 
 

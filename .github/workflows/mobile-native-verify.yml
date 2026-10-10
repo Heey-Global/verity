@@ -160,6 +160,7 @@ jobs:
         run: |
           xcrun swiftc -typecheck -parse-as-library -target "$(uname -m)-apple-macosx14.0" \
             apps/mobile/native/CertificatePinDelegate.swift \
+            apps/mobile/native/PinnedHTTPSessionPool.swift \
             apps/mobile/native/RemoteSmokeTunnel.swift \
             apps/mobile/native/RemoteDataDiagnostics.swift \
             apps/mobile/native/RemoteAppTunnel.swift \
@@ -268,8 +269,27 @@ jobs:
         run: |
           node --test scripts/remote-control-tunnel/mock.test.mjs
           node --test scripts/remote-control-staging/probe.test.mjs
-          bash scripts/remote-control-tunnel/run-apple.sh macos
-          bash scripts/remote-control-tunnel/run-apple.sh ios
+
+      # Keep each cold simulator boot/build within its own deadline.
+      - name: Verify native Remote Control tunnel on macOS (HTTP/1.1)
+        if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.tunnel == 'true'
+        timeout-minutes: 10
+        run: bash scripts/remote-control-tunnel/run-apple.sh macos h1
+
+      - name: Verify native Remote Control tunnel on macOS (HTTP/2)
+        if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.tunnel == 'true'
+        timeout-minutes: 10
+        run: bash scripts/remote-control-tunnel/run-apple.sh macos h2
+
+      - name: Verify native Remote Control tunnel on iOS (HTTP/1.1)
+        if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.tunnel == 'true'
+        timeout-minutes: 10
+        run: bash scripts/remote-control-tunnel/run-apple.sh ios h1
+
+      - name: Verify native Remote Control tunnel on iOS (HTTP/2)
+        if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.tunnel == 'true'
+        timeout-minutes: 10
+        run: bash scripts/remote-control-tunnel/run-apple.sh ios h2
 
       - name: Probe Staging Remote Control through the native tunnels
         if: github.event_name == 'workflow_dispatch' && inputs.installation_handle != ''

@@ -1,5 +1,34 @@
 # Changelog
 
+## [4.35.0](https://github.com/Heey-Global/verity/compare/v4.34.0...v4.35.0) (2026-10-09)
+
+
+### Features
+
+* **diagnostics:** correlate session switch transport phases ([#1444](https://github.com/Heey-Global/verity/issues/1444)) ([063bed3](https://github.com/Heey-Global/verity/commit/063bed3d9a2efeefb520852488ae74c32d1d82ab))
+
+
+### Bug Fixes
+
+* **sandbox:** make staged entry directories traversable ([#1440](https://github.com/Heey-Global/verity/issues/1440)) ([9617c48](https://github.com/Heey-Global/verity/commit/9617c48928d904dca2a2ac97a7c2074636a20500))
+
+## [4.34.0](https://github.com/Heey-Global/verity/compare/v4.33.0...v4.34.0) (2026-10-09)
+
+
+### Features
+
+* **session-links:** allow linking control sessions ([#1434](https://github.com/Heey-Global/verity/issues/1434)) ([4941d84](https://github.com/Heey-Global/verity/commit/4941d84fd198a31025b9740134228ebd5ceff83c))
+* **session:** add bounded ACP signal diagnostics ([#1437](https://github.com/Heey-Global/verity/issues/1437)) ([9297197](https://github.com/Heey-Global/verity/commit/9297197305668776a1c7c17d397184a8be0da938))
+
+
+### Bug Fixes
+
+* **mobile:** prepare dictation before microphone activation ([#1423](https://github.com/Heey-Global/verity/issues/1423)) ([b658103](https://github.com/Heey-Global/verity/commit/b658103bdd29505c28cedf76b2ea9b8e3ee273b6))
+* **mobile:** retain stream diagnostics in connection exports ([#1433](https://github.com/Heey-Global/verity/issues/1433)) ([6d2b9ed](https://github.com/Heey-Global/verity/commit/6d2b9ed8bd7a17f956b49c9cb6ffdad859b2102d))
+* **runner:** provision script sandbox helper in Control image ([#1429](https://github.com/Heey-Global/verity/issues/1429)) ([03769e9](https://github.com/Heey-Global/verity/commit/03769e93ebbc621b0c36dc4844e70a80d286e328))
+* **sandbox:** probe script isolation with trusted CLI privileges ([#1435](https://github.com/Heey-Global/verity/issues/1435)) ([14d2139](https://github.com/Heey-Global/verity/commit/14d2139bcda5d1f5a51c9f17ad24c6af30d40019))
+* **server:** restore local project save target in session sandbox ([#1432](https://github.com/Heey-Global/verity/issues/1432)) ([f9f10f4](https://github.com/Heey-Global/verity/commit/f9f10f4f5d9f8dfc66d012ac4c55b86965c77ed5))
+
 ## [4.33.0](https://github.com/Heey-Global/verity/compare/v4.32.0...v4.33.0) (2026-10-09)
 
 

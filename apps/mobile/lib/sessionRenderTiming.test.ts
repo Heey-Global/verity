@@ -85,12 +85,12 @@ it('keeps stages independent and bounds them to twelve phase entries', () => {
 it('does not leave partial aggregates or change unrelated entries when the trace is full', () => {
   rowPress('a');
   const trace = sessionSwitchTiming('a')!;
-  while (trace.recorded < 63) markSessionSwitch(trace, 'existing');
+  while (trace.recorded < 64) markSessionSwitch(trace, 'render-existing');
   const before = JSON.stringify(trace.phases);
   beginRenderWork('chat-body', 'a')();
   expect(JSON.stringify(trace.phases)).toBe(before);
   markSessionSwitch(trace, 'final');
-  expect(trace.phases).toHaveLength(64);
+  expect(trace.phases).toHaveLength(65);
 });
 
 it('ignores expired and permission traces', () => {
@@ -105,15 +105,15 @@ it('ignores expired and permission traces', () => {
   expect(permission.phases).toHaveLength(0);
 });
 
-it('stops existing aggregates when list completion cannot fit in the phase buffer', () => {
+it('preserves list completion after aggregates consume the metric budget', () => {
   rowPress('a');
   const trace = sessionSwitchTiming('a')!;
   beginRenderWork('chat-body', 'a')();
   const finish = beginRenderWork('chat-body', 'a');
-  while (trace.recorded < 64) markSessionSwitch(trace, 'existing');
-  const before = JSON.stringify(trace.phases);
+  while (trace.recorded < 64) markSessionSwitch(trace, 'render-existing');
   markInitialListLoad(trace);
-  expect(trace.phases.some((p) => p.phase === 'flash-list-on-load')).toBe(false);
+  const before = JSON.stringify(trace.phases);
+  expect(trace.phases.some((p) => p.phase === 'flash-list-on-load')).toBe(true);
   clock += 100;
   finish();
   beginRenderWork('chat-body', 'a')();
@@ -160,7 +160,7 @@ it('does not collect client activity after list completion or beyond the phase b
   expect(trace.phases.some((p) => p.phase.startsWith('activity-'))).toBe(false);
   rowPress('full');
   const full = sessionSwitchTiming('full')!;
-  for (let i = 0; i < 61; i++) markSessionSwitch(full, 'existing');
+  for (let i = 0; i < 61; i++) markSessionSwitch(full, 'render-existing');
   beginClientActivity('socket-message')();
   expect(full.phases).toHaveLength(62);
 });

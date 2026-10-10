@@ -164,6 +164,11 @@ async function resolveProjectDriveFile(input: {
 }
 
 export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
+  canReadDocumentWithoutApproval(input: {
+    projectId: string;
+    sessionId: string;
+    url: string;
+  }): Promise<boolean>;
   invoke(input: WorkspaceInvocationInput): Promise<unknown>;
 } {
   const drive: GoogleDriveAgentApi = deps.drive ?? {
@@ -175,6 +180,25 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
     create: createDriveFile,
   };
   return {
+    async canReadDocumentWithoutApproval(input) {
+      const session = await deps.eventStore.getSession(input.sessionId);
+      if (session?.projectId !== input.projectId) return false;
+      const settings = await deps.eventStore.getProjectSettings(input.projectId);
+      const rootId = settings?.googleDriveFolderId;
+      if (!rootId) return false;
+      const request = googleDriveRequestSchema.parse({
+        action: 'read_document_url',
+        url: input.url,
+      });
+      if (request.action !== 'read_document_url') return false;
+      const token = await deps.googleAccessToken();
+      if (!token) return false;
+      const file = await drive.get(token, new URL(request.url).pathname.split('/')[3]!);
+      return (
+        file.mimeType === 'application/vnd.google-apps.document' &&
+        (await isWithinFolder(drive, token, file, rootId))
+      );
+    },
     async invoke(input) {
       const session = await deps.eventStore.getSession(input.sessionId);
       if (session === undefined || session.projectId !== input.projectId) {
@@ -217,6 +241,15 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
         const file = await drive.get(token, new URL(request.url).pathname.split('/')[3]!);
         if (file.trashed || file.mimeType !== 'application/vnd.google-apps.document')
           throw new Error('The link must reference an available Google Docs document');
+        // A URL is not project authorization: recheck ancestry when redeeming consent.
+        if (
+          input.approvedByCard !== true &&
+          (!rootId || !(await isWithinFolder(drive, token, file, rootId)))
+        )
+          throw new Error(
+            'Reading a Google Doc outside the linked project folder requires explicit approval',
+          );
+        await recheck();
         const bytes = await drive.export(token, file.id, 'text/markdown');
         await recheck();
         return {

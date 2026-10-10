@@ -36,7 +36,7 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.291}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.292}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
 CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.86.0}"
 # renovate: datasource=github-releases depName=cli/cli
@@ -50,7 +50,7 @@ CODEX_VERSION="${CODEXVERSION:-0.160.1}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 CODEX_ACP_VERSION="${CODEXACPVERSION:-2.1.1}"
 # renovate: datasource=npm depName=opencode-ai
-OPENCODE_VERSION="${OPENCODEVERSION:-1.18.34}"
+OPENCODE_VERSION="${OPENCODEVERSION:-1.18.35}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
@@ -179,7 +179,7 @@ esac
 # See the env and securityOpt comments in packages/server/src/provisioner.ts.
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  APT_PACKAGES=(tmux git curl ca-certificates less ripgrep gnupg wget jq openssh-client openssl util-linux)
+  APT_PACKAGES=(python3 tmux git curl ca-certificates less ripgrep gnupg wget jq openssh-client openssl util-linux)
   apt-get update
   apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"
   rm -rf /var/lib/apt/lists/*
@@ -555,6 +555,8 @@ if [ "$INSTALL_RUNNER_SUPERVISOR" = 'true' ]; then
     /usr/local/bin/verity-node-modules-install
   install -m 0755 "$FEATURE_DIR/bin/verity-runner-worker.mjs" \
     /usr/local/bin/verity-runner-worker
+  install -m 0755 "$FEATURE_DIR/bin/verity-agent-signal-trace" \
+    /usr/local/bin/verity-agent-signal-trace
   install -m 0755 "$FEATURE_DIR/bin/verity-agent-spawn-broker.mjs" \
     /usr/local/bin/verity-agent-spawn-broker
   install -m 0755 "$FEATURE_DIR/bin/verity-egress-connector.mjs" \

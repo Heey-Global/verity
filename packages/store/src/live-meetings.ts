@@ -52,31 +52,182 @@ export interface LiveMeetingInsight {
 export class LiveMeetingStore {
   constructor(private readonly db: Kysely<Database>) {}
 
-  async addInsight(sessionId: string, insight: LiveMeetingInsight): Promise<boolean> {
-    const meeting = await this.db
-      .selectFrom('live_meetings')
-      .select('session_id')
-      .where('id', '=', insight.meetingId)
-      .executeTakeFirst();
-    if (meeting?.session_id !== sessionId) return false;
-    await this.db
-      .insertInto('live_meeting_insights')
-      .values({
-        id: insight.id,
-        meeting_id: insight.meetingId,
-        kind: insight.kind,
-        summary: insight.summary,
-        evidence_a: insight.evidenceA,
-        evidence_b: insight.evidenceB,
-        source_path: insight.sourcePath,
-        created_at: insight.createdAt,
-      })
-      .onConflict((conflict) => conflict.column('id').doNothing())
-      .execute();
-    return true;
+  async addInsight(
+    sessionId: string,
+    insight: LiveMeetingInsight,
+    replace = false,
+    revision?: number,
+  ): Promise<boolean> {
+    return this.db.transaction().execute(async (trx) => {
+      const meeting = await trx
+        .selectFrom('live_meetings')
+        .select(['session_id', 'revision'])
+        .where('id', '=', insight.meetingId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (
+        meeting?.session_id !== sessionId ||
+        (revision !== undefined && Number(meeting.revision) !== revision)
+      )
+        return false;
+      if (insight.kind === 'research' && !insight.id.startsWith('question-')) {
+        const questions = await trx
+          .selectFrom('live_meeting_insights')
+          .select('evidence_a')
+          .where('meeting_id', '=', insight.meetingId)
+          .where('id', 'like', 'question-%')
+          .execute();
+        const key = (text: string) => text.trim().replace(/[.!?]+$/u, '');
+        if (questions.some((question) => key(question.evidence_a) === key(insight.evidenceA)))
+          return false;
+      }
+      await trx
+        .insertInto('live_meeting_insights')
+        .values({
+          id: insight.id,
+          meeting_id: insight.meetingId,
+          kind: insight.kind,
+          summary: insight.summary,
+          evidence_a: insight.evidenceA,
+          evidence_b: insight.evidenceB,
+          source_path: insight.sourcePath,
+          created_at: insight.createdAt,
+        })
+        .onConflict((conflict) =>
+          replace
+            ? conflict
+                .column('id')
+                .doUpdateSet({ summary: insight.summary, evidence_a: insight.evidenceA })
+                .where('live_meeting_insights.meeting_id', '=', insight.meetingId)
+            : conflict.column('id').doNothing(),
+        )
+        .execute();
+      return true;
+    });
+  }
+
+  /** Remove question suggestions invalidated by recognition corrections, under the meeting lock. */
+  async reconcileQuestions(
+    sessionId: string,
+    meetingId: string,
+    revision: number | undefined,
+    classified?: {
+      text: string;
+      acceptedIds: readonly string[];
+      resolvedIds: readonly string[];
+      insights?: readonly LiveMeetingInsight[];
+    },
+  ): Promise<boolean> {
+    return this.db.transaction().execute(async (trx) => {
+      const meeting = await trx
+        .selectFrom('live_meetings')
+        .select(['transcript', 'revision'])
+        .where('id', '=', meetingId)
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (
+        !meeting ||
+        (revision !== undefined && Number(meeting.revision) !== revision) ||
+        (classified !== undefined && revision === undefined)
+      )
+        return false;
+      // Publish and retract under the same revision lock so corrections cannot expose stale evidence.
+      for (const insight of classified?.insights ?? []) {
+        if (
+          insight.meetingId !== meetingId ||
+          !insight.id.startsWith('question-') ||
+          !meeting.transcript.includes(insight.evidenceA)
+        )
+          return false;
+      }
+      for (const insight of classified?.insights ?? []) {
+        await trx
+          .insertInto('live_meeting_insights')
+          .values({
+            id: insight.id,
+            meeting_id: meetingId,
+            kind: insight.kind,
+            summary: insight.summary,
+            evidence_a: insight.evidenceA,
+            evidence_b: insight.evidenceB,
+            source_path: insight.sourcePath,
+            created_at: insight.createdAt,
+          })
+          .onConflict((conflict) =>
+            conflict
+              .column('id')
+              .doUpdateSet({
+                summary: insight.summary,
+                evidence_a: insight.evidenceA,
+                resolved: false,
+              })
+              .where('live_meeting_insights.meeting_id', '=', meetingId),
+          )
+          .execute();
+      }
+      const insights = await trx
+        .selectFrom('live_meeting_insights')
+        .select(['id', 'kind', 'evidence_a'])
+        .where('meeting_id', '=', meetingId)
+        .execute();
+      const questions = insights.filter(({ id }) => id.startsWith('question-'));
+      const resolved = questions
+        .filter(
+          (question) =>
+            classified?.resolvedIds.includes(question.id) &&
+            !classified.acceptedIds.includes(question.id),
+        )
+        .map(({ id }) => id);
+      if (resolved.length)
+        await trx
+          .updateTable('live_meeting_insights')
+          .set({ resolved: true })
+          .where('meeting_id', '=', meetingId)
+          .where('id', 'in', resolved)
+          .execute();
+      // Keep resolved evidence so a later batch at the same revision cannot recreate the suggestion.
+      const removed = questions
+        .filter((question) => !meeting.transcript.includes(question.evidence_a))
+        .map(({ id }) => id);
+      const evidenceKey = (text: string) => text.trim().replace(/[.!?]+$/u, '');
+      const acceptedEvidence = new Set(
+        questions.map((question) => evidenceKey(question.evidence_a)),
+      );
+      // A batch result can land before classification; once validated, the question owns that evidence.
+      removed.push(
+        ...insights
+          .filter(
+            (insight) =>
+              insight.kind === 'research' &&
+              !insight.id.startsWith('question-') &&
+              acceptedEvidence.has(evidenceKey(insight.evidence_a)),
+          )
+          .map(({ id }) => id),
+      );
+      if (removed.length)
+        await trx
+          .deleteFrom('live_meeting_insights')
+          .where('meeting_id', '=', meetingId)
+          .where('id', 'in', removed)
+          .execute();
+      return true;
+    });
+  }
+
+  async questions(sessionId: string, meetingId: string): Promise<LiveMeetingInsight[] | null> {
+    return this.readInsights(sessionId, meetingId, true);
   }
 
   async insights(sessionId: string, meetingId: string): Promise<LiveMeetingInsight[] | null> {
+    return this.readInsights(sessionId, meetingId, false);
+  }
+
+  private async readInsights(
+    sessionId: string,
+    meetingId: string,
+    questionsOnly: boolean,
+  ): Promise<LiveMeetingInsight[] | null> {
     const meeting = await this.db
       .selectFrom('live_meetings')
       .select('session_id')
@@ -87,8 +238,10 @@ export class LiveMeetingStore {
       .selectFrom('live_meeting_insights')
       .selectAll()
       .where('meeting_id', '=', meetingId)
+      .where('resolved', '=', false)
+      .$if(questionsOnly, (query) => query.where('id', 'like', 'question-%'))
       .orderBy('created_at', 'desc')
-      .limit(30)
+      .$if(!questionsOnly, (query) => query.limit(30))
       .execute();
     return rows.map((row) => ({
       id: row.id,
