@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.66.1](https://github.com/Heey-Global/verity/compare/mobile-v1.66.0...mobile-v1.66.1) (2026-10-10)
+
+
+### Features
+
+* **tasks:** streamline spoken capture and scope agent tasks to sessions ([#1472](https://github.com/Heey-Global/verity/issues/1472)) ([5b430ac](https://github.com/Heey-Global/verity/commit/5b430ac30ced9d7f2cf28f2c283a8c81cc7495f0))
+
+
+### Bug Fixes
+
+* **mobile:** avoid white screen during OTA reload ([#1473](https://github.com/Heey-Global/verity/issues/1473)) ([eb28e19](https://github.com/Heey-Global/verity/commit/eb28e19b8ca335fdcd12dfe363bb273b5c886390))
+* **mobile:** isolate chat rendering from unrelated interaction updates ([#1478](https://github.com/Heey-Global/verity/issues/1478)) ([da99368](https://github.com/Heey-Global/verity/commit/da9936804014ece4299a9012cf2013ace11634bd))
+* **session:** stop agent output and activity immediately ([#1480](https://github.com/Heey-Global/verity/issues/1480)) ([d80d19d](https://github.com/Heey-Global/verity/commit/d80d19dde17ce76566bea62abc0945367bafe1ea))
+
+
+### Performance Improvements
+
+* **mobile:** coordinate activity and preview refreshes ([#1482](https://github.com/Heey-Global/verity/issues/1482)) ([33467d6](https://github.com/Heey-Global/verity/commit/33467d67d4aa14e9de0444fffe7513c0b2f4ec38))
+* **mobile:** retain unchanged overview row snapshots ([#1481](https://github.com/Heey-Global/verity/issues/1481)) ([bea26a2](https://github.com/Heey-Global/verity/commit/bea26a2fddacfec1d295bb3c94c5cba93bdf7776))
+* **mobile:** share task capture and overview context ([#1483](https://github.com/Heey-Global/verity/issues/1483)) ([c2f5247](https://github.com/Heey-Global/verity/commit/c2f524752dad8702a271d8ae0f2030f81b7b74ef))
+
 ## [1.65.2](https://github.com/Heey-Global/verity/compare/mobile-v1.65.1...mobile-v1.65.2) (2026-10-09)
 
 
