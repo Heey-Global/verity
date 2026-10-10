@@ -24,8 +24,8 @@ import {
 // Project and preview changes arrive over the shared live connection.
 export function useProjects(client: VerityClient) {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const devServersByProject = new Map<string, DevServer[]>();
-  const detectionsByProject = new Map<string, DevServerDetection>();
+  const [devServersByProject] = useState(() => new Map<string, DevServer[]>());
+  const [detectionsByProject] = useState(() => new Map<string, DevServerDetection>());
   // Session id → the URL its preview icon opens; see mergeSessionPreviewUrls.
   const [previewUrls, setPreviewUrls] = useState<ReadonlyMap<string, string | null>>(
     () => new Map(),

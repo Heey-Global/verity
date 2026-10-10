@@ -22,6 +22,28 @@ jest.mock('expo-router', () => ({
   useFocusEffect: (callback: () => void) => require('react').useEffect(callback, [callback]),
 }));
 
+it('keeps empty runtime maps stable across overview renders and refreshes', async () => {
+  const client = {
+    listProjects: jest.fn().mockResolvedValue([]),
+  };
+  const { result, rerender, unmount } = renderHook(() =>
+    useProjects(client as unknown as VerityClient),
+  );
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  const servers = result.current.devServersByProject;
+  const detections = result.current.detectionsByProject;
+  // Fresh empty maps invalidate project grouping even when only selection changed.
+  rerender({});
+  expect(result.current.devServersByProject).toBe(servers);
+  expect(result.current.detectionsByProject).toBe(detections);
+  await act(async () => {
+    await result.current.refresh();
+  });
+  expect(result.current.devServersByProject).toBe(servers);
+  expect(result.current.detectionsByProject).toBe(detections);
+  unmount();
+});
+
 it('refreshes only the invalidated project share source and keeps list refresh independent', async () => {
   const client = {
     listProjects: jest.fn().mockResolvedValue([

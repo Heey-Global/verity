@@ -5,6 +5,10 @@ import { SessionSettingsDialog } from '../../components/SessionSettingsDialog';
 import { useFeatureHint } from '../../components/FeatureHint';
 import { appendHelpQuestion } from '../../lib/featureHints';
 import { TranscriptTimingContext } from '../../components/TranscriptRow';
+import {
+  KnowledgeSaveContext,
+  KnowledgeSaveProvider,
+} from '../../components/KnowledgeSaveProvider';
 import { useSwitchFrameTiming } from '../../hooks/useSwitchFrameTiming';
 import {
   beginRenderWork,
@@ -144,6 +148,7 @@ import * as Haptics from 'expo-haptics';
 import { router, Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   createContext,
+  memo,
   type ComponentProps,
   type ReactNode,
   type RefObject,
@@ -633,10 +638,6 @@ const FILE_ROOT_ICON: Record<SessionFileRoot, IconName> = {
   shared: KNOWLEDGE_ICON,
 };
 
-const KnowledgeSaveContext = createContext<{
-  save(messageId: string, text: string): Promise<void>;
-} | null>(null);
-
 type OpenLocalFile = (path: string, root?: SessionFileRoot) => void;
 const SessionFileOpenContext = createContext<OpenLocalFile | null>(null);
 // An agent's `verity://` link resolved by `parseAppLink`. The screen owns the
@@ -662,7 +663,7 @@ function useTranscriptRows(messages: readonly Message[], sessionId: string): Row
   }, [messages, sessionId]);
 }
 
-export function SessionChat({
+export const SessionChat = memo(function SessionChat({
   client,
   sessionId,
   baseUrl,
@@ -754,18 +755,19 @@ export function SessionChat({
       let active = true;
       setLinkedSessions([]);
       const refresh = () => {
-        void client
+        return client
           .listSessionLinks(sessionId)
           .then((links) => {
             if (active) setLinkedSessions(links);
           })
           .catch(() => undefined);
       };
-      refresh();
       const detach = subscribeLiveRefresh(
         client,
         refresh,
         (path) => path === `/sessions/${encodeURIComponent(sessionId)}/links`,
+        [{ path: `/sessions/${encodeURIComponent(sessionId)}/links` }],
+        { initial: true },
       );
       return () => {
         active = false;
@@ -779,18 +781,19 @@ export function SessionChat({
       let active = true;
       setPendingLinkedMessages([]);
       const refresh = () => {
-        void client
+        return client
           .listPendingLinkedMessages(sessionId)
           .then((items) => {
             if (active) setPendingLinkedMessages(items);
           })
           .catch(() => undefined);
       };
-      refresh();
       const detach = subscribeLiveRefresh(
         client,
         refresh,
         (path) => path === `/sessions/${encodeURIComponent(sessionId)}/linked-message-approvals`,
+        [{ path: `/sessions/${encodeURIComponent(sessionId)}/linked-message-approvals` }],
+        { initial: true },
       );
       return () => {
         active = false;
@@ -4420,16 +4423,10 @@ export function SessionChat({
             <AppLinkOpenContext.Provider value={openAppLink}>
               <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
                 <BookmarksContext.Provider value={bookmarks}>
-                  <KnowledgeSaveContext.Provider
-                    value={
-                      projectId
-                        ? {
-                            save: async (messageId, text) => {
-                              await client.saveSessionKnowledge(sessionId, { messageId, text });
-                            },
-                          }
-                        : null
-                    }
+                  <KnowledgeSaveProvider
+                    client={client}
+                    sessionId={sessionId}
+                    projectId={projectId}
                   >
                     <FlashList
                       onLoad={() => {
@@ -4517,7 +4514,7 @@ export function SessionChat({
                         ) : null}
                       </View>
                     ) : null}
-                  </KnowledgeSaveContext.Provider>
+                  </KnowledgeSaveProvider>
                 </BookmarksContext.Provider>
               </SessionFileImageSourceContext.Provider>
             </AppLinkOpenContext.Provider>
@@ -4778,7 +4775,7 @@ export function SessionChat({
       />
     </AnimatedKeyboardAvoidingView>
   );
-}
+});
 
 // A round header action (Preview / Files / Bookmarks): an icon large enough to hit
 // and recognise, with an optional status dot (e.g. a running dev server) or count

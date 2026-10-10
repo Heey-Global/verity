@@ -1,5 +1,12 @@
 import { stat } from 'node:fs/promises';
-import type { ContainerSpec, DockerClient, DockerContainerSummary } from '../docker.js';
+import { CONTROL_PLANE_PROJECT_ID } from '../control-plane-project.js';
+import { STANDARD_MOUNTS, standardDataMountPaths } from '../sandbox-standard-mounts.js';
+import type {
+  ContainerInspect,
+  ContainerSpec,
+  DockerClient,
+  DockerContainerSummary,
+} from '../docker.js';
 import { readManagedDeployment } from './managed-deployment.js';
 import { MANAGED_DEPLOYMENT_LABEL, MANAGED_ROLE_LABEL } from './managed-server-owner.js';
 
@@ -15,6 +22,38 @@ const COMPOSE_SERVICE_LABEL = 'com.docker.compose.service';
 const COMPOSE_SERVICE = 'verity-control-runner';
 /** The volume whose `supervisor.lock` makes two Runners mutually exclusive. */
 const RUNNER_RUNTIME_VOLUME = 'verity-control-runner-runtime';
+
+/** Reuse the project sandbox's Knowledge permissions and subpaths. */
+function controlPlaneKnowledgeMounts(): NonNullable<ContainerSpec['volumeMounts']> {
+  const paths = standardDataMountPaths(CONTROL_PLANE_PROJECT_ID, '');
+  return (['knowledge', 'insights', 'sharedKnowledge'] as const).map((kind) => ({
+    volume: 'verity-data',
+    target: STANDARD_MOUNTS[kind].target,
+    subpath: paths[kind],
+    ...(!STANDARD_MOUNTS[kind].writable ? { readOnly: true } : {}),
+  }));
+}
+
+function knowledgeMatches(current: ContainerInspect): boolean {
+  const actual =
+    current.mounts?.filter(
+      (mount) => mount.destination === '/knowledge' || mount.destination?.startsWith('/knowledge/'),
+    ) ?? [];
+  const desired = controlPlaneKnowledgeMounts();
+  return (
+    actual.length === desired.length &&
+    desired.every((wanted) =>
+      actual.some(
+        (mount) =>
+          mount.type === 'volume' &&
+          mount.name === wanted.volume &&
+          mount.destination === wanted.target &&
+          mount.subpath === wanted.subpath &&
+          mount.readWrite === !wanted.readOnly,
+      ),
+    )
+  );
+}
 
 export type ManagedControlPlaneRunnerDocker = Pick<
   DockerClient,
@@ -236,6 +275,8 @@ function prepareSpec(
         // and must not narrow the child past what the agent can read.
         'chmod 0700 /data/secrets',
         'chmod 0755 /data/secrets/opencode',
+        // Prepare only Control and Shared, using the same layout migration and modes as projects.
+        'setpriv --reuid=1000 --regid=1000 --clear-groups /usr/local/bin/verity-control-plane-knowledge-init /data',
         'chown -R 1000:1000 /data/workspaces/verity-control',
         // Control sessions use real git worktrees even though they have no
         // product repository. Run every Git command as its uid-1000 owner: an
@@ -362,6 +403,7 @@ export function desiredSpec(
       // `deploy/docker-compose.runner-supervisor.yml` and
       // `deploy/bin/verity-control-plane-runner-start`, which spell the same default.
       'VERITY_MCP_GATEWAY_URL=http://verity:8083/internal/control-plane/mcp',
+      'VERITY_CONTROL_MEMORY_URL=http://verity:8083/internal/control-plane/memory',
       'VERITY_CLAUDE_EGRESS_URL=https://verity-agent-gateway:9443',
       'VERITY_CLAUDE_EGRESS_SERVERNAME=verity-agent-gateway',
       'VERITY_CODEX_EGRESS_URL=https://verity-agent-gateway:9444',
@@ -401,6 +443,7 @@ export function desiredSpec(
       ? {}
       : { binds: [`${dockerSocket.hostPath}:/var/run/docker.sock`] }),
     volumeMounts: [
+      ...controlPlaneKnowledgeMounts(),
       { volume: 'verity-control-runner-runtime', target: '/run/verity-runner' },
       {
         volume: 'verity-control-runner-identity',
@@ -543,7 +586,12 @@ export async function reconcileManagedControlPlaneRunner(
       current.labels?.[MANAGED_ROLE_LABEL] !== MANAGED_ROLE
     )
       throw new Error('managed control-plane Runner name is occupied by a foreign container');
-    if (current.image === deployment.spec.image && current.running && socketMatches(current)) {
+    if (
+      current.image === deployment.spec.image &&
+      current.running &&
+      socketMatches(current) &&
+      knowledgeMatches(current)
+    ) {
       // Reap here too, not only on the create path below. The supervisor lock is
       // exclusive across containers, so a Compose Runner standing beside a
       // healthy managed one cannot start at all — it crash-loops on "runner

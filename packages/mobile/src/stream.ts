@@ -48,6 +48,13 @@ export type SessionStreamConnectionState =
  * events after the cursor, so the reducer keeps accumulating with no gap or
  * duplication. {@link stop} ends the subscription.
  */
+interface OutputFreeze {
+  sequences: Set<number>;
+  pending: number;
+  succeeded: boolean;
+  atSeq: number;
+}
+
 export class SessionStream {
   // Reassigned (not readonly) when older history is prepended: the reducer is
   // forward-only, so prepending means rebuilding it over the full event list.
@@ -71,6 +78,42 @@ export class SessionStream {
   // then we apply events but suppress `onUpdate`, batching the backlog into one
   // render (see onMessage) so opening a session doesn't scroll wildly.
   private caughtUp = false;
+  private readonly suppressedOutput = new Set<number>();
+  private outputFreeze: OutputFreeze | undefined;
+  private outputFrozen = false;
+
+  get outputSuppressed(): boolean {
+    return this.outputFrozen;
+  }
+
+  freezeOutput(): OutputFreeze {
+    if (!this.outputFrozen || this.outputFreeze === undefined) {
+      this.outputFreeze = {
+        sequences: new Set(),
+        pending: 0,
+        succeeded: false,
+        atSeq: this.lastSeq,
+      };
+    }
+    this.outputFreeze.pending += 1;
+    this.outputFrozen = true;
+    return this.outputFreeze;
+  }
+
+  settleOutput(freeze: OutputFreeze, success: boolean): boolean {
+    freeze.succeeded ||= success;
+    freeze.pending -= 1;
+    if (freeze.pending > 0 || freeze.succeeded) return false;
+    for (const seq of freeze.sequences) this.suppressedOutput.delete(seq);
+    const restoredCurrent = this.outputFreeze === freeze;
+    if (restoredCurrent) this.outputFrozen = false;
+    this.reducer = new SessionReducer();
+    for (const frame of this.eventFrames) {
+      if (!this.suppressedOutput.has(frame.seq)) this.reducer.applyFrame(frame);
+    }
+    for (const id of this.resolvedPermissions) this.reducer.resolvePermission(id);
+    return restoredCurrent;
+  }
 
   constructor(private readonly opts: SessionStreamOptions) {
     this.timing = sessionSwitchTiming(opts.sessionId);
@@ -215,7 +258,9 @@ export class SessionStream {
     const previousMessages = this.reducer.messages;
     this.eventFrames = [...fresh, ...this.eventFrames];
     this.reducer = new SessionReducer();
-    for (const frame of this.eventFrames) this.reducer.applyFrame(frame);
+    for (const frame of this.eventFrames) {
+      if (!this.suppressedOutput.has(frame.seq)) this.reducer.applyFrame(frame);
+    }
     // Replaying the frames re-raises every `permission` in them. Re-settle the ones
     // the server already answered so scroll-up can't resurrect a dismissed card.
     for (const toolUseId of this.resolvedPermissions) this.reducer.resolvePermission(toolUseId);
@@ -311,7 +356,24 @@ export class SessionStream {
       ...(frame.ts !== undefined ? { ts: frame.ts } : {}),
       event: frame.event,
     };
-    this.reducer.applyFrame(eventFrame);
+    if (
+      frame.event.t === 'prompt' &&
+      !frame.event.steered &&
+      this.reducer.settledSeq > (this.outputFreeze?.atSeq ?? 0)
+    )
+      this.outputFrozen = false;
+    if (
+      this.outputFrozen &&
+      ['text', 'thinking', 'tool_call', 'permission', 'choices', 'automation_proposal'].includes(
+        frame.event.t,
+      )
+    ) {
+      // Keep the cursor and retained history, but never replay stopped generation.
+      this.outputFreeze?.sequences.add(frame.seq);
+      this.suppressedOutput.add(frame.seq);
+    } else {
+      this.reducer.applyFrame(eventFrame);
+    }
     this.eventFrames.push(eventFrame);
     this.lastSeq = frame.seq;
     // Batch the initial backlog: apply its events silently and emit ONCE at

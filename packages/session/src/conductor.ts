@@ -1390,7 +1390,11 @@ export class Conductor {
     // whole path exists to prevent — so the losing attempt returns as an aborted turn
     // instead. Its terminal events were already written by whoever force-settled it;
     // this return only unwinds the caller.
-    if (handle.forceSettled || this.turns.get(sessionId) !== handle) {
+    if (
+      handle.controller.signal.aborted ||
+      handle.forceSettled ||
+      this.turns.get(sessionId) !== handle
+    ) {
       await cleanup();
       return {
         result: { sessionId: undefined, exitCode: 0, stderr: '', aborted: true },
@@ -1408,6 +1412,20 @@ export class Conductor {
       projectId: session.projectId,
       worktree: session.worktree,
     });
+    // Runner acquisition can rebuild a sandbox. A Stop during that await must
+    // not launch a new worker after cancellation has already been acknowledged.
+    if (
+      handle.controller.signal.aborted ||
+      handle.forceSettled ||
+      this.turns.get(sessionId) !== handle
+    ) {
+      await cleanup();
+      return {
+        result: { sessionId: undefined, exitCode: 0, stderr: '', aborted: true },
+        backendSessionId: undefined,
+        backend,
+      };
+    }
     const turn = runner.startTurn(dispatchOpts, {
       onSession: (id: string) => {
         backendSessionId = id;
