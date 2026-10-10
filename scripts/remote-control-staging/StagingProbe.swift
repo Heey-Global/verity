@@ -20,23 +20,30 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
   try await withThrowingTaskGroup(of: Void.self) { group in
     for worker in 0..<streams {
       group.addTask {
+        var own = 0
         // No request within its own timeout of the deadline: the soak must end
         // with its own diagnostic, not the host's watchdog.
         while Date().addingTimeInterval(12) < deadline {
           guard tunnel.isActive else {
+            let total = await counters.requests
             throw ProbeFailure.soakFailed(
-              "tunnel stopped: \(tunnel.stopReason ?? "unknown"); \(tunnel.diagnosticSummary)")
+              "worker \(worker) after \(own) own and \(total) total requests: tunnel stopped: "
+                + "\(tunnel.stopReason ?? "unknown"); \(tunnel.diagnosticSummary)")
           }
           let config = URLSessionConfiguration.ephemeral
+          // Both: the request interval is an idle timeout between bytes, and
+          // a request that trickles must still end before the soak's deadline.
           config.timeoutIntervalForRequest = 12
+          config.timeoutIntervalForResource = 12
           config.proxyConfigurations = [
             ProxyConfiguration(socksv5Proxy: .hostPort(host: "127.0.0.1", port: localPort))
           ]
           let delegate: CertificatePinDelegate
           do { delegate = try CertificatePinDelegate(pin: corePin, origin: coreURL) }
           catch {
-            let completed = await counters.requests
-            throw ProbeFailure.soakFailed("worker \(worker) after \(completed) requests: \(error)")
+            let total = await counters.requests
+            throw ProbeFailure.soakFailed(
+              "worker \(worker) after \(own) own and \(total) total requests: \(error)")
           }
           let client = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
           defer { client.invalidateAndCancel() }
@@ -44,18 +51,19 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
           do {
             let (_, response) = try await client.data(for: URLRequest(url: coreURL))
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-              let completed = await counters.requests
+              let total = await counters.requests
               throw ProbeFailure.soakFailed(
-                "worker \(worker) after \(completed) requests: status "
+                "worker \(worker) after \(own) own and \(total) total requests: status "
                   + "\((response as? HTTPURLResponse)?.statusCode ?? 0); \(tunnel.diagnosticSummary)")
             }
+            own += 1
             await counters.record(Date().timeIntervalSince(started))
           } catch let failure as ProbeFailure {
             throw failure
           } catch {
-            let completed = await counters.requests
+            let total = await counters.requests
             throw ProbeFailure.soakFailed(
-              "worker \(worker) after \(completed) requests: "
+              "worker \(worker) after \(own) own and \(total) total requests: "
                 + CertificatePinDelegate.transportFailure(error: error as NSError, phase: delegate.phase)
                 + "; \(tunnel.diagnosticSummary)")
           }

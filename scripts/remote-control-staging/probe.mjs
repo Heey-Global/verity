@@ -18,6 +18,8 @@ const soakText = process.env.VERITY_REMOTE_PROBE_SOAK_SECONDS ?? '0';
 const soakSeconds = /^\d{1,3}$/u.test(soakText) ? Number(soakText) : Number.NaN;
 // A soak shorter than one request timeout could issue no request and pass.
 const SOAK_MIN_SECONDS = 30;
+const soakStreamsText = process.env.VERITY_REMOTE_PROBE_SOAK_STREAMS ?? '4';
+const soakStreams = /^[1-8]$/u.test(soakStreamsText) ? Number(soakStreamsText) : Number.NaN;
 if (
   origin.protocol !== 'https:' ||
   origin.pathname !== '/' ||
@@ -33,6 +35,7 @@ if (
   !Number.isInteger(soakSeconds) ||
   (soakSeconds !== 0 && soakSeconds < SOAK_MIN_SECONDS) ||
   soakSeconds > 600 ||
+  !Number.isInteger(soakStreams) ||
   !corePin.startsWith('sha256-') ||
   new URL(coreUrl).protocol !== 'https:'
 ) {

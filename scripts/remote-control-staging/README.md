@@ -26,7 +26,7 @@ A fourth app-mode run is the soak: `VERITY_REMOTE_PROBE_SOAK_SECONDS`
 once, each on a fresh URLSession as the app's transport does, with half a second
 to two seconds between requests. This is the device's pattern, which the
 three-request probes never matched; an attachment that goes silent mid-session
-fails the soak with the failing worker, the request count reached, the native
+fails the soak with the failing worker, its own and the total request count, the native
 transport failure and the tunnel summary. A passing soak prints the request
 count and the slowest request.
 The ticket is passed only in the child process environment and is not logged.

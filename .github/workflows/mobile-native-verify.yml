@@ -315,7 +315,10 @@ jobs:
             bash scripts/remote-control-staging/run.sh
           # The device's pattern: several streams at once for minutes. This is
           # the run that reproduces an attachment going silent mid-session.
-          if [[ "${SOAK_SECONDS:-0}" =~ ^[1-9][0-9]*$ ]]; then
+          # Only an exact 0 skips the soak; anything else that is not a plain
+          # number fails the step rather than quietly leaving the soak out.
+          if [[ "${SOAK_SECONDS:-0}" != 0 ]]; then
+            [[ "$SOAK_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "soak_seconds must be a plain number" >&2; exit 1; }
             VERITY_REMOTE_PROBE_MODE=app VERITY_REMOTE_PROBE_SOAK_SECONDS="$SOAK_SECONDS" \
               VERITY_REMOTE_PROBE_SOAK_STREAMS=6 bash scripts/remote-control-staging/run.sh
           fi
