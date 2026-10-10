@@ -113,6 +113,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     promise: Promise<void>;
     followup: boolean;
     silent: boolean;
+    controller: AbortController;
   } | null>(null);
 
   // A reused split-view pane must never show the previous session's PR, even for
@@ -120,7 +121,10 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   if (identity.client !== client || identity.sessionId !== sessionId) {
     setIdentity({ client, sessionId });
     reqId.current += 1;
-    if (pending.current) pending.current.followup = false;
+    if (pending.current) {
+      pending.current.followup = false;
+      pending.current.controller.abort();
+    }
     pending.current = null;
     setCurrent(cached?.current);
     setSwitchable(cached?.switchable ?? []);
@@ -152,18 +156,21 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
         promise: Promise.resolve(),
         followup: false,
         silent: opts.silent === true,
+        controller: new AbortController(),
       };
       pending.current = request;
       request.promise = (async () => {
         do {
           request.followup = false;
           const id = ++reqId.current;
-          const fresh = (): boolean => mounted.current && id === reqId.current;
+          const fresh = (): boolean =>
+            mounted.current && id === reqId.current && !request.controller.signal.aborted;
           if (!request.silent) setLoading(true);
           try {
             const publishSnapshot = branchesSnapshotWriter(client, sessionId);
-            const prefetched = takePrefetchedBranches(client, sessionId);
-            const res = await (prefetched ?? client.getBranches(sessionId));
+            const prefetched = takePrefetchedBranches(client, sessionId, request.controller.signal);
+            const res = await (prefetched ??
+              client.getBranches(sessionId, request.controller.signal));
             if (fresh()) {
               publishSnapshot(res);
               setCurrent(res.current);
@@ -192,6 +199,14 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     [client, sessionId],
   );
 
+  useEffect(
+    () => () => {
+      pending.current?.controller.abort();
+      pending.current = null;
+    },
+    [client, sessionId],
+  );
+
   // Fetch on focus — opening the session OR returning to it — and pause between
   // visits so a session left in the background (another one opened on top) fires no
   // requests. This immediate load also covers the initial mount (the screen is
@@ -205,7 +220,11 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
       return () => {
         setFocused(false);
         reqId.current += 1;
-        if (pending.current) pending.current.followup = false;
+        if (pending.current) {
+          pending.current.followup = false;
+          pending.current.controller.abort();
+        }
+        pending.current = null;
       };
     }, [appActive, load, enabled]),
   );
@@ -216,7 +235,11 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
       setAppActive(active);
       if (!active) {
         reqId.current += 1; // stale in-flight response must not write in background
-        if (pending.current) pending.current.followup = false;
+        if (pending.current) {
+          pending.current.followup = false;
+          pending.current.controller.abort();
+        }
+        pending.current = null;
       }
       // Changing appActive reruns the focus effect (immediate load) and recreates
       // the polling interval; native timers are not guaranteed to resume themselves.

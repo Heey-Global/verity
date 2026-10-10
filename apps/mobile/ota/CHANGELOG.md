@@ -1,5 +1,47 @@
 # Changelog
 
+## [1.65.2](https://github.com/Heey-Global/verity/compare/mobile-v1.65.1...mobile-v1.65.2) (2026-10-09)
+
+
+### Bug Fixes
+
+* **mobile:** record connection tests from a fresh tunnel ([#1449](https://github.com/Heey-Global/verity/issues/1449)) ([1d97933](https://github.com/Heey-Global/verity/commit/1d9793383956bfc339d478fff901084d661a4a40))
+
+## [1.65.1](https://github.com/Heey-Global/verity/compare/mobile-v1.65.0...mobile-v1.65.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **mobile:** distinguish connection recording export failures ([#1446](https://github.com/Heey-Global/verity/issues/1446)) ([df98937](https://github.com/Heey-Global/verity/commit/df98937c01e522a0ef65e030e4955bd25fc25ed2))
+
+## [1.64.1](https://github.com/Heey-Global/verity/compare/mobile-v1.64.0...mobile-v1.64.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **mobile:** preserve session switch readiness diagnostics ([#1438](https://github.com/Heey-Global/verity/issues/1438)) ([396c63f](https://github.com/Heey-Global/verity/commit/396c63fb7b72e5914dc25a0fde88ce4fc9a71815))
+
+## [1.63.1](https://github.com/Heey-Global/verity/compare/mobile-v1.63.0...mobile-v1.63.1) (2026-10-09)
+
+
+### Features
+
+* **agent:** add verity_app_help tool with shared app help catalog ([#1415](https://github.com/Heey-Global/verity/issues/1415)) ([3db7e07](https://github.com/Heey-Global/verity/commit/3db7e0774cf3254c98212096d8612ba34ba2f7d1))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1403](https://github.com/Heey-Global/verity/issues/1403)) ([abcecd4](https://github.com/Heey-Global/verity/commit/abcecd426c58d144b9e31859086295fe28295598))
+* **mobile:** skip unmounted issue refs during gesture hit testing ([#1424](https://github.com/Heey-Global/verity/issues/1424)) ([3607faa](https://github.com/Heey-Global/verity/commit/3607faa1dbf868cd1ce0a1ef2f368356cc14a680))
+
+## [1.62.1](https://github.com/Heey-Global/verity/compare/mobile-v1.62.0...mobile-v1.62.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **mobile:** defer initial history paging and measure render work ([#1397](https://github.com/Heey-Global/verity/issues/1397)) ([205ec2b](https://github.com/Heey-Global/verity/commit/205ec2b71d24960e7e371b5d6e8e4ec1315500a3))
+* **mobile:** simplify PR waiting button and slow its indicator ([#1399](https://github.com/Heey-Global/verity/issues/1399)) ([458b29a](https://github.com/Heey-Global/verity/commit/458b29aa5ab06b375d2c33d7a410f1a7b51c9788))
+
 ## [1.60.3](https://github.com/Heey-Global/verity/compare/mobile-v1.60.2...mobile-v1.60.3) (2026-10-08)
 
 

@@ -5,7 +5,7 @@ The export identifies the running release, native build, stamped JavaScript comm
 OTA update ID and runtime/channel. Timings are held only in memory: export them
 before restarting the app. No new diagnostic network requests are sent.
 
-The buffer retains the last eight row gestures, at most 64 phases per gesture,
+The buffer retains the last eight row gestures, at most 64 lifecycle phases plus 64 aggregate/probe phases per gesture,
 and collects for at most 30 seconds. Each switch has an opaque `switchId`, a wall
 clock `at` for approximate correlation, and monotonic `elapsedMs` values. Session
 IDs, titles, URLs, message text, credentials and response bodies are excluded.
@@ -14,7 +14,10 @@ a replacement gesture, even when returning to the same session. Cancelled
 touches are recorded. A touch without `js-press-handler` may be a scroll or long
 press rather than a session selection. Keyboard/accessibility presses can begin
 with `js-press-handler` and have no touch phase. Collection limits can truncate
-long/repeated loads; absence of a phase alone does not prove a stage never ran.
+long/repeated loads; `droppedPhases` reports rejected entries. `readiness` states
+whether the list load notification was recorded, not whether a frame was visible.
+Aggregate metrics have an independent budget so they cannot displace lifecycle
+completion. Absence of a phase alone does not prove a stage never ran.
 
 ## Interpreting phases
 
@@ -86,3 +89,106 @@ first render entry for the active gesture. They can include an interrupted rende
 that never commits. The interval to the existing React effect markers includes
 rendering, child work, scheduling and effect execution; it is not isolated CPU
 render time or native paint. These markers share the existing collection limits.
+
+
+Render work aggregates (`render-<stage>-total-ms` and `render-<stage>-count`)
+measure synchronous work in the home body, sidebar group/row bodies, chat body,
+transcript row reconciliation and list-item element construction. Each pair takes
+two phase entries regardless of render count. `value` holds the cumulative duration
+in milliseconds or invocation count; `elapsedMs` is the first recorded sample's
+completion time, not the aggregate duration. Collection stops at the first
+`flash-list-on-load` or the existing 30-second trace limit. List completion is
+tracked independently, so a full phase buffer cannot prolong collection.
+
+Component-body intervals end before their return expression and exclude rendering
+of descendants, native layout and paint. List-item construction measures creation
+of React elements, not execution of their child components. Chat-body time includes
+transcript reconciliation, so these totals overlap and must not be added together.
+Interrupted attempts are included; renders that throw before reaching their end
+marker are not. Compare these totals with the entry/effect intervals to distinguish
+measured synchronous work from unmeasured child work and scheduling. This uses
+ordinary JavaScript clocks and works without a React profiling build.
+
+Automatic history pagination waits for the initial list's `onLoad` signal. Explicit
+message jumps can still load required pages before that signal. Saved-anchor
+restoration is unchanged: anchors outside the loaded tail fall back to latest. Verify on a device by opening a long session at the newest edge: automatic
+follow-up `events-request-start` should follow `flash-list-on-load`, and scrolling
+backwards should continue loading history. Also verify a deep saved anchor and an
+explicit message jump. Only explicit jumps may legitimately request earlier pages.
+
+### Thread scheduling probes
+
+`js-timer-lag-max-ms` records the maximum lateness of a 100 ms JavaScript timer
+from the row touch callback. Each callback schedules a fresh one-shot timer;
+interval catch-up behavior cannot inflate a later sample. It includes timer
+scheduling and garbage collection and does not identify the blocking function or
+prove continuous JS blockage. Other JS work can execute while a timer is overdue.
+`js-timer-peak-deadline-ms` and `js-timer-peak-observed-ms` contain the peak interval
+endpoints in `value`, relative to switch start. Their `elapsedMs` remains the
+first insertion time because aggregates are updated in place.
+
+At list completion, `js-timer-pending-at-list-load-ms` records how overdue the
+pending timer is. It is not an observed timer callback and does not update the
+callback maximum. This distinguishes timer starvation from measured callbacks.
+Fetch-return and AsyncStorage promise continuation similarly include JS delivery
+latency; they cannot alone isolate network or native storage duration.
+
+ `ui-frame-gap-max-ms` records maximum
+Reanimated UI-thread frame callback spacing from chat mount; reporting crosses
+to JavaScript at most twice per second. Its phase timestamp is report delivery,
+not the time of the delayed frame. Neither probe proves native paint completion.
+Both stop after initial list completion, supersession, backgrounding or ten
+seconds. Backgrounding ends collection rather than counting the suspended time.
+The UI probe cannot cover the interval before the chat mounts.
+
+`render-transcript-row-body` measures the synchronous row content factory;
+`render-markdown-body` includes Markdown parsing and element creation. Descendant
+components and native text layout remain outside these body measurements.
+
+### Correlated transport measurement
+
+Each timed session/detail or events request gets an opaque
+`x-verity-switch-request` token plus a fixed `x-verity-switch-kind`. The token
+contains no session identifier and grants no authority. `transportRequests`
+retains at most 16 requests per gesture and 24 milestones per request for the
+30-second trace window. `transportOmissions` counts rejected requests/milestones. Late callbacks stay on their original gesture. Retries
+share the logical request token and add separate native attempts.
+
+Client milestones distinguish fetch dispatch, pinned transport entry, body
+encoding, route readiness, native dispatch/return and fetch return/error. Route
+milestone values are 0 for direct and 1 for tunnel. The `native-return` value is
+the device wall timestamp at JS continuation, not a server timestamp.
+
+`nativeTransportTimings` reports capability availability, up to 32 attempts and
+an omission count. Older installed native builds report `available: false`;
+OTA JavaScript alone cannot add this native capability. Native records contain
+entry, resume, completion and response-ready times, route/proxy dialect and up
+to four URLSession transactions. Transactions expose DNS, connection, TLS,
+request and response milestones, protocol and reuse. `metricsAvailable: false`
+means metrics had not arrived; export snapshots also capture later metrics
+without delaying the HTTP response. No URLs, headers or payloads are retained.
+
+Read native intervals within their own clock domain. Resume to request start
+includes scheduling and connection setup; it is not proof of a connection queue.
+Completion to response-ready includes native conversion and continuation work.
+Response-ready wall time to the JS continuation can help identify bridge delivery
+latency, but a device clock adjustment invalidates that wall-clock difference.
+Do not subtract device and server wall times without clock calibration.
+
+The managed gateway emits one `session-switch-http` record per admitted
+request with the same token, arrival wall time and monotonic offsets for forward,
+socket assignment, upstream request finish, response headers/end and downstream
+completion. Core records arrival and completion/abort/timeout with that token; completion uses
+its own monotonic elapsed time. Gateway and Core each
+limit these diagnostics to 120 requests per minute in constant memory. Missing
+records can mean a budget limit, maintenance rejection, an older server or a route
+that bypasses the gateway; absence alone does not establish transport failure.
+These records do not log session paths or raw request headers.
+
+For a device verification, install a native client containing the transport API
+and deploy the instrumented gateway/Core through their approved release workflows.
+Switch between the same sessions, export before restart, and match the opaque
+request tokens to gateway/Core records. Determine which intervals dominate before
+changing connection limits or request scheduling. Native input delivery, actual
+paint, and the function responsible for unmeasured React/JS work remain outside
+this transport measurement.

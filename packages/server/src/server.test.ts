@@ -81,6 +81,8 @@ import {
   redactScrollDiagnosticData,
   redactScrollDiagnosticEvent,
   sortModelIds,
+  appendMeetingIndex,
+  removeCancelledMeetingTranscript,
   startProjectRelayMigrationScheduler,
   type MeetingTranscriber,
   type MeetingTranscriptResult,
@@ -1421,13 +1423,18 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
     });
     const url = '/sessions/s1/live-meetings/live-1';
     const meeting = {
+      title: 'Pricing [sync]',
       engine: 'fluid-nemotron',
       startedAt: Date.UTC(2026, 9, 1, 9, 30),
       endedAt: Date.UTC(2026, 9, 1, 9, 45),
       state: 'ended',
       transcript: 'We ship on Friday.',
       timedWords: [{ text: 'We ship on Friday.', start: 4, end: 6 }],
-      speakerTurns: [{ speaker: 0, start: 3, end: 7 }],
+      speakerTurns: [
+        { speaker: 0, start: 3, end: 7 },
+        { speaker: 1, start: 8, end: 9 },
+      ],
+      speakerMerges: { '1': 0 },
       captureStatus: 'listening',
       ownerToken: 'o'.repeat(64),
       revision: 2,
@@ -1461,8 +1468,21 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
 
       const notices = async () =>
         (await ctx.store.getEvents('s1')).filter((event) => event.t === 'notice');
-      await vi.waitFor(async () => expect(await notices()).toHaveLength(1));
+      await vi.waitFor(async () => expect((await notices()).length).toBeGreaterThanOrEqual(1));
       const [notice] = await notices();
+      expect(notice?.t === 'notice' && notice.text).toContain('[Pricing \\[sync\\]]');
+      const details = JSON.parse(
+        (notice?.t === 'notice' ? notice.text : '')
+          .split('<!-- verity-meeting: ')[1]!
+          .split(' -->')[0]!,
+      );
+      expect(details).toMatchObject({
+        sessionId: 's1',
+        meetingId: 'live-1',
+        durationMinutes: 15,
+        people: 1,
+        answers: 0,
+      });
       const link = /\]\((\/knowledge\/sources\/meetings\/[^)]+\.md)\)/.exec(
         notice?.t === 'notice' ? notice.text : '',
       )?.[1];
@@ -1477,19 +1497,31 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
       );
       expect(readFileSync(filed, 'utf8')).toContain('**Speaker 1** (00:04): We ship on Friday.');
       expect(readFileSync(join(knowledgeRoot, 'sources/meetings/index.md'), 'utf8')).toContain(
-        `(${link!.split('/').at(-1)})`,
+        `- [Pricing \\[sync\\]](${link!.split('/').at(-1)})`,
       );
 
-      // Naming a speaker afterwards rewrites the same document without a second message.
+      // Late edits must refresh the card as well as the filed document.
       await meetingApp.inject({
         method: 'PUT',
         url,
-        payload: { ...meeting, speakerNames: { '0': 'Anna' }, revision: 3 },
+        payload: { ...meeting, speakerNames: { '0': 'Anna' }, speakerMerges: {}, revision: 3 },
       });
       await vi.waitFor(() =>
         expect(readFileSync(filed, 'utf8')).toContain('**Anna** (00:04): We ship on Friday.'),
       );
-      expect(await notices()).toHaveLength(1);
+      await vi.waitFor(async () => {
+        const latest = (await notices()).at(-1)!;
+        expect(latest.t === 'notice' && latest.text).toContain('"people":2');
+        expect(latest.t === 'notice' && latest.text).toContain('"notes":1');
+      });
+      const count = (await notices()).length;
+      await meetingApp.inject({
+        method: 'PUT',
+        url: `${url}/notes/n1`,
+        payload: { atSeconds: 5, text: 'Friday release', revision: 2 },
+      });
+      await vi.waitFor(() => expect(readFileSync(filed, 'utf8')).toContain('Friday release'));
+      expect(await notices()).toHaveLength(count);
     } finally {
       await meetingApp.close();
       rmSync(worktree, { recursive: true, force: true });
@@ -10610,6 +10642,10 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
     );
     branchSvc.switchable.mockResolvedValue([]);
     const app = buildLocal();
+    const warn = vi.fn();
+    app.addHook('onRequest', async (request) => {
+      request.log.warn = warn;
+    });
 
     branchSvc.hasProjectChanges.mockResolvedValue(false);
     const local = await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
@@ -10619,9 +10655,28 @@ describe('POST /sessions/:id/merge (project without GitHub)', () => {
       localMerge: { base: 'trunk', hasChanges: false },
     });
     expect(branchSvc.hasProjectChanges).toHaveBeenCalledWith(process.cwd(), 'trunk');
+    expect(branchSvc.current).toHaveBeenCalledWith('/clones/__local__-notes', process.cwd());
     branchSvc.hasProjectChanges.mockResolvedValue(true);
     const changed = await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
     expect(changed.json().localMerge.hasChanges).toBe(true);
+    const gitError = Object.assign(new Error('git failed'), {
+      stderr: 'fatal: detected dubious ownership',
+    });
+    branchSvc.hasProjectChanges.mockRejectedValueOnce(gitError);
+    await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: 'file changes', stderr: gitError.stderr }),
+      'verity: local project save status unavailable',
+    );
+    branchSvc.current.mockImplementation(async (wt: string) => {
+      if (wt === '/clones/__local__-notes') throw gitError;
+      return 'feat/notes';
+    });
+    await app.inject({ method: 'GET', url: '/sessions/s1/branches' });
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: 'base branch', stderr: gitError.stderr }),
+      'verity: local project save status unavailable',
+    );
     await app.close();
 
     // Same session without a configured clone root: nothing to merge into locally.
@@ -15991,4 +16046,38 @@ describe('PATCH /sessions/order', () => {
       await gated.close();
     }
   });
+});
+
+it('removes a cancelled transcript and its punctuated title from the meeting index', async () => {
+  const meetingDir = mkdtempSync(join(tmpdir(), 'verity-meeting-index-'));
+  const title = String.raw`Planning [Q1] \ review`;
+  try {
+    writeFileSync(join(meetingDir, 'removed.md'), '# Transcript');
+    await appendMeetingIndex(meetingDir, 'removed.md', title);
+    await appendMeetingIndex(meetingDir, 'kept.md', 'Another meeting');
+    expect(readFileSync(join(meetingDir, 'index.md'), 'utf8')).toContain('(removed.md)');
+    await removeCancelledMeetingTranscript({ meetingDir, relPath: 'removed.md', title });
+    expect(existsSync(join(meetingDir, 'removed.md'))).toBe(false);
+    const index = readFileSync(join(meetingDir, 'index.md'), 'utf8');
+    expect(index).not.toContain('(removed.md)');
+    expect(index).toContain('(kept.md)');
+  } finally {
+    rmSync(meetingDir, { recursive: true, force: true });
+  }
+});
+
+it('replaces a meeting index entry by transcript path when the title changes', async () => {
+  const meetingDir = mkdtempSync(join(tmpdir(), 'verity-meeting-index-title-'));
+  try {
+    await appendMeetingIndex(meetingDir, 'meeting.md', 'Original title');
+    await appendMeetingIndex(meetingDir, 'other.md', 'Other meeting');
+    await appendMeetingIndex(meetingDir, 'meeting.md', 'Updated [title]');
+    const index = readFileSync(join(meetingDir, 'index.md'), 'utf8');
+    expect(index.match(/\]\(meeting\.md\)/g)).toHaveLength(1);
+    expect(index).not.toContain('Original title');
+    expect(index).toContain('Updated');
+    expect(index).toContain('(other.md)');
+  } finally {
+    rmSync(meetingDir, { recursive: true, force: true });
+  }
 });

@@ -1,4 +1,4 @@
-import { beginSessionSwitch } from './sessionSwitchTiming.js';
+import { beginSessionSwitch, exportSessionSwitchTimings } from './sessionSwitchTiming.js';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
@@ -4011,4 +4011,106 @@ it('does not attach continued old-model pagination to a returning gesture', asyn
   await client.getHistory('paginate', { beforeSeq: 5, timing: undefined });
   expect(returned.phases).toEqual([]);
   expect(original.phases).toEqual([]);
+});
+
+it.each([undefined, 'question-price'])(
+  'preserves optional spoken-question identity while accepting older servers: %s',
+  async (questionId) => {
+    const request = {
+      kind: 'research',
+      request: 'research its monthly price',
+      ...(questionId ? { questionId, questionTitle: 'What does the plan cost?' } : {}),
+    };
+    const { fetch } = fakeFetch(json({ requests: [request] }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(
+      await client.checkSpokenMeetingRequest('session', 'meeting', {
+        utterance: 'Verity, research its monthly price',
+        context: '',
+      }),
+    ).toEqual([request]);
+  },
+);
+
+it('sends correlation headers only for an explicit timed session request', async () => {
+  const { fetch, calls } = fakeFetchSequence(
+    json({ events: [], hasMore: false }),
+    json({ events: [], hasMore: false }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.getHistory('untimed');
+  expect(
+    (calls[0]?.init?.headers as Record<string, string> | undefined)?.['x-verity-switch-request'],
+  ).toBeUndefined();
+  const trace = beginSessionSwitch('private-correlated-target');
+  await client.getHistory('private-correlated-target');
+  const headers = calls[1]?.init?.headers as Record<string, string>;
+  expect(headers['x-verity-switch-request']).toBe(`${trace.id}-r1`);
+  expect(headers['x-verity-switch-kind']).toBe('events');
+  expect(
+    exportSessionSwitchTimings()
+      .at(-1)
+      ?.transportRequests[0]?.phases.map((p) => p.phase),
+  ).toEqual(['fetch-dispatch', 'fetch-return']);
+  expect(headers['x-verity-switch-request']).not.toContain('private');
+});
+
+it('sends a selected title when starting an online meeting', async () => {
+  const { fetch, calls } = fakeFetch(json({ meetingId: 'meeting-1' }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.startOnlineMeeting(
+    'session-1',
+    'https://meet.google.com/abc-defg-hij',
+    true,
+    'Pricing sync',
+  );
+  expect(JSON.parse(calls[0]!.init!.body as string)).toMatchObject({
+    title: 'Pricing sync',
+    listenForVerity: true,
+  });
+});
+
+describe('premium feature contracts', () => {
+  it('retains separate entitlement, preference and effective states', async () => {
+    const { uplinkDiagnosticsSchema } = await import('./api.js');
+    const features = {
+      sharing: { granted: true, enabled: false, effective: false },
+      remoteAccess: { granted: false, enabled: true, effective: false },
+    };
+    expect(
+      uplinkDiagnosticsSchema.parse({
+        control: 'connected',
+        sharing: 'unavailable',
+        remoteControl: 'unavailable',
+        features,
+      }).features,
+    ).toEqual(features);
+    expect(
+      uplinkDiagnosticsSchema.parse({
+        control: 'connected',
+        sharing: 'ready',
+        remoteControl: 'unavailable',
+      }).features,
+    ).toBeUndefined();
+  });
+  it('accepts a locally disabled sharing capability', async () => {
+    const { fetch } = fakeFetchSequence(json({ publicSharing: 'disabled' }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getPreviewCapabilities()).toEqual({ publicSharing: 'disabled' });
+  });
+});
+
+it('sends explicit replay and retry options to the welcome endpoint', async () => {
+  const { fetch, calls } = fakeFetch(
+    new Response(JSON.stringify({ state: 'preparing', sessionId: null, projectId: 'starter' })),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.openWelcomeSession({ replay: true, retry: true })).toEqual({
+    state: 'preparing',
+    sessionId: null,
+    projectId: 'starter',
+  });
+  expect(calls[0]?.url).toBe('http://host/onboarding/welcome');
+  expect(calls[0]?.init?.method).toBe('POST');
+  expect(calls[0]?.init?.body).toBe(JSON.stringify({ replay: true, retry: true }));
 });

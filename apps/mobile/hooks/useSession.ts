@@ -19,6 +19,7 @@ import { liveConnectionFor, useLiveHints } from '../lib/liveConnection';
 import { pendingSession } from '../lib/pendingSessions';
 
 export interface UseSession extends SessionModelState {
+  refreshMetadata: () => void;
   /** Fire-and-forget an operator turn; the agent's reply streams back over WS.
    * Optional turn options (e.g. image `attachments`) are forwarded to the model. */
   sendTurn: (prompt: string, opts?: Omit<TurnRequest, 'prompt'>) => Promise<boolean>;
@@ -232,6 +233,7 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
 
   return {
     ...state,
+    refreshMetadata: () => model.refreshMetadata(),
     sendTurn,
     loadOlder,
     loadOlderUntil,

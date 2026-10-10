@@ -2,6 +2,7 @@ import type { BranchList, SessionSummary, VerityClient } from '@verity/mobile';
 
 import {
   cachedBranches,
+  cancelPrefetchedBranches,
   seedSessionBranches,
   invalidateBranches,
   prefetchBranches,
@@ -19,6 +20,53 @@ const branches: BranchList = {
 };
 
 describe('branches prefetch', () => {
+  it('aborts deselected prefetches and prevents late cache publication', async () => {
+    let finish!: (value: BranchList) => void;
+    const getBranches = jest.fn().mockImplementation(
+      () =>
+        new Promise<BranchList>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const client = { getBranches } as unknown as VerityClient;
+    prefetchBranches(client, 'old');
+    const signal = getBranches.mock.calls[0][1] as AbortSignal;
+    cancelPrefetchedBranches(client, 'old');
+    expect(signal.aborted).toBe(true);
+    finish(branches);
+    await Promise.resolve();
+    expect(cachedBranches(client, 'old')).toBeUndefined();
+    expect(takePrefetchedBranches(client, 'old')).toBeUndefined();
+  });
+
+  it('transfers cancellation to the screen without retrying an aborted prefetch', async () => {
+    const aborted = new Error('aborted');
+    const getBranches = jest.fn().mockImplementation(
+      (_id: string, signal: AbortSignal) =>
+        new Promise<BranchList>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(aborted), { once: true });
+        }),
+    );
+    const client = { getBranches } as unknown as VerityClient;
+    prefetchBranches(client, 's');
+    const controller = new AbortController();
+    const joined = takePrefetchedBranches(client, 's', controller.signal);
+    controller.abort();
+    await expect(joined).rejects.toBe(aborted);
+    expect(getBranches).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels an abandoned opening request when another session is selected', () => {
+    const getBranches = jest.fn().mockReturnValue(new Promise(() => {}));
+    const client = { getBranches } as unknown as VerityClient;
+    prefetchBranches(client, 'old');
+    const signal = getBranches.mock.calls[0][1] as AbortSignal;
+    prefetchBranches(client, 'next');
+    expect(signal.aborted).toBe(true);
+    expect(takePrefetchedBranches(client, 'old')).toBeUndefined();
+    cancelPrefetchedBranches(client, 'next');
+  });
+
   it('preserves cached branch metadata for older summaries and clears a confirmed absent PR', () => {
     const client = {} as VerityClient;
     rememberBranches(client, 's', { ...branches, owner: 'example', repo: 'repo' });

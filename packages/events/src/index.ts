@@ -110,6 +110,24 @@ export {
   sessionProgressRequestSchema,
 } from './session-observation-tool.js';
 export {
+  APP_HELP_SYSTEM_PROMPT,
+  APP_HELP_TOOL,
+  APP_HELP_TOOL_DESCRIPTION,
+  APP_HELP_TOPICS,
+  DOCS_BASE_URL,
+  WELCOME_SESSION_MARKER,
+  answerAppHelp,
+  appHelpRequestSchema,
+  renderWelcomeGuidePrompt,
+  renderWelcomeOpener,
+  welcomeChoices,
+  type WelcomeSetupStatus,
+  type AppHelpAnswer,
+  type AppHelpEntry,
+  type AppHelpRequest,
+  type AppHelpTopic,
+} from './app-help.js';
+export {
   ASSIGNED_TASKS_PROMPT_MAX,
   TASKS_ADD_MAX,
   TASKS_RESUME_SYSTEM_PROMPT,

@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import Network
@@ -53,6 +54,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     // the stream. On a device this is the only view of a handshake that the
     // app's TLS client abandons without reporting why.
     let proxy: String
+    let id: String
     /** First characters of the stream ID, so Core's record of the same stream can be matched. */
     let key: String
     let openedAt = Date()
@@ -62,10 +64,11 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var outgoing = RecordTrace()
     var incoming = RecordTrace()
 
-    init(_ connection: NWConnection, proxy: String, key: String) {
+    init(_ connection: NWConnection, proxy: String, id: String) {
       self.connection = connection
       self.proxy = proxy
-      self.key = key
+      self.id = id
+      self.key = String(id.prefix(8))
     }
 
     func noteRecord(_ data: Data, incoming isIncoming: Bool) {
@@ -179,6 +182,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private var receivedStreamFrames = 0
   private var lastStreamEvent = "none"
   private var diagnosticSession = "none"
+  let dataDiagnostics: RemoteDataDiagnostics
+  private var pathMonitor: NWPathMonitor?
+  private var diagnosticsStarted = false
+  private let ownsOuterSession: Bool
   private var sentBytes = 0
   private var receivedBytes = 0
   private var deliveredBytes = 0
@@ -236,7 +243,11 @@ final class RemoteAppTunnel: @unchecked Sendable {
     // `start` bounds the attachment itself.
     configuration.timeoutIntervalForRequest = 7 * 24 * 60 * 60
     configuration.timeoutIntervalForResource = 7 * 24 * 60 * 60
-    outer = outerSession ?? URLSession(configuration: configuration)
+    let diagnostics = RemoteDataDiagnostics()
+    dataDiagnostics = diagnostics
+    ownsOuterSession = outerSession == nil
+    outer = outerSession ?? URLSession(configuration: configuration,
+      delegate: RemoteDataDiagnosticDelegate(diagnostics), delegateQueue: nil)
     socket = outer.webSocketTask(with: dataURL)
     socket.maximumMessageSize = 96 * 1024
     writer = Writer(socket)
@@ -246,11 +257,14 @@ final class RemoteAppTunnel: @unchecked Sendable {
     guard ticket.range(of: "^[A-Za-z0-9_-]{1,512}$", options: .regularExpression) != nil,
       sessionId.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil
     else { throw RemoteSmokeError.invalidInput }
-    lock.withLock { diagnosticSession = sessionId }
+    lock.withLock { diagnosticSession = sessionId; diagnosticsStarted = true }
+    dataDiagnostics.bind(sessionHash: SHA256.hash(data: Data(sessionId.utf8))
+      .map { String(format: "%02x", $0) }.joined().prefix(16).description)
+    dataDiagnostics.record(.socketResume)
     socket.resume()
     let timeout = Task { [weak self] in
       try? await Task.sleep(nanoseconds: 15_000_000_000)
-      if !Task.isCancelled { self?.stop(reason: "attachment timed out") }
+      if !Task.isCancelled { self?.stop(reason: "attachment timed out", cause: .attachmentDeadline) }
     }
     defer { timeout.cancel() }
     do {
@@ -261,6 +275,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
         frame["capability"] as? String == "remote-control-v1"
       else { throw RemoteSmokeError.invalidFrame }
 
+      dataDiagnostics.record(.attached)
       let parameters = NWParameters.tcp
       parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
       let listener = try NWListener(using: parameters)
@@ -314,28 +329,78 @@ final class RemoteAppTunnel: @unchecked Sendable {
       startHeartbeat()
       return port
     } catch {
-      stop(reason: "attachment failed: \(error)")
+      dataDiagnostics.record(.failure, cause: .attachmentFailure, error: error)
+      stop(reason: "attachment failed: \(error)", cause: .attachmentFailure)
       throw error
     }
   }
 
-  func stop(reason: String = "stopped by app") {
+  @discardableResult
+  func enableDataDiagnostics(duration: TimeInterval = RemoteDataDiagnostics.duration) -> Bool {
+    let enabled = lock.withLock {
+      let enabled = dataDiagnostics.enable(startedLate: diagnosticsStarted, delegateAvailable: ownsOuterSession, duration: duration)
+      if enabled { retainDiagnosticStreams() }
+      return enabled
+    }
+    guard enabled else { return false }
+    let monitor = lock.withLock { () -> NWPathMonitor? in
+      guard pathMonitor == nil else { return nil }
+      let monitor = NWPathMonitor()
+      pathMonitor = monitor
+      return monitor
+    }
+    guard let monitor else { return true }
+    monitor.pathUpdateHandler = { [weak self] path in
+      let status: RemoteDataDiagnostics.Path
+      switch path.status {
+      case .satisfied: status = .satisfied
+      case .unsatisfied: status = .unsatisfied
+      case .requiresConnection: status = .requiresConnection
+      @unknown default: status = .unknown
+      }
+      self?.dataDiagnostics.record(.networkPath, path: status)
+    }
+    monitor.start(queue: DispatchQueue(label: "verity.data.diagnostics"))
+    DispatchQueue.global().asyncAfter(deadline: .now() + max(0, min(RemoteDataDiagnostics.duration, duration))) { [weak self] in
+      self?.disableDataDiagnostics()
+    }
+    return true
+  }
+
+  func disableDataDiagnostics() {
+    lock.withLock { pathMonitor?.cancel(); pathMonitor = nil }
+    dataDiagnostics.disable()
+  }
+
+  func exportDataDiagnostics() -> String? {
+    lock.withLock {
+      dataDiagnostics.record(.counters, sentBytes: sentBytes, receivedBytes: receivedBytes,
+        deliveredBytes: deliveredBytes)
+      retainDiagnosticStreams()
+    }
+    return dataDiagnostics.export()
+  }
+
+  func stop(reason: String = "stopped by app", cause: RemoteDataDiagnostics.Cause = .appStop) {
     lock.lock()
-    stopLocked(reason: reason)
+    stopLocked(reason: reason, cause: cause)
   }
 
   /// Expects the lock held and releases it; the caller decides under that
   /// same lock, so nothing can revive the attachment between verdict and stop.
-  private func stopLocked(reason: String) {
+  private func stopLocked(reason: String, cause: RemoteDataDiagnostics.Cause) {
     guard !stopped else { lock.unlock(); return }
+    dataDiagnostics.record(.cancelRequested, cause: cause)
+    dataDiagnostics.record(.counters, sentBytes: sentBytes, receivedBytes: receivedBytes,
+      deliveredBytes: deliveredBytes)
     stopped = true
     stopReasonText = reason
     let connections = streams.values.map(\.connection)
     for (id, stream) in streams {
-      logStream(id, stream, event: "session_stopped")
       stream.closed = true
       stream.stallWatch?.cancel()
       if stream.endedBy == "open" { stream.endedBy = "stopped"; stream.endedAt = Date() }
+      logStream(id, stream, event: "session_stopped")
     }
     streams.removeAll()
     sessionPendingBytes = 0
@@ -343,10 +408,11 @@ final class RemoteAppTunnel: @unchecked Sendable {
     listener?.cancel()
     listener = nil
     lock.unlock()
-    NSLog("Verity remote tunnel stopped: %@", reason)
+    NSLog("Verity remote tunnel stopped: %@", cause.rawValue)
     for connection in connections { connection.cancel() }
     reader?.cancel()
     lock.withLock { heartbeat }?.cancel()
+    dataDiagnostics.record(.socketCancel, cause: cause, closeCode: URLSessionWebSocketTask.CloseCode.goingAway.rawValue)
     socket.cancel(with: .goingAway, reason: nil)
     outer.invalidateAndCancel()
   }
@@ -365,7 +431,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
         let frame = try await receiveFrame()
         try await handle(frame)
       }
-    } catch { stop(reason: "data socket failed: \(error)") }
+    } catch {
+      dataDiagnostics.record(.failure, cause: .readFailure, error: error)
+      stop(reason: "data socket failed: \(error)", cause: .readFailure)
+    }
   }
 
   // Mirrors the Uplink side of the data heartbeat: one outstanding ping, and the
@@ -387,14 +456,17 @@ final class RemoteAppTunnel: @unchecked Sendable {
           return (now.timeIntervalSince(since) > 45, false)
         }
         if expired {
-          self.stop(reason: "heartbeat timeout")
+          self.stop(reason: "heartbeat timeout", cause: .heartbeatDeadline)
           return
         }
         guard due else { continue }
         self.lock.withLock { self.pingsSent += 1 }
         self.socket.sendPing { [weak self] error in
           guard let self else { return }
-          if let error { self.stop(reason: "heartbeat failed: \(error)") }
+          if let error {
+            self.dataDiagnostics.record(.failure, cause: .heartbeatFailure, error: error)
+            self.stop(reason: "heartbeat failed: \(error)", cause: .heartbeatFailure)
+          }
           else {
             self.lock.withLock {
               self.unansweredPingSince = nil
@@ -455,9 +527,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
         stream.noteRecord(data, incoming: true)
         stream.receivedBytes += data.count
         receivedBytes += data.count
+        stream.incomingSequence += 1
         if first { logStream(id, stream, event: "first_remote_data") }
+        else { retainDiagnosticStream(stream) }
       }
-      stream.incomingSequence += 1
       let accepted = lock.withLock {
         guard !stream.closed,
           stream.pendingBytes + data.count <= 256 * 1024,
@@ -478,6 +551,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       lock.withLock {
         stream.incomingEnded = true
         if stream.endedBy == "open" { stream.endedBy = "remote"; stream.endedAt = Date() }
+        retainDiagnosticStream(stream)
       }
       enqueue(Data(), to: stream, id: id, complete: true)
     case "stream.reset":
@@ -516,6 +590,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
             stream.deliveredBytes += data.count
             deliveredBytes += data.count
             if first { logStream(id, stream, event: "first_local_data_delivered") }
+            else { retainDiagnosticStream(stream) }
             stream.pendingBytes -= data.count
             sessionPendingBytes -= data.count
           }
@@ -537,7 +612,32 @@ final class RemoteAppTunnel: @unchecked Sendable {
   }
 
   // Called under lock; events and reset codes are fixed locally, never payload text.
+  private func retainDiagnosticStream(_ stream: Stream) {
+    dataDiagnostics.retainStream(.init(streamId: stream.id,
+      proxy: stream.proxy == "connect" ? .connect : .socks,
+      endedBy: RemoteDataDiagnostics.End(rawValue: stream.endedBy) ?? .stopped,
+      sentBytes: stream.sentBytes, receivedBytes: stream.receivedBytes,
+      deliveredBytes: stream.deliveredBytes, outgoingFrames: stream.outgoingSequence,
+      incomingFrames: stream.incomingSequence, outgoingTLSRecords: stream.outgoing.types,
+      incomingTLSRecords: stream.incoming.types, firstHandshake: stream.incoming.firstHandshake))
+  }
+
+  // Called under the tunnel lock; seed late captures and refresh before export.
+  private func retainDiagnosticStreams() {
+    for stream in streams.values.sorted(by: { $0.id < $1.id }) { retainDiagnosticStream(stream) }
+    for stream in recentStreams { retainDiagnosticStream(stream) }
+  }
+
   private func logStream(_ id: String, _ stream: Stream, event: String) {
+    retainDiagnosticStream(stream)
+    let diagnosticEvent: RemoteDataDiagnostics.Event?
+    switch event {
+    case "opened": diagnosticEvent = .streamOpened
+    case "first_local_data_sent": diagnosticEvent = .streamSendCompleted
+    case "stalled": diagnosticEvent = .streamStalled
+    default: diagnosticEvent = nil
+    }
+    if let diagnosticEvent { dataDiagnostics.record(diagnosticEvent, streamId: id) }
     NSLog("Verity remote stream session=%@ stream=%@ event=%@ sentBytes=%ld receivedBytes=%ld deliveredBytes=%ld",
       diagnosticSession, id, event, stream.sentBytes, stream.receivedBytes, stream.deliveredBytes)
   }
@@ -563,7 +663,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     stream?.worker?.cancel()
     stream?.stallWatch?.cancel()
     stream?.connection.cancel()
-    if exhausted { stop(reason: "stream IDs exhausted") }
+    if exhausted { stop(reason: "stream IDs exhausted", cause: .streamExhausted) }
     return stream != nil
   }
 
@@ -583,7 +683,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
         && self.receivedBytes == receivedWhenArmed
       guard stalled else { self.lock.unlock(); return }
       self.logStream(id, stream, event: "stalled")
-      self.stopLocked(reason: "stall: no reply on a stream within \(Self.stallDeadlineSeconds) s")
+      self.stopLocked(reason: "stall: no reply on a stream within \(Self.stallDeadlineSeconds) s", cause: .streamStall)
     }
     let alreadyDone = lock.withLock { () -> Bool in
       if stream.closed || stream.receivedBytes > 0 { return true }
@@ -655,7 +755,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       try await reserveStreamSlot()
       reserved = true
       let id = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-      let stream = Stream(connection, proxy: proxy, key: String(id.prefix(8)))
+      let stream = Stream(connection, proxy: proxy, id: id)
       let available = lock.withLock {
         reservedSlots -= 1
         reserved = false
@@ -675,6 +775,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
           ? Data([5, 0, 0, 1, 127, 0, 0, 1, 0, 0])
           : Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8),
         to: connection)
+      lock.withLock {
+        retainDiagnosticStream(stream)
+        dataDiagnostics.record(.streamOpenRequested, streamId: id)
+      }
       try await writer.send(["type": "stream.open", "streamId": id, "channel": "remote", "meta": [:]])
       lock.withLock {
         openedStreams += 1
@@ -757,10 +861,16 @@ final class RemoteAppTunnel: @unchecked Sendable {
         lock.withLock {
           stream.outgoingEnded = true
           if stream.endedBy == "open" { stream.endedBy = "local"; stream.endedAt = Date() }
+          retainDiagnosticStream(stream)
         }
         try await writer.send(["type": "stream.end", "streamId": id])
         finish(id, stream)
         return
+      }
+      lock.withLock {
+        if stream.sentBytes == 0 {
+          dataDiagnostics.record(.streamSendRequested, streamId: id)
+        }
       }
       try await writer.send(["type": "stream.data", "streamId": id,
         "seq": stream.outgoingSequence, "payload": bytes.base64EncodedString()])
@@ -773,7 +883,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
         return first
       }
       if first { armStallWatch(stream, id: id) }
-      stream.outgoingSequence += 1
+      lock.withLock {
+        stream.outgoingSequence += 1
+        retainDiagnosticStream(stream)
+      }
     }
   }
 

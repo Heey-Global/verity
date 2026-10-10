@@ -629,6 +629,11 @@ export class SessionModel {
 
   /** Refresh the activity snapshot now — on a live hint that the session's
    * activity, status or pending requests changed. */
+  /** Refresh REST metadata after session settings change. */
+  refreshMetadata(): void {
+    void this.loadDetail();
+  }
+
   refreshActivity(): void {
     if (!this._running || this._paused || !this._historyAttemptComplete) return;
     if (this._activityInFlight) {

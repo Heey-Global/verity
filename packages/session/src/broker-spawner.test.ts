@@ -1,8 +1,9 @@
-import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import {
   chmod,
+  chown,
   mkdir,
   mkdtemp,
   readFile,
@@ -18,6 +19,8 @@ import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   agentLaunchSpec,
+  agentSignalTraceSeconds,
+  validateAgentSignalTraceLease,
   PRIVILEGE_DROP_FLAGS,
   resolveAgentWorktreeRoots,
   resolveDockerGid,
@@ -77,6 +80,130 @@ afterEach(async () => {
   await rm(runtimeDir, { recursive: true, force: true });
 });
 
+describe('bounded agent signal trace lease', () => {
+  const sessionId = '4fcd62fd-f7ca-4f40-80b3-db8346e31250';
+  const now = 1_000_000;
+  const request = {
+    command: 'codex-acp' as const,
+    args: [],
+    cwd: '/work',
+    sessionEnv: { VERITY_SESSION_ID: sessionId },
+  };
+  const leasePath = () => join(runtimeDir, 'signal-trace.json');
+  async function lease(value: unknown) {
+    await writeFile(leasePath(), JSON.stringify(value), { mode: 0o600 });
+  }
+
+  it('keeps default launches unchanged and wraps only a matching Codex lease', async () => {
+    expect(await agentSignalTraceSeconds(runtimeDir, request, now)).toBeUndefined();
+    await lease({ sessionId, expiresAt: now + 600_000 });
+    const seconds = validateAgentSignalTraceLease(
+      await readFile(leasePath(), 'utf8'),
+      request,
+      now,
+    );
+    expect(seconds).toBe(600);
+    if (seconds === undefined) throw new Error('valid signal trace lease was rejected');
+    expect(await agentSignalTraceSeconds(runtimeDir, request, now)).toBe(
+      process.getuid?.() === 0 ? 600 : undefined,
+    );
+    const identity = { agentUid: 1000, agentGid: 1000, runnerUid: 1101, runnerGid: 1101 };
+    const normal = agentLaunchSpec(request, identity);
+    const traced = agentLaunchSpec(request, { ...identity, signalTraceSeconds: seconds });
+    expect(traced.args).toEqual([
+      ...normal.args.slice(0, -1),
+      '/usr/bin/python3',
+      '/usr/local/bin/verity-agent-signal-trace',
+      '--seconds',
+      '600',
+      '--launch',
+      '/usr/local/bin/codex-acp',
+    ]);
+    expect(traced.spawnOptions).toEqual(normal.spawnOptions);
+    expect(
+      validateAgentSignalTraceLease(
+        await readFile(leasePath(), 'utf8'),
+        { ...request, command: 'claude-agent-acp' },
+        now,
+      ),
+    ).toBeUndefined();
+    expect(
+      validateAgentSignalTraceLease(
+        await readFile(leasePath(), 'utf8'),
+        { ...request, knowledgeIsolation: true },
+        now,
+      ),
+    ).toBeUndefined();
+    expect(
+      await agentSignalTraceSeconds(
+        runtimeDir,
+        { ...request, sessionEnv: { VERITY_SESSION_ID: randomUUID() } },
+        now,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('rejects expired, excessive, malformed and extended leases', async () => {
+    for (const value of [
+      { sessionId, expiresAt: now },
+      { sessionId, expiresAt: now + 600_001 },
+      { sessionId, expiresAt: now + 60_000, extra: true },
+      { sessionId: 'invalid', expiresAt: now + 60_000 },
+      { sessionId, expiresAt: String(now + 60_000) },
+    ]) {
+      await lease(value);
+      expect(
+        validateAgentSignalTraceLease(await readFile(leasePath(), 'utf8'), request, now),
+      ).toBeUndefined();
+    }
+    await writeFile(leasePath(), '{');
+    expect(await agentSignalTraceSeconds(runtimeDir, request, now)).toBeUndefined();
+    await writeFile(leasePath(), ' '.repeat(4097));
+    expect(await agentSignalTraceSeconds(runtimeDir, request, now)).toBeUndefined();
+  });
+
+  it.skipIf(process.platform !== 'linux')('rejects a FIFO lease without blocking launches', () => {
+    const created = spawnSync('mkfifo', [leasePath()], { encoding: 'utf8' });
+    expect(created.status, created.stderr).toBe(0);
+    // Run the read in a bounded child: a blocking FIFO open must fail this guard.
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `import { agentSignalTraceSeconds } from './features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
+         process.stdout.write(String(await agentSignalTraceSeconds(process.argv[1], JSON.parse(process.argv[2]))));`,
+        runtimeDir,
+        JSON.stringify(request),
+      ],
+      { encoding: 'utf8', timeout: 5_000 },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('undefined');
+  });
+
+  it('rejects symlinks and leases writable or owned by the agent', async () => {
+    await lease({ sessionId, expiresAt: now + 60_000 });
+    await chmod(leasePath(), 0o622);
+    expect(await agentSignalTraceSeconds(runtimeDir, request, now)).toBeUndefined();
+    await chmod(leasePath(), 0o600);
+    if (process.getuid?.() === 0) {
+      await chown(leasePath(), 1000, 1000);
+      expect(await agentSignalTraceSeconds(runtimeDir, request, now)).toBeUndefined();
+    } else {
+      expect(await agentSignalTraceSeconds(runtimeDir, request, now)).toBeUndefined();
+    }
+    await rm(leasePath());
+    const target = join(runtimeDir, 'trace-lease');
+    await writeFile(target, JSON.stringify({ sessionId, expiresAt: now + 60_000 }), {
+      mode: 0o600,
+    });
+    await symlink(target, leasePath());
+    expect(await agentSignalTraceSeconds(runtimeDir, request, now)).toBeUndefined();
+  });
+});
+
 describe('agent spawn broker', () => {
   it('serializes Codex startup until the preceding process finishes SQLite initialization', async () => {
     // Codex 0.154.0 can fail with EAGAIN when fresh ACP processes open its shared
@@ -109,6 +236,7 @@ describe('agent spawn broker', () => {
       const first = spawner('codex-acp', [], { cwd: runtimeDir, env: {} });
       const second = spawner('codex-acp', [], { cwd: runtimeDir, env: {} });
 
+      await vi.waitFor(() => expect(launches).toHaveLength(1), { timeout: 1_000, interval: 5 });
       await new Promise((resolve) => setTimeout(resolve, 40));
       expect(launches).toHaveLength(1);
       await vi.waitFor(() => expect(launches).toHaveLength(2), { timeout: 1_000 });
@@ -261,6 +389,7 @@ describe('agent spawn broker', () => {
       expect(environments[0]?.VERITY_SESSION_BACKEND).toBe('claude');
       expect(environments[0]?.VERITY_SESSION_MODEL).toBe('opus');
       expect(environments[0]?.VERITY_SESSION_ID).toBe('session-1');
+      expect(environments[0]?.PATH?.split(':')[0]).toBe('/opt/verity/package-managers');
       expect(environments[0]?.ANTHROPIC_API_KEY).toBeUndefined();
     } finally {
       await broker.close();

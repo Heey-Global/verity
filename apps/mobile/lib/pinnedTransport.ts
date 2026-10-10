@@ -1,9 +1,11 @@
+import { type TransportRequestInit, markSwitchTransportRequest } from '@verity/mobile';
 import { requireNativeModule } from 'expo-modules-core';
 import {
   directRouteKnownReachable,
   lastDirectRefusal,
   pendingDirectVerdict,
   recoverRemoteControlRead,
+  remoteControlAvailableForUrl,
   remoteControlFailureForUrl,
   remoteControlPortForUrl,
   reportDirectRouteFailure,
@@ -16,6 +18,8 @@ type NativeResponse = {
 } & ({ bodyBase64: string; bodyText?: never } | { bodyText: string; bodyBase64?: never });
 
 interface NativePinnedTransport {
+  supportsTransportLanes?: () => boolean;
+  exportTransportTimings?: () => { records: unknown[]; omitted: number };
   request(
     requestId: string,
     url: string,
@@ -69,25 +73,78 @@ interface NativePinnedTransport {
   ): { remove(): void };
 }
 
+type BackgroundQueue = { active: number; waiting: Array<() => void> };
+const backgroundQueues = new Map<string, BackgroundQueue>();
+
+/** Bound slow direct reads across clients and downloads sharing a native host pool. */
+function admitBackground(url: string, signal?: AbortSignal | null): Promise<() => void> {
+  if (signal?.aborted)
+    return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'));
+  const host = new URL(url).host.toLowerCase();
+  let queue = backgroundQueues.get(host);
+  if (!queue) {
+    queue = { active: 0, waiting: [] };
+    backgroundQueues.set(host, queue);
+  }
+  const current = queue;
+  return new Promise((resolve, reject) => {
+    const abort = (): void => {
+      const index = current.waiting.indexOf(admit);
+      if (index >= 0) current.waiting.splice(index, 1);
+      if (!current.active && !current.waiting.length) backgroundQueues.delete(host);
+      reject(new DOMException('The operation was aborted.', 'AbortError'));
+    };
+    const admit = (): void => {
+      signal?.removeEventListener('abort', abort);
+      current.active += 1;
+      let released = false;
+      resolve(() => {
+        if (released) return;
+        released = true;
+        current.active -= 1;
+        current.waiting.shift()?.();
+        if (!current.active && !current.waiting.length) backgroundQueues.delete(host);
+      });
+    };
+    if (current.active < 2) admit();
+    else {
+      current.waiting.push(admit);
+      signal?.addEventListener('abort', abort, { once: true });
+    }
+  });
+}
+
 export async function downloadPinnedFile(input: {
   url: string;
   headers?: Record<string, string>;
   destination: string;
   tlsPin: string;
   useRemote?: boolean;
+  /** Cancels routing/admission before dispatch; the legacy native download is not cancellable. */
+  signal?: AbortSignal;
 }): Promise<string> {
-  const port = input.useRemote ? await remoteControlPortForUrl(input.url) : 0;
-  const response = await native().download(
-    input.url,
-    input.headers ?? {},
-    input.destination,
-    input.tlsPin,
-    port,
-  );
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(`File download failed with status ${String(response.status)}.`);
+  if (input.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+  const port =
+    input.useRemote && (await remoteControlAvailableForUrl(input.url))
+      ? await remoteControlPortForUrl(input.url)
+      : 0;
+  const release = port === 0 ? await admitBackground(input.url, input.signal) : undefined;
+  try {
+    if (input.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+    const response = await native().download(
+      input.url,
+      input.headers ?? {},
+      input.destination,
+      input.tlsPin,
+      port,
+    );
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`File download failed with status ${String(response.status)}.`);
+    }
+    return response.uri;
+  } finally {
+    release?.();
   }
-  return response.uri;
 }
 
 let nativeModule: NativePinnedTransport | null | undefined;
@@ -101,13 +158,24 @@ function native(): NativePinnedTransport {
   return nativeModule;
 }
 
-function requestNative(
+async function requestNative(
   transport: NativePinnedTransport,
   ...args: Parameters<NativePinnedTransport['request']>
 ): Promise<NativeResponse> {
   // OTA JavaScript also runs on older native builds. Select by capability once
   // per request; a failed V2 mutation must never be replayed through the old API.
-  return transport.requestV2 ? transport.requestV2(...args) : transport.request(...args);
+  const diagnosticRequestId = args[3]['x-verity-switch-request'];
+  markSwitchTransportRequest(diagnosticRequestId, 'native-dispatch', args[6] > 0 ? 1 : 0);
+  try {
+    const response = await (transport.requestV2
+      ? transport.requestV2(...args)
+      : transport.request(...args));
+    markSwitchTransportRequest(diagnosticRequestId, 'native-return', Date.now());
+    return response;
+  } catch (error) {
+    markSwitchTransportRequest(diagnosticRequestId, 'native-error');
+    throw error;
+  }
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -170,11 +238,17 @@ async function encodeBody(body: BodyInit | null | undefined): Promise<string | n
 const DIRECT_GRACE_MS = 4_000;
 
 export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fetch {
-  return (async (input: RequestInfo | URL, init: RequestInit = {}) => {
+  return (async (input: RequestInfo | URL, init: TransportRequestInit = {}) => {
     if (input instanceof Request)
       throw new Error('Request objects are not supported by the pinned transport.');
     const url = String(input);
+    const remoteEnabled = useRemote && (await remoteControlAvailableForUrl(url));
     const headers = Object.fromEntries(new Headers(init.headers).entries());
+    // Older native bridges forward every header, so only send lane metadata to
+    // builds that strip it before creating the network request.
+    if (native().supportsTransportLanes?.()) {
+      headers['x-verity-transport-lane'] = init.transportLane ?? 'background';
+    }
     const fileUri =
       typeof init.body === 'object' &&
       init.body !== null &&
@@ -191,14 +265,45 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
     };
     init.signal?.addEventListener('abort', onAbort, { once: true });
     let response!: NativeResponse;
+    let releaseLane: (() => void) | undefined;
+    const background =
+      (init.method ?? 'GET').toUpperCase() === 'GET' && init.transportLane !== 'interactive';
+    const admitDirect = async (): Promise<void> => {
+      if (background && !releaseLane) releaseLane = await admitBackground(url, init.signal);
+    };
     try {
+      const diagnosticRequestId = headers['x-verity-switch-request'];
+      markSwitchTransportRequest(diagnosticRequestId, 'pinned-entry');
       const encodedBody = fileUri ? null : await encodeBody(init.body);
+      markSwitchTransportRequest(diagnosticRequestId, 'body-encoded');
       const replayable =
         !fileUri && (init.method ?? 'GET').toUpperCase() === 'GET' && encodedBody === null;
-      const port = useRemote ? await remoteControlPortForUrl(url, replayable) : 0;
+      let port = remoteEnabled ? await remoteControlPortForUrl(url, replayable) : 0;
+      markSwitchTransportRequest(diagnosticRequestId, 'route-ready', port > 0 ? 1 : 0);
       if (init.signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError');
       }
+      // Admission can outlast the route probe and its pending registry entry.
+      // Keep that verdict so a queued cold read retains cancellation and recovery.
+      let verdict = remoteEnabled && replayable && port === 0 ? pendingDirectVerdict(url) : null;
+      let queuedVerdict: string | undefined;
+      void verdict?.then(
+        (outcome) => {
+          queuedVerdict = outcome;
+        },
+        () => undefined,
+      );
+      if (port === 0) await admitDirect();
+      if (queuedVerdict === 'dead' && !directRouteKnownReachable(url)) {
+        port = await remoteControlPortForUrl(url, true);
+        if (port > 0) {
+          verdict = null;
+          releaseLane?.();
+          releaseLane = undefined;
+        }
+      }
+      if (init.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+      markSwitchTransportRequest(diagnosticRequestId, 'lane-admitted');
       // A read sent directly while the route is unknown must not sit in a
       // request timeout: a definite refusal from the capped probe cancels it
       // at once, and a probe timeout grants it a few more seconds, which a
@@ -206,9 +311,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       let settled = false;
       let cancelledBy: 'verdict' | 'grace' | null = null;
       let grace: ReturnType<typeof setTimeout> | undefined;
-      // Non-null only for a read sent while the route was untested; a read the
-      // known-good direct route loses fails as before, without an Uplink detour.
-      const verdict = useRemote && replayable && port === 0 ? pendingDirectVerdict(url) : null;
+
       if (verdict !== null) {
         void verdict.then(
           (outcome) => {
@@ -228,6 +331,11 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       }
       let recovered = false;
       try {
+        // A completed refusal must not cancel an ID before native installs it.
+        if (port === 0 && queuedVerdict === 'dead' && !directRouteKnownReachable(url)) {
+          cancelledBy = 'verdict';
+          throw new Error('Direct route probe reported an unavailable paired address.');
+        }
         response = fileUri
           ? await transport.upload(
               requestId,
@@ -249,7 +357,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
               port,
             );
         settled = true;
-        if (useRemote && port === 0 && !init.signal?.aborted) reportDirectRouteSuccess(url);
+        if (remoteEnabled && port === 0 && !init.signal?.aborted) reportDirectRouteSuccess(url);
       } catch (error) {
         settled = true;
         let directFailed = port === 0;
@@ -296,6 +404,10 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           !init.signal?.aborted
         ) {
           try {
+            await admitDirect();
+            if (init.signal?.aborted) {
+              throw new DOMException('The operation was aborted.', 'AbortError');
+            }
             // A failed read has no uncertain mutation to replay. Keep the same
             // paired URL and pin when a reachable direct route can recover it.
             response = await requestNative(
@@ -320,14 +432,14 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
             directFailed = true;
           }
         }
-        if (useRemote && directFailed && !init.signal?.aborted) reportDirectRouteFailure(url);
+        if (remoteEnabled && directFailed && !init.signal?.aborted) reportDirectRouteFailure(url);
         let remoteAttempted = false;
         let remoteReason: string | null = null;
         if (
           !recovered &&
           verdict !== null &&
           port === 0 &&
-          useRemote &&
+          remoteEnabled &&
           directFailed &&
           replayable &&
           !init.signal?.aborted
@@ -347,6 +459,8 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
             throw new DOMException('The operation was aborted.', 'AbortError');
           }
           if (remotePort > 0) {
+            releaseLane?.();
+            releaseLane = undefined;
             remoteAttempted = true;
             try {
               response = await requestNative(
@@ -374,7 +488,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           }
         }
         if (!recovered) {
-          const skipped = port === 0 && useRemote ? remoteControlFailureForUrl(url) : null;
+          const skipped = port === 0 && remoteEnabled ? remoteControlFailureForUrl(url) : null;
           const route =
             port > 0
               ? replayable
@@ -407,6 +521,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       }
       throw error;
     } finally {
+      releaseLane?.();
       init.signal?.removeEventListener('abort', onAbort);
     }
     const body = utf8ResponseBody(response);
@@ -471,7 +586,10 @@ export function createPinnedWebSocket(
     if (event.type === 'close') subscription.remove();
   });
   void (async () => {
-    const port = useRemote ? await remoteControlPortForUrl(url) : 0;
+    const port =
+      useRemote && (await remoteControlAvailableForUrl(url))
+        ? await remoteControlPortForUrl(url)
+        : 0;
     return native().openWebSocket(
       url,
       tlsPin,
@@ -508,4 +626,88 @@ export function createPinnedWebSocket(
       subscription.remove();
     },
   };
+}
+
+/** Optional native capability: older installed builds remain usable and report the gap. */
+export function exportPinnedTransportTimings(): {
+  available: boolean;
+  records: Record<string, unknown>[];
+  omitted: number;
+} {
+  try {
+    const transport = native();
+    if (!transport.exportTransportTimings) return { available: false, records: [], omitted: 0 };
+    const result = transport.exportTransportTimings();
+    const numeric = new Set([
+      'nativeEntryWallMs',
+      'nativeResumeMs',
+      'nativeCompletionMs',
+      'nativeCompletionWallMs',
+      'nativeResponseReadyMs',
+      'nativeResponseReadyWallMs',
+      'transactionCount',
+      'fetchStartMs',
+      'dnsStartMs',
+      'dnsEndMs',
+      'connectStartMs',
+      'connectEndMs',
+      'tlsStartMs',
+      'tlsEndMs',
+      'requestStartMs',
+      'requestEndMs',
+      'responseStartMs',
+      'responseEndMs',
+    ]);
+    const boolean = new Set([
+      'metricsAvailable',
+      'failed',
+      'transactionsTruncated',
+      'reusedConnection',
+      'proxyConnection',
+    ]);
+    const allowedStrings: Record<string, readonly string[]> = {
+      route: ['direct', 'tunnel'],
+      proxyMode: ['none', 'socks', 'connect'],
+      protocol: ['http/1.0', 'http/1.1', 'h2', 'h3', 'other'],
+    };
+    const sanitize = (input: unknown): Record<string, unknown> => {
+      if (!input || typeof input !== 'object') return {};
+      const output: Record<string, unknown> = {};
+      for (const [name, value] of Object.entries(input)) {
+        if (numeric.has(name) && typeof value === 'number' && Number.isFinite(value))
+          output[name] = value;
+        if (boolean.has(name) && typeof value === 'boolean') output[name] = value;
+        if (allowedStrings[name]?.includes(value as string)) output[name] = value;
+      }
+      return output;
+    };
+    const records = Array.isArray(result.records)
+      ? result.records.slice(-32).flatMap((input: unknown) => {
+          if (!input || typeof input !== 'object') return [];
+          const record = input as Record<string, unknown>;
+          if (
+            typeof record.requestId !== 'string' ||
+            !/^[a-z0-9-]{1,80}$/.test(record.requestId) ||
+            record.requestId.trim() !== record.requestId
+          )
+            return [];
+          return [
+            {
+              ...sanitize(record),
+              requestId: record.requestId,
+              transactions: Array.isArray(record.transactions)
+                ? record.transactions.slice(-4).map(sanitize)
+                : [],
+            },
+          ];
+        })
+      : [];
+    return {
+      available: true,
+      records,
+      omitted: Number.isSafeInteger(result.omitted) && result.omitted >= 0 ? result.omitted : 0,
+    };
+  } catch {
+    return { available: false, records: [], omitted: 0 };
+  }
 }

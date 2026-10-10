@@ -11,8 +11,9 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macosx14.0" \
   apps/mobile/native/CertificatePinDelegate.swift \
+  apps/mobile/native/PinnedHTTPSessionPool.swift \
   apps/mobile/native/RemoteSmokeTunnel.swift \
-  apps/mobile/native/RemoteAppTunnel.swift \
+  apps/mobile/native/RemoteDataDiagnostics.swift apps/mobile/native/RemoteAppTunnel.swift \
   scripts/remote-control-staging/StagingProbe.swift \
   -o "$tmp/staging-probe"
 VERITY_REMOTE_PROBE_BINARY="$tmp/staging-probe" \

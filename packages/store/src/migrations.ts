@@ -4083,6 +4083,94 @@ const migrations: Record<string, Migration> = {
       await sql`alter table project_settings drop column allowed_agents`.execute(db);
     },
   },
+  '0148_starter_project': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The local project a fresh installation creates for its welcome session.
+      // Recorded by id because a slug match would also claim an operator's own
+      // project of the same name.
+      await db.schema
+        .createTable('starter_project')
+        .addColumn('singleton', 'boolean', (column) => column.primaryKey())
+        .addColumn('project_id', 'text', (column) =>
+          column.notNull().references('projects.id').onDelete('cascade'),
+        )
+        .addColumn('created_at', 'timestamptz', (column) => column.notNull().defaultTo(sql`now()`))
+        .addCheckConstraint('starter_project_singleton_check', sql`singleton = true`)
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.dropTable('starter_project').execute();
+    },
+  },
+  '0149_resolved_meeting_questions': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meeting_insights add column resolved boolean not null default false`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meeting_insights drop column resolved`.execute(db);
+    },
+  },
+  '0150_premium_feature_switches': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Default on: a server that already shares or accepts remote control keeps doing so.
+      await db.schema
+        .alterTable('verity_settings')
+        .addColumn('premium_sharing_enabled', 'boolean', (c) => c.notNull().defaultTo(true))
+        .execute();
+      await db.schema
+        .alterTable('verity_settings')
+        .addColumn('premium_remote_access_enabled', 'boolean', (c) => c.notNull().defaultTo(true))
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('verity_settings')
+        .dropColumn('premium_remote_access_enabled')
+        .dropColumn('premium_sharing_enabled')
+        .execute();
+    },
+  },
+  '0151_welcome_session_replay': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Keep the id after session deletion: ordinary onboarding must not recreate
+      // a tour that was deliberately removed. Only explicit replay replaces it.
+      await db.schema
+        .alterTable('starter_project')
+        .addColumn('welcome_session_id', 'text')
+        .execute();
+      await sql`update starter_project set welcome_session_id = (
+        select s.session_id from sessions s
+        join session_automation_marker m on m.session_id = s.session_id
+        where s.project_id = starter_project.project_id and m.marker = 'welcome-session'
+        order by s.created_at, s.session_id limit 1
+      )`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('starter_project').dropColumn('welcome_session_id').execute();
+    },
+  },
+  '0152_live_meeting_titles': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings add column title text`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings drop column title`.execute(db);
+    },
+  },
+};
+
+migrations['0153_project_package_protection'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table project_package_protection (
+      project_id text primary key references projects(id) on delete cascade,
+      decision text not null check (decision in ('protected', 'skipped'))
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table project_package_protection`.execute(db);
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

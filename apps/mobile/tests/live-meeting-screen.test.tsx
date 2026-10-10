@@ -1,10 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { Alert, FlatList } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 
 import MeetingScreen from '../app/meeting/[sessionId]';
 import { createVerityClient, getActiveMeetingServerId } from '../lib/client';
 import {
+  clearSpeakerNameSuggestion,
   currentMeeting,
   endMeeting,
   pauseMeeting,
@@ -17,6 +18,7 @@ import {
 import {
   listMeetings,
   listNotes,
+  loadDraftNote,
   finalizeNote,
   saveNote,
   type MeetingNote,
@@ -26,7 +28,7 @@ import {
 jest.mock('expo-router', () => ({
   router: { back: jest.fn(), push: jest.fn() },
   Stack: { Screen: () => null },
-  useLocalSearchParams: () => ({ sessionId: 'session-1' }),
+  useLocalSearchParams: jest.fn(() => ({ sessionId: 'session-1' })),
 }));
 jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0 }),
@@ -59,6 +61,7 @@ jest.mock('../lib/liveMeetingSession', () => ({
   pauseMeeting: jest.fn().mockResolvedValue(undefined),
   resumeMeeting: jest.fn().mockResolvedValue(undefined),
   updateSpeakerEdits: jest.fn().mockResolvedValue(undefined),
+  clearSpeakerNameSuggestion: jest.fn(),
 }));
 jest.mock('../lib/liveMeetingStore', () => ({
   listMeetings: jest.fn().mockResolvedValue([]),
@@ -85,6 +88,7 @@ async function noteInput() {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.mocked(useLocalSearchParams).mockReturnValue({ sessionId: 'session-1' });
   jest.mocked(subscribeVoiceMeetingRequest).mockReturnValue(jest.fn());
   jest.mocked(currentMeeting).mockReturnValue(null);
   jest.mocked(subscribeMeeting).mockImplementation((listener) => {
@@ -129,6 +133,9 @@ it('shows a listening state before speech and numbered voices as they are recogn
     speakerStatus: 'ready',
     speakerTurns: [],
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   jest.mocked(currentMeeting).mockReturnValue(meeting);
   let publish!: (meeting: MeetingRecord | null) => void;
@@ -165,10 +172,15 @@ it('keeps research and fact checks in the meeting while sending turns to its ses
     transcript: 'The delivery plan changed. Is the release still Friday?',
     error: null,
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   const sendTurn = jest.fn().mockResolvedValue({ turnId: 'turn-1' });
   jest.mocked(createVerityClient).mockReturnValue({
     sendTurn,
+    getSession: jest.fn().mockResolvedValue({ model: 'claude-opus-5-5', projectId: 'project' }),
+    listModels: jest.fn().mockResolvedValue({ models: ['claude-sonnet-5-5'] }),
     getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
     getLiveMeetingInsights: jest.fn().mockResolvedValue([
       {
@@ -180,6 +192,16 @@ it('keeps research and fact checks in the meeting while sending turns to its ses
         evidenceB: 'Friday',
         sourcePath: 'insights/plan.md',
         createdAt: 1,
+      },
+      {
+        id: 'question-release',
+        meetingId: meeting.id,
+        kind: 'research',
+        summary: 'Is the release still Friday?',
+        evidenceA: 'Is the release still Friday?',
+        evidenceB: null,
+        sourcePath: null,
+        createdAt: 2,
       },
     ]),
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
@@ -194,7 +216,10 @@ it('keeps research and fact checks in the meeting while sending turns to its ses
   await waitFor(() => {
     expect(sendTurn).toHaveBeenCalledWith(
       'session-1',
-      expect.objectContaining({ prompt: expect.stringContaining('Is the release still Friday?') }),
+      expect.objectContaining({
+        prompt: expect.stringContaining('Is the release still Friday?'),
+        model: 'claude-sonnet-5-5',
+      }),
     );
     expect(screen.getByText('RESEARCHING')).toBeOnTheScreen();
   });
@@ -222,6 +247,9 @@ it('shows the compact session answer in the meeting after reopening it', async (
     transcript: 'Is Friday correct?',
     error: null,
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   jest.mocked(createVerityClient).mockReturnValue({
     getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
@@ -295,6 +323,9 @@ it('shows a spoken request as working without leaving the meeting', async () => 
     transcript: 'Verity, check the deadline.',
     error: null,
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   render(<MeetingScreen />);
   await screen.findByLabelText('Open full transcript');
@@ -330,12 +361,15 @@ it('shows timed transcript words with their speaker when attribution is unambigu
       { text: 'yes', start: 2, end: 2.4 },
     ],
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   jest.mocked(currentMeeting).mockReturnValue(meeting);
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Open full transcript'));
-  expect(screen.getByText('Speaker 1: Hello')).toBeOnTheScreen();
-  expect(screen.getByText('Unknown speaker: yes')).toBeOnTheScreen();
+  expect(screen.getByText(/Speaker 1.*Hello/)).toBeOnTheScreen();
+  expect(screen.getByText(/Unknown speaker.*yes/)).toBeOnTheScreen();
 });
 
 it('keeps the unfinished transcript visible after timed words', async () => {
@@ -353,11 +387,51 @@ it('keeps the unfinished transcript visible after timed words', async () => {
     speakerTurns: [{ speaker: 0, start: 0, end: 0.6 }],
     timedWords: [{ text: 'Hello', start: 0, end: 0.4 }],
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Open full transcript'));
-  expect(screen.getByText('Speaker 1: Hello,')).toBeOnTheScreen();
-  expect(screen.getByText('Speaker pending: from the meeting')).toBeOnTheScreen();
+  expect(screen.getByText(/Speaker 1.*Hello,/)).toBeOnTheScreen();
+  expect(screen.getByText('from the meeting')).toBeOnTheScreen();
+});
+
+// Words the diarizer had not reached yet were labelled Unknown speaker for about a
+// second; open turns now attribute them live and the rest wait without a label.
+it('attributes live words from open diarizer turns and leaves unreached words pending', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-pending',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hello there. Still talking',
+    error: null,
+    speakerStatus: 'ready',
+    speakerTurns: [{ speaker: 0, start: 0, end: 0.6 }],
+    tentativeSpeakerTurns: [{ speaker: 1, start: 0.8, end: 1.4 }],
+    speakerHorizon: 1.5,
+    timedWords: [
+      { text: 'Hello', start: 0, end: 0.4 },
+      { text: 'there.', start: 0.9, end: 1.3 },
+      { text: 'Still', start: 2, end: 2.3 },
+      { text: 'talking', start: 2.4, end: 2.8 },
+    ],
+  };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('Open full transcript'));
+  expect(screen.getByText(/Speaker 1.*Hello/)).toBeOnTheScreen();
+  expect(screen.getByText(/Speaker 2.*there\./)).toBeOnTheScreen();
+  expect(screen.getByText('Still talking')).toBeOnTheScreen();
+  expect(screen.queryByText(/Unknown speaker/)).toBeNull();
 });
 
 it('shows the transcript once when its text no longer matches the timed words', async () => {
@@ -375,6 +449,9 @@ it('shows the transcript once when its text no longer matches the timed words', 
     speakerTurns: [{ speaker: 0, start: 0, end: 0.6 }],
     timedWords: [{ text: 'Old', start: 0, end: 0.4 }],
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Open full transcript'));
@@ -404,6 +481,9 @@ it('saves a correction for one speaker segment without changing the other', asyn
       { text: 'there', start: 1, end: 1.5 },
     ],
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Open full transcript'));
@@ -419,6 +499,109 @@ it('saves a correction for one speaker segment without changing the other', asyn
     ),
   );
   alert.mockRestore();
+});
+
+it('names a speaker only after the suggestion is confirmed', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-suggest',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hallo, ich bin Holger. Hi',
+    error: null,
+    ownerToken: 'owner',
+    speakerTurns: [
+      { speaker: 0, start: 0, end: 2 },
+      { speaker: 1, start: 3, end: 4 },
+    ],
+    timedWords: [
+      { text: 'Hallo, ich bin Holger.', start: 0, end: 2 },
+      { text: 'Hi', start: 3, end: 3.5 },
+    ],
+    speakerNameSuggestions: [
+      { speaker: 0, name: 'Holger', quote: 'Hallo, ich bin Holger.' },
+      { speaker: 1, name: 'Anna', quote: 'Hi' },
+    ],
+  };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Speaker 1 is Holger?')).toBeOnTheScreen();
+  expect(updateSpeakerEdits).not.toHaveBeenCalled();
+  // A failed save keeps the suggestion in the recording, so it is offered again.
+  jest.mocked(updateSpeakerEdits).mockRejectedValueOnce(new Error('disk full'));
+  fireEvent.press(screen.getByLabelText('Yes, Holger'));
+  expect(await screen.findByText(/Could not save speaker correction/)).toBeOnTheScreen();
+  expect(clearSpeakerNameSuggestion).not.toHaveBeenCalled();
+  expect(screen.getByLabelText('Yes, Holger')).toBeOnTheScreen();
+  expect(updateSpeakerEdits).toHaveBeenCalledWith(meeting.id, { '0': 'Holger' }, [], {});
+
+  fireEvent.press(screen.getByLabelText('Not Anna'));
+  expect(clearSpeakerNameSuggestion).toHaveBeenCalledWith(meeting.id, 1, true);
+  expect(updateSpeakerEdits).toHaveBeenCalledTimes(1);
+});
+
+it('clears a confirmed name suggestion once the name is saved', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-suggest',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Hallo, ich bin Holger. Hi',
+    error: null,
+    ownerToken: 'owner',
+    speakerTurns: [
+      { speaker: 0, start: 0, end: 2 },
+      { speaker: 1, start: 3, end: 4 },
+    ],
+    timedWords: [
+      { text: 'Hallo, ich bin Holger.', start: 0, end: 2 },
+      { text: 'Hi', start: 3, end: 3.5 },
+    ],
+    speakerNameSuggestions: [
+      { speaker: 0, name: 'Holger', quote: 'Hallo, ich bin Holger.' },
+      { speaker: 1, name: 'Anna', quote: 'Hi' },
+    ],
+  };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  let finish!: () => void;
+  jest.mocked(updateSpeakerEdits).mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('Yes, Holger'));
+  await waitFor(() => expect(updateSpeakerEdits).toHaveBeenCalledTimes(1));
+  fireEvent.press(screen.getByLabelText('Yes, Anna'));
+  expect(updateSpeakerEdits).toHaveBeenCalledTimes(1);
+  await act(async () => finish());
+  await waitFor(() =>
+    expect(clearSpeakerNameSuggestion).toHaveBeenCalledWith(meeting.id, 0, false),
+  );
+  fireEvent.press(screen.getByLabelText('Yes, Anna'));
+  await waitFor(() =>
+    expect(updateSpeakerEdits).toHaveBeenLastCalledWith(
+      meeting.id,
+      { '0': 'Holger', '1': 'Anna' },
+      [],
+      {},
+    ),
+  );
 });
 
 it('renames a speaker across the current meeting', async () => {
@@ -437,6 +620,9 @@ it('renames a speaker across the current meeting', async () => {
     speakerTurns: [{ speaker: 0, start: 0, end: 1 }],
     timedWords: [{ text: 'Hello', start: 0, end: 0.5 }],
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   render(<MeetingScreen />);
   await screen.findByLabelText('Rename Speaker 1');
@@ -447,7 +633,7 @@ it('renames a speaker across the current meeting', async () => {
     expect(updateSpeakerEdits).toHaveBeenCalledWith(meeting.id, { '0': 'Anna' }, [], {}),
   );
   fireEvent.press(screen.getByLabelText('Open full transcript'));
-  expect(screen.getByText('Anna: Hello')).toBeOnTheScreen();
+  expect(screen.getByText(/Anna.*Hello/)).toBeOnTheScreen();
   prompt.mockRestore();
 });
 
@@ -472,6 +658,9 @@ it('keeps a rename when a correction is made before its save finishes', async ()
     speakerTurns: [{ speaker: 0, start: 0, end: 1 }],
     timedWords: [{ text: 'Hello', start: 0, end: 0.5 }],
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   render(<MeetingScreen />);
   await screen.findByLabelText('Rename Speaker 1');
@@ -512,6 +701,9 @@ it('rejects a speaker name longer than the sync contract allows', async () => {
     ownerToken: 'owner',
     speakerTurns: [{ speaker: 0, start: 0, end: 1 }],
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   render(<MeetingScreen />);
   await screen.findByLabelText('Rename Speaker 1');
@@ -540,6 +732,9 @@ it('offers the expected speaker slots when no diarizer turn was detected', async
     speakerTurns: [],
     timedWords: [{ text: 'Hello', start: 0, end: 0.5 }],
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Open full transcript'));
@@ -571,6 +766,9 @@ it('merges duplicate speaker labels and allows undo', async () => {
       { text: 'Two', start: 1, end: 1.5 },
     ],
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   render(<MeetingScreen />);
   expect(await screen.findByLabelText('Rename Speaker 2')).toBeOnTheScreen();
@@ -601,6 +799,9 @@ it('shows a spoken request failure without interrupting the meeting', async () =
     transcript: 'Verity, research the deadline.',
     error: null,
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   let notify!: (event: {
     meetingId: string;
@@ -640,6 +841,9 @@ it('starts a direct meeting request and stays put when the server rejects it', a
     error: null,
   };
   const sendTurn = jest.fn().mockRejectedValue(new Error('offline'));
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
   jest.mocked(createVerityClient).mockReturnValue({
@@ -682,6 +886,9 @@ it('preserves a new question typed while the previous request is sending', async
         resolveSend = resolve;
       }),
   );
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
   jest.mocked(createVerityClient).mockReturnValue({
@@ -911,7 +1118,7 @@ it('shows an unsaved note and offers a retry after its write fails', async () =>
     .mockImplementation(() => (jest.mocked(startMeeting).mock.calls.length > 0 ? live : null));
   jest.mocked(saveNote).mockRejectedValueOnce(new Error('disk full'));
 
-  render(<MeetingScreen />);
+  const view = render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Start meeting'));
   fireEvent.changeText(await noteInput(), 'Unsaved decision');
   await screen.findByText('Note not saved yet. Use retry in the note field.');
@@ -920,7 +1127,10 @@ it('shows an unsaved note and offers a retry after its write fails', async () =>
   fireEvent.press(screen.getByLabelText('End meeting'));
   await screen.findByText('Ended · note not saved');
   expect(screen.queryByLabelText('Speech recognition')).toBeNull();
-  fireEvent.press(screen.getByText('Start another meeting'));
+  jest.mocked(listMeetings).mockResolvedValue([live]);
+  view.unmount();
+  render(<MeetingScreen />);
+  await screen.findByText('New meeting');
   // The start controls used to stack under the ended meeting and push Start off-screen.
   expect(screen.getByLabelText('Speech recognition')).toBeOnTheScreen();
   expect(screen.getByLabelText('Start meeting')).toBeOnTheScreen();
@@ -929,9 +1139,28 @@ it('shows an unsaved note and offers a retry after its write fails', async () =>
   expect(screen.getByTestId('unsaved-note')).toBeOnTheScreen();
   expect(screen.getByText('“Unsaved decision”')).toBeOnTheScreen();
 
+  let finishRetry!: () => void;
+  jest.mocked(saveNote).mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finishRetry = resolve;
+      }),
+  );
   fireEvent.press(screen.getByLabelText('Retry saving note'));
   await waitFor(() => expect(saveNote).toHaveBeenCalledTimes(2));
-  await waitFor(() => expect(screen.queryByTestId('unsaved-note')).toBeNull());
+  const next: MeetingRecord = { ...live, id: 'new-after-recovery', state: 'active', endedAt: null };
+  jest.mocked(startMeeting).mockResolvedValueOnce(next);
+  jest
+    .mocked(currentMeeting)
+    .mockImplementation(() => (jest.mocked(startMeeting).mock.calls.length > 1 ? next : live));
+  fireEvent.press(screen.getByLabelText('Start meeting'));
+  fireEvent.changeText(await noteInput(), 'New meeting note');
+  await act(async () => finishRetry());
+  expect(screen.getByLabelText('Add a meeting note')).toHaveDisplayValue('New meeting note');
+  expect(jest.mocked(saveNote).mock.calls.at(-1)?.[0]).toMatchObject({
+    meetingId: next.id,
+    text: 'New meeting note',
+  });
 });
 
 it('shows an autosaved draft after the meeting ends before Add note', async () => {
@@ -963,7 +1192,7 @@ it('shows an autosaved draft after the meeting ends before Add note', async () =
   fireEvent.changeText(await noteInput(), 'Draft at the end');
   expect(screen.queryByTestId('meeting-note')).toBeNull();
   fireEvent.press(screen.getByLabelText('End meeting'));
-  await screen.findByText('Start another meeting');
+  await screen.findByText('Meeting');
   expect((await noteInput()).props.value).toBe('Draft at the end');
 });
 
@@ -1285,6 +1514,9 @@ it('stamps notes with the time of day rather than the meeting timer', async () =
     transcript: '',
     error: null,
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   jest
     .mocked(listNotes)
@@ -1298,16 +1530,17 @@ it('stamps notes with the time of day rather than the meeting timer', async () =
   expect(expected).not.toBe('01:30');
 });
 
-it('explains online setup and opens services when Attendee is not configured', async () => {
+it('opens online configuration without exposing provider details on the start screen', async () => {
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByText(/Online meeting/));
+  expect(screen.queryByText(/Attendee/)).toBeNull();
   expect(
-    screen.getByText(
-      'Set up online meetings: configure Attendee and enable premium Uplink / Online Sharing.',
-    ),
+    screen.getByText('Configure online meetings and enable Verity Premium Online sharing.'),
   ).toBeTruthy();
-  fireEvent.press(screen.getByText('Set up Attendee'));
+  fireEvent.press(screen.getByText('Configure online meetings'));
   expect(router.push).toHaveBeenCalledWith('/settings/services');
+  fireEvent.press(screen.getByText('Verity Premium'));
+  expect(router.push).toHaveBeenCalledWith('/settings/premium');
   fireEvent.press(screen.getByLabelText('Start meeting'));
   expect(startMeeting).not.toHaveBeenCalled();
 });
@@ -1361,6 +1594,9 @@ it('renames an online speaker using synchronized names without replacing other e
     .mockReturnValue({ editOnlineMeetingSpeakers } as unknown as NonNullable<
       ReturnType<typeof createVerityClient>
     >);
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   let publish!: (meeting: MeetingRecord | null) => void;
   jest.mocked(subscribeMeeting).mockImplementation((listener) => {
@@ -1401,6 +1637,9 @@ it('saves a noticed point as a note and hides a dismissed question', async () =>
     transcript: 'Is the release still Friday?',
     error: null,
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   jest.mocked(createVerityClient).mockReturnValue({
     sendTurn: jest.fn(),
@@ -1416,10 +1655,20 @@ it('saves a noticed point as a note and hides a dismissed question', async () =>
         sourcePath: null,
         createdAt: 1,
       },
+      {
+        id: 'question-release',
+        meetingId: meeting.id,
+        kind: 'research',
+        summary: 'Is the release still Friday?',
+        evidenceA: 'Is the release still Friday?',
+        evidenceB: null,
+        sourcePath: null,
+        createdAt: 2,
+      },
     ]),
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   render(<MeetingScreen />);
-  fireEvent.press(await screen.findByLabelText('Save as note'));
+  fireEvent.press((await screen.findAllByLabelText('Save as note'))[0]!);
   await waitFor(() =>
     expect(saveNote).toHaveBeenCalledWith(
       expect.objectContaining({ meetingId: meeting.id, text: 'The delivery dates differ.' }),
@@ -1429,11 +1678,11 @@ it('saves a noticed point as a note and hides a dismissed question', async () =>
   expect(await screen.findByTestId('meeting-note')).toHaveTextContent(
     /The delivery dates differ\./,
   );
-  expect(screen.queryByLabelText('Save as note')).toBeNull();
+  expect(screen.getAllByLabelText('Save as note')).toHaveLength(1);
 
   expect(screen.getByText('Is the release still Friday?')).toBeOnTheScreen();
   // The open question is the last card, after the insight it did not come from.
-  fireEvent.press(screen.getAllByText('Not now').at(-1)!);
+  fireEvent.press(screen.getAllByLabelText('Dismiss meeting question').at(-1)!);
   expect(screen.queryByText('Is the release still Friday?')).toBeNull();
 });
 
@@ -1450,6 +1699,9 @@ it('does not show a noticed-point note whose save failed', async () => {
     transcript: '',
     error: null,
   };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
   jest.mocked(listMeetings).mockResolvedValue([meeting]);
   jest.mocked(saveNote).mockRejectedValueOnce(new Error('disk full'));
   jest.mocked(createVerityClient).mockReturnValue({
@@ -1473,4 +1725,543 @@ it('does not show a noticed-point note whose save failed', async () => {
   expect(screen.queryByTestId('meeting-note')).toBeNull();
   expect(finalizeNote).not.toHaveBeenCalled();
   expect(screen.queryByText(/note not saved/)).toBeNull();
+});
+
+it('keeps one card per question, expands the newest answer and dismisses without cancelling', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-cards',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: 1,
+    endedAt: null,
+    state: 'active',
+    transcript: 'What is the price? When is delivery?',
+    error: null,
+  };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  const cancelTurn = jest.fn();
+  const questionPrompt = (question: string, id: string) =>
+    `Research this point raised during live meeting ${meeting.id}:\n\n${question}\n\nRecent meeting transcript:\n${meeting.transcript}\n\nMeeting question reference: ${id}`;
+  jest.mocked(createVerityClient).mockReturnValue({
+    cancelTurn,
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+    getHistory: jest.fn().mockResolvedValue({
+      hasMore: false,
+      events: [
+        {
+          seq: 1,
+          event: { t: 'prompt', text: questionPrompt('What is the price?', 'question-price') },
+        },
+        { seq: 2, event: { t: 'text', delta: '- Price is ten.\n- Tax is included.' } },
+        { seq: 3, event: { t: 'result' } },
+        {
+          seq: 4,
+          event: { t: 'prompt', text: questionPrompt('When is delivery?', 'question-delivery') },
+        },
+        {
+          seq: 5,
+          event: { t: 'text', delta: '- Delivery is Tuesday.\n- Tracking arrives Monday.' },
+        },
+        { seq: 6, event: { t: 'result' } },
+      ],
+    }),
+    getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
+    getLiveMeetingInsights: jest.fn().mockResolvedValue([
+      {
+        id: 'question-price',
+        meetingId: meeting.id,
+        kind: 'research',
+        summary: 'How much is it?',
+        evidenceA: 'What is the price?',
+        evidenceB: null,
+        sourcePath: null,
+        createdAt: 1,
+      },
+    ]),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Tracking arrives Monday.')).toBeOnTheScreen();
+  expect(screen.queryByText('Tax is included.')).toBeNull();
+  expect(screen.queryByText('How much is it?')).toBeNull();
+  expect(screen.getAllByText('What is the price?')).toHaveLength(1);
+  fireEvent.press(screen.getAllByLabelText('Toggle meeting answer')[0]!);
+  expect(screen.getByText('Tax is included.')).toBeOnTheScreen();
+  expect(screen.queryByText('Tracking arrives Monday.')).toBeNull();
+  fireEvent.press(screen.getAllByLabelText('Dismiss meeting answer')[1]!);
+  expect(screen.queryByText('When is delivery?')).toBeNull();
+  expect(cancelTurn).not.toHaveBeenCalled();
+});
+
+it('replaces a question suggestion with a paraphrased spoken request using its stable identity', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-voice-id',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: 1,
+    endedAt: null,
+    state: 'active',
+    transcript: 'What does the plan cost?',
+    error: null,
+  };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  let notify!: Parameters<typeof subscribeVoiceMeetingRequest>[0];
+  jest.mocked(subscribeVoiceMeetingRequest).mockImplementation((listener) => {
+    notify = listener;
+    return jest.fn();
+  });
+  jest.mocked(createVerityClient).mockReturnValue({
+    getHistory: jest.fn().mockResolvedValue({ hasMore: false, events: [] }),
+    getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+    getLiveMeetingInsights: jest.fn().mockResolvedValue([
+      {
+        id: 'question-price',
+        meetingId: meeting.id,
+        kind: 'research',
+        summary: 'What does the plan cost?',
+        evidenceA: 'What does the plan cost?',
+        evidenceB: null,
+        sourcePath: null,
+        createdAt: 1,
+      },
+    ]),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  expect(await screen.findByLabelText('Research meeting question')).toBeOnTheScreen();
+  act(() =>
+    notify({
+      meetingId: meeting.id,
+      sessionId: 'session-1',
+      status: 'sent',
+      kind: 'research',
+      request: 'research its monthly price',
+      requestId: 'voice-price',
+      questionId: 'question-price',
+      questionTitle: 'What does the plan cost?',
+    }),
+  );
+  expect(screen.getAllByText('What does the plan cost?')).toHaveLength(1);
+  expect(screen.queryByText('research its monthly price')).toBeNull();
+  expect(screen.queryByLabelText('Research meeting question')).toBeNull();
+});
+
+it.each([false, true])(
+  'limits history answers after merging repeated requests across pages: %s',
+  async (paginate) => {
+    const meeting: MeetingRecord = {
+      id: 'meeting-history-limit',
+      sessionId: 'session-1',
+      serverId: null,
+      engine: 'apple-speech',
+      startedAt: 1,
+      endedAt: null,
+      state: 'active',
+      transcript: 'Meeting text.',
+      error: null,
+    };
+    jest
+      .mocked(useLocalSearchParams)
+      .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
+    jest.mocked(listMeetings).mockResolvedValue([meeting]);
+    const requests = [
+      'What is the price?',
+      'When is delivery?',
+      ...Array<string>(4).fill('Where is the venue?'),
+    ];
+    const events = requests.flatMap((question, index) => [
+      {
+        seq: index * 3 + 1,
+        event: {
+          t: 'prompt',
+          text: `Research this point raised during live meeting ${meeting.id}:\n\n${question}\n\nRecent meeting transcript:\n${meeting.transcript}`,
+        },
+      },
+      { seq: index * 3 + 2, event: { t: 'text', delta: `Answer ${index}.` } },
+      { seq: index * 3 + 3, event: { t: 'result' } },
+    ]);
+    jest.mocked(createVerityClient).mockReturnValue({
+      getHistory: jest
+        .fn()
+        .mockImplementation(async (_sessionId, options) =>
+          paginate
+            ? options?.beforeSeq
+              ? { hasMore: false, events: events.slice(0, 6) }
+              : { hasMore: true, events: events.slice(6) }
+            : { hasMore: false, events },
+        ),
+      getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
+      getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+      getLiveMeetingInsights: jest.fn().mockResolvedValue([]),
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    render(<MeetingScreen />);
+    expect(await screen.findByText('Where is the venue?')).toBeOnTheScreen();
+    expect(screen.getByText('What is the price?')).toBeOnTheScreen();
+    expect(screen.getByText('When is delivery?')).toBeOnTheScreen();
+    expect(screen.getAllByText('Where is the venue?')).toHaveLength(1);
+  },
+);
+
+it.each(['requested', 'dismissed'])(
+  'applies the suggestion limit after excluding %s questions',
+  async (hidden) => {
+    const meeting: MeetingRecord = {
+      id: 'meeting-suggestion-limit',
+      sessionId: 'session-1',
+      serverId: null,
+      engine: 'apple-speech',
+      startedAt: 1,
+      endedAt: null,
+      state: 'active',
+      transcript: 'Meeting text.',
+      error: null,
+    };
+    jest
+      .mocked(useLocalSearchParams)
+      .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
+    jest.mocked(listMeetings).mockResolvedValue([meeting]);
+    const insights = Array.from({ length: 5 }, (_, index) => ({
+      id: `question-${index}`,
+      meetingId: meeting.id,
+      kind: 'research',
+      summary: `Question ${index}?`,
+      evidenceA: `Question ${index}?`,
+      evidenceB: null,
+      sourcePath: null,
+      createdAt: index,
+    }));
+    const events =
+      hidden === 'requested'
+        ? insights.slice(0, 4).flatMap((insight, index) => [
+            {
+              seq: index * 3 + 1,
+              event: {
+                t: 'prompt',
+                text: `Research this point raised during live meeting ${meeting.id}:\n\n${insight.summary}\n\nRecent meeting transcript:\n${meeting.transcript}\n\nMeeting question reference: ${insight.id}`,
+              },
+            },
+            { seq: index * 3 + 2, event: { t: 'text', delta: 'An answer.' } },
+            { seq: index * 3 + 3, event: { t: 'result' } },
+          ])
+        : [];
+    jest.mocked(createVerityClient).mockReturnValue({
+      getHistory: jest.fn().mockResolvedValue({ hasMore: false, events }),
+      getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
+      getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+      getLiveMeetingInsights: jest.fn().mockResolvedValue(insights),
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    render(<MeetingScreen />);
+    if (hidden === 'dismissed') {
+      await screen.findByText('Question 0?');
+      for (let index = 0; index < 4; index++)
+        fireEvent.press(screen.getAllByLabelText('Dismiss meeting question')[0]!);
+    }
+    expect(await screen.findByText('Question 4?')).toBeOnTheScreen();
+    expect(screen.getAllByLabelText('Research meeting question')).toHaveLength(1);
+  },
+);
+
+it('keeps a pending question whose wording matches an answer for a different question identity', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-distinct-pending',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: 1,
+    endedAt: null,
+    state: 'active',
+    transcript: 'Meeting text.',
+    error: null,
+  };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  const question = 'What is the price?';
+  jest.mocked(createVerityClient).mockReturnValue({
+    getHistory: jest.fn().mockResolvedValue({
+      hasMore: false,
+      events: [
+        {
+          seq: 1,
+          event: {
+            t: 'prompt',
+            text: `Research this point raised during live meeting ${meeting.id}:\n\n${question}\n\nRecent meeting transcript:\n${meeting.transcript}\n\nMeeting question reference: question-other`,
+          },
+        },
+        { seq: 2, event: { t: 'text', delta: 'An earlier price.' } },
+        { seq: 3, event: { t: 'result' } },
+      ],
+    }),
+    getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+    getLiveMeetingInsights: jest.fn().mockResolvedValue([
+      {
+        id: 'question-pending',
+        meetingId: meeting.id,
+        kind: 'research',
+        summary: question,
+        evidenceA: question,
+        evidenceB: null,
+        sourcePath: null,
+        createdAt: 1,
+      },
+    ]),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('An earlier price.')).toBeOnTheScreen();
+  expect(screen.getByLabelText('Research meeting question')).toBeOnTheScreen();
+});
+
+it('resets answer dismissal when switching to another meeting with the same request', async () => {
+  let meeting: MeetingRecord = {
+    id: 'meeting-first',
+    sessionId: 'session-1',
+    serverId: null,
+    engine: 'apple-speech',
+    startedAt: 1,
+    endedAt: null,
+    state: 'active',
+    transcript: 'Check the price.',
+    error: null,
+  };
+  let notify!: (meeting: MeetingRecord | null) => void;
+  jest.mocked(currentMeeting).mockImplementation(() => meeting);
+  jest.mocked(listMeetings).mockImplementation(async () => [meeting]);
+  jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+    notify = listener;
+    listener(meeting);
+    return jest.fn();
+  });
+  jest.mocked(createVerityClient).mockReturnValue({
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+    getHistory: jest.fn().mockImplementation(async () => ({
+      hasMore: false,
+      events: [
+        {
+          seq: 1,
+          event: {
+            t: 'prompt',
+            text: `Research this point raised during live meeting ${meeting.id}:\n\nCheck the price.\n\nRecent meeting transcript:\n${meeting.transcript}`,
+          },
+        },
+        { seq: 2, event: { t: 'text', delta: '- Price is ten.' } },
+        { seq: 3, event: { t: 'result' } },
+      ],
+    })),
+    getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
+    getLiveMeetingInsights: jest.fn().mockResolvedValue([]),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Price is ten.')).toBeOnTheScreen();
+  fireEvent.press(screen.getByLabelText('Dismiss meeting answer'));
+  expect(screen.queryByText('Price is ten.')).toBeNull();
+  meeting = { ...meeting, id: 'meeting-second' };
+  await act(async () => notify(meeting));
+  expect(await screen.findByText('Price is ten.')).toBeOnTheScreen();
+});
+
+it('opens a fresh start instead of the latest saved meeting', async () => {
+  jest.mocked(useLocalSearchParams).mockReturnValue({ sessionId: 'session-1' });
+  jest.mocked(listMeetings).mockResolvedValue([
+    {
+      id: 'old-meeting',
+      sessionId: 'session-1',
+      engine: 'fluid-nemotron',
+      startedAt: 1,
+      endedAt: 2,
+      state: 'ended',
+      transcript: 'Old transcript',
+      error: null,
+    },
+  ]);
+  render(<MeetingScreen />);
+  await waitFor(() => expect(listMeetings).toHaveBeenCalled());
+  expect(await screen.findByText('New meeting')).toBeTruthy();
+  expect(screen.queryByText('Old transcript')).toBeNull();
+});
+
+it('opens an explicitly selected ended meeting even when it is still the local record', async () => {
+  const meeting: MeetingRecord = {
+    id: 'ended-local',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: 1,
+    endedAt: 2,
+    state: 'ended',
+    transcript: 'Saved words',
+    error: null,
+  };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
+  jest.mocked(currentMeeting).mockReturnValue(meeting);
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  expect(await screen.findByText(/^Ended/)).toBeTruthy();
+});
+
+it('preserves entered text through both composer switches', async () => {
+  const meeting: MeetingRecord = {
+    id: 'meeting-1',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: '',
+    error: null,
+  };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  const input = await noteInput();
+  fireEvent.changeText(input, 'Draft for Friday');
+  fireEvent.press(screen.getByLabelText('Switch to Ask Verity'));
+  expect(screen.getByLabelText('Ask Verity about this meeting').props.value).toBe(
+    'Draft for Friday',
+  );
+  fireEvent.changeText(screen.getByLabelText('Ask Verity about this meeting'), 'Draft for Monday');
+  fireEvent.press(screen.getByLabelText('Switch to note'));
+  expect(screen.getByLabelText('Add a meeting note').props.value).toBe('Draft for Monday');
+});
+
+it('passes the chosen title to the recorder', async () => {
+  render(<MeetingScreen />);
+  fireEvent.changeText(await screen.findByLabelText('Meeting title'), 'Pricing sync');
+  fireEvent.press(screen.getByLabelText('Start meeting'));
+  await waitFor(() =>
+    expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 4, 'Pricing sync'),
+  );
+});
+
+it('hides recording controls while the full-screen transcript is open', async () => {
+  const meeting: MeetingRecord = {
+    id: 'transcript-full',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: 'Hello',
+    captureStatus: 'listening',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  render(<MeetingScreen />);
+  fireEvent.press(await screen.findByLabelText('Open full transcript'));
+  expect(screen.queryByLabelText('Pause meeting')).toBeNull();
+  expect(screen.queryByLabelText('End meeting')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Collapse transcript'));
+  expect(await screen.findByLabelText('Pause meeting')).toBeTruthy();
+});
+
+it('recovers a persisted unfinished note on a fresh offline entry without showing the ended meeting', async () => {
+  const old: MeetingRecord = {
+    id: 'persisted-offline',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: 1,
+    endedAt: 2,
+    state: 'ended',
+    transcript: 'Old transcript',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([old]);
+  jest.mocked(loadDraftNote).mockResolvedValueOnce({
+    id: 'persisted-note',
+    meetingId: old.id,
+    atSeconds: 1,
+    text: 'Finish this offline note',
+  });
+  render(<MeetingScreen />);
+  expect(await screen.findByText('“Finish this offline note”')).toBeOnTheScreen();
+  expect(screen.getByText('New meeting')).toBeOnTheScreen();
+  expect(screen.queryByText('Old transcript')).toBeNull();
+  fireEvent.press(screen.getByLabelText('Save recovered note'));
+  await waitFor(() =>
+    expect(finalizeNote).toHaveBeenCalledWith('persisted-note', 'Finish this offline note'),
+  );
+  await waitFor(() => expect(screen.queryByTestId('unsaved-note')).toBeNull());
+});
+
+it('counts the complete ended answer history across pages and keeps the count after dismissal', async () => {
+  const meeting: MeetingRecord = {
+    id: 'summary-six-answers',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: 1,
+    endedAt: 2,
+    state: 'ended',
+    transcript: '',
+    error: null,
+  };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  const events = Array.from({ length: 6 }, (_, index) => [
+    {
+      seq: index * 3 + 1,
+      event: {
+        t: 'prompt',
+        text: `During live meeting ${meeting.id}, please respond to this request:\n\nQuestion ${index}?\n\nRecent meeting transcript:\ntext`,
+      },
+    },
+    { seq: index * 3 + 2, event: { t: 'text', delta: `Answer ${index}.` } },
+    { seq: index * 3 + 3, event: { t: 'result' } },
+  ]).flat();
+  jest.mocked(createVerityClient).mockReturnValue({
+    getHistory: jest
+      .fn()
+      .mockImplementation(async (_sessionId, options) =>
+        options?.beforeSeq
+          ? { hasMore: false, events: events.slice(0, 3) }
+          : { hasMore: true, events: events.slice(3) },
+      ),
+    getActivity: jest.fn().mockResolvedValue({ busy: false, queued: [] }),
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+    getLiveMeetingInsights: jest.fn().mockResolvedValue([]),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  expect(await screen.findByLabelText('6 answers')).toBeOnTheScreen();
+  expect(screen.getByText('Answer 0.')).toBeOnTheScreen();
+  fireEvent.press(screen.getAllByLabelText('Dismiss meeting answer')[0]!);
+  expect(screen.getByLabelText('6 answers')).toBeOnTheScreen();
+});
+
+it('preserves the note draft when returning after sending an Ask', async () => {
+  const meeting: MeetingRecord = {
+    id: 'sent-ask',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: '',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest.mocked(createVerityClient).mockReturnValue({
+    sendTurn: jest.fn().mockResolvedValue({ turnId: 'turn-1' }),
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  fireEvent.changeText(await noteInput(), 'Keep my note');
+  fireEvent.press(screen.getByLabelText('Switch to Ask Verity'));
+  fireEvent.press(screen.getByLabelText('Ask Verity in meeting'));
+  await waitFor(() =>
+    expect(screen.getByLabelText('Ask Verity about this meeting')).toHaveDisplayValue(''),
+  );
+  fireEvent.press(screen.getByLabelText('Switch to note'));
+  expect(screen.getByLabelText('Add a meeting note')).toHaveDisplayValue('Keep my note');
 });

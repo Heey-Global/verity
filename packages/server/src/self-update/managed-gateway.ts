@@ -1,8 +1,25 @@
+import {
+  switchRequestDiagnostic,
+  createSwitchDiagnosticBudget,
+} from '../switch-request-diagnostic.js';
 import { randomUUID } from 'node:crypto';
 import type { TLSSocket } from 'node:tls';
-import { request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
+import {
+  request as httpRequest,
+  type IncomingMessage,
+  type ServerResponse,
+  type OutgoingHttpHeaders,
+} from 'node:http';
 import { createServer, type Server } from 'node:http';
-import { createServer as createHttpsServer } from 'node:https';
+import {
+  createSecureServer,
+  constants as http2Constants,
+  type Http2SecureServer,
+  Http2ServerRequest,
+  Http2ServerResponse,
+  type ServerHttp2Session,
+  type ServerHttp2Stream,
+} from 'node:http2';
 import {
   chmodSync,
   closeSync,
@@ -27,6 +44,19 @@ import {
   signManagedBrowserOrigin,
 } from '../managed-browser-origin.js';
 
+type GatewayRequest = IncomingMessage | Http2ServerRequest;
+type GatewayResponse = ServerResponse | Http2ServerResponse;
+type GatewayServer = Server | Http2SecureServer;
+
+function writeGatewayHead(
+  response: GatewayResponse,
+  status: number,
+  headers: OutgoingHttpHeaders = {},
+): void {
+  if (response instanceof Http2ServerResponse) response.writeHead(status, headers);
+  else response.writeHead(status, headers);
+}
+
 interface Destroyable {
   destroy(error?: Error): void;
 }
@@ -42,7 +72,7 @@ export interface ManagedGatewayBackend {
 }
 
 export interface ManagedGatewayConfig {
-  /** Fixed metadata only; never request URLs, headers, addresses or error messages. */
+  /** Fixed metadata and validated opaque diagnostic tokens only; never URLs, raw headers, addresses or error messages. */
   readonly log?: (event: Record<string, string | number>) => void;
   readonly tls?: { readonly key: string | Buffer; readonly cert: string | Buffer };
   readonly publicHost?: string;
@@ -88,6 +118,7 @@ export interface ManagedGatewayRuntime {
 
 const HOP_BY_HOP = new Set([
   'connection',
+  'proxy-connection',
   'keep-alive',
   'proxy-authenticate',
   'proxy-authorization',
@@ -96,6 +127,16 @@ const HOP_BY_HOP = new Set([
   'transfer-encoding',
   'upgrade',
 ]);
+
+/** Connection-listed headers are hop-by-hop too, including arbitrary extension names. */
+function forwardedHeaders(headers: IncomingMessage['headers']): IncomingMessage['headers'] {
+  const connection = headers.connection?.split(',').map((name) => name.trim().toLowerCase()) ?? [];
+  return Object.fromEntries(
+    Object.entries(headers).filter(
+      ([name]) => !name.startsWith(':') && !HOP_BY_HOP.has(name) && !connection.includes(name),
+    ),
+  );
+}
 
 // An ACP tool call parks this HTTP request while the user decides. Keep the
 // ordinary proxy deadline tight, but give this one internal endpoint enough
@@ -245,21 +286,51 @@ function publicPathAllowed(url: string | undefined): boolean {
 }
 
 function proxyHttp(
-  request: IncomingMessage,
-  response: ServerResponse,
+  request: GatewayRequest,
+  response: GatewayResponse,
   backend: ManagedGatewayBackend,
   port: number,
   timeoutMs: number,
   upstreamRequests: Set<Destroyable>,
   upstreamSockets: Set<Socket>,
   backendClientIdentitySecret: Buffer | undefined,
+  diagnosticLog?: (event: Record<string, string | number>) => void,
 ): void {
-  const headers = { ...request.headers };
+  const diagnostic = switchRequestDiagnostic(request.method, request.url, request.headers);
+  const started = performance.now();
+  const fields: Record<string, string | number> | undefined =
+    diagnosticLog && diagnostic
+      ? {
+          event: 'session-switch-http',
+          ...diagnostic,
+          receivedAt: Date.now(),
+          httpVersion: request.httpVersion,
+        }
+      : undefined;
+  const mark = (phase: string): void => {
+    if (fields) fields[phase] = Math.round((performance.now() - started) * 1000) / 1000;
+  };
+  let reported = false;
+  const report = (outcome: string): void => {
+    if (!fields || reported) return;
+    reported = true;
+    mark('downstreamCompletedMs');
+    diagnosticLog?.({ ...fields, outcome, statusCode: response.statusCode });
+  };
+  response.once('finish', () => report('finished'));
+  response.once('close', () => report('closed'));
+  const headers = forwardedHeaders(request.headers);
+  delete headers['x-verity-switch-request'];
+  delete headers['x-verity-switch-kind'];
+  if (diagnostic) {
+    headers['x-verity-switch-request'] = diagnostic.diagnosticRequestId;
+    headers['x-verity-switch-kind'] = diagnostic.kind;
+  }
   for (const header of HOP_BY_HOP) delete headers[header];
   delete headers[MANAGED_CLIENT_IDENTITY_HEADER];
   delete headers[MANAGED_BROWSER_ORIGIN_HEADER];
   if (backendClientIdentitySecret !== undefined) {
-    const origin = `${(request.socket as TLSSocket).encrypted ? 'https' : 'http'}://${request.headers.host ?? ''}`;
+    const origin = `${'encrypted' in request.socket && request.socket.encrypted ? 'https' : 'http'}://${request.headers.host ?? ''}`;
     const signedOrigin = signManagedBrowserOrigin(backendClientIdentitySecret, {
       origin,
       method: request.method ?? 'GET',
@@ -278,6 +349,7 @@ function proxyHttp(
     );
   }
   headers.host = `${backend.host}:${String(port)}`;
+  mark('forwardMs');
   const upstream = httpRequest(
     {
       host: backend.host,
@@ -288,21 +360,34 @@ function proxyHttp(
       timeout: timeoutMs,
     },
     (upstreamResponse) => {
-      const responseHeaders = { ...upstreamResponse.headers };
+      mark('upstreamResponseMs');
+      if (fields) fields.upstreamReusedSocket = upstream.reusedSocket ? 1 : 0;
+      upstreamResponse.once('end', () => mark('upstreamEndMs'));
+      upstreamResponse.once('aborted', () => response.destroy());
+      upstreamResponse.once('error', () => response.destroy());
+      const responseHeaders = forwardedHeaders(upstreamResponse.headers);
       for (const header of HOP_BY_HOP) delete responseHeaders[header];
-      response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders);
+      writeGatewayHead(response, upstreamResponse.statusCode ?? 502, responseHeaders);
       upstreamResponse.pipe(response);
     },
   );
   upstreamRequests.add(upstream);
   upstream.once('close', () => upstreamRequests.delete(upstream));
-  upstream.once('socket', (socket) => trackUpstreamSocket(socket, upstreamSockets));
+  upstream.once('finish', () => mark('upstreamRequestFinishMs'));
+  upstream.once('socket', (socket) => {
+    mark('socketAssignedMs');
+    trackUpstreamSocket(socket, upstreamSockets);
+  });
   upstream.once('timeout', () => upstream.destroy(new Error('managed gateway upstream timeout')));
   upstream.once('error', () => {
-    if (!response.headersSent) response.writeHead(502, { 'content-type': 'application/json' });
+    if (!response.headersSent)
+      writeGatewayHead(response, 502, { 'content-type': 'application/json' });
     response.end('{"error":"upstream unavailable"}');
   });
   request.once('aborted', () => upstream.destroy());
+  response.once('close', () => {
+    if (!response.writableFinished) upstream.destroy();
+  });
   request.pipe(upstream);
 }
 
@@ -354,7 +439,7 @@ function proxyUpgrade(
   delete headers[MANAGED_CLIENT_IDENTITY_HEADER];
   delete headers[MANAGED_BROWSER_ORIGIN_HEADER];
   if (backendClientIdentitySecret !== undefined) {
-    const origin = `${(request.socket as TLSSocket).encrypted ? 'https' : 'http'}://${request.headers.host ?? ''}`;
+    const origin = `${'encrypted' in request.socket && request.socket.encrypted ? 'https' : 'http'}://${request.headers.host ?? ''}`;
     const signedOrigin = signManagedBrowserOrigin(backendClientIdentitySecret, {
       origin,
       method: request.method ?? 'GET',
@@ -403,7 +488,7 @@ function proxyUpgrade(
   upstream.end();
 }
 
-function listen(server: Server, host: string, port: number): Promise<number> {
+function listen(server: GatewayServer, host: string, port: number): Promise<number> {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, () => {
@@ -413,7 +498,7 @@ function listen(server: Server, host: string, port: number): Promise<number> {
   });
 }
 
-function closeServer(server: Server, sockets: Set<Socket>): Promise<void> {
+function closeServer(server: GatewayServer, sockets: Set<Socket>): Promise<void> {
   for (const socket of sockets) socket.destroy();
   return new Promise((resolve, reject) =>
     server.close((error) => (error === undefined ? resolve() : reject(error))),
@@ -433,28 +518,40 @@ export async function startManagedGateway(
   const upstreamRequests = new Set<Destroyable>();
   const upstreamSockets = new Set<Socket>();
   const activeHttpSockets = new Map<Socket, number>();
+  const sessions = new Set<ServerHttp2Session>();
+  const activeStreams = new Set<ServerHttp2Stream>();
+  const liveStreams = new Set<ServerHttp2Stream>();
+  const admitSwitchDiagnostic = createSwitchDiagnosticBudget();
   let activeRequests = 0;
   let maintenance = false;
   let draining = false;
   let backend = readPersistedBackend(config);
-  const unavailable = (response: ServerResponse): void => {
-    response.writeHead(503, { 'content-type': 'application/json', connection: 'close' });
+  const unavailable = (response: GatewayResponse): void => {
+    writeGatewayHead(response, 503, {
+      'content-type': 'application/json',
+      ...(response instanceof Http2ServerResponse ? {} : { connection: 'close' }),
+    });
     response.end('{"error":"server maintenance"}');
   };
   const route = (
-    request: IncomingMessage,
-    response: ServerResponse,
+    request: GatewayRequest,
+    response: GatewayResponse,
     port: (value: ManagedGatewayBackend) => number,
     requestTimeoutMs: number = timeoutMs,
   ): void => {
     if (maintenance) return unavailable(response);
     activeRequests += 1;
-    activeHttpSockets.set(request.socket, (activeHttpSockets.get(request.socket) ?? 0) + 1);
+    if (request instanceof Http2ServerRequest) activeStreams.add(request.stream);
+    else activeHttpSockets.set(request.socket, (activeHttpSockets.get(request.socket) ?? 0) + 1);
     let finished = false;
     const done = (): void => {
       if (finished) return;
       finished = true;
       activeRequests -= 1;
+      if (request instanceof Http2ServerRequest) {
+        activeStreams.delete(request.stream);
+        return;
+      }
       const remaining = (activeHttpSockets.get(request.socket) ?? 1) - 1;
       if (remaining === 0) activeHttpSockets.delete(request.socket);
       else activeHttpSockets.set(request.socket, remaining);
@@ -471,22 +568,35 @@ export async function startManagedGateway(
       upstreamRequests,
       upstreamSockets,
       config.clientIdentitySecret,
+      config.log &&
+        switchRequestDiagnostic(request.method, request.url, request.headers) &&
+        admitSwitchDiagnostic()
+        ? config.log
+        : undefined,
     );
   };
   const tlsDiagnostics = new WeakMap<
     Socket,
     { connection: string; peerPort: number; probes: number }
   >();
+  // HTTP/2 exposes a socket proxy, so object identity differs from secureConnection.
+  const peerDiagnostics = new Map<
+    string,
+    { connection: string; peerPort: number; probes: number }
+  >();
   const diagnostic = (socket: Socket) => {
-    let value = tlsDiagnostics.get(socket);
+    const peer = `${socket.localAddress}:${socket.localPort}:${socket.remoteAddress}:${socket.remotePort}`;
+    let value = tlsDiagnostics.get(socket) ?? peerDiagnostics.get(peer);
     if (value === undefined) {
       // The port is only a best-effort local join with the connector's localPort;
       // NAT and port reuse prevent it from being an end-to-end identity.
       value = { connection: randomUUID(), peerPort: socket.remotePort ?? 0, probes: 0 };
       tlsDiagnostics.set(socket, value);
+      peerDiagnostics.set(peer, value);
       const started = Date.now();
       const context = value;
-      socket.once('close', () =>
+      socket.once('close', () => {
+        peerDiagnostics.delete(peer);
         config.log?.({
           event: 'gateway.tls',
           action: 'closed',
@@ -496,12 +606,31 @@ export async function startManagedGateway(
           // These are Node TLSSocket counters, not opaque relay frame totals.
           receivedBytes: socket.bytesRead,
           sentBytes: socket.bytesWritten,
-        }),
-      );
+        });
+      });
     }
     return value;
   };
-  const publicHandler = (request: IncomingMessage, response: ServerResponse): void => {
+  const publicHandler = (request: GatewayRequest, response: GatewayResponse): void => {
+    if (request instanceof Http2ServerRequest) {
+      const authority = request.headers[':authority'];
+      const host = request.headers.host;
+      if (
+        typeof authority !== 'string' ||
+        !authority ||
+        (host !== undefined && host !== authority)
+      ) {
+        writeGatewayHead(response, 400);
+        response.end();
+        return;
+      }
+      request.headers.host = authority;
+      if (request.method === 'CONNECT') {
+        writeGatewayHead(response, 405);
+        response.end();
+        return;
+      }
+    }
     if (
       config.log !== undefined &&
       config.tls !== undefined &&
@@ -535,7 +664,8 @@ export async function startManagedGateway(
     }
 
     if (!publicPathAllowed(request.url)) {
-      response.writeHead(404).end();
+      writeGatewayHead(response, 404);
+      response.end();
       return;
     }
     route(
@@ -548,7 +678,42 @@ export async function startManagedGateway(
   const publicServer =
     config.tls === undefined
       ? createServer(publicHandler)
-      : createHttpsServer({ key: config.tls.key, cert: config.tls.cert }, publicHandler);
+      : createSecureServer(
+          {
+            key: config.tls.key,
+            cert: config.tls.cert,
+            allowHTTP1: true,
+            settings: {
+              maxConcurrentStreams: 16,
+              maxHeaderListSize: 16 * 1024,
+              enableConnectProtocol: false,
+            },
+          },
+          publicHandler,
+        );
+  if (config.tls !== undefined) {
+    publicServer.on('stream', (stream: ServerHttp2Stream, headers: IncomingMessage['headers']) => {
+      liveStreams.add(stream);
+      const session = stream.session;
+      stream.once('close', () => {
+        liveStreams.delete(stream);
+        if (session && !session.destroyed) session.setTimeout(60_000);
+      });
+      stream.on('error', () => undefined);
+      if (headers[':method'] === 'CONNECT' && !stream.headersSent) {
+        stream.respond({ ':status': 405 });
+        stream.end();
+      }
+    });
+    publicServer.on('session', (session: ServerHttp2Session) => {
+      sessions.add(session);
+      session.on('error', () => undefined);
+      session.once('close', () => sessions.delete(session));
+      session.setTimeout(60_000, () => {
+        if (![...liveStreams].some((stream) => stream.session === session)) session.close();
+      });
+    });
+  }
   if (config.tls !== undefined && config.log !== undefined) {
     publicServer.on('secureConnection', (socket: TLSSocket) => {
       const context = diagnostic(socket);
@@ -586,7 +751,7 @@ export async function startManagedGateway(
     internalSockets.add(socket);
     socket.once('close', () => internalSockets.delete(socket));
   });
-  publicServer.on('upgrade', (request, socket, head) => {
+  publicServer.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     if (!publicPathAllowed(request.url)) return rejectUpgrade(socket, 404);
     if (maintenance) return rejectUpgrade(socket, 503);
     upgradedSockets.add(socket);
@@ -739,14 +904,20 @@ export async function startManagedGateway(
           await new Promise((resolve) => setTimeout(resolve, 5));
         }
         const forcedSockets = new Set<Duplex>([...upgradedSockets, ...activeHttpSockets.keys()]);
-        const forced = forcedSockets.size;
-        const sockets = new Set<CloseableDestroyable>([...forcedSockets, ...upstreamSockets]);
+        const forcedStreams = [...activeStreams];
+        const forced = forcedSockets.size + forcedStreams.length;
+        const sockets = new Set<CloseableDestroyable>([
+          ...forcedSockets,
+          ...upstreamSockets,
+          ...forcedStreams,
+        ]);
         const closed = [...sockets].map(
           (socket) =>
             new Promise<void>((resolve) => {
               socket.once('close', resolve);
             }),
         );
+        for (const stream of forcedStreams) stream.close(http2Constants.NGHTTP2_CANCEL);
         for (const request of upstreamRequests) request.destroy();
         for (const socket of forcedSockets) socket.destroy();
         for (const socket of upstreamSockets) closeManagedGatewayUpstreamSocket(socket);
@@ -757,6 +928,8 @@ export async function startManagedGateway(
       }
     },
     close: () => {
+      for (const session of sessions) session.destroy();
+      for (const request of upstreamRequests) request.destroy();
       for (const socket of upgradedSockets) socket.destroy();
       for (const socket of upstreamSockets) socket.destroy();
       return (closing ??= Promise.all([

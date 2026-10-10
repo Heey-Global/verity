@@ -36,9 +36,9 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.289}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.292}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.85.1}"
+CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.86.0}"
 # renovate: datasource=github-releases depName=cli/cli
 GH_VERSION="${GHVERSION:-2.100.0}"
 # renovate: datasource=github-releases depName=DopplerHQ/cli
@@ -46,11 +46,11 @@ DOPPLER_VERSION="${DOPPLERVERSION:-3.76.6}"
 # renovate: datasource=github-releases depName=gitleaks/gitleaks
 GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
 # renovate: datasource=npm depName=@openai/codex
-CODEX_VERSION="${CODEXVERSION:-0.160.0}"
+CODEX_VERSION="${CODEXVERSION:-0.160.1}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 CODEX_ACP_VERSION="${CODEXACPVERSION:-2.1.1}"
 # renovate: datasource=npm depName=opencode-ai
-OPENCODE_VERSION="${OPENCODEVERSION:-1.18.34}"
+OPENCODE_VERSION="${OPENCODEVERSION:-1.18.35}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
@@ -179,7 +179,7 @@ esac
 # See the env and securityOpt comments in packages/server/src/provisioner.ts.
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  APT_PACKAGES=(tmux git curl ca-certificates less ripgrep gnupg wget jq openssh-client openssl util-linux)
+  APT_PACKAGES=(python3 tmux git curl ca-certificates less ripgrep gnupg wget jq openssh-client openssl util-linux)
   apt-get update
   apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"
   rm -rf /var/lib/apt/lists/*
@@ -295,7 +295,7 @@ fi
 if [ "$INSTALL_CLAUDE" = "true" ]; then
   if command -v npm >/dev/null 2>&1; then
     echo ">> verity-sandbox-toolkit: installing @anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
-    npm install -g --ignore-scripts=false "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+    node "$FEATURE_DIR/bin/verity-cli-install.mjs" claude-code "$CLAUDE_CODE_VERSION"
   else
     echo "!! verity-sandbox-toolkit: installClaude=true but npm not on PATH — skipping claude-code." >&2
     echo "!!                 Add the node Feature (installsAfter) or a node base image." >&2
@@ -307,7 +307,7 @@ fi
 if [ "$INSTALL_CLAUDE_ACP" = "true" ]; then
   if command -v npm >/dev/null 2>&1; then
     echo ">> verity-sandbox-toolkit: installing @agentclientprotocol/claude-agent-acp@$CLAUDE_ACP_VERSION"
-    npm install -g --ignore-scripts=false "@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_VERSION}"
+    node "$FEATURE_DIR/bin/verity-cli-install.mjs" claude-acp "$CLAUDE_ACP_VERSION"
     # Upstream (through 0.66.0) renders tool-call titles from unvalidated model
     # input; one wrong-typed field throws, kills the agent process, and — since
     # loadSession replays history through the same renderer — bricks the session
@@ -352,18 +352,18 @@ fi
 if command -v npm >/dev/null 2>&1; then
   if [ "$INSTALL_CODEX" = "true" ]; then
     echo ">> verity-sandbox-toolkit: installing @openai/codex@$CODEX_VERSION"
-    npm install -g --ignore-scripts=false "@openai/codex@${CODEX_VERSION}"
+    node "$FEATURE_DIR/bin/verity-cli-install.mjs" codex "$CODEX_VERSION"
   fi
   # ACP is a separately pinned transport adapter. It ships its own @openai/codex
   # dependency, so the spawn broker pins CODEX_PATH to the root-owned binary
   # installed above — otherwise two Codex versions run in the same image.
   if [ "$INSTALL_CODEX_ACP" = "true" ]; then
     echo ">> verity-sandbox-toolkit: installing @agentclientprotocol/codex-acp@$CODEX_ACP_VERSION"
-    npm install -g --ignore-scripts=false "@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}"
+    node "$FEATURE_DIR/bin/verity-cli-install.mjs" codex-acp "$CODEX_ACP_VERSION"
   fi
   if [ "$INSTALL_OPENCODE" = "true" ]; then
     echo ">> verity-sandbox-toolkit: installing opencode-ai@$OPENCODE_VERSION"
-    npm install -g --ignore-scripts=false "opencode-ai@${OPENCODE_VERSION}"
+    node "$FEATURE_DIR/bin/verity-cli-install.mjs" opencode "$OPENCODE_VERSION"
     # opencode's updater can target a user-writable dir (unlike the root-owned
     # npm global), so root-ownership alone doesn't stop it. Pin it off via its
     # own config file — persists across both consume paths, chowned to the user
@@ -513,6 +513,15 @@ WRITTEN_PATHS+=("$REMOTE_HOME/.tmux.conf")
 # FEATURE_DIR is resolved at the top of this script.
 install -m 0755 "$FEATURE_DIR/bin/wt" /usr/local/bin/wt
 install -m 0755 "$FEATURE_DIR/bin/verity-agent-run" /usr/local/bin/verity-agent-run
+# Session PATH puts these shims before real package managers, including calls
+# made by project scripts. The real binaries remain available on the rest of PATH.
+install -d /opt/verity/package-managers /usr/local/lib/verity
+install -m 0644 "$FEATURE_DIR/bin/verity-package-policy.mjs" /usr/local/lib/verity/verity-package-policy.mjs
+install -m 0755 "$FEATURE_DIR/bin/verity-package-install.mjs" /usr/local/lib/verity/verity-package-install.mjs
+for PACKAGE_MANAGER in npm pnpm yarn bun pip uv; do
+  printf '#!/bin/sh\nexec node /usr/local/lib/verity/verity-package-install.mjs %s "$@"\n' "$PACKAGE_MANAGER" > "/opt/verity/package-managers/$PACKAGE_MANAGER"
+  chmod 0755 "/opt/verity/package-managers/$PACKAGE_MANAGER"
+done
 # The PATH a root-owned launcher sees: no nvm, no shell profile. Used both by the
 # supervisor block below, which must resolve every binary the broker execs by
 # absolute path, and by the opencode-acp wrapper after it.
@@ -546,6 +555,8 @@ if [ "$INSTALL_RUNNER_SUPERVISOR" = 'true' ]; then
     /usr/local/bin/verity-node-modules-install
   install -m 0755 "$FEATURE_DIR/bin/verity-runner-worker.mjs" \
     /usr/local/bin/verity-runner-worker
+  install -m 0755 "$FEATURE_DIR/bin/verity-agent-signal-trace" \
+    /usr/local/bin/verity-agent-signal-trace
   install -m 0755 "$FEATURE_DIR/bin/verity-agent-spawn-broker.mjs" \
     /usr/local/bin/verity-agent-spawn-broker
   install -m 0755 "$FEATURE_DIR/bin/verity-egress-connector.mjs" \

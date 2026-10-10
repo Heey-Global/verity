@@ -54,7 +54,7 @@ beforeEach(() => {
 });
 
 describe('new project', () => {
-  it('opens the project directly and starts provisioning without requiring optional setup', async () => {
+  it('launches a session in the created project without requiring optional setup', async () => {
     const fake = client();
     mockCreateClient.mockReturnValue(fake);
     render(<NewProjectScreen />);
@@ -64,7 +64,10 @@ describe('new project', () => {
     );
     expect(await screen.findByText('What does this project need?')).toBeOnTheScreen();
     fireEvent.press(screen.getByText('Open project'));
-    expect(mockReplace).toHaveBeenCalledWith('/project/project-1');
+    expect(mockReplace).toHaveBeenCalledWith({
+      pathname: '/new',
+      params: { projectId: 'project-1' },
+    });
     await waitFor(() =>
       expect(fake.repairProject).toHaveBeenCalledWith('project-1', { confirmWarnings: false }),
     );
@@ -102,11 +105,14 @@ describe('new project', () => {
     expect(screen.queryByText('GitHub not connected')).toBeNull();
   });
 
-  it('opens an older pending project directly on its project page', () => {
+  it('launches a session in an older pending project when resuming setup', () => {
     mockParams = { projectId: 'project-1' };
     mockCreateClient.mockReturnValue(client());
     render(<NewProjectScreen />);
-    expect(mockReplace).toHaveBeenCalledWith('/project/project-1');
+    expect(mockReplace).toHaveBeenCalledWith({
+      pathname: '/new',
+      params: { projectId: 'project-1' },
+    });
   });
 
   it('creates a local project without repository access', async () => {

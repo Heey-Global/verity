@@ -1,5 +1,74 @@
 # Changelog
 
+## [4.35.0](https://github.com/Heey-Global/verity/compare/v4.34.0...v4.35.0) (2026-10-09)
+
+
+### Features
+
+* **diagnostics:** correlate session switch transport phases ([#1444](https://github.com/Heey-Global/verity/issues/1444)) ([063bed3](https://github.com/Heey-Global/verity/commit/063bed3d9a2efeefb520852488ae74c32d1d82ab))
+
+
+### Bug Fixes
+
+* **sandbox:** make staged entry directories traversable ([#1440](https://github.com/Heey-Global/verity/issues/1440)) ([9617c48](https://github.com/Heey-Global/verity/commit/9617c48928d904dca2a2ac97a7c2074636a20500))
+
+## [4.34.0](https://github.com/Heey-Global/verity/compare/v4.33.0...v4.34.0) (2026-10-09)
+
+
+### Features
+
+* **session-links:** allow linking control sessions ([#1434](https://github.com/Heey-Global/verity/issues/1434)) ([4941d84](https://github.com/Heey-Global/verity/commit/4941d84fd198a31025b9740134228ebd5ceff83c))
+* **session:** add bounded ACP signal diagnostics ([#1437](https://github.com/Heey-Global/verity/issues/1437)) ([9297197](https://github.com/Heey-Global/verity/commit/9297197305668776a1c7c17d397184a8be0da938))
+
+
+### Bug Fixes
+
+* **mobile:** prepare dictation before microphone activation ([#1423](https://github.com/Heey-Global/verity/issues/1423)) ([b658103](https://github.com/Heey-Global/verity/commit/b658103bdd29505c28cedf76b2ea9b8e3ee273b6))
+* **mobile:** retain stream diagnostics in connection exports ([#1433](https://github.com/Heey-Global/verity/issues/1433)) ([6d2b9ed](https://github.com/Heey-Global/verity/commit/6d2b9ed8bd7a17f956b49c9cb6ffdad859b2102d))
+* **runner:** provision script sandbox helper in Control image ([#1429](https://github.com/Heey-Global/verity/issues/1429)) ([03769e9](https://github.com/Heey-Global/verity/commit/03769e93ebbc621b0c36dc4844e70a80d286e328))
+* **sandbox:** probe script isolation with trusted CLI privileges ([#1435](https://github.com/Heey-Global/verity/issues/1435)) ([14d2139](https://github.com/Heey-Global/verity/commit/14d2139bcda5d1f5a51c9f17ad24c6af30d40019))
+* **server:** restore local project save target in session sandbox ([#1432](https://github.com/Heey-Global/verity/issues/1432)) ([f9f10f4](https://github.com/Heey-Global/verity/commit/f9f10f4f5d9f8dfc66d012ac4c55b86965c77ed5))
+
+## [4.33.0](https://github.com/Heey-Global/verity/compare/v4.32.0...v4.33.0) (2026-10-09)
+
+
+### Features
+
+* **agent:** add verity_app_help tool with shared app help catalog ([#1415](https://github.com/Heey-Global/verity/issues/1415)) ([3db7e07](https://github.com/Heey-Global/verity/commit/3db7e0774cf3254c98212096d8612ba34ba2f7d1))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1403](https://github.com/Heey-Global/verity/issues/1403)) ([abcecd4](https://github.com/Heey-Global/verity/commit/abcecd426c58d144b9e31859086295fe28295598))
+* **release:** register tags before builds and guard workflow merges ([#1417](https://github.com/Heey-Global/verity/issues/1417)) ([45f0c8a](https://github.com/Heey-Global/verity/commit/45f0c8a573e251f54684b48eca00888ce36b1c59))
+* **session:** verify runner hashes against original frame payloads ([#1420](https://github.com/Heey-Global/verity/issues/1420)) ([162942f](https://github.com/Heey-Global/verity/commit/162942f566586a78d5310a33e76208a14efe609e))
+
+## [4.32.0](https://github.com/Heey-Global/verity/compare/v4.31.0...v4.32.0) (2026-10-09)
+
+
+### Features
+
+* **mobile:** add bounded DATA lifecycle recordings ([#1408](https://github.com/Heey-Global/verity/issues/1408)) ([ae8fcc2](https://github.com/Heey-Global/verity/commit/ae8fcc2a090e7d12554f4aaabb4bfff87a2e3db4))
+
+
+### Bug Fixes
+
+* **mobile:** attribute live meeting speakers per word and suggest names from introductions ([#1395](https://github.com/Heey-Global/verity/issues/1395)) ([3593a03](https://github.com/Heey-Global/verity/commit/3593a0391c1703b441cba3da60aacddb475f7d67))
+* **mobile:** plan OTA releases while native runtime builds ([#1404](https://github.com/Heey-Global/verity/issues/1404)) ([b9427cb](https://github.com/Heey-Global/verity/commit/b9427cb3193fb5384b42d2865bf2b9ca1ba386e1))
+* **mobile:** simplify PR waiting button and slow its indicator ([#1399](https://github.com/Heey-Global/verity/issues/1399)) ([458b29a](https://github.com/Heey-Global/verity/commit/458b29aa5ab06b375d2c33d7a410f1a7b51c9788))
+
+## [4.31.0](https://github.com/Heey-Global/verity/compare/v4.30.0...v4.31.0) (2026-10-09)
+
+
+### Features
+
+* **mobile:** use SpeechTranscriber with local vocabulary correction ([#1393](https://github.com/Heey-Global/verity/issues/1393)) ([e28551c](https://github.com/Heey-Global/verity/commit/e28551cf683597cf363104cf542f2e3f5d25433e))
+
+
+### Bug Fixes
+
+* **mobile:** resume OTA planning after native staging publication ([#1392](https://github.com/Heey-Global/verity/issues/1392)) ([6f40f41](https://github.com/Heey-Global/verity/commit/6f40f41687ecff2c03dd2f36b866769050820541))
+
 ## [4.30.0](https://github.com/Heey-Global/verity/compare/v4.29.0...v4.30.0) (2026-10-08)
 
 

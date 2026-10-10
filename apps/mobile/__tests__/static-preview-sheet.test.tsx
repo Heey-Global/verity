@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { Alert, Linking, Modal, Platform, Share } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
@@ -109,10 +110,11 @@ function enableDetectedOnline() {
   jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
     buttons?.find((button) => button.text === '1 hour')?.onPress?.();
   });
-  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
+  fireEvent.press(screen.getByRole('switch', { name: 'Online sharing' }));
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await AsyncStorage.setItem('verity.hints.v1.preview-and-sharing', 'seen');
   jest.clearAllMocks();
 });
 
@@ -163,12 +165,12 @@ it('shows both access switches for a picked server and creates the public link o
 
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
   expect(await screen.findByRole('switch', { name: 'Local' })).toBeTruthy();
-  expect(screen.getByRole('switch', { name: 'Shared online' })).toBeTruthy();
+  expect(screen.getByRole('switch', { name: 'Online sharing' })).toBeTruthy();
   expect(screen.queryByText(/\d{3} \d{3}/)).toBeNull();
   expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
 
   const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
-  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
+  fireEvent.press(screen.getByRole('switch', { name: 'Online sharing' }));
   act(() =>
     alert.mock.calls
       .at(-1)?.[2]
@@ -204,7 +206,7 @@ it('controls detected access directly from the server overview', async () => {
       .checked,
   ).toBe(true);
   expect(
-    screen.getByRole('switch', { name: 'Shared online for Vite on port 5173' }).props
+    screen.getByRole('switch', { name: 'Online sharing for Vite on port 5173' }).props
       .accessibilityState.checked,
   ).toBe(false);
   expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
@@ -228,14 +230,14 @@ it('identifies each detected server in overview switch labels', async () => {
     ).toBeTruthy();
     expect(
       screen.getByRole('switch', {
-        name: `Shared online for ${server.name} on port ${String(server.port)}`,
+        name: `Online sharing for ${server.name} on port ${String(server.port)}`,
       }),
     ).toBeTruthy();
   }
 });
 
 // A failed revoke must leave the switch on so access can be retried.
-it('keeps detected Local on when revocation fails without changing Shared online', async () => {
+it('keeps detected Local on when revocation fails without changing Online sharing', async () => {
   const stopLocalPreviewShare = jest.fn(async () => {
     throw new Error('Could not revoke local access');
   });
@@ -254,7 +256,7 @@ it('keeps detected Local on when revocation fails without changing Shared online
   expect(await screen.findByText('Could not revoke local access')).toBeTruthy();
   expect(screen.getByRole('switch', { name: 'Local' }).props.accessibilityState.checked).toBe(true);
   expect(
-    screen.getByRole('switch', { name: 'Shared online' }).props.accessibilityState.checked,
+    screen.getByRole('switch', { name: 'Online sharing' }).props.accessibilityState.checked,
   ).toBe(true);
   expect(stopPublicPreviewShare).not.toHaveBeenCalled();
 });
@@ -265,15 +267,15 @@ it('cancels a detected online link before allocating access', async () => {
   renderSheet(makeClient({ createSessionPortPreviewShare }));
   fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
   expect(screen.queryByLabelText('On your network')).toBeNull();
-  expect(screen.queryByLabelText('Over the internet')).toBeNull();
-  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
+  expect(screen.queryByText('Public sharing is part of Verity Premium.')).toBeNull();
+  fireEvent.press(screen.getByRole('switch', { name: 'Online sharing' }));
   expect(screen.getByRole('switch', { name: 'Local' }).props.accessibilityState.disabled).toBe(
     true,
   );
   await act(async () => alert.mock.calls.at(-1)?.[3]?.onDismiss?.());
   expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
   expect(
-    screen.getByRole('switch', { name: 'Shared online' }).props.accessibilityState,
+    screen.getByRole('switch', { name: 'Online sharing' }).props.accessibilityState,
   ).toMatchObject({ checked: false, disabled: false });
 });
 
@@ -293,7 +295,7 @@ it('shares only the server that was picked from several', async () => {
   fireEvent.press(await screen.findByRole('button', { name: 'API on port 3000' }));
   expect(await screen.findByText('API :3000')).toBeTruthy();
   const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
-  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
+  fireEvent.press(screen.getByRole('switch', { name: 'Online sharing' }));
   act(() =>
     alert.mock.calls
       .at(-1)?.[2]
@@ -471,14 +473,14 @@ it('shows the live public link with its PIN on reopen and stops it after confirm
   });
 
   const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
-  fireEvent.press(screen.getByRole('switch', { name: 'Shared online' }));
+  fireEvent.press(screen.getByRole('switch', { name: 'Online sharing' }));
   expect(stopPublicPreviewShare).not.toHaveBeenCalled();
   const confirm = alert.mock.calls[0]?.[2]?.find((choice) => choice.text === 'Stop sharing');
   act(() => confirm?.onPress?.());
   await waitFor(() => expect(stopPublicPreviewShare).toHaveBeenCalledWith('port-share'));
   await waitFor(() =>
     expect(
-      screen.getByRole('switch', { name: 'Shared online' }).props.accessibilityState.checked,
+      screen.getByRole('switch', { name: 'Online sharing' }).props.accessibilityState.checked,
     ).toBe(false),
   );
   expect(screen.queryByText('https://vite.example')).toBeNull();
@@ -1088,7 +1090,7 @@ describe('managed dev servers', () => {
       screen.getByRole('switch', { name: 'Local for Curtis Demo' }).props.accessibilityState,
     ).toMatchObject({ checked: true });
     expect(
-      screen.getByRole('switch', { name: 'Shared online for Curtis Demo' }).props
+      screen.getByRole('switch', { name: 'Online sharing for Curtis Demo' }).props
         .accessibilityState,
     ).toMatchObject({ checked: false });
     expect(screen.queryByText(/41000/)).toBeNull();
@@ -1182,7 +1184,7 @@ describe('managed dev servers', () => {
     );
   });
 
-  // Shared online asks how long the link lives and creates it for the
+  // Online sharing asks how long the link lives and creates it for the
   // instance; a running server is not started again.
   it('creates a public link with the chosen lifetime for a running server', async () => {
     const createSessionPortPreviewShare = jest.fn(async () => link());
@@ -1191,7 +1193,7 @@ describe('managed dev servers', () => {
     renderSheet(
       managedClient([demo()], { createSessionPortPreviewShare, controlManagedDevServer }),
     );
-    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' }));
     await waitFor(() =>
       expect(createSessionPortPreviewShare).toHaveBeenCalledWith('session-one', {
         targetPort: 41000,
@@ -1203,8 +1205,8 @@ describe('managed dev servers', () => {
     expect(controlManagedDevServer).not.toHaveBeenCalled();
   });
 
-  // Shared online alone must not also open the server on the local network.
-  it('starts a stopped server for Shared online with Local left off', async () => {
+  // Online sharing alone must not also open the server on the local network.
+  it('starts a stopped server for Online sharing with Local left off', async () => {
     const stopped = demo({
       instance: {
         ...demo().instance!,
@@ -1229,14 +1231,14 @@ describe('managed dev servers', () => {
         createSessionPortPreviewShare,
       }),
     );
-    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' }));
     await waitFor(() => expect(createSessionPortPreviewShare).toHaveBeenCalled());
     expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'start', {
       local: false,
     });
   });
 
-  it('approves for Shared online without opening the server locally', async () => {
+  it('approves for Online sharing without opening the server locally', async () => {
     const approveManagedDevServer = jest.fn(async () => []);
     answer('1 hour', 'Share');
     renderSheet(
@@ -1253,7 +1255,7 @@ describe('managed dev servers', () => {
         },
       ),
     );
-    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' }));
     await waitFor(() =>
       expect(approveManagedDevServer).toHaveBeenCalledWith(
         'session-one',
@@ -1266,7 +1268,7 @@ describe('managed dev servers', () => {
 
   // Started only for the link: a failed link must not leave it running with
   // no access on.
-  it('stops a server it started for Shared online when the link fails', async () => {
+  it('stops a server it started for Online sharing when the link fails', async () => {
     const stopped = demo({
       instance: {
         ...demo().instance!,
@@ -1291,7 +1293,7 @@ describe('managed dev servers', () => {
         }),
       }),
     );
-    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' }));
     await waitFor(() =>
       expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
         onlyIfUnshared: true,
@@ -1317,7 +1319,7 @@ describe('managed dev servers', () => {
           .mockResolvedValue([running]),
       }),
     );
-    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' }));
     await waitFor(() => expect(createSessionPortPreviewShare).toHaveBeenCalled());
     expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'start', {
       local: false,
@@ -1346,7 +1348,7 @@ describe('managed dev servers', () => {
     renderSheet(
       managedClient([server], { controlManagedDevServer, createSessionPortPreviewShare }),
     );
-    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' }));
     await waitFor(() =>
       expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
         onlyIfUnshared: true,
@@ -1366,7 +1368,7 @@ describe('managed dev servers', () => {
         stopPublicPreviewShare,
       }),
     );
-    const toggle = await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' });
+    const toggle = await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' });
     await waitFor(() => expect(toggle.props.accessibilityState.checked).toBe(true));
     expect(toggle.props.accessibilityState.disabled).toBe(false);
     fireEvent.press(toggle);
@@ -1417,7 +1419,7 @@ describe('managed dev servers', () => {
         createSessionPortPreviewShare,
       }),
     );
-    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' }));
     await waitFor(() =>
       expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
         onlyIfUnshared: true,
@@ -1447,7 +1449,7 @@ describe('managed dev servers', () => {
         }),
       }),
     );
-    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' }));
     await waitFor(() =>
       expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
         onlyIfUnshared: true,
@@ -1461,7 +1463,7 @@ describe('managed dev servers', () => {
     renderSheet(
       managedClient([demo({ accessSwitches: undefined })], { createSessionPortPreviewShare }),
     );
-    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' }));
     await waitFor(() =>
       expect(alert).toHaveBeenCalledWith(
         'Share online and on your network?',
@@ -1495,7 +1497,7 @@ describe('managed dev servers', () => {
         createSessionPortPreviewShare,
       }),
     );
-    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' }));
     await waitFor(() =>
       expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'stop', {
         onlyIfUnshared: true,
@@ -1532,7 +1534,7 @@ describe('managed dev servers', () => {
         createSessionPortPreviewShare,
       }),
     );
-    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' }));
     await waitFor(() =>
       expect(controlManagedDevServer).toHaveBeenCalledWith('session-one', 'srv-1', 'start', {
         local: false,
@@ -1560,7 +1562,7 @@ describe('managed dev servers', () => {
       ...(seconds > 86400 ? ['More durations', String(label)] : [String(label)]),
     );
     renderSheet(managedClient([demo()], { createSessionPortPreviewShare }));
-    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' }));
     await waitFor(() =>
       expect(createSessionPortPreviewShare).toHaveBeenCalledWith(
         'session-one',
@@ -1578,7 +1580,9 @@ describe('managed dev servers', () => {
       const createSessionPortPreviewShare = jest.fn(async () => link());
       const alert = answer('Cancel');
       renderSheet(managedClient([demo()], { createSessionPortPreviewShare }));
-      fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+      fireEvent.press(
+        await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' }),
+      );
       await waitFor(() => expect(alert).toHaveBeenCalled());
       expect(alert.mock.calls[0]![2]!.some((button) => button.text === 'Cancel')).toBe(true);
       expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
@@ -1620,7 +1624,7 @@ describe('managed dev servers', () => {
         controlManagedDevServer,
       }),
     );
-    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    fireEvent.press(await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' }));
     await waitFor(() =>
       phase === 'list'
         ? expect(listManagedDevServers).toHaveBeenCalledTimes(2)
@@ -1651,7 +1655,7 @@ describe('managed dev servers', () => {
     );
     expect(await screen.findByText('Creating link…')).toBeTruthy();
     expect(
-      screen.getByRole('switch', { name: 'Shared online for Curtis Demo' }).props
+      screen.getByRole('switch', { name: 'Online sharing for Curtis Demo' }).props
         .accessibilityState,
     ).toMatchObject({ checked: true });
   });
@@ -1709,7 +1713,7 @@ describe('managed dev servers', () => {
 
   // Ending a public link affects visitors, so it asks; the server decides
   // whether the server stops with it.
-  it('asks before Shared online turns off and then stops the link', async () => {
+  it('asks before Online sharing turns off and then stops the link', async () => {
     const stopPublicPreviewShare = jest.fn(async () => undefined);
     answer('Stop sharing');
     renderSheet(
@@ -1718,11 +1722,20 @@ describe('managed dev servers', () => {
         stopPublicPreviewShare,
       }),
     );
-    fireEvent.press(await screen.findByRole('switch', { name: 'Shared online for Curtis Demo' }));
+    await screen.findByRole('switch', { name: 'Online sharing for Curtis Demo' });
+    // The server entry can arrive before its links; turning a still-unchecked
+    // switch on would exercise publishing instead of revocation.
+    await waitFor(() =>
+      expect(
+        screen.getByRole('switch', { name: 'Online sharing for Curtis Demo' }).props
+          .accessibilityState.checked,
+      ).toBe(true),
+    );
+    fireEvent.press(screen.getByRole('switch', { name: 'Online sharing for Curtis Demo' }));
     await waitFor(() => expect(stopPublicPreviewShare).toHaveBeenCalledWith('link-1'));
   });
 
-  it('offers Premium instead of the Shared online switch without entitlement', async () => {
+  it('offers Premium instead of the Online sharing switch without entitlement', async () => {
     const onOpenSettings = jest.fn();
     renderSheet(
       managedClient([demo()], {
@@ -1734,11 +1747,11 @@ describe('managed dev servers', () => {
     );
     fireEvent.press(
       await screen.findByRole('button', {
-        name: 'Shared online needs Verity Premium. Open settings',
+        name: 'Manage Online sharing in Verity Premium',
       }),
     );
     expect(onOpenSettings).toHaveBeenCalled();
-    expect(screen.queryByRole('switch', { name: 'Shared online for Curtis Demo' })).toBeNull();
+    expect(screen.queryByRole('switch', { name: 'Online sharing for Curtis Demo' })).toBeNull();
   });
 
   it('marks a server the agent started without approval as not shared yet', async () => {
@@ -1836,4 +1849,24 @@ describe('managed dev servers', () => {
     fireEvent.press(await screen.findByRole('button', { name: 'Save API as an entry' }));
     expect(onAskAgent).toHaveBeenCalledWith(expect.stringContaining('verity-dev-server add'));
   });
+});
+
+it('explains first online sharing before publishing and Ask in chat cancels', async () => {
+  await AsyncStorage.removeItem('verity.hints.v1.preview-and-sharing');
+  const createSessionPortPreviewShare = jest.fn(async () => portShare());
+  const onAskHelp = jest.fn();
+  renderSheet(makeClient({ createSessionPortPreviewShare }), { onAskHelp });
+  fireEvent.press(await screen.findByRole('button', { name: 'Vite on port 5173' }));
+  jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
+    buttons?.find((button) => button.text === '1 hour')?.onPress?.();
+  });
+  await screen.findByRole('switch', { name: 'Online sharing' });
+  fireEvent.press(screen.getByRole('switch', { name: 'Online sharing' }));
+  await screen.findByText('Ask in chat');
+  expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByText('Ask in chat'));
+  await waitFor(() =>
+    expect(onAskHelp).toHaveBeenCalledWith('How does Shared online preview sharing work?'),
+  );
+  expect(createSessionPortPreviewShare).not.toHaveBeenCalled();
 });

@@ -14,6 +14,8 @@ interface SpeakerLine {
   text: string;
   start: number;
   end: number;
+  /** Not yet reached by the diarizer; shown without a speaker until it is. */
+  pending?: boolean;
 }
 
 // Server copy of apps/mobile/lib/liveMeetingSpeakers.ts. The filed transcript must
@@ -34,15 +36,25 @@ function reconcileTimedTranscript(
 ): { words: TimedWord[]; tail: string } | null {
   const transcriptWords = [...transcript.matchAll(/\S+/gu)];
   const comparable = (text: string) => text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  // Apple joins results so a lone "." or "," can stand as its own token. Such tokens
+  // carry no timing to align, and comparing them to the next word broke alignment.
+  const skipPunctuation = (from: number) => {
+    while (transcriptWords[from] && !comparable(transcriptWords[from]![0])) from++;
+    return from;
+  };
   let index = 0;
   const aligned = words.map((word) => {
-    const spoken = word.text.match(/\S+/gu) ?? [];
+    const spoken = (word.text.match(/\S+/gu) ?? []).filter((token) => comparable(token));
+    if (!spoken.length) return { ...word, text: '' };
     const first = transcriptWords[index];
     for (const token of spoken) {
+      index = skipPunctuation(index);
       if (!transcriptWords[index] || comparable(token) !== comparable(transcriptWords[index]![0]))
         return null;
       index++;
     }
+    // Preserve untimed punctuation in the adjacent timed text, including sentence ends.
+    index = skipPunctuation(index);
     const last = transcriptWords[index - 1];
     return first && last
       ? { ...word, text: transcript.slice(first.index, last.index + last[0].length) }
@@ -61,53 +73,109 @@ function speakerLines(
   turns: SpeakerTurn[],
   corrections: SpeakerCorrection[],
   merges: Record<string, number>,
+  horizon = Infinity,
 ): SpeakerLine[] {
   const lines: SpeakerLine[] = [];
+  const resolved = turns
+    .map((turn) => ({ ...turn, who: resolvedSpeaker(turn.speaker, merges) }))
+    .sort((a, b) => a.start - b.start);
+  // Turns are sorted by start, so each word only needs the window that can reach it:
+  // a long meeting would otherwise scan every turn for every word.
+  const longest = resolved.reduce((max, turn) => Math.max(max, turn.end - turn.start), 0);
+  const firstReaching = (time: number) => {
+    let low = 0;
+    let high = resolved.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (resolved[middle]!.start < time - longest) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
+  // Coverage is a union, so a turn repeated by the model is not counted twice.
+  const heardFor = (spans: [number, number][]) => {
+    let total = 0;
+    let reached = -Infinity;
+    for (const [from, to] of [...spans].sort((a, b) => a[0] - b[0])) {
+      total += Math.max(0, to - Math.max(from, reached));
+      reached = Math.max(reached, to);
+    }
+    return total;
+  };
   for (const word of words) {
     const duration = word.end - word.start;
     if (!word.text.trim() || duration <= 0) continue;
-    // Streaming diarization reports one voice as many short adjacent turns, so a word
-    // spanning a turn boundary is measured against all of that speaker's turns at once.
-    // Coverage is a union, so a turn repeated by the model is not counted twice.
+    // A word's timing includes the pause around it, while the diarizer marks only
+    // speech; measured against the whole word, a phrase spoken with pauses matched
+    // nobody. The share is therefore taken of the time any voice was heard, and
+    // adjacent turns of one speaker count together.
     const covered = new Map<number | null, [number, number][]>();
-    for (const turn of turns) {
+    // Turns running past the word's edge: evidence of who was speaking around it.
+    const crossing = new Set<number | null>();
+    const nearby: typeof resolved = [];
+    for (let index = firstReaching(word.start - 0.6); index < resolved.length; index++) {
+      const turn = resolved[index]!;
+      if (turn.start >= word.end + 0.6) break;
+      nearby.push(turn);
+    }
+    for (const turn of nearby) {
       const from = Math.max(word.start, turn.start);
       const to = Math.min(word.end, turn.end);
       if (to <= from) continue;
-      const speaker = resolvedSpeaker(turn.speaker, merges);
-      covered.set(speaker, [...(covered.get(speaker) ?? []), [from, to]]);
+      covered.set(turn.who, [...(covered.get(turn.who) ?? []), [from, to]]);
+      if (turn.start < word.start || turn.end > word.end) crossing.add(turn.who);
     }
-    const candidates = new Set(
-      [...covered]
-        .filter(([, spans]) => {
-          let total = 0;
-          let reached = word.start;
-          for (const [from, to] of spans.sort((a, b) => a[0] - b[0])) {
-            total += Math.max(0, to - Math.max(from, reached));
-            reached = Math.max(reached, to);
-          }
-          return total > duration * 0.6;
-        })
-        .map(([speaker]) => speaker),
-    );
+    const heard = heardFor([...covered.values()].flat());
+    let speaker: number | null | undefined;
+    // A voice heard for only a sliver of a long span is not enough evidence; older
+    // phrase-level timings would otherwise go to whoever spoke briefly inside them.
+    if (heard >= duration * 0.25) {
+      // Two voices each heard for most of the word is real overlap: leave it unknown.
+      const dominant = [...covered].filter(([, spans]) => heardFor(spans) > heard * 0.6);
+      speaker = dominant.length === 1 ? dominant[0]![0] : null;
+    } else if (heard === 0 && word.start >= horizon) {
+      // The diarizer has not reached this audio yet; it is pending, not unknown.
+      speaker = undefined;
+    } else {
+      // A short pause inside one person's speech belongs to that person, and so does a
+      // word clipped by that person's turn edge. Anyone else heard nearby leaves it
+      // unknown.
+      const neighbours = nearby.filter(
+        (turn) =>
+          (turn.end <= word.start && word.start - turn.end < 0.6) ||
+          (turn.start >= word.end && turn.start - word.end < 0.6),
+      );
+      const around = new Set([...covered.keys(), ...neighbours.map((turn) => turn.who)]);
+      // A voice heard only inside the word, with no one around it, is too little to go on.
+      speaker =
+        duration <= 1 && (neighbours.length || crossing.size) && around.size === 1
+          ? [...around][0]!
+          : null;
+    }
     const correction = corrections.findLast(
       (entry) => entry.start <= word.start && entry.end >= word.end,
     );
-    const speaker = correction
-      ? resolvedSpeaker(correction.speaker, merges)
-      : candidates.size === 1
-        ? [...candidates][0]!
-        : null;
+    if (correction) speaker = resolvedSpeaker(correction.speaker, merges);
+    const pending = speaker === undefined;
     const previous = lines.at(-1);
     if (
-      previous?.speaker === speaker &&
+      previous &&
+      previous.speaker === (speaker ?? null) &&
+      (previous.pending ?? false) === pending &&
       word.start - previous.end <= 1.2 &&
       previous.text.length < 240 &&
       !/[.!?]$/.test(previous.text)
     ) {
       previous.text += ` ${word.text}`;
       previous.end = word.end;
-    } else lines.push({ speaker, text: word.text, start: word.start, end: word.end });
+    } else
+      lines.push({
+        speaker: speaker ?? null,
+        text: word.text,
+        start: word.start,
+        end: word.end,
+        ...(pending ? { pending: true } : {}),
+      });
   }
   return lines;
 }
@@ -130,7 +198,8 @@ function paragraph(text: string): string {
   return inline(text).replace(/^(#|>|[-*+](?=\s)|\d+[.)](?=\s))/, '\\$1');
 }
 
-export function liveMeetingTitle(meeting: Pick<Meeting, 'startedAt'>): string {
+export function liveMeetingTitle(meeting: Pick<Meeting, 'startedAt' | 'title'>): string {
+  if (meeting.title?.trim()) return inline(meeting.title);
   const started = new Date(meeting.startedAt).toISOString();
   return `Live meeting ${started.slice(0, 10)} ${started.slice(11, 16)} UTC`;
 }
@@ -213,6 +282,124 @@ export function renderLiveMeetingMarkdown(input: {
     .trimEnd()}\n`;
 }
 
-export function liveMeetingSavedMessage(link: string, title: string): string {
-  return `Meeting saved to the knowledge base: [${title}](${link})`;
+/** Preserve a chosen title as literal text inside a Markdown link label. */
+export function liveMeetingLinkLabel(title: string): string {
+  return inline(title).replace(/[\\[\]]/g, '\\$&');
+}
+
+export function liveMeetingSavedMessage(
+  link: string,
+  title: string,
+  details?: {
+    sessionId: string;
+    meetingId: string;
+    durationMinutes: number;
+    people: number;
+    answers?: number;
+    notes: number;
+  },
+): string {
+  const notice = `Meeting saved to the knowledge base: [${liveMeetingLinkLabel(title)}](${link})`;
+  return details ? `${notice}\n<!-- verity-meeting: ${JSON.stringify(details)} -->` : notice;
+}
+
+/** Use the same resolved speaker identities as the native meeting summary. */
+export function liveMeetingPeopleCount(
+  meeting: Pick<Meeting, 'speakerTurns' | 'speakerCorrections' | 'speakerMerges'>,
+): number {
+  const merges = meeting.speakerMerges ?? {};
+  return new Set(
+    [
+      ...(meeting.speakerTurns ?? []).map((turn) => resolvedSpeaker(turn.speaker, merges)),
+      ...(meeting.speakerCorrections ?? []).map((correction) =>
+        resolvedSpeaker(correction.speaker, merges),
+      ),
+    ].filter((speaker) => speaker !== null),
+  ).size;
+}
+
+/** Counts completed meeting replies, excluding progress before tools and steered requests. */
+export function liveMeetingAnswerCount(
+  events: readonly {
+    t: string;
+    text?: string | undefined;
+    delta?: string | undefined;
+    parentToolId?: unknown;
+    steered?: boolean | undefined;
+  }[],
+  meetingId: string,
+): number {
+  type Answer = {
+    key: string;
+    questionId?: string;
+    answer: string;
+    ready: boolean;
+    combined: boolean;
+  };
+  const cards: Answer[] = [];
+  let current: Answer | null = null;
+  for (const event of events) {
+    if (event.t === 'prompt') {
+      const prompt = event.text ?? '';
+      const matches =
+        prompt.startsWith(`Research this point raised during live meeting ${meetingId}:\n\n`) ||
+        prompt.startsWith(`During live meeting ${meetingId}, please respond to this request:\n\n`);
+      if (event.steered && !matches) continue;
+      if (event.steered && current) {
+        current.combined = true;
+        current.ready = false;
+        current.answer = '';
+      }
+      const requestReference = [
+        ...prompt.matchAll(/(?:^|\n\n)Meeting request reference: ([a-zA-Z0-9-]+)/gu),
+      ].at(-1);
+      const questionReference = [
+        ...prompt.matchAll(/(?:^|\n\n)Meeting question reference: (question-[a-zA-Z0-9-]+)/gu),
+      ].at(-1);
+      const questionId =
+        questionReference && (!requestReference || questionReference.index > requestReference.index)
+          ? questionReference[1]
+          : undefined;
+      const separator = prompt.indexOf('\n\n');
+      const context = prompt.indexOf('\n\nRecent meeting transcript:', separator + 2);
+      const request = prompt.slice(separator + 2, context < 0 ? undefined : context).trim();
+      // Keep this normalization in step with mobile's meetingQuestionKey.
+      const key = request
+        .toLocaleLowerCase()
+        .replace(
+          /^(?:verity[,!:]?\s*)?(?:(?:recherchier(?:e)?(?:\s+mal)?|research|check|prüf(?:e)?)(?:\s+(?:mal|bitte|please))?[,!:]?\s+)/iu,
+          '',
+        )
+        .replace(/[^\p{L}\p{N}]/gu, '');
+      current =
+        matches && request
+          ? {
+              key,
+              ...(questionId ? { questionId } : {}),
+              answer: '',
+              ready: false,
+              combined: !!event.steered,
+            }
+          : null;
+      if (current) {
+        const index = cards.findIndex((item) =>
+          item.questionId && current!.questionId
+            ? item.questionId === current!.questionId
+            : item.key === current!.key,
+        );
+        if (index >= 0) cards.splice(index, 1);
+        cards.push(current);
+      }
+    } else if (event.t === 'text' && !event.parentToolId && current && !current.combined) {
+      current.answer = (current.answer + (event.delta ?? '')).slice(-20_000);
+    } else if (event.t === 'tool_call' && !event.parentToolId && current && !current.combined) {
+      current.answer = '';
+    } else if (event.t === 'result' && current && !current.combined) {
+      if (current.answer.trim()) current.ready = true;
+    } else if (event.t === 'interrupted' && current && !current.combined) {
+      current.ready = !!current.answer.trim();
+      current = null;
+    }
+  }
+  return cards.filter((card) => card.ready && !card.combined).length;
 }

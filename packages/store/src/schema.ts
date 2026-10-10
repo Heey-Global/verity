@@ -347,6 +347,11 @@ export interface ProjectsTable {
   state_changed_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
+export interface ProjectPackageProtectionTable {
+  project_id: string;
+  decision: 'protected' | 'skipped';
+}
+
 interface ProjectIdentityClaimsTable {
   owner: string;
   repo: string;
@@ -502,6 +507,9 @@ export interface VeritySettingsTable {
    * is assigned by the Uplink during the first successful handshake. */
   uplink_subscription_key: ColumnType<string | null, string | null | undefined, string | null>;
   uplink_installation_id: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Operator switches for the paid Uplink features (see VeritySettingsRecord). */
+  premium_sharing_enabled: ColumnType<boolean, boolean | undefined, boolean>;
+  premium_remote_access_enabled: ColumnType<boolean, boolean | undefined, boolean>;
   /** VESTIGIAL — no longer read or written. These were the nightly sandbox
    *  auto-update policy, removed once the relay reconciler started rebuilding
    *  every sandbox onto the current image after each Server restart: on a released
@@ -1241,6 +1249,13 @@ interface SecretProviderPermissionsTable {
   updated_at: ColumnType<Date, string | undefined, string>;
 }
 
+interface StarterProjectTable {
+  singleton: boolean;
+  project_id: string;
+  welcome_session_id: ColumnType<string | null, string | null | undefined, string | null>;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
 interface ControlPlaneGenerationTable {
   singleton: boolean;
   generation: number;
@@ -1373,6 +1388,7 @@ export interface Database {
   http_mcp_connections: HttpMcpConnectionsTable;
   project_mcp_bindings: ProjectMcpBindingsTable;
   control_plane_generation: ControlPlaneGenerationTable;
+  starter_project: StarterProjectTable;
   sessions: SessionsTable;
   session_slide_decks: SessionSlideDecksTable;
   project_google_connections: ProjectGoogleConnectionsTable;
@@ -1395,6 +1411,7 @@ export interface Database {
   project_memberships: ProjectMembershipsTable;
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;
+  project_package_protection: ProjectPackageProtectionTable;
   verity_settings: VeritySettingsTable;
   secret_key_meta: SecretKeyMetaTable;
   auth_tokens: AuthTokenTable;
@@ -1434,6 +1451,7 @@ export interface Database {
 }
 
 interface LiveMeetingsTable {
+  title: string | null;
   id: string;
   session_id: string;
   engine: string;
@@ -1480,6 +1498,7 @@ interface LiveMeetingNotesTable {
 }
 
 interface LiveMeetingInsightsTable {
+  resolved: Generated<boolean>;
   id: string;
   meeting_id: string;
   kind: 'contradiction' | 'research';

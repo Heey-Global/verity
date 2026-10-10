@@ -114,7 +114,7 @@ jobs:
         run: npm run -w @verity/mobile build
 
       - name: Verify published native runtime compatibility
-        if: steps.release-kind.outputs.skip != 'true'
+        if: steps.intent.outputs.mode == 'stage'
         id: version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -164,10 +164,10 @@ jobs:
           echo "runtime=$native_version" >> "$GITHUB_OUTPUT"
 
       - name: Update Staging OTA Release Please PR
-        if: steps.intent.outputs.mode == 'plan' && steps.version.outputs.blocked != 'true'
+        if: steps.intent.outputs.mode == 'plan'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/mobile-ota-proposal.mjs plan "${{ steps.version.outputs.runtime }}"
+        run: node scripts/mobile-ota-proposal.mjs plan "$(tr -d '[:space:]' < apps/mobile/version.txt)"
 
       - name: Stage immutable candidate and update rolling promotion PR
         id: stage

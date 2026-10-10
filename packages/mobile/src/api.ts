@@ -1,5 +1,7 @@
 import {
   markSessionSwitch,
+  beginSwitchTransportRequest,
+  markSwitchTransportRequest,
   sessionSwitchTiming,
   type SwitchTiming,
 } from './sessionSwitchTiming.js';
@@ -14,6 +16,20 @@ import {
   usageSchema,
 } from '@verity/events';
 import { z } from 'zod';
+
+/** Local transport scheduling metadata; fetch implementations may ignore it. */
+export type TransportLane = 'interactive' | 'background';
+export interface TransportRequestInit extends RequestInit {
+  transportLane?: TransportLane;
+}
+
+function readTransportLane(path: string): TransportLane {
+  const pathname = path.split('?')[0]!;
+  return /^\/(?:sessions|projects)$/u.test(pathname) ||
+    /^\/sessions\/[^/]+(?:\/(?:events|activity))?$/u.test(pathname)
+    ? 'interactive'
+    : 'background';
+}
 
 const projectGitHubIssuesSchema = z.object({
   connected: z.boolean(),
@@ -702,6 +718,8 @@ export const veritySettingsSchema = z.object({
   githubAppPrivateKeyConfigured: z.boolean(),
   dopplerServiceTokenConfigured: z.boolean(),
   uplinkSubscriptionKeyConfigured: z.boolean(),
+  premiumSharingEnabled: z.boolean().optional(),
+  premiumRemoteAccessEnabled: z.boolean().optional(),
   uplinkInstallationId: z.string().nullable(),
   transcribeBaseUrl: z.string().nullable(),
   transcribeModel: z.string().nullable(),
@@ -916,6 +934,8 @@ export type VeritySettingsPatch = {
   githubAppPrivateKey?: string | null | undefined;
   dopplerServiceToken?: string | null | undefined;
   uplinkSubscriptionKey?: string | null | undefined;
+  premiumSharingEnabled?: boolean | undefined;
+  premiumRemoteAccessEnabled?: boolean | undefined;
   transcribeApiKey?: string | null | undefined;
   codexAuthJson?: string | null | undefined;
   opencodeBaseUrl?: string | null | undefined;
@@ -1007,7 +1027,19 @@ const remoteStreamRecordSchema = z.object({
 });
 export type RemoteStreamRecord = z.infer<typeof remoteStreamRecordSchema>;
 
+const premiumFeatureStateSchema = z.object({
+  granted: z.boolean(),
+  enabled: z.boolean(),
+  effective: z.boolean(),
+});
+
 export const uplinkDiagnosticsSchema = z.object({
+  features: z
+    .object({
+      sharing: premiumFeatureStateSchema,
+      remoteAccess: premiumFeatureStateSchema,
+    })
+    .optional(),
   control: z.enum(['connected', 'connecting', 'reconnecting', 'rejected', 'disabled']),
   sharing: z.enum(['ready', 'unavailable']),
   remoteControl: z.enum(['ready', 'unavailable']),
@@ -1042,6 +1074,17 @@ export const onboardingStatusSchema = z.object({
   nextStep: z.enum(['master-password', 'github', 'first-project', 'ai-backends']).nullable(),
 });
 export type OnboardingStatus = z.infer<typeof onboardingStatusSchema>;
+
+/** `POST /onboarding/welcome`: the welcome session in the server's starter project.
+ *  `preparing` while the starter project's sandbox is still being set up (call again
+ *  to poll), `none` when the server has no starter project (an older installation,
+ *  or the operator deleted it), `failed` when the session could not be created. */
+export const welcomeSessionSchema = z.object({
+  state: z.enum(['ready', 'preparing', 'none', 'failed']),
+  sessionId: z.string().nullable(),
+  projectId: z.string().nullable(),
+});
+export type WelcomeSession = z.infer<typeof welcomeSessionSchema>;
 
 /** Result of `POST /github/app/validate` (#320, onboarding): a live check that the
  *  stored GitHub-App creds actually mint a token. `ok` gates the wizard's GitHub
@@ -1878,6 +1921,7 @@ export type IntegrationAccount = z.infer<typeof integrationAccountSchema>;
 export type IntegrationSource = z.infer<typeof integrationSourceSchema>;
 
 const liveMeetingSchema = z.object({
+  title: z.string().nullable().optional(),
   id: z.string(),
   sessionId: z.string(),
   engine: z.enum([
@@ -1969,13 +2013,14 @@ export class VerityClient {
     sessionId: string,
     meetingUrl: string,
     listenForVerity = true,
+    title?: string,
   ): Promise<{ meetingId: string }> {
     return z.object({ meetingId: z.string() }).parse(
       await (
         await this.request(`/sessions/${encodeURIComponent(sessionId)}/live-meetings/online`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ meetingUrl, listenForVerity }),
+          body: JSON.stringify({ meetingUrl, listenForVerity, title }),
         })
       ).json(),
     );
@@ -2048,7 +2093,14 @@ export class VerityClient {
     sessionId: string,
     meetingId: string,
     body: { utterance: string; context: string },
-  ): Promise<{ kind: 'research' | 'opinion'; request: string }[]> {
+  ): Promise<
+    {
+      kind: 'research' | 'opinion';
+      request: string;
+      questionId?: string | undefined;
+      questionTitle?: string | undefined;
+    }[]
+  > {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/addressed`,
       {
@@ -2059,9 +2111,36 @@ export class VerityClient {
     );
     return z
       .object({
-        requests: z.array(z.object({ kind: z.enum(['research', 'opinion']), request: z.string() })),
+        requests: z.array(
+          z.object({
+            kind: z.enum(['research', 'opinion']),
+            request: z.string(),
+            questionId: z.string().optional(),
+            questionTitle: z.string().optional(),
+          }),
+        ),
       })
       .parse(await res.json()).requests;
+  }
+
+  /** Asks the server's model whether these words of one speaker introduce them by name.
+   * The name is only a suggestion: the app asks the operator before using it. */
+  async checkMeetingSpeakerName(
+    sessionId: string,
+    meetingId: string,
+    body: { text: string; hints: string[] },
+  ): Promise<{ name: string | null; quote?: string | undefined }> {
+    const res = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/speaker-name`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    return z
+      .object({ name: z.string().nullable(), quote: z.string().optional() })
+      .parse(await res.json());
   }
 
   async putLiveMeeting(meeting: LiveMeeting & { ownerToken: string }): Promise<void> {
@@ -3134,6 +3213,19 @@ export class VerityClient {
     return uplinkDiagnosticsSchema.parse(await res.json());
   }
 
+  /** Open the welcome session. Explicit replay may restore missing starter resources;
+   * retry requests one new provisioning attempt after a failure. */
+  async openWelcomeSession(options?: {
+    replay?: boolean;
+    retry?: boolean;
+  }): Promise<WelcomeSession> {
+    const res = await this.request('/onboarding/welcome', {
+      method: 'POST',
+      ...(options ? { body: JSON.stringify(options) } : {}),
+    });
+    return welcomeSessionSchema.parse(await res.json());
+  }
+
   /** First-run onboarding gate (#320): whether setup is complete and, if not, the
    *  next required step. Sealed-safe on the server, so the app can poll this on
    *  launch before the operator has unlocked/created the master password. */
@@ -3598,11 +3690,13 @@ export class VerityClient {
   }
 
   async getPreviewCapabilities(): Promise<{
-    publicSharing: 'available' | 'premium-required' | 'unavailable';
+    publicSharing: 'available' | 'premium-required' | 'unavailable' | 'disabled';
   }> {
     const res = await this.request('/preview-capabilities', { method: 'GET' });
     return z
-      .object({ publicSharing: z.enum(['available', 'premium-required', 'unavailable']) })
+      .object({
+        publicSharing: z.enum(['available', 'premium-required', 'unavailable', 'disabled']),
+      })
       .parse(await res.json());
   }
 
@@ -3620,9 +3714,13 @@ export class VerityClient {
     );
   }
 
-  async listSessionLocalPreviewShares(sessionId: string): Promise<LocalPreviewShare[]> {
+  async listSessionLocalPreviewShares(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<LocalPreviewShare[]> {
     const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/local-shares`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return z
       .object({ shares: z.array(localPreviewShareSchema) })
@@ -3630,9 +3728,13 @@ export class VerityClient {
       .shares.map((share) => this.resolveLocalPreview(share));
   }
 
-  async listProjectLocalPreviewShares(projectId: string): Promise<LocalPreviewShare[]> {
+  async listProjectLocalPreviewShares(
+    projectId: string,
+    signal?: AbortSignal,
+  ): Promise<LocalPreviewShare[]> {
     const res = await this.request(`/projects/${encodeURIComponent(projectId)}/local-shares`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return z
       .object({ shares: z.array(localPreviewShareSchema) })
@@ -3652,11 +3754,15 @@ export class VerityClient {
     };
   }
 
-  async listManagedDevServers(sessionId: string): Promise<ManagedDevServer[] | null> {
+  async listManagedDevServers(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<ManagedDevServer[] | null> {
     let res: Response;
     try {
       res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers`, {
         method: 'GET',
+        ...(signal ? { signal } : {}),
       });
     } catch (err) {
       // An older Core has no such route, and one without Docker answers 503; the
@@ -3771,9 +3877,13 @@ export class VerityClient {
     await this.request(`/local-shares/${encodeURIComponent(shareId)}`, { method: 'DELETE' });
   }
 
-  async listPublicPreviewShares(projectId: string): Promise<PublicPreviewShare[]> {
+  async listPublicPreviewShares(
+    projectId: string,
+    signal?: AbortSignal,
+  ): Promise<PublicPreviewShare[]> {
     const res = await this.request(`/projects/${encodeURIComponent(projectId)}/public-shares`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return publicPreviewSharesResponseSchema.parse(await res.json()).shares;
   }
@@ -3834,11 +3944,15 @@ export class VerityClient {
   /** What the session is serving, or `null` when this Core predates port
    *  detection. Only the router's own "Route … not found" means that: the route
    *  also answers 404 for a missing session, which must not hide the feature. */
-  async listSessionDevServers(sessionId: string): Promise<SessionDevServer[] | null> {
+  async listSessionDevServers(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionDevServer[] | null> {
     let res: Response;
     try {
       res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/dev-servers`, {
         method: 'GET',
+        ...(signal ? { signal } : {}),
       });
     } catch (err) {
       // Fastify's default not-found body carries `error: 'Not Found'`; Core's
@@ -4274,9 +4388,10 @@ export class VerityClient {
   }
 
   /** The current + switchable branches of a session's worktree (#91). */
-  async getBranches(id: string): Promise<BranchList> {
+  async getBranches(id: string, signal?: AbortSignal): Promise<BranchList> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/branches`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return branchListSchema.parse(await res.json());
   }
@@ -4557,10 +4672,12 @@ export class VerityClient {
 
   private async request(
     path: string,
-    init: RequestInit,
+    init: TransportRequestInit,
     fetchImpl: typeof fetch = this.fetchImpl,
     timingOverride?: { trace: SwitchTiming | undefined },
   ): Promise<Response> {
+    if ((init.method ?? 'GET') === 'GET')
+      init = { ...init, transportLane: readTransportLane(path) };
     // Attach the per-device bearer token (audit C1) when we have one. Callers
     // pass plain-object headers, so a record spread is safe; an explicit
     // Authorization in `init` (none today) would win by being spread last.
@@ -4600,7 +4717,25 @@ export class VerityClient {
     const timing = timingOverride?.trace;
     const timingKind = path.includes('/events') ? 'events' : 'session';
     markSessionSwitch(timing, `${timingKind}-request-start`);
-    const res = await fetchImpl(`${this.baseUrl}${path}`, init);
+    const diagnosticRequestId = beginSwitchTransportRequest(timing, timingKind);
+    if (diagnosticRequestId) {
+      init = {
+        ...init,
+        headers: {
+          ...(init.headers as Record<string, string>),
+          'x-verity-switch-request': diagnosticRequestId,
+          'x-verity-switch-kind': timingKind,
+        },
+      };
+    }
+    let res: Response;
+    try {
+      res = await fetchImpl(`${this.baseUrl}${path}`, init);
+      markSwitchTransportRequest(diagnosticRequestId, 'fetch-return', res.status);
+    } catch (error) {
+      markSwitchTransportRequest(diagnosticRequestId, 'fetch-error');
+      throw error;
+    }
     markSessionSwitch(timing, `${timingKind}-fetch-return`, res.status);
     if (!res.ok) {
       // A 401 on a GATED route AFTER we sent a token means that token is

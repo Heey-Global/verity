@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 import type { AttachmentUpload } from '@verity/events';
@@ -157,4 +158,134 @@ async function materializeIntoDirectory(
     await rm(storageDir, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
+}
+
+/** Stage immutable image bytes in the shared directory belonging to this turn. */
+export async function stageImageAttachments(
+  cwd: string,
+  turnId: string,
+  attachments: readonly AttachmentUpload[] | undefined,
+): Promise<import('./image-references.js').ImageReference[] | undefined> {
+  const images = (attachments ?? []).filter((attachment) => attachment.kind === 'image');
+  if (images.length === 0) return undefined;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(turnId))
+    throw new Error('invalid attachment turn id');
+  if ((await lstat(cwd)).isSymbolicLink()) throw new Error('attachment worktree is a symlink');
+  const cwdHandle = await open(
+    cwd,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  let parent = cwdHandle;
+  try {
+    for (const component of ['.verity-sessions', 'attachments', `turn-${turnId}`]) {
+      const path = join(`/proc/self/fd/${parent.fd}`, component);
+      await mkdir(path, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'EEXIST') throw error;
+      });
+      if ((await lstat(path)).isSymbolicLink())
+        throw new Error('attachment directory is a symlink');
+      const child = await open(
+        path,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      );
+      if (parent !== cwdHandle) await parent.close();
+      parent = child;
+    }
+    const references: import('./image-references.js').ImageReference[] = [];
+    for (const image of images) {
+      const bytes = Buffer.from(image.data, 'base64');
+      if (bytes.length < 1 || bytes.length > 7_500_000)
+        throw new Error('invalid image attachment size');
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const name = `${sha256}.image`;
+      const path = join(`/proc/self/fd/${parent.fd}`, name);
+      try {
+        const file = await open(
+          path,
+          constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+          0o600,
+        );
+        try {
+          await file.writeFile(bytes);
+        } finally {
+          await file.close();
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        if ((await lstat(path)).isSymbolicLink())
+          throw new Error('attachment file is a symlink', { cause: error });
+        const file = await open(
+          path,
+          constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+        );
+        try {
+          const stats = await file.stat();
+          if (
+            !stats.isFile() ||
+            stats.size !== bytes.length ||
+            createHash('sha256')
+              .update(await readBoundedImage(file, bytes.length))
+              .digest('hex') !== sha256
+          ) {
+            throw new Error('staged image content changed', { cause: error });
+          }
+        } finally {
+          await file.close();
+        }
+      }
+      references.push({
+        kind: 'image',
+        mediaType: image.mediaType,
+        filePath: join(cwd, '.verity-sessions', 'attachments', `turn-${turnId}`, name),
+        byteSize: bytes.length,
+        sha256,
+      });
+    }
+    return references;
+  } finally {
+    if (parent !== cwdHandle) await parent.close();
+    await cwdHandle.close();
+  }
+}
+
+/** Remove only the files of a turn whose worker is confirmed to have stopped. */
+export async function cleanupTurnImageAttachments(cwd: string, turnId: string): Promise<void> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(turnId))
+    throw new Error('invalid attachment turn id');
+  const handles = [];
+  try {
+    if ((await lstat(cwd)).isSymbolicLink()) throw new Error('attachment worktree is a symlink');
+    let parent = await open(cwd, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    handles.push(parent);
+    for (const component of ['.verity-sessions', 'attachments']) {
+      const path = join(`/proc/self/fd/${parent.fd}`, component);
+      if ((await lstat(path)).isSymbolicLink())
+        throw new Error('attachment directory is a symlink');
+      parent = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      handles.push(parent);
+    }
+    await rm(join(`/proc/self/fd/${parent.fd}`, `turn-${turnId}`), {
+      recursive: true,
+      force: true,
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  } finally {
+    for (const handle of handles.reverse()) await handle.close();
+  }
+}
+
+async function readBoundedImage(
+  file: import('node:fs/promises').FileHandle,
+  size: number,
+): Promise<Buffer> {
+  const bytes = Buffer.alloc(size + 1);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const { bytesRead } = await file.read(bytes, offset, bytes.length - offset, offset);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  if (offset !== size) throw new Error('staged image content changed');
+  return bytes.subarray(0, offset);
 }

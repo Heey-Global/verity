@@ -1,4 +1,5 @@
 import { listProjectGitHubIssues } from './project-github-issues.js';
+import { ensureStarterProject } from './welcome-session.js';
 import { createGhcrForgeAdapter } from './brokered-forge-ghcr.js';
 import { loadForgePackageMap } from './brokered-forge-package-map.js';
 import { createBrokeredForgeProxy } from './brokered-http-tool.js';
@@ -120,7 +121,8 @@ import {
   PreviewShareManager,
   sweepOrphanedPreviewShares,
 } from './preview-share-manager.js';
-import { UplinkControlClient } from './uplink-control-client.js';
+import { UplinkControlClient, premiumFeatureSwitches } from './uplink-control-client.js';
+import { applyPremiumFeatureSwitches } from './premium-feature-switches.js';
 import {
   createRemoteConnectorPool,
   remoteDataUrlForControl,
@@ -603,6 +605,7 @@ import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
+import type { VeritySettingsRecord } from '@verity/store';
 
 export interface EmbeddedServerConfig {
   /** TLS termination for a direct Server. Managed mode terminates at its Gateway. */
@@ -1276,6 +1279,7 @@ export function buildRunnerConductorWiring(deps: {
               : backend.runnerSupervisorBackend === 'codex-acp'
                 ? new ServerCodexTranscript({ runtimeDir, transcript: deps.transcript })
                 : undefined,
+          mapAttachmentPath: sandboxPath,
           mapTurnOptions: (opts) => ({
             ...opts,
             worktree: sandboxPath(opts.worktree),
@@ -1986,6 +1990,7 @@ export async function buildEmbeddedServer(
             'verity_present_plan',
             'verity_end_planning',
             'verity_tasks',
+            'verity_app_help',
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',
@@ -2004,6 +2009,7 @@ export async function buildEmbeddedServer(
             'verity_present_plan',
             'verity_end_planning',
             'verity_tasks',
+            'verity_app_help',
             'verity_google_slides',
             'verity_google_docs',
             'verity_knowledge',
@@ -4227,6 +4233,7 @@ export async function buildEmbeddedServer(
         uplinkControl?.isAvailable() === true,
         Boolean(settings?.uplinkSubscriptionKey?.trim()),
         uplinkControl?.diagnostics(),
+        settings === undefined || premiumFeatureSwitches(settings).sharing,
       );
     },
     ...(previewShareManager !== undefined ? { previewShareManager } : {}),
@@ -4246,6 +4253,12 @@ export async function buildEmbeddedServer(
     ...(uplinkControl !== undefined
       ? { onUplinkCredentialsChanged: () => uplinkControl.refreshCredentials() }
       : {}),
+    ...(uplinkControl !== undefined
+      ? {
+          onPremiumFeatureSwitchesChanged: (settings: VeritySettingsRecord) =>
+            applyPremiumFeatureSwitches(settings, uplinkControl, previewShareManager),
+        }
+      : {}),
     ...(uplinkControl ? { attendeeEdge: uplinkControl } : {}),
     onOpenCodeSettingsChanged: async (settings) => {
       materializeOpenCodeSettings(settings, secretRoot, config.claudeConnectorPort);
@@ -4257,6 +4270,9 @@ export async function buildEmbeddedServer(
     ...(config.googleDriveClientId !== undefined
       ? { googleDriveClientId: config.googleDriveClientId }
       : {}),
+    googleDriveDocumentIsWithinProject: (
+      input: Parameters<typeof googleDriveTool.canReadDocumentWithoutApproval>[0],
+    ) => googleDriveTool.canReadDocumentWithoutApproval(input),
     onGoogleCredentialsChanged: () => googleAccessToken.invalidate(),
     secretCipher,
     persistAgentCredentials: async (patch, persist) => {
@@ -5161,6 +5177,16 @@ export async function buildEmbeddedServer(
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
   app.addHook('onClose', () => managedDevServerManager?.close());
   void listenerDiscovery?.reconcile();
+  // A fresh installation provisions its starter project now, so the sandbox image
+  // is pulled while the operator is still onboarding (see welcome-session.ts).
+  const starterProvisioner = provisioner;
+  if (starterProvisioner !== undefined) {
+    void ensureStarterProject({
+      store: eventStore,
+      provision: (projectId) => starterProvisioner.provision(projectId),
+      log: app.log,
+    });
+  }
   app.addHook('onClose', () => claudeCredentialSync.close());
   let preserveProjectRelaysOnClose = false;
   app.addHook('onClose', () =>

@@ -2,6 +2,7 @@ import type { EventStore } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { LocalPreviewManager } from './local-preview-manager.js';
+import type { PreviewSharingCapability } from './preview-capability.js';
 import {
   PreviewShareConflictError,
   PreviewShareInputError,
@@ -29,11 +30,7 @@ export function registerLocalPreviewRoutes(
   deps: {
     eventStore: EventStore;
     manager?: LocalPreviewManager;
-    publicSharing?: () =>
-      | Promise<'available' | 'premium-required' | 'unavailable'>
-      | 'available'
-      | 'premium-required'
-      | 'unavailable';
+    publicSharing?: () => Promise<PreviewSharingCapability> | PreviewSharingCapability;
   },
 ): void {
   app.get('/preview-capabilities', async () => ({

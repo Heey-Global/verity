@@ -6,10 +6,84 @@ import UIKit
 
 enum ProductionProbeFailure: Error { case transport(String) }
 
+// Assert negotiated protocol using the shipping timing recorder, not response headers.
+func verifyProtocol(_ timing: PinnedTransportTiming, expected: String) async throws {
+  for _ in 0..<100 {
+    let snapshot = timing.snapshot()
+    if snapshot["metricsAvailable"] as? Bool == true {
+      let transactions = snapshot["transactions"] as? [[String: Any]]
+      guard transactions?.last?["protocol"] as? String == expected
+      else { throw ProductionProbeFailure.transport("unexpected negotiated protocol") }
+      return
+    }
+    try await Task.sleep(for: .milliseconds(10))
+  }
+  throw ProductionProbeFailure.transport("missing protocol metrics")
+}
+
+func checkSiblingCancellation(client: URLSession, origin: URL) async throws {
+  let held = Task { try await client.data(from: origin.appendingPathComponent("slow")) }
+  defer { held.cancel() }
+  // Keep a pending stream on the same session while its sibling completes.
+  try await Task.sleep(for: .milliseconds(100))
+  let (body, response) = try await client.data(from: origin.appendingPathComponent("healthz"))
+  guard (response as? HTTPURLResponse)?.statusCode == 200,
+    String(data: body, encoding: .utf8) == "core-ok" else { throw TunnelError.protocolViolation }
+  held.cancel()
+  var cancelled = false
+  do { _ = try await held.value } catch { cancelled = true }
+  guard cancelled else { throw TunnelError.protocolViolation }
+  let (_, next) = try await client.data(from: origin.appendingPathComponent("healthz"))
+  guard (next as? HTTPURLResponse)?.statusCode == 200 else { throw TunnelError.protocolViolation }
+}
+
+func pooledRead(session: URLSession, origin: URL, delegate: CertificatePinDelegate) async throws
+  -> (Data, URLResponse)
+{
+  try await withCheckedThrowingContinuation { continuation in
+    let task = session.dataTask(with: origin) { body, response, error in
+      if let error { continuation.resume(throwing: error) }
+      else if let body, let response { continuation.resume(returning: (body, response)) }
+      else { continuation.resume(throwing: TunnelError.protocolViolation) }
+    }
+    task.delegate = delegate
+    task.resume()
+  }
+}
+
+func runDirectProtocolSmoke(origin: URL, pin: String, expectedProtocol: String) async throws {
+  let delegate = try CertificatePinDelegate(pin: pin, origin: origin)
+  let timing = PinnedTransportTiming(headers: ["x-verity-switch-request": "fixture-direct"],
+    proxyPort: 0, proxyMode: "none")!
+  delegate.transportTiming = timing
+  let pool = PinnedHTTPSessionPool()
+  defer { pool.shutdown() }
+  let lease = try pool.acquire(origin: origin, pin: pin, proxyPort: 0, proxyMode: "socks")
+  defer { lease.release() }
+  let (_, response) = try await pooledRead(session: lease.session, origin: origin, delegate: delegate)
+  guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw TunnelError.protocolViolation }
+  try await verifyProtocol(timing, expected: expectedProtocol)
+  let heldDelegate = try CertificatePinDelegate(pin: pin, origin: origin)
+  let held = lease.session.dataTask(with: origin.appendingPathComponent("slow"))
+  held.delegate = heldDelegate
+  held.resume()
+  defer { held.cancel() }
+  try await Task.sleep(for: .milliseconds(100))
+  let siblingDelegate = try CertificatePinDelegate(pin: pin, origin: origin)
+  let (body, sibling) = try await pooledRead(session: lease.session, origin: origin, delegate: siblingDelegate)
+  guard (sibling as? HTTPURLResponse)?.statusCode == 200,
+    String(data: body, encoding: .utf8) == "core-ok" else { throw TunnelError.protocolViolation }
+  held.cancel()
+  let (_, after) = try await pooledRead(session: lease.session, origin: origin,
+    delegate: try CertificatePinDelegate(pin: pin, origin: origin))
+  guard (after as? HTTPURLResponse)?.statusCode == 200 else { throw TunnelError.protocolViolation }
+
+}
+
 // The prototype uses a different SOCKS implementation; only this
 // path can catch regressions in the shipping app's stream forwarding.
 @available(macOS 14.0, iOS 17.0, *)
-func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) async throws {
+func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String, expectedProtocol: String) async throws {
   let dataURL = endpoint.deletingLastPathComponent().appendingPathComponent("data")
   for (host, pin, expectedFailure, connect) in [
     // A second attachment must work after the preceding tunnel is torn down.
@@ -27,7 +101,37 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) 
     let outerDelegate = try CertificatePinDelegate(pin: outerPin, origin: outerOrigin.url!)
     let outer = URLSession(configuration: .ephemeral, delegate: outerDelegate, delegateQueue: nil)
     let tunnel = try RemoteAppTunnel(dataURL: dataURL, coreURL: origin, outerSession: outer)
-    defer { tunnel.stop(); outer.invalidateAndCancel() }
+    tunnel.enableDataDiagnostics()
+    defer {
+      tunnel.stop()
+      tunnel.stop()
+      let snapshot = try! JSONSerialization.jsonObject(with: Data(tunnel.exportDataDiagnostics()!.utf8)) as! [String: Any]
+      let events = snapshot["events"] as! [[String: Any]]
+      precondition(events.filter { $0["event"] as? String == "cancel_requested" }.count == 1)
+      precondition(events.filter { $0["event"] as? String == "socket_cancel" }.count == 1)
+      precondition(snapshot["sessionHash"] as? String != "fixture-session")
+      precondition(snapshot["delegateAvailable"] as? Bool == false)
+      let streamSnapshots = snapshot["streams"] as! [[String: Any]]
+      // Teardown must leave stream/TLS evidence in the recorder, not only the live summary.
+      precondition(!streamSnapshots.isEmpty)
+      precondition(streamSnapshots.count <= RemoteDataDiagnostics.streamCapacity)
+      for stream in streamSnapshots {
+        let id = stream["streamId"] as! String
+        precondition(id.range(of: "^[A-F0-9]{32}$", options: .regularExpression) != nil)
+        precondition(stream["proxy"] as? String == (connect ? "connect" : "socks"))
+        precondition(stream["endedBy"] as? String != "open")
+        precondition((stream["outgoingTLSRecords"] as! [Int]).count <= 8)
+        precondition((stream["incomingTLSRecords"] as! [Int]).count <= 8)
+      }
+      let opened = events.firstIndex { $0["event"] as? String == "stream_opened" }
+      let requested = events.firstIndex { $0["event"] as? String == "stream_send_requested" }
+      let completed = events.firstIndex { $0["event"] as? String == "stream_send_completed" }
+      precondition(opened != nil && requested != nil && completed != nil)
+      precondition(opened! < requested! && requested! < completed!)
+      precondition(events[requested!]["streamId"] as? String == events[completed!]["streamId"] as? String)
+      tunnel.disableDataDiagnostics()
+      outer.invalidateAndCancel()
+    }
     let port = try await tunnel.start(ticket: "fixture-ticket", sessionId: "fixture-session")
     if connect {
       // Any local process can dial the listener; only the host and port check
@@ -52,6 +156,9 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) 
     config.timeoutIntervalForResource = 15
     config.proxyConfigurations = [proxy]
     let delegate = try CertificatePinDelegate(pin: pin, origin: origin)
+    let timing = PinnedTransportTiming(headers: ["x-verity-switch-request": "fixture-proxy"],
+      proxyPort: port, proxyMode: connect ? "connect" : "socks")!
+    delegate.transportTiming = timing
     let client = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     defer { client.invalidateAndCancel() }
     do {
@@ -61,6 +168,8 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) 
         String(data: body, encoding: .utf8) == "core-ok",
         delegate.phase == "PIN_AND_CHAIN_TRUST_ACCEPTED"
       else { throw TunnelError.protocolViolation }
+      try await verifyProtocol(timing, expected: expectedProtocol)
+      try await checkSiblingCancellation(client: client, origin: origin)
       var request = URLRequest(url: origin.appendingPathComponent("echo"))
       request.httpMethod = "POST"
       request.httpBody = Data(repeating: 0x61, count: 96 * 1024)
@@ -283,10 +392,15 @@ func smokeResult() async -> String {
   let endpoint = environment["VERITY_TUNNEL_URL"] ?? (arguments.count > 1 ? arguments[1] : "")
   let outerPin = environment["VERITY_TUNNEL_OUTER_PIN"] ?? (arguments.count > 2 ? arguments[2] : "")
   let corePin = environment["VERITY_TUNNEL_CORE_PIN"] ?? (arguments.count > 3 ? arguments[3] : "")
+  let fixtureProtocol = environment["VERITY_TUNNEL_PROTOCOL"] ?? (arguments.count > 4 ? arguments[4] : "h1")
+  let directURL = environment["VERITY_TUNNEL_DIRECT_URL"] ?? (arguments.count > 5 ? arguments[5] : "")
+  let expectedProtocol = fixtureProtocol == "h2" ? "h2" : "http/1.1"
+  guard let direct = URL(string: directURL), direct.scheme == "https" else { return "FAIL: missing direct endpoint" }
   guard let url = URL(string: endpoint), url.scheme == "wss" else { return "FAIL: missing WSS endpoint" }
   do {
     try checkFailureDiagnostics()
-    try await runProductionTunnelSmoke(endpoint: url, outerPin: outerPin, corePin: corePin)
+    try await runDirectProtocolSmoke(origin: direct, pin: corePin, expectedProtocol: expectedProtocol)
+    try await runProductionTunnelSmoke(endpoint: url, outerPin: outerPin, corePin: corePin, expectedProtocol: expectedProtocol)
     try await runTunnelSmoke(endpoint: url, outerPin: outerPin, corePin: corePin)
     return "success"
   } catch { return "FAIL: \(error)" }

@@ -1,4 +1,5 @@
 import { exportSessionSwitchTimings } from '@verity/mobile';
+import { exportPinnedTransportTimings } from './pinnedTransport';
 import { BUILD_COMMIT } from './buildInfo.generated';
 import * as Application from 'expo-application';
 import * as Updates from 'expo-updates';
@@ -81,6 +82,8 @@ export async function shareUpdateDiagnostics(): Promise<void> {
     schema: 3,
     commit: BUILD_COMMIT,
     sessionSwitchTimings: exportSessionSwitchTimings(),
+    nativeTransportTimings: exportPinnedTransportTimings(),
+    captureSummary: { omittedSwitches: 0 },
     exportedAt: new Date().toISOString(),
     version: shorten(runningReleaseVersion(Application.nativeApplicationVersion), 256),
     nativeVersion: boundedIdentity(Application.nativeApplicationVersion),
@@ -108,6 +111,19 @@ export async function shareUpdateDiagnostics(): Promise<void> {
     },
     logs,
   };
+  // Transport metadata also counts against the report ceiling. Preserve the
+  // latest gesture and leave half the byte budget for update/recovery logs.
+  while (utf8Bytes(JSON.stringify(report, null, 2)) > MAX_REPORT_BYTES / 2) {
+    if (report.sessionSwitchTimings.length > 1) {
+      report.sessionSwitchTimings.shift();
+      report.captureSummary.omittedSwitches++;
+    } else if (report.nativeTransportTimings.records.length > 0) {
+      report.nativeTransportTimings.records.shift();
+      report.nativeTransportTimings.omitted++;
+    } else {
+      break;
+    }
+  }
   const ordered = [...retained].sort(
     (a, b) => priority(a) - priority(b) || b.timestamp - a.timestamp,
   );
