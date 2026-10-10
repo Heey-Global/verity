@@ -327,6 +327,14 @@ list require a per-device bearer token after pairing. `/secret/unlock` and
 material. See [SECURITY.md](../SECURITY.md) for the security model and known
 limitations.
 
+In the managed deployment, the public TLS gateway negotiates HTTP/2 for REST
+requests, allowing concurrent requests to share a connection. HTTP/1.1 remains
+available automatically for compatible clients and classic WebSocket upgrades.
+This protocol behavior is fixed; it has no configuration switch. Gateway-to-Core
+forwarding, internal listeners and local preview ingress remain HTTP/1.1. TLS
+certificate pinning and device authentication apply with either public protocol.
+Clients connecting directly to the Core do not gain HTTP/2 from the gateway.
+
 The reference Compose deployment publishes port 8082 on all host interfaces.
 Prefer access limited to your devices through a trusted network or VPN such as
 WireGuard or Tailscale. Using a VPN to connect does not itself restrict access
