@@ -764,6 +764,32 @@ describe('AcpClaudeBackend', () => {
     }
   });
 
+  it('retries an immediate Stop when the first SIGKILL call throws', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const controller = new AbortController();
+      const fake = acpSpawner({ exitHangs: true, cancel: { operator: controller } });
+      fake.kill.mockImplementationOnce(() => {
+        throw new Error('temporary kill channel failure');
+      });
+      const result = await new AcpClaudeBackend().run({
+        store: ctx.store,
+        storeSessionId: 'verity-session-immediate-kill-throws',
+        worktree: '/work/project',
+        cwd: '/work/project',
+        prompt: 'Do it',
+        spawner: fake.spawner,
+        signal: controller.signal,
+      });
+      expect(result.aborted).toBe(true);
+      expect(fake.kill.mock.calls).toEqual([['SIGKILL']]);
+      vi.advanceTimersByTime(10_000);
+      expect(fake.kill.mock.calls).toEqual([['SIGKILL'], ['SIGKILL']]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('persists Claude ACP quota updates for the existing usage meters', async () => {
     const fake = acpSpawner({
       rateLimit: {

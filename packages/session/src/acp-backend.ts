@@ -73,11 +73,11 @@ function killAgent(child: SpawnedProcess, immediate = false): void {
   killedAgents.add(child);
   try {
     child.kill(immediate ? 'SIGKILL' : 'SIGTERM');
+    if (immediate) return;
   } catch {
     // A pluggable/remote spawner can lose its channel while the process remains alive.
     // Keep scheduling the independent hard-kill attempt below.
   }
-  if (immediate) return;
   // Guarded: `Spawner` is a pluggable seam, and this call is the one that runs detached
   // in a timer. A throwing `kill` — a remote runner client whose channel has closed, a
   // test double — would otherwise leave the process with an uncaught exception rather
