@@ -61,6 +61,9 @@ describe('keyboard handling', () => {
     const frame = session.match(/<AnimatedKeyboardAvoidingView\b[\s\S]*?>/);
     expect(frame?.[0]).toContain(`enabled={${binding?.[1]}.enabled}`);
     expect(frame?.[0]).toContain(`${binding?.[1]}.resetStyle`);
+    // Parent-relative measurements silently subtract the navigation header
+    // from the avoided height and leave the composer behind the keyboard.
+    expect(frame?.[0]).toMatch(/\bautomaticOffset\b/);
   });
 
   it('mounts the keyboard provider around the navigator', () => {

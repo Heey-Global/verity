@@ -3918,10 +3918,10 @@ export const SessionChat = memo(function SessionChat({
       // the show event, which is what the transcript's scroll position is
       // measured against.
       behavior="padding"
-      // The custom nav header is drawn by the navigator ABOVE this screen body, so
-      // the KAV frame already starts below it (screen-absolute coords) — no extra
-      // offset needed. A non-zero offset here over-lifts the input by ~the header
-      // height, leaving a dead gap between the field and the keyboard top.
+      // Layout coordinates are relative to the navigator, while the keyboard
+      // uses screen coordinates. Measure the frame in the window so the custom
+      // header and embedded layouts do not leave the composer under the keyboard.
+      automaticOffset
       keyboardVerticalOffset={0}
     >
       {embedded ? headerBar : <Stack.Screen options={{ header: () => headerBar }} />}
