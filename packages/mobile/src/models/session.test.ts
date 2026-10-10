@@ -1008,7 +1008,7 @@ describe('SessionModel — cancel (#79)', () => {
       expect(model.state.activityAnimating).toBe(false);
       sockets[0]?.emitEvent(3, { t: 'prompt', text: 'late steering', steered: true });
       sockets[0]?.emitEvent(4, { t: 'text', delta: ' late' });
-      model.refreshActivity();
+      await model.refreshActivity();
       await flush();
       expect(agentTexts(model.state)).toEqual(['visible']);
       await model.sendTurn('failed successor');
@@ -1226,7 +1226,7 @@ describe('SessionModel — cancel (#79)', () => {
       sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
       sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
       sockets[0]?.emitEvent(2, { t: 'interrupted' });
-      model.refreshActivity();
+      await model.refreshActivity();
       await flush();
       expect(model.state.busy).toBe(true);
       await model.cancel();
