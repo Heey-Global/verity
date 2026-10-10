@@ -19,6 +19,7 @@ export function liveResourceInterval(path: string): number | undefined {
   if (/^\/settings\/agent-logins\/[^/]+$/u.test(p)) return 2_500;
   if (p === '/sessions' || p === '/provider-limits') return 30_000;
   if (/^\/sessions\/[^/]+\/activity$/u.test(p)) return 10_000;
+  if (p === '/tasks') return 15_000;
   if (p === '/secret/status') return 15_000;
   if (p === '/onboarding/status') return 3_000;
   return undefined;

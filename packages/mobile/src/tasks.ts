@@ -7,6 +7,7 @@ export const taskSchema = z.object({
   sessionId: z.string().nullable(),
   sourceSessionId: z.string().nullable(),
   origin: z.enum(['user', 'agent']),
+  titleGenerationStatus: z.enum(['none', 'pending', 'ready', 'failed']).optional(),
   title: z.string(),
   detail: z.string().nullable(),
   attachments: z.array(z.object({ hash: z.string(), filename: z.string(), mimeType: z.string() })),
@@ -20,6 +21,7 @@ export const taskSchema = z.object({
 });
 export type Task = z.infer<typeof taskSchema>;
 export const taskCaptureSchema = z.object({
+  generateTitle: z.boolean().optional(),
   title: z.string(),
   projectId: z.string().nullable(),
   detail: z.string().nullable().optional(),
@@ -44,6 +46,14 @@ export const taskPatchSchema = taskSchema
   });
 export type TaskCapture = z.infer<typeof taskCaptureSchema>;
 export type TaskPatch = z.infer<typeof taskPatchSchema>;
+/** A useful local label while the complete transcript is preserved in detail. */
+export function provisionalTaskTitle(transcript: string): string {
+  const text = transcript.trim().replace(/\s+/gu, ' ');
+  if (text.length <= 80) return text;
+  const prefix = text.slice(0, 77);
+  const boundary = prefix.lastIndexOf(' ');
+  return `${boundary > 40 ? prefix.slice(0, boundary) : prefix}…`;
+}
 export interface TaskContext {
   projectId: string | null;
   sessionId: string | null;

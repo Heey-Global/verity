@@ -10837,6 +10837,7 @@ describe('POST /sessions/:id/branch', () => {
 describe('error boundary', () => {
   it('never reflects an internal store error to the client', async () => {
     const throwing = {
+      tasks: { expirePendingTitles: async () => [] },
       listMovePreviewRestarts: async () => [],
       listSessions: () => Promise.reject(new Error('driver destroyed SECRET-INTERNAL')),
     } as unknown as Parameters<typeof buildServer>[0]['eventStore'];
@@ -11110,6 +11111,7 @@ describe('GET /live (WebSocket)', () => {
 
   it('ends the subscription without detail if the backlog read fails', async () => {
     const throwing = {
+      tasks: { expirePendingTitles: async () => [] },
       listMovePreviewRestarts: async () => [],
       getSession: async () => ({ sessionId: 's1', projectId: null }),
       getEventsAfter: () => Promise.reject(new Error('db down INTERNAL')),

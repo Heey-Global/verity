@@ -11,6 +11,7 @@ it('forwards the managed server manager to app and agent routes', async () => {
   const view = vi.fn<(sessionId: string) => Promise<never[]>>(async () => []);
   const app = buildControlPlane({
     eventStore: {
+      tasks: { expirePendingTitles: async () => [] },
       getSession: async () => ({ projectId: 'p1' }),
       listMovePreviewRestarts: async () => [],
     } as unknown as ControlPlaneDeps['eventStore'],

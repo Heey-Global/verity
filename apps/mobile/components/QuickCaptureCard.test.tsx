@@ -82,6 +82,8 @@ it('never saves on its own; Save stores the text after dictation ends', async ()
   expect(captureTask).toHaveBeenCalledWith(
     expect.objectContaining({
       title: 'Final captured outcome',
+      detail: 'Final captured outcome',
+      generateTitle: true,
       projectId: 'p',
       sourceSessionId: 's',
     }),

@@ -568,6 +568,7 @@ export {
   taskSchema,
   bubbleRestingPlace,
   taskAge,
+  provisionalTaskTitle,
   taskContext,
   projectsByRecentCapture,
   TASK_SILENCE_MS,

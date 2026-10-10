@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { bubbleRestingPlace, projectsByRecentCapture, taskAge, taskContext } from './tasks.js';
+import {
+  bubbleRestingPlace,
+  projectsByRecentCapture,
+  taskAge,
+  taskContext,
+  provisionalTaskTitle,
+} from './tasks.js';
 describe('task context', () => {
   const sessions = [{ sessionId: 's', projectId: 'p' }];
   it('uses the session project on phone and selected wide home', () => {
@@ -95,4 +101,14 @@ describe('projects by recent capture', () => {
     ]);
     expect(order.map((p) => p.id)).toEqual(['a', 'b', 'c']);
   });
+});
+
+it('makes a short local title without losing the separately stored transcript', () => {
+  expect(provisionalTaskTitle('  Fix the task list  ')).toBe('Fix the task list');
+  const transcript =
+    'I would like the tasks that I dictate to have a short title while keeping all the context available in a description.';
+  const title = provisionalTaskTitle(transcript);
+  expect(title.length).toBeLessThanOrEqual(80);
+  expect(title.endsWith('…')).toBe(true);
+  expect(transcript.startsWith(title.slice(0, -1))).toBe(true);
 });

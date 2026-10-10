@@ -1,10 +1,11 @@
 import {
   projectDisplayName,
+  provisionalTaskTitle,
   type AttachmentUpload,
   type ProjectRecord,
   type TaskContext,
 } from '@verity/mobile';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -80,7 +81,12 @@ export function QuickCaptureCard({
   );
   const [other, setOther] = useState(false);
   const [saving, setSaving] = useState(false);
-  const voice = useVoiceInput(text, setText);
+  const dictated = useRef(false);
+  const onDictation = useCallback((value: string) => {
+    if (value.trim()) dictated.current = true;
+    setText(value);
+  }, []);
+  const voice = useVoiceInput(text, onDictation);
   const started = useRef(false);
   const savingRef = useRef(false);
   const pendingSave = useRef<{ target: string | null; recording: boolean } | null>(null);
@@ -115,7 +121,8 @@ export function QuickCaptureCard({
     void (async () => {
       try {
         const task = await captureTask({
-          title: text.trim(),
+          title: dictated.current ? provisionalTaskTitle(text) : text.trim(),
+          ...(dictated.current ? { detail: text.trim(), generateTitle: true } : {}),
           projectId: target,
           sourceSessionId: context.sessionId,
           uploads,
