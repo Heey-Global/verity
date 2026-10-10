@@ -1534,8 +1534,13 @@ it('opens online configuration without exposing provider details on the start sc
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByText(/Online meeting/));
   expect(screen.queryByText(/Attendee/)).toBeNull();
+  expect(
+    screen.getByText('Configure online meetings and enable Verity Premium Online sharing.'),
+  ).toBeTruthy();
   fireEvent.press(screen.getByText('Configure online meetings'));
   expect(router.push).toHaveBeenCalledWith('/settings/services');
+  fireEvent.press(screen.getByText('Verity Premium'));
+  expect(router.push).toHaveBeenCalledWith('/settings/premium');
   fireEvent.press(screen.getByLabelText('Start meeting'));
   expect(startMeeting).not.toHaveBeenCalled();
 });

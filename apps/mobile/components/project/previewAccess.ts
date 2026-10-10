@@ -4,7 +4,7 @@ import { localPreviewReachable, type LocalPreviewShare } from '@verity/mobile';
 
 export async function openLocalPreview(
   share: LocalPreviewShare,
-  publicSharing: 'available' | 'premium-required' | 'unavailable',
+  publicSharing: 'available' | 'premium-required' | 'unavailable' | 'disabled',
   sharePublicly: () => void,
   openSettings?: () => void,
 ): Promise<void> {
@@ -18,13 +18,15 @@ export async function openLocalPreview(
       ? 'Your device cannot reach this preview on your server’s network. Share it online with a PIN instead?'
       : publicSharing === 'premium-required'
         ? 'This preview is only available on your server’s network or VPN. Public sharing requires Verity Premium.'
-        : 'This preview is only available on your server’s network or VPN. Uplink is temporarily unavailable.',
+        : publicSharing === 'disabled'
+          ? 'Online sharing is switched off. Enable it in Verity Premium settings.'
+          : 'This preview is only available on your server’s network or VPN. Uplink is temporarily unavailable.',
     // The way out comes first: publishing is the fix when the network is the
     // problem, so it leads; the local link is the fallback for a device at home.
     [
       ...(publicSharing === 'available'
         ? [{ text: 'Share online', onPress: sharePublicly }]
-        : publicSharing === 'premium-required' && openSettings
+        : (publicSharing === 'premium-required' || publicSharing === 'disabled') && openSettings
           ? [{ text: 'Open settings', onPress: openSettings }]
           : []),
       {

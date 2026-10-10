@@ -42,12 +42,15 @@ jest.mock('../components/settings/SettingsChrome', () => {
     SettingsListPanel: ({ children }: { children: React.ReactNode }) => (
       <NativeView>{children}</NativeView>
     ),
+    SettingsPanel: ({ children }: { children: React.ReactNode }) => (
+      <NativeView>{children}</NativeView>
+    ),
     SettingsNavRow: () => null,
     SettingsSaveState: () => null,
   };
 });
 
-import ServicesSettingsScreen from '../app/settings/remote-access';
+import ServicesSettingsScreen from '../app/settings/diagnostics';
 
 it('keeps connection diagnostics reachable when Core settings cannot load', () => {
   render(<ServicesSettingsScreen />);

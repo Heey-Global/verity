@@ -1659,6 +1659,11 @@ export default function MeetingScreen() {
                   accessibilityLabel="Online meeting link"
                   style={styles.engineChoice}
                 />
+                <Text style={styles.hint}>
+                  {attendeeConfigured
+                    ? 'Transcription continues while the app is closed. Requires Verity Premium Online sharing.'
+                    : 'Configure online meetings and enable Verity Premium Online sharing.'}
+                </Text>
                 {!attendeeConfigured ? (
                   <Pressable
                     accessibilityRole="button"
@@ -1667,6 +1672,12 @@ export default function MeetingScreen() {
                     <Text style={styles.link}>Configure online meetings</Text>
                   </Pressable>
                 ) : null}
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => router.push('/settings/premium')}
+                >
+                  <Text style={styles.link}>Verity Premium</Text>
+                </Pressable>
               </>
             ) : null}
           </View>

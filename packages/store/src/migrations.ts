@@ -4112,7 +4112,27 @@ const migrations: Record<string, Migration> = {
       await sql`alter table live_meeting_insights drop column resolved`.execute(db);
     },
   },
-  '0150_live_meeting_titles': {
+  '0150_premium_feature_switches': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Default on: a server that already shares or accepts remote control keeps doing so.
+      await db.schema
+        .alterTable('verity_settings')
+        .addColumn('premium_sharing_enabled', 'boolean', (c) => c.notNull().defaultTo(true))
+        .execute();
+      await db.schema
+        .alterTable('verity_settings')
+        .addColumn('premium_remote_access_enabled', 'boolean', (c) => c.notNull().defaultTo(true))
+        .execute();
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .alterTable('verity_settings')
+        .dropColumn('premium_remote_access_enabled')
+        .dropColumn('premium_sharing_enabled')
+        .execute();
+    },
+  },
+  '0151_live_meeting_titles': {
     async up(db: Kysely<unknown>): Promise<void> {
       await sql`alter table live_meetings add column title text`.execute(db);
     },

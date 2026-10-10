@@ -1011,7 +1011,7 @@ export function SessionChat({
           setPreviewServer(server);
           setStaticPreviewOpen(true);
         },
-        () => router.push('/settings/services'),
+        () => router.push('/settings/premium'),
       );
     } catch (caught) {
       const alert = openFailureAlert(server.name, caught instanceof Error ? caught.message : '');
@@ -4051,7 +4051,7 @@ export function SessionChat({
                     { id: localShareId, url } as LocalPreviewShare,
                     capabilities.publicSharing,
                     openEntry,
-                    () => router.push('/settings/services'),
+                    () => router.push('/settings/premium'),
                   );
                 })()
                   .catch((caught: unknown) =>
@@ -4093,7 +4093,7 @@ export function SessionChat({
           }}
           onOpenSettings={() => {
             setStaticPreviewOpen(false);
-            router.push('/settings/services');
+            router.push('/settings/premium');
           }}
           client={client}
           projectId={projectId}
