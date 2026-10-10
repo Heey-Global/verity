@@ -3,7 +3,7 @@ import { request as httpsRequest } from 'node:https';
 import { createProjectEgressCa, issueGatewayServerCertificate } from '../claude-egress-ca.js';
 import { once } from 'node:events';
 import { mkdtemp, readFile } from 'node:fs/promises';
-import { connect } from 'node:net';
+import { connect, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -11,8 +11,15 @@ import { verifyManagedBrowserOrigin } from '../managed-browser-origin.js';
 import {
   closeManagedGatewayUpstreamSocket,
   startManagedGateway,
+  type ManagedGatewayConfig,
   type ManagedGatewayRuntime,
 } from './managed-gateway.js';
+import {
+  drainManagedGateway,
+  enterManagedGatewayMaintenance,
+  leaveManagedGatewayMaintenance,
+  startManagedGatewayControlServer,
+} from './managed-gateway-control.js';
 
 const closers: (() => Promise<void>)[] = [];
 afterEach(async () => Promise.all(closers.splice(0).map((close) => close())));
@@ -83,15 +90,34 @@ async function expectConnectionsClosed(sockets: Set<import('node:net').Socket>):
   expect(sockets.size).toBe(0);
 }
 
+/**
+ * Make the Gateway's own end of every client connection on `port` ignore
+ * destroy(), so its 'close' never arrives — the forced connection a drain used
+ * to wait on forever. Every other socket, the control channel's included,
+ * still closes normally.
+ */
+function holdGatewayClientSocketsOpen(port: number): { mockRestore(): void } {
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  const destroy = Socket.prototype.destroy;
+  return vi.spyOn(Socket.prototype, 'destroy').mockImplementation(function (
+    this: Socket,
+    error?: Error,
+  ) {
+    return this.localPort === port ? this : destroy.call(this, error);
+  });
+}
+
 async function gateway(
   publicBackend: number,
   internalBackend: number,
+  options: Pick<ManagedGatewayConfig, 'drainCloseGraceMs'> = {},
 ): Promise<ManagedGatewayRuntime> {
   const runtime = await startManagedGateway({
     publicPort: 0,
     internalPort: 0,
     backend: { host: '127.0.0.1', publicPort: publicBackend, internalPort: internalBackend },
     allowedBackendHosts: ['127.0.0.1'],
+    ...options,
   });
   closers.push(() => runtime.close());
   return runtime;
@@ -435,6 +461,67 @@ describe('managed gateway foundation', () => {
     await clientClosed;
     await expectConnectionsClosed(current.connections);
   });
+
+  // Drain runs on the Gateway's serialized control channel. A forced connection
+  // whose 'close' never arrived used to park it there for good: every later
+  // instruction from the Updater, "leave maintenance" included, timed out behind
+  // it, and the Gateway answered 503 to everything until it was restarted.
+  it('finishes a drain whose forced connections never report closing', async () => {
+    const current = await backend('current');
+    closers.push(() => current.close());
+    const runtime = await gateway(current.port, current.port, { drainCloseGraceMs: 50 });
+    const socket = connect(runtime.publicPort, '127.0.0.1');
+    socket.on('error', () => undefined);
+    closers.push(async () => {
+      socket.destroy();
+    });
+    await once(socket, 'connect');
+    socket.write(
+      'GET /events HTTP/1.1\r\nHost: gateway\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n',
+    );
+    await once(socket, 'data');
+    const unclosable = holdGatewayClientSocketsOpen(runtime.publicPort);
+    runtime.enterMaintenance();
+    try {
+      await expect(runtime.drain(0)).resolves.toEqual({ forced: 1 });
+    } finally {
+      unclosable.mockRestore();
+    }
+    expect(runtime.status().draining).toBe(false);
+    expect(() => runtime.leaveMaintenance()).not.toThrow();
+  });
+
+  // The Updater's drain request allows only a fixed slack on top of the drain it
+  // asks for. A close grace that ate that slack would fail every cutover that
+  // needed it, even though the Gateway finished the drain moments later.
+  it('answers the Updater before its drain request gives up, at the default grace', async () => {
+    const current = await backend('current');
+    closers.push(() => current.close());
+    const runtime = await gateway(current.port, current.port);
+    const socketPath = join(await mkdtemp(join(tmpdir(), 'gateway-drain-')), 'control.sock');
+    const control = await startManagedGatewayControlServer({ socketPath, gateway: runtime });
+    closers.push(() => control.close());
+    const socket = connect(runtime.publicPort, '127.0.0.1');
+    socket.on('error', () => undefined);
+    closers.push(async () => {
+      socket.destroy();
+    });
+    await once(socket, 'connect');
+    socket.write(
+      'GET /events HTTP/1.1\r\nHost: gateway\r\nConnection: Upgrade\r\nUpgrade: test\r\n\r\n',
+    );
+    await once(socket, 'data');
+    await enterManagedGatewayMaintenance(socketPath);
+    const unclosable = holdGatewayClientSocketsOpen(runtime.publicPort);
+    try {
+      await expect(drainManagedGateway(socketPath, 0)).resolves.toMatchObject({ forced: 1 });
+    } finally {
+      unclosable.mockRestore();
+    }
+    await expect(leaveManagedGatewayMaintenance(socketPath)).resolves.toMatchObject({
+      maintenance: false,
+    });
+  }, 15_000);
 
   it('force-closes an in-flight HTTP request at the drain deadline', async () => {
     const stalled = createServer();

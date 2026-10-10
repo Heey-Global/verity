@@ -65,6 +65,27 @@ interface CloseableDestroyable extends Destroyable {
   once(event: 'close', listener: () => void): this;
 }
 
+/**
+ * Must stay well inside the slack the Updater's drain request allows on top of
+ * the drain itself (`drainManagedGateway`), or the Updater gives up on a drain
+ * the Gateway is about to report as done.
+ */
+export const DEFAULT_DRAIN_CLOSE_GRACE_MS = 2_000;
+
+async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export interface ManagedGatewayBackend {
   readonly host: string;
   readonly publicPort: number;
@@ -89,6 +110,8 @@ export interface ManagedGatewayConfig {
   /** Durable backend selection, on the Gateway-owned control volume. */
   readonly backendStatePath?: string;
   readonly requestTimeoutMs?: number;
+  /** How long a drain waits for force-closed connections to report closing. */
+  readonly drainCloseGraceMs?: number;
   /** Shared only with the managed Server; authenticates the original socket peer. */
   readonly clientIdentitySecret?: Buffer;
 }
@@ -238,6 +261,12 @@ function validateConfig(config: ManagedGatewayConfig): void {
   validateBackend(config.backend, config.allowedBackendHosts, config.allowManagedServerGenerations);
   if (config.requestTimeoutMs !== undefined && config.requestTimeoutMs <= 0) {
     throw new Error('managed gateway request timeout must be positive');
+  }
+  if (
+    config.drainCloseGraceMs !== undefined &&
+    (!Number.isSafeInteger(config.drainCloseGraceMs) || config.drainCloseGraceMs < 0)
+  ) {
+    throw new Error('managed gateway drain close grace must be a non-negative integer');
   }
 }
 
@@ -512,6 +541,7 @@ export async function startManagedGateway(
 ): Promise<ManagedGatewayRuntime> {
   validateConfig(config);
   const timeoutMs = config.requestTimeoutMs ?? 30_000;
+  const drainCloseGraceMs = config.drainCloseGraceMs ?? DEFAULT_DRAIN_CLOSE_GRACE_MS;
   const publicSockets = new Set<Socket>();
   const internalSockets = new Set<Socket>();
   const upgradedSockets = new Set<Duplex>();
@@ -911,17 +941,29 @@ export async function startManagedGateway(
           ...upstreamSockets,
           ...forcedStreams,
         ]);
+        const unclosed = new Set(sockets);
         const closed = [...sockets].map(
           (socket) =>
             new Promise<void>((resolve) => {
-              socket.once('close', resolve);
+              socket.once('close', () => {
+                unclosed.delete(socket);
+                resolve();
+              });
             }),
         );
         for (const stream of forcedStreams) stream.close(http2Constants.NGHTTP2_CANCEL);
         for (const request of upstreamRequests) request.destroy();
         for (const socket of forcedSockets) socket.destroy();
         for (const socket of upstreamSockets) closeManagedGatewayUpstreamSocket(socket);
-        await Promise.all(closed);
+        // Bounded: drain holds the serialized control channel, so waiting on a
+        // 'close' that never comes would wedge every later Updater instruction —
+        // leaving maintenance included — and keep the Gateway answering 503.
+        if (!(await settlesWithin(Promise.all(closed), drainCloseGraceMs))) {
+          // A stream's close() asks nghttp2 for an RST it may never get to send;
+          // destroy() tears the stream down locally regardless.
+          for (const socket of unclosed) socket.destroy();
+          config.log?.({ event: 'gateway.drain', action: 'close-timeout', pending: unclosed.size });
+        }
         return { forced };
       } finally {
         draining = false;
