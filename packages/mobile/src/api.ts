@@ -2061,7 +2061,14 @@ export class VerityClient {
     sessionId: string,
     meetingId: string,
     body: { utterance: string; context: string },
-  ): Promise<{ kind: 'research' | 'opinion'; request: string }[]> {
+  ): Promise<
+    {
+      kind: 'research' | 'opinion';
+      request: string;
+      questionId?: string | undefined;
+      questionTitle?: string | undefined;
+    }[]
+  > {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/addressed`,
       {
@@ -2072,7 +2079,14 @@ export class VerityClient {
     );
     return z
       .object({
-        requests: z.array(z.object({ kind: z.enum(['research', 'opinion']), request: z.string() })),
+        requests: z.array(
+          z.object({
+            kind: z.enum(['research', 'opinion']),
+            request: z.string(),
+            questionId: z.string().optional(),
+            questionTitle: z.string().optional(),
+          }),
+        ),
       })
       .parse(await res.json()).requests;
   }
