@@ -361,6 +361,16 @@ describe('verity-runner supervisor runtime', () => {
     }
   });
 
+  it('forwards Control memory configuration without leaking a turn bearer from the container', () => {
+    expect(
+      supervisorWorkerEnv({
+        VERITY_CONTROL_MEMORY_URL: 'http://verity/internal/control-plane/memory',
+        VERITY_CONTROL_MEMORY_TOKEN: 'stale-container-token',
+      }),
+    ).toEqual({ VERITY_CONTROL_MEMORY_URL: 'http://verity/internal/control-plane/memory' });
+    expect(supervisorWorkerEnv({ VERITY_CONTROL_MEMORY_URL: '' })).toEqual({});
+  });
+
   it('supplies every env var the worker bundle reads from its own process env', async () => {
     // The supervisor spawns the worker with an EXPLICIT env — process.env is deliberately
     // not spread across that boundary — so a variable the worker reads and the supervisor
@@ -386,6 +396,7 @@ describe('verity-runner supervisor runtime', () => {
         supervisorWorkerEnv({
           VERITY_AGENT_SPAWN_BROKER_SOCKET: '/run/broker.sock',
           VERITY_MCP_GATEWAY_URL: 'http://relay.internal/internal/mcp',
+          VERITY_CONTROL_MEMORY_URL: 'http://verity/internal/control-plane/memory',
         }),
       ),
       // Per-turn coordinates the supervisor computes itself for each spawn.

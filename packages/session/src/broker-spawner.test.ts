@@ -563,6 +563,14 @@ describe('agent spawn broker', () => {
     expect(arm?.[0]).not.toMatch(/backend/iu);
   });
 
+  // Losing the turn bearer here leaves the installed Control memory helper unusable.
+  it('passes the current Control bearer into the agent environment', async () => {
+    const text = await readFile(new URL('./runner-worker-entry.ts', import.meta.url), 'utf8');
+    expect(text).toMatch(
+      /process\.env\.VERITY_CONTROL_MEMORY_URL !== undefined && request\.mcpGatewayToken !== undefined\s*\?\s*\{ VERITY_CONTROL_MEMORY_TOKEN: request\.mcpGatewayToken \}/u,
+    );
+  });
+
   it('refuses a gateway bearer the container has no endpoint to redeem', async () => {
     const text = await readFile(new URL('./runner-worker-entry.ts', import.meta.url), 'utf8');
     expect(text).toMatch(

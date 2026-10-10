@@ -236,6 +236,12 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
   ),
   declare(
     'POST',
+    '/internal/control-plane/memory',
+    'gateway-turn',
+    'per-turn Control gateway bearer on the shared internal listener, bound to Control memory',
+  ),
+  declare(
+    'POST',
     '/internal/control-plane/mcp',
     'gateway-turn',
     'per-turn gateway bearer, for the one caller that arrives on the shared internal listener rather than a project socket',

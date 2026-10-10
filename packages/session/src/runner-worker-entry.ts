@@ -227,7 +227,13 @@ const turn = await server.run(join(turnDir, 'events.jsonl'), {
   ...(request.timeoutMs !== undefined ? { timeoutMs: request.timeoutMs } : {}),
   // The Sandbox's own environment stays the base; only Verity's per-turn runtime
   // context is layered on, so in-Sandbox helpers resolve this turn's backend/model.
-  ...(request.sessionEnv !== undefined ? { env: { ...process.env, ...request.sessionEnv } } : {}),
+  env: {
+    ...process.env,
+    ...request.sessionEnv,
+    ...(process.env.VERITY_CONTROL_MEMORY_URL !== undefined && request.mcpGatewayToken !== undefined
+      ? { VERITY_CONTROL_MEMORY_TOKEN: request.mcpGatewayToken }
+      : {}),
+  },
   // The gateway URL is the Sandbox's view of the Server's project-bound broker; it is
   // provisioned into the container, never carried by the request. A bearer without a
   // URL was refused above, so this condition can no longer make a turn run tool-less.
