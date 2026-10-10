@@ -4,6 +4,7 @@ import {
   beginRowTouch,
   markFirstSessionRender,
   rowPress,
+  rowPressIn,
 } from '../lib/sessionSwitchTiming';
 import { cancelSessionSwitch, markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { isLinkableSession } from '../lib/sessionLinks';
@@ -1876,7 +1877,7 @@ const SessionRow = memo(function SessionRow({
         disabled={interactionsLocked}
         {...moveActions}
         onTouchStart={(event) => beginRowTouch(session.sessionId, event.nativeEvent.timestamp)}
-        onPressIn={() => markSessionSwitch(sessionSwitchTiming(session.sessionId), 'js-press-in')}
+        onPressIn={(event) => rowPressIn(session.sessionId, event.nativeEvent.timestamp)}
         onTouchCancel={() => cancelSessionSwitch(session.sessionId)}
         onPress={() => {
           if (interactionsLocked) return;
@@ -1918,7 +1919,7 @@ const SessionRow = memo(function SessionRow({
         disabled={interactionsLocked}
         {...moveActions}
         onTouchStart={(event) => beginRowTouch(session.sessionId, event.nativeEvent.timestamp)}
-        onPressIn={() => markSessionSwitch(sessionSwitchTiming(session.sessionId), 'js-press-in')}
+        onPressIn={(event) => rowPressIn(session.sessionId, event.nativeEvent.timestamp)}
         onTouchCancel={() => cancelSessionSwitch(session.sessionId)}
         onPress={() => {
           if (!interactionsLocked) {

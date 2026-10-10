@@ -116,6 +116,12 @@ export function cancelSessionSwitch(sessionId: string): void {
 export type SwitchTransportPhase =
   | 'fetch-dispatch'
   | 'pinned-entry'
+  | 'remote-availability-ready'
+  | 'route-cache-hit'
+  | 'route-probe-start'
+  | 'route-probe-end'
+  | 'route-queue-start'
+  | 'route-queue-end'
   | 'body-encoded'
   | 'route-ready'
   | 'lane-admitted'

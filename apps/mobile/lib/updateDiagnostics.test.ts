@@ -1,4 +1,4 @@
-import { beginRowTouch, markFirstSessionRender, rowPress } from './sessionSwitchTiming';
+import { beginRowTouch, markFirstSessionRender, rowPress, rowPressIn } from './sessionSwitchTiming';
 import {
   markSessionSwitch,
   sessionSwitchTiming,
@@ -216,4 +216,33 @@ it('bounds transport metadata while retaining the latest gesture', async () => {
     report.logSummary.maxBytes,
   );
   expect(JSON.stringify(report)).not.toContain('private-overflow');
+});
+
+// Responder grant precedes touch-start on Fabric; a previous tap must not receive it.
+it.each([true, false])('keeps touch callbacks together with press-first=%s', (pressFirst) => {
+  beginRowTouch('repeat-row', 100);
+  const previous = sessionSwitchTiming('repeat-row')!;
+  if (pressFirst) {
+    rowPressIn('repeat-row', 200);
+    beginRowTouch('repeat-row', 200);
+  } else {
+    beginRowTouch('repeat-row', 200);
+    rowPressIn('repeat-row', 200);
+  }
+  rowPress('repeat-row');
+  const current = sessionSwitchTiming('repeat-row')!;
+  expect(current.id).not.toBe(previous.id);
+  expect(previous.phases.map((p) => p.phase)).toEqual(['js-touch-start']);
+  expect(current.phases.map((p) => p.phase)).toEqual(
+    pressFirst
+      ? ['js-press-in', 'js-touch-start', 'js-press-handler']
+      : ['js-touch-start', 'js-press-in', 'js-press-handler'],
+  );
+});
+
+it('does not join matching timestamps from different rows', () => {
+  rowPressIn('row-a', 300);
+  const previous = sessionSwitchTiming('row-a')!;
+  beginRowTouch('row-b', 300);
+  expect(sessionSwitchTiming('row-b')!.id).not.toBe(previous.id);
 });

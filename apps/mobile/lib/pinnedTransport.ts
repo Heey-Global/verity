@@ -242,8 +242,11 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
     if (input instanceof Request)
       throw new Error('Request objects are not supported by the pinned transport.');
     const url = String(input);
-    const remoteEnabled = useRemote && (await remoteControlAvailableForUrl(url));
     const headers = Object.fromEntries(new Headers(init.headers).entries());
+    const diagnosticRequestId = headers['x-verity-switch-request'];
+    markSwitchTransportRequest(diagnosticRequestId, 'pinned-entry');
+    const remoteEnabled = useRemote && (await remoteControlAvailableForUrl(url));
+    markSwitchTransportRequest(diagnosticRequestId, 'remote-availability-ready');
     // Older native bridges forward every header, so only send lane metadata to
     // builds that strip it before creating the network request.
     if (native().supportsTransportLanes?.()) {
@@ -272,13 +275,13 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       if (background && !releaseLane) releaseLane = await admitBackground(url, init.signal);
     };
     try {
-      const diagnosticRequestId = headers['x-verity-switch-request'];
-      markSwitchTransportRequest(diagnosticRequestId, 'pinned-entry');
       const encodedBody = fileUri ? null : await encodeBody(init.body);
       markSwitchTransportRequest(diagnosticRequestId, 'body-encoded');
       const replayable =
         !fileUri && (init.method ?? 'GET').toUpperCase() === 'GET' && encodedBody === null;
-      let port = remoteEnabled ? await remoteControlPortForUrl(url, replayable) : 0;
+      let port = remoteEnabled
+        ? await remoteControlPortForUrl(url, replayable, diagnosticRequestId)
+        : 0;
       markSwitchTransportRequest(diagnosticRequestId, 'route-ready', port > 0 ? 1 : 0);
       if (init.signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError');
