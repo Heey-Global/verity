@@ -4,7 +4,7 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { router, useFocusEffect, type Href } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Text } from 'react-native';
 import {
   SettingsGroup,
@@ -145,7 +145,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
     {
       title: 'Matrix',
       usageKey: 'matrix',
-      group: 'Messaging',
+      group: 'Communication',
       icon: 'message-circle',
       subtitle: 'Import room messages into project knowledge',
       route: '/settings/services/matrix',
@@ -171,7 +171,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
       ...(mcpCount > 0 ? { status: `${mcpCount} configured` } : {}),
     },
   ];
-  const renderRows = (items: Connection[]) => (
+  const renderRows = (items: Connection[], includeMeetings = false) => (
     <SettingsListPanel>
       {items.map((item) => (
         <SettingsNavRow
@@ -194,6 +194,14 @@ function ConnectionsView({ client }: { client: VerityClient }) {
           onPress={() => router.push(item.route)}
         />
       ))}
+      {includeMeetings ? (
+        <SettingsNavRow
+          icon="mic"
+          title="Attendee"
+          subtitle="Online meeting bots and transcripts"
+          onPress={() => router.push('/settings/services/attendee')}
+        />
+      ) : null}
     </SettingsListPanel>
   );
   return (
@@ -205,25 +213,16 @@ function ConnectionsView({ client }: { client: VerityClient }) {
         setRetry((value) => value + 1);
       }}
     >
-      <SettingsGroup title="Connected" description="Manage the services you use.">
-        {rows.some((item) => item.connected) ? (
-          renderRows(rows.filter((item) => item.connected))
-        ) : (
-          <SettingsPanel>
-            <Text style={styles.reproHint}>No connections yet. Add only what you need below.</Text>
-          </SettingsPanel>
-        )}
-      </SettingsGroup>
-      <SettingsGroup title="Meetings">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="mic"
-            title="Attendee"
-            subtitle="Online meeting bots and transcripts"
-            onPress={() => router.push('/settings/services/attendee')}
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
+      {['Agents', 'Code', 'Files & documents', 'Communication', 'Secrets', 'Advanced'].map(
+        (group) => (
+          <SettingsGroup key={group} title={group}>
+            {renderRows(
+              rows.filter((item) => item.group === group),
+              group === 'Communication',
+            )}
+          </SettingsGroup>
+        ),
+      )}
       {error ? (
         <SettingsPanel>
           <Text style={styles.reproHint}>
@@ -231,25 +230,6 @@ function ConnectionsView({ client }: { client: VerityClient }) {
           </Text>
         </SettingsPanel>
       ) : null}
-      {rows.some((item) => !item.connected) ? (
-        <Text accessibilityRole="header" style={styles.disclosureTitle}>
-          Available
-        </Text>
-      ) : null}
-      {['Agents', 'Code', 'Files & documents', 'Messaging', 'Secrets', 'Advanced'].map((group) => {
-        const available = rows.filter((item) => !item.connected && item.group === group);
-        return available.length > 0 ? (
-          <SettingsGroup
-            key={group}
-            title={group}
-            description={
-              group === 'Agents' ? 'Available connections — add only what you need.' : undefined
-            }
-          >
-            {renderRows(available)}
-          </SettingsGroup>
-        ) : null;
-      })}
     </SettingsScaffold>
   );
 }
