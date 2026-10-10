@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { constants, existsSync, readFileSync, readdirSync } from 'node:fs';
-import { mkdtemp, open, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, open, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -144,6 +144,29 @@ describe('staged image transport', () => {
     await cleanupTurnImageAttachments(cwd, 'test-turn');
     await cleanupTurnImageAttachments(cwd, 'test-turn');
     expect(existsSync(refs?.[0]?.filePath ?? '')).toBe(false);
+  });
+
+  it('makes staged images readable across server and runner identities, including retries', async () => {
+    const image: AttachmentUpload = { kind: 'image', mediaType: 'image/png', data: b64('image') };
+    const refs = await stageImageAttachments(cwd, 'permissions-turn', [image]);
+    const filePath = refs?.[0]?.filePath ?? '';
+    const directories = [
+      join(cwd, '.verity-sessions'),
+      join(cwd, '.verity-sessions', 'attachments'),
+      dirname(filePath),
+    ];
+    const assertReadable = async () => {
+      // Same-UID tests miss a supervisor unable to traverse server-owned directories.
+      for (const directory of directories) {
+        expect((await stat(directory)).mode & 0o777).toBe(0o755);
+      }
+      expect((await stat(filePath)).mode & 0o777).toBe(0o644);
+    };
+    await assertReadable();
+    for (const directory of directories) await chmod(directory, 0o700);
+    await chmod(filePath, 0o600);
+    expect(await stageImageAttachments(cwd, 'permissions-turn', [image])).toEqual(refs);
+    await assertReadable();
   });
 
   it('rejects modified retry files and symlinked turn directories', async () => {
