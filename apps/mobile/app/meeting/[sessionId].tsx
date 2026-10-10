@@ -165,6 +165,9 @@ export default function MeetingScreen() {
   const [recorderOnline, setRecorderOnline] = useState(true);
   const [transcriptExpanded, setTranscriptExpanded] = useState(false);
   const [insightQuestion, setInsightQuestion] = useState('');
+  const askClearedAfterSend = useRef(false);
+  const askText = useRef(insightQuestion);
+  askText.current = insightQuestion;
   const [sendingInsight, setSendingInsight] = useState(false);
   const [voiceSending, setVoiceSending] = useState(false);
   const [composing, setComposing] = useState<'note' | 'ask' | null>(null);
@@ -754,8 +757,10 @@ export default function MeetingScreen() {
         queueBehindActiveTurn: true,
       });
       // A retried card must not clear what is being typed in the composer.
-      if (kind === 'request')
-        setInsightQuestion((current) => (current === question ? '' : current));
+      if (kind === 'request' && askText.current === question) {
+        askClearedAfterSend.current = true;
+        setInsightQuestion('');
+      }
     } catch (reason) {
       setLocalAnswers((current) => current.filter((card) => card.id !== local.id));
       setError(`Could not start meeting request: ${String(reason)}`);
@@ -1367,8 +1372,10 @@ export default function MeetingScreen() {
 
   const switchComposer = (mode: 'note' | 'ask') => {
     if (mode === composing) return;
-    if (mode === 'ask') setInsightQuestion(draft?.text ?? '');
-    else editNote(insightQuestion);
+    if (mode === 'ask') {
+      askClearedAfterSend.current = false;
+      setInsightQuestion(draft?.text ?? '');
+    } else if (!askClearedAfterSend.current) editNote(insightQuestion);
     setComposing(mode);
   };
   const composerMode = (mode: 'note' | 'ask') => (
@@ -1460,7 +1467,10 @@ export default function MeetingScreen() {
           submitBehavior="submit"
           returnKeyType="send"
           value={insightQuestion}
-          onChangeText={setInsightQuestion}
+          onChangeText={(text) => {
+            askClearedAfterSend.current = false;
+            setInsightQuestion(text);
+          }}
           onSubmitEditing={() => void openResearch(insightQuestion, 'request')}
           style={styles.composerInput}
         />

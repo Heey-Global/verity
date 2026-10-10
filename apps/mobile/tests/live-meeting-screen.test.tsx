@@ -2233,3 +2233,30 @@ it('counts the complete ended answer history across pages and keeps the count af
   fireEvent.press(screen.getAllByLabelText('Dismiss meeting answer')[0]!);
   expect(screen.getByLabelText('6 answers')).toBeOnTheScreen();
 });
+
+it('preserves the note draft when returning after sending an Ask', async () => {
+  const meeting: MeetingRecord = {
+    id: 'sent-ask',
+    sessionId: 'session-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    transcript: '',
+    error: null,
+  };
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest.mocked(createVerityClient).mockReturnValue({
+    sendTurn: jest.fn().mockResolvedValue({ turnId: 'turn-1' }),
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<MeetingScreen />);
+  fireEvent.changeText(await noteInput(), 'Keep my note');
+  fireEvent.press(screen.getByLabelText('Switch to Ask Verity'));
+  fireEvent.press(screen.getByLabelText('Ask Verity in meeting'));
+  await waitFor(() =>
+    expect(screen.getByLabelText('Ask Verity about this meeting')).toHaveDisplayValue(''),
+  );
+  fireEvent.press(screen.getByLabelText('Switch to note'));
+  expect(screen.getByLabelText('Add a meeting note')).toHaveDisplayValue('Keep my note');
+});

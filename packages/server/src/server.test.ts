@@ -1468,7 +1468,7 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
 
       const notices = async () =>
         (await ctx.store.getEvents('s1')).filter((event) => event.t === 'notice');
-      await vi.waitFor(async () => expect(await notices()).toHaveLength(1));
+      await vi.waitFor(async () => expect((await notices()).length).toBeGreaterThanOrEqual(1));
       const [notice] = await notices();
       expect(notice?.t === 'notice' && notice.text).toContain('[Pricing \\[sync\\]]');
       const details = JSON.parse(
@@ -1500,16 +1500,28 @@ describe('POST /sessions/:id/meetings/transcripts', () => {
         `- [Pricing \\[sync\\]](${link!.split('/').at(-1)})`,
       );
 
-      // Naming a speaker afterwards rewrites the same document without a second message.
+      // Late edits must refresh the card as well as the filed document.
       await meetingApp.inject({
         method: 'PUT',
         url,
-        payload: { ...meeting, speakerNames: { '0': 'Anna' }, revision: 3 },
+        payload: { ...meeting, speakerNames: { '0': 'Anna' }, speakerMerges: {}, revision: 3 },
       });
       await vi.waitFor(() =>
         expect(readFileSync(filed, 'utf8')).toContain('**Anna** (00:04): We ship on Friday.'),
       );
-      expect(await notices()).toHaveLength(1);
+      await vi.waitFor(async () => {
+        const latest = (await notices()).at(-1)!;
+        expect(latest.t === 'notice' && latest.text).toContain('"people":2');
+        expect(latest.t === 'notice' && latest.text).toContain('"notes":1');
+      });
+      const count = (await notices()).length;
+      await meetingApp.inject({
+        method: 'PUT',
+        url: `${url}/notes/n1`,
+        payload: { atSeconds: 5, text: 'Friday release', revision: 2 },
+      });
+      await vi.waitFor(() => expect(readFileSync(filed, 'utf8')).toContain('Friday release'));
+      expect(await notices()).toHaveLength(count);
     } finally {
       await meetingApp.close();
       rmSync(worktree, { recursive: true, force: true });

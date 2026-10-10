@@ -2266,13 +2266,13 @@ async function fileLiveMeeting(input: {
         title,
         details,
       );
-      const announced = events.some(
+      const announced = events.findLast(
         (event) =>
           event.t === 'notice' &&
           event.text.startsWith('Meeting saved to the knowledge base: [') &&
           event.text.split('\n')[0]?.endsWith(`](${savedLink})`),
       );
-      if (announced) return;
+      if (announced?.t === 'notice' && announced.text === text) return;
       await emitNotice({
         eventStore: input.eventStore,
         bus: input.bus,
