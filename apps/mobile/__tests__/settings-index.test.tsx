@@ -74,7 +74,8 @@ describe('settings index — destinations', () => {
 
   // Each destination must still reach its settings or recovery screen.
   it.each([
-    ['Remote access', '/settings/remote-access'],
+    ['Verity Premium', '/settings/premium'],
+    ['Diagnostics', '/settings/diagnostics'],
     ['Meeting transcription', '/settings/transcription'],
     ['Connections', '/settings/services'],
     ['Server update', '/settings/server-update'],

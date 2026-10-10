@@ -28,7 +28,6 @@ import {
   SettingsToggleRow,
 } from '../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
-import { shareUpdateDiagnostics } from '../../lib/updateDiagnostics';
 import { checkForAppUpdate } from '../../lib/automaticUpdates';
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
@@ -95,19 +94,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       };
     }, [client]),
   );
-
-  const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
-  const exportDiagnostics = async () => {
-    if (exportingDiagnostics) return;
-    setExportingDiagnostics(true);
-    try {
-      await shareUpdateDiagnostics();
-    } catch {
-      Alert.alert('Export failed', 'Could not export update diagnostics. Try again later.');
-    } finally {
-      setExportingDiagnostics(false);
-    }
-  };
 
   const checkForManualUpdate = useCallback(() => {
     if (checkingForUpdate) return;
@@ -200,9 +186,10 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           />
           <SettingsNavRow
             icon="globe"
-            title="Remote access"
-            subtitle="Verity Uplink"
-            onPress={() => router.push('/settings/remote-access')}
+            title="Verity Premium"
+            subtitle="Online sharing and Remote access"
+            value={settings?.uplinkSubscriptionKeyConfigured ? 'Configured' : 'Not active'}
+            onPress={() => router.push('/settings/premium')}
           />
         </SettingsListPanel>
       </SettingsGroup>
@@ -250,8 +237,8 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           <SettingsNavRow
             icon="file-text"
             title="Diagnostics"
-            subtitle={exportingDiagnostics ? 'Preparing…' : 'Export app update logs'}
-            onPress={() => void exportDiagnostics()}
+            subtitle="Connection, transcription and app logs"
+            onPress={() => router.push('/settings/diagnostics')}
           />
           {!isDemoMode() ? (
             <SettingsNavRow

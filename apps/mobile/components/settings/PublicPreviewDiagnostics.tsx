@@ -7,7 +7,7 @@ import {
 import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Pressable, Text } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 
 import { getServerProfile } from '../../lib/serverProfile';
 import { exportRemoteDataDiagnostics } from '../../lib/remoteDataDiagnostics';
@@ -17,6 +17,8 @@ import {
 } from '../../lib/remoteControlTransport';
 import { settingsStyles as styles } from './settingsStyles';
 import { SettingsPanel } from './SettingsChrome';
+import { StatusPill } from '../StatusPill';
+import { premiumFeatures } from '../premium/premiumFeatures';
 
 // One line per stream, in Core's words: what arrived from the phone, what the
 // local TLS ingress answered, and what went back out. Read beside the phone's
@@ -92,14 +94,14 @@ export function PublicPreviewDiagnostics({
       const result = await testRemoteControlForUrl(profile.activeUrl, capture);
       setTestResult(
         result.ready
-          ? 'Remote Control works: the iPhone reached Core through Uplink.'
-          : `Remote Control failed at ${result.detail}.`,
+          ? 'Remote access works: the iPhone reached Core through Uplink.'
+          : `Remote access failed at ${result.detail}.`,
       );
       // Core status can stall when the paired address is unreachable. The
       // independent status refresh must not keep the tunnel test spinner open.
       void refresh();
     } catch {
-      setTestResult('Remote Control test failed before the connection could be checked.');
+      setTestResult('Remote access test failed before the connection could be checked.');
     } finally {
       setChecking(false);
     }
@@ -127,39 +129,55 @@ export function PublicPreviewDiagnostics({
 
   return (
     <SettingsPanel>
-      <Text style={styles.disclosureTitle}>Connection diagnostics</Text>
-      <Text style={styles.reproHint}>
-        Uplink:{' '}
-        {keyConfigured === false
-          ? 'No subscription key configured'
-          : status
-            ? controlLabel(status)
-            : statusError
-              ? statusError === 'unsupported'
-                ? 'Update Core to show connection status'
-                : 'Core status unavailable'
-              : 'Checking…'}
-      </Text>
-      <Text style={styles.reproHint}>
-        Sharing:{' '}
-        {status
-          ? status.sharing === 'ready'
-            ? 'Granted by Uplink'
-            : status.control === 'connected'
-              ? 'Not granted by Uplink'
-              : 'Waiting for Uplink'
-          : 'Unknown'}
-      </Text>
-      <Text style={styles.reproHint}>
-        Remote Control:{' '}
-        {status
-          ? status.remoteControl === 'ready'
-            ? 'Offered by Core'
-            : status.control === 'connected'
-              ? 'Not offered by Core'
-              : 'Waiting for Uplink'
-          : 'Unknown'}
-      </Text>
+      <View style={styles.secretLabelRow}>
+        <Text style={styles.pathLabel}>Uplink</Text>
+        <StatusPill
+          quiet
+          intent={
+            keyConfigured === false
+              ? 'optional'
+              : status?.control === 'connected'
+                ? 'ready'
+                : status?.control === 'rejected' || statusError
+                  ? 'needsSetup'
+                  : 'transient'
+          }
+          label={
+            keyConfigured === false
+              ? 'No subscription'
+              : status
+                ? controlLabel(status)
+                : statusError === 'unsupported'
+                  ? 'Update server'
+                  : statusError
+                    ? 'Unavailable'
+                    : 'Checking…'
+          }
+        />
+      </View>
+      {premiumFeatures
+        .filter((feature) => feature.id !== 'teams')
+        .map((feature) => {
+          const state = status?.features?.[feature.id];
+          const ready =
+            feature.id === 'sharing'
+              ? status?.sharing === 'ready'
+              : status?.remoteControl === 'ready';
+          const label =
+            state?.enabled === false
+              ? 'Off'
+              : ready
+                ? 'Ready'
+                : status?.control === 'connected' && state?.granted === false
+                  ? 'Not included'
+                  : 'Unavailable';
+          return (
+            <View key={feature.id} style={styles.secretLabelRow}>
+              <Text style={styles.pathLabel}>{feature.name}</Text>
+              <StatusPill quiet intent={ready ? 'ready' : 'optional'} label={label} />
+            </View>
+          );
+        })}
       <Text style={styles.reproHint}>
         iPhone route: {route ? 'Saved' : 'Missing — connect through VPN to refresh it'}
       </Text>
@@ -169,13 +187,13 @@ export function PublicPreviewDiagnostics({
       {profile && route ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Test Remote Control through Uplink"
+          accessibilityLabel="Test Remote access through Uplink"
           disabled={checking}
           onPress={() => void runTest()}
           style={[styles.retryButton, styles.selfStart, checking ? styles.buttonDisabled : null]}
         >
           <Text style={styles.retryButtonLabel}>
-            {checking ? 'Testing Remote Control…' : 'Test Remote Control'}
+            {checking ? 'Testing Remote access…' : 'Test Remote access'}
           </Text>
         </Pressable>
       ) : null}
@@ -183,7 +201,7 @@ export function PublicPreviewDiagnostics({
         <>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Record Remote Control connection test"
+            accessibilityLabel="Record Remote access connection test"
             disabled={checking}
             onPress={() => void runTest(true)}
           >
@@ -209,13 +227,13 @@ export function PublicPreviewDiagnostics({
         </Text>
       ) : null}
       <Text style={styles.reproHint}>
-        Sharing status reports the granted capability. Creating a public preview checks the full
-        sharing path.
+        Online sharing status reports the effective capability. Creating a public preview checks the
+        full sharing path.
       </Text>
       {statusError === 'unavailable' && profile ? (
         <Text style={styles.reproHint}>
           {remoteControlFailureForUrl(profile.activeUrl) ??
-            'Core did not answer; use the Remote Control test to locate the failure.'}
+            'Core did not answer; use the Remote access test to locate the failure.'}
         </Text>
       ) : null}
       <Pressable accessibilityRole="button" onPress={() => void refresh()}>

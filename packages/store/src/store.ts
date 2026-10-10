@@ -705,6 +705,10 @@ export interface VeritySettingsRecord {
   uplinkSubscriptionKey?: string | null;
   /** Stable identity assigned and validated by the Uplink. */
   uplinkInstallationId?: string | null;
+  /** Operator switches for the paid Uplink features. Uplink grants a feature;
+   * the switch decides whether this server uses it. Both default to on. */
+  premiumSharingEnabled?: boolean;
+  premiumRemoteAccessEnabled?: boolean;
   advancedModeEnabled?: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -744,7 +748,9 @@ type VeritySettingsKey =
   | 'contactsAuthorized'
   | 'googleGrantedScopes'
   | 'uplinkSubscriptionKey'
-  | 'uplinkInstallationId';
+  | 'uplinkInstallationId'
+  | 'premiumSharingEnabled'
+  | 'premiumRemoteAccessEnabled';
 
 export type VeritySettingsPatch = {
   [K in VeritySettingsKey]?: VeritySettingsRecord[K] | undefined;
@@ -6367,6 +6373,8 @@ export class EventStore implements EventSink {
       google_granted_scopes: string[];
       uplink_subscription_key: string | null;
       uplink_installation_id: string | null;
+      premium_sharing_enabled: boolean;
+      premium_remote_access_enabled: boolean;
       advanced_mode_enabled: boolean;
       created_at: Date;
       updated_at: Date;
@@ -6428,6 +6436,8 @@ export class EventStore implements EventSink {
         ? this.decryptSecret(row.uplink_subscription_key)
         : row.uplink_subscription_key,
       uplinkInstallationId: row.uplink_installation_id,
+      premiumSharingEnabled: row.premium_sharing_enabled,
+      premiumRemoteAccessEnabled: row.premium_remote_access_enabled,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -6468,6 +6478,8 @@ export class EventStore implements EventSink {
     'google_granted_scopes',
     'uplink_subscription_key',
     'uplink_installation_id',
+    'premium_sharing_enabled',
+    'premium_remote_access_enabled',
     'advanced_mode_enabled',
     'created_at',
     'updated_at',
@@ -6539,6 +6551,8 @@ export class EventStore implements EventSink {
       google_granted_scopes: JSON.stringify(patch.googleGrantedScopes ?? []),
       uplink_subscription_key: this.encryptSecret(normalizeSetting(patch.uplinkSubscriptionKey)),
       uplink_installation_id: normalizeSetting(patch.uplinkInstallationId),
+      premium_sharing_enabled: patch.premiumSharingEnabled ?? true,
+      premium_remote_access_enabled: patch.premiumRemoteAccessEnabled ?? true,
     };
     const row = await this.db
       .insertInto('verity_settings')
@@ -6668,6 +6682,12 @@ export class EventStore implements EventSink {
             : {}),
           ...(patch.uplinkInstallationId !== undefined
             ? { uplink_installation_id: normalizeSetting(patch.uplinkInstallationId) }
+            : {}),
+          ...(patch.premiumSharingEnabled !== undefined
+            ? { premium_sharing_enabled: patch.premiumSharingEnabled }
+            : {}),
+          ...(patch.premiumRemoteAccessEnabled !== undefined
+            ? { premium_remote_access_enabled: patch.premiumRemoteAccessEnabled }
             : {}),
           ...(patch.advancedModeEnabled !== undefined
             ? { advanced_mode_enabled: patch.advancedModeEnabled }

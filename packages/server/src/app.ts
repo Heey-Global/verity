@@ -106,6 +106,8 @@ export interface ControlPlaneDeps {
   runtimeDiagnostics?: ServerDeps['runtimeDiagnostics'];
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: ServerDeps['onUplinkCredentialsChanged'];
+  /** Apply the premium feature switches after either of them changed. */
+  onPremiumFeatureSwitchesChanged?: ServerDeps['onPremiumFeatureSwitchesChanged'];
   /** Check live Drive ancestry before granting automatic document URL reads. */
   googleDriveDocumentIsWithinProject?: ServerDeps['googleDriveDocumentIsWithinProject'];
   /** Invalidate cached access tokens after shared Google OAuth credentials change. */
@@ -387,6 +389,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.uplinkDiagnostics !== undefined ? { uplinkDiagnostics: deps.uplinkDiagnostics } : {}),
     ...(deps.onUplinkCredentialsChanged !== undefined
       ? { onUplinkCredentialsChanged: deps.onUplinkCredentialsChanged }
+      : {}),
+    ...(deps.onPremiumFeatureSwitchesChanged !== undefined
+      ? { onPremiumFeatureSwitchesChanged: deps.onPremiumFeatureSwitchesChanged }
       : {}),
     ...(deps.googleDriveDocumentIsWithinProject !== undefined
       ? { googleDriveDocumentIsWithinProject: deps.googleDriveDocumentIsWithinProject }

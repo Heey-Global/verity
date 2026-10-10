@@ -1,4 +1,3 @@
-import { beginClientActivity } from '../lib/sessionSwitchTiming';
 import { useSessionRowCallbacks } from '../hooks/useSessionRowCallbacks';
 import {
   beginRenderWork,
@@ -8,7 +7,6 @@ import {
 } from '../lib/sessionSwitchTiming';
 import { cancelSessionSwitch, markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { isLinkableSession } from '../lib/sessionLinks';
-import { subscribeLiveRefresh } from '../lib/liveConnection';
 import { moveProjectIdToIndex } from '../lib/projectReorder';
 import { SessionDragSlot } from '../components/SessionDragSlot';
 import { SessionIssueRef } from '../components/SessionIssueRef';
@@ -44,7 +42,6 @@ import {
   projectRepoRef,
   sandboxUpdateAlertMessage,
   sandboxUpdateIndicator,
-  subscribeProjectStatusMutations,
   sandboxUpdateNeedsAttention,
   sessionBadge,
   attentionNotice,
@@ -107,22 +104,18 @@ import { usePushNotifications } from '../hooks/usePushNotifications';
 import { useSessionList } from '../hooks/useSessionList';
 import { useUnread } from '../hooks/useUnread';
 import { createVerityClient, getVerityBaseUrl } from '../lib/client';
+import { useProjects } from '../hooks/useProjects';
 import {
-  localPreviewLinks,
-  mergeSessionPreviewUrls,
-  nextProjectPreviewLinks,
-  publicPreviewLinks,
-  publicPreviewSessionIds,
-  type ProjectPreviewLinks,
-} from '../lib/sessionPreviewLinks';
-import { prefetchBranches, seedSessionBranches } from '../lib/branchesPrefetch';
+  cancelPrefetchedBranches,
+  prefetchBranches,
+  seedSessionBranches,
+} from '../lib/branchesPrefetch';
 import { newSessionId, registerPendingSession } from '../lib/pendingSessions';
 import { createProjectCollapseQueue } from '../lib/projectCollapseQueue';
 import { createSessionConfirmingWarnings } from '../lib/startSession';
 import { devServerUrl } from '../lib/devServerUrl';
 import { repairProject } from '../lib/projectRepair';
 import { sessionLoadError } from '../lib/sessionLoadError';
-import { mergeProjectStatusMutation } from '../lib/projectStatusMutation';
 import { projectOverviewStatus, type ProjectOverviewStatus } from '../lib/projectSetup';
 import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
@@ -706,6 +699,11 @@ function SessionList({ client }: { client: VerityClient }) {
     [renderGroup],
   );
 
+  useEffect(() => {
+    if (!selectedId) return;
+    return () => cancelPrefetchedBranches(client, selectedId);
+  }, [client, selectedId]);
+
   // Wide layout: the session shown in the split pane is "open", so keep it marked
   // seen as new events stream in (markSeen no-ops when the count hasn't moved).
   useEffect(() => {
@@ -959,155 +957,6 @@ function RightPanePlaceholder() {
       <Text style={styles.rightPanePlaceholderText}>Select a session</Text>
     </View>
   );
-}
-
-// Project and preview changes arrive over the shared live connection.
-function useProjects(client: VerityClient) {
-  const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const devServersByProject = new Map<string, DevServer[]>();
-  const detectionsByProject = new Map<string, DevServerDetection>();
-  // Session id → the URL its preview icon opens; see mergeSessionPreviewUrls.
-  const [previewUrls, setPreviewUrls] = useState<ReadonlyMap<string, string | null>>(
-    () => new Map(),
-  );
-  // Sessions with an unexpired public share: their row shows "online" even when
-  // the preview entry opens the local link.
-  const [publicPreviews, setPublicPreviews] = useState<ReadonlySet<string>>(() => new Set());
-  const publicPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
-  const localPreviewLinksRef = useRef<ProjectPreviewLinks>(new Map());
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const loadGeneration = useRef(0);
-  const pendingProjectMutations = useRef(
-    new Map<string, { project: ProjectRecord; generation: number }>(),
-  );
-
-  useEffect(
-    () =>
-      subscribeProjectStatusMutations((updated) => {
-        setProjects((current) => {
-          const existing = current.find((project) => project.id === updated.id);
-          const merged = mergeProjectStatusMutation(existing, updated);
-          pendingProjectMutations.current.set(updated.id, {
-            project: merged,
-            generation: loadGeneration.current,
-          });
-          return existing
-            ? current.map((project) => (project.id === updated.id ? merged : project))
-            : [...current, merged];
-        });
-      }),
-    [],
-  );
-
-  // `silent` skips the loading-spinner flip so the interval poll refreshes in
-  // place (no flicker); the initial load + pull-to-refresh flip it as before.
-  const load = useCallback(
-    async (opts?: { silent?: boolean }) => {
-      const generation = ++loadGeneration.current;
-      if (!opts?.silent) setLoading(true);
-      try {
-        const nextProjects = await client.listProjects();
-        const activeProjects = nextProjects.filter((project) => project.state === 'active');
-        const projectIds = activeProjects.map((project) => project.id);
-        const [publicResults, localResults] = await Promise.all([
-          Promise.allSettled(
-            projectIds.map((id) => client.listPublicPreviewShares(id).then(publicPreviewLinks)),
-          ),
-          Promise.allSettled(
-            projectIds.map((id) =>
-              client.listProjectLocalPreviewShares(id).then(localPreviewLinks),
-            ),
-          ),
-        ]);
-        if (generation !== loadGeneration.current) return;
-        publicPreviewLinksRef.current = nextProjectPreviewLinks(
-          publicPreviewLinksRef.current,
-          projectIds,
-          publicResults,
-        );
-        localPreviewLinksRef.current = nextProjectPreviewLinks(
-          localPreviewLinksRef.current,
-          projectIds,
-          localResults,
-        );
-        const finishPublish = beginClientActivity('project-list-publish');
-        try {
-          const now = Date.now();
-          setPreviewUrls(
-            mergeSessionPreviewUrls(
-              publicPreviewLinksRef.current,
-              localPreviewLinksRef.current,
-              now,
-            ),
-          );
-          setPublicPreviews(publicPreviewSessionIds(publicPreviewLinksRef.current, now));
-          const pending = new Map(
-            [...pendingProjectMutations.current].filter(
-              ([, entry]) => entry.generation >= generation,
-            ),
-          );
-          const seen = new Set(nextProjects.map((project) => project.id));
-          setProjects([
-            ...nextProjects.map((project) => pending.get(project.id)?.project ?? project),
-            ...[...pending.values()]
-              .map(({ project }) => project)
-              .filter((project) => !seen.has(project.id)),
-          ]);
-          pendingProjectMutations.current.clear();
-        } finally {
-          finishPublish();
-        }
-        setError(undefined); // recovered — clear any stale banner
-      } catch (caught) {
-        if (generation !== loadGeneration.current) return;
-        // A silent background poll keeps the last-good list on screen without
-        // flashing an error banner over it; only the initial load and
-        // pull-to-refresh surface a failure to the operator.
-        if (!opts?.silent) {
-          setError(caught instanceof VerityApiError ? caught.message : 'Could not load projects');
-        }
-      } finally {
-        if (generation === loadGeneration.current) setLoading(false);
-      }
-    },
-    [client],
-  );
-
-  // Load on focus — the first mount AND every return to the overview. The poll
-  // below is too coarse to carry a change the operator just made elsewhere: a
-  // project deleted on its detail screen pops back here, and waiting out the
-  // interval would leave the deleted card on the list, tappable. Every refetch
-  // after the first is silent, so coming back never flashes the list into its
-  // loading state.
-  const loadedOnce = useRef(false);
-  useFocusEffect(
-    useCallback(() => {
-      void load(loadedOnce.current ? { silent: true } : undefined);
-      loadedOnce.current = true;
-    }, [load]),
-  );
-
-  useEffect(
-    () =>
-      subscribeLiveRefresh(
-        client,
-        () => load({ silent: true }),
-        (path) => path.startsWith('/projects'),
-      ),
-    [client, load],
-  );
-
-  return {
-    projects,
-    devServersByProject,
-    detectionsByProject,
-    previewUrls,
-    publicPreviews,
-    loading,
-    error,
-    refresh: () => load(),
-  };
 }
 
 function projectGroups(

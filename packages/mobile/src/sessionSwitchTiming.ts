@@ -118,6 +118,7 @@ export type SwitchTransportPhase =
   | 'pinned-entry'
   | 'body-encoded'
   | 'route-ready'
+  | 'lane-admitted'
   | 'native-dispatch'
   | 'native-return'
   | 'native-error'

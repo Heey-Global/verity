@@ -4069,3 +4069,33 @@ it('sends explicit replay and retry options to the welcome endpoint', async () =
   expect(calls[0]?.init?.method).toBe('POST');
   expect(calls[0]?.init?.body).toBe(JSON.stringify({ replay: true, retry: true }));
 });
+
+describe('premium feature contracts', () => {
+  it('retains separate entitlement, preference and effective states', async () => {
+    const { uplinkDiagnosticsSchema } = await import('./api.js');
+    const features = {
+      sharing: { granted: true, enabled: false, effective: false },
+      remoteAccess: { granted: false, enabled: true, effective: false },
+    };
+    expect(
+      uplinkDiagnosticsSchema.parse({
+        control: 'connected',
+        sharing: 'unavailable',
+        remoteControl: 'unavailable',
+        features,
+      }).features,
+    ).toEqual(features);
+    expect(
+      uplinkDiagnosticsSchema.parse({
+        control: 'connected',
+        sharing: 'ready',
+        remoteControl: 'unavailable',
+      }).features,
+    ).toBeUndefined();
+  });
+  it('accepts a locally disabled sharing capability', async () => {
+    const { fetch } = fakeFetchSequence(json({ publicSharing: 'disabled' }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getPreviewCapabilities()).toEqual({ publicSharing: 'disabled' });
+  });
+});
