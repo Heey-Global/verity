@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.37.1](https://github.com/Heey-Global/verity/compare/v4.37.0...v4.37.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **gateway:** bound the drain's wait for force-closed connections ([#1489](https://github.com/Heey-Global/verity/issues/1489)) ([e094584](https://github.com/Heey-Global/verity/commit/e094584d8c91c359554a4f89a357e90a96e3a5c5))
+
 ## [4.37.0](https://github.com/Heey-Global/verity/compare/v4.36.0...v4.37.0) (2026-10-10)
 
 
