@@ -182,6 +182,8 @@ function configLocation(manager, cwd, env, version) {
   if (!policy) throw new Error(`Unsupported package manager: ${manager}`);
   if (manager === 'pip' && env?.PIP_CONFIG_FILE && env.PIP_CONFIG_FILE !== '/dev/null')
     return { ...policy, path: resolve(cwd, env.PIP_CONFIG_FILE) };
+  if (manager === 'uv' && env?.VERITY_UV_CONFIG_FILE)
+    return { ...policy, path: env.VERITY_UV_CONFIG_FILE };
   if (manager === 'bun')
     return { ...policy, path: env?.VERITY_BUN_CONFIG_FILE ?? join(resolve(cwd), policy.file) };
   // Match package managers' ancestor discovery instead of silently creating a
@@ -234,7 +236,8 @@ function entries(text, config) {
         /^\s*[[{]/u.test(entry) ||
         /^['"]/u.test(entry) ||
         /^\s*(?:---|\.\.\.)/u.test(entry) ||
-        /:\s*[|>]/u.test(entry),
+        /:\s*[|>]/u.test(entry) ||
+        /:\s*[&*]/u.test(entry),
     )
   )
     return { lines, result, unsupported: true };

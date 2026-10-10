@@ -121,6 +121,17 @@ async function main() {
         }
       }
     }
+    if (manager === 'uv') {
+      delete environment.VERITY_UV_CONFIG_FILE;
+      for (let i = 0; i < args.length && args[i] !== '--'; i++) {
+        const [flag, inline] = args[i].split('=', 2);
+        if (flag === '--config-file') {
+          const value = inline ?? args[++i];
+          if (!value) throw new Error('Missing uv configuration path.');
+          environment.VERITY_UV_CONFIG_FILE = resolve(directory, value);
+        }
+      }
+    }
     if (supported && ['npm', 'pnpm', 'yarn'].includes(manager)) {
       const key = { npm: 'min-release-age', pnpm: 'minimumReleaseAge', yarn: 'npmMinimalAgeGate' }[
         manager

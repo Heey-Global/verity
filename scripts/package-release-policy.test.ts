@@ -241,17 +241,18 @@ describe('release delay configuration', () => {
     },
   );
 
-  it.each(['{packages: ["packages/*"]}\n', '"minimumReleaseAge": 0\n'])(
-    'leaves unsupported YAML forms intact: %s',
-    (text) => {
-      const root = project();
-      const path = join(root, 'pnpm-workspace.yaml');
-      writeFileSync(path, text);
-      expect(detectReleaseDelay('pnpm', root).setupSupported).toBe(false);
-      expect(() => configureReleaseDelay('pnpm', root, '11.0.0')).toThrow('Unsupported');
-      expect(readFileSync(path, 'utf8')).toBe(text);
-    },
-  );
+  it.each([
+    '{packages: ["packages/*"]}\n',
+    '"minimumReleaseAge": 0\n',
+    'minimumReleaseAge: &age 1440\nother: *age\n',
+  ])('leaves unsupported YAML forms intact: %s', (text) => {
+    const root = project();
+    const path = join(root, 'pnpm-workspace.yaml');
+    writeFileSync(path, text);
+    expect(detectReleaseDelay('pnpm', root).setupSupported).toBe(false);
+    expect(() => configureReleaseDelay('pnpm', root, '11.0.0')).toThrow('Unsupported');
+    expect(readFileSync(path, 'utf8')).toBe(text);
+  });
 
   it('resolves uv project paths after its working-directory option', () => {
     expect(effectiveInstallDirectory('uv', ['-C', 'app', 'sync'], '/work')).toBe('/work/app');

@@ -143,6 +143,30 @@ describe('package install wrapper', () => {
     },
   );
 
+  it.each([['--config-file', 'custom.toml'], ['--config-file=custom.toml']])(
+    'uses uv explicit configuration %s',
+    async (...options) => {
+      const f = await fixture(
+        (body, reply) => {
+          expect(body.configFile).toBe(join(f.root, 'custom.toml'));
+          answer(reply, body.action === 'check' ? 'configure' : 'continue');
+        },
+        'uv',
+        '0.9.17',
+      );
+      const custom = join(f.root, 'custom.toml');
+      const standard = join(f.root, 'uv.toml');
+      writeFileSync(custom, 'exclude-newer = "P0D"\n');
+      const original = 'exclude-newer = "P7D"\n';
+      writeFileSync(standard, original);
+      const args = [...options, 'sync'];
+      expect((await f.start(args).exited).code).toBe(0);
+      expect(readFileSync(custom, 'utf8')).toContain('P3D');
+      expect(readFileSync(standard, 'utf8')).toBe(original);
+      expect(JSON.parse(readFileSync(f.marker, 'utf8')).args).toEqual(args);
+    },
+  );
+
   it.each(['https', 'socks5', 'socks5h', 'socks4', 'http'])(
     'redacts %s URL credentials while preserving execution arguments',
     async (scheme) => {
