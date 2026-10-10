@@ -34,13 +34,19 @@ jest.mock('@verity/mobile', () => ({
     return model;
   }),
 }));
-const mockHintListeners: ((hints: { sessionId: string; topics: string[] }[]) => void)[] = [];
+const mockRefreshSubscriptions: { refresh: () => unknown; filter: (path: string) => boolean }[] =
+  [];
 jest.mock('../lib/liveConnection', () => ({
   liveConnectionFor: jest.fn(() => ({})),
-  useLiveHints: (_baseUrl: string, listener: (hints: unknown[]) => void) => {
-    mockHintListeners.push(listener);
+  useLiveHints: jest.fn(),
+  subscribeLiveRefresh: (
+    _client: unknown,
+    refresh: () => unknown,
+    filter: (path: string) => boolean,
+  ) => {
+    mockRefreshSubscriptions.push({ refresh, filter });
+    return () => {};
   },
-  subscribeLiveRefresh: () => () => {},
 }));
 jest.mock('expo-router', () => ({
   useFocusEffect: (callback: () => (() => void) | undefined) => {
@@ -219,14 +225,20 @@ describe('useSession frame publication', () => {
     expect(model.setView).toHaveBeenLastCalledWith(false);
   });
 
-  it('refreshes the activity snapshot when a hint says it changed, not for every event', () => {
-    mockHintListeners.length = 0;
+  it('uses one coordinated activity subscription and returns its pending work', () => {
+    mockRefreshSubscriptions.length = 0;
     const hook = renderHook(() => useSession(client, 's1', 'http://host'));
     const model = mockModels[0]!;
-    act(() => mockHintListeners.at(-1)?.([{ sessionId: 's1', topics: ['events'] }]));
-    expect(model.refreshActivity).not.toHaveBeenCalled();
-    act(() => mockHintListeners.at(-1)?.([{ sessionId: 's1', topics: ['events', 'status'] }]));
-    expect(model.refreshActivity).toHaveBeenCalledTimes(1);
+    const pending = new Promise<void>(() => {});
+    model.refreshActivity.mockReturnValue(pending);
+    const subscription = mockRefreshSubscriptions[0]!;
+    expect(mockRefreshSubscriptions).toHaveLength(1);
+    expect(subscription.filter('/sessions/s1/activity')).toBe(true);
+    expect(subscription.filter('/sessions/other/activity')).toBe(false);
+    expect(subscription.refresh()).toBe(pending);
+    // A second hint listener silently bypasses the shared debounce/coalescer.
+    const { useLiveHints } = require('../lib/liveConnection');
+    expect(useLiveHints).not.toHaveBeenCalled();
     hook.unmount();
   });
 });

@@ -66,9 +66,19 @@ export function subscribeLiveRefresh(
   refresh: () => void | Promise<unknown>,
   filter: (path: string) => boolean = () => true,
   resources: readonly LiveResource[] = [],
+  options: { initial?: boolean } = {},
 ): () => void {
   // Lightweight test/demo clients may implement only the API calls they use.
-  if (typeof client.observeReads !== 'function') return () => undefined;
+  if (typeof client.observeReads !== 'function') {
+    const initial = options.initial
+      ? setTimeout(() => {
+          void Promise.resolve()
+            .then(refresh)
+            .catch(() => undefined);
+        }, 50)
+      : undefined;
+    return () => clearTimeout(initial);
+  }
   const connection = liveConnectionFor(client.liveBaseUrl());
   const subscriptions = new Map<string, { key: string; detach: () => void }>();
   let disposed = false;
@@ -114,10 +124,15 @@ export function subscribeLiveRefresh(
   const detachReads = client.observeReads(observe);
   const detachHints = connection.onHints((hints) => {
     if (
-      hints.some(({ sessionId }) => {
+      hints.some(({ sessionId, topics }) => {
         const prefix = `/sessions/${encodeURIComponent(sessionId)}/`;
         return [...subscriptions.keys()].some(
-          (path) => path === `${prefix}activity` || path === `${prefix}live-meetings`,
+          (path) =>
+            path === `${prefix}live-meetings` ||
+            (path === `${prefix}activity` &&
+              topics.some(
+                (topic) => topic === 'activity' || topic === 'status' || topic === 'permission',
+              )),
         );
       })
     )
@@ -145,6 +160,7 @@ export function subscribeLiveRefresh(
     syncFallback();
     if (state === 'connected') invalidate();
   });
+  if (options.initial) invalidate();
   return () => {
     disposed = true;
     clearTimeout(timer);
