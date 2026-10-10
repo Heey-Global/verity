@@ -38,6 +38,7 @@ describe('install classification', () => {
     ['yarn', ['--cwd=/tmp/project', 'install']],
     ['yarn', ['upgrade-interactive']],
     ['bun', ['add', 'express']],
+    ['bun', ['-c', 'custom.toml', 'install']],
     ['bun', ['x', 'example']],
     ['pip', ['install', '--upgrade', 'requests']],
     ['pip', ['--require-virtualenv', 'install', 'requests']],

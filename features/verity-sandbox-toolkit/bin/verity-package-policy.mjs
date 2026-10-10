@@ -120,6 +120,7 @@ export function classifyInstall(manager, args) {
   for (let i = 0; i < args.length; i++) {
     if (
       VALUE_OPTIONS.has(args[i]) ||
+      (manager === 'bun' && args[i] === '-c') ||
       (manager === 'npm' && ['-w', '--workspace'].includes(args[i]))
     ) {
       i++;
