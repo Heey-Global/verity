@@ -62,6 +62,7 @@ export class ResourceObserver {
         affected =
           watched[1] === 'projects' &&
           (watched[2] === undefined || parts[2] === undefined || watched[2] === parts[2]);
+      else if (parts[1] === 'tasks') affected = watched[1] === 'tasks';
       else if (parts[1] === 'server') affected = watched[1] === 'server';
       else if (['settings', 'secret', 'github', 'onboarding'].includes(parts[1] ?? ''))
         affected = ['settings', 'onboarding'].includes(watched[1] ?? '');

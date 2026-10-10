@@ -10,6 +10,9 @@ export const TASK_STATUSES: readonly TaskStatus[] = ['open', 'in_progress', 'don
 export const OPEN_TASK_STATUSES: readonly TaskStatus[] = ['open', 'in_progress'];
 
 export interface TaskRecord {
+  titleGenerationStatus?: 'none' | 'pending' | 'ready' | 'failed';
+  /** Only this revision advanced automatically, so a queued manual edit can rebase. */
+  generatedTitleRevision?: number | null;
   id: string;
   ownerUserId: string;
   /** `null` preserves legacy tasks or tasks whose project was deleted until reassignment. */
@@ -32,6 +35,7 @@ export interface TaskRecord {
 }
 
 export interface TaskInput {
+  generateTitle?: boolean | undefined;
   /** Client-minted id, so a retried save cannot create a duplicate. */
   id: string;
   ownerUserId: string;
@@ -253,6 +257,7 @@ export class TaskStore {
         session_id: input.sessionId ?? null,
         source_session_id: input.sourceSessionId ?? null,
         origin: input.origin,
+        title_generation_status: input.generateTitle ? 'pending' : 'none',
         title,
         detail: detail === null ? null : this.cipher.encrypt(detail),
         attachments,
@@ -272,6 +277,8 @@ export class TaskStore {
             status,
             sort: input.sort ?? 0,
             revision: sql<number>`tasks.revision + 1`,
+            generated_title_revision: null,
+            title_generation_status: input.generateTitle ? 'pending' : 'none',
             updated_at: now,
             completed_at: isTerminal(status)
               ? sql`coalesce(tasks.completed_at, ${now}::timestamptz)`
@@ -312,7 +319,7 @@ export class TaskStore {
         );
     const existing = await this.db
       .selectFrom('tasks')
-      .select(['status', 'revision', 'session_id', 'project_id'])
+      .select(['status', 'revision', 'session_id', 'project_id', 'title_generation_status'])
       .where('id', '=', id)
       .where('owner_user_id', '=', ownerUserId)
       .executeTakeFirst();
@@ -352,6 +359,13 @@ export class TaskStore {
       .set({
         ...(values as Partial<TasksTable>),
         revision: existing.revision + 1,
+        generated_title_revision: null,
+        title_generation_status:
+          patch.title !== undefined
+            ? 'ready'
+            : existing.title_generation_status === 'pending'
+              ? 'failed'
+              : existing.title_generation_status,
         updated_at: new Date().toISOString(),
       } as never)
       .where('id', '=', id)
@@ -370,6 +384,30 @@ export class TaskStore {
       throw new TaskRevisionConflictError(id, current.revision);
     }
     return this.record(row);
+  }
+
+  /** A generated title must not outlive an edit or a change in task state. */
+  async setGeneratedTitle(
+    task: TaskRecord,
+    title: string | undefined,
+  ): Promise<TaskRecord | undefined> {
+    const row = await this.db
+      .updateTable('tasks')
+      .set({
+        ...(title === undefined ? {} : { title: this.cipher.encrypt(normalizeTitle(title)) }),
+        title_generation_status: title === undefined ? 'failed' : 'ready',
+        revision: task.revision + 1,
+        generated_title_revision: task.revision + 1,
+        updated_at: new Date().toISOString(),
+      })
+      .where('id', '=', task.id)
+      .where('owner_user_id', '=', task.ownerUserId)
+      .where('revision', '=', task.revision)
+      .where('status', '=', 'open')
+      .where('session_id', 'is', null)
+      .returningAll()
+      .executeTakeFirst();
+    return row === undefined ? undefined : this.record(row);
   }
 
   async delete(id: string, ownerUserId: string, expectedRevision?: number): Promise<boolean> {
@@ -413,6 +451,8 @@ export class TaskStore {
       result: row.result === null ? null : this.cipher.decrypt(row.result),
       sort: row.sort,
       revision: row.revision,
+      generatedTitleRevision: row.generated_title_revision,
+      titleGenerationStatus: row.title_generation_status,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       completedAt: row.completed_at,

@@ -193,8 +193,25 @@ it('separates agent steps and includes completed steps in the current session', 
   // Step actions live in the shared "…" card, not inline chips.
   expect(ui.queryByText('Move to my tasks')).toBeNull();
   expect(ui.getAllByA11yHint('Opens step actions')).toHaveLength(2);
-  fireEvent.press(ui.getByLabelText('Session · 1'));
+  expect(ui.queryByLabelText('Session · 1')).toBeNull();
+  expect(ui.getAllByText('1/2')).toHaveLength(2);
+  ui.rerender(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 'x' }} />);
   expect(ui.getByText('Other session step')).toBeTruthy();
+  expect(ui.queryByText('Rotate tokens')).toBeNull();
+  expect(ui.queryByText('Rate-limit login')).toBeNull();
+  expect(ui.getAllByText('0/1')).toHaveLength(2);
+  ui.rerender(<TasksPanel {...props} context={{ projectId: 'p', sessionId: 'empty' }} />);
+  expect(ui.queryByText('Other session step')).toBeNull();
+  expect(ui.queryByText('This session')).toBeNull();
+  expect(ui.getByText('0/0')).toBeTruthy();
+  ui.rerender(<TasksPanel {...props} />);
+  expect(ui.queryByLabelText('Agent')).toBeNull();
+  expect(ui.getByLabelText('Mine').props.accessibilityState.selected).toBe(true);
+  expect(ui.queryByLabelText('Session · 1')).toBeNull();
+  expect(ui.queryByLabelText('Session · 2')).toBeNull();
+  expect(ui.queryByText('Other session step')).toBeNull();
+  expect(ui.queryByText('Rotate tokens')).toBeNull();
+  expect(ui.queryByText('Rate-limit login')).toBeNull();
 });
 it('edits the text in place and saves it when the field is left', () => {
   jest.mocked(useTasks).mockReturnValue({ tasks: [task], pending: [], conflicts: [] });
@@ -302,12 +319,16 @@ it('starts legacy tasks collapsed when a project is current and removes empty co
 });
 it('remembers Agent across reopening and falls back from unavailable Issues', async () => {
   jest.mocked(useTasks).mockReturnValue({ tasks: [], pending: [], conflicts: [] });
-  let ui = render(<TasksPanel {...props} />);
+  const sessionContext = { projectId: 'p', sessionId: 's' };
+  let ui = render(<TasksPanel {...props} context={sessionContext} />);
   fireEvent.press(ui.getByLabelText('Agent'));
   expect(saveTaskPreferences).toHaveBeenCalledWith({ tab: 'agent' });
   ui.unmount();
-  ui = render(<TasksPanel {...props} />);
+  ui = render(<TasksPanel {...props} context={sessionContext} />);
   expect(ui.getByLabelText('Agent').props.accessibilityState.selected).toBe(true);
+  ui.rerender(<TasksPanel {...props} />);
+  expect(ui.queryByLabelText('Agent')).toBeNull();
+  expect(ui.getByLabelText('Mine').props.accessibilityState.selected).toBe(true);
   ui.unmount();
   await saveTaskPreferences({ tab: 'issues' });
   ui = render(<TasksPanel {...props} />);
@@ -366,3 +387,45 @@ it('selects a project outside a session and remembers it for capture', async () 
   expect(saveTaskPreferences).toHaveBeenCalledWith({ projectId: 'p' });
   expect(ui.queryByText('General')).toBeNull();
 });
+
+it('keeps the full description behind an accessible expandable control', () => {
+  const detail = 'The complete original spoken request with all its context.';
+  jest
+    .mocked(useTasks)
+    .mockReturnValue({ tasks: [{ ...task, detail }], pending: [], conflicts: [] });
+  const ui = render(<TasksPanel {...props} />);
+  expect(ui.queryByText(detail)).toBeNull();
+  fireEvent.press(ui.getByText('Show description'));
+  expect(ui.getByText(detail)).toBeTruthy();
+  expect(
+    ui.getByRole('button', { name: 'Hide description' }).props.accessibilityState.expanded,
+  ).toBe(true);
+  fireEvent.press(ui.getByText('Hide description'));
+  expect(ui.queryByText(detail)).toBeNull();
+});
+
+it.each(['pending', 'failed'] as const)(
+  'shows only the original description while title generation is %s',
+  (titleGenerationStatus) => {
+    const detail = 'Please make the spoken tasks easier to read while preserving all the details.';
+    jest.mocked(useTasks).mockReturnValue({
+      tasks: [{ ...task, title: 'Internal fallback', detail, titleGenerationStatus }],
+      pending: [],
+      conflicts: [],
+    });
+    const ui = render(<TasksPanel {...props} />);
+    expect(ui.getByDisplayValue(detail)).toBeTruthy();
+    expect(ui.queryByDisplayValue('Internal fallback')).toBeNull();
+    expect(ui.queryByText('Show description')).toBeNull();
+    jest.mocked(useTasks).mockReturnValue({
+      tasks: [{ ...task, title: 'Improve spoken tasks', detail, titleGenerationStatus: 'ready' }],
+      pending: [],
+      conflicts: [],
+    });
+    ui.rerender(<TasksPanel {...props} />);
+    expect(ui.getByDisplayValue('Improve spoken tasks')).toBeTruthy();
+    expect(ui.queryByDisplayValue(detail)).toBeNull();
+    fireEvent.press(ui.getByText('Show description'));
+    expect(ui.getByText(detail)).toBeTruthy();
+  },
+);

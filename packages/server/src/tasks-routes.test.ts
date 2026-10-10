@@ -1,5 +1,5 @@
 import type { AgentEvent } from '@verity/events';
-import { EventStore } from '@verity/store';
+import { EventStore, type TaskRecord } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,6 +12,9 @@ const MEMBER = '00000000-0000-4000-8000-000000000002';
 const T1 = '11111111-1111-4111-8111-111111111111';
 const T2 = '22222222-2222-4222-8222-222222222222';
 
+const queryTitle =
+  vi.fn<(task: TaskRecord, prompt: string, signal: AbortSignal) => Promise<string | undefined>>();
+const tasksChanged = vi.fn();
 let ctx: TestDb;
 let app: FastifyInstance;
 let store: EventStore;
@@ -24,6 +27,8 @@ afterAll(async () => {
   await ctx.close();
 });
 beforeEach(async () => {
+  queryTitle.mockReset().mockResolvedValue(undefined);
+  tasksChanged.mockClear();
   await truncateAll(ctx.db);
   store = new EventStore(ctx.db);
   await ctx.db
@@ -52,6 +57,8 @@ beforeEach(async () => {
   });
   registerTasksRoutes(app, {
     eventStore: store,
+    queryTitle,
+    tasksChanged,
     publish: async (sessionId, event) => {
       published.push({ sessionId, event });
     },
@@ -828,5 +835,140 @@ describe('task capture uploads', () => {
     });
     expect(response.statusCode).toBe(400);
     expect(await store.tasks.get(T1, ADMIN)).toBeUndefined();
+  });
+});
+
+describe('background voice task titles', () => {
+  const capture = {
+    projectId: 'p1',
+    sourceSessionId: 's1',
+    title: 'I would like to make...',
+    detail: 'I would like to make voice tasks easier to read.',
+    generateTitle: true,
+  };
+
+  it('answers capture before inference completes, preserves the transcript and updates once', async () => {
+    let finish!: (title: string) => void;
+    queryTitle.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const start = performance.now();
+    const response = await app.inject({ method: 'PUT', url: `/tasks/${T1}`, payload: capture });
+    expect(response.statusCode).toBe(201);
+    expect(response.json().task).toMatchObject({
+      title: capture.title,
+      detail: capture.detail,
+      revision: 1,
+    });
+    expect(performance.now() - start).toBeLessThan(1000);
+    await app.inject({ method: 'PUT', url: `/tasks/${T1}`, payload: capture });
+    expect(queryTitle).toHaveBeenCalledTimes(1);
+    finish('Improve voice task titles');
+    await vi.waitFor(async () =>
+      expect((await store.tasks.get(T1, ADMIN))?.title).toBe('Improve voice task titles'),
+    );
+    expect((await store.tasks.get(T1, ADMIN))?.detail).toBe(capture.detail);
+    expect((await store.tasks.get(T1, ADMIN))?.titleGenerationStatus).toBe('ready');
+    expect(tasksChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([{ title: 'My own title' }, { detail: 'Revised description' }, { status: 'done' }])(
+    'discards stale inference after an edit: %j',
+    async (patch) => {
+      let finish!: (title: string) => void;
+      queryTitle.mockReturnValue(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      await app.inject({ method: 'PUT', url: `/tasks/${T1}`, payload: capture });
+      await app.inject({
+        method: 'PATCH',
+        url: `/tasks/${T1}`,
+        payload: { ...patch, expectedRevision: 1 },
+      });
+      const write = vi.spyOn(store.tasks, 'setGeneratedTitle');
+      finish('Generated title');
+      // Wait for the conditional write to finish rather than testing before it runs.
+      await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+      await write.mock.results[0]!.value;
+      expect((await store.tasks.get(T1, ADMIN))?.title).toBe(
+        'title' in patch ? patch.title : capture.title,
+      );
+      expect(tasksChanged).not.toHaveBeenCalled();
+      write.mockRestore();
+    },
+  );
+
+  it('accepts a queued manual edit across only the generated revision, but still rejects real conflicts', async () => {
+    queryTitle.mockResolvedValue('Improve voice task titles');
+    await app.inject({ method: 'PUT', url: `/tasks/${T1}`, payload: capture });
+    await vi.waitFor(async () => expect((await store.tasks.get(T1, ADMIN))?.revision).toBe(2));
+    const edit = await app.inject({
+      method: 'PATCH',
+      url: `/tasks/${T1}`,
+      payload: { title: 'My title', expectedRevision: 1 },
+    });
+    expect(edit.statusCode).toBe(200);
+    expect(edit.json().task).toMatchObject({ title: 'My title', revision: 3 });
+    const stale = await app.inject({
+      method: 'PATCH',
+      url: `/tasks/${T1}`,
+      payload: { title: 'Stale title', expectedRevision: 2 },
+    });
+    expect(stale.statusCode).toBe(409);
+  });
+
+  it('keeps capture usable when inference fails and never processes ordinary captures', async () => {
+    queryTitle.mockRejectedValue(new Error('provider unavailable'));
+    const response = await app.inject({ method: 'PUT', url: `/tasks/${T1}`, payload: capture });
+    expect(response.statusCode).toBe(201);
+    await vi.waitFor(() => expect(queryTitle).toHaveBeenCalledTimes(1));
+    await vi.waitFor(async () =>
+      expect((await store.tasks.get(T1, ADMIN))?.titleGenerationStatus).toBe('failed'),
+    );
+    expect((await store.tasks.get(T1, ADMIN))?.title).toBe(capture.title);
+    await app.inject({
+      method: 'PUT',
+      url: `/tasks/${T2}`,
+      payload: { title: 'Typed task', projectId: 'p1' },
+    });
+    expect(queryTitle).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects nonexistent or inaccessible source sessions before inference', async () => {
+    expect(
+      (
+        await app.inject({
+          method: 'PUT',
+          url: `/tasks/${T1}`,
+          payload: { ...capture, sourceSessionId: 'missing' },
+        })
+      ).statusCode,
+    ).toBe(404);
+    await grantMember({ read: true, execute: false });
+    expect(
+      (
+        await app.inject({
+          method: 'PUT',
+          url: `/tasks/${T1}`,
+          headers: asMember,
+          payload: capture,
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await app.inject({
+          method: 'PUT',
+          url: `/tasks/${T1}`,
+          headers: asMember,
+          payload: { ...capture, sourceSessionId: null },
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(queryTitle).not.toHaveBeenCalled();
   });
 });

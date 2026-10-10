@@ -992,6 +992,12 @@ export interface ManagedDevServersTable {
  *  is assigned to, which is what the conductor injects into that session's turns.
  *  `title`, `detail` and `result` hold cipher envelopes, never plaintext. */
 export interface TasksTable {
+  title_generation_status: ColumnType<
+    'none' | 'pending' | 'ready' | 'failed',
+    'none' | 'pending' | 'ready' | 'failed' | undefined,
+    'none' | 'pending' | 'ready' | 'failed'
+  >;
+  generated_title_revision: ColumnType<number | null, number | null | undefined, number | null>;
   id: string;
   owner_user_id: ColumnType<string, string, never>;
   project_id: ColumnType<string | null, string | null | undefined, string | null>;

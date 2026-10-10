@@ -1,4 +1,5 @@
 import Storage from 'expo-sqlite/kv-store';
+import { subscribeLiveRefresh } from './liveConnection';
 import {
   TaskQueue,
   projectRecordSchema,
@@ -21,6 +22,7 @@ const empty: TaskQueueState = { tasks: [], pending: [], conflicts: [] };
 let state = empty;
 let scope: string | null = null;
 let queue: TaskQueue | null = null;
+let detachLive: (() => void) | undefined;
 let ready: Promise<void> = Promise.resolve();
 const listeners = new Set<() => void>();
 function publish(next: TaskQueueState): void {
@@ -40,6 +42,8 @@ export function taskAccountScope(): string | null {
 function switchScope(): void {
   const next = taskAccountScope();
   if (next === scope) return;
+  detachLive?.();
+  detachLive = undefined;
   scope = next;
   queue = null;
   publish(empty);
@@ -54,6 +58,15 @@ function switchScope(): void {
   });
   queue = instance;
   ready = instance.restore();
+  detachLive = subscribeLiveRefresh(
+    api,
+    async () => {
+      await ready;
+      await instance.sync();
+    },
+    (path) => path.split('?')[0] === '/tasks',
+    [{ path: '/tasks' }],
+  );
   void ready.then(() => instance.sync()).catch(() => undefined);
 }
 export function startTasksStore(): () => void {
@@ -65,6 +78,8 @@ export function startTasksStore(): () => void {
   switchScope();
   return () => {
     for (const stop of unsub) stop();
+    detachLive?.();
+    detachLive = undefined;
   };
 }
 export function useTasks(): TaskQueueState {
@@ -95,6 +110,7 @@ export async function captureTask(body: TaskCapture): Promise<Task> {
   const task: Task = {
     id: randomUUID(),
     title: body.title,
+    titleGenerationStatus: body.generateTitle ? 'pending' : 'none',
     projectId: body.projectId,
     sourceSessionId: body.sourceSessionId ?? null,
     detail: body.detail ?? null,

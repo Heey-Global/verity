@@ -1,6 +1,8 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { captureTask, startTasksStore, useTasks } from './tasksStore';
 import Storage from 'expo-sqlite/kv-store';
+import { subscribeLiveRefresh } from './liveConnection';
+jest.mock('./liveConnection', () => ({ subscribeLiveRefresh: jest.fn(() => jest.fn()) }));
 
 let mockCredential: string | null = 'first';
 let mockUrl = 'https://first.test';
@@ -42,9 +44,24 @@ it('hides the previous credential cache immediately and keeps its outbox isolate
   const stop = startTasksStore();
   const { result } = renderHook(() => useTasks());
   await act(async () => {
-    await captureTask({ title: 'Private capture', projectId: 'p' });
+    await captureTask({
+      title: 'Private capture',
+      detail: 'Full original description',
+      generateTitle: true,
+      projectId: 'p',
+    });
   });
   expect(result.current.tasks[0]?.title).toBe('Private capture');
+  expect(result.current.tasks[0]).toMatchObject({
+    detail: 'Full original description',
+    titleGenerationStatus: 'pending',
+  });
+  expect(subscribeLiveRefresh).toHaveBeenCalledWith(
+    mockClient,
+    expect.any(Function),
+    expect.any(Function),
+    [{ path: '/tasks' }],
+  );
   const calls = mockClient.saveTask.mock.calls.length;
   act(() => {
     mockCredential = 'second';
