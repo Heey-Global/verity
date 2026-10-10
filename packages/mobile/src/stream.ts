@@ -78,6 +78,10 @@ export class SessionStream {
   private stopSucceeded = false;
   private freezeAtSeq = 0;
 
+  get outputSuppressed(): boolean {
+    return this.outputFrozen;
+  }
+
   freezeOutput(): void {
     if (this.pendingStops === 0) {
       this.cancellingOutput = new Set<number>();

@@ -1052,8 +1052,12 @@ describe('SessionModel — cancel (#79)', () => {
       expect(agentTexts(model.state)).toEqual([]);
       expect(model.state.working).toBe(false);
       sockets[0]?.emitEvent(3, { t: 'interrupted' });
-      sockets[0]?.emitEvent(4, { t: 'prompt', text: 'successor' });
-      sockets[0]?.emitEvent(5, { t: 'text', delta: 'new output' });
+      sockets[0]?.emitEvent(4, { t: 'prompt', text: 'late steering', steered: true });
+      sockets[0]?.emitEvent(5, { t: 'text', delta: 'still late' });
+      expect(agentTexts(model.state)).toEqual([]);
+      expect(model.state.working).toBe(false);
+      sockets[0]?.emitEvent(6, { t: 'prompt', text: 'successor' });
+      sockets[0]?.emitEvent(7, { t: 'text', delta: 'new output' });
       expect(agentTexts(model.state)).toEqual(['new output']);
       expect(model.state.working).toBe(true);
     } finally {

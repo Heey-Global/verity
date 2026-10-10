@@ -354,7 +354,7 @@ export class SessionModel {
       transport: opts.transport,
       onUpdate: (session) => {
         if (this._cancelRequested) {
-          if (this._cancelSettled && session.running) {
+          if (this._cancelSettled && session.running && !this.stream.outputSuppressed) {
             this._cancelRequested = false;
           } else {
             if (this.stream.settledSeq > this._cancelAtSeq) this._cancelSettled = true;
