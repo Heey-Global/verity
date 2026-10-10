@@ -20,7 +20,9 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
   try await withThrowingTaskGroup(of: Void.self) { group in
     for worker in 0..<streams {
       group.addTask {
-        while Date() < deadline {
+        // No request within its own timeout of the deadline: the soak must end
+        // with its own diagnostic, not the host's watchdog.
+        while Date().addingTimeInterval(12) < deadline {
           guard tunnel.isActive else {
             throw ProbeFailure.soakFailed(
               "tunnel stopped: \(tunnel.stopReason ?? "unknown"); \(tunnel.diagnosticSummary)")
@@ -37,7 +39,10 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
           do {
             let (_, response) = try await client.data(for: URLRequest(url: coreURL))
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-              throw ProbeFailure.soakFailed("status \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+              let completed = await counters.requests
+              throw ProbeFailure.soakFailed(
+                "worker \(worker) after \(completed) requests: status "
+                  + "\((response as? HTTPURLResponse)?.statusCode ?? 0); \(tunnel.diagnosticSummary)")
             }
             await counters.record(Date().timeIntervalSince(started))
           } catch let failure as ProbeFailure {
@@ -50,7 +55,8 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
                 + "; \(tunnel.diagnosticSummary)")
           }
           // A reading user, not a load test: half a second to two seconds between requests.
-          try await Task.sleep(nanoseconds: UInt64.random(in: 500_000_000...2_000_000_000))
+          let pause = min(Double.random(in: 0.5...2), max(0, deadline.timeIntervalSinceNow))
+          try await Task.sleep(nanoseconds: UInt64(pause * 1_000_000_000))
         }
       }
     }
@@ -130,13 +136,17 @@ enum StagingProbe {
           else { throw ProbeFailure.tunnelStopped(tunnel.stopReason ?? "bad response") }
           lastStatus = http.statusCode
         }
-        let soakSeconds = UInt64(environment["VERITY_REMOTE_PROBE_SOAK_SECONDS"] ?? "0") ?? 0
-        let soakStreams = Int(environment["VERITY_REMOTE_PROBE_SOAK_STREAMS"] ?? "4") ?? 4
+        // Unparsable values fail rather than skip: a soak that silently did
+        // not run would leave the run green.
+        guard let soakSeconds = UInt64(environment["VERITY_REMOTE_PROBE_SOAK_SECONDS"] ?? "0"),
+          let soakStreams = Int(environment["VERITY_REMOTE_PROBE_SOAK_STREAMS"] ?? "4"),
+          soakSeconds <= 600, (1...8).contains(soakStreams)
+        else { throw RemoteSmokeError.invalidInput }
         if soakSeconds > 0 {
           print("soaking \(soakSeconds)s with \(soakStreams) streams")
           fflush(stdout)
           try await soak(tunnel: tunnel, coreURL: coreURL, corePin: corePin, localPort: localPort,
-            seconds: soakSeconds, streams: max(1, min(soakStreams, 8)))
+            seconds: soakSeconds, streams: soakStreams)
         }
         // An HTTP success must also exercise the production tunnel's byte accounting.
         let summary = tunnel.diagnosticSummary

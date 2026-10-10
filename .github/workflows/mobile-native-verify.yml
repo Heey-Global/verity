@@ -304,6 +304,7 @@ jobs:
           VERITY_REMOTE_INSTALLATION_HANDLE: ${{ inputs.installation_handle }}
           VERITY_REMOTE_CORE_URL: ${{ inputs.core_url }}
           VERITY_REMOTE_CORE_PIN: ${{ inputs.core_pin }}
+          VERITY_REMOTE_PROBE_SOAK_SECONDS: ${{ inputs.soak_seconds }}
         run: |
           bash scripts/remote-control-staging/run.sh
           VERITY_REMOTE_PROBE_MODE=app bash scripts/remote-control-staging/run.sh
@@ -313,5 +314,7 @@ jobs:
             bash scripts/remote-control-staging/run.sh
           # The device's pattern: several streams at once for minutes. This is
           # the run that reproduces an attachment going silent mid-session.
-          VERITY_REMOTE_PROBE_MODE=app VERITY_REMOTE_PROBE_SOAK_SECONDS="${{ inputs.soak_seconds }}" \
-            VERITY_REMOTE_PROBE_SOAK_STREAMS=6 bash scripts/remote-control-staging/run.sh
+          if [[ "$VERITY_REMOTE_PROBE_SOAK_SECONDS" != 0 ]]; then
+            VERITY_REMOTE_PROBE_MODE=app VERITY_REMOTE_PROBE_SOAK_STREAMS=6 \
+              bash scripts/remote-control-staging/run.sh
+          fi

@@ -121,6 +121,10 @@ test('a soak longer than the watchdog allows is refused before admission', async
   const result = await runProbe({ ...input, soakSeconds: '601' });
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /Invalid Remote Control staging probe inputs/u);
+  // A spelling the native side would read as zero must not pass here either.
+  const spelled = await runProbe({ ...input, soakSeconds: '1e2' });
+  assert.notEqual(spelled.code, 0);
+  assert.match(spelled.stderr, /Invalid Remote Control staging probe inputs/u);
 });
 
 test('a ticket for a different request never reaches the native runner', async (t) => {
