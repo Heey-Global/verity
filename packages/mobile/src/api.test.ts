@@ -4055,19 +4055,19 @@ it('sends correlation headers only for an explicit timed session request', async
   expect(headers['x-verity-switch-request']).not.toContain('private');
 });
 
-it('sends explicit replay and retry options to the welcome endpoint', async () => {
-  const { fetch, calls } = fakeFetch(
-    new Response(JSON.stringify({ state: 'preparing', sessionId: null, projectId: 'starter' })),
-  );
+it('sends a selected title when starting an online meeting', async () => {
+  const { fetch, calls } = fakeFetch(json({ meetingId: 'meeting-1' }));
   const client = new VerityClient({ baseUrl: 'http://host', fetch });
-  expect(await client.openWelcomeSession({ replay: true, retry: true })).toEqual({
-    state: 'preparing',
-    sessionId: null,
-    projectId: 'starter',
+  await client.startOnlineMeeting(
+    'session-1',
+    'https://meet.google.com/abc-defg-hij',
+    true,
+    'Pricing sync',
+  );
+  expect(JSON.parse(calls[0]!.init!.body as string)).toMatchObject({
+    title: 'Pricing sync',
+    listenForVerity: true,
   });
-  expect(calls[0]?.url).toBe('http://host/onboarding/welcome');
-  expect(calls[0]?.init?.method).toBe('POST');
-  expect(calls[0]?.init?.body).toBe(JSON.stringify({ replay: true, retry: true }));
 });
 
 describe('premium feature contracts', () => {
@@ -4098,4 +4098,19 @@ describe('premium feature contracts', () => {
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
     expect(await client.getPreviewCapabilities()).toEqual({ publicSharing: 'disabled' });
   });
+});
+
+it('sends explicit replay and retry options to the welcome endpoint', async () => {
+  const { fetch, calls } = fakeFetch(
+    new Response(JSON.stringify({ state: 'preparing', sessionId: null, projectId: 'starter' })),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.openWelcomeSession({ replay: true, retry: true })).toEqual({
+    state: 'preparing',
+    sessionId: null,
+    projectId: 'starter',
+  });
+  expect(calls[0]?.url).toBe('http://host/onboarding/welcome');
+  expect(calls[0]?.init?.method).toBe('POST');
+  expect(calls[0]?.init?.body).toBe(JSON.stringify({ replay: true, retry: true }));
 });

@@ -4151,9 +4151,17 @@ const migrations: Record<string, Migration> = {
       await db.schema.alterTable('starter_project').dropColumn('welcome_session_id').execute();
     },
   },
+  '0152_live_meeting_titles': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings add column title text`.execute(db);
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meetings drop column title`.execute(db);
+    },
+  },
 };
 
-migrations['0151_project_package_protection'] = {
+migrations['0153_project_package_protection'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`create table project_package_protection (
       project_id text primary key references projects(id) on delete cascade,
