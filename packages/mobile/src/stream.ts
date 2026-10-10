@@ -74,13 +74,26 @@ export class SessionStream {
   private readonly suppressedOutput = new Set<number>();
   private cancellingOutput: Set<number> | undefined;
   private outputFrozen = false;
+  private pendingStops = 0;
+  private stopSucceeded = false;
 
   freezeOutput(): void {
-    this.cancellingOutput = new Set<number>();
+    if (this.pendingStops === 0) {
+      this.cancellingOutput = new Set<number>();
+      this.stopSucceeded = false;
+    }
+    this.pendingStops += 1;
     this.outputFrozen = true;
   }
 
-  restoreOutput(): void {
+  settleOutput(success: boolean): boolean {
+    this.stopSucceeded ||= success;
+    this.pendingStops -= 1;
+    if (this.pendingStops > 0) return false;
+    if (this.stopSucceeded) {
+      this.cancellingOutput = undefined;
+      return false;
+    }
     for (const seq of this.cancellingOutput ?? []) this.suppressedOutput.delete(seq);
     this.cancellingOutput = undefined;
     this.outputFrozen = false;
@@ -89,6 +102,7 @@ export class SessionStream {
       if (!this.suppressedOutput.has(frame.seq)) this.reducer.applyFrame(frame);
     }
     for (const id of this.resolvedPermissions) this.reducer.resolvePermission(id);
+    return true;
   }
 
   constructor(private readonly opts: SessionStreamOptions) {
@@ -335,13 +349,12 @@ export class SessionStream {
     if (frame.event.t === 'prompt' && !frame.event.steered) this.outputFrozen = false;
     if (
       this.outputFrozen &&
-      this.cancellingOutput !== undefined &&
       ['text', 'thinking', 'tool_call', 'permission', 'choices', 'automation_proposal'].includes(
         frame.event.t,
       )
     ) {
       // Keep the cursor and retained history, but never replay stopped generation.
-      this.cancellingOutput.add(frame.seq);
+      this.cancellingOutput?.add(frame.seq);
       this.suppressedOutput.add(frame.seq);
     } else {
       this.reducer.applyFrame(eventFrame);

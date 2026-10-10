@@ -1065,6 +1065,51 @@ describe('SessionModel — cancel (#79)', () => {
     }
   });
 
+  it.each([false, true])(
+    'settles overlapping stops without losing output (success: %s)',
+    async (success) => {
+      const { connect, sockets } = recordingConnect();
+      let rejectFirst!: (error: Error) => void;
+      let finishSecond!: () => void;
+      const client = stubClient();
+      client.cancelTurn = vi
+        .fn()
+        .mockReturnValueOnce(
+          new Promise((_, reject) => {
+            rejectFirst = reject;
+          }),
+        )
+        .mockReturnValueOnce(
+          new Promise((resolve, reject) => {
+            finishSecond = () =>
+              success
+                ? resolve({ sessionId: 's1', cancelled: true })
+                : reject(new Error('offline'));
+          }),
+        );
+      const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+      try {
+        model.start();
+        await flush();
+        sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+        sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+        sockets[0]?.emitEvent(2, { t: 'text', delta: 'visible' });
+        const first = model.cancel();
+        sockets[0]?.emitEvent(3, { t: 'text', delta: ' first' });
+        const second = model.cancel({ force: true });
+        sockets[0]?.emitEvent(4, { t: 'text', delta: ' second' });
+        rejectFirst(new Error('offline'));
+        await first;
+        expect(agentTexts(model.state)).toEqual(['visible']);
+        finishSecond();
+        await second;
+        expect(agentTexts(model.state)).toEqual([success ? 'visible' : 'visible first second']);
+      } finally {
+        model.stop();
+      }
+    },
+  );
+
   it('releases a no-op Stop despite a stale busy poll before an external turn', async () => {
     const { connect, sockets } = recordingConnect();
     const client = stubClient();

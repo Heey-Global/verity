@@ -1249,12 +1249,12 @@ export class SessionModel {
       const result = await this.opts.client.cancelTurn(this.opts.sessionId, opts);
       this._waiting = [];
       if (result.forceReleased) this._terminationUnconfirmed = false;
+      const restoredOutput = this.stream.settleOutput(result.cancelled);
       if (result.cancelled) this.opts.onTurnCancelled?.();
-      else {
+      else if (restoredOutput) {
         // An already-idle session emits no new terminal event to release Stop.
         this._cancelRequested = false;
         this._busy = false;
-        this.stream.restoreOutput();
         this._session = this.stream.state;
       }
       this.emit();
@@ -1263,8 +1263,7 @@ export class SessionModel {
         ...(item.attachments !== undefined ? { attachments: item.attachments } : {}),
       }));
     } catch (error) {
-      this._cancelRequested = false;
-      this.stream.restoreOutput();
+      if (this.stream.settleOutput(false)) this._cancelRequested = false;
       this._session = this.stream.state;
       this._cancelError = error instanceof VerityApiError ? error.message : 'failed to stop turn';
       this.emit();
