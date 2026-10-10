@@ -1,5 +1,28 @@
 # Changelog
 
+## [4.36.0](https://github.com/Heey-Global/verity/compare/v4.35.0...v4.36.0) (2026-10-10)
+
+
+### Features
+
+* **gateway:** enable HTTP/2 on the public TLS listener ([#1462](https://github.com/Heey-Global/verity/issues/1462)) ([c832c6e](https://github.com/Heey-Global/verity/commit/c832c6eeb54bf87749490525a14a0fbaf4adb890))
+* **meetings:** classify questions and unify research cards ([#1436](https://github.com/Heey-Global/verity/issues/1436)) ([0661e06](https://github.com/Heey-Global/verity/commit/0661e06659c6225abd3ad69f851ec0a84952c117))
+* **mobile:** refresh meeting screens and saved cards ([#1467](https://github.com/Heey-Global/verity/issues/1467)) ([c4d92f1](https://github.com/Heey-Global/verity/commit/c4d92f1370cee350d6ce81a6c4874802fa21c917))
+* **onboarding:** add first-use hints and welcome tour replay ([#1464](https://github.com/Heey-Global/verity/issues/1464)) ([5251304](https://github.com/Heey-Global/verity/commit/525130482f58c8b210796fe74f0b0443d4bed118))
+* **onboarding:** starter project and welcome session for new installations ([#1431](https://github.com/Heey-Global/verity/issues/1431)) ([b4da113](https://github.com/Heey-Global/verity/commit/b4da113047d92d2d660a45a3903a642491ff2793))
+* **premium:** add feature switches and dedicated settings flows ([#1461](https://github.com/Heey-Global/verity/issues/1461)) ([6070c6f](https://github.com/Heey-Global/verity/commit/6070c6f9dd1946a7c8969d906650e5a3290894df))
+* **sandbox:** offer project dependency release delays ([#1443](https://github.com/Heey-Global/verity/issues/1443)) ([7a5a8ee](https://github.com/Heey-Global/verity/commit/7a5a8ee29459a2421c022815fc9cca848054e7ba))
+* **session:** transport runner images through turn-scoped file references ([#1459](https://github.com/Heey-Global/verity/issues/1459)) ([75ffb54](https://github.com/Heey-Global/verity/commit/75ffb541ce7ed745e0124ae0e3ec5d1d0a24f03b))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1465](https://github.com/Heey-Global/verity/issues/1465)) ([3f92c35](https://github.com/Heey-Global/verity/commit/3f92c35bcc92d536eee19eb661e43ce2ac5229e1))
+* **dev-servers:** forward manager through control-plane composition ([#1463](https://github.com/Heey-Global/verity/issues/1463)) ([09eb68a](https://github.com/Heey-Global/verity/commit/09eb68a942a72b13925e7c2ae1e721f29b843dc9))
+* **drive:** require approval for external document reads ([#1452](https://github.com/Heey-Global/verity/issues/1452)) ([126d9b7](https://github.com/Heey-Global/verity/commit/126d9b7a35c0826b522338c0cd6fbdbeaa38845d))
+* **mobile:** prioritize session reads over background requests ([#1456](https://github.com/Heey-Global/verity/issues/1456)) ([0048b27](https://github.com/Heey-Global/verity/commit/0048b27167ee89a19d1b7ed8f7ae4b242ff10cea))
+* **preview:** isolate core session cookies from local applications ([#1451](https://github.com/Heey-Global/verity/issues/1451)) ([c51dd6d](https://github.com/Heey-Global/verity/commit/c51dd6d528b3ed53d24177e8416867eaf6a7d219))
+
 ## [4.35.0](https://github.com/Heey-Global/verity/compare/v4.34.0...v4.35.0) (2026-10-09)
 
 
