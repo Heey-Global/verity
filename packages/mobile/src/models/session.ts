@@ -321,8 +321,6 @@ export class SessionModel {
   private _olderLoadGeneration = 0;
   private _cancelError: string | undefined;
   private _cancelRequested = false;
-  private _cancelSettled = false;
-  private _cancelAtSeq = 0;
   // The tool_use_id of a permission decision POST in flight (#149), or undefined.
   private _decidingPermission: string | undefined;
   private _permissionError: string | undefined;
@@ -354,10 +352,8 @@ export class SessionModel {
       transport: opts.transport,
       onUpdate: (session) => {
         if (this._cancelRequested) {
-          if (this._cancelSettled && session.running && !this.stream.outputSuppressed) {
+          if (session.running && !this.stream.outputSuppressed) {
             this._cancelRequested = false;
-          } else {
-            if (this.stream.settledSeq > this._cancelAtSeq) this._cancelSettled = true;
           }
         }
         if (session.pendingPermission?.toolUseId !== this._session.pendingPermission?.toolUseId) {
@@ -1241,8 +1237,6 @@ export class SessionModel {
   async cancel(opts?: { force?: boolean }): Promise<RestoredQueuedTurn[]> {
     this._cancelError = undefined;
     this._cancelRequested = true;
-    this._cancelSettled = false;
-    this._cancelAtSeq = this.stream.newestSeq;
     this.stream.freezeOutput();
     this.emit();
     try {

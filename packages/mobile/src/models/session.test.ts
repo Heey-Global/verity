@@ -1139,6 +1139,37 @@ describe('SessionModel — cancel (#79)', () => {
     },
   );
 
+  it('allows a successor after the interrupted event lands between overlapping Stops', async () => {
+    const { connect, sockets } = recordingConnect();
+    const finishes: Array<() => void> = [];
+    const client = stubClient();
+    client.cancelTurn = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishes.push(() => resolve({ sessionId: 's1', cancelled: true }));
+        }),
+    );
+    const model = new SessionModel({ client, sessionId: 's1', transport: connect });
+    try {
+      model.start();
+      await flush();
+      sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+      sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
+      const first = model.cancel();
+      sockets[0]?.emitEvent(2, { t: 'interrupted' });
+      const second = model.cancel({ force: true });
+      finishes.forEach((finish) => finish());
+      await Promise.all([first, second]);
+      sockets[0]?.emitEvent(3, { t: 'prompt', text: 'external successor' });
+      sockets[0]?.emitEvent(4, { t: 'text', delta: 'new output' });
+      expect(agentTexts(model.state)).toEqual(['new output']);
+      expect(model.state.working).toBe(true);
+      expect(model.state.activityAnimating).toBe(true);
+    } finally {
+      model.stop();
+    }
+  });
+
   it('releases a no-op Stop despite a stale busy poll before an external turn', async () => {
     const { connect, sockets } = recordingConnect();
     const client = stubClient();
