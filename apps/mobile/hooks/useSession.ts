@@ -10,12 +10,11 @@ import {
   publishSettledPermission,
   publishSessionStatusMutation,
 } from '@verity/mobile';
-import type { LiveHint } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AppState } from 'react-native';
 
-import { liveConnectionFor, useLiveHints } from '../lib/liveConnection';
+import { liveConnectionFor } from '../lib/liveConnection';
 import { pendingSession } from '../lib/pendingSessions';
 
 export interface UseSession extends SessionModelState {
@@ -161,21 +160,6 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
 
   // The activity snapshot (working indicator, queue, pending requests) is not
   // streamed; refresh it the moment the server says it changed.
-  const onHints = useCallback(
-    (hints: LiveHint[]) => {
-      if (
-        hints.some((hint) =>
-          hint.topics.some(
-            (topic) => topic === 'activity' || topic === 'status' || topic === 'permission',
-          ),
-        )
-      ) {
-        model.refreshActivity();
-      }
-    },
-    [model],
-  );
-  useLiveHints(baseUrl, onHints, sessionId);
   useEffect(
     () =>
       subscribeLiveRefresh(

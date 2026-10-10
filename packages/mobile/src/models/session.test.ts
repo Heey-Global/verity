@@ -591,7 +591,7 @@ describe('SessionModel — working reconciliation', () => {
       client.getActivity = vi
         .fn()
         .mockResolvedValue({ busy: true, activityAnimating: true, queued: [] });
-      model.refreshActivity();
+      void model.refreshActivity();
       await flush();
       expect(model.state.activityAnimating).toBe(true);
       expect(emitted).toContain(true);
@@ -728,7 +728,7 @@ describe('SessionModel — working reconciliation', () => {
       await flush();
       sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
       sockets[0]?.emitEvent(1, { t: 'prompt', text: 'go' });
-      model.refreshActivity();
+      void model.refreshActivity();
       await flush();
       expect(model.state.working).toBe(false);
       sockets[0]?.emitEvent(2, { t: 'dev_servers_changed', devServers: [] });
@@ -2119,12 +2119,19 @@ describe('SessionModel — server activity + queued messages', () => {
       const model = new SessionModel({ client, sessionId: 's1', transport: connect });
       model.start();
       await vi.advanceTimersByTimeAsync(0); // first poll starts, then hangs
-      model.refreshActivity();
-      model.refreshActivity();
+      let completed = false;
+      const refresh = model.refreshActivity().then(() => {
+        completed = true;
+      });
+      void model.refreshActivity();
+      await Promise.resolve();
+      expect(completed).toBe(false);
       expect(getActivity).toHaveBeenCalledTimes(1); // overlap guard held
       resolveFirst({ busy: false, queued: [] }); // the slow poll finally resolves
       await vi.advanceTimersByTimeAsync(0); // hints must refresh without waiting for a poll
       expect(getActivity).toHaveBeenCalledTimes(2);
+      await refresh;
+      expect(completed).toBe(true);
       model.stop();
     } finally {
       vi.useRealTimers();
@@ -2854,7 +2861,7 @@ it('loads activity on demand without a recurring timer in live mode', async () =
     await flush();
     expect(getActivity).toHaveBeenCalledTimes(1);
     expect(interval).not.toHaveBeenCalled();
-    model.refreshActivity();
+    void model.refreshActivity();
     await flush();
     expect(getActivity).toHaveBeenCalledTimes(2);
   } finally {

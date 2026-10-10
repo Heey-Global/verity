@@ -754,18 +754,19 @@ export function SessionChat({
       let active = true;
       setLinkedSessions([]);
       const refresh = () => {
-        void client
+        return client
           .listSessionLinks(sessionId)
           .then((links) => {
             if (active) setLinkedSessions(links);
           })
           .catch(() => undefined);
       };
-      refresh();
       const detach = subscribeLiveRefresh(
         client,
         refresh,
         (path) => path === `/sessions/${encodeURIComponent(sessionId)}/links`,
+        [{ path: `/sessions/${encodeURIComponent(sessionId)}/links` }],
+        { initial: true },
       );
       return () => {
         active = false;
@@ -779,18 +780,19 @@ export function SessionChat({
       let active = true;
       setPendingLinkedMessages([]);
       const refresh = () => {
-        void client
+        return client
           .listPendingLinkedMessages(sessionId)
           .then((items) => {
             if (active) setPendingLinkedMessages(items);
           })
           .catch(() => undefined);
       };
-      refresh();
       const detach = subscribeLiveRefresh(
         client,
         refresh,
         (path) => path === `/sessions/${encodeURIComponent(sessionId)}/linked-message-approvals`,
+        [{ path: `/sessions/${encodeURIComponent(sessionId)}/linked-message-approvals` }],
+        { initial: true },
       );
       return () => {
         active = false;

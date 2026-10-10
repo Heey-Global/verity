@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { VerityClient, ManagedDevServer, SessionDevServer } from '@verity/mobile';
 import { subscribeLiveRefresh } from '../lib/liveConnection';
-import { useReadAbortScope } from './useReadAbortScope';
 
 interface SessionPreviewReadsOptions {
   client: VerityClient;
@@ -12,6 +11,58 @@ interface SessionPreviewReadsOptions {
   devServers: SessionDevServer[] | undefined;
 }
 
+/** Manual, initial and live reads share one request and retain a trailing refresh. */
+function usePreviewSource(
+  client: VerityClient,
+  path: string,
+  enabled: boolean,
+  read: (signal: AbortSignal) => Promise<void>,
+  scope?: string | null,
+): () => Promise<void> {
+  const refreshRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  useEffect(() => {
+    if (!enabled) return;
+    const controller = new AbortController();
+    let inFlight: Promise<void> | undefined;
+    let pending = false;
+    const refresh = (): Promise<void> => {
+      if (controller.signal.aborted) return Promise.resolve();
+      if (inFlight) {
+        pending = true;
+        return inFlight;
+      }
+      inFlight = (async () => {
+        do {
+          pending = false;
+          try {
+            await read(controller.signal);
+          } catch {
+            // A source owns its display fallback; failed reads must still release
+            // the queue so a later invalidation can recover it.
+          }
+        } while (pending && !controller.signal.aborted);
+      })().finally(() => {
+        inFlight = undefined;
+      });
+      return inFlight;
+    };
+    refreshRef.current = refresh;
+    const detach = subscribeLiveRefresh(
+      client,
+      refresh,
+      (candidate) => candidate.split('?')[0] === path,
+      [{ path }],
+    );
+    void refresh();
+    return () => {
+      controller.abort();
+      detach();
+      refreshRef.current = () => Promise.resolve();
+    };
+  }, [client, path, enabled, read, scope]);
+  return useCallback(() => refreshRef.current(), []);
+}
+
 export function useSessionPreviewReads({
   client,
   sessionId,
@@ -20,99 +71,131 @@ export function useSessionPreviewReads({
   completedServerTools,
   devServers,
 }: SessionPreviewReadsOptions) {
-  // Names and addresses of managed servers, for their chat cards.
   const [managedByInstance, setManagedByInstance] = useState<Map<string, ManagedDevServer>>(
     () => new Map(),
   );
-  const beginManagedRead = useReadAbortScope(client, sessionId);
-  useEffect(() => {
-    if (typeof client.listManagedDevServers !== 'function') return;
-    let active = true;
-    const controller = beginManagedRead();
-    void client
-      .listManagedDevServers(sessionId, controller.signal)
-      .then((servers) => {
-        if (!active || !servers) return;
-        setManagedByInstance(
-          new Map(
-            servers.flatMap((server) =>
-              server.instance ? [[server.instance.id, server] as const] : [],
-            ),
-          ),
-        );
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-      controller.abort();
-    };
-  }, [client, completedServerTools, devServers, sessionId, beginManagedRead]);
-  const [hasActiveStaticPreview, setHasActiveStaticPreview] = useState(false);
+  const [publicShared, setPublicShared] = useState(false);
+  const [localShared, setLocalShared] = useState(false);
   const [hasRunningDevServer, setHasRunningDevServer] = useState(false);
-  // Set once a Core without port detection says so, so the header stops asking.
+  // Unsupported is scoped to the client/session, never inherited by a new Core.
   const devServersUnsupported = useRef(false);
-  const beginStaticPreviewRead = useReadAbortScope(client, sessionId);
-  const refreshStaticPreview = useCallback(() => {
-    if (!projectId) return;
-    const controller = beginStaticPreviewRead();
-    if (typeof client.listSessionDevServers === 'function' && !devServersUnsupported.current) {
-      void client
-        .listSessionDevServers(sessionId, controller.signal)
-        .then((servers) => {
-          if (controller.signal.aborted) return;
-          if (servers === null) devServersUnsupported.current = true;
-          setHasRunningDevServer((servers ?? []).length > 0);
-        })
-        .catch(() => undefined);
-    }
-    // Shared means shared on the local network or online alike: either lights the
-    // preview button. A failed read counts as "not shared" for that source only.
-    const now = Date.now();
-    const publicShared = client
-      .listPublicPreviewShares(projectId, controller.signal)
-      .then((shares) =>
-        shares.some(
-          (share) =>
-            (share.targetKind === 'static-folder' ||
-              (share.targetKind === 'dev-server' && share.devServerId === null)) &&
-            share.sessionId === sessionId &&
-            share.state === 'active' &&
-            new Date(share.expiresAt).getTime() > now,
-        ),
-      )
-      .catch(() => false);
-    const localShared =
-      typeof client.listSessionLocalPreviewShares === 'function'
-        ? client
-            .listSessionLocalPreviewShares(sessionId, controller.signal)
-            .then((shares) => shares.some((share) => share.expiresAt.getTime() > now))
-            .catch(() => false)
-        : Promise.resolve(false);
-    void Promise.all([publicShared, localShared]).then(([online, local]) => {
-      if (!controller.signal.aborted) setHasActiveStaticPreview(online || local);
-    });
-  }, [client, projectId, sessionId, beginStaticPreviewRead]);
   useEffect(() => {
-    if (!loaded) return;
-    refreshStaticPreview();
-    const detach = subscribeLiveRefresh(
-      client,
-      refreshStaticPreview,
-      (path) =>
-        (projectId != null &&
-          path === `/projects/${encodeURIComponent(projectId)}/public-shares`) ||
-        (path.startsWith(`/sessions/${encodeURIComponent(sessionId)}/`) &&
-          /preview|share|dev-server/u.test(path)),
-    );
-    return () => {
-      detach();
-      beginStaticPreviewRead().abort();
-    };
-  }, [refreshStaticPreview, loaded, client, projectId, sessionId, beginStaticPreviewRead]);
+    setManagedByInstance(new Map());
+    devServersUnsupported.current = false;
+  }, [client, sessionId]);
+  useEffect(() => {
+    setPublicShared(false);
+    setLocalShared(false);
+    setHasRunningDevServer(false);
+  }, [client, sessionId, projectId]);
+
+  const readManaged = useCallback(
+    async (signal: AbortSignal) => {
+      const servers = await client.listManagedDevServers(sessionId, signal);
+      if (signal.aborted || !servers) return;
+      setManagedByInstance(
+        new Map(
+          servers.flatMap((server) =>
+            server.instance ? [[server.instance.id, server] as const] : [],
+          ),
+        ),
+      );
+    },
+    [client, sessionId],
+  );
+  const refreshManaged = usePreviewSource(
+    client,
+    `/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers`,
+    typeof client.listManagedDevServers === 'function',
+    readManaged,
+  );
+  const previousManagedInputs = useRef({ client, sessionId, completedServerTools, devServers });
+  useEffect(() => {
+    const previous = previousManagedInputs.current;
+    previousManagedInputs.current = { client, sessionId, completedServerTools, devServers };
+    if (
+      previous.client === client &&
+      previous.sessionId === sessionId &&
+      (previous.completedServerTools !== completedServerTools || previous.devServers !== devServers)
+    )
+      void refreshManaged();
+  }, [client, sessionId, completedServerTools, devServers, refreshManaged]);
+
+  const readDevServers = useCallback(
+    async (signal: AbortSignal) => {
+      if (devServersUnsupported.current) return;
+      const servers = await client.listSessionDevServers(sessionId, signal);
+      if (signal.aborted) return;
+      if (servers === null) devServersUnsupported.current = true;
+      setHasRunningDevServer((servers ?? []).length > 0);
+    },
+    [client, sessionId],
+  );
+  const readPublic = useCallback(
+    async (signal: AbortSignal) => {
+      if (!projectId) return;
+      const shared = await client
+        .listPublicPreviewShares(projectId, signal)
+        .then((shares) =>
+          shares.some(
+            (share) =>
+              (share.targetKind === 'static-folder' ||
+                (share.targetKind === 'dev-server' && share.devServerId === null)) &&
+              share.sessionId === sessionId &&
+              share.state === 'active' &&
+              new Date(share.expiresAt).getTime() > Date.now(),
+          ),
+        )
+        .catch(() => false);
+      if (!signal.aborted) setPublicShared(shared);
+    },
+    [client, projectId, sessionId],
+  );
+  const readLocal = useCallback(
+    async (signal: AbortSignal) => {
+      const shared = await client
+        .listSessionLocalPreviewShares(sessionId, signal)
+        .then((shares) => shares.some((share) => share.expiresAt.getTime() > Date.now()))
+        .catch(() => false);
+      if (!signal.aborted) setLocalShared(shared);
+    },
+    [client, sessionId],
+  );
+  const enabled = loaded && Boolean(projectId);
+  const refreshDevServers = usePreviewSource(
+    client,
+    `/sessions/${encodeURIComponent(sessionId)}/dev-servers`,
+    enabled && typeof client.listSessionDevServers === 'function',
+    readDevServers,
+    projectId,
+  );
+  const refreshPublic = usePreviewSource(
+    client,
+    `/projects/${encodeURIComponent(projectId ?? '')}/public-shares`,
+    enabled,
+    readPublic,
+    projectId,
+  );
+  const refreshLocal = usePreviewSource(
+    client,
+    `/sessions/${encodeURIComponent(sessionId)}/local-shares`,
+    enabled && typeof client.listSessionLocalPreviewShares === 'function',
+    readLocal,
+    projectId,
+  );
+  const refreshStaticPreview = useCallback(
+    () => Promise.all([refreshDevServers(), refreshPublic(), refreshLocal()]),
+    [refreshDevServers, refreshPublic, refreshLocal],
+  );
 
   useEffect(() => {
     if (devServers !== undefined) setHasRunningDevServer(devServers.length > 0);
   }, [devServers]);
 
-  return { managedByInstance, hasActiveStaticPreview, hasRunningDevServer, refreshStaticPreview };
+  return {
+    managedByInstance,
+    hasActiveStaticPreview: publicShared || localShared,
+    hasRunningDevServer,
+    refreshStaticPreview,
+  };
 }

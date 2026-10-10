@@ -308,7 +308,7 @@ export class SessionModel {
   // Guards against overlapping polls: the interval fires on a fixed cadence
   // regardless of whether the prior `loadActivity` resolved, and the poll now does a
   // server-side git read (#110), so a slow tick must not let requests stack up.
-  private _activityInFlight = false;
+  private _activityInFlight: Promise<void> | undefined;
   private _activityRefreshPending = false;
   private _activityRequest = 0;
   private _planningDecisionAfterActivityRequest = 0;
@@ -634,13 +634,13 @@ export class SessionModel {
     void this.loadDetail();
   }
 
-  refreshActivity(): void {
-    if (!this._running || this._paused || !this._historyAttemptComplete) return;
+  refreshActivity(): Promise<void> {
+    if (!this._running || this._paused || !this._historyAttemptComplete) return Promise.resolve();
     if (this._activityInFlight) {
       this._activityRefreshPending = true;
-      return;
+      return this._activityInFlight;
     }
-    void this.loadActivity();
+    return this.loadActivity();
   }
 
   /** Leave the live subscription + stop the activity poll while backgrounded. */
@@ -894,10 +894,21 @@ export class SessionModel {
 
   /** Refresh the server-authoritative busy/queued activity. A failure is
    * non-fatal — keep the last known values until the next poll. */
-  private async loadActivity(): Promise<void> {
-    // Skip if a prior poll is still in flight, so a slow tick can't stack requests.
-    if (this._activityInFlight) return;
-    this._activityInFlight = true;
+  private loadActivity(): Promise<void> {
+    if (this._activityInFlight) return this._activityInFlight;
+    // Keep the promise pending through a queued refresh so external refresh
+    // coordinators do not mistake a detached request for completed work.
+    this._activityInFlight = this.readActivity().finally(() => {
+      this._activityInFlight = undefined;
+      if (this._activityRefreshPending) {
+        this._activityRefreshPending = false;
+        return this.refreshActivity();
+      }
+    });
+    return this._activityInFlight;
+  }
+
+  private async readActivity(): Promise<void> {
     const activityRequest = ++this._activityRequest;
     // Snapshot the newest seq NOW, before the request goes out: the server's answer
     // reflects the session state at roughly this moment, so anchoring the settled
@@ -1021,12 +1032,6 @@ export class SessionModel {
       this.emit();
     } catch {
       // transient — keep the last values
-    } finally {
-      this._activityInFlight = false;
-      if (this._activityRefreshPending) {
-        this._activityRefreshPending = false;
-        this.refreshActivity();
-      }
     }
   }
 

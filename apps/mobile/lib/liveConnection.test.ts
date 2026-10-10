@@ -54,6 +54,19 @@ const read = (resource: LiveResource) => {
   for (const listener of readListeners) listener(resource);
 };
 
+it('loads initially without live-read support and cancels an unmounted initial read', async () => {
+  const lightweight = {} as VerityClient;
+  const refresh = jest.fn().mockResolvedValue(undefined);
+  const detach = subscribeLiveRefresh(lightweight, refresh, undefined, [], { initial: true });
+  await advance();
+  expect(refresh).toHaveBeenCalledTimes(1);
+  detach();
+  const cancel = subscribeLiveRefresh(lightweight, refresh, undefined, [], { initial: true });
+  cancel();
+  await advance();
+  expect(refresh).toHaveBeenCalledTimes(1);
+});
+
 it('refreshes on hints rather than a clock, filters resources and detaches on unmount', async () => {
   const refresh = jest.fn();
   const detach = subscribeLiveRefresh(client, refresh, (path) => path === '/projects');
@@ -143,4 +156,47 @@ it('refreshes meeting answers when session events change', async () => {
   await advance();
   expect(refresh).toHaveBeenCalledTimes(1);
   detach();
+});
+
+it('coalesces activity hints and invalidations while ignoring unrelated event hints', async () => {
+  const refresh = jest.fn();
+  const detach = subscribeLiveRefresh(client, refresh, () => true, [
+    { path: '/sessions/s/activity' },
+  ]);
+  deliver({ k: 'hint', hints: [{ sessionId: 's', topics: ['events'] }] });
+  deliver({ k: 'hint', hints: [{ sessionId: 'other', topics: ['activity'] }] });
+  await advance();
+  expect(refresh).not.toHaveBeenCalled();
+  deliver({ k: 'hint', hints: [{ sessionId: 's', topics: ['activity', 'status'] }] });
+  deliver({ k: 'invalidate', path: '/sessions/s/activity' });
+  await advance();
+  expect(refresh).toHaveBeenCalledTimes(1);
+  detach();
+});
+
+it('coordinates the initial load with changes and cancels a queued follow-up on disposal', async () => {
+  let resolve!: () => void;
+  const refresh = jest.fn(
+    () =>
+      new Promise<void>((done) => {
+        resolve = done;
+      }),
+  );
+  const detach = subscribeLiveRefresh(
+    client,
+    refresh,
+    () => true,
+    [{ path: '/sessions/s/links' }],
+    { initial: true },
+  );
+  deliver({ k: 'invalidate', path: '/sessions/s/links' });
+  await advance();
+  expect(refresh).toHaveBeenCalledTimes(1);
+  deliver({ k: 'invalidate', path: '/sessions/s/links' });
+  await advance();
+  expect(refresh).toHaveBeenCalledTimes(1);
+  detach();
+  resolve();
+  await advance();
+  expect(refresh).toHaveBeenCalledTimes(1);
 });
