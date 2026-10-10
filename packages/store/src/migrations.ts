@@ -4083,7 +4083,6 @@ const migrations: Record<string, Migration> = {
       await sql`alter table project_settings drop column allowed_agents`.execute(db);
     },
   },
-
   '0148_starter_project': {
     async up(db: Kysely<unknown>): Promise<void> {
       // The local project a fresh installation creates for its welcome session.
@@ -4103,7 +4102,17 @@ const migrations: Record<string, Migration> = {
       await db.schema.dropTable('starter_project').execute();
     },
   },
-  '0149_premium_feature_switches': {
+  '0149_resolved_meeting_questions': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meeting_insights add column resolved boolean not null default false`.execute(
+        db,
+      );
+    },
+    async down(db: Kysely<unknown>): Promise<void> {
+      await sql`alter table live_meeting_insights drop column resolved`.execute(db);
+    },
+  },
+  '0150_premium_feature_switches': {
     async up(db: Kysely<unknown>): Promise<void> {
       // Default on: a server that already shares or accepts remote control keeps doing so.
       await db.schema

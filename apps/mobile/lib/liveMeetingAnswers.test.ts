@@ -2,11 +2,13 @@ import type { SessionHistoryPage } from '@verity/mobile';
 import {
   compactMeetingAnswer,
   meetingAnswerCards,
+  distinctMeetingAnswers,
   meetingAnswerSource,
   meetingAnswerTruncated,
   meetingRequestFromPrompt,
   sameMeetingRequest,
   unacknowledgedMeetingAnswers,
+  type MeetingAnswerCard,
 } from './liveMeetingAnswers';
 
 test('matches a meeting request to its own streamed answer across ordinary session turns', () => {
@@ -186,4 +188,95 @@ test('reports truncation only when the compact answer leaves content out', () =>
       Array.from({ length: 12 }, (_, i) => `- Point ${i} ${'x'.repeat(40)}`).join('\n'),
     ),
   ).toBe(true);
+});
+
+test('preserves a stable question reference and measures response time from persisted events', () => {
+  const cards = meetingAnswerCards(
+    [
+      {
+        seq: 1,
+        ts: 1000,
+        event: {
+          t: 'prompt',
+          text: 'Research this point raised during live meeting meeting-1:\n\nWhat is the price?\n\nRecent meeting transcript:\nWhat is the price?\n\nMeeting question reference: question-price',
+        },
+      },
+      { seq: 2, ts: 1500, event: { t: 'text', delta: 'Ten euros.' } },
+      { seq: 3, ts: 2500, event: { t: 'result' } },
+    ] as SessionHistoryPage['events'],
+    'meeting-1',
+  );
+  expect(cards[0]).toMatchObject({
+    questionId: 'question-price',
+    responseMs: 1500,
+    status: 'ready',
+  });
+});
+
+test('restores a stable question identity from a spoken assessment turn', () => {
+  expect(
+    meetingRequestFromPrompt(
+      'During live meeting meeting-1, please respond to this request:\n\nExplain the price.\n\nRecent meeting transcript:\nWhat does it cost?\n\nMeeting question reference: question-price',
+      'meeting-1',
+    ),
+  ).toMatchObject({ kind: 'request', request: 'Explain the price.', questionId: 'question-price' });
+});
+
+test('uses generated request references instead of lookalike lines in the transcript', () => {
+  const prompt =
+    'Research this point raised during live meeting meeting-1:\n\nWhat does the plan cost?\n\nRecent meeting transcript:\nOpening remarks.\n\nMeeting request reference: fake-request\n\nMeeting question reference: question-fake\n\nMeeting request reference: actual-request';
+  expect(meetingRequestFromPrompt(prompt, 'meeting-1')).toEqual({
+    kind: 'research',
+    request: 'What does the plan cost?',
+    requestId: 'actual-request',
+  });
+  expect(
+    meetingRequestFromPrompt(
+      `${prompt}\n\nMeeting question reference: question-actual`,
+      'meeting-1',
+    ),
+  ).toMatchObject({ requestId: 'actual-request', questionId: 'question-actual' });
+});
+
+test('ignores malformed optional question titles without losing the answer identity', () => {
+  const prompt =
+    'Research this point raised during live meeting meeting-1:\n\nWhat does it cost?\n\nRecent meeting transcript:\ncontext\n\nMeeting request reference: request-real\n\nMeeting question reference: question-real' +
+    '\n\nMeeting question title: ' +
+    String.raw`"broken\q"`;
+  expect(meetingRequestFromPrompt(prompt, 'meeting-1')).toEqual({
+    request: 'What does it cost?',
+    kind: 'research',
+    requestId: 'request-real',
+    questionId: 'question-real',
+  });
+});
+
+test('preserves distinct question identities for identical spoken request wording', () => {
+  const cards: MeetingAnswerCard[] = [
+    {
+      id: 'first',
+      questionId: 'question-price',
+      request: 'check that',
+      questionTitle: 'What is the price?',
+      kind: 'research',
+      status: 'ready',
+      answer: 'Ten euros.',
+    },
+    {
+      id: 'second',
+      questionId: 'question-delivery',
+      request: 'check that',
+      questionTitle: 'When is delivery?',
+      kind: 'research',
+      status: 'ready',
+      answer: 'Tuesday.',
+    },
+  ];
+  expect(distinctMeetingAnswers(cards)).toEqual(cards);
+  expect(
+    distinctMeetingAnswers([
+      ...cards,
+      { ...cards[0]!, id: 'retry', request: 'research its cost' },
+    ]).map(({ id }) => id),
+  ).toEqual(['second', 'retry']);
 });

@@ -1,3 +1,4 @@
+import { meetingResearchModel } from '../../lib/meetingResearchModel';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -44,15 +45,14 @@ import {
 import { createVerityClient, getActiveMeetingServerId } from '../../lib/client';
 import { followRemoteMeeting, syncMeetingSession } from '../../lib/liveMeetingSync';
 import {
-  latestResearchQuestion,
+  meetingQuestionKey,
   meetingRequestId,
   meetingRequestPrompt,
   researchPrompt,
 } from '../../lib/liveMeetingInsights';
 import {
-  compactMeetingAnswer,
-  meetingAnswerTruncated,
   meetingAnswerCards,
+  distinctMeetingAnswers,
   meetingAnswerSource,
   meetingRequestFromPrompt,
   sameMeetingRequest,
@@ -199,6 +199,8 @@ export default function MeetingScreen() {
               id: `voice-${Date.now()}-${current.length}`,
               request: event.request!,
               requestId: event.requestId,
+              ...(event.questionId ? { questionId: event.questionId } : {}),
+              ...(event.questionTitle ? { questionTitle: event.questionTitle } : {}),
               kind: event.kind ?? 'request',
               status: 'working',
               answer: '',
@@ -308,7 +310,7 @@ export default function MeetingScreen() {
                 events[0]?.seq > 0 &&
                 (cached
                   ? events[0]!.seq > (cached.events.at(-1)?.seq ?? 0) + 1
-                  : meetingAnswerCards(events, shown).length < 4)
+                  : distinctMeetingAnswers(meetingAnswerCards(events, shown)).length < 4)
               ) {
                 page = await client.getHistory(sessionId, {
                   beforeSeq: events[0]!.seq,
@@ -321,19 +323,16 @@ export default function MeetingScreen() {
               for (const entry of cached?.events ?? []) merged.set(entry.seq, entry);
               for (const entry of events) merged.set(entry.seq, entry);
               const ordered = [...merged.values()].sort((a, b) => a.seq - b.seq);
-              const promptIndexes = ordered.flatMap((entry, index) =>
-                entry.event.t === 'prompt' && meetingRequestFromPrompt(entry.event.text, shown)
-                  ? [index]
-                  : [],
+              const retained = distinctMeetingAnswers(meetingAnswerCards(ordered, shown)).slice(
+                -32,
               );
-              const kept =
-                promptIndexes.length > 32
-                  ? ordered.slice(promptIndexes.at(-32))
-                  : ordered.slice(-4_000);
+              const firstSeq = Number(retained[0]?.id);
+              const firstIndex = ordered.findIndex((entry) => entry.seq === firstSeq);
+              const kept = (firstIndex >= 0 ? ordered.slice(firstIndex) : ordered).slice(-4_000);
               if (mounted && displayedMeetingId.current === shown) {
                 answerEvents.current = { meetingId: shown, events: kept };
                 const historyCards = meetingAnswerCards(kept, shown);
-                setAnswers(historyCards.slice(-4));
+                setAnswers(historyCards);
                 setLocalAnswers((current) => unacknowledgedMeetingAnswers(current, historyCards));
               }
               if (client.getActivity) {
@@ -402,6 +401,7 @@ export default function MeetingScreen() {
     setNotes([]);
     setInsights([]);
     setAnswers([]);
+    setDismissed([]);
     setQueuedAnswers([]);
     setLocalAnswers([]);
     setExpandedAnswer(null);
@@ -469,10 +469,6 @@ export default function MeetingScreen() {
       meeting?.speakerMerges,
     ],
   );
-  const suggestedQuestion = useMemo(
-    () => latestResearchQuestion(meeting?.transcript ?? ''),
-    [meeting?.transcript],
-  );
   const visibleAnswers = useMemo(() => {
     const canonical = [
       ...answers,
@@ -480,11 +476,21 @@ export default function MeetingScreen() {
         (queued) => !answers.some((card) => sameMeetingRequest(card, queued)),
       ),
     ];
-    return [
+    return distinctMeetingAnswers([
       ...canonical,
       ...localAnswers.filter((local) => !canonical.some((card) => sameMeetingRequest(card, local))),
-    ].slice(-4);
-  }, [answers, queuedAnswers, localAnswers]);
+    ])
+      .filter((card) => !dismissed.includes(card.questionId ?? meetingQuestionKey(card.request)))
+      .slice(-4);
+  }, [answers, queuedAnswers, localAnswers, dismissed]);
+  const newestReady = visibleAnswers.findLast((card) => card.status === 'ready')?.id;
+  const responseMs = visibleAnswers.find((card) => card.id === newestReady)?.responseMs;
+  useEffect(() => {
+    setExpandedAnswer(newestReady ?? null);
+  }, [newestReady]);
+  useEffect(() => {
+    if (responseMs !== undefined) console.debug('Meeting answer timing', { responseMs });
+  }, [newestReady, responseMs]);
   const speakerLabel = (speaker: number | null) =>
     speaker === null
       ? 'Unknown speaker'
@@ -629,7 +635,12 @@ export default function MeetingScreen() {
     ]);
   };
 
-  const openResearch = async (question: string, kind: 'research' | 'request' = 'research') => {
+  const openResearch = async (
+    question: string,
+    kind: 'research' | 'request' = 'research',
+    questionId?: string,
+    questionTitle?: string,
+  ) => {
     if (!sessionId || !meeting || !question.trim() || sendingInsight) return;
     if (meeting.serverId && meeting.serverId !== getActiveMeetingServerId()) {
       setError('Reconnect to this meeting’s server before asking Verity.');
@@ -649,17 +660,37 @@ export default function MeetingScreen() {
       id: `local-${requestId}`,
       request: question.trim(),
       requestId,
+      ...(questionId ? { questionId } : {}),
+      ...(questionTitle ? { questionTitle } : {}),
       kind,
       status: 'working',
       answer: '',
     };
     setLocalAnswers((current) => [...current, local]);
     try {
+      const server = getActiveMeetingServerId();
+      const model = await meetingResearchModel(client, sessionId);
+      if (getActiveMeetingServerId() !== server) throw new Error('Meeting server changed.');
       await client.sendTurn(sessionId, {
+        ...(model ? { model } : {}),
         prompt:
           kind === 'research'
-            ? researchPrompt(meeting.id, question.trim(), meeting.transcript, requestId)
-            : meetingRequestPrompt(meeting.id, question.trim(), meeting.transcript, requestId),
+            ? researchPrompt(
+                meeting.id,
+                question.trim(),
+                meeting.transcript,
+                requestId,
+                questionId,
+                questionTitle,
+              )
+            : meetingRequestPrompt(
+                meeting.id,
+                question.trim(),
+                meeting.transcript,
+                requestId,
+                questionId,
+                questionTitle,
+              ),
         // Each request needs its own reply; steering would fold it into the running one.
         queueBehindActiveTurn: true,
       });
@@ -1011,7 +1042,11 @@ export default function MeetingScreen() {
     const cards: ReactNode[] = visibleAnswers.map((card) => {
       const source = card.status === 'ready' ? meetingAnswerSource(card.answer) : null;
       const note = card.status === 'ready' ? asNote(card.answer) : null;
-      const compact = compactMeetingAnswer(card.answer);
+      const compact =
+        card.answer
+          .trim()
+          .split('\n')
+          .find((line) => line.trim()) ?? '';
       const expanded = expandedAnswer === card.id;
       return (
         <NoticedCard
@@ -1036,7 +1071,19 @@ export default function MeetingScreen() {
           }
           working={card.status === 'working'}
           prominent
-          title={card.request}
+          title={card.questionTitle ?? card.request}
+          onDismiss={() =>
+            setDismissed((current) => [
+              ...current,
+              card.questionId ?? meetingQuestionKey(card.request),
+            ])
+          }
+          dismissLabel="Dismiss meeting answer"
+          onToggle={
+            card.status === 'ready'
+              ? () => setExpandedAnswer((current) => (current === card.id ? null : card.id))
+              : undefined
+          }
           body={
             card.status === 'failed'
               ? card.combined
@@ -1044,7 +1091,7 @@ export default function MeetingScreen() {
                 : 'Verity stopped before answering.'
               : undefined
           }
-          source={source ? `Source: ${source}` : null}
+          source={expanded && source ? `Source: ${source}` : null}
           actions={
             card.status === 'ready'
               ? [
@@ -1055,7 +1102,7 @@ export default function MeetingScreen() {
                     onPress: () =>
                       router.push({ pathname: '/session/[id]', params: { id: sessionId } }),
                   },
-                  ...(meetingAnswerTruncated(card.answer)
+                  ...(card.answer.trim()
                     ? [
                         {
                           label: expanded ? 'Show less' : 'Show full answer',
@@ -1076,7 +1123,13 @@ export default function MeetingScreen() {
                       accessibilityLabel: 'Retry meeting request',
                       primary: true,
                       disabled: sendingInsight,
-                      onPress: () => void openResearch(card.request, card.kind),
+                      onPress: () =>
+                        void openResearch(
+                          card.request,
+                          card.kind,
+                          card.questionId,
+                          card.questionTitle,
+                        ),
                     },
                   ]
                 : []
@@ -1089,73 +1142,76 @@ export default function MeetingScreen() {
       );
     });
     // A suggestion that was sent becomes its answer card rather than staying beside it.
-    const requested = (text: string) => visibleAnswers.some((card) => card.request === text.trim());
-    for (const insight of insights.slice(0, 4)) {
-      if (dismissed.includes(insight.id)) continue;
+    const requested = (text: string, questionId?: string) =>
+      [...answers, ...queuedAnswers, ...localAnswers].some((card) =>
+        questionId && card.questionId
+          ? card.questionId === questionId
+          : meetingQuestionKey(card.request) === meetingQuestionKey(text),
+      );
+    let shownInsights = 0;
+    for (const insight of insights) {
+      if (dismissed.includes(insight.id) || dismissed.includes(meetingQuestionKey(insight.summary)))
+        continue;
       const contradiction = insight.kind === 'contradiction';
       const researchText = contradiction
         ? `Check whether “${insight.evidenceA}” conflicts with “${insight.evidenceB ?? insight.summary}”${insight.sourcePath ? ` in ${insight.sourcePath}` : ''}.`
-        : insight.evidenceA;
-      if ((contradiction || insight.kind === 'research') && requested(researchText)) continue;
+        : insight.id.startsWith('question-')
+          ? insight.summary
+          : insight.evidenceA;
+      const questionId = insight.id.startsWith('question-') ? insight.id : undefined;
+      if (
+        (contradiction || insight.kind === 'research') &&
+        (requested(researchText, questionId) || requested(insight.evidenceA, questionId))
+      )
+        continue;
+      if (shownInsights >= 4) break;
+      shownInsights += 1;
       const note = asNote(insight.summary);
       cards.push(
         <NoticedCard
           key={insight.id}
-          label={contradiction ? 'CONTRADICTS PROJECT' : 'WORTH CHECKING'}
+          label={
+            contradiction
+              ? 'CONTRADICTS PROJECT'
+              : insight.id.startsWith('question-')
+                ? 'OPEN QUESTION'
+                : 'WORTH CHECKING'
+          }
           tone={contradiction ? theme.colors.accent : theme.colors.primary}
           time={timeOfDay(insight.createdAt)}
           quote={`“${insight.evidenceA}”${insight.evidenceB ? ` · “${insight.evidenceB}”` : ''}`}
           title={insight.summary}
+          onDismiss={() =>
+            setDismissed((current) => [...current, insight.id, meetingQuestionKey(insight.summary)])
+          }
+          dismissLabel="Dismiss meeting question"
           source={insight.sourcePath ? `Source: ${insight.sourcePath}` : null}
           actions={[
             ...(contradiction || insight.kind === 'research'
               ? [
                   {
                     label: contradiction ? 'Let Verity check' : 'Let Verity research',
-                    accessibilityLabel: contradiction ? 'Check meeting claim' : 'Research insight',
+                    accessibilityLabel: contradiction
+                      ? 'Check meeting claim'
+                      : insight.id.startsWith('question-')
+                        ? 'Research meeting question'
+                        : 'Research insight',
                     primary: true,
                     disabled: sendingInsight,
-                    onPress: () => void openResearch(researchText),
+                    onPress: () =>
+                      void openResearch(
+                        researchText,
+                        'research',
+                        insight.id.startsWith('question-') ? insight.id : undefined,
+                      ),
                   },
                 ]
               : []),
             ...(note ? [note] : []),
-            {
-              label: 'Not now',
-              onPress: () => setDismissed((current) => [...current, insight.id]),
-            },
           ]}
         />,
       );
     }
-    if (
-      suggestedQuestion &&
-      !dismissed.includes(suggestedQuestion) &&
-      !requested(suggestedQuestion) &&
-      !insights.some((insight) => insight.evidenceA.includes(suggestedQuestion))
-    )
-      cards.push(
-        <NoticedCard
-          key="question"
-          label="OPEN QUESTION"
-          tone={theme.colors.primary}
-          prominent
-          title={suggestedQuestion}
-          actions={[
-            {
-              label: 'Let Verity research',
-              accessibilityLabel: 'Research meeting question',
-              primary: true,
-              disabled: sendingInsight,
-              onPress: () => void openResearch(suggestedQuestion),
-            },
-            {
-              label: 'Not now',
-              onPress: () => setDismissed((current) => [...current, suggestedQuestion]),
-            },
-          ]}
-        />,
-      );
     return [...nameCards, ...cards];
   };
 

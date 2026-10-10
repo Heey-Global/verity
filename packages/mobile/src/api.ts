@@ -17,6 +17,20 @@ import {
 } from '@verity/events';
 import { z } from 'zod';
 
+/** Local transport scheduling metadata; fetch implementations may ignore it. */
+export type TransportLane = 'interactive' | 'background';
+export interface TransportRequestInit extends RequestInit {
+  transportLane?: TransportLane;
+}
+
+function readTransportLane(path: string): TransportLane {
+  const pathname = path.split('?')[0]!;
+  return /^\/(?:sessions|projects)$/u.test(pathname) ||
+    /^\/sessions\/[^/]+(?:\/(?:events|activity))?$/u.test(pathname)
+    ? 'interactive'
+    : 'background';
+}
+
 const projectGitHubIssuesSchema = z.object({
   connected: z.boolean(),
   viewerLogin: z.string().nullable(),
@@ -2077,7 +2091,14 @@ export class VerityClient {
     sessionId: string,
     meetingId: string,
     body: { utterance: string; context: string },
-  ): Promise<{ kind: 'research' | 'opinion'; request: string }[]> {
+  ): Promise<
+    {
+      kind: 'research' | 'opinion';
+      request: string;
+      questionId?: string | undefined;
+      questionTitle?: string | undefined;
+    }[]
+  > {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/addressed`,
       {
@@ -2088,7 +2109,14 @@ export class VerityClient {
     );
     return z
       .object({
-        requests: z.array(z.object({ kind: z.enum(['research', 'opinion']), request: z.string() })),
+        requests: z.array(
+          z.object({
+            kind: z.enum(['research', 'opinion']),
+            request: z.string(),
+            questionId: z.string().optional(),
+            questionTitle: z.string().optional(),
+          }),
+        ),
       })
       .parse(await res.json()).requests;
   }
@@ -3677,9 +3705,13 @@ export class VerityClient {
     );
   }
 
-  async listSessionLocalPreviewShares(sessionId: string): Promise<LocalPreviewShare[]> {
+  async listSessionLocalPreviewShares(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<LocalPreviewShare[]> {
     const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/local-shares`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return z
       .object({ shares: z.array(localPreviewShareSchema) })
@@ -3687,9 +3719,13 @@ export class VerityClient {
       .shares.map((share) => this.resolveLocalPreview(share));
   }
 
-  async listProjectLocalPreviewShares(projectId: string): Promise<LocalPreviewShare[]> {
+  async listProjectLocalPreviewShares(
+    projectId: string,
+    signal?: AbortSignal,
+  ): Promise<LocalPreviewShare[]> {
     const res = await this.request(`/projects/${encodeURIComponent(projectId)}/local-shares`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return z
       .object({ shares: z.array(localPreviewShareSchema) })
@@ -3709,11 +3745,15 @@ export class VerityClient {
     };
   }
 
-  async listManagedDevServers(sessionId: string): Promise<ManagedDevServer[] | null> {
+  async listManagedDevServers(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<ManagedDevServer[] | null> {
     let res: Response;
     try {
       res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/managed-dev-servers`, {
         method: 'GET',
+        ...(signal ? { signal } : {}),
       });
     } catch (err) {
       // An older Core has no such route, and one without Docker answers 503; the
@@ -3828,9 +3868,13 @@ export class VerityClient {
     await this.request(`/local-shares/${encodeURIComponent(shareId)}`, { method: 'DELETE' });
   }
 
-  async listPublicPreviewShares(projectId: string): Promise<PublicPreviewShare[]> {
+  async listPublicPreviewShares(
+    projectId: string,
+    signal?: AbortSignal,
+  ): Promise<PublicPreviewShare[]> {
     const res = await this.request(`/projects/${encodeURIComponent(projectId)}/public-shares`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return publicPreviewSharesResponseSchema.parse(await res.json()).shares;
   }
@@ -3891,11 +3935,15 @@ export class VerityClient {
   /** What the session is serving, or `null` when this Core predates port
    *  detection. Only the router's own "Route … not found" means that: the route
    *  also answers 404 for a missing session, which must not hide the feature. */
-  async listSessionDevServers(sessionId: string): Promise<SessionDevServer[] | null> {
+  async listSessionDevServers(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionDevServer[] | null> {
     let res: Response;
     try {
       res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/dev-servers`, {
         method: 'GET',
+        ...(signal ? { signal } : {}),
       });
     } catch (err) {
       // Fastify's default not-found body carries `error: 'Not Found'`; Core's
@@ -4331,9 +4379,10 @@ export class VerityClient {
   }
 
   /** The current + switchable branches of a session's worktree (#91). */
-  async getBranches(id: string): Promise<BranchList> {
+  async getBranches(id: string, signal?: AbortSignal): Promise<BranchList> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/branches`, {
       method: 'GET',
+      ...(signal ? { signal } : {}),
     });
     return branchListSchema.parse(await res.json());
   }
@@ -4614,10 +4663,12 @@ export class VerityClient {
 
   private async request(
     path: string,
-    init: RequestInit,
+    init: TransportRequestInit,
     fetchImpl: typeof fetch = this.fetchImpl,
     timingOverride?: { trace: SwitchTiming | undefined },
   ): Promise<Response> {
+    if ((init.method ?? 'GET') === 'GET')
+      init = { ...init, transportLane: readTransportLane(path) };
     // Attach the per-device bearer token (audit C1) when we have one. Callers
     // pass plain-object headers, so a record spread is safe; an explicit
     // Authorization in `init` (none today) would win by being spread last.

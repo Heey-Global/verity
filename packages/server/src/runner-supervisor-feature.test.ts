@@ -3593,7 +3593,7 @@ describe('verity-runner supervisor runtime', () => {
     expect((await readTurnState(runtimeDir, 'turn-1'))?.startCommandId).toBe('start-1');
   });
 
-  it('normalizes and bounds inline image attachments on the start request', () => {
+  it('validates turn-owned image references and rejects tampering', async () => {
     const base = {
       protocolVersion: 1,
       kind: 'start-turn',
@@ -3605,47 +3605,55 @@ describe('verity-runner supervisor runtime', () => {
       cwd: runtimeDir,
       prompt: 'look',
     };
-    // A valid image is carried through, reduced to exactly the fields the worker
-    // hands its backend (kind/mediaType/data), dropping anything extra.
+    const dir = join(runtimeDir, '.verity-sessions/attachments/turn-turn-1');
+    await mkdir(dir, { recursive: true });
+    const bytes = Buffer.from('original image bytes');
+    const filePath = join(dir, 'image.png');
+    await writeFile(filePath, bytes);
+    const image = {
+      kind: 'image',
+      mediaType: 'image/png',
+      filePath,
+      byteSize: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    };
     expect(
-      validateStartTurnRequest({
-        ...base,
-        attachments: [{ kind: 'image', mediaType: 'image/png', data: 'aGk=', extra: 'x' }],
-      }).attachments,
-    ).toEqual([{ kind: 'image', mediaType: 'image/png', data: 'aGk=' }]);
-    // A turn without attachments never gains the field (byte-identical to today).
+      validateStartTurnRequest({ ...base, attachments: [{ ...image, extra: 'x' }] }).attachments,
+    ).toEqual([image]);
     expect(validateStartTurnRequest(base)).not.toHaveProperty('attachments');
-    // File-kind uploads never reach here (materialized server-side); reject them.
+    for (const override of [
+      { kind: 'file' },
+      { mediaType: 'image/tiff' },
+      { byteSize: 0 },
+      { byteSize: bytes.length + 1 },
+      { sha256: '0'.repeat(64) },
+      { filePath: join(dir, '../image.png') },
+      { filePath: join(runtimeDir, '.verity-sessions/attachments/turn-other/image.png') },
+      { filePath: join(dir, 'missing.png') },
+    ]) {
+      expect(() =>
+        validateStartTurnRequest({ ...base, attachments: [{ ...image, ...override }] }),
+      ).toThrow(/invalid attachment/u);
+    }
     expect(() =>
-      validateStartTurnRequest({
-        ...base,
-        attachments: [{ kind: 'file', mediaType: 'application/pdf', fileName: 'a.pdf', data: 'x' }],
-      }),
-    ).toThrow(/invalid attachment/u);
-    // An unknown image media type and an empty data string are both rejected.
-    expect(() =>
-      validateStartTurnRequest({
-        ...base,
-        attachments: [{ kind: 'image', mediaType: 'image/tiff', data: 'x' }],
-      }),
-    ).toThrow(/invalid attachment/u);
-    expect(() =>
-      validateStartTurnRequest({
-        ...base,
-        attachments: [{ kind: 'image', mediaType: 'image/png', data: '' }],
-      }),
-    ).toThrow(/invalid attachment/u);
-    // More than the per-turn cap is rejected as a batch.
-    expect(() =>
-      validateStartTurnRequest({
-        ...base,
-        attachments: Array.from({ length: 9 }, () => ({
-          kind: 'image',
-          mediaType: 'image/png',
-          data: 'aGk=',
-        })),
-      }),
+      validateStartTurnRequest({ ...base, attachments: Array.from({ length: 9 }, () => image) }),
     ).toThrow(/invalid attachments/u);
+    await symlink(filePath, join(dir, 'symlink.png'));
+    expect(() =>
+      validateStartTurnRequest({
+        ...base,
+        attachments: [{ ...image, filePath: join(dir, 'symlink.png') }],
+      }),
+    ).toThrow(/invalid attachment/u);
+    await writeFile(filePath, Buffer.alloc(bytes.length, 42));
+    expect(() => validateStartTurnRequest({ ...base, attachments: [image] })).toThrow(
+      /invalid attachment/u,
+    );
+    await rename(dir, `${dir}-original`);
+    await symlink(`${dir}-original`, dir);
+    expect(() => validateStartTurnRequest({ ...base, attachments: [image] })).toThrow(
+      /invalid attachment/u,
+    );
   });
 
   it('ignores request fields it does not know', () => {
@@ -4978,7 +4986,28 @@ describe('verity-runner supervisor runtime', () => {
     }
   });
 
-  it('delivers inline image attachments to the worker over start-turn', async () => {
+  it('delivers large image references to the worker over start-turn', async () => {
+    const dir = join(runtimeDir, '.verity-sessions/attachments/turn-turn-image');
+    await mkdir(dir, { recursive: true });
+    const bytes = Buffer.alloc(3 * 1024 * 1024, 42);
+    const images: {
+      kind: 'image';
+      mediaType: 'image/png';
+      filePath: string;
+      byteSize: number;
+      sha256: string;
+    }[] = [];
+    for (let index = 0; index < 2; index += 1) {
+      const filePath = join(dir, `image-${String(index)}.png`);
+      await writeFile(filePath, bytes);
+      images.push({
+        kind: 'image',
+        mediaType: 'image/png',
+        filePath,
+        byteSize: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      });
+    }
     const supervisor = await runSupervisor({
       runtimeDir,
       // Pin runtime ownership to this process (self-owned mkdtemp) so the check passes
@@ -5003,11 +5032,10 @@ describe('verity-runner supervisor runtime', () => {
         worktree: runtimeDir,
         cwd: runtimeDir,
         prompt: 'describe this',
-        attachments: [{ kind: 'image', mediaType: 'image/png', data: 'aGk=' }],
+        attachments: images,
       });
       expect(imageResponse).toMatchObject({ ok: true, outcome: 'created' });
-      // The worker receives the SAME normalized image block the in-process runner
-      // hands its backend, persisted verbatim in request.json.
+      // Large image bytes must never inflate the persisted worker request.
       await vi.waitFor(async () => {
         expect(
           JSON.parse(
@@ -5016,7 +5044,7 @@ describe('verity-runner supervisor runtime', () => {
         ).toMatchObject({
           turnId: 'turn-image',
           prompt: 'describe this',
-          attachments: [{ kind: 'image', mediaType: 'image/png', data: 'aGk=' }],
+          attachments: images,
         });
       });
     } finally {
