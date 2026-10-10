@@ -3,7 +3,7 @@ import { type Backend, type SpawnedProcess, type Spawner } from '@verity/session
 import { DockerExecBackend, containerPathFor, dockerHostFor } from './project-backend.js';
 
 const AGENT_SEED_PATH =
-  'PATH=/opt/agent-seed/bin:/usr/local/share/nvm/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+  'PATH=/opt/verity/package-managers:/opt/agent-seed/bin:/usr/local/share/nvm/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const SIGNING_DOCKER_CONTAINER = 'VERITY_SIGNING_DOCKER_CONTAINER=dev-heey-global--verity';
 
 function fakeProcess(stdout: string[] = []): SpawnedProcess {

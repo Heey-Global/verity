@@ -591,4 +591,5 @@ export {
   type SwitchTiming,
 } from './sessionSwitchTiming.js';
 
+export { packageInstallSummary, packageInstallDecision } from './ui/packageInstallSummary.js';
 export type { TransportLane, TransportRequestInit } from './api.js';
