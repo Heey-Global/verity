@@ -16,6 +16,7 @@ describe('repository workflow API policy', () => {
     ['PATCH', '/git/refs/heads/automation/promote', 'git-write'],
     ['GET', '/pulls/12/reviews', 'pulls-read'],
     ['PUT', '/pulls/12/reviews/45/dismissals', 'pulls-write'],
+    ['PUT', '/pulls/12/update-branch', 'pulls-write'],
     ['POST', '/actions/workflows/ci.yml/dispatches', 'actions-write'],
     ['POST', '/actions/runs/123/rerun', 'actions-write'],
     ['POST', '/actions/runs/123/cancel', 'actions-write'],
@@ -286,3 +287,33 @@ it('keeps content paths out of status-token selection', async () => {
     ),
   ).resolves.toMatchObject({ action: 'git-read', authorization: 'Bearer contents-token' });
 });
+
+// Updating a PR branch must not grant other methods or adjacent routes.
+it.each(['GET', 'HEAD', 'POST', 'PATCH', 'DELETE', 'PUT'])(
+  'rejects unsupported update-branch requests: %s',
+  async (method) => {
+    let mints = 0;
+    const adapter = createGitHubForgeAdapter({
+      mint: async () => {
+        mints++;
+        return 'token';
+      },
+      transport: async () => {
+        throw new Error('unexpected');
+      },
+    });
+    for (const path of method === 'PUT'
+      ? ['/pulls/12/update-branch/extra', '/pulls/nope/update-branch']
+      : ['/pulls/12/update-branch']) {
+      await expect(
+        adapter.authorize(
+          { hostname: 'api.github.com', method, path: '/repos/acme/app' + path },
+          binding,
+          new Set<ForgeAction>(['pulls-read', 'pulls-write']),
+          AbortSignal.timeout(1000),
+        ),
+      ).rejects.toThrow();
+    }
+    expect(mints).toBe(0);
+  },
+);

@@ -76,6 +76,8 @@ export function githubRestAction(method: string, suffix: string): ForgeAction | 
       : ['POST', 'PATCH', 'DELETE'].includes(method)
         ? 'issues-write'
         : undefined;
+  if (/^\/pulls\/\d+\/update-branch$/.test(suffix))
+    return method === 'PUT' ? 'pulls-write' : undefined;
   if (
     /^\/pulls(?:\/\d+)?(?:\/(?:commits|files|merge|reviews|comments))?$/.test(suffix) ||
     /^\/pulls\/\d+\/reviews\/\d+(?:\/dismissals)?$/.test(suffix)
