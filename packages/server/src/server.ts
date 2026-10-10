@@ -287,6 +287,7 @@ import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { registerGitHubTokenRoute } from './github-token-route.js';
 import { registerProjectMemoryRoute } from './project-memory-route.js';
+import { registerPackageInstallRoute } from './package-install-route.js';
 import {
   appendProjectOverview,
   markProjectOverviewAuthoritative,
@@ -5409,6 +5410,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.sshSign !== undefined ? { sshSign: deps.sshSign } : {}),
   });
   registerGitHubTokenRoute(app);
+  registerPackageInstallRoute(app, {
+    store: deps.eventStore,
+    conductor,
+    appendNotice: async (sessionId, text) => {
+      await emitSessionEvent(deps.eventStore, deps.bus, sessionId, {
+        t: 'notice',
+        text,
+        role: 'agent',
+      });
+    },
+    ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
+  });
   registerProjectMemoryRoute(app, {
     append: async (projectId, text) => {
       if (deps.dataRoot !== undefined) {

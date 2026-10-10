@@ -13,6 +13,14 @@ Feature so a single `install.sh` is the source of truth for both consume paths:
 
 Same script, same result — no drift between the baked base and per-user builds.
 
+## Dependency release delay
+
+Agent sessions put the toolkit's npm, pnpm, Yarn, Bun, pip, and uv wrappers first
+on PATH. Install commands use a project-bound broker to offer a persistent,
+optional three-day release delay before executing the real package manager.
+See [Dependency release delay](../../docs/package-release-delay.md) for supported
+versions, configuration files, and coverage limits.
+
 ## Trusted CLI argument policies
 
 A trusted CLI whose arguments are identifiers rather than filesystem operands

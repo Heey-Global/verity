@@ -36,7 +36,7 @@ export interface DockerExecBackendOptions {
 // through to agent exec sessions — no gh-token file is projected here. PATH is
 // re-set so /opt/agent-seed/bin (the gh wrapper + credential helper) wins.
 const AGENT_EXEC_BASE_ENV: Record<string, string> = {
-  PATH: '/opt/agent-seed/bin:/usr/local/share/nvm/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+  PATH: '/opt/verity/package-managers:/opt/agent-seed/bin:/usr/local/share/nvm/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
 };
 
 function stripTrailingSlashes(path: string): string {

@@ -347,6 +347,11 @@ export interface ProjectsTable {
   state_changed_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
+export interface ProjectPackageProtectionTable {
+  project_id: string;
+  decision: 'protected' | 'skipped';
+}
+
 interface ProjectIdentityClaimsTable {
   owner: string;
   repo: string;
@@ -1406,6 +1411,7 @@ export interface Database {
   project_memberships: ProjectMembershipsTable;
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;
+  project_package_protection: ProjectPackageProtectionTable;
   verity_settings: VeritySettingsTable;
   secret_key_meta: SecretKeyMetaTable;
   auth_tokens: AuthTokenTable;

@@ -4161,6 +4161,18 @@ const migrations: Record<string, Migration> = {
   },
 };
 
+migrations['0151_project_package_protection'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table project_package_protection (
+      project_id text primary key references projects(id) on delete cascade,
+      decision text not null check (decision in ('protected', 'skipped'))
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table project_package_protection`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

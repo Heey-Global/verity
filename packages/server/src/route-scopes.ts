@@ -196,6 +196,12 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
     'container-capability',
     'per-container capability, presented by the sandbox `verity-dev-server` command',
   ),
+  declare(
+    'POST',
+    '/internal/package-install',
+    'container-capability',
+    'per-container capability, presented by the sandbox package-manager shims',
+  ),
   // Both methods: the MCP endpoint answers POST for calls and GET for the
   // server-sent event stream, and the same per-turn bearer covers both.
   declare(
