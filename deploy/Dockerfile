@@ -289,6 +289,9 @@ RUN install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runne
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-agent-run /usr/local/bin/verity-agent-run
 COPY deploy/bin/verity-control-plane-runner-start /usr/local/bin/verity-control-plane-runner-start
 COPY deploy/bin/verity-control-plane-git-sign /usr/local/bin/verity-control-plane-git-sign
+COPY deploy/bin/verity-control-plane-memory /usr/local/bin/verity-memory
+COPY deploy/bin/verity-control-plane-knowledge-init /usr/local/bin/verity-control-plane-knowledge-init
+RUN chmod 0755 /usr/local/bin/verity-memory /usr/local/bin/verity-control-plane-knowledge-init
 # The launcher calls this one and treats a non-zero exit as fatal, so an image
 # that forgets it does not degrade quietly — it refuses to start the
 # control-plane Runner. `verity-compose.test.ts` pins the pair for that reason.

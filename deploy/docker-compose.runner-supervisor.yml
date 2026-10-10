@@ -57,6 +57,8 @@ services:
         mkdir -p /data/workspaces/verity-control /data/sessions /data/runners /data/secrets/opencode &&
         chown 1000:1000 /data /data/workspaces /data/sessions /data/runners /data/secrets /data/secrets/opencode &&
         chmod 0700 /data/secrets && chmod 0755 /data/secrets/opencode &&
+        setpriv --reuid=1000 --regid=1000 --clear-groups
+          /usr/local/bin/verity-control-plane-knowledge-init /data &&
         chown -R 1000:1000 /data/workspaces/verity-control &&
         if ! setpriv --reuid=1000 --regid=1000 --clear-groups
           git -C /data/workspaces/verity-control rev-parse --verify HEAD >/dev/null 2>&1; then
@@ -131,6 +133,7 @@ services:
       # packages/server/src/self-update/managed-control-plane-runner.ts and the default in
       # deploy/bin/verity-control-plane-runner-start.
       VERITY_MCP_GATEWAY_URL: http://verity:8083/internal/control-plane/mcp
+      VERITY_CONTROL_MEMORY_URL: http://verity:8083/internal/control-plane/memory
       VERITY_CLAUDE_EGRESS_URL: https://verity-agent-gateway:9443
       VERITY_CLAUDE_EGRESS_SERVERNAME: verity-agent-gateway
       VERITY_CODEX_EGRESS_URL: https://verity-agent-gateway:9444
@@ -177,6 +180,25 @@ services:
       timeout: 5s
       retries: 3
     volumes:
+      # Only Control's project root is exposed; immutable material stays read-only.
+      - type: volume
+        source: verity-data
+        target: /knowledge
+        read_only: true
+        volume:
+          subpath: knowledge/verity-control
+      - type: volume
+        source: verity-data
+        target: /knowledge/insights
+        read_only: false
+        volume:
+          subpath: knowledge/verity-control/insights
+      - type: volume
+        source: verity-data
+        target: /knowledge/shared
+        read_only: true
+        volume:
+          subpath: knowledge/shared
       - verity-control-runner-runtime:/run/verity-runner
       - verity-control-runner-identity:/run/verity-control-identity:ro
       - type: volume

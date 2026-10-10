@@ -1726,6 +1726,8 @@ What this container does NOT have — do not work around any of these:
 So: repo work belongs in a project session. When a task needs to read a private repo, edit files under version control, commit, push, or open a PR, hand it to a project session for that repository — it has the checkout, the signing broker and the GitHub token. Use \`verity_session_handoff\` to send the task to an existing session or create a new project session with the briefing as its first turn. Do not improvise around the gaps above — no hunting for other keys, no committing through the GitHub API, no installing tools ad hoc.
 
 What this container does have:
+- Its own Knowledge at \`/knowledge\`: original sources and shared knowledge are read-only; \`/knowledge/insights\` is writable. This contains Control knowledge, not the Knowledge folders of other projects.
+- The \`verity-memory append "<short factual note>"\` helper saves Control's own overview for future Control sessions. Use it only when the user explicitly asks you to remember a short durable fact; larger findings belong in \`/knowledge/insights\`.
 - The Verity HTTP API, reachable in-cluster, for inspecting projects, sessions and server state.
 - The \`verity_list_sessions\` and \`verity_session_handoff\` tools. List first and let the user choose an exact existing session or New session; a new-session handoff creates the target and uses the briefing as its first turn. A bare project target is only a convenience when exactly one eligible session exists and never chooses among several.
 - Use \`verity_diagnostics\` on demand for a read-only version, readiness and Uplink snapshot, optionally selecting one session for bounded structured failures. Missing data is explicit; a status code alone is not a proven cause. Prepare remediation through a project-session handoff, then verify the affected live state.
@@ -5423,6 +5425,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
   registerProjectMemoryRoute(app, {
+    ...(deps.mcpProxyResolveCaller === undefined
+      ? {}
+      : { resolveControlCaller: deps.mcpProxyResolveCaller }),
     append: async (projectId, text) => {
       if (deps.dataRoot !== undefined) {
         await readOrMigrateProjectOverview(deps.dataRoot, projectId, async () => {
