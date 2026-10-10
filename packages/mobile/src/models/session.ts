@@ -1165,7 +1165,6 @@ export class SessionModel {
     // async via onChange, so a fast double-tap can call this twice before the
     // re-render — without this guard both would POST a turn from one intent.
     if (this._sending) return false;
-    this._cancelRequested = false;
     this._sending = true;
     this._sendError = undefined;
     this._cancelError = undefined; // a new turn clears a stale stop-error banner

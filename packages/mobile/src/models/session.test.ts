@@ -975,6 +975,7 @@ describe('SessionModel — cancel (#79)', () => {
     const { connect, sockets } = recordingConnect();
     let finishCancel!: (result: { sessionId: string; cancelled: boolean }) => void;
     const client = stubClient();
+    client.sendTurn = vi.fn().mockRejectedValue(new Error('offline'));
     client.cancelTurn = vi.fn().mockReturnValue(
       new Promise((resolve) => {
         finishCancel = resolve;
@@ -1010,7 +1011,9 @@ describe('SessionModel — cancel (#79)', () => {
       model.refreshActivity();
       await flush();
       expect(agentTexts(model.state)).toEqual(['visible']);
+      await model.sendTurn('failed successor');
       expect(model.state.working).toBe(false);
+      expect(model.state.activityAnimating).toBe(false);
 
       finishCancel({ sessionId: 's1', cancelled: true });
       await cancellation;
