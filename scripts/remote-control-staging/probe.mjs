@@ -137,8 +137,10 @@ try {
       });
     });
     socket.on('error', fail);
-    socket.on('close', () => {
-      if (!attached) fail(new Error('Admission closed before data attachment.'));
+    socket.on('close', (code) => {
+      // A validated ready response completes admission before native DATA attaches.
+      if (!child || code !== 1000)
+        fail(new Error('Admission closed before successful completion.'));
     });
   });
   const watchdog = new Promise((_, reject) => {
