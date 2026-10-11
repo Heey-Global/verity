@@ -16,7 +16,9 @@ connection must already have `remote-control-v1` negotiated and the
 `remote-control` feature. The probe opens App admission, waits for a matching
 short-lived ticket, accepts normal admission completion after a validated ready response, and
 uses the Swift smoke tunnel and the production app tunnel to make separate
-HTTPS GET requests. Both must receive HTTP 200 through pinned inner TLS.
+HTTPS GET requests to `/healthz` on the paired Core host and port. This public
+liveness route needs no device bearer token; the paired TLS identity and pin
+remain unchanged. Both must receive HTTP 200 through pinned inner TLS.
 A third app-mode run sets `VERITY_REMOTE_PROBE_IDLE_SECONDS=40` and pauses
 before its last request, longer than the 15-second data heartbeat: an app
 attachment that ends while idle fails that run with the tunnel's stop reason.

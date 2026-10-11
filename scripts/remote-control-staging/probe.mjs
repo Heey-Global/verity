@@ -108,6 +108,9 @@ try {
         env: {
           ...process.env,
           VERITY_REMOTE_DATA_URL: dataUrl.href,
+          // No device token is available: probe the public liveness route.
+          // URL resolution preserves the paired TLS host and port.
+          VERITY_REMOTE_CORE_URL: new URL('/healthz', coreUrl).href,
           VERITY_REMOTE_TICKET: frame.ticket,
           VERITY_REMOTE_SESSION_ID: frame.sessionId,
         },

@@ -58,7 +58,7 @@ async function fixture(t, response, status = 200, closeCode) {
   const binary = join(directory, 'fake-probe');
   writeFileSync(
     binary,
-    `#!/usr/bin/env node\nif (process.env.VERITY_REMOTE_TICKET !== "test_ticket") process.exit(2);\nconsole.log("attached"); console.log("Core HTTPS status: ${status}");\n`,
+    `#!/usr/bin/env node\nif (process.env.VERITY_REMOTE_TICKET !== "test_ticket") process.exit(2);\nif (process.env.VERITY_REMOTE_CORE_URL !== "https://core.example:8082/healthz") process.exit(3);\nconsole.log("attached"); console.log("Core HTTPS status: ${status}");\n`,
     { mode: 0o755 },
   );
   const address = server.address();
@@ -74,7 +74,7 @@ function runProbe(input) {
         NODE_EXTRA_CA_CERTS: input.cert,
         VERITY_REMOTE_UPLINK_ORIGIN: input.origin,
         VERITY_REMOTE_INSTALLATION_HANDLE: 'test_handle',
-        VERITY_REMOTE_CORE_URL: 'https://core.example/',
+        VERITY_REMOTE_CORE_URL: 'https://core.example:8082/',
         VERITY_REMOTE_CORE_PIN: `sha256-${'a'.repeat(43)}`,
         VERITY_REMOTE_PROBE_BINARY: input.binary,
         ...(input.soakSeconds === undefined
