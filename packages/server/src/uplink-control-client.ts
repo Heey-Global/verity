@@ -1027,6 +1027,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       if (hadSharing && !this.features.has('sharing')) {
         this.beginDrain();
         const reason = 'Uplink removed public preview entitlement';
+        this.resolveReady();
         this.cancelPending(reason);
         await this.disableFeaturesOnce(reason);
       }

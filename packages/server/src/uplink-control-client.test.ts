@@ -3150,6 +3150,25 @@ describe('Uplink connection demand', () => {
     expect(f.disabled).not.toHaveBeenCalled();
     await f.client.stop();
   });
+  it('returns checked idle diagnostics when a rights check withdraws the last entitlement', async () => {
+    const f = await welcomed(setup({ premiumRemoteAccessEnabled: false }));
+    const checking = f.client.checkEntitlements();
+    await flush();
+    f.socket.message({
+      type: 'renewed',
+      features: [],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await expect(checking).resolves.toMatchObject({
+      control: 'idle',
+      entitlement: 'checked',
+      idleReason: 'not-granted',
+      sharing: 'unavailable',
+    });
+    expect(f.disabled).toHaveBeenCalled();
+    await f.client.stop();
+  });
+
   it('does not extend remote rights past their lease while recovering a lost connection', async () => {
     const f = setupReconnecting();
     f.client.start();
