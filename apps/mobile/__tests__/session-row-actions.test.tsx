@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
-import { Text } from 'react-native';
+import { Platform, Text } from 'react-native';
 import { GestureDetector } from 'react-native-gesture-handler';
 
 import {
@@ -146,6 +146,22 @@ describe('SwipeableSessionRow gesture diagnostics', () => {
         <Text>row content</Text>
       </SwipeableSessionRow>,
     );
+
+  it('keeps the browser row mounted when recording is toggled', () => {
+    const original = Platform.OS;
+    Platform.OS = 'web';
+    try {
+      renderRow();
+      const content = screen.getByText('row content');
+      act(() => setGestureDiagnosticsEnabled(true));
+      expect(screen.getByText('row content')).toBe(content);
+      expect(observers()).toHaveLength(0);
+      act(() => setGestureDiagnosticsEnabled(false));
+      expect(screen.getByText('row content')).toBe(content);
+    } finally {
+      Platform.OS = original;
+    }
+  });
 
   it('records lock changes, which a locked row cannot report through touches', () => {
     const row = (disabled: boolean) => (

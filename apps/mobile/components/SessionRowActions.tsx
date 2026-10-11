@@ -143,7 +143,8 @@ export function SwipeableSessionRow({
     [],
   );
   const observer = useMemo(
-    () => (recording ? rowTouchObserver(record, () => widthRef.current) : null),
+    () =>
+      recording && Platform.OS !== 'web' ? rowTouchObserver(record, () => widthRef.current) : null,
     [recording, record],
   );
   // A locked row sets pointerEvents to none, so no touch reaches the observer
