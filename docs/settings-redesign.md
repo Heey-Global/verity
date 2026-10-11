@@ -215,7 +215,7 @@ No Save/Reset bar. Persistence is per-change:
 - Saves are partial `PATCH /settings` (already partial-friendly via `patchFromDraft` /
   `secretPatchFromDraft`) — send only the changed field.
 - **Errors are per-field and inline.** A sealed-store `503` on a secret field →
-  `Unlock the secret store first` under that field, value reverts. No floating error bar.
+  `Unlock the secret store first` under that field; retain the entered value without persisting it. No floating error bar.
 - No global "Reset" — re-editing a field is the undo. (A per-field revert affordance is
   optional polish, not v1.)
 
@@ -223,24 +223,12 @@ No Save/Reset bar. Persistence is per-change:
 
 ## 5. Status system
 
-One pill component, driven by an intent — the **word is always rendered in `text`/`textMuted`
-colour at ≥ 4.5:1** and carries a **leading glyph**; the tone only drives dot/border/background.
+Status appearance follows [the design system's shared status component](./design-system.md#54-status).
+Intents and reserved labels follow [Status intents](./design-system.md#8-status-intents)
+and [Wording](./design-system.md#11-wording). This screen defines no separate palette,
+glyph policy, or status component.
 
-| Intent | Colour token | Glyph | Example labels |
-| --- | --- | --- | --- |
-| Ready / done | `tone.done` (green) `#3aa657` / `#28e6a4` | ✓ | `Signing ready`, `Connected`, `Unlocked` |
-| Needs setup | `tone.danger` (**Himbeere**) `#d84f74` / `#ff5c8a` | ! | `Needs setup` |
-| Optional / empty | muted `textMuted` detail text, **no pill** | – | `Optional`, `Not configured` |
-| Transient / in progress | neutral, no tone | spinner | `Saving…`, `Checking`, `Reprovisioning 2/5` |
-
-- **Amber (`tone.attention`) is retired from this screen. [decided]** It fails WCAG 1.4.3
-  in light (`#e8a33d` ≈ 2.2:1) and in dark mode was set to the exact accent magenta
-  (`#ff35da == accent`), making "act now" indistinguishable from decorative chrome.
-- **Himbeere for "needs setup". [decided]** Distinct from the magenta accent, respects the
-  "no orange" brand preference, one token for both themes. It also serves danger/destructive
-  buttons (Logout, Reprovision) — acceptable because those are **buttons**, needs-setup is a
-  **status pill**; context and the glyph+word redundancy disambiguate.
-- Retires `Missing` / `Not set` / `0/4 set` / `Incomplete · N/6`.
+Retire `Missing`, `Not set`, `0/4 set`, and `Incomplete · N/6`.
 
 ---
 

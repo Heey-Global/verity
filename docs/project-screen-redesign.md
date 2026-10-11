@@ -228,26 +228,20 @@ DOPPLER
   the sub-screen carries the same subtle global `Saving…` / `✓ All changes saved` line plus a
   `Last saved HH:MM` footer — it must not drop it.
 - **Sealed store.** The Doppler-token field inherits the sealed-store handling verbatim: a
-  `503` shows `Unlock the secret store first` under the field and reverts the value.
+  `503` shows `Unlock the secret store first` under the field; retain the entered value without persisting it.
 
 ## 6. Status system  (shared with the server spec)
 
-Reuse the exact same pill (server spec §5): word in `text`/`textMuted` ≥ 4.5:1 + leading
-glyph; tone only drives dot/border/background; **green = ready · Himbeere = needs setup ·
-muted text = optional**. Map the current project vocab onto it:
+Use [the shared status component](./design-system.md#54-status) and
+[status intents](./design-system.md#8-status-intents), with labels from
+[the wording glossary](./design-system.md#11-wording). No project-specific status palette
+or glyph policy is introduced.
 
-| Today | New |
-| --- | --- |
-| Dev server `Running` | green `✓ Running` |
-| Dev server `Ready` | muted `Ready` |
-| Dev server absent, **optional** | muted `Not configured` (never Himbeere) |
-| Dev server absent but **required** | Himbeere `! Needs setup` |
-| Dev server `Error` / `Unreachable` | Himbeere `! Needs setup` |
-| Sandbox image `Update available` / `Security update` | green `✓ Up to date` / Himbeere `! Update available` |
-| Doppler `Minted` / `Bound` | green `✓ Minted` / `transient` `Bound` (spinner + word, not muted) |
-| Container `Active` / `Failed` / `Absent` | green `✓ Active` / Himbeere `! Failed` / muted `Absent` |
-
-Live/transient states (`Checking`, `Starting`, `Stopping`) keep a spinner + word, not a tone.
+Map live dev servers, minted Doppler bindings, active containers, and current sandbox
+images to `ready`. Required missing services, unreachable services, failed containers,
+and available sandbox updates use `needsSetup`. Optional absent services use `optional`.
+In-progress operations, including binding before minting, use `transient` with a spinner
+and word. Preserve the distinction between `Running` for processes and `Active` for containers.
 
 ## 7. Automations (Monitors)  — first-class, needs server work
 

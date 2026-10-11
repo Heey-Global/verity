@@ -45,7 +45,7 @@ and restate nothing; if one disagrees with it, this document wins.
 | Text            | `text`        | `#f5f5f8`           | `#0d0f17`              | Titles and body                                                                        |
 | Muted text      | `textMuted`   | `#a5a8b8`           | `#4a4f62`              | Subtitles, values, labels, section headers in lists, icons                             |
 | Faint text      | `textFaint`   | `#80849a`           | `#62677c`              | Placeholders, footnotes, chevrons, inactive                                            |
-| Action          | `action`      | `#18c8f5`           | `#066a8c`              | Everything that can be tapped: buttons, links, focus, toggle (on)                      |
+| Action          | `action`      | `#18c8f5`           | `#056485`              | Everything that can be tapped: buttons, links, focus, toggle (on)                      |
 | Action label    | `actionLabel` | `#6fdcf8`           | `#055a78`              | Label of the tonal primary button                                                      |
 | Signature       | `signature`   | `#ff18b7`           | `#b0107d`              | Brand only: content-screen eyebrows, Premium icon, success moment. **Never an action** |
 | Success         | `success`     | `#2ee6a6`           | `#0e6845`              | Connected, active, done                                                                |
