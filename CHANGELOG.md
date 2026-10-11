@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.39.0](https://github.com/Heey-Global/verity/compare/v4.38.2...v4.39.0) (2026-10-11)
+
+
+### Features
+
+* **diagnostics:** retain bounded remote return-path evidence ([#1520](https://github.com/Heey-Global/verity/issues/1520)) ([3b53db4](https://github.com/Heey-Global/verity/commit/3b53db48d957565e5228eb39d68b5984ef090a94))
+
 ## [4.38.2](https://github.com/Heey-Global/verity/compare/v4.38.1...v4.38.2) (2026-10-11)
 
 
