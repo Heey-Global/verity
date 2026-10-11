@@ -63,7 +63,12 @@ it('does not celebrate a rejected key and keeps replacement available', async ()
   fireEvent.press(await screen.findByLabelText('Enter subscription key'));
   fireEvent.changeText(screen.getByPlaceholderText('Paste your subscription key'), 'bad-key');
   fireEvent.press(screen.getByLabelText('Activate'));
-  expect(await screen.findByText('This subscription key was not recognized.')).toBeOnTheScreen();
+  expect(
+    await screen.findByText('This key is not known to Verity Uplink. Check it in your account.'),
+  ).toBeOnTheScreen();
+  // The reason sits on the field as a tag; the key stays so it can be corrected.
+  expect(screen.getByText('UNKNOWN')).toBeOnTheScreen();
+  expect(screen.getByLabelText('Uplink subscription key').props.value).toBe('bad-key');
   expect(screen.queryByText('Premium is active')).toBeNull();
 });
 it('confirms revocation before switching Online sharing off', async () => {
@@ -123,6 +128,17 @@ it('retries failed switch writes from the error banner', async () => {
   await waitFor(() => expect(screen.queryByText('Retry')).toBeNull());
 });
 
+it('shows the managed subscription as one card with tag, switches and a diagnostics entry', async () => {
+  clientWithKey(true);
+  render(<PremiumScreen />);
+  expect(await screen.findByText('ACTIVE')).toBeOnTheScreen();
+  expect(screen.getByText('Connected to Uplink')).toBeOnTheScreen();
+  expect(screen.getByText('SOON')).toBeOnTheScreen();
+  expect(screen.getAllByRole('switch')).toHaveLength(2);
+  expect(screen.getByText('Uplink connected · all features on')).toBeOnTheScreen();
+  expect(screen.queryByLabelText('Enter subscription key')).toBeNull();
+});
+
 it('accepts a verified activation that already returned to idle', async () => {
   const { client } = clientWithKey();
   client.getUplinkDiagnostics = jest.fn().mockResolvedValue({
@@ -137,4 +153,12 @@ it('accepts a verified activation that already returned to idle', async () => {
   fireEvent.changeText(screen.getByPlaceholderText('Paste your subscription key'), 'fixture-key');
   fireEvent.press(screen.getByLabelText('Activate'));
   expect(await screen.findByText('Premium is active')).toBeOnTheScreen();
+});
+
+it('ignores Return on an empty key field so a stored key is never overwritten', async () => {
+  const { update } = clientWithKey(true);
+  render(<PremiumScreen />);
+  fireEvent.press(await screen.findByLabelText('Replace subscription key'));
+  fireEvent(screen.getByLabelText('Uplink subscription key'), 'submitEditing');
+  expect(update).not.toHaveBeenCalled();
 });

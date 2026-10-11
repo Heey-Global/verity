@@ -64,6 +64,13 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     alignSelf: 'center',
     gap: theme.spacing.xl,
   },
+  scaffoldFooter: {
+    width: '100%',
+    maxWidth: 760,
+    alignSelf: 'center',
+    paddingHorizontal: theme.spacing.xl,
+    paddingTop: theme.spacing.sm,
+  },
   detailContent: {
     width: '100%',
     maxWidth: 760,

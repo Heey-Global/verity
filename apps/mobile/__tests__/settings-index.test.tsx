@@ -66,6 +66,25 @@ describe('settings index — destinations', () => {
     expect(await screen.findByText('3 connected')).toBeOnTheScreen();
   });
 
+  // A stored key is not an active subscription; the row must not say "Active"
+  // while Uplink refuses it.
+  it('flags a rejected subscription key on the Verity Premium row', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        settings: makeSettings({ uplinkSubscriptionKeyConfigured: true }),
+        getUplinkDiagnostics: jest.fn().mockResolvedValue({
+          control: 'rejected',
+          reason: 'revoked',
+          sharing: 'unavailable',
+          remoteControl: 'unavailable',
+        }),
+      }),
+    );
+    render(<SettingsIndexScreen />);
+    expect(await screen.findByLabelText('Key rejected')).toBeOnTheScreen();
+    expect(screen.queryByLabelText('Active')).toBeNull();
+  });
+
   it('renders a not-connected message when no server URL is configured', () => {
     mockCreateVerityClient.mockReturnValue(null);
     render(<SettingsIndexScreen />);

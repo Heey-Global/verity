@@ -7,7 +7,8 @@ import {
 import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { getServerProfile } from '../../lib/serverProfile';
 import { exportRemoteDataDiagnostics } from '../../lib/remoteDataDiagnostics';
@@ -15,9 +16,7 @@ import {
   remoteControlFailureForUrl,
   testRemoteControlForUrl,
 } from '../../lib/remoteControlTransport';
-import { settingsStyles as styles } from './settingsStyles';
-import { SettingsPanel } from './SettingsChrome';
-import { StatusPill } from '../StatusPill';
+import { CardRow, DotValue, Eyebrow, RowCard, type DotTone } from '../premium/PremiumChrome';
 import { premiumFeatures } from '../premium/premiumFeatures';
 
 // One line per stream, in Core's words: what arrived from the phone, what the
@@ -43,19 +42,24 @@ function streamLine(record: RemoteStreamRecord): string {
 }
 
 function controlLabel(value: UplinkDiagnostics): string {
-  if (value.control === 'idle') return 'Disconnected — no active use';
-  if (value.control === 'connected') return 'Connected to Uplink';
+  if (value.control === 'idle') return value.entitlement === 'checked' ? 'On demand' : 'Idle';
+  if (value.control === 'connected') return 'Connected';
   if (value.control === 'rejected') {
     return value.reason === 'revoked'
-      ? 'Subscription key revoked'
+      ? 'Key revoked'
       : value.reason === 'expired'
-        ? 'Subscription key expired'
-        : 'Subscription key rejected';
+        ? 'Key expired'
+        : 'Key rejected';
   }
-  if (value.control === 'disabled') return 'Uplink is disabled on Core';
-  return value.control === 'connecting' ? 'Connecting to Uplink' : 'Reconnecting to Uplink';
+  if (value.control === 'disabled') return 'Disabled';
+  return value.control === 'connecting' ? 'Connecting' : 'Reconnecting';
 }
 
+/**
+ * The Connection and Tests sections of Settings › Diagnostics: Uplink and the
+ * two Premium features as status dots, then the Remote access round trip and
+ * its connection recording. One component because a test refreshes the status.
+ */
 export function PublicPreviewDiagnostics({
   client,
   keyConfigured,
@@ -66,6 +70,8 @@ export function PublicPreviewDiagnostics({
   const [status, setStatus] = useState<UplinkDiagnostics | null>(null);
   const [statusError, setStatusError] = useState<'unsupported' | 'unavailable' | null>(null);
   const [checking, setChecking] = useState(false);
+  const [rightsChecking, setRightsChecking] = useState(false);
+  const [rightsFailed, setRightsFailed] = useState(false);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
   const refresh = useCallback(async () => {
@@ -128,144 +134,203 @@ export function PublicPreviewDiagnostics({
     }
   };
 
-  return (
-    <SettingsPanel>
-      <View style={styles.secretLabelRow}>
-        <Text style={styles.pathLabel}>Uplink</Text>
-        <StatusPill
-          quiet
-          intent={
-            keyConfigured === false
-              ? 'optional'
-              : status?.control === 'connected'
-                ? 'ready'
-                : status?.control === 'rejected' || statusError
-                  ? 'needsSetup'
-                  : status?.control === 'idle'
-                    ? 'optional'
-                    : 'transient'
+  const uplink: { tone: DotTone; label: string; subtitle?: string | undefined } =
+    keyConfigured === false
+      ? { tone: 'off', label: 'Off', subtitle: 'No subscription key' }
+      : status
+        ? {
+            tone:
+              status.control === 'connected' ||
+              (status.control === 'idle' && status.entitlement === 'checked')
+                ? 'ok'
+                : status.control === 'rejected'
+                  ? 'error'
+                  : 'off',
+            label: controlLabel(status),
+            // Uplink connects only while a share or Remote access needs it.
+            subtitle:
+              status.control === 'idle'
+                ? status.entitlement === 'checked'
+                  ? 'Connects when a feature is in use'
+                  : 'Rights are checked when a feature is first used'
+                : undefined,
           }
-          label={
-            keyConfigured === false
-              ? 'No subscription'
-              : status
-                ? controlLabel(status)
-                : statusError === 'unsupported'
-                  ? 'Update server'
-                  : statusError
-                    ? 'Unavailable'
-                    : 'Checking…'
-          }
-        />
-      </View>
-      <Pressable
-        accessibilityRole="button"
-        disabled={checking || !keyConfigured}
-        onPress={() => {
-          setChecking(true);
-          void client
-            .checkUplinkEntitlements()
-            .then((value) => {
-              setStatus(value);
-              setStatusError(null);
-            })
-            .catch(() => setStatusError('unavailable'))
-            .finally(() => setChecking(false));
-        }}
-      >
-        <Text style={styles.linkText}>Check subscription rights</Text>
-      </Pressable>
-      {premiumFeatures
-        .filter((feature) => feature.id !== 'teams')
-        .map((feature) => {
-          const state = status?.features?.[feature.id];
-          const ready =
-            feature.id === 'sharing'
-              ? status?.sharing === 'ready'
-              : status?.remoteControl === 'ready';
-          const label =
-            state?.enabled === false
-              ? 'Off'
-              : ready
-                ? 'Ready'
-                : (status?.control === 'connected' || status?.entitlement === 'checked') &&
-                    state?.granted === false
-                  ? 'Not included'
-                  : status?.control === 'idle'
-                    ? status.entitlement === 'unchecked'
-                      ? 'Not checked'
-                      : feature.id === 'sharing' && state?.granted
-                        ? 'Ready on demand'
-                        : 'Unavailable'
-                    : 'Unavailable';
-          return (
-            <View key={feature.id} style={styles.secretLabelRow}>
-              <Text style={styles.pathLabel}>{feature.name}</Text>
-              <StatusPill quiet intent={ready ? 'ready' : 'optional'} label={label} />
-            </View>
-          );
-        })}
-      <Text style={styles.reproHint}>
-        iPhone route: {route ? 'Saved' : 'Missing — connect through VPN to refresh it'}
-      </Text>
-      {status?.lastCloseCode !== undefined ? (
-        <Text style={styles.reproHint}>Last Uplink close code: {status.lastCloseCode}</Text>
-      ) : null}
-      {profile && route ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Test Remote access through Uplink"
-          disabled={checking}
-          onPress={() => void runTest()}
-          style={[styles.retryButton, styles.selfStart, checking ? styles.buttonDisabled : null]}
-        >
-          <Text style={styles.retryButtonLabel}>
-            {checking ? 'Testing Remote access…' : 'Test Remote access'}
-          </Text>
-        </Pressable>
-      ) : null}
-      {profile && route ? (
-        <>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Record Remote access connection test"
-            disabled={checking}
-            onPress={() => void runTest(true)}
-          >
-            <Text style={styles.linkText}>Record connection test</Text>
-          </Pressable>
-          <Text style={styles.reproHint}>
-            Starts a fresh connection and records events and counters for up to two minutes.
-            Interrupts current remote requests. No addresses, credentials or content are recorded.
-          </Text>
-          <Pressable accessibilityRole="button" onPress={() => void copyCapture()}>
-            <Text style={styles.linkText}>Copy connection recording</Text>
-          </Pressable>
-        </>
-      ) : null}
-      {exportStatus ? <Text style={styles.reproHint}>{exportStatus}</Text> : null}
-      {testResult ? <Text style={styles.reproHint}>{testResult}</Text> : null}
-      {status?.remoteStreams !== undefined ? (
-        <Text style={styles.reproHint}>
-          Core streams:{' '}
-          {status.remoteStreams.length === 0
+        : statusError === 'unsupported'
+          ? { tone: 'error', label: 'Update server' }
+          : statusError === 'unavailable'
+            ? {
+                tone: 'error',
+                label: 'Unavailable',
+                subtitle:
+                  (profile ? remoteControlFailureForUrl(profile.activeUrl) : null) ??
+                  'Core did not answer; use the Remote access test to locate the failure.',
+              }
+            : { tone: 'off', label: 'Checking…' };
+  const details = [
+    status?.lastCloseCode !== undefined ? `Last Uplink close code: ${status.lastCloseCode}` : null,
+    status?.remoteStreams !== undefined
+      ? `Core streams: ${
+          status.remoteStreams.length === 0
             ? 'none since Core started'
-            : status.remoteStreams.map(streamLine).join('\n')}
-        </Text>
-      ) : null}
-      <Text style={styles.reproHint}>
-        Online sharing connects when a share starts and disconnects after the last share ends,
-        unless Remote access needs the connection. Subscription rights are checked when connecting.
-      </Text>
-      {statusError === 'unavailable' && profile ? (
-        <Text style={styles.reproHint}>
-          {remoteControlFailureForUrl(profile.activeUrl) ??
-            'Core did not answer; use the Remote access test to locate the failure.'}
-        </Text>
-      ) : null}
-      <Pressable accessibilityRole="button" onPress={() => void refresh()}>
-        <Text style={styles.linkText}>Refresh status</Text>
-      </Pressable>
-    </SettingsPanel>
+            : status.remoteStreams.map(streamLine).join('\n')
+        }`
+      : null,
+  ].filter((line): line is string => line !== null);
+
+  const checkRights = () => {
+    setRightsChecking(true);
+    setRightsFailed(false);
+    void client
+      .checkUplinkEntitlements()
+      .then((value) => {
+        setStatus(value);
+        setStatusError(null);
+      })
+      .catch(() => setRightsFailed(true))
+      .finally(() => setRightsChecking(false));
+  };
+  const checkRow = (
+    <CardRow
+      title="Check subscription rights"
+      subtitle={
+        rightsChecking
+          ? 'Checking…'
+          : rightsFailed
+            ? 'Could not reach Uplink. Try again.'
+            : 'Asks Uplink which features your key includes'
+      }
+      disabled={rightsChecking || checking || keyConfigured !== true}
+      onPress={checkRights}
+    />
+  );
+
+  return (
+    <>
+      <View style={styles.section}>
+        <Eyebrow>Connection</Eyebrow>
+        <RowCard>
+          <CardRow
+            title="Uplink"
+            subtitle={uplink.subtitle}
+            trailing={<DotValue tone={uplink.tone} label={uplink.label} />}
+          />
+          {premiumFeatures
+            .filter((feature) => feature.id !== 'teams')
+            .map((feature) => {
+              const state = status?.features?.[feature.id];
+              const ready =
+                feature.id === 'sharing'
+                  ? status?.sharing === 'ready'
+                  : status?.remoteControl === 'ready';
+              const notIncluded =
+                (status?.control === 'connected' || status?.entitlement === 'checked') &&
+                state?.granted === false;
+              // Only sharing dials Uplink on demand; Remote access keeps the
+              // channel up while it is usable, so an idle channel means it is not.
+              const onDemand =
+                feature.id === 'sharing' &&
+                !ready &&
+                status?.control === 'idle' &&
+                status.entitlement === 'checked' &&
+                state?.granted === true &&
+                state.enabled !== false;
+              return (
+                <CardRow
+                  key={feature.id}
+                  title={feature.name}
+                  subtitle={
+                    state?.enabled === false
+                      ? 'Switched off in Verity Premium'
+                      : notIncluded
+                        ? 'Not included in your subscription'
+                        : undefined
+                  }
+                  trailing={
+                    <DotValue
+                      tone={
+                        (ready || onDemand) && state?.enabled !== false && !notIncluded
+                          ? 'ok'
+                          : 'off'
+                      }
+                      label={
+                        state?.enabled === false || notIncluded
+                          ? 'Off'
+                          : ready
+                            ? 'On'
+                            : onDemand
+                              ? 'On demand'
+                              : status?.control === 'idle' && status.entitlement === 'unchecked'
+                                ? 'Not checked'
+                                : '–'
+                      }
+                    />
+                  }
+                />
+              );
+            })}
+        </RowCard>
+        {statusError === 'unavailable' ? (
+          <RowCard>
+            <CardRow
+              title="Try again"
+              subtitle="Reload the Uplink status"
+              onPress={() => void refresh()}
+            />
+          </RowCard>
+        ) : null}
+        {details.map((line, index) => (
+          <Text key={index} style={styles.footnote}>
+            {line}
+          </Text>
+        ))}
+      </View>
+      <View style={styles.section}>
+        <Eyebrow>Tests</Eyebrow>
+        {profile && route ? (
+          <RowCard>
+            {checkRow}
+            <CardRow
+              title="Test remote access"
+              subtitle={checking ? 'Testing…' : (testResult ?? 'Round trip through Uplink')}
+              accessibilityLabel="Test Remote access through Uplink"
+              disabled={checking || rightsChecking}
+              onPress={() => void runTest()}
+            />
+            <CardRow
+              title="Record connection test"
+              subtitle="Interrupts current remote requests. Up to two minutes. No addresses, credentials or content."
+              accessibilityLabel="Record Remote access connection test"
+              disabled={checking || rightsChecking}
+              onPress={() => void runTest(true)}
+            />
+            <CardRow
+              title="Copy last recording"
+              subtitle={exportStatus ?? undefined}
+              accessibilityLabel="Copy connection recording"
+              onPress={() => void copyCapture()}
+            />
+          </RowCard>
+        ) : (
+          <RowCard>
+            {checkRow}
+            <CardRow
+              title="Test remote access"
+              subtitle="Connect through your local network or VPN once to enable tests."
+              chevron={false}
+            />
+          </RowCard>
+        )}
+      </View>
+    </>
   );
 }
+
+const styles = StyleSheet.create((theme) => ({
+  section: { gap: theme.spacing.sm },
+  footnote: {
+    color: theme.colors.textFaint,
+    fontSize: theme.text.xs,
+    lineHeight: 17 * theme.fontScale,
+    marginHorizontal: 2,
+  },
+}));

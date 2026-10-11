@@ -9,7 +9,7 @@
 import { Children, Fragment, isValidElement, type ReactNode } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 import { Stack } from 'expo-router';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUnistyles } from 'react-native-unistyles';
 
@@ -36,6 +36,7 @@ export function SettingsScaffold({
   onRetry,
   detail = false,
   state,
+  footer,
   children,
 }: {
   title: string;
@@ -47,6 +48,9 @@ export function SettingsScaffold({
    *  (the project settings routes). Omitted → the shared store's error and
    *  save state drive the banners. */
   state?: { error: string | undefined; saving: boolean };
+  /** Pinned below the scroll view, clear of the home indicator: the one
+   *  primary action of a step-like screen (Verity Premium). */
+  footer?: ReactNode;
   children: ReactNode;
 }) {
   const { theme } = useUnistyles();
@@ -55,8 +59,13 @@ export function SettingsScaffold({
   const error = state !== undefined ? state.error : verity.error;
   const saving = state !== undefined ? (state.saving ? 1 : 0) : verity.saving;
 
+  // A pinned footer sits outside the scroll view, so the frame itself has to
+  // shrink above the keyboard or the footer's action ends up behind it. Only one
+  // of the two may react to the keyboard, or the inset is applied twice. Both
+  // stay mounted either way so switching steps keeps the scroll position.
+  const pinned = footer !== undefined;
   return (
-    <View style={styles.flex}>
+    <KeyboardAvoidingView style={styles.flex} behavior="padding" enabled={pinned}>
       <Stack.Screen options={{ title }} />
       {error !== undefined ? <SettingsBanner message={error} onRetry={onRetry} /> : null}
       {/* Only on screens backed by the Verity settings store — that store is
@@ -80,14 +89,18 @@ export function SettingsScaffold({
         contentContainerStyle={[
           styles.content,
           detail ? styles.detailContent : null,
-          { paddingBottom: insets.bottom + 24 },
+          { paddingBottom: pinned ? 24 : insets.bottom + 24 },
         ]}
         keyboardShouldPersistTaps="handled"
         bottomOffset={KEYBOARD_BOTTOM_OFFSET}
+        enabled={!pinned}
       >
         {children}
       </KeyboardAwareScrollView>
-    </View>
+      {footer !== undefined ? (
+        <View style={[styles.scaffoldFooter, { paddingBottom: insets.bottom + 16 }]}>{footer}</View>
+      ) : null}
+    </KeyboardAvoidingView>
   );
 }
 

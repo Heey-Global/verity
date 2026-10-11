@@ -1,21 +1,18 @@
-import { ReturnPathDiagnostics } from '../../components/settings/ReturnPathDiagnostics';
 import { type IntegrationSource, type VerityClient } from '@verity/mobile';
 import * as Application from 'expo-application';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { Alert, Text } from 'react-native';
+import { Alert, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
+import { CardRow, Eyebrow, RowCard, Tag } from '../../components/premium/PremiumChrome';
 import { MatrixImportErrors } from '../../components/settings/MatrixImportErrors';
 import { PublicPreviewDiagnostics } from '../../components/settings/PublicPreviewDiagnostics';
+import { ReturnPathDiagnostics } from '../../components/settings/ReturnPathDiagnostics';
 import {
   SettingsGroup,
-  SettingsListPanel,
   SettingsMessage,
-  SettingsNavRow,
-  SettingsPanel,
   SettingsScaffold,
-  SettingsToggleRow,
 } from '../../components/settings/SettingsChrome';
-import { settingsStyles as styles } from '../../components/settings/settingsStyles';
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient } from '../../lib/client';
 import {
@@ -40,6 +37,7 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
   const [sources, setSources] = useState<IntegrationSource[] | null>(null);
   const [error, setError] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [showImportErrors, setShowImportErrors] = useState(false);
   const [serverVersion, setServerVersion] = useState<string | null>(null);
   const recordingGestures = useGestureDiagnosticsEnabled();
   useFocusEffect(
@@ -99,66 +97,54 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
       setExporting(false);
     }
   };
+  const errorCount = sources?.reduce((total, source) => total + source.importDiagnostics.length, 0);
   return (
     <SettingsScaffold title="Diagnostics" detail>
-      <SettingsGroup title="Connection">
+      <PublicPreviewDiagnostics
+        client={client}
+        keyConfigured={settings?.uplinkSubscriptionKeyConfigured}
+      />
+      <View style={local.section}>
+        <Eyebrow>Server recording</Eyebrow>
         <ReturnPathDiagnostics client={client} />
-        <PublicPreviewDiagnostics
-          client={client}
-          keyConfigured={settings?.uplinkSubscriptionKeyConfigured}
-        />
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="file-text"
-            title="Export Remote Control test inputs"
-            subtitle="Share server addresses, routing handle and TLS pin. No access tokens or tickets."
-            disabled={exporting}
-            onPress={() => void exportRemoteInputs()}
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
-      <SettingsGroup title="Transcription">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="mic"
+      </View>
+      <View style={local.section}>
+        <Eyebrow>More</Eyebrow>
+        <RowCard>
+          <CardRow
             title="Live transcription test"
             onPress={() => router.push('/settings/live-meeting-stt')}
           />
-        </SettingsListPanel>
-      </SettingsGroup>
-      <SettingsGroup title="Integrations">
-        <SettingsPanel>
-          <Text style={styles.disclosureTitle}>Matrix import errors</Text>
-          {error ? (
-            <Text style={styles.fieldError}>
-              Could not load import errors. Reopen Diagnostics to retry.
-            </Text>
-          ) : sources === null ? (
-            <Text style={styles.reproSubtitle}>Loading…</Text>
-          ) : sources.length === 0 ? (
-            <Text style={styles.reproSubtitle}>No import errors</Text>
-          ) : (
-            sources.map((source) => (
-              <SettingsGroup
-                key={`${source.accountId}:${source.sourceId}`}
-                title={source.displayName}
-              >
-                <MatrixImportErrors source={source} />
-              </SettingsGroup>
-            ))
-          )}
-        </SettingsPanel>
-      </SettingsGroup>
-      <SettingsGroup title="App">
-        <SettingsListPanel>
-          <SettingsToggleRow
-            label="Record overview gestures"
-            subtitle="Until the app restarts. Logs how session rows react to swipes and holds for the export below."
-            value={recordingGestures}
-            onValueChange={setGestureDiagnosticsEnabled}
+          <CardRow
+            title="Matrix import errors"
+            subtitle={
+              error
+                ? 'Could not load import errors. Reopen Diagnostics to retry.'
+                : sources === null
+                  ? 'Loading…'
+                  : sources.length === 0
+                    ? 'No import errors'
+                    : `${sources.length} ${sources.length === 1 ? 'source' : 'sources'} · ${
+                        showImportErrors ? 'hide details' : 'show details'
+                      }`
+            }
+            trailing={
+              errorCount !== undefined && errorCount > 0 ? (
+                <Tag label={String(errorCount)} tone="error" />
+              ) : null
+            }
+            chevron={sources !== null && sources.length > 0}
+            {...(sources !== null && sources.length > 0
+              ? { onPress: () => setShowImportErrors((shown) => !shown) }
+              : {})}
           />
-          <SettingsNavRow
-            icon="file-text"
+          <CardRow
+            title="Record overview gestures"
+            subtitle="Until the app restarts. Logs how session rows react to swipes and holds for the export below."
+            switchValue={recordingGestures}
+            onPress={() => setGestureDiagnosticsEnabled(!recordingGestures)}
+          />
+          <CardRow
             title="Export app update logs"
             subtitle={
               exporting
@@ -168,8 +154,28 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
             disabled={exporting}
             onPress={() => void exportLogs()}
           />
-        </SettingsListPanel>
-      </SettingsGroup>
+          <CardRow
+            title="Export Remote Control test inputs"
+            subtitle="Addresses, routing handle and TLS pin. No tokens or tickets."
+            disabled={exporting}
+            onPress={() => void exportRemoteInputs()}
+          />
+        </RowCard>
+      </View>
+      {showImportErrors && sources !== null && sources.length > 0
+        ? sources.map((source) => (
+            <SettingsGroup
+              key={`${source.accountId}:${source.sourceId}`}
+              title={source.displayName}
+            >
+              <MatrixImportErrors source={source} />
+            </SettingsGroup>
+          ))
+        : null}
     </SettingsScaffold>
   );
 }
+
+const local = StyleSheet.create((theme) => ({
+  section: { gap: theme.spacing.sm },
+}));

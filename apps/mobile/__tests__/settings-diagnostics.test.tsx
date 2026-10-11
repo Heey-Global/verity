@@ -35,8 +35,7 @@ it('groups diagnostics and keeps transcription and log export actionable', async
   await waitFor(() => expect(shareUpdateDiagnostics).toHaveBeenCalled());
   fireEvent.press(screen.getByLabelText('Export Remote Control test inputs'));
   await waitFor(() => expect(shareRemoteControlCiInputs).toHaveBeenCalled());
-  expect(screen.getByText('Connection')).toBeOnTheScreen();
-  expect(screen.getByText('Integrations')).toBeOnTheScreen();
+  expect(screen.getByText('More')).toBeOnTheScreen();
 });
 it('switches overview gesture recording on and off for this app run', async () => {
   mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));

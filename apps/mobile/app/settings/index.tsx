@@ -78,6 +78,8 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
   const updateVersion = useServerUpdateBadge(true);
   const [connectedCount, setConnectedCount] = useState<number | undefined>(undefined);
+  const keyConfigured = settings?.uplinkSubscriptionKeyConfigured === true;
+  const [uplinkState, setUplinkState] = useState<'active' | 'rejected' | 'pending'>('pending');
   // Re-read on focus: this screen stays mounted under /devices, where the
   // count changes.
   useFocusEffect(
@@ -89,10 +91,29 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         .listPairedDevices()
         .then((devices) => active && setConnectedCount(devices.length))
         .catch(() => undefined);
+      // A stored key is not an active subscription: Uplink may have refused it.
+      // Keep the last known state while re-reading so the row does not flicker.
+      if (keyConfigured) {
+        client
+          .getUplinkDiagnostics()
+          .then(
+            (status) =>
+              active &&
+              setUplinkState(
+                status.control === 'connected' ||
+                  (status.control === 'idle' && status.entitlement === 'checked')
+                  ? 'active'
+                  : status.control === 'rejected'
+                    ? 'rejected'
+                    : 'pending',
+              ),
+          )
+          .catch(() => active && setUplinkState('pending'));
+      }
       return () => {
         active = false;
       };
-    }, [client]),
+    }, [client, keyConfigured]),
   );
 
   const checkForManualUpdate = useCallback(() => {
@@ -185,10 +206,18 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             onPress={() => router.push('/settings/server-update')}
           />
           <SettingsNavRow
-            icon="globe"
+            icon="zap"
             title="Verity Premium"
-            subtitle="Online sharing and Remote access"
-            value={settings?.uplinkSubscriptionKeyConfigured ? 'Configured' : 'Not active'}
+            subtitle="Online sharing, remote access"
+            status={
+              !settings?.uplinkSubscriptionKeyConfigured
+                ? { intent: 'optional', label: 'Not active' }
+                : uplinkState === 'rejected'
+                  ? { intent: 'needsSetup', label: 'Key rejected' }
+                  : uplinkState === 'active'
+                    ? { intent: 'ready', label: 'Active' }
+                    : { intent: 'optional', label: 'Configured' }
+            }
             onPress={() => router.push('/settings/premium')}
           />
         </SettingsListPanel>
@@ -235,9 +264,8 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             />
           ) : null}
           <SettingsNavRow
-            icon="file-text"
+            icon="activity"
             title="Diagnostics"
-            subtitle="Connection, transcription and app logs"
             onPress={() => router.push('/settings/diagnostics')}
           />
           {!isDemoMode() ? (
