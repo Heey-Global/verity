@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.38.2](https://github.com/Heey-Global/verity/compare/v4.38.1...v4.38.2) (2026-10-11)
+
+
+### Bug Fixes
+
+* **diagnostics:** probe public Core health route ([#1516](https://github.com/Heey-Global/verity/issues/1516)) ([0b0176f](https://github.com/Heey-Global/verity/commit/0b0176f97cf6502e1c4dcef93cd4d00d811c248f))
+
 ## [4.38.1](https://github.com/Heey-Global/verity/compare/v4.38.0...v4.38.1) (2026-10-11)
 
 
