@@ -359,7 +359,7 @@ export const premiumChromeStyles = StyleSheet.create((theme) => ({
   },
   trailing: { flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 },
   dotValue: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  value: { color: theme.colors.textMuted, fontSize: 15 },
+  value: { color: theme.colors.textMuted, fontSize: 15 * theme.fontScale },
   keyField: {
     minHeight: 56,
     flexDirection: 'row',

@@ -446,7 +446,10 @@ function featureOn(status: UplinkDiagnostics | null, id: 'sharing' | 'remoteAcce
   if (status?.features === undefined) {
     return id === 'sharing' ? status?.sharing === 'ready' : status?.remoteControl === 'ready';
   }
-  const state = status.features[id];
+  const state = status.features[id] as (typeof status.features)[typeof id] | undefined;
+  if (state === undefined) {
+    return id === 'sharing' ? status.sharing === 'ready' : status.remoteControl === 'ready';
+  }
   if (state.enabled === false) return false;
   if (state.effective) return true;
   return (

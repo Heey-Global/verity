@@ -71,6 +71,7 @@ export function PublicPreviewDiagnostics({
   const [statusError, setStatusError] = useState<'unsupported' | 'unavailable' | null>(null);
   const [checking, setChecking] = useState(false);
   const [rightsChecking, setRightsChecking] = useState(false);
+  const [rightsFailed, setRightsFailed] = useState(false);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
   const refresh = useCallback(async () => {
@@ -177,19 +178,26 @@ export function PublicPreviewDiagnostics({
 
   const checkRights = () => {
     setRightsChecking(true);
+    setRightsFailed(false);
     void client
       .checkUplinkEntitlements()
       .then((value) => {
         setStatus(value);
         setStatusError(null);
       })
-      .catch(() => setStatusError('unavailable'))
+      .catch(() => setRightsFailed(true))
       .finally(() => setRightsChecking(false));
   };
   const checkRow = (
     <CardRow
       title="Check subscription rights"
-      subtitle={rightsChecking ? 'Checking…' : 'Asks Uplink which features your key includes'}
+      subtitle={
+        rightsChecking
+          ? 'Checking…'
+          : rightsFailed
+            ? 'Could not reach Uplink. Try again.'
+            : 'Asks Uplink which features your key includes'
+      }
       disabled={rightsChecking || checking || keyConfigured !== true}
       onPress={checkRights}
     />
@@ -238,14 +246,18 @@ export function PublicPreviewDiagnostics({
                   }
                   trailing={
                     <DotValue
-                      tone={ready || onDemand ? 'ok' : 'off'}
+                      tone={
+                        (ready || onDemand) && state?.enabled !== false && !notIncluded
+                          ? 'ok'
+                          : 'off'
+                      }
                       label={
-                        ready
-                          ? 'On'
-                          : onDemand
-                            ? 'On demand'
-                            : state?.enabled === false || notIncluded
-                              ? 'Off'
+                        state?.enabled === false || notIncluded
+                          ? 'Off'
+                          : ready
+                            ? 'On'
+                            : onDemand
+                              ? 'On demand'
                               : status?.control === 'idle' && status.entitlement === 'unchecked'
                                 ? 'Not checked'
                                 : '–'
