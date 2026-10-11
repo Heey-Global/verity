@@ -14,9 +14,11 @@ the Staging `/remote-control` and `/data` routes are enabled, with:
 The workflow does not take a subscription key. The existing Core Control
 connection must already have `remote-control-v1` negotiated and the
 `remote-control` feature. The probe opens App admission, waits for a matching
-short-lived ticket, keeps admission open through the request, and
+short-lived ticket, accepts normal admission completion after a validated ready response, and
 uses the Swift smoke tunnel and the production app tunnel to make separate
-HTTPS GET requests. Both must receive HTTP 200 through pinned inner TLS.
+HTTPS GET requests to `/healthz` on the paired Core host and port. This public
+liveness route needs no device bearer token; the paired TLS identity and pin
+remain unchanged. Both must receive HTTP 200 through pinned inner TLS.
 A third app-mode run sets `VERITY_REMOTE_PROBE_IDLE_SECONDS=40` and pauses
 before its last request, longer than the 15-second data heartbeat: an app
 attachment that ends while idle fails that run with the tunnel's stop reason.
@@ -40,6 +42,22 @@ fixture. No Staging request runs during ordinary pull-request CI.
 Run the local admission checks with
 `node --test scripts/remote-control-staging/probe.test.mjs`. The full Staging
 probe requires macOS 14+, Xcode, and the four workflow inputs above.
+
+## Fast live soak
+
+For repeated live transport checks, dispatch `verity-remote-control-soak`
+(`remote-control-soak.yml`) with the same four public inputs above and the
+source `ref` to test. It runs admission regression tests, compiles the macOS
+probe, and runs the production app tunnel with six parallel streams for
+`soak_seconds` (default 180, required range 30 to 600). A zero duration is
+rejected, so a successful run cannot silently skip the soak.
+
+This workflow avoids the iOS app build and Simulator tests. It does not replace
+`verity-mobile-native-verify` or establish that an iPhone's lifecycle and UI
+work. Runner availability, dependency installation, and Swift compilation still
+add time before the soak. An active live test is not cancelled by a new dispatch.
+GitHub retains only one pending run in this concurrency group; a further dispatch
+replaces that pending run. No live test runs automatically on pull requests.
 
 ## Diagnosing a device connection
 

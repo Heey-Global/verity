@@ -1,5 +1,27 @@
 # Changelog
 
+## [4.39.0](https://github.com/Heey-Global/verity/compare/v4.38.2...v4.39.0) (2026-10-11)
+
+
+### Features
+
+* **diagnostics:** retain bounded remote return-path evidence ([#1520](https://github.com/Heey-Global/verity/issues/1520)) ([3b53db4](https://github.com/Heey-Global/verity/commit/3b53db48d957565e5228eb39d68b5984ef090a94))
+
+## [4.38.2](https://github.com/Heey-Global/verity/compare/v4.38.1...v4.38.2) (2026-10-11)
+
+
+### Bug Fixes
+
+* **diagnostics:** probe public Core health route ([#1516](https://github.com/Heey-Global/verity/issues/1516)) ([0b0176f](https://github.com/Heey-Global/verity/commit/0b0176f97cf6502e1c4dcef93cd4d00d811c248f))
+
+## [4.38.1](https://github.com/Heey-Global/verity/compare/v4.38.0...v4.38.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1506](https://github.com/Heey-Global/verity/issues/1506)) ([086c5b3](https://github.com/Heey-Global/verity/commit/086c5b3654ee71be20c0b6f1c9fb04e5d7d21f04))
+* **diagnostics:** accept completed staging admission before data attachment ([#1513](https://github.com/Heey-Global/verity/issues/1513)) ([0c0ce17](https://github.com/Heey-Global/verity/commit/0c0ce17b1dca37775bd9e372abb1966459b9a390))
+
 ## [4.38.0](https://github.com/Heey-Global/verity/compare/v4.37.2...v4.38.0) (2026-10-11)
 
 

@@ -7,7 +7,22 @@ import {
   Platform,
   TextInput,
 } from 'react-native';
+import * as ReactNative from 'react-native';
+import {
+  KeyboardControllerNative,
+  useReanimatedKeyboardAnimation,
+} from 'react-native-keyboard-controller';
 import { useSessionKeyboardAvoidance } from './useSessionKeyboardAvoidance';
+
+jest.mock('react-native-keyboard-controller', () => ({
+  ...require('react-native-keyboard-controller/jest'),
+  KeyboardControllerNative: { viewPositionInWindow: jest.fn() },
+}));
+jest.mock('react-native-reanimated', () => ({
+  ...require('react-native-reanimated/mock'),
+  // Keep geometry across renders, as real shared values do.
+  useSharedValue: (value: unknown) => require('react').useRef({ value }).current,
+}));
 
 let mockFocused = true;
 // The public RN declaration omits the null returned by TextInputState at runtime.
@@ -31,6 +46,11 @@ describe('session keyboard avoidance', () => {
   beforeEach(() => {
     mockFocused = true;
     visible = false;
+    jest.spyOn(require('react-native'), 'findNodeHandle').mockReturnValue(1);
+    jest.mocked(useReanimatedKeyboardAnimation).mockReturnValue({
+      height: { value: -300 },
+      progress: { value: 1 },
+    } as ReturnType<typeof useReanimatedKeyboardAnimation>);
     events = {};
     removals = [];
     cancelTransition = jest.fn();
@@ -72,21 +92,77 @@ describe('session keyboard avoidance', () => {
   it('does not inherit keyboard space when entering with no visible keyboard', () => {
     const { result } = renderHook(useSessionKeyboardAvoidance);
     expect(result.current.enabled).toBe(false);
-    expect(result.current.resetStyle).toMatchObject({ paddingBottom: 0 });
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 0 });
   });
 
   it('avoids a keyboard already visible before the session mounted', () => {
     visible = true;
     const { result } = renderHook(useSessionKeyboardAvoidance);
     expect(result.current.enabled).toBe(true);
-    expect(result.current.resetStyle).toHaveProperty('paddingBottom', undefined);
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 300 });
   });
 
-  it('releases the reset padding when opening after a hidden keyboard', () => {
+  it('applies keyboard padding when opening after a hidden keyboard', () => {
     const { result } = renderHook(useSessionKeyboardAvoidance);
-    expect(result.current.resetStyle).toMatchObject({ paddingBottom: 0 });
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 0 });
     act(() => events.keyboardDidShow());
-    expect(result.current.resetStyle).toHaveProperty('paddingBottom', undefined);
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 300 });
+  });
+
+  it('uses the window bottom rather than subtracting the navigation header', async () => {
+    visible = true;
+    const { height: windowHeight } = ReactNative.Dimensions.get('window');
+    jest.mocked(KeyboardControllerNative.viewPositionInWindow).mockResolvedValue({
+      x: 0,
+      y: 100,
+      width: 400,
+      height: windowHeight - 100,
+    });
+    const { result, rerender } = renderHook(useSessionKeyboardAvoidance);
+    await act(async () => {
+      await result.current.onLayout();
+    });
+    rerender({});
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 300 });
+  });
+
+  it('avoids only the overlap for a pane ending above the window bottom', async () => {
+    visible = true;
+    const { height: windowHeight } = ReactNative.Dimensions.get('window');
+    jest.mocked(KeyboardControllerNative.viewPositionInWindow).mockResolvedValue({
+      x: 0,
+      y: 100,
+      width: 400,
+      height: windowHeight - 200,
+    });
+    const { result, rerender } = renderHook(useSessionKeyboardAvoidance);
+    await act(async () => {
+      await result.current.onLayout();
+    });
+    expect(KeyboardControllerNative.viewPositionInWindow).toHaveBeenCalledWith(1);
+    rerender({});
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 200 });
+  });
+
+  it('follows the animated height throughout opening and closing', () => {
+    visible = true;
+    // Read the configured shared value without calling a hook outside React.
+    const { result, rerender } = renderHook(useSessionKeyboardAvoidance);
+    const keyboard = jest.mocked(useReanimatedKeyboardAnimation).mock.results.at(-1)?.value;
+    keyboard.height.value = -150;
+    rerender({});
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 150 });
+    keyboard.height.value = 0;
+    rerender({});
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 0 });
+  });
+
+  it('clears live padding when hiding even if the controller retains its height', () => {
+    visible = true;
+    const { result } = renderHook(useSessionKeyboardAvoidance);
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 300 });
+    act(() => events.keyboardDidHide());
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 0 });
   });
 
   it('does not disable an opening iOS keyboard before cached visibility catches up', () => {
@@ -105,7 +181,7 @@ describe('session keyboard avoidance', () => {
     jest.mocked(TextInput.State.currentlyFocusedInput).mockReturnValue(noFocusedInput);
     const { result } = renderHook(useSessionKeyboardAvoidance);
     expect(result.current.enabled).toBe(false);
-    expect(result.current.resetStyle).toMatchObject({ paddingBottom: 0 });
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 0 });
   });
 
   it('clears cached visibility after navigation detaches the focused field', () => {
@@ -147,7 +223,7 @@ describe('session keyboard avoidance', () => {
     mockFocused = false;
     rerender({});
     expect(result.current.enabled).toBe(false);
-    expect(result.current.resetStyle).toMatchObject({ paddingBottom: 0 });
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 0 });
     visible = false;
     mockFocused = true;
     rerender({});
