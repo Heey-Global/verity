@@ -77,6 +77,8 @@ export interface PreviewEdgeControl {
   create(input: PreviewEdgeCreate): Promise<PreviewEdgeBinding>;
   remove(shareId: string): Promise<void>;
   isAvailable?(): boolean;
+  canStartSharing?(): boolean;
+  onSharingDisabled?(listener: () => void): () => void;
 }
 
 export interface PreviewShareManagerOptions {
@@ -238,7 +240,7 @@ export class PreviewShareManager {
   }
 
   isAvailable(): boolean {
-    return this.options.edge.isAvailable?.() ?? true;
+    return this.options.edge.canStartSharing?.() ?? this.options.edge.isAvailable?.() ?? true;
   }
 
   async listStaticDirectories(
@@ -564,7 +566,7 @@ export class PreviewShareManager {
     const staticMount =
       staticPath && staticRoot ? this.staticMount(staticRoot, staticPath) : undefined;
 
-    if (this.options.edge.isAvailable?.() === false) {
+    if ((this.options.edge.canStartSharing?.() ?? this.options.edge.isAvailable?.()) === false) {
       throw new PreviewShareConflictError(
         'public previews are not entitled or the Uplink is offline',
       );
@@ -1522,6 +1524,8 @@ export class PreviewShareInputError extends Error {}
 export class PreviewShareNotFoundError extends Error {}
 export class PreviewShareConflictError extends Error {}
 export class PreviewShareUpstreamError extends Error {}
+/** Revocation is durable locally, but Uplink has not acknowledged it yet. */
+export class PreviewShareRemovalQueuedError extends Error {}
 
 function publicShare(record: PublicPreviewShareRecord): PublicPreviewShare {
   return {

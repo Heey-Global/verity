@@ -1163,6 +1163,8 @@ export interface ServerDeps {
       })
     | undefined;
   /** Reconnect the Uplink after its encrypted credential changes. */
+  recheckUplink?:
+    (() => Promise<import('./uplink-control-client.js').UplinkDiagnostics>) | undefined;
   onUplinkCredentialsChanged?: (() => void) | undefined;
   /** Apply the premium feature switches after either of them changed. */
   onPremiumFeatureSwitchesChanged?:
@@ -4328,6 +4330,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // can run without the global bearer gate, but have no paired device to serve.
     if (request.localUserId === undefined) return reply.code(404).send({ error: 'not found' });
     return deps.remoteControlDescriptor?.() ?? { version: 1, enabled: false, reason: 'disabled' };
+  });
+  app.post('/api/uplink/check', async (request, reply) => {
+    if (request.localUserId === undefined || !deps.recheckUplink)
+      return reply.code(404).send({ error: 'not found' });
+    try {
+      return await deps.recheckUplink();
+    } catch {
+      return reply.code(503).send({ error: 'Uplink rights check failed' });
+    }
   });
   app.get('/api/uplink/diagnostics', async (request, reply) => {
     if (request.localUserId === undefined) return reply.code(404).send({ error: 'not found' });

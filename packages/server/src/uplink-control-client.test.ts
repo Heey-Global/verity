@@ -1,9 +1,11 @@
+import { PreviewShareRemovalQueuedError } from './preview-share-manager.js';
 import { EventEmitter } from 'node:events';
 import type { VeritySettingsPatch, EventStore } from '@verity/store';
 import WebSocket from 'ws';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  CLOSE_TIMEOUT_MS,
+  DEMAND_CHECK_TIMEOUT_MS,
+  REMOVAL_TIMEOUT_MS,
   MAX_CONTROL_PENDING_MESSAGES,
   MAX_CONTROL_PENDING_BYTES,
   RECONNECT_CAPACITY_MS,
@@ -41,6 +43,7 @@ class FakeSocket extends EventEmitter {
 
 function setup(
   options: {
+    restoreShareIds?: () => Promise<string[]>;
     readError?: Error;
     settingsRead?: Promise<{ uplinkSubscriptionKey: string; uplinkInstallationId: null }>;
     pendingRemovals?: string[];
@@ -96,6 +99,7 @@ function setup(
       : { expectedInstallationId: options.expectedInstallationId }),
     store: store as unknown as EventStore & typeof store,
     serverVersion: 'test',
+    restoreShareIds: options.restoreShareIds ?? (async () => ['existing-share']),
     webSocketFactory: socketFactory,
     onFeaturesDisabled: disabled,
     onShareExpired: expired,
@@ -144,6 +148,9 @@ function setupReconnecting(
     url: UPLINK_CONTROL_URL,
     store: store as unknown as EventStore & typeof store,
     serverVersion: 'test',
+    restoreShareIds: async () => ['existing-share'],
+    offerRemoteControl: true,
+    reserveRemoteConnector: async () => 'unavailable',
     webSocketFactory: socketFactory,
     onFeaturesDisabled: disabled,
     ...(options.offerRemoteControl !== undefined
@@ -152,31 +159,6 @@ function setupReconnecting(
     log,
   });
   return { client, sockets, socketFactory, store, disabled, log };
-}
-
-/** Window used by the back-off ceiling guards, long enough that the doubling
- * has saturated for most of it. */
-const CEILING_WINDOW_MS = RECONNECT_MAX_MS * 60;
-/** Dials the ordinary ceiling must produce across that window, halved for the
- * jitter and for the dials lost to the doubling on the way up. The capacity
- * ceiling is an order of magnitude below this, so the two never overlap. */
-const SATURATED_DIALS = CEILING_WINDOW_MS / RECONNECT_MAX_MS / 2;
-
-/** Counts how often the client redials across a window in which every dial
- * fails, which is what makes the back-off *ceiling* observable: a single
- * reconnect only ever shows the current delay, and that delay starts at its
- * floor no matter which ceiling is in force. */
-async function dialsWhileFailing(sockets: FakeSocket[], windowMs: number): Promise<number> {
-  const before = sockets.length;
-  const step = RECONNECT_MAX_MS / 2;
-  for (let elapsed = 0; elapsed < windowMs; elapsed += step) {
-    for (const socket of sockets) {
-      if (socket.readyState !== WebSocket.CLOSED) socket.close(1006, '');
-    }
-    await flush();
-    await vi.advanceTimersByTimeAsync(step);
-  }
-  return sockets.length - before;
 }
 
 /** Brings a fixture to the state every share operation requires: connected,
@@ -199,7 +181,7 @@ async function welcomed(
 }
 
 async function flush(): Promise<void> {
-  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+  for (let index = 0; index < 24; index += 1) await Promise.resolve();
 }
 
 describe('UplinkControlClient', () => {
@@ -326,9 +308,13 @@ describe('UplinkControlClient', () => {
       resume();
       for (let i = 0; i < MAX_CONTROL_PENDING_MESSAGES; i += 1) await flush();
       expect(fixture.client.isAvailable()).toBe(false);
+      fixture.client.refreshCredentials();
+      await vi.advanceTimersByTimeAsync(1250);
+      replacement.open();
       replacement.message(welcome);
       await flush();
-      expect(fixture.client.isAvailable()).toBe(true);
+      expect(fixture.client.isAvailable()).toBe(false);
+      expect(fixture.client.diagnostics().entitlement).toBe('checked');
       expect(replacement.close).not.toHaveBeenCalled();
     } finally {
       resume();
@@ -354,14 +340,14 @@ describe('UplinkControlClient', () => {
   it('reports control and sharing readiness from the live socket and granted features', async () => {
     const fixture = setup();
     const off = { granted: false, enabled: true, effective: false };
-    expect(fixture.client.diagnostics()).toEqual({
+    expect(fixture.client.diagnostics()).toMatchObject({
       control: 'disabled',
       sharing: 'unavailable',
       remoteControl: 'unavailable',
       features: { sharing: off, remoteAccess: off },
     });
     await welcomed(fixture);
-    expect(fixture.client.diagnostics()).toEqual({
+    expect(fixture.client.diagnostics()).toMatchObject({
       control: 'connected',
       sharing: 'ready',
       remoteControl: 'unavailable',
@@ -433,7 +419,7 @@ describe('UplinkControlClient', () => {
         type: 'welcome',
         installationId: 'installation-1',
         handle,
-        features: ['remote-control'],
+        features: ['sharing', 'remote-control'],
         leaseUntil: new Date(Date.now() + 60_000).toISOString(),
         capabilities: ['remote-control-v1'],
         channels: ['http', 'ws', 'remote'],
@@ -470,7 +456,7 @@ describe('UplinkControlClient', () => {
     socket.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['remote-control'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
       capabilities: ['remote-control-v1'],
       channels: ['http', 'ws', 'remote'],
@@ -559,7 +545,7 @@ describe('UplinkControlClient', () => {
     fixture.sockets[0]!.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['sharing'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
     });
     await flush();
@@ -591,7 +577,7 @@ describe('UplinkControlClient', () => {
     socket.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['remote-control'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
       capabilities: ['remote-control-v1'],
       channels: ['http', 'ws', 'remote'],
@@ -612,16 +598,19 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
-  it('withholds sharing while Online sharing is switched off, though Uplink granted it', async () => {
+  it('does not dial for restored shares while Online sharing is switched off', async () => {
     const fixture = setup({ premiumSharingEnabled: false });
-    await welcomed(fixture);
-    expect(fixture.client.isAvailable()).toBe(false);
+    fixture.client.start();
+    await flush();
+    expect(fixture.socketFactory).not.toHaveBeenCalled();
     expect(fixture.client.diagnostics()).toMatchObject({
-      sharing: 'unavailable',
-      features: { sharing: { granted: true, enabled: false, effective: false } },
+      control: 'idle',
+      entitlement: 'unchecked',
+      features: { sharing: { granted: false, enabled: false, effective: false } },
     });
-    fixture.client.applyFeatureSwitches({ sharing: true, remoteAccess: true });
-    expect(fixture.client.isAvailable()).toBe(true);
+    fixture.client.applyFeatureSwitches({ sharing: true, remoteAccess: false });
+    expect(fixture.client.canStartSharing()).toBe(true);
+    expect(fixture.client.isAvailable()).toBe(false);
     await fixture.client.stop();
   });
 
@@ -638,7 +627,7 @@ describe('UplinkControlClient', () => {
     socket.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['remote-control'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
       capabilities: ['remote-control-v1'],
       channels: ['http', 'ws', 'remote'],
@@ -690,7 +679,7 @@ describe('UplinkControlClient', () => {
     socket.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['remote-control'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
       capabilities: ['remote-control-v1'],
       channels: ['http', 'ws', 'remote'],
@@ -725,7 +714,7 @@ describe('UplinkControlClient', () => {
     socket.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['remote-control'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
       capabilities: ['remote-control-v1'],
       channels: ['http', 'ws', 'remote'],
@@ -762,7 +751,7 @@ describe('UplinkControlClient', () => {
     socket.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['remote-control'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
       capabilities: ['remote-control-v1'],
       channels: ['http', 'ws', 'remote'],
@@ -807,7 +796,7 @@ describe('UplinkControlClient', () => {
     socket.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['remote-control'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
       capabilities: ['remote-control-v1'],
       channels: ['http', 'ws', 'remote'],
@@ -851,7 +840,7 @@ describe('UplinkControlClient', () => {
     socket.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['remote-control'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
       capabilities: ['remote-control-v1'],
       channels: ['http', 'ws', 'remote'],
@@ -883,7 +872,11 @@ describe('UplinkControlClient', () => {
   it.each([
     { capabilities: undefined, channels: undefined },
     { capabilities: ['remote-control-v1'], channels: ['http', 'ws'] },
-    { capabilities: ['remote-control-v1'], channels: ['http', 'ws', 'remote'], features: [] },
+    {
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+      features: ['sharing'],
+    },
   ])('rejects remote session traffic without full selection and entitlement', async (selection) => {
     const { client, socket } = setup({ offerRemoteControl: true });
     client.start();
@@ -892,7 +885,7 @@ describe('UplinkControlClient', () => {
     socket.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: selection.features ?? ['remote-control'],
+      features: selection.features ?? ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
       ...(selection.capabilities ? { capabilities: selection.capabilities } : {}),
       ...(selection.channels ? { channels: selection.channels } : {}),
@@ -924,7 +917,7 @@ describe('UplinkControlClient', () => {
     socket.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['remote-control'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
       capabilities: ['remote-control-v1'],
       channels: ['http', 'ws', 'remote'],
@@ -945,7 +938,7 @@ describe('UplinkControlClient', () => {
     socket.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['remote-control'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
       capabilities: ['remote-control-v1'],
       channels: ['http', 'ws', 'remote'],
@@ -978,7 +971,7 @@ describe('UplinkControlClient', () => {
     socket.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['remote-control'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
       capabilities: ['remote-control-v1'],
       channels: ['http', 'ws', 'remote'],
@@ -1007,7 +1000,7 @@ describe('UplinkControlClient', () => {
     socket.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['remote-control'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
       capabilities: ['remote-control-v1'],
       channels: ['http', 'ws', 'remote'],
@@ -1015,7 +1008,7 @@ describe('UplinkControlClient', () => {
     await flush();
     socket.message({
       type: 'renewed',
-      features: [],
+      features: ['sharing'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
     });
     await flush();
@@ -1041,7 +1034,7 @@ describe('UplinkControlClient', () => {
     socket.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['remote-control'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
       capabilities: ['remote-control-v1'],
       channels: ['http', 'ws', 'remote'],
@@ -1071,7 +1064,7 @@ describe('UplinkControlClient', () => {
     sockets[0]!.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['remote-control'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
       capabilities: ['remote-control-v1'],
       channels: ['http', 'ws', 'remote'],
@@ -1084,7 +1077,7 @@ describe('UplinkControlClient', () => {
     sockets[1]!.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['remote-control'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 60_000).toISOString(),
     });
     await flush();
@@ -1096,9 +1089,8 @@ describe('UplinkControlClient', () => {
       decisionExpiresAt: Date.now() + 15_000,
     });
     await flush();
-    await vi.waitFor(() =>
-      expect(sockets[1]!.close).toHaveBeenCalledWith(1002, 'invalid control message'),
-    );
+    expect(sockets[1]!.terminate).toHaveBeenCalledOnce();
+    expect(client.remoteControlDescriptor().enabled).toBe(false);
     await client.stop();
   });
 
@@ -1154,6 +1146,7 @@ describe('UplinkControlClient', () => {
       uplinkInstallationId: 'installation-1',
     });
     const pending = client.create({ pinHash: 'hash', durationSeconds: 900 });
+    await flush();
     const pendingAssertion = expect(pending).rejects.toThrow(
       'Uplink removed public preview entitlement',
     );
@@ -1196,49 +1189,17 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
-  it('redials and terminates a control socket whose lease-expiry close stalls', async () => {
+  it('terminates an expired lease without waiting for a close handshake or redialling', async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-09-22T06:00:00.000Z'));
-    const { client, sockets, socketFactory, log } = setupReconnecting();
-    client.start();
-    await flush();
-    const expiredSocket = sockets[0]!;
-    expiredSocket.open();
-    expiredSocket.message({
-      type: 'welcome',
-      installationId: 'installation-1',
-      features: ['sharing'],
-      leaseUntil: '2026-09-22T06:00:10.000Z',
+    const { client, socket, socketFactory } = await welcomed(setup(), 10000);
+    socket.close.mockImplementation(() => {
+      socket.readyState = WebSocket.CLOSING;
     });
-    await flush();
-    // Model the production failure: close enters CLOSING but never emits close.
-    expiredSocket.close.mockImplementation(() => {
-      expiredSocket.readyState = WebSocket.CLOSING;
-    });
-
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(socket.terminate).toHaveBeenCalledOnce();
     expect(client.isAvailable()).toBe(false);
-    expect(expiredSocket.close).toHaveBeenCalledWith(4001, 'lease expired');
-    expect(log.warn).toHaveBeenCalledWith(
-      { leaseUntil: '2026-09-22T06:00:10.000Z' },
-      'Uplink lease expired',
-    );
-
-    // Reconnection does not wait for either close or forced termination.
-    await vi.advanceTimersByTimeAsync(CLOSE_TIMEOUT_MS - 1);
-    expect(socketFactory).toHaveBeenCalledTimes(2);
-    expect(expiredSocket.terminate).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    expect(expiredSocket.terminate).toHaveBeenCalledOnce();
-    expect(log.warn).toHaveBeenCalledWith(
-      { code: 4001, reason: 'lease expired', readyState: WebSocket.CLOSING },
-      'terminating stalled Uplink close handshake',
-    );
-
-    // A delayed close from the retired transport cannot schedule another dial.
-    expiredSocket.emit('close', 4001, Buffer.from('lease expired'));
     await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 2);
-    expect(socketFactory).toHaveBeenCalledTimes(2);
+    expect(socketFactory).toHaveBeenCalledOnce();
     await client.stop();
   });
 
@@ -1325,78 +1286,66 @@ describe('UplinkControlClient', () => {
    * against an Uplink that allocates per connection, each of those dials costs
    * something.
    */
-  it('keeps dialling after a capacity refusal, on the slower schedule', async () => {
+  it('bounds a startup capacity refusal without keeping a background connection', async () => {
     vi.useFakeTimers();
-    const { client, socketFactory, sockets, disabled } = setupReconnecting();
+    const { client, sockets, socketFactory } = setupReconnecting();
     client.start();
     await flush();
     sockets[0]!.open();
     sockets[0]!.message({ type: 'reject', reason: 'limit_reached' });
     await flush();
-
-    expect(disabled).toHaveBeenCalledWith('limit_reached');
-    // Still quiet at the ordinary ceiling: a capacity refusal must not be
-    // retried on the same schedule as a dropped connection.
-    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 2);
-    expect(socketFactory).toHaveBeenCalledTimes(1);
-
-    // Dialled again once the slower schedule comes round, with no operator
-    // action: capacity freed on the far end has to be noticed on its own.
-    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 1.5);
-    expect(socketFactory).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 2);
+    expect(socketFactory).toHaveBeenCalledOnce();
+    expect(client.diagnostics().control).toBe('idle');
     await client.stop();
   });
 
-  it('returns to the ordinary schedule once a welcome lands', async () => {
+  it('recovers an established remote listener after a network interruption', async () => {
     vi.useFakeTimers();
-    const { client, sockets } = setupReconnecting();
+    const { client, sockets, socketFactory } = setupReconnecting();
     client.start();
     await flush();
     sockets[0]!.open();
-    sockets[0]!.message({ type: 'reject', reason: 'limit_reached' });
-    await flush();
-    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 1.5);
-
-    sockets[1]!.open();
-    sockets[1]!.message({
+    sockets[0]!.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['sharing'],
-      leaseUntil: new Date(Date.now() + 60 * 60_000).toISOString(),
+      features: ['sharing', 'remote-control'],
+      leaseUntil: new Date(Date.now() + 3600000).toISOString(),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
     });
     await flush();
-
-    // The slow schedule belongs to the refusal, not to the installation. An
-    // admission that leaves it in place makes every later network blip cost
-    // five minutes of downtime, which nothing in the logs would explain.
-    //
-    // Counting dials over a window is the only way to see this: the welcome
-    // also resets the *delay* to its floor, so the first reconnect after a
-    // drop is prompt either way. The ceiling only shows itself once the
-    // back-off has doubled its way up to it.
-    const dials = await dialsWhileFailing(sockets, CEILING_WINDOW_MS);
-    expect(dials).toBeGreaterThan(SATURATED_DIALS);
+    sockets[0]!.close(1006, '');
+    await vi.advanceTimersByTimeAsync(DEMAND_CHECK_TIMEOUT_MS * 2);
+    expect(socketFactory.mock.calls.length).toBeGreaterThan(1);
+    sockets.at(-1)!.open();
+    sockets.at(-1)!.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['remote-control'],
+      leaseUntil: new Date(Date.now() + 60000).toISOString(),
+      handle: Buffer.alloc(16, 7).toString('base64url'),
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+    });
+    await flush();
+    expect(client.remoteControlDescriptor().enabled).toBe(true);
     await client.stop();
   });
 
-  it('does not inherit a capacity back-off across a stop and start', async () => {
+  it('starts a fresh bounded check after a stop and start', async () => {
     vi.useFakeTimers();
-    const { client, sockets } = setupReconnecting();
+    const { client, sockets, socketFactory } = setupReconnecting();
     client.start();
     await flush();
     sockets[0]!.open();
     sockets[0]!.message({ type: 'reject', reason: 'limit_reached' });
     await flush();
+    await vi.advanceTimersByTimeAsync(DEMAND_CHECK_TIMEOUT_MS);
     await client.stop();
-
-    // Restarting is an operator asking for a fresh attempt - most often right
-    // after changing something they expect to have fixed it. Carrying the old
-    // refusal's schedule over means the first evidence either way is minutes
-    // away, and it looks like nothing happened.
     client.start();
     await flush();
-    const dials = await dialsWhileFailing(sockets, CEILING_WINDOW_MS);
-    expect(dials).toBeGreaterThan(SATURATED_DIALS);
+    expect(socketFactory).toHaveBeenCalledTimes(2);
     await client.stop();
   });
 
@@ -1504,25 +1453,17 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
-  it('keeps reporting a refusal it has stopped dialling on', async () => {
+  it('retains a refused-key diagnostic without background attempts', async () => {
     vi.useFakeTimers();
-    const { client, sockets, log } = setupReconnecting();
+    const { client, sockets, socketFactory } = setupReconnecting();
     client.start();
     await flush();
     sockets[0]!.open();
     sockets[0]!.message({ type: 'reject', reason: 'unknown_key' });
     await flush();
-    log.warn.mockClear();
-
-    // The incident this change exists for ran 13 days. An installation that
-    // has given up must not look like one that is fine: if the only record is
-    // the single refusal at the moment it happened, whoever looks later sees
-    // an idle client and no reason.
-    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 2.5);
-    expect(log.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: 'unknown_key' }),
-      'not dialling the Uplink: this key was refused',
-    );
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 3);
+    expect(socketFactory).toHaveBeenCalledOnce();
+    expect(client.diagnostics()).toMatchObject({ control: 'rejected', reason: 'unknown_key' });
     await client.stop();
   });
 
@@ -1590,7 +1531,7 @@ describe('UplinkControlClient', () => {
     await flush();
 
     await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 1.5);
-    expect(socketFactory).toHaveBeenCalledTimes(2);
+    expect(socketFactory).toHaveBeenCalledOnce();
     await client.stop();
   });
 
@@ -1929,6 +1870,7 @@ describe('UplinkControlClient', () => {
     });
     await flush();
     const pending = client.create({ pinHash: 'hash', durationSeconds: 900 });
+    await flush();
     socket.close(1002, 'protocol_error');
     await expect(pending).rejects.toThrow(
       'Uplink closed the control connection (1002: protocol_error)',
@@ -1949,6 +1891,7 @@ describe('UplinkControlClient', () => {
     });
     await flush();
     const creating = client.create({ pinHash: 'hash', durationSeconds: 900 });
+    await flush();
     const creatingAssertion = expect(creating).rejects.toThrow('invalid Uplink control message');
     const createFrame = JSON.parse(socket.sent.at(-1)!) as { requestId: string };
     socket.message({ type: 'share.removed', requestId: createFrame.requestId });
@@ -1997,23 +1940,29 @@ describe('UplinkControlClient', () => {
 
   it('revokes a late share.ready after its create request was abandoned', async () => {
     vi.useFakeTimers();
-    const { client, socket, store } = setup();
+    const { client, socket, store } = setup({
+      offerRemoteControl: true,
+      reserveRemoteConnector: async () => 'unavailable',
+    });
     client.start();
     await flush();
     socket.open();
     socket.message({
       type: 'welcome',
       installationId: 'installation-1',
-      features: ['sharing'],
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 10 * 60 * 60_000).toISOString(),
     });
     await flush();
 
     const creating = client.create({ pinHash: 'hash', durationSeconds: 900 });
+    await flush();
     const createFrame = JSON.parse(socket.sent.at(-1)!) as { requestId: string };
     socket.message({
       type: 'renewed',
-      features: [],
+      features: ['remote-control'],
       leaseUntil: new Date(Date.now() + 10 * 60 * 60_000).toISOString(),
     });
     await expect(creating).rejects.toThrow('removed public preview entitlement');
@@ -2033,7 +1982,7 @@ describe('UplinkControlClient', () => {
 
     socket.message({
       type: 'renewed',
-      features: ['sharing'],
+      features: ['sharing', 'remote-control'],
       leaseUntil: new Date(Date.now() + 9 * 60 * 60_000 - 1).toISOString(),
     });
     await flush();
@@ -2067,6 +2016,7 @@ describe('UplinkControlClient', () => {
     });
     await flush();
     const creating = client.create({ pinHash: 'hash', durationSeconds: 900 });
+    await flush();
     const creatingAssertion = expect(creating).rejects.toThrow('share.create timed out');
     const createFrame = JSON.parse(socket.sent.at(-1)!) as { requestId: string };
     for (let elapsed = 0; elapsed < 120_000; elapsed += 15_000) {
@@ -2089,12 +2039,16 @@ describe('UplinkControlClient', () => {
   it.each([true, false])(
     'loads and removes a durable orphan after client restart (sharing enabled: %s)',
     async (premiumSharingEnabled) => {
-      const { client, socket, store } = setup({
+      const { client, socket, store, socketFactory } = setup({
         pendingRemovals: ['restart-orphan'],
         premiumSharingEnabled,
       });
       client.start();
       await flush();
+      if (!premiumSharingEnabled) {
+        client.refreshCredentials();
+        await vi.waitFor(() => expect(socketFactory).toHaveBeenCalled());
+      }
       socket.open();
       socket.message({
         type: 'welcome',
@@ -2178,6 +2132,7 @@ describe('UplinkControlClient', () => {
     });
     await flush();
     const creating = client.create({ pinHash: 'hash', durationSeconds: 900 });
+    await flush();
     const creatingAssertion = expect(creating).rejects.toThrow('invalid share id');
     const createFrame = JSON.parse(socket.sent.at(-1)!) as { requestId: string };
     socket.message({
@@ -2219,6 +2174,7 @@ describe('UplinkControlClient', () => {
     });
     await flush();
     const creating = client.create({ pinHash: 'hash', durationSeconds: 900 });
+    await flush();
     const creatingAssertion = expect(creating).rejects.toThrow('invalid Uplink publicOrigin');
     const createFrame = JSON.parse(socket.sent.at(-1)!) as { requestId: string };
     socket.message({
@@ -2264,6 +2220,7 @@ describe('UplinkControlClient', () => {
       });
       await flush();
       const creating = first.client.create({ pinHash: 'hash', durationSeconds: 900 });
+      await flush();
       const creatingAssertion = expect(creating).rejects.toThrow(expectedError);
       const createFrame = JSON.parse(first.socket.sent.at(-1)!) as { requestId: string };
       first.socket.message({
@@ -2341,7 +2298,7 @@ describe('UplinkControlClient', () => {
     expect(socketFactory).not.toHaveBeenCalled();
     settings.uplinkSubscriptionKey = 'first-key';
     client.refreshCredentials();
-    await vi.runOnlyPendingTimersAsync();
+    await vi.advanceTimersByTimeAsync(1250);
     await flush();
     expect(socketFactory).toHaveBeenCalledOnce();
     await client.stop();
@@ -2367,7 +2324,7 @@ describe('UplinkControlClient', () => {
     expect(client.isAvailable()).toBe(true);
     socket.close(1006, 'lost');
     client.refreshCredentials();
-    await vi.runOnlyPendingTimersAsync();
+    await vi.advanceTimersByTimeAsync(1250);
     socket.open();
     socket.message({
       type: 'welcome',
@@ -2379,7 +2336,8 @@ describe('UplinkControlClient', () => {
     expect(client.isAvailable()).toBe(false);
     resolveCleanup();
     await flush();
-    expect(client.isAvailable()).toBe(true);
+    expect(client.isAvailable()).toBe(false);
+    expect(client.diagnostics()).toMatchObject({ control: 'idle', entitlement: 'checked' });
     await client.stop();
   });
 
@@ -2398,7 +2356,7 @@ describe('UplinkControlClient', () => {
     expect(disabled).toHaveBeenCalledOnce();
     settings.uplinkSubscriptionKey = 'restored-key';
     client.refreshCredentials();
-    await vi.runOnlyPendingTimersAsync();
+    await vi.advanceTimersByTimeAsync(1250);
     socket.open();
     socket.message({
       type: 'welcome',
@@ -2408,7 +2366,8 @@ describe('UplinkControlClient', () => {
     });
     await flush();
     expect(disabled).toHaveBeenCalledTimes(2);
-    expect(client.isAvailable()).toBe(true);
+    expect(client.isAvailable()).toBe(false);
+    expect(client.diagnostics()).toMatchObject({ control: 'idle', entitlement: 'checked' });
     await client.stop();
   });
 
@@ -2451,7 +2410,7 @@ describe('UplinkControlClient', () => {
     // belonging to the closed transport before the factory returns it again.
     socketRef.removeAllListeners();
     clientRef.refreshCredentials();
-    await vi.runOnlyPendingTimersAsync();
+    await vi.advanceTimersByTimeAsync(1250);
     socketRef.open();
     socketRef.message({
       type: 'welcome',
@@ -2464,7 +2423,8 @@ describe('UplinkControlClient', () => {
     await flush();
     expect(configured.store.addPendingUplinkShareRemoval).toHaveBeenCalledWith('existing-share');
     expect(configured.store.deletePendingUplinkShareRemoval).toHaveBeenCalledWith('existing-share');
-    expect(clientRef.isAvailable()).toBe(true);
+    expect(clientRef.isAvailable()).toBe(false);
+    expect(clientRef.diagnostics().control).toBe('idle');
     await clientRef.stop();
   });
 
@@ -2525,29 +2485,20 @@ describe('UplinkControlClient', () => {
     ).toThrow('Uplink control URL must be an authenticated WSS endpoint');
   });
 
-  it('refuses to create a share before the Uplink has granted the entitlement', async () => {
-    const { client, socket, log } = setup();
+  it('bounds a share start when Uplink never supplies an entitlement', async () => {
+    vi.useFakeTimers();
+    const { client, socket } = setup();
     client.start();
     await flush();
     socket.open();
-
-    await expect(client.create({ pinHash: 'hash', durationSeconds: 900 })).rejects.toThrow(
-      'public preview sharing is not enabled by the Uplink',
-    );
-    // Refused locally: nothing but the hello handshake reached the control plane.
-    expect(socket.sent.map((value) => (JSON.parse(value) as { type: string }).type)).toEqual([
-      'hello',
-    ]);
-    expect(log.warn).toHaveBeenCalledWith(
-      { targetHost: new URL(UPLINK_CONTROL_URL).host, control: 'connecting' },
-      'Uplink share create not sent',
-    );
+    const creating = client.create({ pinHash: 'hash', durationSeconds: 900 });
+    const assertion = expect(creating).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(DEMAND_CHECK_TIMEOUT_MS);
+    await assertion;
+    expect(socket.sent.map((raw) => (JSON.parse(raw) as { type: string }).type)).toEqual(['hello']);
     await client.stop();
   });
 
-  // Order matters more than the failure: the removal is persisted BEFORE the
-  // refusal, so a share created by a since-disconnected Uplink is still revoked
-  // after a restart.
   it('persists the pending revocation before refusing to revoke while offline', async () => {
     const { client, socket, store } = setup();
     client.start();
@@ -2567,6 +2518,7 @@ describe('UplinkControlClient', () => {
   ])('surfaces a refused share as $expected', async ({ code, expected }) => {
     const { client, socket, log } = await welcomed(setup());
     const creating = client.create({ pinHash: 'hash', durationSeconds: 900 });
+    await flush();
     const creatingAssertion = expect(creating).rejects.toThrow(expected);
     const createFrame = JSON.parse(socket.sent.at(-1)!) as { requestId: string };
 
@@ -2601,6 +2553,7 @@ describe('UplinkControlClient', () => {
   it('revokes the share it cannot date instead of returning an unbounded binding', async () => {
     const { client, socket, store, log } = await welcomed(setup());
     const creating = client.create({ pinHash: 'hash', durationSeconds: 900 });
+    await flush();
     const creatingAssertion = expect(creating).rejects.toThrow('invalid Uplink expiresAt');
     const createFrame = JSON.parse(socket.sent.at(-1)!) as { requestId: string };
 
@@ -2633,6 +2586,7 @@ describe('UplinkControlClient', () => {
   it('logs and revokes a ready share without a session secret', async () => {
     const { client, socket, store, log } = await welcomed(setup());
     const creating = client.create({ pinHash: 'hash', durationSeconds: 900 });
+    await flush();
     const creatingAssertion = expect(creating).rejects.toThrow('invalid Uplink sessionSecret');
     const createFrame = JSON.parse(socket.sent.at(-1)!) as { requestId: string };
 
@@ -2714,13 +2668,13 @@ describe('UplinkControlClient', () => {
     await flush();
 
     expect(disabled).toHaveBeenCalledWith('subscription revoked');
-    expect(socket.close).toHaveBeenCalledWith(4003, 'revoked');
+    expect(socket.terminate).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(5_000);
     await flush();
     expect(socketFactory).toHaveBeenCalledOnce();
 
     client.refreshCredentials();
-    await vi.runOnlyPendingTimersAsync();
+    await vi.advanceTimersByTimeAsync(1250);
     await flush();
     expect(socketFactory).toHaveBeenCalledTimes(2);
     await client.stop();
@@ -2734,7 +2688,7 @@ describe('UplinkControlClient', () => {
     await vi.advanceTimersByTimeAsync(10_000);
     await flush();
 
-    expect(socket.close).toHaveBeenCalledWith(4001, 'lease expired');
+    expect(socket.terminate).toHaveBeenCalledOnce();
     expect(disabled).toHaveBeenCalledWith('Uplink lease expired');
     expect(client.isAvailable()).toBe(false);
     await client.stop();
@@ -2877,5 +2831,382 @@ describe('UplinkControlClient', () => {
     await flush();
     expect(socket.sent).toEqual([]);
     expect(socket.readyState).toBe(WebSocket.CONNECTING);
+  });
+});
+
+function admit(socket: FakeSocket, features = ['sharing']): void {
+  socket.open();
+  socket.message({
+    type: 'welcome',
+    installationId: 'installation-1',
+    features,
+    leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    handle: Buffer.alloc(16, 7).toString('base64url'),
+    capabilities: ['remote-control-v1', 'webhook-v1'],
+    channels: ['http', 'ws', 'remote'],
+  });
+}
+
+function replyShare(socket: FakeSocket, shareId: string, requestId?: string): void {
+  const frame = JSON.parse(socket.sent.at(-1)!) as { requestId: string };
+  socket.message({
+    type: 'share.ready',
+    requestId: requestId ?? frame.requestId,
+    shareId,
+    publicOrigin: 'https://preview.example',
+    edgeUrl: 'wss://preview.example/__verity/connector',
+    connectorToken: 'c'.repeat(32),
+    sessionSecret: 's'.repeat(32),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+}
+
+describe('Uplink connection demand', () => {
+  beforeEach(() => vi.useFakeTimers());
+
+  it('keeps enabled sharing offline without a share, including orphan-only restart', async () => {
+    const f = setup({
+      restoreShareIds: async () => [],
+      pendingRemovals: ['orphan'],
+      premiumRemoteAccessEnabled: false,
+    });
+    f.client.start();
+    await flush();
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 2);
+    expect(f.socketFactory).not.toHaveBeenCalled();
+    expect(f.client.canStartSharing()).toBe(true);
+    expect(f.client.diagnostics()).toMatchObject({ control: 'idle', entitlement: 'unchecked' });
+    await f.client.stop();
+  });
+
+  it('stops restored sharing and queues revocation after a stalled initial handshake', async () => {
+    const f = setup({
+      restoreShareIds: async () => ['restored'],
+      premiumRemoteAccessEnabled: false,
+    });
+    const shutdown = vi.fn();
+    f.client.onSharingDisabled(shutdown);
+    f.disabled.mockImplementation(async () => {
+      await f.client.remove('restored').catch(() => undefined);
+    });
+    f.client.start();
+    await flush();
+    await vi.advanceTimersByTimeAsync(DEMAND_CHECK_TIMEOUT_MS);
+    expect(shutdown).toHaveBeenCalled();
+    expect(f.disabled).toHaveBeenCalled();
+    expect(f.store.addPendingUplinkShareRemoval).toHaveBeenCalledWith('restored');
+    expect(f.client.diagnostics().control).toBe('idle');
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS);
+    expect(f.socketFactory).toHaveBeenCalledOnce();
+    await f.client.stop();
+  });
+
+  it('resets the initial handshake deadline for an explicit retry', async () => {
+    const f = setupReconnecting();
+    f.client.start();
+    await flush();
+    await vi.advanceTimersByTimeAsync(DEMAND_CHECK_TIMEOUT_MS - 1000);
+    const checking = f.client.checkEntitlements();
+    const assertion = expect(checking).resolves.toMatchObject({ control: 'connected' });
+    await vi.advanceTimersByTimeAsync(2000);
+    admit(f.sockets.at(-1)!, ['remote-control']);
+    await assertion;
+    await f.client.stop();
+  });
+
+  it('fails closed when restoring sharing demand fails', async () => {
+    const f = setup({
+      restoreShareIds: async () => {
+        throw new Error('storage unavailable');
+      },
+    });
+    const shutdown = vi.fn();
+    f.client.onSharingDisabled(shutdown);
+    f.client.start();
+    await flush();
+    expect(f.disabled).toHaveBeenCalled();
+    expect(shutdown).toHaveBeenCalled();
+    expect(f.client.diagnostics().control).toBe('idle');
+    expect(f.socketFactory).not.toHaveBeenCalled();
+    await f.client.stop();
+  });
+
+  it('reports idle after transport loss clears the last sharing demand', async () => {
+    const f = await welcomed(setup({ premiumRemoteAccessEnabled: false }));
+    f.socket.close(1006, 'lost');
+    await flush();
+    expect(f.client.diagnostics().control).toBe('idle');
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS);
+    expect(f.socketFactory).toHaveBeenCalledOnce();
+    await f.client.stop();
+  });
+
+  it('distinguishes durable offline revocation from a failed queue write', async () => {
+    const f = setup({ restoreShareIds: async () => [], premiumRemoteAccessEnabled: false });
+    await expect(f.client.remove('queued')).rejects.toBeInstanceOf(PreviewShareRemovalQueuedError);
+    expect(f.store.addPendingUplinkShareRemoval).toHaveBeenCalledWith('queued');
+    const failure = new Error('queue storage failed');
+    f.store.addPendingUplinkShareRemoval.mockRejectedValueOnce(failure);
+    await expect(f.client.remove('unsaved')).rejects.toBe(failure);
+    await f.client.stop();
+  });
+
+  it('connects for the first share and disconnects after the last removal', async () => {
+    const f = setup({ restoreShareIds: async () => [], premiumRemoteAccessEnabled: false });
+    f.client.start();
+    await flush();
+    const creating = f.client.create({ pinHash: 'hash', durationSeconds: 900 });
+    await flush();
+    expect(f.socketFactory).toHaveBeenCalledOnce();
+    admit(f.socket);
+    await flush();
+    replyShare(f.socket, 'first');
+    await creating;
+    expect(f.client.diagnostics().control).toBe('connected');
+    const removing = f.client.remove('first');
+    await flush();
+    const frame = JSON.parse(f.socket.sent.at(-1)!) as { requestId: string };
+    f.socket.message({ type: 'share.removed', requestId: frame.requestId, shareId: 'first' });
+    await removing;
+    expect(f.client.diagnostics().control).toBe('idle');
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS);
+    expect(f.socketFactory).toHaveBeenCalledOnce();
+    await f.client.stop();
+  });
+
+  it('does not retire the connection between concurrent share starts', async () => {
+    const f = setup({ restoreShareIds: async () => [], premiumRemoteAccessEnabled: false });
+    f.client.start();
+    await flush();
+    const first = f.client.create({ pinHash: 'hash', durationSeconds: 900 });
+    const second = f.client.create({ pinHash: 'hash', durationSeconds: 900 });
+    await flush();
+    admit(f.socket);
+    await flush();
+    const requests = f.socket.sent
+      .map((raw) => JSON.parse(raw) as { type: string; requestId: string })
+      .filter((frame) => frame.type === 'share.create');
+    expect(requests).toHaveLength(2);
+    replyShare(f.socket, 'first', requests[0]!.requestId);
+    await first;
+    const removing = f.client.remove('first');
+    await flush();
+    const removal = JSON.parse(f.socket.sent.at(-1)!) as { requestId: string };
+    f.socket.message({ type: 'share.removed', requestId: removal.requestId, shareId: 'first' });
+    await removing;
+    expect(f.socket.terminate).not.toHaveBeenCalled();
+    replyShare(f.socket, 'second', requests[1]!.requestId);
+    await second;
+    expect(f.client.diagnostics().control).toBe('connected');
+    await f.client.stop();
+  });
+
+  it('rejects an unentitled share and retires all background attempts', async () => {
+    const f = setup({ restoreShareIds: async () => [], premiumRemoteAccessEnabled: false });
+    f.client.start();
+    await flush();
+    const creating = f.client.create({ pinHash: 'hash', durationSeconds: 900 });
+    const assertion = expect(creating).rejects.toThrow();
+    await flush();
+    admit(f.socket, []);
+    await assertion;
+    await flush();
+    expect(f.client.diagnostics()).toMatchObject({
+      control: 'idle',
+      entitlement: 'checked',
+      idleReason: 'not-granted',
+    });
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 2);
+    expect(f.socketFactory).toHaveBeenCalledOnce();
+    await f.client.stop();
+  });
+
+  it('keeps an entitled remote listener connected without sharing and closes on withdrawal', async () => {
+    const f = setup({
+      restoreShareIds: async () => [],
+      offerRemoteControl: true,
+      reserveRemoteConnector: async () => 'unavailable',
+    });
+    f.client.start();
+    await flush();
+    admit(f.socket, ['remote-control']);
+    await flush();
+    expect(f.client.remoteControlDescriptor().enabled).toBe(true);
+    f.socket.message({
+      type: 'renewed',
+      features: [],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+    expect(f.client.diagnostics().control).toBe('idle');
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS);
+    expect(f.socketFactory).toHaveBeenCalledOnce();
+    await f.client.stop();
+  });
+
+  it('refreshes sharing rights for a share start on an established remote connection', async () => {
+    const f = setup({
+      restoreShareIds: async () => [],
+      offerRemoteControl: true,
+      reserveRemoteConnector: async () => 'unavailable',
+    });
+    f.client.start();
+    await flush();
+    admit(f.socket, ['remote-control']);
+    await flush();
+    const creating = f.client.create({ pinHash: 'hash', durationSeconds: 900 });
+    await flush();
+    expect(JSON.parse(f.socket.sent.at(-1)!)).toEqual({ type: 'renew' });
+    f.socket.message({
+      type: 'renewed',
+      features: ['sharing', 'remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+    replyShare(f.socket, 'newly-granted');
+    expect((await creating).shareId).toBe('newly-granted');
+    expect(f.socketFactory).toHaveBeenCalledOnce();
+    await f.client.stop();
+  });
+
+  it('rechecks denied remote rights after explicit disable and re-enable', async () => {
+    const f = setup({
+      restoreShareIds: async () => [],
+      offerRemoteControl: true,
+      reserveRemoteConnector: async () => 'unavailable',
+    });
+    f.client.start();
+    await flush();
+    admit(f.socket, []);
+    await flush();
+    expect(f.client.diagnostics().control).toBe('idle');
+    f.settings.premiumRemoteAccessEnabled = false;
+    f.client.applyFeatureSwitches({ sharing: true, remoteAccess: false });
+    f.settings.premiumRemoteAccessEnabled = true;
+    const replacement = new FakeSocket();
+    f.socketFactory.mockReturnValue(replacement as unknown as WebSocket);
+    f.client.applyFeatureSwitches({ sharing: true, remoteAccess: true });
+    await vi.advanceTimersByTimeAsync(1250);
+    await flush();
+    admit(replacement, ['remote-control']);
+    await flush();
+    expect(f.client.remoteControlDescriptor().enabled).toBe(true);
+    await f.client.stop();
+  });
+
+  it('bounds a failed last-share revocation while retaining its durable removal', async () => {
+    const f = await welcomed(
+      setup({ restoreShareIds: async () => ['last'], premiumRemoteAccessEnabled: false }),
+    );
+    const removing = f.client.remove('last');
+    const assertion = expect(removing).rejects.toThrow();
+    await flush();
+    await vi.advanceTimersByTimeAsync(REMOVAL_TIMEOUT_MS);
+    await assertion;
+    await flush();
+    expect(f.store.addPendingUplinkShareRemoval).toHaveBeenCalledWith('last');
+    expect(f.store.deletePendingUplinkShareRemoval).not.toHaveBeenCalled();
+    expect(f.client.diagnostics().control).toBe('idle');
+    await f.client.stop();
+  });
+
+  it('bounds explicit rights checks without turning them into sharing demand', async () => {
+    const f = setup({ restoreShareIds: async () => [], premiumRemoteAccessEnabled: false });
+    f.client.start();
+    await flush();
+    const checking = f.client.checkEntitlements();
+    await flush();
+    await vi.advanceTimersByTimeAsync(0);
+    admit(f.socket);
+    await flush();
+    expect(await checking).toMatchObject({
+      control: 'idle',
+      entitlement: 'checked',
+      features: { sharing: { granted: true } },
+    });
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS);
+    expect(f.socketFactory).toHaveBeenCalledOnce();
+    await f.client.stop();
+  });
+
+  it('retires a handshake immediately when both features are switched off', async () => {
+    const f = setup({
+      restoreShareIds: async () => [],
+      offerRemoteControl: true,
+      reserveRemoteConnector: async () => 'unavailable',
+    });
+    f.client.start();
+    await flush();
+    f.settings.premiumRemoteAccessEnabled = false;
+    f.settings.premiumSharingEnabled = false;
+    f.client.applyFeatureSwitches({ sharing: false, remoteAccess: false });
+    await vi.advanceTimersByTimeAsync(REMOVAL_TIMEOUT_MS);
+    admit(f.socket, ['sharing', 'remote-control']);
+    await flush();
+    expect(f.client.diagnostics().control).toBe('idle');
+    expect(f.client.remoteControlDescriptor().enabled).toBe(false);
+    await f.client.stop();
+  });
+  it('checks current rights on a live connection without revoking unrelated shares', async () => {
+    const f = await welcomed(setup());
+    const checking = f.client.checkEntitlements();
+    await flush();
+    expect(JSON.parse(f.socket.sent.at(-1)!)).toEqual({ type: 'renew' });
+    f.socket.message({
+      type: 'renewed',
+      features: ['sharing'],
+      leaseUntil: new Date(Date.now() + 60000).toISOString(),
+    });
+    expect(await checking).toMatchObject({ control: 'connected', sharing: 'ready' });
+    expect(f.disabled).not.toHaveBeenCalled();
+    await f.client.stop();
+  });
+  it('returns checked idle diagnostics when a rights check withdraws the last entitlement', async () => {
+    const f = await welcomed(setup({ premiumRemoteAccessEnabled: false }));
+    const checking = f.client.checkEntitlements();
+    await flush();
+    f.socket.message({
+      type: 'renewed',
+      features: [],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await expect(checking).resolves.toMatchObject({
+      control: 'idle',
+      entitlement: 'checked',
+      idleReason: 'not-granted',
+      sharing: 'unavailable',
+    });
+    expect(f.disabled).toHaveBeenCalled();
+    await f.client.stop();
+  });
+
+  it('does not extend remote rights past their lease while recovering a lost connection', async () => {
+    const f = setupReconnecting();
+    f.client.start();
+    await flush();
+    admit(f.sockets[0]!, ['remote-control']);
+    await flush();
+    f.sockets[0]!.close(1006, 'lost');
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(f.client.diagnostics().control).toBe('idle');
+    const attempts = f.socketFactory.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS);
+    expect(f.socketFactory).toHaveBeenCalledTimes(attempts);
+    await f.client.stop();
+  });
+  it('gives an explicit fresh check its own budget after an interrupted remote lease', async () => {
+    const f = setupReconnecting();
+    f.client.start();
+    await flush();
+    admit(f.sockets[0]!, ['remote-control']);
+    await flush();
+    f.sockets[0]!.close(1006, 'lost');
+    await vi.advanceTimersByTimeAsync(59000);
+    const checking = f.client.checkEntitlements();
+    const assertion = expect(checking).resolves.toMatchObject({ control: 'connected' });
+    await vi.advanceTimersByTimeAsync(4000);
+    admit(f.sockets.at(-1)!, ['remote-control']);
+    await assertion;
+    await f.client.stop();
   });
 });

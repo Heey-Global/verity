@@ -122,3 +122,19 @@ it('retries failed switch writes from the error banner', async () => {
   expect(client.getVeritySettings).toHaveBeenCalledTimes(1);
   await waitFor(() => expect(screen.queryByText('Retry')).toBeNull());
 });
+
+it('accepts a verified activation that already returned to idle', async () => {
+  const { client } = clientWithKey();
+  client.getUplinkDiagnostics = jest.fn().mockResolvedValue({
+    ...diagnostics(),
+    control: 'idle',
+    entitlement: 'checked',
+    sharing: 'unavailable',
+    remoteControl: 'unavailable',
+  });
+  render(<PremiumScreen />);
+  fireEvent.press(await screen.findByLabelText('Enter subscription key'));
+  fireEvent.changeText(screen.getByPlaceholderText('Paste your subscription key'), 'fixture-key');
+  fireEvent.press(screen.getByLabelText('Activate'));
+  expect(await screen.findByText('Premium is active')).toBeOnTheScreen();
+});

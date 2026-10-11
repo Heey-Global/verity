@@ -2617,6 +2617,27 @@ export async function buildEmbeddedServer(
             : { expectedInstallationId: config.publicPreviews.expectedInstallationId }),
           store: eventStore,
           serverVersion: config.publicPreviews.serverVersion,
+          restoreShareIds: async () => {
+            const previews = (await eventStore.listPublicPreviewShares())
+              .filter((share) => share.state === 'active' && share.expiresAt.getTime() > Date.now())
+              .map((share) => share.id);
+            const meetings = await eventStore.listAttendeeState<{
+              phase: string;
+              binding?: { shareId: string; expiresAt: string };
+            }>();
+            return [
+              ...previews,
+              ...meetings
+                .filter(
+                  (row) =>
+                    row.id.startsWith('meeting:') &&
+                    row.state.phase !== 'ended' &&
+                    row.state.binding &&
+                    Date.parse(row.state.binding.expiresAt) > Date.now(),
+                )
+                .map((row) => row.state.binding!.shareId),
+            ];
+          },
           ...(remoteConnector === undefined
             ? {}
             : { offerRemoteControl: true, reserveRemoteConnector: remoteConnector.reserve }),
@@ -4249,7 +4270,7 @@ export async function buildEmbeddedServer(
     previewSharingCapability: async () => {
       const settings = await eventStore.getVeritySettings();
       return previewSharingCapability(
-        uplinkControl?.isAvailable() === true,
+        uplinkControl?.canStartSharing() === true,
         Boolean(settings?.uplinkSubscriptionKey?.trim()),
         uplinkControl?.diagnostics(),
         settings === undefined || premiumFeatureSwitches(settings).sharing,
@@ -4270,7 +4291,10 @@ export async function buildEmbeddedServer(
         }
       : {}),
     ...(uplinkControl !== undefined
-      ? { onUplinkCredentialsChanged: () => uplinkControl.refreshCredentials() }
+      ? {
+          onUplinkCredentialsChanged: () => uplinkControl.refreshCredentials(),
+          recheckUplink: () => uplinkControl.checkEntitlements(),
+        }
       : {}),
     ...(uplinkControl !== undefined
       ? {

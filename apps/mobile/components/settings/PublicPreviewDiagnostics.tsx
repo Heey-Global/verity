@@ -43,6 +43,7 @@ function streamLine(record: RemoteStreamRecord): string {
 }
 
 function controlLabel(value: UplinkDiagnostics): string {
+  if (value.control === 'idle') return 'Disconnected — no active use';
   if (value.control === 'connected') return 'Connected to Uplink';
   if (value.control === 'rejected') {
     return value.reason === 'revoked'
@@ -140,7 +141,9 @@ export function PublicPreviewDiagnostics({
                 ? 'ready'
                 : status?.control === 'rejected' || statusError
                   ? 'needsSetup'
-                  : 'transient'
+                  : status?.control === 'idle'
+                    ? 'optional'
+                    : 'transient'
           }
           label={
             keyConfigured === false
@@ -155,6 +158,23 @@ export function PublicPreviewDiagnostics({
           }
         />
       </View>
+      <Pressable
+        accessibilityRole="button"
+        disabled={checking || !keyConfigured}
+        onPress={() => {
+          setChecking(true);
+          void client
+            .checkUplinkEntitlements()
+            .then((value) => {
+              setStatus(value);
+              setStatusError(null);
+            })
+            .catch(() => setStatusError('unavailable'))
+            .finally(() => setChecking(false));
+        }}
+      >
+        <Text style={styles.linkText}>Check subscription rights</Text>
+      </Pressable>
       {premiumFeatures
         .filter((feature) => feature.id !== 'teams')
         .map((feature) => {
@@ -168,9 +188,16 @@ export function PublicPreviewDiagnostics({
               ? 'Off'
               : ready
                 ? 'Ready'
-                : status?.control === 'connected' && state?.granted === false
+                : (status?.control === 'connected' || status?.entitlement === 'checked') &&
+                    state?.granted === false
                   ? 'Not included'
-                  : 'Unavailable';
+                  : status?.control === 'idle'
+                    ? status.entitlement === 'unchecked'
+                      ? 'Not checked'
+                      : feature.id === 'sharing' && state?.granted
+                        ? 'Ready on demand'
+                        : 'Unavailable'
+                    : 'Unavailable';
           return (
             <View key={feature.id} style={styles.secretLabelRow}>
               <Text style={styles.pathLabel}>{feature.name}</Text>
@@ -227,8 +254,8 @@ export function PublicPreviewDiagnostics({
         </Text>
       ) : null}
       <Text style={styles.reproHint}>
-        Online sharing status reports the effective capability. Creating a public preview checks the
-        full sharing path.
+        Online sharing connects when a share starts and disconnects after the last share ends,
+        unless Remote access needs the connection. Subscription rights are checked when connecting.
       </Text>
       {statusError === 'unavailable' && profile ? (
         <Text style={styles.reproHint}>

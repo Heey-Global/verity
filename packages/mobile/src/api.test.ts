@@ -3575,6 +3575,30 @@ it('labels Attendee JSON writes so the server parses configuration and meeting c
 });
 
 describe('Uplink diagnostics schema', () => {
+  it('requests an explicit bounded rights check through POST', async () => {
+    const status = {
+      control: 'idle',
+      sharing: 'unavailable',
+      remoteControl: 'unavailable',
+      entitlement: 'checked',
+    };
+    const { fetch, calls } = fakeFetchSequence(json(status));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.checkUplinkEntitlements()).toEqual(status);
+    expect(calls[0]?.url).toBe('http://host/api/uplink/check');
+    expect(calls[0]?.init?.method).toBe('POST');
+  });
+  it('preserves deliberate idle and unchecked entitlement states', async () => {
+    const { uplinkDiagnosticsSchema } = await import('./api.js');
+    const idle = {
+      control: 'idle',
+      sharing: 'unavailable',
+      remoteControl: 'unavailable',
+      entitlement: 'unchecked',
+      idleReason: 'no-demand',
+    };
+    expect(uplinkDiagnosticsSchema.parse(idle)).toEqual(idle);
+  });
   it('keeps the status fields when a Core stream record is out of shape', async () => {
     const { uplinkDiagnosticsSchema } = await import('./api.js');
     // Core's stream records evolve separately; a drifted one must not take the

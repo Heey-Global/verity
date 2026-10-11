@@ -345,6 +345,21 @@ describe('PreviewShareManager', () => {
     ).rejects.toThrow('outside the project checkout');
     expect(edge.create).not.toHaveBeenCalled();
   });
+  it('starts an idle edge on demand and requires live authority before activation', async () => {
+    const { manager, edge } = fixture();
+    edge.isAvailable.mockReturnValue(false);
+    Object.assign(edge, { canStartSharing: () => true });
+    const create = edge.create.getMockImplementation()!;
+    edge.create.mockImplementation(async (input) => {
+      const binding = await create(input);
+      edge.isAvailable.mockReturnValue(true);
+      return binding;
+    });
+    const share = await manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 });
+    expect(edge.create).toHaveBeenCalledOnce();
+    expect(share.state).toBe('active');
+  });
+
   it('resolves the connector image only after edge authority is available', async () => {
     const { manager, edge, resolveConnectorImage } = fixture();
     edge.isAvailable.mockReturnValueOnce(false);

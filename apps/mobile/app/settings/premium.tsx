@@ -93,7 +93,10 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
         });
         if (!mounted.current || attempt !== generation.current) return;
         setStatus(next);
-        if (next.control === 'connected') {
+        if (
+          next.control === 'connected' ||
+          (next.entitlement === 'checked' && next.control === 'idle')
+        ) {
           setMode('activated');
           if (Platform.OS !== 'web')
             void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
@@ -249,18 +252,22 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
               </View>
               <StatusPill
                 intent={
-                  status?.control === 'connected'
-                    ? 'ready'
-                    : status?.control === 'rejected'
-                      ? 'needsSetup'
-                      : 'transient'
+                  status?.control === 'idle'
+                    ? 'optional'
+                    : status?.control === 'connected'
+                      ? 'ready'
+                      : status?.control === 'rejected'
+                        ? 'needsSetup'
+                        : 'transient'
                 }
                 label={
                   status?.control === 'connected'
                     ? 'Active'
                     : status?.control === 'rejected'
                       ? 'Key rejected'
-                      : 'Awaiting connection'
+                      : status?.control === 'idle'
+                        ? 'Disconnected'
+                        : 'Awaiting connection'
                 }
               />
               <Pressable
@@ -309,12 +316,16 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
                   <Text style={styles.lead}>
                     {status?.features?.[feature.id]?.enabled === false
                       ? 'Off'
-                      : status?.control === 'connected' &&
+                      : (status?.control === 'connected' || status?.entitlement === 'checked') &&
                           status.features?.[feature.id]?.granted === false
                         ? 'Not included in your subscription'
                         : status?.features?.[feature.id]?.effective
                           ? 'Ready'
-                          : 'Waiting for Uplink'}
+                          : status?.control === 'idle'
+                            ? status.entitlement === 'checked'
+                              ? 'Ready on demand'
+                              : 'Not checked — checked when used'
+                            : 'Waiting for Uplink'}
                   </Text>
                 </>
               ) : null}

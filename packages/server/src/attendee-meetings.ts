@@ -3,7 +3,11 @@ import { createServer, type Server } from 'node:http';
 import { PreviewConnector, hashPreviewPin } from '@verity/preview-tunnel';
 import type { EventStore, LiveMeetingSyncRecord } from '@verity/store';
 import { z } from 'zod';
-import type { PreviewEdgeControl, PreviewEdgeBinding } from './preview-share-manager.js';
+import {
+  PreviewShareRemovalQueuedError,
+  type PreviewEdgeControl,
+  type PreviewEdgeBinding,
+} from './preview-share-manager.js';
 import {
   ATTENDEE_WEBHOOK_PATH,
   AttendeeClient,
@@ -49,6 +53,8 @@ export class AttendeeMeetings {
   private timer: NodeJS.Timeout | undefined;
   private tail: Promise<unknown> = Promise.resolve();
   private closed = false;
+  private sharingGeneration = 0;
+  private unsubscribeSharing: (() => void) | undefined;
   private polling: Promise<void> | undefined;
   private readonly researchJobs = new Map<string, Promise<void>>();
   private readonly connectors = new Map<string, PreviewConnector>();
@@ -64,7 +70,39 @@ export class AttendeeMeetings {
       ) => Promise<void>;
       client?: (key: string) => AttendeeClient;
     },
-  ) {}
+  ) {
+    this.unsubscribeSharing = options.edge?.onSharingDisabled?.(() => {
+      this.sharingGeneration += 1;
+      for (const connector of this.connectors.values()) connector.close();
+      this.connectors.clear();
+      // Provider recovery must not reopen a webhook after local authority loss.
+      void this.serial(async () => {
+        for (const row of await this.records()) {
+          const state = row.state;
+          if (!state.binding) continue;
+          const shareId = state.binding.shareId;
+          try {
+            await this.revokeShare(shareId);
+          } catch {
+            // Retain the handle when durable revocation cannot be confirmed.
+            continue;
+          }
+          delete state.binding;
+          await this.save(state);
+        }
+      }).catch(() => undefined);
+    });
+  }
+
+  private async revokeShare(shareId: string): Promise<void> {
+    if (!this.options.edge) throw new Error('Uplink cleanup is unavailable');
+    try {
+      await this.options.edge.remove(shareId);
+    } catch (error) {
+      // Provider completion can proceed once revocation survives a restart.
+      if (!(error instanceof PreviewShareRemovalQueuedError)) throw error;
+    }
+  }
 
   private client(key: string) {
     return this.options.client?.(key) ?? new AttendeeClient(key);
@@ -163,6 +201,7 @@ export class AttendeeMeetings {
   }
   async close() {
     this.closed = true;
+    this.unsubscribeSharing?.();
     clearInterval(this.timer);
     await this.polling;
     await this.tail;
@@ -178,6 +217,9 @@ export class AttendeeMeetings {
   }
   private async connect(state: OnlineMeeting) {
     if (!state.binding || this.connectors.has(state.meeting.id)) return;
+    if (this.options.edge?.isAvailable?.() === false)
+      throw new Error('Online sharing authority lost before connection');
+    const generation = this.sharingGeneration;
     const connector = new PreviewConnector({
       edgeUrl: state.binding.edgeUrl,
       connectorToken: state.binding.connectorToken,
@@ -186,6 +228,10 @@ export class AttendeeMeetings {
       requestTimeoutMs: 8_000,
     });
     await connector.connect();
+    if (generation !== this.sharingGeneration || this.options.edge?.isAvailable?.() === false) {
+      connector.close();
+      throw new Error('Online sharing authority lost during connection');
+    }
     this.connectors.set(state.meeting.id, connector);
     void connector
       .waitForDisconnect()
@@ -234,6 +280,7 @@ export class AttendeeMeetings {
         processedRequests: {},
       };
       await this.publish(state);
+      const sharingGeneration = this.sharingGeneration;
       try {
         const binding = await this.options.edge.create({
           durationSeconds: 30 * 24 * 60 * 60,
@@ -247,6 +294,13 @@ export class AttendeeMeetings {
         webhookUrl.searchParams.set('pin', state.pin);
         state.botCreateAttempted = true;
         await this.save(state);
+        if (
+          sharingGeneration !== this.sharingGeneration ||
+          this.options.edge.isAvailable?.() === false
+        ) {
+          state.botCreateAttempted = false;
+          throw new Error('Online sharing authority lost before bot creation');
+        }
         const bot = z.object({ id: z.string() }).parse(
           await this.client(credentials.apiKey).request('bots', 'POST', {
             meeting_url: meetingUrl,
@@ -265,16 +319,21 @@ export class AttendeeMeetings {
       } catch (error) {
         if (error instanceof AttendeeRequestRejected) state.botCreateAttempted = false;
         if (!state.botCreateAttempted) {
-          if (state.binding)
-            await this.options.edge.remove(state.binding.shareId).catch(() => undefined);
+          if (state.binding) {
+            try {
+              await this.revokeShare(state.binding.shareId);
+              delete state.binding;
+            } catch {
+              // Keep preparation cleanup retryable when the durable queue fails.
+            }
+          }
           this.connectors.get(id)?.close();
           this.connectors.delete(id);
-          state.phase = 'ended';
+          state.phase = state.binding ? 'stopping' : 'ended';
           state.meeting.state = 'ended';
           state.meeting.endedAt = Date.now();
           state.credentials = { apiKey: '', webhookSecret: '' };
           state.pin = '';
-          delete state.binding;
           await this.publish(state);
           throw new Error(
             error instanceof AttendeeRequestRejected
@@ -403,7 +462,7 @@ export class AttendeeMeetings {
       // A restart before provider submission must not leave a phantom active meeting.
       if (state.binding) {
         if (!this.options.edge) throw new Error('Uplink cleanup is unavailable');
-        await this.options.edge.remove(state.binding.shareId);
+        await this.revokeShare(state.binding.shareId);
       }
       this.connectors.get(state.meeting.id)?.close();
       this.connectors.delete(state.meeting.id);
@@ -492,7 +551,7 @@ export class AttendeeMeetings {
       }
     }
     if (final) {
-      if (state.binding) await this.options.edge?.remove(state.binding.shareId);
+      if (state.binding) await this.revokeShare(state.binding.shareId);
       this.connectors.get(state.meeting.id)?.close();
       this.connectors.delete(state.meeting.id);
       state.phase = 'ended';

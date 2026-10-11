@@ -6,14 +6,19 @@ import type {
   PreviewEdgeControl,
   PreviewEdgeCreate,
 } from './preview-share-manager.js';
-import { PreviewShareUpstreamError } from './preview-share-manager.js';
+import {
+  PreviewShareUpstreamError,
+  PreviewShareRemovalQueuedError,
+} from './preview-share-manager.js';
 
 const PROTOCOL_VERSION = 1;
 const HEARTBEAT_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 120_000;
+export const DEMAND_CHECK_TIMEOUT_MS = 15_000;
+export const REMOVAL_TIMEOUT_MS = 5_000;
 /** A WebSocket close handshake is cooperative. Do not let a peer that never
  * completes it strand the control client in CLOSING forever. */
-export const CLOSE_TIMEOUT_MS = 5_000;
+const CLOSE_TIMEOUT_MS = 5_000;
 /** Exported so the guards can derive their timings from the schedule rather
  * than restating it. */
 export const RECONNECT_MAX_MS = 30_000;
@@ -37,19 +42,9 @@ const MAX_REFUSAL_REASON_CHARS = 200;
 const MAX_CLOSE_REASON_BYTES = 123;
 export const UPLINK_CONTROL_URL = 'wss://uplink.verity.build/control';
 
-/** Refusals that are about who this installation is: dialling again with the
- * same key cannot change the answer, so the client stops and reports the reason.
- * Everything else — a named capacity limit, a version mismatch, or a reason this
- * client has never heard of — is treated as temporary and retried on the slower
- * schedule. That default direction is the safe one: retrying a permanent refusal
- * wastes a connection every few minutes, while giving up on a temporary one
- * leaves sharing dead until someone restarts the server.
- *
- * `protocol_unsupported` belongs on the temporary side despite naming something
- * this installation cannot change: a mixed-version fleet or a rolled-back
- * deployment resolves it without anyone touching the installation, and the fix
- * that *is* the installation's — upgrading it — restarts the process anyway, so
- * treating it as permanent would buy nothing and cost the self-healing case. */
+/** Identity refusals remain terminal until an explicit retry. Capacity and
+ * protocol refusals use slower back-off while established Remote access still
+ * needs recovery; initial and explicit rights checks have a fixed budget. */
 const IDENTITY_REJECTS: ReadonlySet<string> = new Set(['unknown_key', 'revoked', 'expired']);
 
 interface SettingsStore extends EventStore {
@@ -99,6 +94,7 @@ export interface UplinkControlClientOptions {
   store: SettingsStore;
   serverVersion: string;
   webSocketFactory?: (url: string, options: { maxPayload: number }) => WebSocket;
+  restoreShareIds?: () => Promise<string[]>;
   onFeaturesDisabled?: (reason: string) => Promise<void>;
   onSharePinLocked?: (shareId: string) => Promise<void>;
   onShareExpired?: (shareId: string) => Promise<void>;
@@ -139,8 +135,10 @@ interface PremiumFeatureState {
 }
 
 export interface UplinkDiagnostics {
-  control: 'connected' | 'connecting' | 'reconnecting' | 'rejected' | 'disabled';
+  control: 'idle' | 'connected' | 'connecting' | 'reconnecting' | 'rejected' | 'disabled';
   sharing: 'ready' | 'unavailable';
+  entitlement?: 'unchecked' | 'checked';
+  idleReason?: 'no-demand' | 'not-granted';
   remoteControl: 'ready' | 'unavailable';
   reason?: 'unknown_key' | 'revoked' | 'expired';
   lastCloseCode?: number;
@@ -158,10 +156,23 @@ export function premiumFeatureSwitches(
   };
 }
 
-/** Long-lived fail-closed client for the paid Uplink control plane. Credentials
+/** Demand-driven, fail-closed client for the paid Uplink control plane. Credentials
  * are read from the encrypted settings store only. No environment/file fallback
  * is accepted by this class. */
 export class UplinkControlClient implements PreviewEdgeControl {
+  private activeShares = new Set<string>();
+  private shareOperations = 0;
+  private idle = false;
+  private grants: Set<string> | undefined;
+  private grantExpiresAt = 0;
+  private offlineLeaseTimer: NodeJS.Timeout | undefined;
+  private checkTimer: NodeJS.Timeout | undefined;
+  private drainTimer: NodeJS.Timeout | undefined;
+  private readyWaiters = new Set<(error?: Error) => void>();
+  private initialized: Promise<void> | undefined;
+  private probing = false;
+  private remoteSupported = false;
+  private sharingDisabledListeners = new Set<() => void>();
   private socket: WebSocket | undefined;
   private stopped = true;
   private retryMs = 1_000;
@@ -210,16 +221,169 @@ export class UplinkControlClient implements PreviewEdgeControl {
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    this.idle = false;
+    this.grants = undefined;
     // A stop/start cycle inside one process is a fresh attempt, not a
     // continuation of whatever back-off the previous one ended on.
     this.retryMs = 1_000;
     this.retryCeilingMs = RECONNECT_MAX_MS;
     this.generation += 1;
-    void this.connect();
+    const initialGeneration = this.generation;
+    this.initialized = (async () => {
+      const ids = await this.options.restoreShareIds?.();
+      if (this.stopped || initialGeneration !== this.generation) return;
+      for (const id of ids ?? []) this.activeShares.add(id);
+      await this.connect();
+    })().catch((error: unknown) => {
+      this.options.log?.error({ error }, 'failed to initialize Uplink demand');
+      if (!this.stopped && initialGeneration === this.generation) {
+        this.clearAuthority('Failed to restore Uplink demand');
+        this.park();
+      }
+    });
+  }
+
+  private remoteDemand(): boolean {
+    return (
+      this.switches.remoteAccess &&
+      this.options.offerRemoteControl === true &&
+      this.options.reserveRemoteConnector !== undefined &&
+      (this.grants === undefined ||
+        (this.grants.has('remote-control') &&
+          this.remoteSupported &&
+          this.grantExpiresAt > Date.now()))
+    );
+  }
+
+  private hasDemand(): boolean {
+    return (
+      this.probing ||
+      this.remoteDemand() ||
+      (this.switches.sharing &&
+        (this.grants === undefined || this.grants.has('sharing')) &&
+        (this.activeShares.size > 0 || this.shareOperations > 0))
+    );
+  }
+
+  /** Idle is distinct from shutdown: a new explicit share can wake the client. */
+  private park(shutdown = false): void {
+    this.idle = true;
+    if (this.offlineLeaseTimer) clearTimeout(this.offlineLeaseTimer);
+    this.offlineLeaseTimer = undefined;
+    this.probing = false;
+    this.generation += 1;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+    if (this.checkTimer) clearTimeout(this.checkTimer);
+    this.checkTimer = undefined;
+    if (this.drainTimer) clearTimeout(this.drainTimer);
+    this.drainTimer = undefined;
+    const socket = this.socket;
+    this.socket = undefined;
+    this.clearAuthority('Uplink has no effective demand', false);
+    this.resolveReady(new Error('Uplink has no effective demand'));
+    if (shutdown) socket?.close(1000, 'server shutdown');
+    else socket?.terminate();
+  }
+
+  private settleDemand(): void {
+    if (this.stopped || this.hasDemand()) return;
+    // Local connector shutdown may need a final bounded revocation exchange.
+    if (this.pending.size > 0 || this.orphanShareIds.size > 0) {
+      this.beginDrain();
+    } else this.park();
+  }
+
+  private beginDrain(): void {
+    if (this.drainTimer) return;
+    this.drainTimer = setTimeout(() => {
+      this.drainTimer = undefined;
+      if (!this.hasDemand()) this.park();
+    }, REMOVAL_TIMEOUT_MS);
+    this.drainTimer.unref();
+  }
+
+  private resolveReady(error?: Error): void {
+    for (const waiter of this.readyWaiters) waiter(error);
+    this.readyWaiters.clear();
+  }
+
+  private notifySharingDisabled(): void {
+    for (const listener of this.sharingDisabledListeners) {
+      try {
+        listener();
+      } catch (error) {
+        this.options.log?.error({ error }, 'failed to notify sharing shutdown');
+      }
+    }
+  }
+
+  onSharingDisabled(listener: () => void): () => void {
+    this.sharingDisabledListeners.add(listener);
+    return () => this.sharingDisabledListeners.delete(listener);
+  }
+
+  canStartSharing(): boolean {
+    return !this.stopped && this.switches.sharing;
+  }
+
+  async checkEntitlements(): Promise<UplinkDiagnostics> {
+    await this.initialized;
+    if (this.stopped) throw new Error('Uplink client is stopped');
+    let ready: Promise<void>;
+    if (this.welcomed && this.socket?.readyState === WebSocket.OPEN) {
+      ready = this.waitForReady();
+      this.socket.send(JSON.stringify({ type: 'renew' }));
+    } else {
+      this.refreshCredentials();
+      ready = this.waitForReady();
+    }
+    try {
+      await ready;
+    } finally {
+      this.probing = false;
+      this.settleDemand();
+    }
+    return this.diagnostics();
+  }
+
+  private async ensureSharing(): Promise<void> {
+    await this.initialized;
+    if (!this.canStartSharing()) throw new Error('Online sharing is switched off');
+    if (this.isAvailable()) return;
+    if (this.idle) {
+      this.grants = undefined;
+      this.lastReject = undefined;
+      this.idle = false;
+    }
+    const ready = this.waitForReady();
+    if (this.welcomed && this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify({ type: 'renew' }));
+    }
+    await ready;
+    if (!this.isAvailable()) throw new Error('Sharing is not granted by Uplink');
+  }
+
+  private waitForReady(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.readyWaiters.delete(done);
+        reject(new Error('Uplink rights check timed out'));
+      }, DEMAND_CHECK_TIMEOUT_MS);
+      const done = (error?: Error) => {
+        clearTimeout(timer);
+        this.readyWaiters.delete(done);
+        if (error) reject(error);
+        else resolve();
+      };
+      this.readyWaiters.add(done);
+      void this.connect();
+    });
   }
 
   async stop(options: { revoke?: boolean } = {}): Promise<void> {
     this.stopped = true;
+    this.park(true);
     this.generation += 1;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = undefined;
@@ -232,6 +396,13 @@ export class UplinkControlClient implements PreviewEdgeControl {
   /** Called after a settings write so a new/replaced key takes effect now rather
    * than waiting for an unrelated network reconnect. */
   refreshCredentials(notifyFeatureLoss = true): void {
+    if (this.checkTimer) clearTimeout(this.checkTimer);
+    this.checkTimer = undefined;
+    if (this.offlineLeaseTimer) clearTimeout(this.offlineLeaseTimer);
+    this.offlineLeaseTimer = undefined;
+    this.grants = undefined;
+    this.idle = false;
+    this.probing = notifyFeatureLoss;
     this.lastReject = undefined;
     this.lastCloseCode = undefined;
     this.retryMs = 1_000;
@@ -246,8 +417,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
       this.closeAndReconnect(4000, 'feature switches changed');
       return;
     }
-    this.socket?.close(4000, 'credentials changed');
-    if (!this.socket) this.scheduleReconnect(0);
+    if (this.socket) this.closeAndReconnect(4000, 'credentials changed');
+    else this.scheduleReconnect(0);
   }
 
   isAvailable(): boolean {
@@ -263,13 +434,29 @@ export class UplinkControlClient implements PreviewEdgeControl {
    * Renegotiating remote access must not revoke unrelated public links. */
   applyFeatureSwitches(next: PremiumFeatureSwitches): void {
     const previous = this.switches;
+    const needsDrain =
+      this.activeShares.size > 0 || this.pending.size > 0 || this.orphanShareIds.size > 0;
+    if ((!previous.remoteAccess && next.remoteAccess) || (!previous.sharing && next.sharing))
+      this.grants = undefined;
     this.switches = { ...next };
     if (previous.remoteAccess && !next.remoteAccess) {
       this.clearRemoteSessions('remote access switched off in settings');
     }
     if (previous.sharing !== next.sharing || previous.remoteAccess !== next.remoteAccess) {
       this.options.log?.info({ switches: this.switches }, 'premium feature switches applied');
-      if (previous.remoteAccess !== next.remoteAccess) this.refreshCredentials(false);
+      if (!next.sharing) {
+        this.activeShares.clear();
+        this.notifySharingDisabled();
+      }
+      if (!this.hasDemand()) {
+        if (needsDrain) this.beginDrain();
+        else this.park();
+        this.resolveReady(new Error('Uplink features disabled'));
+      } else if (previous.remoteAccess !== next.remoteAccess) this.refreshCredentials(false);
+      else if (this.idle) {
+        this.idle = false;
+        void this.connect();
+      }
     }
   }
 
@@ -281,25 +468,40 @@ export class UplinkControlClient implements PreviewEdgeControl {
     const connected = this.welcomed && this.socket?.readyState === WebSocket.OPEN;
     const control = this.stopped
       ? 'disabled'
-      : connected
-        ? 'connected'
-        : this.lastReject !== undefined
-          ? 'rejected'
-          : this.socket?.readyState === WebSocket.OPEN
-            ? 'connecting'
-            : 'reconnecting';
+      : this.lastReject !== undefined && IDENTITY_REJECTS.has(this.lastReject.reason)
+        ? 'rejected'
+        : this.idle
+          ? 'idle'
+          : connected
+            ? 'connected'
+            : this.lastReject !== undefined
+              ? 'rejected'
+              : this.socket?.readyState === WebSocket.OPEN
+                ? 'connecting'
+                : 'reconnecting';
     const reason = this.lastReject?.reason;
-    const sharingGranted = connected && this.features.has('sharing');
-    const remoteGranted = connected && this.features.has('remote-control');
+    const sharingGranted = this.grants?.has('sharing') ?? false;
+    const remoteGranted = this.grants?.has('remote-control') ?? false;
     return {
       control,
+      entitlement: this.grants === undefined ? 'unchecked' : 'checked',
+      ...(this.idle && !this.stopped
+        ? {
+            idleReason:
+              this.grants !== undefined &&
+              (this.switches.sharing || this.switches.remoteAccess) &&
+              !((this.switches.sharing && this.grants.has('sharing')) || this.remoteDemand())
+                ? ('not-granted' as const)
+                : ('no-demand' as const),
+          }
+        : {}),
       sharing: this.isAvailable() ? 'ready' : 'unavailable',
       remoteControl: this.remoteControlDescriptor().enabled ? 'ready' : 'unavailable',
       features: {
         sharing: {
           granted: sharingGranted,
           enabled: this.switches.sharing,
-          effective: sharingGranted && this.switches.sharing,
+          effective: this.isAvailable(),
         },
         remoteAccess: {
           granted: remoteGranted,
@@ -342,6 +544,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
     ) {
       return { version: 1, enabled: false, reason: 'disabled' };
     }
+    if (this.grants !== undefined && !this.grants.has('remote-control')) {
+      return { version: 1, enabled: false, reason: 'disabled' };
+    }
     if (
       !this.welcomed ||
       this.socket?.readyState !== WebSocket.OPEN ||
@@ -364,6 +569,23 @@ export class UplinkControlClient implements PreviewEdgeControl {
   }
 
   async create(input: PreviewEdgeCreate): Promise<PreviewEdgeBinding> {
+    this.shareOperations += 1;
+    try {
+      await this.ensureSharing();
+      const binding = await this.createConnected(input);
+      if (!this.isAvailable()) {
+        await this.queueOrphanShare(binding.shareId);
+        throw new Error('Sharing authority lost during creation');
+      }
+      this.activeShares.add(binding.shareId);
+      return binding;
+    } finally {
+      this.shareOperations -= 1;
+      this.settleDemand();
+    }
+  }
+
+  private async createConnected(input: PreviewEdgeCreate): Promise<PreviewEdgeBinding> {
     if (input.webhook && !this.webhookNegotiated)
       throw new Error('Uplink webhook-v1 is unavailable');
     if (!this.isAvailable()) {
@@ -425,22 +647,49 @@ export class UplinkControlClient implements PreviewEdgeControl {
   }
 
   async remove(shareId: string): Promise<void> {
+    this.activeShares.delete(shareId);
+    if (!this.hasDemand()) this.beginDrain();
+    try {
+      await this.removeConnected(shareId);
+    } finally {
+      this.settleDemand();
+    }
+  }
+
+  private async removeConnected(shareId: string): Promise<void> {
     await this.options.store.addPendingUplinkShareRemoval(shareId);
     this.orphanShareIds.add(shareId);
-    if (!this.controlReady) throw new Error('cannot revoke preview while Uplink is unavailable');
-    const response = await this.request('share.remove', { shareId });
-    if (response.type === 'remove.failed') {
-      throw new Error(
-        `Uplink failed to remove public preview: ${optionalString(response.code, 'internal')}`,
+    try {
+      if (!this.controlReady) throw new Error('cannot revoke preview while Uplink is unavailable');
+      const response = await this.request('share.remove', { shareId });
+      if (response.type === 'remove.failed') {
+        throw new Error(
+          `Uplink failed to remove public preview: ${optionalString(response.code, 'internal')}`,
+        );
+      }
+      if (response.type !== 'share.removed') throw new Error('unexpected Uplink removal response');
+      await this.options.store.deletePendingUplinkShareRemoval(shareId);
+      this.orphanShareIds.delete(shareId);
+    } catch (error) {
+      throw new PreviewShareRemovalQueuedError(
+        error instanceof Error ? error.message : 'Uplink revocation is queued',
+        { cause: error },
       );
     }
-    if (response.type !== 'share.removed') throw new Error('unexpected Uplink removal response');
-    await this.options.store.deletePendingUplinkShareRemoval(shareId);
-    this.orphanShareIds.delete(shareId);
   }
 
   private async connect(): Promise<void> {
-    if (this.stopped || this.socket) return;
+    if (this.stopped || this.idle || this.socket) return;
+    if (!this.checkTimer && (this.grants === undefined || this.probing)) {
+      this.checkTimer = setTimeout(() => {
+        this.checkTimer = undefined;
+        if (!this.welcomed || this.probing) {
+          this.clearAuthority('Uplink rights check timed out');
+          this.park();
+        }
+      }, DEMAND_CHECK_TIMEOUT_MS);
+      this.checkTimer.unref();
+    }
     const generation = this.generation;
     let settings: VeritySettingsRecord | undefined;
     try {
@@ -453,6 +702,12 @@ export class UplinkControlClient implements PreviewEdgeControl {
     }
     if (this.stopped || generation !== this.generation || this.socket) return;
     if (settings !== undefined) this.switches = premiumFeatureSwitches(settings);
+    if (!this.hasDemand()) {
+      if (!this.switches.sharing && this.activeShares.size > 0)
+        void this.disableFeaturesOnce('Online sharing is switched off').catch(() => undefined);
+      this.park();
+      return;
+    }
     if (
       this.options.expectedInstallationId !== undefined &&
       settings?.uplinkInstallationId !== this.options.expectedInstallationId
@@ -465,7 +720,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
     const key: string | undefined = settings?.uplinkSubscriptionKey?.trim();
     if (!key) {
       this.clearAuthority('Uplink subscription key is not configured');
-      this.scheduleReconnect(RECONNECT_MAX_MS);
+      this.park();
       return;
     }
     if (this.lastReject?.key === key) {
@@ -727,11 +982,13 @@ export class UplinkControlClient implements PreviewEdgeControl {
           this.options.offerRemoteControl === true &&
           negotiation.capabilities.has(REMOTE_CAPABILITY) &&
           negotiation.channels.has(REMOTE_CHANNEL);
+        this.remoteSupported = this.remoteNegotiated;
         this.remoteInstallation =
           installationHandle === undefined ? undefined : { installationId, installationHandle };
         this.welcomed = true;
         this.startHeartbeat();
         if (!this.features.has('sharing') || !this.switches.sharing) {
+          if (!this.hasDemand()) this.beginDrain();
           await this.disableFeaturesOnce(
             this.switches.sharing
               ? 'Uplink did not grant public preview entitlement'
@@ -753,7 +1010,12 @@ export class UplinkControlClient implements PreviewEdgeControl {
         this.socket?.close(1011, 'local welcome processing failed');
         return;
       }
-      void this.flushOrphanShares();
+      if (this.checkTimer) clearTimeout(this.checkTimer);
+      this.checkTimer = undefined;
+      this.probing = false;
+      this.resolveReady();
+      void this.flushOrphanShares().finally(() => this.settleDemand());
+      this.settleDemand();
       return;
     }
     if (frame.type === 'renewed') {
@@ -773,11 +1035,15 @@ export class UplinkControlClient implements PreviewEdgeControl {
         'Uplink lease renewed',
       );
       if (hadSharing && !this.features.has('sharing')) {
+        this.beginDrain();
         const reason = 'Uplink removed public preview entitlement';
+        this.resolveReady();
         this.cancelPending(reason);
         await this.disableFeaturesOnce(reason);
       }
       if (!hadSharing && this.features.has('sharing')) void this.flushOrphanShares();
+      this.resolveReady();
+      this.settleDemand();
       return;
     }
     if (frame.type === 'revoke') {
@@ -785,7 +1051,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
       this.lastReject = { key, reason };
       this.options.log?.warn({ frameType: 'revoke', reason }, 'Uplink withdrew this installation');
       this.clearAuthority(reason);
-      this.socket?.close(4003, 'revoked');
+      this.activeShares.clear();
+      this.grants = new Set();
+      this.park();
       return;
     }
     if (frame.type === 'reject') {
@@ -805,7 +1073,11 @@ export class UplinkControlClient implements PreviewEdgeControl {
         'Uplink refused the control connection',
       );
       this.clearAuthority(reason);
-      this.socket?.close(4003, closeReason(reason, 'rejected'));
+      if (identityReject) {
+        this.activeShares.clear();
+        this.grants = new Set();
+        this.park();
+      } else this.socket?.close(4003, closeReason(reason, 'rejected'));
       return;
     }
     if (frame.type === 'share.pin_locked') {
@@ -813,7 +1085,12 @@ export class UplinkControlClient implements PreviewEdgeControl {
       return;
     }
     if (frame.type === 'share.expired') {
-      await this.options.onShareExpired?.(stringField(frame, 'shareId'));
+      this.activeShares.delete(stringField(frame, 'shareId'));
+      try {
+        await this.options.onShareExpired?.(stringField(frame, 'shareId'));
+      } finally {
+        this.settleDemand();
+      }
       return;
     }
     if (frame.type === 'session.request') {
@@ -909,6 +1186,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
         ? frame.features.filter((v): v is string => typeof v === 'string')
         : [],
     );
+    this.grants = new Set(this.features);
+    this.grantExpiresAt = leaseUntil;
+    if (this.offlineLeaseTimer) clearTimeout(this.offlineLeaseTimer);
+    this.offlineLeaseTimer = undefined;
     if (this.leaseTimer) clearTimeout(this.leaseTimer);
     if (this.renewalTimer) clearTimeout(this.renewalTimer);
     this.leaseTimer = setTimeout(
@@ -918,7 +1199,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
           'Uplink lease expired',
         );
         this.clearAuthority('Uplink lease expired');
-        this.closeAndReconnect(4001, 'lease expired');
+        this.activeShares.clear();
+        this.grants = new Set();
+        this.park();
       },
       Math.max(0, leaseUntil - Date.now()),
     );
@@ -987,6 +1270,26 @@ export class UplinkControlClient implements PreviewEdgeControl {
   }
 
   private clearAuthority(reason: string, notify = true): void {
+    // A disconnected transport cannot extend the last granted lease by retrying.
+    if (
+      !this.stopped &&
+      !this.idle &&
+      this.grants?.has('remote-control') &&
+      this.remoteDemand() &&
+      !this.offlineLeaseTimer
+    ) {
+      this.offlineLeaseTimer = setTimeout(
+        () => {
+          this.offlineLeaseTimer = undefined;
+          this.options.log?.warn({}, 'Uplink lease expired during recovery');
+          this.grants = new Set();
+          this.clearAuthority('Uplink lease expired');
+          this.park();
+        },
+        Math.max(0, this.grantExpiresAt - Date.now()),
+      );
+      this.offlineLeaseTimer.unref();
+    }
     this.features.clear();
     this.remoteNegotiated = false;
     this.webhookNegotiated = false;
@@ -1143,6 +1446,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
   }
 
   private disableFeaturesOnce(reason: string): Promise<void> {
+    this.activeShares.clear();
+    this.notifySharingDisabled();
     this.cleanupRequired = true;
     if (this.authorityLossNotified) return this.cleanupTail;
     this.authorityLossNotified = true;
@@ -1156,7 +1461,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
         this.authorityLossNotified = false;
         this.options.log?.error({ error }, 'failed to disable paid Uplink features locally');
         throw error;
-      });
+      })
+      .finally(() => this.settleDemand());
     return this.cleanupTail;
   }
 
@@ -1199,11 +1505,14 @@ export class UplinkControlClient implements PreviewEdgeControl {
         }
         reject(error);
       };
-      const timer = setTimeout(() => {
-        this.pending.delete(requestId);
-        if (type === 'share.create') this.rememberAbandonedCreate(requestId);
-        fail(new Error(`Uplink ${type} timed out`), 'timeout');
-      }, REQUEST_TIMEOUT_MS);
+      const timer = setTimeout(
+        () => {
+          this.pending.delete(requestId);
+          if (type === 'share.create') this.rememberAbandonedCreate(requestId);
+          fail(new Error(`Uplink ${type} timed out`), 'timeout');
+        },
+        type === 'share.remove' ? REMOVAL_TIMEOUT_MS : REQUEST_TIMEOUT_MS,
+      );
       this.pending.set(requestId, {
         type,
         expectedResponseTypes:
@@ -1297,7 +1606,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   }
 
   private scheduleReconnect(delay = this.retryMs): void {
-    if (this.stopped || this.retryTimer) return;
+    if (this.stopped || this.idle || this.retryTimer || !this.hasDemand()) return;
     const jitter = Math.floor(Math.random() * Math.max(1, delay / 4));
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined;

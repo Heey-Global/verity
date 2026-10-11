@@ -83,6 +83,7 @@ class FakeControlSocket extends EventEmitter {
   readyState: number = WebSocket.CONNECTING;
   readonly sent: Record<string, unknown>[] = [];
   ping = vi.fn();
+  terminate = vi.fn(() => this.close(1006, 'terminated'));
   close = vi.fn((code?: number, reason?: string) => {
     this.readyState = WebSocket.CLOSED;
     this.emit('close', code, Buffer.from(reason ?? ''));
@@ -126,6 +127,7 @@ class FakeUplink {
   readonly socket: FakeControlSocket;
   readonly shares = new Map<string, MintedShare>();
   readonly removed: string[] = [];
+  features: string[] = ['sharing'];
   readonly failures = wireFailures;
   private counter = 0;
 
@@ -142,6 +144,14 @@ class FakeUplink {
    */
   private async handle(frame: Record<string, unknown>): Promise<void> {
     try {
+      if (frame.type === 'hello') {
+        this.socket.deliver({
+          type: 'welcome',
+          installationId: 'installation-1',
+          features: this.features,
+          leaseUntil: new Date(Date.now() + 600_000).toISOString(),
+        });
+      }
       if (frame.type === 'share.create') await this.createShare(frame);
       if (frame.type === 'share.remove') await this.removeShare(frame);
     } catch (error) {
@@ -154,23 +164,6 @@ class FakeUplink {
         code,
       });
     }
-  }
-
-  /** Connect, welcome, and grant the sharing entitlement. */
-  async welcome(client: UplinkControlClient): Promise<void> {
-    client.start();
-    // The client attaches its listeners asynchronously; opening before it does
-    // would drop the `open` event and hang the handshake.
-    await until(() => this.socket.listenerCount('open') > 0, 'the client to attach its listeners');
-    this.socket.open();
-    await until(() => this.socket.sent.some((frame) => frame.type === 'hello'), 'the client hello');
-    this.socket.deliver({
-      type: 'welcome',
-      installationId: 'installation-1',
-      features: ['sharing'],
-      leaseUntil: new Date(Date.now() + 600_000).toISOString(),
-    });
-    await until(() => client.isAvailable(), 'the sharing entitlement to take effect');
   }
 
   private async createShare(frame: Record<string, unknown>): Promise<void> {
@@ -462,10 +455,19 @@ async function harness(staticSource?: { dataRoot: string; worktree: string }) {
     // could not serve a second connection anyway once its readyState is CLOSED.
     // Asserted at teardown rather than assumed, so a client that grew a reconnect
     // on any of these paths fails here instead of double-handling every frame.
-    webSocketFactory: dials(() => uplink.socket as unknown as WebSocket),
+    webSocketFactory: dials(() => {
+      queueMicrotask(() => uplink.socket.open());
+      return uplink.socket as unknown as WebSocket;
+    }),
   });
   cleanups.push(() => control.stop());
-  await uplink.welcome(control);
+  control.start();
+  await until(
+    () => control.diagnostics().control === 'idle',
+    'idle startup without sharing demand',
+  );
+  expect(uplink.socket.listenerCount('open')).toBe(0);
+  expect(uplink.socket.sent).toEqual([]);
   const { docker, specs, connectors } = dockerWithRealConnectors(uplink, staticSource?.dataRoot);
   const manager = new PreviewShareManager({
     store,
@@ -681,20 +683,24 @@ describe('public preview sharing, composed end to end', () => {
   );
 
   it(
-    'refuses to create a share once the Uplink withdraws the sharing entitlement',
+    'refuses to create a share when the on-demand handshake denies sharing',
     { timeout: 20_000 },
     async () => {
       const { uplink, manager, control } = await harness();
 
-      uplink.socket.deliver({ type: 'revoke', reason: 'expired' });
-      await until(() => !control.isAvailable(), 'the entitlement to be withdrawn');
-
-      expect(control.isAvailable()).toBe(false);
-      // Pinned rather than matched loosely: the manager has to refuse on the
-      // withdrawn entitlement, which is a different state from a dropped socket.
+      uplink.features = [];
       await expect(
         manager.create({ devServerId: DEV_SERVER_ID, pin: PIN, ttlSeconds: 3600 }),
-      ).rejects.toThrow('public previews are not entitled or the Uplink is offline');
+      ).rejects.toMatchObject({
+        message: 'Uplink could not create the preview',
+      });
+      await until(() => control.diagnostics().control === 'idle', 'denied sharing to disconnect');
+      expect(control.isAvailable()).toBe(false);
+      expect(control.diagnostics()).toMatchObject({
+        entitlement: 'checked',
+        idleReason: 'not-granted',
+      });
+      expect(uplink.socket.sent.some((frame) => frame.type === 'share.create')).toBe(false);
       expect(uplink.shares.size).toBe(0);
     },
   );
