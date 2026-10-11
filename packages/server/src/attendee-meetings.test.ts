@@ -774,9 +774,14 @@ it.each([false, true])(
   },
 );
 
-it.each(['connection', 'save'])(
-  'does not create a bot when sharing is disabled during %s',
-  async (stage) => {
+it.each([
+  { stage: 'connection', queueFails: false },
+  { stage: 'save', queueFails: false },
+  { stage: 'connection', queueFails: true },
+  { stage: 'save', queueFails: true },
+])(
+  'does not create a bot when sharing is disabled during $stage (queue fails: $queueFails)',
+  async ({ stage, queueFails }) => {
     const { PreviewConnector } = await import('@verity/preview-tunnel');
     const rows = new Map<string, unknown>();
     const store = {
@@ -805,7 +810,9 @@ it.each(['connection', 'save'])(
       .mockImplementation(() => new Promise(() => undefined));
     const close = vi.spyOn(PreviewConnector.prototype, 'close');
     const request = vi.fn();
-    const remove = vi.fn(async () => undefined);
+    const remove = vi.fn(async () => {
+      if (queueFails) throw new Error('queue storage unavailable');
+    });
     const service = new AttendeeMeetings({
       store,
       ingest: vi.fn(),
@@ -840,9 +847,18 @@ it.each(['connection', 'save'])(
       expect(close).toHaveBeenCalled();
       expect(remove).toHaveBeenCalledWith('share');
       expect([...rows].find(([id]) => id.startsWith('meeting:'))?.[1]).toMatchObject({
-        phase: 'ended',
+        phase: queueFails ? 'stopping' : 'ended',
         credentials: { apiKey: '', webhookSecret: '' },
       });
+      const state = [...rows].find(([id]) => id.startsWith('meeting:'))?.[1];
+      if (queueFails) {
+        expect(state).toHaveProperty('binding.shareId', 'share');
+        remove.mockImplementation(async () => undefined);
+        await service.stop('session', (state as { meeting: { id: string } }).meeting.id);
+        const completed = [...rows].find(([id]) => id.startsWith('meeting:'))?.[1];
+        expect(completed).toMatchObject({ phase: 'ended' });
+        expect(completed).not.toHaveProperty('binding');
+      } else expect(state).not.toHaveProperty('binding');
     } finally {
       await service.close();
       connect.mockRestore();

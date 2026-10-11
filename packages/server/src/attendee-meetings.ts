@@ -319,15 +319,21 @@ export class AttendeeMeetings {
       } catch (error) {
         if (error instanceof AttendeeRequestRejected) state.botCreateAttempted = false;
         if (!state.botCreateAttempted) {
-          if (state.binding) await this.revokeShare(state.binding.shareId).catch(() => undefined);
+          if (state.binding) {
+            try {
+              await this.revokeShare(state.binding.shareId);
+              delete state.binding;
+            } catch {
+              // Keep preparation cleanup retryable when the durable queue fails.
+            }
+          }
           this.connectors.get(id)?.close();
           this.connectors.delete(id);
-          state.phase = 'ended';
+          state.phase = state.binding ? 'stopping' : 'ended';
           state.meeting.state = 'ended';
           state.meeting.endedAt = Date.now();
           state.credentials = { apiKey: '', webhookSecret: '' };
           state.pin = '';
-          delete state.binding;
           await this.publish(state);
           throw new Error(
             error instanceof AttendeeRequestRejected
