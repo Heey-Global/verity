@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.66.4](https://github.com/Heey-Global/verity/compare/mobile-v1.66.3...mobile-v1.66.4) (2026-10-11)
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1506](https://github.com/Heey-Global/verity/issues/1506)) ([086c5b3](https://github.com/Heey-Global/verity/commit/086c5b3654ee71be20c0b6f1c9fb04e5d7d21f04))
+
 ## [1.66.3](https://github.com/Heey-Global/verity/compare/mobile-v1.66.2...mobile-v1.66.3) (2026-10-11)
 
 
