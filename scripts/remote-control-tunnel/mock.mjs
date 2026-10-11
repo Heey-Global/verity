@@ -119,7 +119,7 @@ export async function startFixture({ key, cert, protocol = 'h1' }) {
           );
           const stream = { socket, incoming: 0, outgoing: 0 };
           streams.set(id, stream);
-          socket.on('data', (chunk) => {
+          socket.on('data', (/** @type {Buffer} */ chunk) => {
             for (let offset = 0; offset < chunk.length; offset += 64 * 1024) {
               send({
                 type: 'stream.data',

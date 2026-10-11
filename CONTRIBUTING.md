@@ -16,7 +16,7 @@ impact, and preserve the isolation and credential boundaries described in
 
 ## Development setup
 
-Verity requires Node 24 and uses npm workspaces:
+Verity requires Node 26.11.1 and uses npm workspaces:
 
 ```sh
 npm install

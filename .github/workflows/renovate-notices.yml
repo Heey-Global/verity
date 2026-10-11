@@ -52,7 +52,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.21.0'
+          node-version: '26.11.1'
 
       # No npm ci: the generator reads package-lock.json and nothing else.
       - name: Regenerate third-party notices and dispatch the checks
