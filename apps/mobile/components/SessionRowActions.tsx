@@ -263,7 +263,8 @@ function rowTouchObserver(
 ) {
   let origin: { x: number; y: number } | null = null;
   let reported = 0;
-  // Horizontal distances worth one entry each; the swipe activates past 12 pt.
+  // Distances along either axis worth one entry each; `dx`/`dy` tell a swipe
+  // (active past 12 pt horizontally) from a scroll.
   const marks = [6, 12, 24, 48];
   const delta = (touch: { absoluteX: number; absoluteY: number } | undefined) =>
     touch && origin

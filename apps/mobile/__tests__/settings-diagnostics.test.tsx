@@ -13,7 +13,7 @@ jest.mock('../components/settings/PublicPreviewDiagnostics', () => ({
 }));
 import DiagnosticsScreen from '../app/settings/diagnostics';
 import { shareUpdateDiagnostics } from '../lib/updateDiagnostics';
-import { gestureDiagnosticsEnabled } from '../lib/gestureDiagnostics';
+import { gestureDiagnosticsEnabled, setGestureDiagnosticsEnabled } from '../lib/gestureDiagnostics';
 import {
   makeClient,
   mockCreateVerityClient,
@@ -21,6 +21,7 @@ import {
   resetSettingsHarness,
 } from './support/settingsHarness';
 afterEach(() => {
+  setGestureDiagnosticsEnabled(false);
   resetSettingsHarness();
   jest.clearAllMocks();
 });
