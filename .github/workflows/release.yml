@@ -1552,7 +1552,7 @@ jobs:
 
       # renovate: datasource=github-actions depName=actions/upload-artifact
       - name: Upload trusted Server build context
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: trusted-server-build-context-v${{ needs.release-please.outputs.backend-version }}
           path: |
@@ -2105,7 +2105,7 @@ jobs:
 
       # renovate: datasource=github-actions depName=actions/upload-artifact
       - name: Upload architecture release evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: server-release-evidence-v${{ env.VERSION }}-${{ matrix.architecture }}
           path: ${{ runner.temp }}/server-release-evidence-${{ matrix.architecture }}/*
@@ -2604,7 +2604,7 @@ jobs:
 
       - name: Upload digest-pinned relay reference
         # renovate: datasource=github-actions depName=actions/upload-artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verity-project-relay-image
           path: verity-project-relay-image.txt
@@ -2821,7 +2821,7 @@ jobs:
 
       - name: Upload immutable image reference
         # renovate: datasource=github-actions depName=actions/upload-artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verity-preview-${{ matrix.component }}-image
           path: verity-preview-${{ matrix.component }}-image.txt
