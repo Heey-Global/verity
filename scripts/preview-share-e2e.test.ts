@@ -693,10 +693,14 @@ describe('public preview sharing, composed end to end', () => {
         manager.create({ devServerId: DEV_SERVER_ID, pin: PIN, ttlSeconds: 3600 }),
       ).rejects.toMatchObject({
         message: 'Uplink could not create the preview',
-        cause: expect.objectContaining({ message: 'Sharing is not granted by Uplink' }),
       });
       await until(() => control.diagnostics().control === 'idle', 'denied sharing to disconnect');
       expect(control.isAvailable()).toBe(false);
+      expect(control.diagnostics()).toMatchObject({
+        entitlement: 'checked',
+        idleReason: 'not-granted',
+      });
+      expect(uplink.socket.sent.some((frame) => frame.type === 'share.create')).toBe(false);
       expect(uplink.shares.size).toBe(0);
     },
   );
