@@ -57,6 +57,7 @@ export function useGestureDiagnosticsEnabled(): boolean {
 
 /** Maps a row key to a small number so reports can tell rows apart without naming them. */
 export function gestureRowNumber(key: string): number {
+  if (!enabled) return 0;
   let number = rowNumbers.get(key);
   if (number === undefined) {
     number = rowNumbers.size + 1;

@@ -289,7 +289,8 @@ export function useProjectReorder({
           if (recording)
             runOnJS(recordReorder)(hit ? 'touch-down-hold' : 'touch-down-fail', hitId, {
               headers: registeredHeaders.value.length,
-              excluded,
+              // Only a release explains itself by an excluded area.
+              excluded: !hit && excluded,
             });
           if (!hit) manager.fail();
         })

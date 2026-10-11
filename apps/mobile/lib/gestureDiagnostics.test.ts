@@ -37,6 +37,12 @@ it('keeps only the latest events and counts what it dropped', () => {
   expect(report.events[0]!.event).toBe('e5');
 });
 
+it('keeps no row keys while recording is off', () => {
+  expect(gestureRowNumber('session:a')).toBe(0);
+  setGestureDiagnosticsEnabled(true);
+  expect(gestureRowNumber('session:b')).toBe(1);
+});
+
 it('numbers rows without exporting the key they were derived from', () => {
   setGestureDiagnosticsEnabled(true);
   const first = gestureRowNumber('session:secret-a');

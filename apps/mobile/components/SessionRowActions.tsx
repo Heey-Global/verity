@@ -21,6 +21,7 @@ import Reanimated, {
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import {
+  gestureDiagnosticsEnabled,
   gestureRowNumber,
   recordGesture,
   useGestureDiagnosticsEnabled,
@@ -116,15 +117,6 @@ export function SwipeableSessionRow({
     }
   }, [disabled]);
 
-  // Toggling recording remounts the row under a new root; an open row must not
-  // stay registered after its swipeable is gone.
-  useEffect(
-    () => () => {
-      if (openRow === swipeable.current) openRow = null;
-    },
-    [],
-  );
-
   const recording = useGestureDiagnosticsEnabled();
   const widthRef = useRef(width);
   widthRef.current = width;
@@ -137,6 +129,9 @@ export function SwipeableSessionRow({
       extra?: { dx?: number; dy?: number; detail?: Record<string, string | number | boolean> },
     ) => {
       const tag = diagnosticsRef.current;
+      // Swipe callbacks fire whether or not recording is on; keep them from
+      // numbering rows outside a recording.
+      if (!gestureDiagnosticsEnabled()) return;
       recordGesture({
         source,
         event,
@@ -151,6 +146,14 @@ export function SwipeableSessionRow({
     () => (recording ? rowTouchObserver(record, () => widthRef.current, disabledRef) : null),
     [recording, record],
   );
+  // Toggling recording remounts the swipeable under a new root, and refs are
+  // detached before cleanup runs: capture the instance this mount registered.
+  useEffect(() => {
+    const mounted = swipeable.current;
+    return () => {
+      if (openRow === mounted) openRow = null;
+    };
+  }, [observer]);
 
   const row = (
     <View
