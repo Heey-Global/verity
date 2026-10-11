@@ -17,6 +17,7 @@ import { settingsStyles as styles } from '../../components/settings/settingsStyl
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient } from '../../lib/client';
 import { useLoadVeritySettings, useVeritySettings } from '../../lib/settingsStore';
+import { shareRemoteControlCiInputs } from '../../lib/remoteControlCiExport';
 import { shareUpdateDiagnostics } from '../../lib/updateDiagnostics';
 
 export default function DiagnosticsScreen() {
@@ -77,6 +78,20 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
       setExporting(false);
     }
   };
+  const exportRemoteInputs = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      await shareRemoteControlCiInputs();
+    } catch {
+      Alert.alert(
+        'Export unavailable',
+        'Select a paired server with Remote Control enabled and a TLS pin before exporting.',
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
   return (
     <SettingsScaffold title="Diagnostics" detail>
       <SettingsGroup title="Connection">
@@ -84,6 +99,15 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
           client={client}
           keyConfigured={settings?.uplinkSubscriptionKeyConfigured}
         />
+        <SettingsListPanel>
+          <SettingsNavRow
+            icon="file-text"
+            title="Export Remote Control test inputs"
+            subtitle="Share server addresses, routing handle and TLS pin. No access tokens or tickets."
+            disabled={exporting}
+            onPress={() => void exportRemoteInputs()}
+          />
+        </SettingsListPanel>
       </SettingsGroup>
       <SettingsGroup title="Transcription">
         <SettingsListPanel>
