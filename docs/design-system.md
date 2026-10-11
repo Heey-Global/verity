@@ -190,7 +190,8 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 ### 5.5 Toggle
 
 - Filled track: off = `textFaint` track, white knob; on = `action` track, white knob. Both
-  tracks reach at least 3 : 1 against `surface`, so the state is visible without the knob.
+  tracks reach at least 3 : 1 against `surface`. The white knob has a 1 px `background`
+  outline, keeping its position distinguishable against either track at at least 3 : 1.
 - States: on, off, disabled, switching (spinner in the knob until the server confirms).
 - The whole row is tappable, not just the toggle. Switching something off that has
   consequences (e.g. revoking public links) asks first.
