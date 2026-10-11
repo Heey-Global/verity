@@ -10,7 +10,7 @@ import { WebSocketServer } from 'ws';
 
 const probe = fileURLToPath(new URL('./probe.mjs', import.meta.url));
 
-async function fixture(t, response, status = 200) {
+async function fixture(t, response, status = 200, closeCode) {
   const directory = mkdtempSync(join(tmpdir(), 'verity-staging-probe-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const key = join(directory, 'key.pem');
@@ -45,7 +45,8 @@ async function fixture(t, response, status = 200) {
       peer.once('message', (raw) => {
         const connect = JSON.parse(raw.toString());
         assert.equal(connect.installationHandle, 'test_handle');
-        peer.send(JSON.stringify(response(connect)));
+        if (response) peer.send(JSON.stringify(response(connect)));
+        if (closeCode !== undefined) peer.close(closeCode);
       });
     });
   });
@@ -162,3 +163,36 @@ test('an attached tunnel with an unsuccessful Core response fails the probe', as
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /did not complete an attached Core HTTPS GET/u);
 });
+
+for (const [label, closeCode, ready, success] of [
+  ['normal completion after ready', 1000, true, true],
+  ['normal close before ready', 1000, false, false],
+  ['abnormal close after ready', 1011, true, false],
+]) {
+  test(label, async (t) => {
+    const input = await fixture(
+      t,
+      ready
+        ? (connect) => ({
+            type: 'connect.ready',
+            requestId: connect.requestId,
+            sessionId: 'test_session',
+            ticket: 'test_ticket',
+            expiresAt: Date.now() + 60_000,
+            capability: 'remote-control-v1',
+          })
+        : null,
+      200,
+      closeCode,
+    );
+    // Keep DATA attachment later than the server's admission completion.
+    writeFileSync(
+      input.binary,
+      `#!/usr/bin/env node\nsetTimeout(() => { console.log('attached'); console.log('Core HTTPS status: 200'); }, 200);\n`,
+      { mode: 0o755 },
+    );
+    const result = await runProbe(input);
+    assert.equal(result.code === 0, success, result.stderr);
+    if (!success) assert.match(result.stderr, /Admission closed before successful completion/u);
+  });
+}
