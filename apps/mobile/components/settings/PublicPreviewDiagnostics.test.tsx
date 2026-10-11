@@ -279,3 +279,17 @@ it('never reports Remote access as on demand while the channel idles', async () 
   render(<PublicPreviewDiagnostics client={{ getUplinkDiagnostics } as never} keyConfigured />);
   await waitFor(() => expect(screen.getAllByText('On demand')).toHaveLength(1));
 });
+
+it('offers a retry when the status could not be loaded', async () => {
+  // Without a saved route every other row is inert; leaving the screen must not
+  // be the only way to try again.
+  mockGetServerProfile.mockReturnValue(null);
+  const getUplinkDiagnostics = jest
+    .fn()
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValue({ control: 'connected', sharing: 'ready', remoteControl: 'ready' });
+  render(<PublicPreviewDiagnostics client={{ getUplinkDiagnostics } as never} keyConfigured />);
+  fireEvent.press(await screen.findByLabelText('Try again'));
+  await waitFor(() => expect(screen.getByText('Connected')).toBeOnTheScreen());
+  expect(screen.queryByLabelText('Try again')).toBeNull();
+});

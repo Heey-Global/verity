@@ -256,6 +256,15 @@ export function PublicPreviewDiagnostics({
               );
             })}
         </RowCard>
+        {statusError !== null ? (
+          <RowCard>
+            <CardRow
+              title="Try again"
+              subtitle="Reload the Uplink status"
+              onPress={() => void refresh()}
+            />
+          </RowCard>
+        ) : null}
         {details.map((line, index) => (
           <Text key={index} style={styles.footnote}>
             {line}

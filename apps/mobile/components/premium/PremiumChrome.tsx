@@ -272,7 +272,7 @@ export const premiumChromeStyles = StyleSheet.create((theme) => ({
     overflow: 'hidden',
     color: theme.colors.textMuted,
     backgroundColor: `${theme.colors.text}0f`,
-    fontSize: 11,
+    fontSize: 11 * theme.fontScale,
     fontWeight: '700',
     letterSpacing: 0.9,
     paddingHorizontal: 9,
@@ -333,9 +333,13 @@ export const premiumChromeStyles = StyleSheet.create((theme) => ({
   pressed: { opacity: 0.7 },
   disabled: { opacity: 0.45 },
   body: { flex: 1, minWidth: 0, gap: 2 },
-  title: { color: theme.colors.text, fontSize: 17, fontWeight: '600' },
-  rowTitle: { color: theme.colors.text, fontSize: 17, fontWeight: '500' },
-  subtitle: { color: theme.colors.textMuted, fontSize: 13.5, lineHeight: 18 * theme.fontScale },
+  title: { color: theme.colors.text, fontSize: 17 * theme.fontScale, fontWeight: '600' },
+  rowTitle: { color: theme.colors.text, fontSize: 17 * theme.fontScale, fontWeight: '500' },
+  subtitle: {
+    color: theme.colors.textMuted,
+    fontSize: 13.5 * theme.fontScale,
+    lineHeight: 18 * theme.fontScale,
+  },
   rowCard: {
     paddingVertical: theme.spacing.xs,
     paddingHorizontal: theme.spacing.lg,
@@ -380,7 +384,7 @@ export const premiumChromeStyles = StyleSheet.create((theme) => ({
     flex: 1,
     minHeight: 44,
     color: theme.colors.text,
-    fontSize: 17,
+    fontSize: 17 * theme.fontScale,
     fontWeight: '600',
     letterSpacing: 0.7,
     fontFamily: MONO,
@@ -406,7 +410,7 @@ export const premiumChromeStyles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     shadowOpacity: 0,
   },
-  ctaLabel: { color: theme.colors.onPrimary, fontSize: 18, fontWeight: '700' },
+  ctaLabel: { color: theme.colors.onPrimary, fontSize: 18 * theme.fontScale, fontWeight: '700' },
   ctaGhostLabel: { color: theme.colors.text },
 }));
 const styles = premiumChromeStyles;

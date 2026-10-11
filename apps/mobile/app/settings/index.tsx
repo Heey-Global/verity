@@ -91,6 +91,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
         .then((devices) => active && setConnectedCount(devices.length))
         .catch(() => undefined);
       // A stored key is not an active subscription: Uplink may have refused it.
+      setUplinkState('pending');
       client
         .getUplinkDiagnostics()
         .then(
