@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.67.0](https://github.com/Heey-Global/verity/compare/mobile-v1.66.0...mobile-v1.67.0) (2026-10-11)
+
+
+### Features
+
+* **diagnostics:** activate bounded Core recording from paired app ([#1526](https://github.com/Heey-Global/verity/issues/1526)) ([4549449](https://github.com/Heey-Global/verity/commit/454944926224eaada810012559f69965239e159e))
+* **mobile:** add opt-in overview gesture diagnostics ([#1525](https://github.com/Heey-Global/verity/issues/1525)) ([6f64d2b](https://github.com/Heey-Global/verity/commit/6f64d2b2dfd311bfeef71df82842bb4691531a9b))
+* **mobile:** export Remote Control CI test inputs ([#1507](https://github.com/Heey-Global/verity/issues/1507)) ([58adde4](https://github.com/Heey-Global/verity/commit/58adde41ba272710c588638e68ce43f0ba7bd656))
+* **tasks:** streamline spoken capture and scope agent tasks to sessions ([#1472](https://github.com/Heey-Global/verity/issues/1472)) ([5b430ac](https://github.com/Heey-Global/verity/commit/5b430ac30ced9d7f2cf28f2c283a8c81cc7495f0))
+
+
+### Bug Fixes
+
+* **mobile:** avoid white screen during OTA reload ([#1473](https://github.com/Heey-Global/verity/issues/1473)) ([eb28e19](https://github.com/Heey-Global/verity/commit/eb28e19b8ca335fdcd12dfe363bb273b5c886390))
+* **mobile:** correct session keyboard visibility and overlap ([#1495](https://github.com/Heey-Global/verity/issues/1495)) ([7a22ff0](https://github.com/Heey-Global/verity/commit/7a22ff079eede32b186fcd5cfb0aa403fb80c71c))
+* **mobile:** correlate touch diagnostics and expose route waits ([#1496](https://github.com/Heey-Global/verity/issues/1496)) ([9868bd8](https://github.com/Heey-Global/verity/commit/9868bd8c57e915dc5e0b637ed628dfe02e54fe74))
+* **mobile:** isolate chat rendering from unrelated interaction updates ([#1478](https://github.com/Heey-Global/verity/issues/1478)) ([da99368](https://github.com/Heey-Global/verity/commit/da9936804014ece4299a9012cf2013ace11634bd))
+* **mobile:** prevent session keyboard padding from being overwritten ([#1514](https://github.com/Heey-Global/verity/issues/1514)) ([63d7485](https://github.com/Heey-Global/verity/commit/63d74851974e7d4e319c464002b0d85465ec0ba0))
+* **uplink:** connect only while effective features need access ([#1519](https://github.com/Heey-Global/verity/issues/1519)) ([e868d76](https://github.com/Heey-Global/verity/commit/e868d766c3d66e8042a39ef8fa0ae48493556f60))
+
+
+### Performance Improvements
+
+* **mobile:** coordinate activity and preview refreshes ([#1482](https://github.com/Heey-Global/verity/issues/1482)) ([33467d6](https://github.com/Heey-Global/verity/commit/33467d67d4aa14e9de0444fffe7513c0b2f4ec38))
+* **mobile:** retain unchanged overview row snapshots ([#1481](https://github.com/Heey-Global/verity/issues/1481)) ([bea26a2](https://github.com/Heey-Global/verity/commit/bea26a2fddacfec1d295bb3c94c5cba93bdf7776))
+* **mobile:** share task capture and overview context ([#1483](https://github.com/Heey-Global/verity/issues/1483)) ([c2f5247](https://github.com/Heey-Global/verity/commit/c2f524752dad8702a271d8ae0f2030f81b7b74ef))
+
 ## [1.66.0](https://github.com/Heey-Global/verity/compare/mobile-v1.65.0...mobile-v1.66.0) (2026-10-10)
 
 
