@@ -807,3 +807,32 @@ it('does not create a bot when sharing is disabled during webhook connection', a
     close.mockRestore();
   }
 });
+
+it('retains the webhook share handle when shutdown revocation fails', async () => {
+  const state = { meeting: { id: 'restored' }, phase: 'running', binding: { shareId: 'share' } };
+  let disable!: () => void;
+  const save = vi.fn();
+  const remove = vi.fn(async () => {
+    throw new Error('durable queue unavailable');
+  });
+  const service = new AttendeeMeetings({
+    store: {
+      listAttendeeState: async () => [{ id: 'meeting:restored', state }],
+      putAttendeeState: save,
+    } as unknown as EventStore,
+    ingest: vi.fn(),
+    edge: {
+      create: vi.fn(),
+      remove,
+      onSharingDisabled: (listener) => {
+        disable = listener;
+        return () => undefined;
+      },
+    },
+  });
+  disable();
+  await service.close();
+  expect(remove).toHaveBeenCalledWith('share');
+  expect(state.binding).toEqual({ shareId: 'share' });
+  expect(save).not.toHaveBeenCalled();
+});

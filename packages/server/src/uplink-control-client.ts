@@ -233,7 +233,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
       await this.connect();
     })().catch((error: unknown) => {
       this.options.log?.error({ error }, 'failed to initialize Uplink demand');
-      if (!this.stopped && initialGeneration === this.generation) this.park();
+      if (!this.stopped && initialGeneration === this.generation) {
+        this.clearAuthority('Failed to restore Uplink demand');
+        this.park();
+      }
     });
   }
 
@@ -1447,7 +1450,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
         this.authorityLossNotified = false;
         this.options.log?.error({ error }, 'failed to disable paid Uplink features locally');
         throw error;
-      });
+      })
+      .finally(() => this.settleDemand());
     return this.cleanupTail;
   }
 

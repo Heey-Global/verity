@@ -2913,6 +2913,33 @@ describe('Uplink connection demand', () => {
     await f.client.stop();
   });
 
+  it('fails closed when restoring sharing demand fails', async () => {
+    const f = setup({
+      restoreShareIds: async () => {
+        throw new Error('storage unavailable');
+      },
+    });
+    const shutdown = vi.fn();
+    f.client.onSharingDisabled(shutdown);
+    f.client.start();
+    await flush();
+    expect(f.disabled).toHaveBeenCalled();
+    expect(shutdown).toHaveBeenCalled();
+    expect(f.client.diagnostics().control).toBe('idle');
+    expect(f.socketFactory).not.toHaveBeenCalled();
+    await f.client.stop();
+  });
+
+  it('reports idle after transport loss clears the last sharing demand', async () => {
+    const f = await welcomed(setup({ premiumRemoteAccessEnabled: false }));
+    f.socket.close(1006, 'lost');
+    await flush();
+    expect(f.client.diagnostics().control).toBe('idle');
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS);
+    expect(f.socketFactory).toHaveBeenCalledOnce();
+    await f.client.stop();
+  });
+
   it('connects for the first share and disconnects after the last removal', async () => {
     const f = setup({ restoreShareIds: async () => [], premiumRemoteAccessEnabled: false });
     f.client.start();

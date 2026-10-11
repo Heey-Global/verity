@@ -77,7 +77,12 @@ export class AttendeeMeetings {
           const state = row.state;
           if (!state.binding) continue;
           const shareId = state.binding.shareId;
-          await this.options.edge?.remove(shareId).catch(() => undefined);
+          try {
+            await this.options.edge?.remove(shareId);
+          } catch {
+            // Retain the handle when durable revocation cannot be confirmed.
+            continue;
+          }
           delete state.binding;
           await this.save(state);
         }
