@@ -41,6 +41,21 @@ Run the local admission checks with
 `node --test scripts/remote-control-staging/probe.test.mjs`. The full Staging
 probe requires macOS 14+, Xcode, and the four workflow inputs above.
 
+## Fast live soak
+
+For repeated live transport checks, dispatch `verity-remote-control-soak`
+(`remote-control-soak.yml`) with the same four public inputs above and the
+source `ref` to test. It runs admission regression tests, compiles the macOS
+probe, and runs the production app tunnel with six parallel streams for
+`soak_seconds` (default 180, required range 30 to 600). A zero duration is
+rejected, so a successful run cannot silently skip the soak.
+
+This workflow avoids the iOS app build and Simulator tests. It does not replace
+`verity-mobile-native-verify` or establish that an iPhone's lifecycle and UI
+work. Runner availability, dependency installation, and Swift compilation still
+add time before the soak. Concurrent requests queue instead of cancelling an
+active live test. No live test runs automatically on pull requests.
+
 ## Diagnosing a device connection
 
 ### Selecting an isolated Uplink endpoint
