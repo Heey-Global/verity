@@ -53,8 +53,9 @@ Pick the section that matches what you want to do.
   [dev server sharing](DEV_SERVER_SHARING_CONCEPT.md),
   [backup and recovery](BACKUP_RECOVERY_CONCEPT.md),
   [tasks and quick capture](TASKS_AND_QUICK_CAPTURE_CONCEPT.md),
-  [live meetings](LIVE_MEETING_CONCEPT.md), and the
-  [design language](design-language.md).
+  [live meetings](LIVE_MEETING_CONCEPT.md), the
+  [design system](design-system.md) for colors, typography and components, and the
+  [design language](design-language.md) for interaction and wording.
 - [Mobile demo](mobile-demo.md) and
   [mobile build performance](mobile-build-performance.md): working on the app.
 - [Open-source readiness](open-source-readiness.md) and

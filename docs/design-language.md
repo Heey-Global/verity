@@ -12,6 +12,12 @@ touch the pill, the save experience, a lifecycle verb, or a status word, they re
 the relevant section here and restate nothing. If a rule appears both here and in a
 surface spec and the two disagree, this document wins.
 
+Visual foundations and components — colors, typography, spacing, shapes, and the look of
+every component including status indicators — are owned by
+[`design-system.md`](./design-system.md). Where this document describes how something
+looks, that document replaces it; the behavior rules here (auto-save, navigation,
+confirmation policy, wording) stay authoritative.
+
 The purpose is narrow and deliberate: the redesign exists to kill status and vocabulary
 sprawl. Two engineers building one screen each must ship the *same* pill and the *same*
 save experience. That is only guaranteed if the pill, the save model, and the words are
@@ -20,6 +26,10 @@ defined once, in a neutral place. This is that place.
 ---
 
 ## Status system
+
+> The visual form of status indicators (tags, dots, colors) is now defined in
+> [`design-system.md`](./design-system.md#54-status). The intents and wording rules below
+> still apply; the pill shape and the raspberry tone are retired.
 
 There is exactly **one** status pill across both surfaces, implemented by a single
 component (see [Shared components & tokens](#shared-components--tokens)) and driven by an
