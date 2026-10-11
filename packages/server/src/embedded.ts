@@ -1,3 +1,4 @@
+import { returnPathSelection, selectedReturnPathExpiry } from './remote-return-path-diagnostics.js';
 import { listProjectGitHubIssues } from './project-github-issues.js';
 import { ensureStarterProject } from './welcome-session.js';
 import { createGhcrForgeAdapter } from './brokered-forge-ghcr.js';
@@ -2597,10 +2598,13 @@ export async function buildEmbeddedServer(
   // lines. Allocated whether or not a client is built, so the binding below
   // needs no second copy of the conditions that decide it.
   const uplinkLog = createDeferredLogger();
+  const returnPath = returnPathSelection(process.env);
   const remoteConnector = config.publicPreviews?.remoteControl
     ? createRemoteConnectorPool({
         dataUrl: remoteDataUrlForControl(config.publicPreviews.uplinkUrl),
         ...config.publicPreviews.remoteControl,
+        returnPathExpiry: (): number | undefined =>
+          selectedReturnPathExpiry(returnPath, uplinkControl?.remoteControlDescriptor()),
         log: uplinkLog,
       })
     : undefined;
