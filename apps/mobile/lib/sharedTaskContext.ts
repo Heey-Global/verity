@@ -6,8 +6,8 @@ import { createVerityClient, getVerityBaseUrl, subscribeVerityBaseUrl } from './
 import { loadTaskContextData, saveTaskContextData, taskAccountScope } from './tasksStore';
 
 type Overview = Awaited<ReturnType<VerityClient['listSessionOverview']>>;
-type Context = { projects: ProjectRecord[]; sessions: SessionSummary[] };
-const empty: Context = { projects: [], sessions: [] };
+type Context = { projects: ProjectRecord[]; sessions: SessionSummary[]; projectsReady: boolean };
+const empty: Context = { projects: [], sessions: [], projectsReady: false };
 const listeners = new Set<() => void>();
 function publish(): void {
   for (const listener of listeners) listener();
@@ -48,12 +48,17 @@ function install(target: typeof entry, patch: Partial<Context>): void {
   const sessions = patch.sessions
     ? retain(target.snapshot.sessions, patch.sessions)
     : target.snapshot.sessions;
-  if (projects !== target.snapshot.projects || sessions !== target.snapshot.sessions) {
-    target.snapshot = { projects, sessions };
+  const projectsReady = target.snapshot.projectsReady || patch.projects !== undefined;
+  if (
+    projects !== target.snapshot.projects ||
+    sessions !== target.snapshot.sessions ||
+    projectsReady !== target.snapshot.projectsReady
+  ) {
+    target.snapshot = { projects, sessions, projectsReady };
     publish();
   }
   if (!target.projectsLoaded || !target.sessionsLoaded) return;
-  const snapshot = target.snapshot;
+  const snapshot = { projects: target.snapshot.projects, sessions: target.snapshot.sessions };
   const serialized = JSON.stringify(snapshot);
   target.writes = target.writes
     .then(async () => {

@@ -89,6 +89,16 @@ describe('task outbox', () => {
     expect(restored.remote).toHaveLength(1);
     expect(restored.snapshot().pending).toHaveLength(0);
   });
+  // The silent failure: a capture handed over twice with its stable id shows
+  // up as two rows and two pending creates until the next full sync.
+  it('keeps one row when the same capture id is created again', async () => {
+    const s = setup();
+    await s.queue.create(task, { title: task.title, projectId: null });
+    await s.queue.create({ ...task, title: 'Again' }, { title: 'Again', projectId: null });
+    expect(s.snapshot().tasks).toHaveLength(1);
+    expect(s.snapshot().tasks[0]?.title).toBe(task.title);
+    expect(JSON.parse(s.disk()).pending).toHaveLength(1);
+  });
   it('does not block local saving behind a hung sync request', async () => {
     const s = setup();
     await s.queue.create(task, { title: task.title, projectId: null });

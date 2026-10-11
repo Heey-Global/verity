@@ -110,7 +110,14 @@ export async function refreshTasks(force = false): Promise<void> {
   await ready;
   await queue?.sync(force);
 }
-export async function captureTask(body: TaskCapture): Promise<Task> {
+/** `id` and `createdAt` come from captures made elsewhere (the Apple Watch). The
+ *  stable id makes a repeated hand-over a no-op while the task is still in the
+ *  local queue, and the server answers a PUT for an existing id with that task.
+ *  In that case the returned task is the one built here, not the stored row. */
+export async function captureTask(
+  body: TaskCapture,
+  origin: { id?: string; createdAt?: string } = {},
+): Promise<Task> {
   switchScope();
   const startedScope = scope;
   await ready;
@@ -119,7 +126,7 @@ export async function captureTask(body: TaskCapture): Promise<Task> {
   if (!body.projectId) throw new Error('Choose a project to save this task');
   const now = new Date().toISOString();
   const task: Task = {
-    id: randomUUID(),
+    id: origin.id ?? randomUUID(),
     title: body.title,
     titleGenerationStatus: body.generateTitle ? 'pending' : 'none',
     projectId: body.projectId,
@@ -136,7 +143,7 @@ export async function captureTask(body: TaskCapture): Promise<Task> {
     result: null,
     sort: 0,
     revision: 0,
-    createdAt: now,
+    createdAt: origin.createdAt ?? now,
     updatedAt: now,
     completedAt: null,
   };
@@ -172,6 +179,8 @@ export async function resolveTaskConflict(id: string, keepLocal: boolean): Promi
 export async function loadTaskContextData(): Promise<{
   projects: ProjectRecord[];
   sessions: SessionSummary[];
+  /** The account the data belongs to. */
+  scope: string;
 } | null> {
   const started = taskAccountScope();
   if (!started) return null;
@@ -181,6 +190,7 @@ export async function loadTaskContextData(): Promise<{
   return {
     projects: parsed.projects.map((value) => projectRecordSchema.parse(value)),
     sessions: parsed.sessions.map((value) => sessionSummarySchema.parse(value)),
+    scope: started,
   };
 }
 export async function saveTaskContextData(

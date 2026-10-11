@@ -8,6 +8,11 @@ const expoProjectId = process.env.EXPO_PROJECT_ID?.trim() || 'b38b4675-5fef-4eb5
 const officialGoogleOAuthClientId =
   '340053543157-ohufghcdnc5do2lkjg7cgnkk67oac0e7.apps.googleusercontent.com';
 const googleOAuthClientId = process.env.GOOGLE_AUTH_ID?.trim() || officialGoogleOAuthClientId;
+// The Apple team is public (it prefixes every signed bundle). It becomes the
+// development team of every generated target, the iPhone app included; the
+// Apple Watch target from @bacons/apple-targets cannot be signed without it.
+// Forks and local builds under another team set APPLE_TEAM_ID.
+const appleTeamId = process.env.APPLE_TEAM_ID?.trim() || 'P9C486Q6X6';
 const appVariant = process.env.VERITY_APP_VARIANT ?? 'production';
 if (appVariant !== 'production' && appVariant !== 'staging')
   throw new Error('Invalid VERITY_APP_VARIANT');
@@ -67,6 +72,7 @@ const config: ExpoConfig = {
   // Shared iOS and Android application identifier (reverse-DNS of verity.build).
   ios: {
     bundleIdentifier: staging ? 'build.verity.app.staging' : 'build.verity.app',
+    appleTeamId,
     // Keep the generated app target and Podfile on the same iOS minimum.
     deploymentTarget: '27.0',
     // GitHub's manifest code has no PKCE protection, so its callback must use a
@@ -182,6 +188,9 @@ const config: ExpoConfig = {
     './plugins/withFluidAudio',
     // iOS 27 requires scene lifecycle adoption before UIKit creates the UI.
     './plugins/withSceneLifecycle',
+    // Links the native targets under ./targets (the Apple Watch quick capture app)
+    // into the generated Xcode project and registers them for EAS signing.
+    '@bacons/apple-targets',
     // Efficient image rendering (chat attachments + previews).
     'expo-image',
     // Native share-sheet integration for exporting session content and files.
