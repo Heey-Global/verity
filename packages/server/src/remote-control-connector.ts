@@ -1,5 +1,6 @@
 import { createConnection, type Socket } from 'node:net';
 import WebSocket from 'ws';
+import { RemoteReturnPathDiagnostics } from './remote-return-path-diagnostics.js';
 import { RemoteTransportDiagnostics } from './remote-transport-diagnostics.js';
 import type {
   RemoteConnectorRequest,
@@ -93,6 +94,8 @@ export interface RemoteConnectorPoolOptions {
   connectLocal?: (host: string, port: number) => Socket;
   /** Records why sessions end and streams reset; otherwise a failure only surfaces as a generic app error. */
   log?: Pick<Console, 'info' | 'warn'>;
+  /** Returns an absolute expiry only for the authenticated selected installation. */
+  returnPathExpiry?: () => number | undefined;
 }
 
 export function remoteDataUrlForControl(controlUrl: string): string {
@@ -187,6 +190,9 @@ class ConnectorSession implements RemoteConnectorReservation {
   private heartbeat: NodeJS.Timeout | undefined;
   private diagnosticTimer: NodeJS.Timeout | undefined;
   private readonly diagnostics: RemoteTransportDiagnostics;
+  private returnPath: RemoteReturnPathDiagnostics | undefined;
+  private returnPathTimer: NodeJS.Timeout | undefined;
+  private returnPathDeadline: NodeJS.Timeout | undefined;
   private unansweredPingSince: number | undefined;
 
   constructor(
@@ -196,6 +202,23 @@ class ConnectorSession implements RemoteConnectorReservation {
     private readonly onStreamEnded: (record: RemoteStreamRecord) => void = () => undefined,
   ) {
     this.diagnostics = new RemoteTransportDiagnostics(request.sessionId);
+    const expiry = options.returnPathExpiry?.();
+    if (
+      options.log &&
+      expiry !== undefined &&
+      expiry > Date.now() &&
+      expiry - Date.now() <= 600_000
+    ) {
+      this.returnPath = new RemoteReturnPathDiagnostics(request.sessionId);
+      this.returnPathTimer = setInterval(() => this.logReturnPath(), 5_000);
+      this.returnPathTimer.unref();
+      this.returnPathDeadline = setTimeout(() => {
+        this.logReturnPath(true);
+        if (this.returnPathTimer) clearInterval(this.returnPathTimer);
+        this.returnPath = undefined;
+      }, expiry - Date.now());
+      this.returnPathDeadline.unref();
+    }
     this.closed = new Promise<void>((resolve) => {
       this.resolveClosed = resolve;
     });
@@ -238,6 +261,12 @@ class ConnectorSession implements RemoteConnectorReservation {
         });
         ws.on('message', (data, isBinary) => {
           if (this.terminated) return;
+          this.returnPath?.record(
+            'emitted_message',
+            'observed',
+            undefined,
+            Buffer.isBuffer(data) ? data.length : 0,
+          );
           this.diagnostics.receive(Buffer.isBuffer(data) ? data.length : 0);
           if (isBinary || !Buffer.isBuffer(data) || data.byteLength > MAX_FRAME_BYTES) {
             this.failProtocol({ type: isBinary ? '(binary)' : '(oversize)' });
@@ -250,8 +279,10 @@ class ConnectorSession implements RemoteConnectorReservation {
             this.failProtocol({ type: '(unparseable)' });
             return;
           }
-          if (frame && typeof frame === 'object' && !Array.isArray(frame))
+          if (frame && typeof frame === 'object' && !Array.isArray(frame)) {
+            this.returnPath?.record('parser', 'observed', frame as Frame);
             this.diagnostics.frame('in', frame as Frame);
+          }
           if (!this.ready) {
             if (
               !isFrame(frame, 'attached', ['sessionId', 'capability']) ||
@@ -280,7 +311,9 @@ class ConnectorSession implements RemoteConnectorReservation {
             this.release('remote stream failed');
           }
         });
-        ws.on('error', () => {
+        ws.on('error', (error) => {
+          this.returnPath?.record('ws_error', 'error', undefined, 0, 0, error);
+          this.logReturnPath();
           this.options.log?.warn(
             { sessionId: this.request.sessionId, code: 'data_socket_error' },
             'remote data connection error',
@@ -288,6 +321,8 @@ class ConnectorSession implements RemoteConnectorReservation {
           this.release('remote data connection failed');
         });
         ws.on('close', (code) => {
+          this.returnPath?.record('close', 'observed');
+          this.logReturnPath();
           this.logTransport(`socket_close_${String(code)}`);
           this.release(`remote data connection closed (${String(code)})`);
         });
@@ -347,6 +382,8 @@ class ConnectorSession implements RemoteConnectorReservation {
   release(reason: string): void {
     if (this.terminated) return;
     this.terminated = true;
+    if (this.returnPathTimer) clearInterval(this.returnPathTimer);
+    this.logReturnPath();
     if (this.heartbeat) clearInterval(this.heartbeat);
     if (this.diagnosticTimer) clearInterval(this.diagnosticTimer);
     this.logTransport('release');
@@ -418,6 +455,11 @@ class ConnectorSession implements RemoteConnectorReservation {
     );
   }
 
+  private logReturnPath(final = false): void {
+    const snapshot = this.returnPath?.exportSummary(final);
+    if (snapshot) this.options.log?.info(snapshot, 'remote return-path diagnostics');
+  }
+
   private send(frame: Frame, onSent?: () => void): void {
     const ws = this.ws;
     if (this.terminated || !this.ready || ws?.readyState !== WebSocket.OPEN) return;
@@ -434,9 +476,22 @@ class ConnectorSession implements RemoteConnectorReservation {
       this.release('remote pending write limit reached');
       return;
     }
+    const decodedBytes =
+      frame.type === 'stream.data' && typeof frame.payload === 'string'
+        ? Buffer.byteLength(frame.payload, 'base64')
+        : 0;
+    this.returnPath?.record('send', 'observed', frame, Buffer.byteLength(raw), decodedBytes);
     this.diagnostics.frame('out', frame, write);
     try {
       ws.send(raw, (error) => {
+        this.returnPath?.record(
+          'callback',
+          error ? 'error' : 'accepted',
+          frame,
+          Buffer.byteLength(raw),
+          decodedBytes,
+        );
+        if (this.terminated) this.logReturnPath();
         this.diagnostics.complete(write, Boolean(error));
         if (error) this.release('remote data send failed');
         else {
@@ -446,6 +501,7 @@ class ConnectorSession implements RemoteConnectorReservation {
       });
       this.diagnostics.observeBuffer(ws.bufferedAmount);
     } catch {
+      this.returnPath?.record('callback', 'error', frame, Buffer.byteLength(raw), decodedBytes);
       this.diagnostics.complete(write, true);
       this.release('remote data send failed');
     }

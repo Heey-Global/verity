@@ -16,6 +16,7 @@ async function fixture(
   connectLocal?: (host: string, port: number) => Socket,
   serviceOptions: { autoPong?: boolean } = {},
   log?: Pick<Console, 'info' | 'warn'>,
+  returnPathExpiry?: () => number | undefined,
 ): Promise<{
   reserve: ReturnType<typeof createRemoteConnectorPool>['reserve'];
   recentStreams: ReturnType<typeof createRemoteConnectorPool>['recentStreams'];
@@ -58,6 +59,7 @@ async function fixture(
   });
   const pool = createRemoteConnectorPool({
     ...(log ? { log } : {}),
+    ...(returnPathExpiry ? { returnPathExpiry } : {}),
     dataUrl: 'wss://uplink.example/data',
     localHost: '127.0.0.1',
     localPort: address.port,
@@ -94,6 +96,81 @@ async function reserve(
 }
 
 describe('remote control connector', () => {
+  it('keeps detailed diagnostics disabled by default and expires opt-in without ending transport', async () => {
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const ordinary = await fixture(undefined, {}, log);
+    const ordinaryReservation = await reserve(ordinary);
+    ordinaryReservation.release('test end');
+    expect(log.info.mock.calls.some(([entry]) => entry.event === 'remote.return_path')).toBe(false);
+    const selected = await fixture(undefined, {}, log, () => Date.now() + 100);
+    const selectedReservation = await reserve(selected);
+    let ended = false;
+    void selectedReservation.closed!.then(() => {
+      ended = true;
+    });
+    await vi.waitFor(() =>
+      expect(log.info.mock.calls.some(([entry]) => entry.event === 'remote.return_path')).toBe(
+        true,
+      ),
+    );
+    const exported = log.info.mock.calls.filter(
+      ([entry]) => entry.event === 'remote.return_path',
+    ).length;
+    expect(ended).toBe(false);
+    selectedReservation.release('test end');
+    expect(
+      log.info.mock.calls.filter(([entry]) => entry.event === 'remote.return_path'),
+    ).toHaveLength(exported);
+  });
+  it('exports exact target send callback evidence without ticket or payload', async () => {
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const f = await fixture(undefined, {}, log, () => Date.now() + 60_000);
+    const reservation = await reserve(f);
+    const attaching = reservation.attach(
+      'private_ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(1));
+    f.peer().send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await attaching;
+    f.peer().send(
+      JSON.stringify({ type: 'stream.open', streamId: 'target', channel: 'remote', meta: {} }),
+    );
+    f.peer().send(
+      JSON.stringify({
+        type: 'stream.data',
+        streamId: 'target',
+        seq: 0,
+        payload: Buffer.from('private-body').toString('base64'),
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(f.received.some((entry) => (entry as { type: string }).type === 'stream.data')).toBe(
+        true,
+      ),
+    );
+    reservation.release('test end');
+    const summary = log.info.mock.calls
+      .filter(([entry]) => entry.event === 'remote.return_path')
+      .at(-1)?.[0];
+    expect(summary.streams).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          completedFrames: 1,
+          decodedBytes: 12,
+          firstCallback: expect.objectContaining({ seq: 0, outcome: 'accepted' }),
+        }),
+      ]),
+    );
+    expect(JSON.stringify(summary)).not.toContain('private');
+  });
   it('samples incomplete WebSocket bytes below message delivery and stops sampling on release', async () => {
     const log = { info: vi.fn(), warn: vi.fn() };
     const f = await fixture(undefined, {}, log);
