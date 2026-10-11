@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.38.1](https://github.com/Heey-Global/verity/compare/v4.38.0...v4.38.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1506](https://github.com/Heey-Global/verity/issues/1506)) ([086c5b3](https://github.com/Heey-Global/verity/commit/086c5b3654ee71be20c0b6f1c9fb04e5d7d21f04))
+* **diagnostics:** accept completed staging admission before data attachment ([#1513](https://github.com/Heey-Global/verity/issues/1513)) ([0c0ce17](https://github.com/Heey-Global/verity/commit/0c0ce17b1dca37775bd9e372abb1966459b9a390))
+
 ## [4.38.0](https://github.com/Heey-Global/verity/compare/v4.37.2...v4.38.0) (2026-10-11)
 
 
