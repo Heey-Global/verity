@@ -143,9 +143,17 @@ export function SwipeableSessionRow({
     [],
   );
   const observer = useMemo(
-    () => (recording ? rowTouchObserver(record, () => widthRef.current, disabledRef) : null),
+    () => (recording ? rowTouchObserver(record, () => widthRef.current) : null),
     [recording, record],
   );
+  // A locked row sets pointerEvents to none, so no touch reaches the observer
+  // to report it; record the lock changes themselves instead.
+  const lockedBefore = useRef(disabled);
+  useEffect(() => {
+    if (lockedBefore.current === disabled) return;
+    lockedBefore.current = disabled;
+    record('row', disabled ? 'locked' : 'unlocked');
+  }, [disabled, record]);
   // Toggling recording remounts the swipeable under a new root, and refs are
   // detached before cleanup runs: capture the instance this mount registered.
   useEffect(() => {
@@ -259,7 +267,6 @@ function rowTouchObserver(
     extra?: { dx?: number; dy?: number; detail?: Record<string, string | number | boolean> },
   ) => void,
   width: () => number,
-  disabled: { current: boolean },
 ) {
   let origin: { x: number; y: number } | null = null;
   let reported = 0;
@@ -277,7 +284,7 @@ function rowTouchObserver(
       origin = touch ? { x: touch.absoluteX, y: touch.absoluteY } : null;
       reported = 0;
       record('row', 'touch-down', {
-        detail: { width: Math.round(width()), disabled: disabled.current },
+        detail: { width: Math.round(width()) },
       });
     })
     .onTouchesMove((event) => {

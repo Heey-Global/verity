@@ -14,7 +14,8 @@ recording, and labelled with their `projectKind` (`local`, `github`, …).
 ## Events
 
 - `source: row` — an observer on each session row that never activates.
-  `touch-down` reports the row width and whether row interactions were locked.
+  `touch-down` reports the row width. `locked` and `unlocked` mark the row
+  ignoring touches while a drag runs; a locked row receives no touches at all.
   `move-6`, `move-12`, `move-24` and `move-48` mark the distance the finger
   travelled, with `dx`/`dy`. The swipe activates past 12 pt horizontally.
   `touch-cancelled` means another gesture claimed the touch; `touch-up` means

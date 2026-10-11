@@ -147,6 +147,30 @@ describe('SwipeableSessionRow gesture diagnostics', () => {
       </SwipeableSessionRow>,
     );
 
+  it('records lock changes, which a locked row cannot report through touches', () => {
+    const row = (disabled: boolean) => (
+      <SwipeableSessionRow
+        favorite={false}
+        label="Fix login"
+        onToggleFavorite={jest.fn()}
+        onDelete={jest.fn()}
+        onEdit={jest.fn()}
+        disabled={disabled}
+        diagnostics={{ rowKey: 'session:private-id', projectKind: 'local' }}
+      >
+        <Text>row content</Text>
+      </SwipeableSessionRow>
+    );
+    const view = render(row(false));
+    act(() => setGestureDiagnosticsEnabled(true));
+    view.rerender(row(true));
+    view.rerender(row(false));
+    expect(exportGestureDiagnostics().events.map((event) => event.event)).toEqual([
+      'locked',
+      'unlocked',
+    ]);
+  });
+
   it('adds no observer while recording is off', () => {
     // An observer outside a recording session would change the gesture tree
     // every user runs, which is what the switch exists to prevent.
