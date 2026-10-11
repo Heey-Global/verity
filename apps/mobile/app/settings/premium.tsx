@@ -297,7 +297,11 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
             }}
             editable={writable && !checking}
             error={rejection?.tag}
-            onSubmit={() => void activate()}
+            onSubmit={() => {
+              // Same gate as the Activate button: Return on an empty field must
+              // never overwrite a stored key.
+              if (writable && key.trim()) void activate();
+            }}
           />
           <Text
             style={[styles.help, message ? styles.error : null]}

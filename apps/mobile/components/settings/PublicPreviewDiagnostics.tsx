@@ -42,7 +42,7 @@ function streamLine(record: RemoteStreamRecord): string {
 }
 
 function controlLabel(value: UplinkDiagnostics): string {
-  if (value.control === 'idle') return 'Idle';
+  if (value.control === 'idle') return value.entitlement === 'checked' ? 'On demand' : 'Idle';
   if (value.control === 'connected') return 'Connected';
   if (value.control === 'rejected') {
     return value.reason === 'revoked'
@@ -140,7 +140,8 @@ export function PublicPreviewDiagnostics({
       : status
         ? {
             tone:
-              status.control === 'connected'
+              status.control === 'connected' ||
+              (status.control === 'idle' && status.entitlement === 'checked')
                 ? 'ok'
                 : status.control === 'rejected'
                   ? 'error'

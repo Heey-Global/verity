@@ -256,7 +256,7 @@ it('shows idle sharing and explicitly checks rights without implying a reconnect
   expect(screen.getByText('Idle')).toBeOnTheScreen();
   expect(screen.getByText('Not checked')).toBeOnTheScreen();
   fireEvent.press(screen.getByLabelText('Check subscription rights'));
-  await waitFor(() => expect(screen.getByText('On demand')).toBeOnTheScreen());
+  await waitFor(() => expect(screen.getAllByText('On demand')).toHaveLength(2));
   expect(screen.getByText('Connects when a feature is in use')).toBeOnTheScreen();
   expect(checkUplinkEntitlements).toHaveBeenCalledTimes(1);
   expect(getUplinkDiagnostics).toHaveBeenCalledTimes(1);
@@ -277,7 +277,9 @@ it('never reports Remote access as on demand while the channel idles', async () 
     },
   });
   render(<PublicPreviewDiagnostics client={{ getUplinkDiagnostics } as never} keyConfigured />);
-  await waitFor(() => expect(screen.getAllByText('On demand')).toHaveLength(1));
+  // One for the Uplink channel itself, one for Online sharing — none for Remote access.
+  await waitFor(() => expect(screen.getAllByText('On demand')).toHaveLength(2));
+  expect(screen.getByText('–')).toBeOnTheScreen();
 });
 
 it('offers a retry when the status could not be loaded', async () => {
