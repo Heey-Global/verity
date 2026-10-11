@@ -102,7 +102,7 @@ describe('remote control connector', () => {
     const ordinaryReservation = await reserve(ordinary);
     ordinaryReservation.release('test end');
     expect(log.info.mock.calls.some(([entry]) => entry.event === 'remote.return_path')).toBe(false);
-    const expiry = Date.now() + 100;
+    const expiry = Date.now() + 250;
     const selected = await fixture(undefined, {}, log, () => expiry);
     const selectedReservation = await reserve(selected);
     let ended = false;
@@ -113,6 +113,7 @@ describe('remote control connector', () => {
     const exported = log.info.mock.calls.filter(
       ([entry]) => entry.event === 'remote.return_path',
     ).length;
+    expect(exported).toBe(1);
     expect(ended).toBe(false);
     selectedReservation.release('test end');
     expect(
@@ -121,7 +122,8 @@ describe('remote control connector', () => {
   });
   it('exports exact target send callback evidence without ticket or payload', async () => {
     const log = { info: vi.fn(), warn: vi.fn() };
-    const f = await fixture(undefined, {}, log, () => Date.now() + 60_000);
+    const expiry = Date.now() + 1000;
+    const f = await fixture(undefined, {}, log, () => expiry);
     const reservation = await reserve(f);
     const attaching = reservation.attach(
       'private_ticket',

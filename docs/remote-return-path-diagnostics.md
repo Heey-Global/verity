@@ -45,7 +45,9 @@ report omitted detail explicitly. Cumulative emitted-message counts and byte len
 transport error and close observation, survive detail saturation. Totals for retained streams keep updating
 when the event budget is exhausted. Error, release and close paths export
 available metadata, including late callbacks until consent expires; a final
-summary has reserved capacity before expiry. Summaries stop at release, and the
+summary has reserved capacity and is scheduled 100 ms before expiry, ending
+detailed collection early. If event-loop delay passes the absolute deadline,
+export is suppressed instead of extending consent. Summaries stop at release, and the
 absolute expiry is checked during recording and export, independently of timer
 delivery, and stops all detailed recording and export.
 

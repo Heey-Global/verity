@@ -212,11 +212,14 @@ class ConnectorSession implements RemoteConnectorReservation {
       this.returnPath = new RemoteReturnPathDiagnostics(request.sessionId, expiry);
       this.returnPathTimer = setInterval(() => this.logReturnPath(), 5_000);
       this.returnPathTimer.unref();
-      this.returnPathDeadline = setTimeout(() => {
-        this.logReturnPath(true);
-        if (this.returnPathTimer) clearInterval(this.returnPathTimer);
-        this.returnPath = undefined;
-      }, expiry - Date.now());
+      this.returnPathDeadline = setTimeout(
+        () => {
+          this.logReturnPath(true);
+          if (this.returnPathTimer) clearInterval(this.returnPathTimer);
+          this.returnPath = undefined;
+        },
+        Math.max(0, expiry - Date.now() - 100),
+      );
       this.returnPathDeadline.unref();
     }
     this.closed = new Promise<void>((resolve) => {
