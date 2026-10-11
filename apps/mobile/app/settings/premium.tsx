@@ -293,12 +293,16 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
             onChangeText={(value) => {
               setKey(value);
               setRejection(null);
+              setMessage(null);
             }}
             editable={writable && !checking}
             error={rejection?.tag}
             onSubmit={() => void activate()}
           />
-          <Text style={styles.help} accessibilityRole={message ? 'alert' : undefined}>
+          <Text
+            style={[styles.help, message ? styles.error : null]}
+            accessibilityRole={message ? 'alert' : undefined}
+          >
             {message ??
               'From your Verity account. Stored encrypted on your server, never shown again.'}
           </Text>
@@ -341,11 +345,13 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
                     ? 'Connected to Uplink'
                     : connection === 'onDemand'
                       ? 'Connects when a feature is in use'
-                      : connection === 'idle'
-                        ? 'Checked when a feature is first used'
-                        : connection === 'rejected'
-                          ? rejectionFor(status?.reason).sentence
-                          : 'Waiting for Uplink'
+                      : connection === 'disabled'
+                        ? 'Uplink is disabled on this server'
+                        : connection === 'idle'
+                          ? 'Checked when a feature is first used'
+                          : connection === 'rejected'
+                            ? rejectionFor(status?.reason).sentence
+                            : 'Waiting for Uplink'
                 }
               />
               <Tag
@@ -354,9 +360,11 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
                     ? 'Active'
                     : connection === 'idle'
                       ? 'Idle'
-                      : connection === 'rejected'
-                        ? 'Rejected'
-                        : 'Connecting'
+                      : connection === 'disabled'
+                        ? 'Disabled'
+                        : connection === 'rejected'
+                          ? 'Rejected'
+                          : 'Connecting'
                 }
                 tone={active ? 'ok' : connection === 'rejected' ? 'error' : 'neutral'}
               />
@@ -479,6 +487,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   accent: { color: theme.colors.accent },
   lead: { color: theme.colors.textMuted, fontSize: 15, lineHeight: 22 * theme.fontScale },
+  error: { color: theme.colors.tone.danger },
   help: { color: theme.colors.textMuted, fontSize: 13.5, lineHeight: 19 * theme.fontScale },
   link: { color: theme.colors.primary, fontSize: 15, fontWeight: '600', paddingVertical: 6 },
   hero: {

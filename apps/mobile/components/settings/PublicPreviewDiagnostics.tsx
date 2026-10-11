@@ -256,8 +256,8 @@ export function PublicPreviewDiagnostics({
               );
             })}
         </RowCard>
-        {details.map((line) => (
-          <Text key={line.slice(0, 24)} style={styles.footnote}>
+        {details.map((line, index) => (
+          <Text key={index} style={styles.footnote}>
             {line}
           </Text>
         ))}

@@ -201,6 +201,10 @@ export function KeyField({
         placeholderTextColor={theme.colors.textFaint}
         editable={editable}
         secureTextEntry
+        // A subscription key is not an account password; keep it out of the
+        // password manager's save prompt.
+        textContentType="none"
+        autoComplete="off"
         autoCapitalize="none"
         autoCorrect={false}
         spellCheck={false}
