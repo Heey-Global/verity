@@ -17,6 +17,11 @@ import {
   type AnimatedRef,
 } from 'react-native-reanimated';
 
+import {
+  gestureRowNumber,
+  recordGesture,
+  useGestureDiagnosticsEnabled,
+} from '../lib/gestureDiagnostics';
 import { projectHandleRef } from '../lib/projectHandleRef';
 
 import {
@@ -229,6 +234,23 @@ export function useProjectReorder({
     if (next !== scrollY.value) scrollTo(listRef, 0, next, false);
   });
 
+  // Off unless switched on in Settings → Diagnostics; toggling rebuilds the pan.
+  const recording = useGestureDiagnosticsEnabled();
+  const recordReorder = useCallback(
+    (event: string, headerId: string | null, detail: Record<string, string | number | boolean>) =>
+      recordGesture({
+        source: 'reorder',
+        event,
+        ...(headerId !== null ? { row: gestureRowNumber(headerId) } : {}),
+        detail: {
+          ...detail,
+          ...(headerId !== null
+            ? { target: headerId.startsWith('session:') ? 'session' : 'project' }
+            : {}),
+        },
+      }),
+    [],
+  );
   const gesture = useMemo(
     () =>
       Gesture.Pan()
@@ -240,6 +262,8 @@ export function useProjectReorder({
         .shouldCancelWhenOutside(false)
         .onTouchesDown((event, manager) => {
           const touch = event.allTouches[0];
+          let hitId: string | null = null;
+          let excluded = false;
           const hit =
             touch &&
             registeredHeaders.value.some((header) => {
@@ -247,19 +271,26 @@ export function useProjectReorder({
                 header.scope === undefined
                   ? source.value.sortable
                   : (source.value.sessionOrders[header.scope] ?? []);
-              if (
-                !allowed.includes(header.id) ||
-                hitsExcluded(header, touch.absoluteX, touch.absoluteY)
-              )
+              if (!allowed.includes(header.id)) return false;
+              if (hitsExcluded(header, touch.absoluteX, touch.absoluteY)) {
+                excluded = true;
                 return false;
+              }
               const bounds = measure(header.handle);
-              return (
+              const inside =
                 bounds !== null &&
                 touch.absoluteX >= bounds.pageX &&
                 touch.absoluteX <= bounds.pageX + bounds.width &&
                 touch.absoluteY >= bounds.pageY &&
-                touch.absoluteY <= bounds.pageY + bounds.height
-              );
+                touch.absoluteY <= bounds.pageY + bounds.height;
+              if (inside) hitId = header.id;
+              return inside;
+            });
+          if (recording)
+            runOnJS(recordReorder)(hit ? 'touch-down-hold' : 'touch-down-fail', hitId, {
+              headers: registeredHeaders.value.length,
+              // Only a release explains itself by an excluded area.
+              excluded: !hit && excluded,
             });
           if (!hit) manager.fail();
         })
@@ -269,6 +300,7 @@ export function useProjectReorder({
         .onTouchesUp(() => runOnJS(releaseFallback)())
         .onTouchesCancelled(() => runOnJS(releaseFallback)())
         .onStart((event) => {
+          if (recording) runOnJS(recordReorder)('start', null, {});
           if (drag.value && !drag.value.dropping) return;
           const host = measure(hostRef);
           if (!host) return;
@@ -326,6 +358,7 @@ export function useProjectReorder({
           updateTarget();
         })
         .onFinalize((_event, success) => {
+          if (recording) runOnJS(recordReorder)('finalize', null, { success });
           const current = drag.value;
           if (!current || current.dropping) return;
           drag.value = success ? { ...current, dropping: true } : null;
@@ -353,6 +386,8 @@ export function useProjectReorder({
       ended,
       updateTarget,
       releaseFallback,
+      recording,
+      recordReorder,
     ],
   );
 

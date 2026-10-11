@@ -1,4 +1,5 @@
 import { exportSessionSwitchTimings } from '@verity/mobile';
+import { exportGestureDiagnostics } from './gestureDiagnostics';
 import { exportPinnedTransportTimings } from './pinnedTransport';
 import { BUILD_COMMIT } from './buildInfo.generated';
 import * as Application from 'expo-application';
@@ -83,6 +84,7 @@ export async function shareUpdateDiagnostics(): Promise<void> {
     commit: BUILD_COMMIT,
     sessionSwitchTimings: exportSessionSwitchTimings(),
     nativeTransportTimings: exportPinnedTransportTimings(),
+    gestureDiagnostics: exportGestureDiagnostics(),
     captureSummary: { omittedSwitches: 0 },
     exportedAt: new Date().toISOString(),
     version: shorten(runningReleaseVersion(Application.nativeApplicationVersion), 256),
@@ -117,6 +119,9 @@ export async function shareUpdateDiagnostics(): Promise<void> {
     if (report.sessionSwitchTimings.length > 1) {
       report.sessionSwitchTimings.shift();
       report.captureSummary.omittedSwitches++;
+    } else if (report.gestureDiagnostics.events.length > 0) {
+      report.gestureDiagnostics.events.shift();
+      report.gestureDiagnostics.dropped++;
     } else if (report.nativeTransportTimings.records.length > 0) {
       report.nativeTransportTimings.records.shift();
       report.nativeTransportTimings.omitted++;
