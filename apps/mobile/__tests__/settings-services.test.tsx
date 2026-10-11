@@ -757,3 +757,46 @@ it.each([
   expect(screen.queryByLabelText(new RegExp(otherTitle))).toBeNull();
   expect(screen.queryByText(/OpenCode/)).toBeNull();
 });
+
+// Connection status must not move a service out of its category.
+it.each([false, true])('groups services consistently when connected=%s', async (connected) => {
+  mockCreateVerityClient.mockReturnValue(
+    makeClient('unlocked', {
+      settings: makeSettings({
+        claudeCodeOauthCredentialsConfigured: connected,
+        codexAuthJsonConfigured: connected,
+        dopplerServiceTokenConfigured: connected,
+      }),
+    }),
+  );
+  render(<ConnectionsScreen />);
+  await screen.findByLabelText('Claude');
+  await act(async () => undefined);
+
+  const categories = [
+    ['Agents', ['Claude', 'Codex', 'OpenCode']],
+    ['Code', ['GitHub']],
+    ['Files & documents', ['Google']],
+    ['Communication', ['Matrix', 'Attendee']],
+    ['Secrets', ['Doppler']],
+    ['Advanced', ['MCP servers']],
+  ] as const;
+  for (const [category, services] of categories) {
+    const heading = screen.getByRole('header', { name: category });
+    let container = heading.parent!;
+    while (within(container).queryAllByRole('button').length === 0 && container.parent) {
+      container = container.parent;
+    }
+    const section = within(container);
+    expect(section.getAllByRole('header')).toHaveLength(1);
+    expect(section.getAllByRole('button')).toHaveLength(services.length);
+    for (const service of services) {
+      expect(section.getByRole('button', { name: service })).toBeOnTheScreen();
+      expect(screen.getAllByRole('button', { name: service })).toHaveLength(1);
+    }
+  }
+  expect(screen.queryByRole('header', { name: 'Connected' })).toBeNull();
+  expect(screen.queryByRole('header', { name: 'Available' })).toBeNull();
+  const claude = within(screen.getByLabelText('Claude'));
+  expect(claude.getByLabelText(connected ? 'Connected' : 'Connect')).toBeOnTheScreen();
+});

@@ -183,7 +183,6 @@ export function isSessionLinkProject(
   project: Pick<ProjectRecord, 'kind' | 'state' | 'hiddenAt'>,
 ): boolean {
   return (
-    project.kind !== 'control_plane' &&
     project.hiddenAt === null &&
     (project.state === 'active' || project.state === 'sleeping' || project.state === 'waking')
   );
@@ -706,6 +705,10 @@ export interface VeritySettingsRecord {
   uplinkSubscriptionKey?: string | null;
   /** Stable identity assigned and validated by the Uplink. */
   uplinkInstallationId?: string | null;
+  /** Operator switches for the paid Uplink features. Uplink grants a feature;
+   * the switch decides whether this server uses it. Both default to on. */
+  premiumSharingEnabled?: boolean;
+  premiumRemoteAccessEnabled?: boolean;
   advancedModeEnabled?: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -745,7 +748,9 @@ type VeritySettingsKey =
   | 'contactsAuthorized'
   | 'googleGrantedScopes'
   | 'uplinkSubscriptionKey'
-  | 'uplinkInstallationId';
+  | 'uplinkInstallationId'
+  | 'premiumSharingEnabled'
+  | 'premiumRemoteAccessEnabled';
 
 export type VeritySettingsPatch = {
   [K in VeritySettingsKey]?: VeritySettingsRecord[K] | undefined;
@@ -3088,6 +3093,110 @@ export class EventStore implements EventSink {
     // guarantee RETURNING order (and DELETE takes no ORDER BY), so sort by the
     // serial `id` to restore insert order.
     return rows.sort((a, b) => Number(a.id) - Number(b.id)).map((r) => r.note);
+  }
+
+  /**
+   * Record the starter project a fresh installation created for itself. Only the
+   * first call wins; the record keeps pointing at that project after it is
+   * deleted (projects are soft-deleted), so it is never recreated.
+   */
+  async recordStarterProject(projectId: string): Promise<boolean> {
+    const result = await this.db
+      .insertInto('starter_project')
+      .values({ singleton: true, project_id: projectId })
+      .onConflict((oc) => oc.column('singleton').doNothing())
+      .executeTakeFirst();
+    return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
+  }
+
+  /** Explicit tour replay restores only the recorded starter, never a name match. */
+  async ensureReplayStarterProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
+    const row = await this.db.transaction().execute(async (tx) => {
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      const recorded = await tx
+        .selectFrom('starter_project')
+        .select('project_id')
+        .executeTakeFirst();
+      if (recorded) {
+        const existing = await tx
+          .selectFrom('projects')
+          .selectAll()
+          .where('id', '=', recorded.project_id)
+          .forUpdate()
+          .executeTakeFirst();
+        if (existing) {
+          if (existing.hidden_at === null) return existing;
+          const restored = await tx
+            .updateTable('projects')
+            .set({
+              hidden_at: null,
+              archived: false,
+              overview_visible: true,
+              state: 'absent',
+              provision_error: null,
+              provision_warning: null,
+              sleep_compatibility_fingerprint: null,
+              sleeping_since: null,
+              wake_started_at: null,
+              state_changed_at: sql`now()`,
+              updated_at: sql`now()`,
+            })
+            .where('id', '=', existing.id)
+            .returningAll()
+            .executeTakeFirstOrThrow();
+          await ensureProjectKnowledgeSpace(tx, restored.id, restored.repo);
+          return restored;
+        }
+      }
+      // A unique replay identity cannot claim a user's similarly named project.
+      await tx
+        .insertInto('project_identity_claims')
+        .values({ owner: input.owner, repo: input.repo, project_id: input.id })
+        .execute();
+      const created = await tx
+        .insertInto('projects')
+        .values({
+          id: input.id,
+          owner: input.owner,
+          repo: input.repo,
+          container_name: input.containerName,
+          kind: 'local',
+          clone_dir: input.cloneDir ?? null,
+          state: 'absent',
+          overview_visible: true,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      await tx
+        .insertInto('starter_project')
+        .values({ singleton: true, project_id: created.id })
+        .onConflict((oc) => oc.column('singleton').doUpdateSet({ project_id: created.id }))
+        .execute();
+      await ensureProjectKnowledgeSpace(tx, created.id, created.repo);
+      return created;
+    });
+    return this.projectRowToRecord(row);
+  }
+
+  async getStarterWelcomeSessionId(): Promise<string | undefined> {
+    const row = await this.db
+      .selectFrom('starter_project')
+      .select('welcome_session_id')
+      .executeTakeFirst();
+    return row?.welcome_session_id ?? undefined;
+  }
+
+  async recordStarterWelcomeSession(sessionId: string): Promise<void> {
+    await this.db
+      .updateTable('starter_project')
+      .set({ welcome_session_id: sessionId })
+      .where('singleton', '=', true)
+      .execute();
+  }
+
+  async getStarterProjectId(): Promise<string | undefined> {
+    const row = await this.db.selectFrom('starter_project').select('project_id').executeTakeFirst();
+    return row?.project_id;
   }
 
   /**
@@ -6264,6 +6373,8 @@ export class EventStore implements EventSink {
       google_granted_scopes: string[];
       uplink_subscription_key: string | null;
       uplink_installation_id: string | null;
+      premium_sharing_enabled: boolean;
+      premium_remote_access_enabled: boolean;
       advanced_mode_enabled: boolean;
       created_at: Date;
       updated_at: Date;
@@ -6325,6 +6436,8 @@ export class EventStore implements EventSink {
         ? this.decryptSecret(row.uplink_subscription_key)
         : row.uplink_subscription_key,
       uplinkInstallationId: row.uplink_installation_id,
+      premiumSharingEnabled: row.premium_sharing_enabled,
+      premiumRemoteAccessEnabled: row.premium_remote_access_enabled,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -6365,6 +6478,8 @@ export class EventStore implements EventSink {
     'google_granted_scopes',
     'uplink_subscription_key',
     'uplink_installation_id',
+    'premium_sharing_enabled',
+    'premium_remote_access_enabled',
     'advanced_mode_enabled',
     'created_at',
     'updated_at',
@@ -6436,6 +6551,8 @@ export class EventStore implements EventSink {
       google_granted_scopes: JSON.stringify(patch.googleGrantedScopes ?? []),
       uplink_subscription_key: this.encryptSecret(normalizeSetting(patch.uplinkSubscriptionKey)),
       uplink_installation_id: normalizeSetting(patch.uplinkInstallationId),
+      premium_sharing_enabled: patch.premiumSharingEnabled ?? true,
+      premium_remote_access_enabled: patch.premiumRemoteAccessEnabled ?? true,
     };
     const row = await this.db
       .insertInto('verity_settings')
@@ -6565,6 +6682,12 @@ export class EventStore implements EventSink {
             : {}),
           ...(patch.uplinkInstallationId !== undefined
             ? { uplink_installation_id: normalizeSetting(patch.uplinkInstallationId) }
+            : {}),
+          ...(patch.premiumSharingEnabled !== undefined
+            ? { premium_sharing_enabled: patch.premiumSharingEnabled }
+            : {}),
+          ...(patch.premiumRemoteAccessEnabled !== undefined
+            ? { premium_remote_access_enabled: patch.premiumRemoteAccessEnabled }
             : {}),
           ...(patch.advancedModeEnabled !== undefined
             ? { advanced_mode_enabled: patch.advancedModeEnabled }
@@ -7224,6 +7347,29 @@ export class EventStore implements EventSink {
       .where('project_id', '=', projectId)
       .executeTakeFirst();
     return row ? this.projectSettingsRowToRecord(row) : undefined;
+  }
+
+  /** Missing rows keep existing projects undecided until their first installation. */
+  async getPackageProtectionDecision(
+    projectId: string,
+  ): Promise<'protected' | 'skipped' | 'undecided'> {
+    const row = await this.db
+      .selectFrom('project_package_protection')
+      .select('decision')
+      .where('project_id', '=', projectId)
+      .executeTakeFirst();
+    return row?.decision ?? 'undecided';
+  }
+
+  async setPackageProtectionDecision(
+    projectId: string,
+    decision: 'protected' | 'skipped',
+  ): Promise<void> {
+    await this.db
+      .insertInto('project_package_protection')
+      .values({ project_id: projectId, decision })
+      .onConflict((conflict) => conflict.column('project_id').doUpdateSet({ decision }))
+      .execute();
   }
 
   /** Like {@link getProjectSettings} but WITHOUT decrypting `doppler_token` —

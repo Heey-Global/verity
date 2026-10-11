@@ -1,12 +1,19 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { ExpoSpeechRecognitionModule } from 'expo-speech-recognition';
-import { useVoiceInput } from './useVoiceInput';
+import { useVoiceInput as nativeUseVoiceInput } from './useVoiceInput';
+
+// These lifecycle regressions isolate explicit starts; preparation visibility
+// has a separate suite that exercises the real bridge coordinator.
+const useVoiceInput: typeof nativeUseVoiceInput = (value, change, send, options) =>
+  nativeUseVoiceInput(value, change, send, { ...options, visible: false });
 import { correctVoiceText } from '../lib/voiceVocabulary';
 
 let listener: (event: Record<string, unknown>) => void;
 jest.mock('expo-modules-core', () => {
   const native = {
     dictationLocales: jest.fn(async () => ['de-DE']),
+    prepareDictation: jest.fn(async () => undefined),
+    releasePreparedDictation: jest.fn(async () => undefined),
     startDictation: jest.fn(
       async (_session: string, _locale: string, _vocabulary: string[]) => undefined,
     ),

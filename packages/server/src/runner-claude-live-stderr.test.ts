@@ -40,6 +40,29 @@ describe('live smoke stderr', () => {
     ]);
   });
 
+  it('tolerates bounded transcript-tail model diagnostics', () => {
+    const line =
+      '[session/models] sessionId=session-1 phase=read-transcript-tail durationMs=5 totalMs=5 model=unknown permissionMode=unknown';
+    expect(unexpectedStderrLines(`${line}\n`)).toEqual([]);
+    expect(
+      unexpectedStderrLines(
+        line
+          .replace('model=unknown', 'model=claude-sonnet-4')
+          .replace('permissionMode=unknown', 'permissionMode=default'),
+      ),
+    ).toEqual([]);
+    // Broad namespace filters silently swallow failures or appended credentials.
+    for (const unexpected of [
+      `${line} token=secret`,
+      line.replace('durationMs=5', 'durationMs=fast'),
+      line.replace('phase=read-transcript-tail', 'phase=error'),
+      line.replace('model=unknown', 'model=https://example.com/key'),
+      line.replace('permissionMode=unknown', 'permissionMode=unknown/path?key=secret'),
+    ]) {
+      expect(unexpectedStderrLines(unexpected)).toEqual([unexpected]);
+    }
+  });
+
   it('still reports anything that is not that line', () => {
     // The point of the check: a crash, a warning, or a leaked credential in the
     // agent's stderr must fail the gate exactly as an empty-string assertion did.

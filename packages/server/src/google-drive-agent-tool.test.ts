@@ -401,7 +401,11 @@ it('reads a shared document URL without a linked folder and without selecting it
   });
   eventStore.getProjectSettings.mockResolvedValue({ googleDriveFolderId: null } as never);
   await expect(
-    tool.invoke({ ...input, request: { action: 'read_document_url', url: documentUrl } }),
+    tool.invoke({
+      ...input,
+      approvedByCard: true,
+      request: { action: 'read_document_url', url: documentUrl },
+    }),
   ).resolves.toMatchObject({ content: '# doc', encoding: 'utf8' });
   expect(exportFile).toHaveBeenCalledWith('token', 'shared', 'text/markdown');
   expect(vi.spyOn(drive, 'list')).not.toHaveBeenCalled();
@@ -447,4 +451,53 @@ it('preserves the URL across gateway and executor parsing and classifies link re
   const parsed = googleDriveRequestSchema.parse({ action: 'read_document_url', url: documentUrl });
   expect(googleDriveRequestSchema.parse(parsed)).toEqual(parsed);
   expect(googleDriveIsMutation(parsed)).toBe(false);
+});
+
+it.each([null, 'root'])(
+  'requires explicit approval for external documents with folder %s',
+  async (folderId) => {
+    const { tool, eventStore, exportFile } = setup({
+      shared: { id: 'shared', name: 'Shared', mimeType: 'application/vnd.google-apps.document' },
+    });
+    eventStore.getProjectSettings.mockResolvedValue({ googleDriveFolderId: folderId } as never);
+    expect(await tool.canReadDocumentWithoutApproval({ ...input, url: documentUrl })).toBe(false);
+    await expect(
+      tool.invoke({ ...input, request: { action: 'read_document_url', url: documentUrl } }),
+    ).rejects.toThrow('explicit approval');
+    expect(exportFile).not.toHaveBeenCalled();
+    await expect(
+      tool.invoke({
+        ...input,
+        approvedByCard: true,
+        request: { action: 'read_document_url', url: documentUrl },
+      }),
+    ).resolves.toMatchObject({ content: '# doc' });
+  },
+);
+it('automatically reads nested project documents but rejects files moved outside before execution', async () => {
+  const shared: DriveFile = {
+    id: 'shared',
+    name: 'Shared',
+    mimeType: 'application/vnd.google-apps.document',
+    parents: ['nested'],
+  };
+  const { tool, exportFile } = setup({
+    shared,
+    nested: {
+      id: 'nested',
+      name: 'Nested',
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: ['root'],
+    },
+  });
+  expect(await tool.canReadDocumentWithoutApproval({ ...input, url: documentUrl })).toBe(true);
+  await expect(
+    tool.invoke({ ...input, request: { action: 'read_document_url', url: documentUrl } }),
+  ).resolves.toMatchObject({ content: '# doc' });
+  exportFile.mockClear();
+  shared.parents = [];
+  await expect(
+    tool.invoke({ ...input, request: { action: 'read_document_url', url: documentUrl } }),
+  ).rejects.toThrow('explicit approval');
+  expect(exportFile).not.toHaveBeenCalled();
 });

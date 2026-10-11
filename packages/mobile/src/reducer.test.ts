@@ -1353,3 +1353,18 @@ it('preserves background work across steering and clears it for a fresh turn', (
   reducer.apply(5, { t: 'prompt', text: 'New turn' });
   expect(reducer.hasOpenTasks).toBe(false);
 });
+
+it('refreshes a saved meeting notice in place during live updates and history replay', () => {
+  const r = new SessionReducer();
+  const first = 'Meeting saved to the knowledge base: [Planning](docs/meeting.md)';
+  const updated = first + '\n<!-- verity-meeting: {"notes":2,"people":1} -->';
+  r.apply(1, { t: 'notice', text: first });
+  const snapshot = r.messages[0];
+  r.apply(2, { t: 'notice', text: 'Unrelated notice' });
+  r.apply(3, { t: 'notice', text: updated });
+  expect(r.messages).toHaveLength(2);
+  expect(r.messages[0]).toMatchObject({ id: 'notice-1', text: updated });
+  expect(snapshot).toMatchObject({ text: first });
+  r.apply(4, { t: 'notice', text: 'Meeting saved to the knowledge base: [Other](docs/other.md)' });
+  expect(r.messages).toHaveLength(3);
+});

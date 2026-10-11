@@ -66,3 +66,21 @@ it('updates reorder boundaries and removes selection actions in narrow layout', 
   expect(narrow.result.current.get('a')!.onSelect).toBeUndefined();
   expect(narrow.result.current.get('a')!.onMoveDown).toBeUndefined();
 });
+
+it('retains sibling callbacks when one session changes and when the input array is rebuilt', () => {
+  const props = options();
+  const hook = renderHook((input: typeof props) => useSessionRowCallbacks(input), {
+    initialProps: props,
+  });
+  const a = hook.result.current.get('a');
+  const b = hook.result.current.get('b');
+  hook.rerender({ ...props, sessions: [...props.sessions] });
+  expect(hook.result.current.get('a')).toBe(a);
+  expect(hook.result.current.get('b')).toBe(b);
+  const changed = { ...props.sessions[0]!, name: 'new name' };
+  hook.rerender({ ...props, sessions: [changed, props.sessions[1]!] });
+  expect(hook.result.current.get('a')).not.toBe(a);
+  expect(hook.result.current.get('b')).toBe(b);
+  hook.result.current.get('a')!.onOpen();
+  expect(props.onOpen).toHaveBeenLastCalledWith(changed);
+});

@@ -1,0 +1,29 @@
+#!/usr/bin/env node
+// Control has a live turn bearer rather than a project container capability.
+import { readFileSync } from 'node:fs';
+
+function fail(message) {
+  console.error(`verity-memory: ${message}`);
+  process.exit(1);
+}
+if (process.argv[2] !== 'append')
+  fail('usage: verity-memory append "<note>" (or pipe the note on stdin)');
+const text = process.argv.length > 3 ? process.argv.slice(3).join(' ') : readFileSync(0, 'utf8');
+if (text.trim() === '') fail('refusing to append empty memory');
+const url = process.env.VERITY_CONTROL_MEMORY_URL;
+const token = process.env.VERITY_CONTROL_MEMORY_TOKEN;
+if (!url) fail('memory broker is not configured for Control');
+if (!token) fail('memory append requires an active Control turn');
+try {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ text }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok)
+    fail(`broker rejected the append (HTTP ${response.status}): ${await response.text()}`);
+  console.error('verity-memory: saved to Control memory');
+} catch {
+  fail('could not reach the memory broker');
+}

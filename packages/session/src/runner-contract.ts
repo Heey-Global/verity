@@ -102,6 +102,8 @@ export interface StartTurnHooks {
  * the D6 handshake instead of launching a new agent.
  */
 export interface RunnerAttachTarget {
+  /** Runner-visible worktree used to stage image references for recovered steering. */
+  attachmentCwd?: string;
   turnId: string;
   sessionId: string;
   /** Protocol version already authenticated by supervisor discovery. Allows N+1 to

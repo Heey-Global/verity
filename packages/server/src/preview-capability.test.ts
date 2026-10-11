@@ -14,3 +14,11 @@ it('distinguishes entitlement refusal from transport unavailability', () => {
     'unavailable',
   );
 });
+
+it('reports a stored key with Online sharing switched off as disabled, never as premium-required', () => {
+  // Switched off must not read like "buy a subscription": the operator has one.
+  expect(previewSharingCapability(false, true, undefined, false)).toBe('disabled');
+  expect(previewSharingCapability(true, true, undefined, false)).toBe('disabled');
+  // Without a key the switch is irrelevant.
+  expect(previewSharingCapability(false, false, undefined, false)).toBe('premium-required');
+});

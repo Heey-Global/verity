@@ -1,8 +1,10 @@
+import { taskContext } from '@verity/mobile';
 import { Image } from 'react-native';
 import { act, fireEvent, render } from '@testing-library/react-native';
 import { QuickCaptureCard } from './QuickCaptureCard';
 import { KeyCommands } from './KeyCommands';
 import { captureTask } from '../lib/tasksStore';
+import { dispatchTaskVoiceShortcut } from '../lib/voiceShortcut';
 import {
   screenshotAccess,
   recentTaskScreenshot,
@@ -81,6 +83,8 @@ it('never saves on its own; Save stores the text after dictation ends', async ()
   expect(captureTask).toHaveBeenCalledWith(
     expect.objectContaining({
       title: 'Final captured outcome',
+      detail: 'Final captured outcome',
+      generateTitle: true,
       projectId: 'p',
       sourceSessionId: 's',
     }),
@@ -247,3 +251,74 @@ it('does not cancel an explicit save already waiting for the final transcript', 
   expect(voice.abort).not.toHaveBeenCalled();
   expect(props.onClose).not.toHaveBeenCalled();
 });
+
+it('cancels dictation when UIKit routes the shortcut through the root responder', () => {
+  render(<QuickCaptureCard {...props} />);
+  act(() => dispatchTaskVoiceShortcut());
+  expect(voice.abort).toHaveBeenCalledTimes(1);
+  expect(props.onClose).toHaveBeenCalledTimes(1);
+  expect(captureTask).not.toHaveBeenCalled();
+});
+
+it('ignores root shortcuts while an explicit save waits for the transcript', () => {
+  const ui = render(<QuickCaptureCard {...props} />);
+  fireEvent.changeText(ui.getByLabelText('Task text'), 'Task to save');
+  fireEvent.press(ui.getByText('Save'));
+  act(() => dispatchTaskVoiceShortcut());
+  expect(voice.abort).not.toHaveBeenCalled();
+  expect(props.onClose).not.toHaveBeenCalled();
+});
+
+it.each([
+  [false, false],
+  [false, true],
+  [true, true],
+])(
+  'adopts delayed session context while preserving explicit selection (chosen=%s, cached=%s)',
+  async (chooseProject, cachedProjects) => {
+    jest
+      .mocked(useVoiceInput)
+      .mockReturnValue({ ...voice, state: 'idle' } as unknown as ReturnType<typeof useVoiceInput>);
+    const projects = [
+      {
+        id: 'remembered',
+        owner: 'local',
+        repo: 'Remembered',
+        kind: 'local' as const,
+        containerName: 'remembered',
+        imageRef: null,
+        state: 'active' as const,
+        provisionError: null,
+        createdAt: '',
+        updatedAt: '',
+      },
+    ];
+    const ui = render(
+      <QuickCaptureCard
+        {...props}
+        projects={cachedProjects ? projects : []}
+        context={taskContext('/session/s', { id: 's' }, [])}
+      />,
+    );
+    fireEvent.changeText(ui.getByLabelText('Task text'), 'Cold session capture');
+    if (chooseProject) fireEvent.press(ui.getByText('Remembered'));
+    else {
+      await act(async () => fireEvent.press(ui.getByText('Save')));
+      expect(captureTask).not.toHaveBeenCalled();
+    }
+    ui.rerender(
+      <QuickCaptureCard
+        {...props}
+        projects={projects}
+        context={taskContext('/session/s', { id: 's' }, [{ sessionId: 's', projectId: 'p' }])}
+      />,
+    );
+    await act(async () => fireEvent.press(ui.getByText('Save')));
+    expect(captureTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: chooseProject ? 'remembered' : 'p',
+        sourceSessionId: 's',
+      }),
+    );
+  },
+);

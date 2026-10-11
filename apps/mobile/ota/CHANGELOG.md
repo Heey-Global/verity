@@ -1,5 +1,75 @@
 # Changelog
 
+## [1.66.3](https://github.com/Heey-Global/verity/compare/mobile-v1.66.2...mobile-v1.66.3) (2026-10-11)
+
+
+### Features
+
+* **mobile:** export Remote Control CI test inputs ([#1507](https://github.com/Heey-Global/verity/issues/1507)) ([58adde4](https://github.com/Heey-Global/verity/commit/58adde41ba272710c588638e68ce43f0ba7bd656))
+
+## [1.66.2](https://github.com/Heey-Global/verity/compare/mobile-v1.66.1...mobile-v1.66.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* **mobile:** correct session keyboard visibility and overlap ([#1495](https://github.com/Heey-Global/verity/issues/1495)) ([7a22ff0](https://github.com/Heey-Global/verity/commit/7a22ff079eede32b186fcd5cfb0aa403fb80c71c))
+* **mobile:** correlate touch diagnostics and expose route waits ([#1496](https://github.com/Heey-Global/verity/issues/1496)) ([9868bd8](https://github.com/Heey-Global/verity/commit/9868bd8c57e915dc5e0b637ed628dfe02e54fe74))
+
+## [1.66.1](https://github.com/Heey-Global/verity/compare/mobile-v1.66.0...mobile-v1.66.1) (2026-10-10)
+
+
+### Features
+
+* **tasks:** streamline spoken capture and scope agent tasks to sessions ([#1472](https://github.com/Heey-Global/verity/issues/1472)) ([5b430ac](https://github.com/Heey-Global/verity/commit/5b430ac30ced9d7f2cf28f2c283a8c81cc7495f0))
+
+
+### Bug Fixes
+
+* **mobile:** avoid white screen during OTA reload ([#1473](https://github.com/Heey-Global/verity/issues/1473)) ([eb28e19](https://github.com/Heey-Global/verity/commit/eb28e19b8ca335fdcd12dfe363bb273b5c886390))
+* **mobile:** isolate chat rendering from unrelated interaction updates ([#1478](https://github.com/Heey-Global/verity/issues/1478)) ([da99368](https://github.com/Heey-Global/verity/commit/da9936804014ece4299a9012cf2013ace11634bd))
+* **session:** stop agent output and activity immediately ([#1480](https://github.com/Heey-Global/verity/issues/1480)) ([d80d19d](https://github.com/Heey-Global/verity/commit/d80d19dde17ce76566bea62abc0945367bafe1ea))
+
+
+### Performance Improvements
+
+* **mobile:** coordinate activity and preview refreshes ([#1482](https://github.com/Heey-Global/verity/issues/1482)) ([33467d6](https://github.com/Heey-Global/verity/commit/33467d67d4aa14e9de0444fffe7513c0b2f4ec38))
+* **mobile:** retain unchanged overview row snapshots ([#1481](https://github.com/Heey-Global/verity/issues/1481)) ([bea26a2](https://github.com/Heey-Global/verity/commit/bea26a2fddacfec1d295bb3c94c5cba93bdf7776))
+* **mobile:** share task capture and overview context ([#1483](https://github.com/Heey-Global/verity/issues/1483)) ([c2f5247](https://github.com/Heey-Global/verity/commit/c2f524752dad8702a271d8ae0f2030f81b7b74ef))
+
+## [1.65.2](https://github.com/Heey-Global/verity/compare/mobile-v1.65.1...mobile-v1.65.2) (2026-10-09)
+
+
+### Bug Fixes
+
+* **mobile:** record connection tests from a fresh tunnel ([#1449](https://github.com/Heey-Global/verity/issues/1449)) ([1d97933](https://github.com/Heey-Global/verity/commit/1d9793383956bfc339d478fff901084d661a4a40))
+
+## [1.65.1](https://github.com/Heey-Global/verity/compare/mobile-v1.65.0...mobile-v1.65.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **mobile:** distinguish connection recording export failures ([#1446](https://github.com/Heey-Global/verity/issues/1446)) ([df98937](https://github.com/Heey-Global/verity/commit/df98937c01e522a0ef65e030e4955bd25fc25ed2))
+
+## [1.64.1](https://github.com/Heey-Global/verity/compare/mobile-v1.64.0...mobile-v1.64.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **mobile:** preserve session switch readiness diagnostics ([#1438](https://github.com/Heey-Global/verity/issues/1438)) ([396c63f](https://github.com/Heey-Global/verity/commit/396c63fb7b72e5914dc25a0fde88ce4fc9a71815))
+
+## [1.63.1](https://github.com/Heey-Global/verity/compare/mobile-v1.63.0...mobile-v1.63.1) (2026-10-09)
+
+
+### Features
+
+* **agent:** add verity_app_help tool with shared app help catalog ([#1415](https://github.com/Heey-Global/verity/issues/1415)) ([3db7e07](https://github.com/Heey-Global/verity/commit/3db7e0774cf3254c98212096d8612ba34ba2f7d1))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1403](https://github.com/Heey-Global/verity/issues/1403)) ([abcecd4](https://github.com/Heey-Global/verity/commit/abcecd426c58d144b9e31859086295fe28295598))
+* **mobile:** skip unmounted issue refs during gesture hit testing ([#1424](https://github.com/Heey-Global/verity/issues/1424)) ([3607faa](https://github.com/Heey-Global/verity/commit/3607faa1dbf868cd1ce0a1ef2f368356cc14a680))
+
 ## [1.62.1](https://github.com/Heey-Global/verity/compare/mobile-v1.62.0...mobile-v1.62.1) (2026-10-09)
 
 

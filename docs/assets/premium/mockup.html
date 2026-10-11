@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<title>Verity Premium · Mockup</title>
+<style>
+  :root {
+    --bg: #07070d; --surface: #0f0f1b; --surfaceAlt: #171729; --border: rgba(255,255,255,0.08);
+    --text: #f3f3fa; --muted: #8e8ea3; --faint: #5a5a72; --accent: #ff2bd6; --primary: #2ab0ff;
+    --onPrimary: #00111f; --done: #28e6a4; --danger: #ff5c8a; --glow: rgba(42,176,255,0.35);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #050508; color: var(--text); font-family: -apple-system, "SF Pro Text", "Inter", "Helvetica Neue", Arial, sans-serif; padding: 28px; display: flex; flex-wrap: wrap; gap: 36px; -webkit-font-smoothing: antialiased; }
+  .shot { display: flex; flex-direction: column; gap: 12px; width: 393px; }
+  .caption { font-size: 15px; font-weight: 600; padding-left: 6px; }
+  .caption small { display: block; color: var(--muted); font-weight: 400; font-size: 12.5px; margin-top: 3px; line-height: 1.45; }
+
+  .phone { width: 393px; height: 852px; border-radius: 54px; border: 10px solid #26262e; position: relative; overflow: hidden;
+    background: #000; }
+  .island { position: absolute; top: 11px; left: 50%; transform: translateX(-50%); width: 122px; height: 35px; background: #000; border-radius: 20px; z-index: 50; }
+  .status { height: 56px; display: flex; justify-content: space-between; align-items: center; padding: 8px 30px 0 36px; font-size: 16px; font-weight: 600; }
+  .status .r { display: flex; gap: 6px; align-items: center; }
+  .status .bat { width: 26px; height: 12px; border-radius: 4px; background: var(--text); }
+  .nav { height: 56px; display: flex; align-items: center; padding: 0 18px; position: relative; }
+  .nav .back { width: 44px; height: 44px; border-radius: 12px; background: rgba(255,255,255,0.06); display: flex; align-items: center; justify-content: center; }
+  .nav .title { position: absolute; left: 0; right: 0; text-align: center; font-size: 19px; font-weight: 700; pointer-events: none; }
+  .content { padding: 10px 18px 0; display: flex; flex-direction: column; gap: 10px; }
+
+  /* Settings root exactly as the app renders it today (SettingsChrome / settingsStyles). */
+  .nav.native { padding: 0 12px; }
+  .nav.native .backText { display: flex; align-items: center; gap: 2px; color: var(--primary); font-size: 17px; }
+  .nav.native .title { font-size: 17px; font-weight: 600; }
+  .settings { padding: 16px; display: flex; flex-direction: column; gap: 24px; }
+  .group { display: flex; flex-direction: column; gap: 8px; }
+  .gh { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: #9a9ec9; }
+  .lp { background: #0a0b16; border-radius: 10px; border-top: 0.5px solid #2a2552; overflow: hidden; }
+  .nr { min-height: 56px; display: flex; align-items: center; gap: 12px; padding: 8px 12px; }
+  .nr + .nr { border-top: 0.5px solid #2a2552; margin-left: 12px; padding-left: 0; }
+  .nr .slot { width: 30px; display: flex; justify-content: center; flex: none; }
+  .nr .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .nr .t { font-size: 16px; font-weight: 600; color: #eef0ff; }
+  .nr .s { font-size: 12px; line-height: 16px; color: #9a9ec9; }
+  .nr .tr { display: flex; align-items: center; gap: 4px; flex-shrink: 1; }
+  .nr .val { font-size: 14px; color: #9a9ec9; max-width: 100px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qp { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #9a9ec9; min-height: 24px; }
+  .qp b { font-weight: 800; }
+  .qp.ready b { color: #28e6a4; }
+  .qp.needs b { color: #ff5c8a; }
+  .qp.opt { font-weight: 600; }
+
+  .eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin: 12px 2px 2px; }
+  .eyebrow.grey { color: var(--muted); }
+  .headline { font-size: 28px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.15; margin: 4px 2px 0; }
+  .lead { font-size: 15px; color: var(--muted); line-height: 1.45; margin: 0 2px; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; display: flex; align-items: center; gap: 14px; }
+  .card.sel { border-color: var(--primary); box-shadow: 0 0 0 1px rgba(42,176,255,0.3), 0 8px 30px rgba(42,176,255,0.14); }
+  .card.soft { opacity: 0.55; }
+  .card .ic { width: 40px; height: 40px; border-radius: 10px; background: rgba(255,255,255,0.05); display: flex; align-items: center; justify-content: center; flex: none; }
+  .card .body { flex: 1; min-width: 0; }
+  .card .t { font-size: 17px; font-weight: 600; }
+  .card .s { font-size: 13.5px; color: var(--muted); margin-top: 2px; }
+  .card .v { color: var(--muted); font-size: 15px; display: flex; align-items: center; gap: 4px; }
+  .card .t .time { color: var(--accent); }
+  .stack { display: flex; flex-direction: column; gap: 8px; }
+
+  .pill { height: 56px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border); display: flex; align-items: center; padding: 0 22px; gap: 14px; }
+  .pill .lab { font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .pill .val { font-size: 17px; font-weight: 600; font-family: "SF Mono", Menlo, monospace; letter-spacing: 0.04em; }
+  .pill .val.ph { color: var(--faint); font-weight: 400; font-family: inherit; letter-spacing: 0; }
+  .pill.focus { border-color: var(--primary); }
+
+  .tag { font-size: 11.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; padding: 4px 9px; border-radius: 6px; background: rgba(255,255,255,0.06); color: var(--muted); }
+  .tag.ok { background: rgba(40,230,164,0.14); color: var(--done); }
+  .tag.err { background: rgba(255,92,138,0.14); color: var(--danger); }
+  .tag.acc { background: rgba(255,43,214,0.14); color: var(--accent); }
+
+  .row { display: flex; align-items: center; gap: 14px; padding: 14px 4px; border-top: 1px solid var(--border); }
+  .row:first-of-type { border-top: 0; }
+  .row .body { flex: 1; min-width: 0; }
+  .row .t { font-size: 17px; font-weight: 500; }
+  .row .s { font-size: 13.5px; color: var(--muted); margin-top: 2px; }
+  .row .v { color: var(--muted); font-size: 15px; display: flex; align-items: center; gap: 6px; }
+  .row.soft .t, .row.soft .s { color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 4px; background: var(--faint); }
+  .dot.ok { background: var(--done); box-shadow: 0 0 10px var(--done); }
+  .dot.err { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
+
+  .toggle { width: 46px; height: 26px; border-radius: 13px; background: var(--surfaceAlt); border: 1px solid var(--border); position: relative; flex: none; }
+  .toggle i { position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 10px; background: var(--muted); }
+  .toggle.on { background: rgba(243,243,250,0.2); border-color: var(--text); }
+  .toggle.on i { left: 22px; background: var(--primary); box-shadow: 0 0 12px rgba(42,176,255,0.6); }
+  .toggle.off-dim { opacity: 0.4; }
+
+  .help { font-size: 13.5px; color: var(--muted); line-height: 1.45; margin: 2px 2px 0; }
+  .link { color: var(--primary); font-size: 15px; font-weight: 600; margin: 6px 2px; }
+  .link.danger { color: var(--danger); }
+
+  .cta { position: absolute; left: 24px; right: 24px; bottom: 44px; height: 56px; border-radius: 10px; background: var(--primary); color: var(--onPrimary); font-size: 18px; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 10px; box-shadow: 0 12px 40px var(--glow); }
+  .cta.busy { background: #1d7fbd; box-shadow: none; }
+  .cta.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); box-shadow: none; }
+  .spin { width: 18px; height: 18px; border-radius: 9px; border: 2.5px solid rgba(0,17,31,0.3); border-top-color: var(--onPrimary); }
+  .home { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 134px; height: 5px; border-radius: 3px; background: #444; }
+
+  /* activation */
+  .hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; padding: 34px 10px 12px; }
+  .hero .check { width: 84px; height: 84px; border-radius: 24px; background: rgba(255,43,214,0.14); border: 1px solid rgba(255,43,214,0.5); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 50px rgba(255,43,214,0.35); }
+  .hero .h { font-size: 26px; font-weight: 700; }
+  .hero .p { font-size: 15px; color: var(--muted); line-height: 1.45; }
+  .confetti { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .confetti i { position: absolute; width: 6px; height: 11px; border-radius: 1.5px; opacity: 0.95; }
+  svg { display: block; }
+</style>
+</head>
+<body>
+
+<!-- ───────────── 0 · Einstieg ───────────── -->
+<div class="shot">
+  <div class="caption">0 · Einstieg in den Settings
+    <small>Unverändert der heutige Settings-Stil. Nur die Zeile „Remote access“ wird „Verity Premium“, und „Diagnostics“ öffnet einen Screen.</small>
+  </div>
+  <div class="phone">
+    <div class="island"></div>
+    <div class="status"><span>9:41</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="nav native"><div class="backText"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#2ab0ff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>Back</div><div class="title">Settings</div></div>
+    <div class="settings">
+      <div class="group"><div class="gh">Connections</div><div class="lp"><div class="nr"><div class="slot"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2ab0ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></div><div class="body"><div class="t">Connections</div><div class="s">AI, code, documents and other services</div></div><div class="tr"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5d6090" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div></div></div></div>
+      <div class="group"><div class="gh">Access</div><div class="lp"><div class="nr"><div class="slot"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2ab0ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div><div class="body"><div class="t">Devices &amp; Web Browsers</div><div class="s">3 connected</div></div><div class="tr"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5d6090" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div></div></div></div>
+      <div class="group"><div class="gh">Server</div><div class="lp"><div class="nr"><div class="slot"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2ab0ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></div><div class="body"><div class="t">Server update</div><div class="s">Version 4.36.0 available</div></div><div class="tr"><span class="qp needs"><b>!</b>Update</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5d6090" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div></div><div class="nr"><div class="slot"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2ab0ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div><div class="body"><div class="t">Verity Premium</div><div class="s">Online sharing, remote access</div></div><div class="tr"><span class="qp ready"><b>✓</b>Active</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5d6090" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div></div></div></div>
+      <div class="group"><div class="gh">Features</div><div class="lp"><div class="nr"><div class="slot"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2ab0ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div><div class="body"><div class="t">Tasks</div><div class="s">Capture bubble, screenshot suggestions</div></div><div class="tr"><span class="val">On</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5d6090" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div></div><div class="nr"><div class="slot"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2ab0ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/></svg></div><div class="body"><div class="t">Meeting transcription</div></div><div class="tr"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5d6090" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div></div></div></div>
+      <div class="group"><div class="gh">This app</div><div class="lp"><div class="nr"><div class="slot"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2ab0ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div><div class="body"><div class="t">Diagnostics</div></div><div class="tr"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5d6090" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div></div><div class="nr"><div class="slot"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2ab0ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l14 9-14 9V3z"/></svg></div><div class="body"><div class="t">Try demo</div><div class="s">Local sample data and simulated AI</div></div><div class="tr"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5d6090" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div></div><div class="nr"><div class="slot"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2ab0ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01M6 18h.01"/></svg></div><div class="body"><div class="t">Server address</div></div><div class="tr"><span class="val">http://dev-…:8090</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5d6090" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div></div></div></div>
+    </div>
+    <div class="home"></div>
+  </div>
+</div>
+
+<!-- ───────────── 1 · Ohne Subscription ───────────── -->
+<div class="shot">
+  <div class="caption">1 · Ohne Subscription
+    <small>Erklären, nicht verkaufen: drei Karten sagen, was Premium freischaltet. Ein CTA führt zur Eingabe, der Kauf-Link bleibt klein.</small>
+  </div>
+  <div class="phone">
+    <div class="island"></div>
+    <div class="status"><span>9:41</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="nav"><div class="back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></div><div class="title">Verity Premium</div></div>
+    <div class="content">
+      <div class="headline" style="margin-top:14px">Your server,<br/><span style="color:var(--accent)">reachable anywhere.</span></div>
+      <div class="lead">Premium connects your server to Verity Uplink.</div>
+      <div class="eyebrow" style="margin-top:18px">What you get</div>
+      <div class="stack">
+        <div class="card"><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div><div class="body"><div class="t">Online sharing</div><div class="s">Preview links that work over the internet</div></div></div>
+        <div class="card"><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"/></svg></div><div class="body"><div class="t">Remote access</div><div class="s">Reach your server from anywhere</div></div></div>
+        <div class="card soft"><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></div><div class="body"><div class="t">Teams</div><div class="s">Shared projects and sessions</div></div><span class="tag">Soon</span></div>
+      </div>
+      <div class="link" style="margin-top:14px">Get Verity Premium ↗</div>
+    </div>
+    <div class="cta"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#00111f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>Enter subscription key</div>
+    <div class="home"></div>
+  </div>
+</div>
+
+<!-- ───────────── 2 · Schlüssel eingeben ───────────── -->
+<div class="shot">
+  <div class="caption">2 · Schlüssel eingeben
+    <small>Ein Pill-Feld, ein CTA. Beim Prüfen wird der CTA zum Fortschritt; der Fehlerfall steht als Tag am Feld, nicht als Dialog.</small>
+  </div>
+  <div class="phone">
+    <div class="island"></div>
+    <div class="status"><span>9:41</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="nav"><div class="back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></div><div class="title">Verity Premium</div></div>
+    <div class="content">
+      <div class="eyebrow">Subscription key</div>
+      <div class="pill focus"><span class="lab">Key</span><span class="val">••••••••••••••••••4f2a</span></div>
+      <div class="help">From your Verity account. Stored encrypted on your server, never shown again.</div>
+
+      <div class="eyebrow grey" style="margin-top:26px">If the key is rejected</div>
+      <div class="pill" style="border-color:rgba(255,92,138,0.6)"><span class="lab">Key</span><span class="val">••••••••••••••••••9c10</span><span class="tag err" style="margin-left:auto">Unknown</span></div>
+      <div class="help">This key is not known to Verity Uplink. Check it in your account.</div>
+    </div>
+    <div class="cta busy"><span class="spin"></span>Checking with Uplink…</div>
+    <div class="home"></div>
+  </div>
+</div>
+
+<!-- ───────────── 3 · Aktiviert ───────────── -->
+<div class="shot">
+  <div class="caption">3 · Aktiviert
+    <small>Konfetti, ein Moment Freude, dann weiter zum Verwalten. Die Features starten eingeschaltet.</small>
+  </div>
+  <div class="phone">
+    <div class="island"></div>
+    <div class="status"><span>9:41</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="nav"><div class="title">Verity Premium</div></div>
+    <div class="content">
+      <div class="hero">
+        <div class="check"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#ff2bd6" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></div>
+        <div class="h">Premium is active</div>
+        <div class="p">Your server is connected to Verity Uplink.<br/>Online sharing and remote access are on.</div>
+      </div>
+      <div class="stack" style="margin-top:8px">
+        <div class="card"><div class="body"><div class="t">Online sharing</div><div class="s">Included in your subscription</div></div><div class="toggle on"><i></i></div></div>
+        <div class="card"><div class="body"><div class="t">Remote access</div><div class="s">Included in your subscription</div></div><div class="toggle on"><i></i></div></div>
+      </div>
+    </div>
+    <div class="confetti">
+      <i style="left:40px;top:150px;background:#ff2bd6;transform:rotate(20deg)"></i><i style="left:90px;top:200px;background:#2ab0ff;transform:rotate(-40deg)"></i><i style="left:150px;top:130px;background:#28e6a4;transform:rotate(60deg)"></i><i style="left:220px;top:170px;background:#ff2bd6;transform:rotate(-15deg)"></i><i style="left:300px;top:140px;background:#2ab0ff;transform:rotate(35deg)"></i><i style="left:340px;top:210px;background:#ffd166;transform:rotate(-60deg)"></i><i style="left:60px;top:290px;background:#ffd166;transform:rotate(80deg)"></i><i style="left:120px;top:330px;background:#ff2bd6;transform:rotate(-25deg)"></i><i style="left:260px;top:300px;background:#28e6a4;transform:rotate(45deg)"></i><i style="left:330px;top:330px;background:#ff2bd6;transform:rotate(-70deg)"></i><i style="left:30px;top:380px;background:#2ab0ff;transform:rotate(10deg)"></i><i style="left:190px;top:250px;background:#ffd166;transform:rotate(-50deg)"></i><i style="left:280px;top:230px;background:#ff5c8a;transform:rotate(25deg)"></i><i style="left:100px;top:120px;background:#ff5c8a;transform:rotate(-80deg)"></i><i style="left:350px;top:280px;background:#28e6a4;transform:rotate(15deg)"></i><i style="left:160px;top:400px;background:#2ab0ff;transform:rotate(70deg)"></i><i style="left:240px;top:380px;background:#ff2bd6;transform:rotate(-30deg)"></i><i style="left:70px;top:230px;background:#28e6a4;transform:rotate(55deg)"></i><i style="left:310px;top:390px;background:#ffd166;transform:rotate(-10deg)"></i><i style="left:200px;top:110px;background:#ff5c8a;transform:rotate(40deg)"></i>
+    </div>
+    <div class="cta ghost">Continue</div>
+    <div class="home"></div>
+  </div>
+</div>
+
+<!-- ───────────── 4 · Verwalten ───────────── -->
+<div class="shot">
+  <div class="caption">4 · Verwalten
+    <small>Subscription als eine Karte mit Status. Features sind einzelne Schalter; was die Subscription nicht enthält, bleibt sichtbar aber grau. Diagnose ist eine Zeile.</small>
+  </div>
+  <div class="phone">
+    <div class="island"></div>
+    <div class="status"><span>9:41</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="nav"><div class="back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></div><div class="title">Verity Premium</div></div>
+    <div class="content">
+      <div class="card sel" style="margin-top:8px"><div class="ic" style="background:rgba(255,43,214,0.14)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ff2bd6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div><div class="body"><div class="t">Subscription</div><div class="s">Connected to Uplink · renews in 23 h</div></div><span class="tag ok">Active</span></div>
+      <div class="row" style="border-top:0;padding-top:6px"><div class="body"><div class="t">Subscription key</div><div class="s">••••4f2a</div></div><div class="v">Replace ›</div></div>
+
+      <div class="eyebrow">Features</div>
+      <div class="stack">
+        <div class="card"><div class="body"><div class="t">Online sharing</div><div class="s">Preview links over the internet</div></div><div class="toggle on"><i></i></div></div>
+        <div class="card"><div class="body"><div class="t">Remote access</div><div class="s">Off · not reachable from outside</div></div><div class="toggle"><i></i></div></div>
+        <div class="card soft"><div class="body"><div class="t">Teams</div><div class="s">Shared projects and sessions</div></div><span class="tag">Soon</span></div>
+      </div>
+
+      <div class="eyebrow">Diagnostics</div>
+      <div class="card"><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div><div class="body"><div class="t">Connection</div><div class="s">Uplink connected · remote access off</div></div><div class="v"><span class="dot ok"></span> ›</div></div>
+
+      <div class="link danger" style="margin-top:18px">Remove subscription key</div>
+    </div>
+    <div class="home"></div>
+  </div>
+</div>
+
+<!-- ───────────── 5 · Diagnose ───────────── -->
+<div class="shot">
+  <div class="caption">5 · Diagnose
+    <small>Erst Zustand (Punkte statt Pills), dann Tests, dann Export. Ein Screen für alles, was heute auf vier verteilt ist.</small>
+  </div>
+  <div class="phone">
+    <div class="island"></div>
+    <div class="status"><span>9:41</span><span class="r">●●● <span class="bat"></span></span></div>
+    <div class="nav"><div class="back"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></div><div class="title">Diagnostics</div></div>
+    <div class="content">
+      <div class="eyebrow">Connection</div>
+      <div class="card" style="flex-direction:column;align-items:stretch;gap:0;padding:4px 16px">
+        <div class="row"><div class="body"><div class="t">Uplink</div></div><div class="v"><span class="dot ok"></span>Connected</div></div>
+        <div class="row"><div class="body"><div class="t">Online sharing</div></div><div class="v"><span class="dot ok"></span>On</div></div>
+        <div class="row"><div class="body"><div class="t">Remote access</div><div class="s">Switched off in Verity Premium</div></div><div class="v"><span class="dot"></span>Off</div></div>
+      </div>
+
+      <div class="eyebrow">Tests</div>
+      <div class="card" style="flex-direction:column;align-items:stretch;gap:0;padding:4px 16px">
+        <div class="row"><div class="body"><div class="t">Test remote access</div><div class="s">Round trip through Uplink</div></div><div class="v">›</div></div>
+        <div class="row"><div class="body"><div class="t">Record connection test</div></div><div class="v">›</div></div>
+        <div class="row"><div class="body"><div class="t">Copy last recording</div></div><div class="v">14:02 ›</div></div>
+      </div>
+
+      <div class="eyebrow">More</div>
+      <div class="card" style="flex-direction:column;align-items:stretch;gap:0;padding:4px 16px">
+        <div class="row"><div class="body"><div class="t">Live transcription test</div></div><div class="v">›</div></div>
+        <div class="row"><div class="body"><div class="t">Matrix import errors</div></div><div class="v"><span class="tag err">2</span> ›</div></div>
+        <div class="row"><div class="body"><div class="t">Export app update logs</div><div class="s">App 1.65.1 · Server 4.35.0</div></div><div class="v">›</div></div>
+      </div>
+    </div>
+    <div class="home"></div>
+  </div>
+</div>
+
+</body>
+</html>

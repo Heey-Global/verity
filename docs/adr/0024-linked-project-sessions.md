@@ -7,7 +7,8 @@
 
 The user may link two distinct existing sessions in the same project or in
 different available projects from Session settings. A session cannot link to
-itself. The link is an explicit, bidirectional information-flow grant for
+itself. Control sessions may link to project sessions and to other Control
+sessions under the same rules. The link is an explicit, bidirectional information-flow grant for
 agent-authored messages between that exact pair. It is separate from knowledge
 folder grants: either agent may include information it can access in a message
 to the other. The UI states this before the link is created. Unlinking revokes

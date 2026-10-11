@@ -1,4 +1,14 @@
+import { meetingSavedCard } from '../../lib/meetingSavedCard';
+import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
+import { isLinkableSession } from '../../lib/sessionLinks';
+import { SessionSettingsDialog } from '../../components/SessionSettingsDialog';
+import { useFeatureHint } from '../../components/FeatureHint';
+import { appendHelpQuestion } from '../../lib/featureHints';
 import { TranscriptTimingContext } from '../../components/TranscriptRow';
+import {
+  KnowledgeSaveContext,
+  KnowledgeSaveProvider,
+} from '../../components/KnowledgeSaveProvider';
 import { useSwitchFrameTiming } from '../../hooks/useSwitchFrameTiming';
 import {
   beginRenderWork,
@@ -100,6 +110,8 @@ import {
   listSessionsTitle,
   permissionInputText,
   knowledgePublishSummary,
+  packageInstallSummary,
+  packageInstallDecision,
   KNOWLEDGE_PUBLISH_EXPLANATION,
   printableFileHtml,
   sessionHandoffCaveats,
@@ -130,13 +142,13 @@ import {
   type ToolCallTone,
   type ToolImage,
   type LocalPreviewShare,
-  type ManagedDevServer,
 } from '@verity/mobile';
 import { FlashList, type FlashListRef } from '@shopify/flash-list';
 import * as Haptics from 'expo-haptics';
 import { router, Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   createContext,
+  memo,
   type ComponentProps,
   type ReactNode,
   type RefObject,
@@ -219,6 +231,7 @@ import {
   shouldSubmitOnReturn,
 } from '../../hardwareKeyboard';
 import { type Bookmarks, useBookmarks } from '../../hooks/useBookmarks';
+import { useSessionPreviewReads } from '../../hooks/useSessionPreviewReads';
 import { type UseBranches, useBranches } from '../../hooks/useBranches';
 import { shouldShowPullRequest } from '../../lib/pullRequestVisibility';
 import { useModels } from '../../hooks/useModels';
@@ -625,10 +638,6 @@ const FILE_ROOT_ICON: Record<SessionFileRoot, IconName> = {
   shared: KNOWLEDGE_ICON,
 };
 
-const KnowledgeSaveContext = createContext<{
-  save(messageId: string, text: string): Promise<void>;
-} | null>(null);
-
 type OpenLocalFile = (path: string, root?: SessionFileRoot) => void;
 const SessionFileOpenContext = createContext<OpenLocalFile | null>(null);
 // An agent's `verity://` link resolved by `parseAppLink`. The screen owns the
@@ -654,7 +663,7 @@ function useTranscriptRows(messages: readonly Message[], sessionId: string): Row
   }, [messages, sessionId]);
 }
 
-export function SessionChat({
+export const SessionChat = memo(function SessionChat({
   client,
   sessionId,
   baseUrl,
@@ -686,6 +695,7 @@ export function SessionChat({
   const { theme } = useUnistyles();
   const {
     session,
+    refreshMetadata,
     streamError,
     sending,
     sendError,
@@ -745,18 +755,19 @@ export function SessionChat({
       let active = true;
       setLinkedSessions([]);
       const refresh = () => {
-        void client
+        return client
           .listSessionLinks(sessionId)
           .then((links) => {
             if (active) setLinkedSessions(links);
           })
           .catch(() => undefined);
       };
-      refresh();
       const detach = subscribeLiveRefresh(
         client,
         refresh,
         (path) => path === `/sessions/${encodeURIComponent(sessionId)}/links`,
+        [{ path: `/sessions/${encodeURIComponent(sessionId)}/links` }],
+        { initial: true },
       );
       return () => {
         active = false;
@@ -770,18 +781,19 @@ export function SessionChat({
       let active = true;
       setPendingLinkedMessages([]);
       const refresh = () => {
-        void client
+        return client
           .listPendingLinkedMessages(sessionId)
           .then((items) => {
             if (active) setPendingLinkedMessages(items);
           })
           .catch(() => undefined);
       };
-      refresh();
       const detach = subscribeLiveRefresh(
         client,
         refresh,
         (path) => path === `/sessions/${encodeURIComponent(sessionId)}/linked-message-approvals`,
+        [{ path: `/sessions/${encodeURIComponent(sessionId)}/linked-message-approvals` }],
+        { initial: true },
       );
       return () => {
         active = false;
@@ -983,30 +995,15 @@ export function SessionChat({
   const completedServerTools = session.messages.filter(
     (message) => message.kind === 'tool-call' && message.tool.state === 'completed',
   ).length;
-  // Names and addresses of managed servers, for their chat cards.
-  const [managedByInstance, setManagedByInstance] = useState<Map<string, ManagedDevServer>>(
-    () => new Map(),
-  );
-  useEffect(() => {
-    if (typeof client.listManagedDevServers !== 'function') return;
-    let active = true;
-    void client
-      .listManagedDevServers(sessionId)
-      .then((servers) => {
-        if (!active || !servers) return;
-        setManagedByInstance(
-          new Map(
-            servers.flatMap((server) =>
-              server.instance ? [[server.instance.id, server] as const] : [],
-            ),
-          ),
-        );
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [client, completedServerTools, session.devServers, sessionId]);
+  const { managedByInstance, hasActiveStaticPreview, hasRunningDevServer, refreshStaticPreview } =
+    useSessionPreviewReads({
+      client,
+      sessionId,
+      projectId,
+      loaded,
+      completedServerTools,
+      devServers: session.devServers,
+    });
   const openDetectedLocally = async (server: NonNullable<typeof session.devServers>[number]) => {
     if (previewOpening !== null) return;
     setPreviewOpening(server.port);
@@ -1024,7 +1021,7 @@ export function SessionChat({
           setPreviewServer(server);
           setStaticPreviewOpen(true);
         },
-        () => router.push('/settings/services'),
+        () => router.push('/settings/premium'),
       );
     } catch (caught) {
       const alert = openFailureAlert(server.name, caught instanceof Error ? caught.message : '');
@@ -1033,66 +1030,6 @@ export function SessionChat({
       setPreviewOpening(null);
     }
   };
-  const [hasActiveStaticPreview, setHasActiveStaticPreview] = useState(false);
-  const [hasRunningDevServer, setHasRunningDevServer] = useState(false);
-  // Set once a Core without port detection says so, so the header stops asking.
-  const devServersUnsupported = useRef(false);
-  const refreshStaticPreview = useCallback(() => {
-    if (!projectId) return;
-    if (typeof client.listSessionDevServers === 'function' && !devServersUnsupported.current) {
-      void client
-        .listSessionDevServers(sessionId)
-        .then((servers) => {
-          if (servers === null) devServersUnsupported.current = true;
-          setHasRunningDevServer((servers ?? []).length > 0);
-        })
-        .catch(() => undefined);
-    }
-    // Shared means shared on the local network or online alike: either lights the
-    // preview button. A failed read counts as "not shared" for that source only.
-    const now = Date.now();
-    const publicShared = client
-      .listPublicPreviewShares(projectId)
-      .then((shares) =>
-        shares.some(
-          (share) =>
-            (share.targetKind === 'static-folder' ||
-              (share.targetKind === 'dev-server' && share.devServerId === null)) &&
-            share.sessionId === sessionId &&
-            share.state === 'active' &&
-            new Date(share.expiresAt).getTime() > now,
-        ),
-      )
-      .catch(() => false);
-    const localShared =
-      typeof client.listSessionLocalPreviewShares === 'function'
-        ? client
-            .listSessionLocalPreviewShares(sessionId)
-            .then((shares) => shares.some((share) => share.expiresAt.getTime() > now))
-            .catch(() => false)
-        : Promise.resolve(false);
-    void Promise.all([publicShared, localShared]).then(([online, local]) =>
-      setHasActiveStaticPreview(online || local),
-    );
-  }, [client, projectId, sessionId]);
-  useEffect(() => {
-    if (!loaded) return;
-    refreshStaticPreview();
-    const detach = subscribeLiveRefresh(
-      client,
-      refreshStaticPreview,
-      (path) =>
-        (projectId != null &&
-          path === `/projects/${encodeURIComponent(projectId)}/public-shares`) ||
-        (path.startsWith(`/sessions/${encodeURIComponent(sessionId)}/`) &&
-          /preview|share|dev-server/u.test(path)),
-    );
-    return () => detach();
-  }, [refreshStaticPreview, loaded, client, projectId, sessionId]);
-
-  useEffect(() => {
-    if (session.devServers !== undefined) setHasRunningDevServer(session.devServers.length > 0);
-  }, [session.devServers]);
 
   const confirmAutomation = useCallback(
     async (proposal: AutomationProposalMessage['proposal']): Promise<void> => {
@@ -1144,7 +1081,16 @@ export function SessionChat({
   );
   // Live dictation writes recognized speech straight into the draft as it streams.
   const voiceAutoSendRef = useRef<(text: string) => Promise<boolean>>(async () => false);
-  const voice = useVoiceInput(draft, setDraft, (text) => voiceAutoSendRef.current(text));
+  const [voiceVisible, setVoiceVisible] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setVoiceVisible(true);
+      return () => setVoiceVisible(false);
+    }, []),
+  );
+  const voice = useVoiceInput(draft, setDraft, (text) => voiceAutoSendRef.current(text), {
+    visible: voiceVisible,
+  });
   // Branch switcher (#91): tap the top chip to switch this session's worktree to a
   // different branch — the chat (one persistent thread per session) stays put.
   const branches = useBranches(client, sessionId, loaded || !locallyCreated);
@@ -2436,6 +2382,36 @@ export function SessionChat({
   // tap-revealed action row under a message (next to Copy); recalled from the header
   // sheet, which jumps back to the message.
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
+  const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
+  const [sessionMenuAnchor, setSessionMenuAnchor] = useState<AttachAnchor | null>(null);
+  const sessionMenuRef = useRef<View>(null);
+  const openSessionMenu = useAttachmentMenuAnchor(sessionMenuRef, setSessionMenuAnchor);
+  const [settingsProjects, setSettingsProjects] = useState<
+    Awaited<ReturnType<VerityClient['listProjects']>>
+  >([]);
+  const [settingsSessions, setSettingsSessions] = useState<
+    Awaited<ReturnType<VerityClient['listSessions']>>
+  >([]);
+  useEffect(() => {
+    if (!sessionSettingsOpen) return;
+    let active = true;
+    void Promise.all([client.listProjects(), client.listSessions()])
+      .then(([projects, sessions]) => {
+        if (active) {
+          setSettingsProjects(projects);
+          setSettingsSessions(sessions);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [client, sessionSettingsOpen]);
+  const askHelp = (question: string) => {
+    voice.abort();
+    setDraft((current) => appendHelpQuestion(current, question));
+  };
+  const featureHint = useFeatureHint(askHelp, sessionId);
   const [filesOpen, setFilesOpen] = useState(false);
   const [filesInitialPath, setFilesInitialPath] = useState<string | null>(null);
   const [filesInitialRoot, setFilesInitialRoot] = useState<SessionFileRoot>('worktree');
@@ -2450,6 +2426,8 @@ export function SessionChat({
   const openAppLink = useCallback<OpenAppLink>(
     (target) => {
       switch (target.kind) {
+        case 'session-settings':
+          return () => setSessionSettingsOpen(true);
         case 'route':
           return () => router.push(target.path);
         case 'project-settings': {
@@ -3274,9 +3252,12 @@ export function SessionChat({
   }, [uploadMeetingAudio]);
   const onLiveMeeting = useCallback(() => {
     setAttachMenuOpen(false);
-    voice.abort();
-    router.push({ pathname: '/meeting/[sessionId]', params: { sessionId } });
-  }, [sessionId, voice]);
+    void featureHint.confirm('live-meeting').then((proceed) => {
+      if (!proceed) return;
+      voice.abort();
+      router.push({ pathname: '/meeting/[sessionId]', params: { sessionId } });
+    });
+  }, [sessionId, voice, featureHint.confirm]);
   const onConnectGoogleService = useCallback(
     (service: GoogleService) => {
       setAttachMenuOpen(false);
@@ -3849,6 +3830,15 @@ export function SessionChat({
         {/* Actions sit on the title row as large round buttons, so the header needs a
             single row and the targets are big enough to hit and recognise. */}
         <View style={styles.headerActions}>
+          <View ref={sessionMenuRef} collapsable={false}>
+            <HeaderActionButton
+              icon="more-horizontal"
+              label="Session menu"
+              accessibilityLabel="Open session menu"
+              onHint={showHeaderHint}
+              onPress={openSessionMenu}
+            />
+          </View>
           {projectId ? (
             <HeaderActionButton
               icon="monitor"
@@ -3928,10 +3918,10 @@ export function SessionChat({
       // the show event, which is what the transcript's scroll position is
       // measured against.
       behavior="padding"
-      // The custom nav header is drawn by the navigator ABOVE this screen body, so
-      // the KAV frame already starts below it (screen-absolute coords) — no extra
-      // offset needed. A non-zero offset here over-lifts the input by ~the header
-      // height, leaving a dead gap between the field and the keyboard top.
+      // Layout coordinates are relative to the navigator, while the keyboard
+      // uses screen coordinates. Measure the frame in the window so the custom
+      // header and embedded layouts do not leave the composer under the keyboard.
+      automaticOffset
       keyboardVerticalOffset={0}
     >
       {embedded ? headerBar : <Stack.Screen options={{ header: () => headerBar }} />}
@@ -4115,7 +4105,7 @@ export function SessionChat({
                     { id: localShareId, url } as LocalPreviewShare,
                     capabilities.publicSharing,
                     openEntry,
-                    () => router.push('/settings/services'),
+                    () => router.push('/settings/premium'),
                   );
                 })()
                   .catch((caught: unknown) =>
@@ -4149,6 +4139,7 @@ export function SessionChat({
       ) : null}
       {staticPreviewOpen && projectId ? (
         <StaticPreviewSheet
+          onAskHelp={askHelp}
           detectedServers={session.devServers}
           initialServer={previewServer}
           onAskAgent={(prompt) => {
@@ -4157,7 +4148,7 @@ export function SessionChat({
           }}
           onOpenSettings={() => {
             setStaticPreviewOpen(false);
-            router.push('/settings/services');
+            router.push('/settings/premium');
           }}
           client={client}
           projectId={projectId}
@@ -4167,6 +4158,92 @@ export function SessionChat({
             setPreviewServer(undefined);
             refreshStaticPreview();
           }}
+        />
+      ) : null}
+      {featureHint.sheet}
+      {sessionMenuAnchor ? (
+        <ActionMenu
+          anchor={sessionMenuAnchor}
+          label="Session menu"
+          onClose={() => setSessionMenuAnchor(null)}
+          items={[
+            {
+              icon: 'settings',
+              title: 'Session settings',
+              subtitle: 'Rename, link or manage this session',
+              onPress: () => {
+                setSessionMenuAnchor(null);
+                setSessionSettingsOpen(true);
+              },
+            },
+          ]}
+        />
+      ) : null}
+      {sessionSettingsOpen ? (
+        <SessionSettingsDialog
+          key={sessionId}
+          sessionId={sessionId}
+          sessionName={name ?? null}
+          displayName={sessionFallback}
+          projectId={projectId ?? null}
+          projectName={
+            settingsProjects.find((project) => project.id === projectId)?.repo ?? 'No project'
+          }
+          canMove={
+            !busy &&
+            settingsProjects.some((project) => project.id === projectId && project.kind === 'local')
+          }
+          moveDisabledReason={
+            busy
+              ? 'Finish the current turn before changing projects.'
+              : 'Moving is available for normal sessions in local projects.'
+          }
+          projects={settingsProjects
+            .filter((project) => project.kind === 'local')
+            .map((project) => ({ id: project.id, name: project.repo }))}
+          linkableSessions={settingsSessions
+            .filter((candidate) => isLinkableSession(candidate, sessionId, settingsProjects))
+            .map((candidate) => ({
+              id: candidate.sessionId,
+              name: candidate.name ?? candidate.sessionId,
+              projectId: candidate.projectId!,
+              projectName:
+                settingsProjects.find((project) => project.id === candidate.projectId)?.repo ??
+                candidate.projectId!,
+            }))}
+          client={client}
+          onClose={() => setSessionSettingsOpen(false)}
+          onChanged={() => {
+            refreshMetadata();
+            branchesRefresh();
+          }}
+          onDelete={() =>
+            Alert.alert(
+              'Delete session?',
+              `This permanently removes "${sessionFallback}", its history and worktree. This cannot be undone.`,
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Delete',
+                  style: 'destructive',
+                  onPress: () => {
+                    void client
+                      .deleteSession(sessionId)
+                      .then(() => {
+                        setSessionSettingsOpen(false);
+                        router.replace('/');
+                      })
+                      .catch((error: unknown) =>
+                        Alert.alert(
+                          'Could not delete session',
+                          error instanceof Error ? error.message : 'Please try again.',
+                        ),
+                      );
+                  },
+                },
+              ],
+            )
+          }
         />
       ) : null}
       {filesOpen ? (
@@ -4346,16 +4423,10 @@ export function SessionChat({
             <AppLinkOpenContext.Provider value={openAppLink}>
               <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
                 <BookmarksContext.Provider value={bookmarks}>
-                  <KnowledgeSaveContext.Provider
-                    value={
-                      projectId
-                        ? {
-                            save: async (messageId, text) => {
-                              await client.saveSessionKnowledge(sessionId, { messageId, text });
-                            },
-                          }
-                        : null
-                    }
+                  <KnowledgeSaveProvider
+                    client={client}
+                    sessionId={sessionId}
+                    projectId={projectId}
                   >
                     <FlashList
                       onLoad={() => {
@@ -4443,7 +4514,7 @@ export function SessionChat({
                         ) : null}
                       </View>
                     ) : null}
-                  </KnowledgeSaveContext.Provider>
+                  </KnowledgeSaveProvider>
                 </BookmarksContext.Provider>
               </SessionFileImageSourceContext.Provider>
             </AppLinkOpenContext.Provider>
@@ -4584,6 +4655,7 @@ export function SessionChat({
       {visiblePullRequest ? (
         <PullRequestBar
           key={visiblePullRequest.number}
+          confirmHint={() => featureHint.confirm('review-and-pull-requests')}
           pullRequest={visiblePullRequest}
           onMerge={onMergePullRequest}
           onRefresh={branchesRefresh}
@@ -4597,6 +4669,7 @@ export function SessionChat({
       branches.current !== branches.localMergeBase &&
       !branches.workspaceMissing ? (
         <LocalMergeBar
+          confirmHint={() => featureHint.confirm('review-and-pull-requests')}
           branch={branches.current}
           base={branches.localMergeBase}
           busy={working}
@@ -4650,6 +4723,7 @@ export function SessionChat({
         onStop={onStop}
         dead={dead}
         voiceState={voice.state}
+        voicePreparation={voice.preparation}
         voiceAutoMode={voice.autoMode}
         voiceCountdown={voice.countdown}
         onMic={voice.toggle}
@@ -4701,7 +4775,7 @@ export function SessionChat({
       />
     </AnimatedKeyboardAvoidingView>
   );
-}
+});
 
 // A round header action (Preview / Files / Bookmarks): an icon large enough to hit
 // and recognise, with an optional status dot (e.g. a running dev server) or count
@@ -6392,6 +6466,17 @@ function SessionFilesSheet({
 // transcript rows (which live in `data`, so the header sheet can scroll back to
 // them), false for messages rendered inside a collapsed sub-agent subtree — those
 // aren't rows we can jump to, so offering a bookmark there would be a dead anchor.
+function SavedMeetingNotice({ card }: { card: NonNullable<ReturnType<typeof meetingSavedCard>> }) {
+  const openFile = useContext(SessionFileOpenContext);
+  const target = sessionFileTargetFromLocalLink(card.link);
+  return (
+    <SavedMeetingCard
+      card={card}
+      onOpenLegacy={target && openFile ? () => openFile(target.path, target.root) : undefined}
+    />
+  );
+}
+
 function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
   // Collapsible rows keep local `expanded` state and expand to many screens of detail.
   // FlashList recycles a cell renderer instance across items of the same type, so that
@@ -6435,8 +6520,11 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
   switch (item.message.kind) {
     case 'user-text':
       return <UserBubble message={item.message} />;
-    case 'agent-text':
+    case 'agent-text': {
+      const saved = meetingSavedCard(item.message.text);
+      if (saved) return <SavedMeetingNotice card={saved} />;
       return <AgentBlock message={item.message} bookmarkable={bookmarkable} />;
+    }
     case 'tool-call':
       return <ToolCard key={item.message.id} message={item.message} />; // single tool not in a run
     case 'agent-event':
@@ -8481,6 +8569,8 @@ function PermissionPrompt({
   const isGmail = pending.tool === 'verity_gmail';
   const isCalendar = pending.tool === 'verity_google_calendar';
   const isKnowledge = pending.tool === 'verity_knowledge';
+  const packageInstall =
+    pending.tool === 'verity_package_install' ? packageInstallSummary(pending.input) : null;
   const planningTool = planningToolName(pending.tool);
   const isEndPlanning = planningTool === END_PLANNING_TOOL;
   const isPresentPlan = planningTool === 'verity_present_plan';
@@ -8556,6 +8646,7 @@ function PermissionPrompt({
   // which is all that is known when no summariser recognised the input.
   const cardTitle =
     [
+      packageInstall?.title ?? null,
       !isKnowledge
         ? null
         : knowledgeSummary?.replacesExisting
@@ -8598,7 +8689,11 @@ function PermissionPrompt({
     markSessionSwitch(allowTiming.current, 'allow-js-press-handler');
     onDecide(
       pending.toolUseId,
-      scope === undefined ? { behavior: 'allow' } : { behavior: 'allow', scope },
+      packageInstall !== null
+        ? packageInstallDecision(packageInstall.supported, 'primary')
+        : scope === undefined
+          ? { behavior: 'allow' }
+          : { behavior: 'allow', scope },
     );
   };
   return (
@@ -8608,14 +8703,19 @@ function PermissionPrompt({
       // tool") is read before the operator reaches the Allow/Deny buttons.
       accessibilityRole="alert"
       accessibilityLabel={
-        isKnowledge
-          ? `${cardTitle} ${KNOWLEDGE_PUBLISH_EXPLANATION}`
-          : `${cardTitle} Allow or deny.`
+        packageInstall !== null
+          ? `${cardTitle}. ${spellOutBidiControls(packageInstall.command)}. ${spellOutBidiControls(packageInstall.explanation)} ${packageInstall.denyLabel} or ${packageInstall.allowLabel}.`
+          : isKnowledge
+            ? `${cardTitle} ${KNOWLEDGE_PUBLISH_EXPLANATION}`
+            : `${cardTitle} Allow or deny.`
       }
     >
       <View style={styles.permissionHeader}>
         <View style={[styles.permissionDot, { backgroundColor: theme.colors.tone.attention }]} />
-        <Text style={styles.permissionTitle} numberOfLines={1}>
+        <Text
+          style={styles.permissionTitle}
+          numberOfLines={packageInstall === null ? 1 : undefined}
+        >
           {cardTitle}
         </Text>
         {/* Surface the backend's risk class (#149): `ask` is the escalated case that
@@ -8623,11 +8723,13 @@ function PermissionPrompt({
             transported. (`auto` is normally pre-approved upstream, so it's rare here —
             labelled plainly if it ever arrives.) */}
         <Text style={styles.permissionRisk}>
-          {approvedForDelivery
-            ? 'delivery pending'
-            : pending.riskClass === 'ask'
-              ? 'needs approval'
-              : pending.riskClass}
+          {packageInstall !== null
+            ? 'Safety'
+            : approvedForDelivery
+              ? 'delivery pending'
+              : pending.riskClass === 'ask'
+                ? 'needs approval'
+                : pending.riskClass}
         </Text>
       </View>
       {isPresentPlan ? (
@@ -8637,7 +8739,16 @@ function PermissionPrompt({
           </Text>
         </View>
       ) : null}
-      {knowledgeSummary !== null ? (
+      {packageInstall !== null ? (
+        <View style={styles.permissionHttpSummary}>
+          <Text style={styles.permissionSubtitle} selectable>
+            {spellOutBidiControls(packageInstall.command)}
+          </Text>
+          <Text style={styles.permissionInstallExplanation}>
+            {spellOutBidiControls(packageInstall.explanation)}
+          </Text>
+        </View>
+      ) : knowledgeSummary !== null ? (
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionSubtitle} selectable>
             Source: {spellOutBidiControls(knowledgeSummary.source)}
@@ -8866,23 +8977,40 @@ function PermissionPrompt({
       ) : null}
       <View style={styles.permissionButtons}>
         <Pressable
-          onPress={() => active && onDecide(pending.toolUseId, { behavior: 'deny' })}
+          onPress={() =>
+            active &&
+            onDecide(
+              pending.toolUseId,
+              packageInstall !== null
+                ? packageInstallDecision(packageInstall.supported, 'secondary')
+                : { behavior: 'deny' },
+            )
+          }
           disabled={!active}
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
-          accessibilityLabel={`${approvedForDelivery ? 'Cancel' : 'Deny'} ${view.title}`}
+          accessibilityLabel={
+            packageInstall?.denyLabel ?? `${approvedForDelivery ? 'Cancel' : 'Deny'} ${view.title}`
+          }
           style={({ pressed }) => [
             styles.permissionButton,
-            styles.permissionDeny,
+            packageInstall?.supported ? styles.permissionNeutral : styles.permissionDeny,
             active ? null : styles.permissionButtonDisabled,
             pressed && active ? styles.permissionButtonPressed : null,
           ]}
         >
           {deciding ? (
-            <ActivityIndicator color={theme.colors.tone.danger} />
+            <ActivityIndicator
+              color={packageInstall?.supported ? theme.colors.text : theme.colors.tone.danger}
+            />
           ) : (
-            <Text style={[styles.permissionButtonLabel, { color: theme.colors.tone.danger }]}>
-              {approvedForDelivery ? 'Cancel' : 'Deny'}
+            <Text
+              style={[
+                styles.permissionButtonLabel,
+                { color: packageInstall?.supported ? theme.colors.text : theme.colors.tone.danger },
+              ]}
+            >
+              {packageInstall?.denyLabel ?? (approvedForDelivery ? 'Cancel' : 'Deny')}
             </Text>
           )}
         </Pressable>
@@ -8898,11 +9026,13 @@ function PermissionPrompt({
           accessibilityRole="button"
           accessibilityState={{ disabled: !active, busy: deciding }}
           accessibilityLabel={
-            isKnowledge
-              ? knowledgeSummary?.replacesExisting
-                ? 'Save changes to Global Knowledge'
-                : 'Publish to Global Knowledge'
-              : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${view.title}${isScopedSecretTool ? ' once' : ''}`
+            packageInstall !== null
+              ? packageInstall.allowLabel
+              : isKnowledge
+                ? knowledgeSummary?.replacesExisting
+                  ? 'Save changes to Global Knowledge'
+                  : 'Publish to Global Knowledge'
+                : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${view.title}${isScopedSecretTool ? ' once' : ''}`
           }
           style={({ pressed }) => [
             styles.permissionButton,
@@ -8915,15 +9045,17 @@ function PermissionPrompt({
             <ActivityIndicator color={theme.colors.onPrimary} />
           ) : (
             <Text style={[styles.permissionButtonLabel, styles.permissionAllowLabel]}>
-              {isKnowledge
-                ? knowledgeSummary?.replacesExisting
-                  ? 'Save changes'
-                  : 'Publish to Global'
-                : approvedForDelivery
-                  ? 'Retry delivery'
-                  : isScopedSecretTool
-                    ? 'Allow once'
-                    : 'Allow'}
+              {packageInstall !== null
+                ? packageInstall.allowLabel
+                : isKnowledge
+                  ? knowledgeSummary?.replacesExisting
+                    ? 'Save changes'
+                    : 'Publish to Global'
+                  : approvedForDelivery
+                    ? 'Retry delivery'
+                    : isScopedSecretTool
+                      ? 'Allow once'
+                      : 'Allow'}
             </Text>
           )}
         </Pressable>
@@ -9071,11 +9203,13 @@ function QueuedMessages({
 }
 
 function PullRequestBar({
+  confirmHint,
   pullRequest,
   onMerge,
   onRefresh,
   onDismiss,
 }: {
+  confirmHint: () => Promise<boolean>;
   pullRequest: NonNullable<UseBranches['pullRequest']>;
   onMerge: UseBranches['mergePullRequest'];
   onRefresh: () => void;
@@ -9162,6 +9296,11 @@ function PullRequestBar({
       setMerging(true);
       setError(undefined);
       setMergeRejectedFor(undefined);
+      if (!(await confirmHint())) {
+        if (mounted.current) setMerging(false);
+        return;
+      }
+      if (!mounted.current) return;
       const result = await onMerge(pullRequest.number);
       if (!mounted.current) return;
       setMerging(false);
@@ -9181,7 +9320,12 @@ function PullRequestBar({
       <View style={styles.prBar}>
         <Pressable
           style={({ pressed }) => [styles.prOpenTarget, pressed ? styles.prBarPressed : null]}
-          onPress={() => void Linking.openURL(pullRequest.url).catch(() => undefined)}
+          onPress={() =>
+            void confirmHint().then((proceed) => {
+              if (proceed && mounted.current)
+                void Linking.openURL(pullRequest.url).catch(() => undefined);
+            })
+          }
           accessibilityRole="link"
           accessibilityLabel={`Open pull request ${String(pullRequest.number)} on GitHub`}
         >
@@ -9206,7 +9350,11 @@ function PullRequestBar({
               styles.prDismissButton,
               pressed ? styles.prDismissButtonPressed : null,
             ]}
-            onPress={onDismiss}
+            onPress={() =>
+              void confirmHint().then((proceed) => {
+                if (proceed && mounted.current) onDismiss();
+              })
+            }
             accessibilityRole="button"
             accessibilityLabel={`Hide pull request ${String(pullRequest.number)} status`}
           >
@@ -9227,7 +9375,14 @@ function PullRequestBar({
                 ? styles.prMergeButtonPressed
                 : null,
             ]}
-            onPress={button.kind === 'refresh' ? onRefresh : merge}
+            onPress={
+              button.kind === 'refresh'
+                ? () =>
+                    void confirmHint().then((proceed) => {
+                      if (proceed && mounted.current) onRefresh();
+                    })
+                : merge
+            }
             disabled={!mergeButtonEnabled && button.kind !== 'refresh'}
             accessibilityRole="button"
             accessibilityState={{
@@ -9258,11 +9413,13 @@ function PullRequestBar({
 /** Save a local session's work through the agent and then into the project base.
  *  The server checks the commit and merge preconditions. */
 function LocalMergeBar({
+  confirmHint,
   branch,
   base,
   busy,
   onSave,
 }: {
+  confirmHint: () => Promise<boolean>;
   branch: string;
   base: string;
   busy: boolean;
@@ -9320,7 +9477,11 @@ function LocalMergeBar({
             saving || busy ? styles.prMergeButtonDisabled : null,
             pressed && !saving && !busy ? styles.prMergeButtonPressed : null,
           ]}
-          onPress={save}
+          onPress={() =>
+            void confirmHint().then((proceed) => {
+              if (proceed && mounted.current) save();
+            })
+          }
           disabled={saving || busy}
           accessibilityRole="button"
           accessibilityState={{ disabled: saving || busy, busy: saving }}
@@ -9351,6 +9512,7 @@ function InputBar({
   activityAnimating,
   onStop,
   dead,
+  voicePreparation,
   voiceState,
   voiceAutoMode,
   voiceCountdown,
@@ -9396,6 +9558,7 @@ function InputBar({
   onStop: () => void;
   /** Session can't be resumed (worktree gone) — lock the input, no send/mic. */
   dead: boolean;
+  voicePreparation?: string | null;
   voiceState: VoiceState;
   voiceAutoMode: boolean;
   voiceCountdown: number | null;
@@ -9527,13 +9690,15 @@ function InputBar({
             placeholder={
               dead
                 ? 'This session can’t be resumed'
-                : voiceState === 'recording'
-                  ? 'Listening…'
-                  : hasPlan
-                    ? 'Reply to change the plan…'
-                    : planning
-                      ? 'Answer, or add what matters to you…'
-                      : 'Message this agent…'
+                : voicePreparation
+                  ? 'Preparing microphone…'
+                  : voiceState === 'recording'
+                    ? 'Listening…'
+                    : hasPlan
+                      ? 'Reply to change the plan…'
+                      : planning
+                        ? 'Answer, or add what matters to you…'
+                        : 'Message this agent…'
             }
             placeholderTextColor={theme.colors.textFaint}
             editable={!dead}
@@ -11657,6 +11822,14 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
   },
   // Deny: an outlined (danger-toned) button — destructive, so not filled.
+  permissionNeutral: {
+    borderColor: theme.colors.border,
+    backgroundColor: 'transparent',
+  },
+  permissionInstallExplanation: {
+    color: theme.colors.text,
+    fontSize: theme.text.sm,
+  },
   permissionDeny: {
     borderColor: theme.colors.tone.danger,
     backgroundColor: 'transparent',

@@ -419,6 +419,26 @@ describe('nodeSpawner (real child process, integration)', () => {
     },
   );
 
+  it.skipIf(walkUnavailable)(
+    'SIGKILL immediately terminates escaped tools that ignore SIGTERM',
+    async () => {
+      const { proc, grandchildPid } = await spawnEscapedGrandchild('process.on("SIGTERM",()=>{})');
+      try {
+        const schedule = vi.spyOn(globalThis, 'setTimeout');
+        try {
+          proc.kill('SIGKILL');
+          expect(schedule).not.toHaveBeenCalled();
+        } finally {
+          schedule.mockRestore();
+        }
+        await proc.exited;
+        expect(await waitForReaped(grandchildPid)).toBe(true);
+      } finally {
+        forceKill(grandchildPid);
+      }
+    },
+  );
+
   it('kill terminates the whole process tree, not just the direct child', async () => {
     // The core of the duplicate-process fix: an agent's grandchildren (the shells it
     // spawns) must die WITH it. The parent spawns a long-lived grandchild in its own

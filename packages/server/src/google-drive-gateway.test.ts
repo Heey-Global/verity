@@ -70,10 +70,10 @@ async function harness(
       mimeType:
         id === 'root'
           ? 'application/vnd.google-apps.folder'
-          : id === 'shared'
+          : id === 'shared' || id === 'outside-doc'
             ? 'application/vnd.google-apps.document'
             : 'text/plain',
-      parents: id === 'root' ? [] : ['root'],
+      parents: id === 'root' || id === 'outside-doc' ? [] : ['root'],
       version: 'v1',
     })),
     list: vi.fn().mockResolvedValue({ files: [] }),
@@ -94,6 +94,7 @@ async function harness(
   const tokens = createMcpGatewayTokens();
   const app = buildServer({
     eventStore: store,
+    googleDriveDocumentIsWithinProject: (input) => tool.canReadDocumentWithoutApproval(input),
     bus: new InMemoryEventBus(),
     secretCipher: cipher,
     conductor: { requestExternalPermission: approvals } as unknown as Conductor,
@@ -206,7 +207,7 @@ it('does not treat a denied card as permission to trash a file', async () => {
   );
 });
 
-it('allows a document URL read through the authenticated gateway without a project folder', async () => {
+it('requires approval for a document URL read without a project folder', async () => {
   await harness(async ({ store, call, approvals, mutate }) => {
     await store.updateProjectSettings('p1', { googleDriveFolderId: null });
     const result = await call({
@@ -216,9 +217,54 @@ it('allows a document URL read through the authenticated gateway without a proje
     expect(result.error).toBeUndefined();
     expect(result.result).toBeDefined();
     expect(result.result?.isError).not.toBe(true);
-    expect(approvals).not.toHaveBeenCalled();
+    expect(approvals).toHaveBeenCalledOnce();
     expect(mutate).not.toHaveBeenCalled();
     const denied = await call({ action: 'list' });
     expect(denied.error !== undefined || denied.result?.isError === true).toBe(true);
   });
 });
+
+it('reads document URLs inside the linked folder without approval', async () => {
+  await harness(async ({ call, approvals }) => {
+    const result = await call({
+      action: 'read_document_url',
+      url: 'https://docs.google.com/document/d/shared/edit',
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.result?.isError).not.toBe(true);
+    expect(approvals).not.toHaveBeenCalled();
+  });
+});
+it('does not export a document when external read approval is denied', async () => {
+  await harness(
+    async ({ store, call, approvals }) => {
+      await store.updateProjectSettings('p1', { googleDriveFolderId: null });
+      const result = await call({
+        action: 'read_document_url',
+        url: 'https://docs.google.com/document/d/shared/edit',
+      });
+      expect(result.error !== undefined || result.result?.isError === true).toBe(true);
+      expect(approvals).toHaveBeenCalledOnce();
+    },
+    undefined,
+    false,
+  );
+});
+
+it.each([true, false])(
+  'requires approval for documents outside a linked folder (allow=%s)',
+  async (allow) => {
+    await harness(
+      async ({ call, approvals }) => {
+        const result = await call({
+          action: 'read_document_url',
+          url: 'https://docs.google.com/document/d/outside-doc/edit',
+        });
+        expect(approvals).toHaveBeenCalledOnce();
+        expect(result.error !== undefined || result.result?.isError === true).toBe(!allow);
+      },
+      undefined,
+      allow,
+    );
+  },
+);

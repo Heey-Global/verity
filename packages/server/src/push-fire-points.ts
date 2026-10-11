@@ -156,6 +156,9 @@ class DefaultPushFirePoints implements PushFirePoints {
         if (!current()) return;
         const title = pushHeading(context, 'Permission needed');
         const body = `${pushSessionName(context)} requests permission to continue.`;
+        // Setup choices need the session card's explicit action; generic Allow loses it.
+        const categoryId =
+          event.tool === 'verity_package_install' ? 'SESSION_STATUS' : 'PERMISSION_PROMPT';
         return this.options.router.notify({
           key,
           sessionId,
@@ -163,7 +166,7 @@ class DefaultPushFirePoints implements PushFirePoints {
           notification: {
             title,
             body,
-            categoryId: 'PERMISSION_PROMPT',
+            categoryId,
             data: { sessionId, kind: 'permission', toolUseId: event.id },
             priority: 'high',
             sound: 'default',
@@ -171,7 +174,7 @@ class DefaultPushFirePoints implements PushFirePoints {
           alert: {
             sessionId,
             kind: 'permission',
-            categoryId: 'PERMISSION_PROMPT',
+            categoryId,
             toolUseId: event.id,
             title,
             body,

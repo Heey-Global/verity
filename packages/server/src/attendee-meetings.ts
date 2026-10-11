@@ -196,7 +196,7 @@ export class AttendeeMeetings {
       .catch(() => undefined);
   }
 
-  async start(sessionId: string, meetingUrl: string, listenForVerity: boolean) {
+  async start(sessionId: string, meetingUrl: string, listenForVerity: boolean, title?: string) {
     return this.serial(async () => {
       if (!this.options.edge || !this.targetOrigin)
         throw new Error('Online meetings require an available Uplink webhook connection.');
@@ -215,6 +215,7 @@ export class AttendeeMeetings {
           id,
           sessionId,
           engine: 'attendee',
+          title: title?.trim() || null,
           startedAt: Date.now(),
           endedAt: null,
           state: 'active',

@@ -2,7 +2,7 @@ import { parseSpawnRequestBody, type SpawnBody } from './session-create-schema.j
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { DeletedProjectError, type ProjectRecord } from '@verity/store';
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import { parseOwnerRepo } from './canonical.js';
 import {
   CONTROL_PLANE_PROJECT_OWNER,
@@ -59,10 +59,25 @@ export interface SessionCreateRouteDeps extends Pick<
   defaultModel: string;
 }
 
+/** What the spawn logic needs from an HTTP request: only its logger. */
+interface SpawnRequest {
+  log: Pick<FastifyBaseLogger, 'error'>;
+}
+/** What the spawn logic needs from an HTTP reply: only the status code. */
+interface SpawnReply {
+  code(statusCode: number): unknown;
+}
+
+/** Creates a session the way `POST /sessions` does, for server-internal callers. */
+export type SpawnSession = (
+  body: SpawnBody,
+  log: SpawnRequest['log'],
+) => Promise<{ statusCode: number; result: SpawnResult }>;
+
 export function registerSessionCreateRoute(
   app: FastifyInstance,
   deps: SessionCreateRouteDeps,
-): void {
+): { spawn: SpawnSession } {
   // Create a NEW session (concept §7 "Parallel-Agent-Spawn", §8): provision a
   // worktree and persist the Verity session row immediately so the client can
   // open `/session/:id`. No agent process starts until the first turn is sent.
@@ -71,8 +86,8 @@ export function registerSessionCreateRoute(
   // path — a project delete that starts mid-spawn waits for this to settle
   // before it purges the clone root out from under the worktree being created.
   const spawnSession = async (
-    request: FastifyRequest,
-    reply: FastifyReply,
+    request: SpawnRequest,
+    reply: SpawnReply,
     body: SpawnBody,
   ): Promise<SpawnResult> => {
     const admitted: { release?: () => void } = {};
@@ -84,8 +99,8 @@ export function registerSessionCreateRoute(
   };
 
   const spawnSessionAdmitted = async (
-    request: FastifyRequest,
-    reply: FastifyReply,
+    request: SpawnRequest,
+    reply: SpawnReply,
     body: SpawnBody,
     admitted: { release?: () => void },
   ): Promise<SpawnResult> => {
@@ -429,4 +444,20 @@ export function registerSessionCreateRoute(
     spawnsInFlight.set(requestedId, tracked);
     return await run;
   });
+
+  return {
+    spawn: async (body, log) => {
+      let statusCode = 200;
+      const result = await spawnSession(
+        { log },
+        {
+          code: (code) => {
+            statusCode = code;
+          },
+        },
+        body,
+      );
+      return { statusCode, result };
+    },
+  };
 }

@@ -1987,9 +1987,12 @@ function filteredResponseHeaders(
   for (const name of Object.keys(result))
     if (name.startsWith('x-verity-local-set-cookie-')) delete result[name];
   if (mode === 'local-open')
-    headers.getSetCookie().forEach((cookie, index) => {
-      result[`x-verity-local-set-cookie-${index}`] = cookie;
-    });
+    headers
+      .getSetCookie()
+      .filter((cookie) => !isCoreSessionCookie(cookie))
+      .forEach((cookie, index) => {
+        result[`x-verity-local-set-cookie-${index}`] = cookie;
+      });
   const location = result.location;
   if (location) {
     try {
@@ -2019,7 +2022,7 @@ function sanitizeResponseHeaders(
   const cookies: string[] = [];
   for (const name of Object.keys(result)) {
     if (name.startsWith('x-verity-local-set-cookie-')) {
-      if (mode === 'local-open') cookies.push(result[name]!);
+      if (mode === 'local-open' && !isCoreSessionCookie(result[name]!)) cookies.push(result[name]!);
       delete result[name];
     }
   }
@@ -2110,6 +2113,20 @@ function sendPreviewPage(
   response.end(page);
 }
 
+// Cookies are scoped to hosts, not ports: local previews must not receive or
+// replace the Core login credential when they share a hostname with the UI.
+function isCoreSessionCookie(cookie: string): boolean {
+  return cookie.split('=', 1)[0]?.trim() === '__Host-verity_session';
+}
+
+function previewRequestCookies(cookie: string): string {
+  return cookie
+    .split(';')
+    .filter((part) => !isCoreSessionCookie(part))
+    .join(';')
+    .trim();
+}
+
 function localRequestCookies(
   headers: Record<string, string>,
   request: IncomingMessage,
@@ -2118,7 +2135,7 @@ function localRequestCookies(
   for (const name of Object.keys(headers))
     if (name.startsWith('x-verity-local-request-cookie-')) delete headers[name];
   if (mode === 'local-open' && request.headers.cookie) {
-    const value = request.headers.cookie;
+    const value = previewRequestCookies(request.headers.cookie);
     for (let offset = 0; offset < value.length; offset += 4096)
       headers[`x-verity-local-request-cookie-${offset / 4096}`] = value.slice(
         offset,
@@ -2140,10 +2157,14 @@ function targetRequestHeaders(
       delete result[name];
     }
   }
-  if (mode === 'local-open' && chunks.length)
-    result.cookie = chunks
-      .sort((a, b) => a[0] - b[0])
-      .map((chunk) => chunk[1])
-      .join('');
+  if (mode === 'local-open' && chunks.length) {
+    const cookie = previewRequestCookies(
+      chunks
+        .sort((a, b) => a[0] - b[0])
+        .map((chunk) => chunk[1])
+        .join(''),
+    );
+    if (cookie) result.cookie = cookie;
+  }
   return result;
 }

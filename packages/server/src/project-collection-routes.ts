@@ -38,6 +38,27 @@ export interface ProjectCollectionRouteDeps {
   isUniqueViolation: (error: unknown) => boolean;
 }
 
+/**
+ * The stored shape of a new local project. Shared by `POST /projects` and the
+ * starter project a fresh installation creates, so both land on disk and in the
+ * overview the same way.
+ */
+export function localProjectInput(slug: string): ProjectUpsertInput {
+  const identity = { owner: LOCAL_PROJECT_OWNER, repo: slug };
+  return {
+    id: randomUUID(),
+    ...identity,
+    containerName: containerNameFor(identity),
+    kind: 'local',
+    // Linking later rewrites owner/repo; the pinned directory keeps existing
+    // absolute session worktree paths valid.
+    cloneDir: `${identity.owner}-${identity.repo}`,
+    state: 'absent',
+    restore: true,
+    overviewVisible: true,
+  };
+}
+
 /** Registers project collection, ordering, repository-picker, and creation routes. */
 export function registerProjectCollectionRoutes(
   app: FastifyInstance,
@@ -101,22 +122,18 @@ export function registerProjectCollectionRoutes(
       };
     }
     const input: ProjectUpsertInput = {
-      id: randomUUID(),
-      owner: parsed.owner,
-      repo: parsed.repo,
-      containerName: containerNameFor(parsed),
       ...(local
-        ? {
-            kind: 'local' as const,
-            // Linking later rewrites owner/repo; the pinned directory keeps existing
-            // absolute session worktree paths valid.
-            cloneDir: `${parsed.owner}-${parsed.repo}`,
-          }
-        : {}),
+        ? localProjectInput(parsed.repo)
+        : {
+            id: randomUUID(),
+            owner: parsed.owner,
+            repo: parsed.repo,
+            containerName: containerNameFor(parsed),
+            state: 'absent' as const,
+            restore: true,
+            overviewVisible: true,
+          }),
       ...(body.imageRef !== undefined ? { imageRef: body.imageRef } : {}),
-      state: 'absent',
-      restore: true,
-      overviewVisible: true,
     };
     let project: ProjectRecord;
     try {

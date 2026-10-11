@@ -4,6 +4,7 @@ import type { VeritySettingsPatch, VeritySettingsRecord } from '@verity/store';
 import type { AgentLoginService } from './agent-login.js';
 import { claudeSubscriptionPlan } from './agent-subscription.js';
 import { registerSettingsRoutes, type SettingsRouteDeps } from './settings-routes.js';
+import { applyPremiumFeatureSwitches } from './premium-feature-switches.js';
 
 const apps: FastifyInstance[] = [];
 afterEach(async () => {
@@ -26,6 +27,8 @@ async function setup(initial: Partial<VeritySettingsRecord> = {}) {
   const app = Fastify();
   apps.push(app);
   const changed = vi.fn();
+  const switchesChanged = vi.fn();
+  const uplinkChanged = vi.fn();
   const { refreshOpenCodeModels } = registerSettingsRoutes(app, {
     store: () => store,
     agentLogin: {} as AgentLoginService,
@@ -35,9 +38,11 @@ async function setup(initial: Partial<VeritySettingsRecord> = {}) {
     effectiveTranscription: () => ({ baseUrl: null, model: null, apiKeyConfigured: false }),
     transcriptionConfigured: () => false,
     onOpenCodeSettingsChanged: changed,
+    onUplinkCredentialsChanged: uplinkChanged,
+    onPremiumFeatureSwitchesChanged: switchesChanged,
   });
   await app.ready();
-  return { app, store, changed, refreshOpenCodeModels };
+  return { app, store, changed, switchesChanged, uplinkChanged, refreshOpenCodeModels };
 }
 
 const credentials = { opencodeBaseUrl: 'https://provider.example/v1', opencodeApiKey: 'test-key' };
@@ -270,4 +275,71 @@ describe('GET /settings subscription plans', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().settings.claudeSubscriptionPlan).toBeNull();
   });
+});
+
+// The switch is only half the feature: a write that lands in the row but never
+// reaches the Uplink client leaves remote sessions open and shares public until
+// the next restart, while the app already shows "Off".
+describe('PATCH /settings premium feature switches', () => {
+  it('applies the stored switches after either of them changes', async () => {
+    const { app, switchesChanged, uplinkChanged } = await setup({
+      premiumSharingEnabled: true,
+      premiumRemoteAccessEnabled: true,
+    });
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/settings',
+      payload: { premiumRemoteAccessEnabled: false },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(switchesChanged).toHaveBeenCalledTimes(1);
+    expect(switchesChanged.mock.calls[0]?.[0]).toMatchObject({
+      premiumSharingEnabled: true,
+      premiumRemoteAccessEnabled: false,
+    });
+    // A credential reset would revoke public links when only remote access changes.
+    expect(uplinkChanged).not.toHaveBeenCalled();
+  });
+
+  it('leaves the switches alone when only the subscription key changes', async () => {
+    const { app, switchesChanged, uplinkChanged } = await setup();
+    await app.inject({
+      method: 'PATCH',
+      url: '/settings',
+      payload: { uplinkSubscriptionKey: 'subscription-fixture' },
+    });
+    expect(uplinkChanged).toHaveBeenCalledTimes(1);
+    expect(switchesChanged).not.toHaveBeenCalled();
+  });
+});
+
+it('retries public-link revocation after a failed settings PATCH already stored sharing off', async () => {
+  const { app, switchesChanged } = await setup({ premiumSharingEnabled: true });
+  let switches = { sharing: true, remoteAccess: true };
+  const client = {
+    featureSwitches: () => switches,
+    applyFeatureSwitches: (next: typeof switches) => {
+      switches = next;
+    },
+  };
+  const shares = {
+    disableAll: vi
+      .fn(async () => {})
+      .mockRejectedValueOnce(new Error('could not list public shares')),
+  };
+  switchesChanged.mockImplementation((settings: VeritySettingsRecord) =>
+    applyPremiumFeatureSwitches(settings, client, shares),
+  );
+  const request = {
+    method: 'PATCH' as const,
+    url: '/settings',
+    payload: { premiumSharingEnabled: false },
+  };
+  expect((await app.inject(request)).statusCode).toBe(500);
+  expect(switches.sharing).toBe(false);
+  expect(
+    (await app.inject({ method: 'GET', url: '/settings' })).json().settings.premiumSharingEnabled,
+  ).toBe(false);
+  expect((await app.inject(request)).statusCode).toBe(200);
+  expect(shares.disableAll).toHaveBeenCalledTimes(2);
 });

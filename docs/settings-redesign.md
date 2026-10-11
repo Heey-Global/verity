@@ -330,3 +330,10 @@ refresh and dev-server start / stop / restart are **not** destructive and need n
 - Unlock ownership: inline `SecretStoreSection` vs the separate `/unlock-device` gate that
   redirects sealed servers — the "disabled with inline hint" cards must not be specced for a
   state the gate immediately preempts.
+
+## 12. Verity Premium and Diagnostics
+
+The Server group gains a **Verity Premium** row that replaces "Remote access", and the
+"Diagnostics" row under *This app* opens a dedicated screen instead of exporting logs
+directly. Both screens, their status vocabulary, and the per-feature switches are specified in
+[`premium-settings.md`](./premium-settings.md).

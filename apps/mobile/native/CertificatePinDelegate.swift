@@ -9,6 +9,7 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
   private var storedFailure: String?
   private var storedPhase = "NO_AUTH_CHALLENGE"
   private var storedMetrics = "tx0,proxy0,connect0,tls0,response0"
+  var transportTiming: PinnedTransportTiming?
   var onOpen: (() -> Void)?
   var onClose: ((Int, String?) -> Void)?
 
@@ -34,6 +35,7 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
 
   func urlSession(_ session: URLSession, task: URLSessionTask,
     didFinishCollecting metrics: URLSessionTaskMetrics) {
+    transportTiming?.collected(metrics)
     let transactions = metrics.transactionMetrics
     let last = transactions.last
     let summary = "tx\(min(transactions.count, 99))"

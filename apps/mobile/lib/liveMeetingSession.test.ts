@@ -1,7 +1,7 @@
 import { VerityApiError } from '@verity/mobile';
 import { isDemoMode, isEnteringDemoMode } from './demoMode';
 import { liveMeetingSTT, type STTEvent } from './liveMeetingSTT';
-import { createVerityClient } from './client';
+import { createVerityClient, getVerityBaseUrl } from './client';
 import { waitFor } from '@testing-library/react-native';
 import {
   createMeeting,
@@ -911,3 +911,92 @@ it('checks a new meeting while the previous name request is still pending', asyn
     jest.useRealTimers();
   }
 });
+
+it.each(['pause', 'switch server'] as const)(
+  'settles sending when capture changes during model discovery: %s',
+  async (change) => {
+    let resolveSession!: (session: { model: string }) => void;
+    const sendTurn = jest.fn().mockResolvedValue({ turnId: 'turn-1' });
+    jest.mocked(createVerityClient).mockReturnValue({
+      sendTurn,
+      checkSpokenMeetingRequest: jest
+        .fn()
+        .mockResolvedValue([{ kind: 'research', request: 'prüfe das Budget' }]),
+      getSession: jest.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveSession = resolve;
+          }),
+      ),
+      listModels: jest.fn().mockResolvedValue({ models: [] }),
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    let onEvent!: (event: STTEvent) => void;
+    jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+      onEvent = listener;
+      return { remove: jest.fn() };
+    });
+    const events: string[] = [];
+    const unsubscribe = subscribeVoiceMeetingRequest((event) => events.push(event.status));
+    try {
+      await startMeeting('session-1');
+      onEvent({ kind: 'status', state: 'listening' });
+      onEvent({ kind: 'snapshot', text: 'Verity, prüfe das Budget.', final: true });
+      await waitFor(() => expect(resolveSession).toBeDefined());
+      expect(events).toEqual(['sending']);
+      if (change === 'pause') await pauseMeeting();
+      else jest.mocked(getVerityBaseUrl).mockReturnValue('https://other.example');
+      resolveSession({ model: 'claude-opus-5-5' });
+      await waitFor(() => expect(events).toEqual(['sending', 'failed']));
+      expect(sendTurn).not.toHaveBeenCalled();
+    } finally {
+      jest.mocked(getVerityBaseUrl).mockReturnValue('https://server.example');
+      unsubscribe();
+      await endMeeting();
+    }
+  },
+);
+
+it.each(['research', 'opinion'] as const)(
+  'carries the classified question identity into a spoken %s turn and event',
+  async (kind) => {
+    const sendTurn = jest.fn().mockResolvedValue({ turnId: 'turn-1' });
+    jest.mocked(createVerityClient).mockReturnValue({
+      sendTurn,
+      checkSpokenMeetingRequest: jest.fn().mockResolvedValue([
+        {
+          kind,
+          request: 'prüfe den monatlichen Preis',
+          questionId: 'question-price',
+          questionTitle: 'What does the plan cost?',
+        },
+      ]),
+    } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+    let onEvent!: (event: STTEvent) => void;
+    jest.mocked(liveMeetingSTT!.addListener).mockImplementation((_name, listener) => {
+      onEvent = listener;
+      return { remove: jest.fn() };
+    });
+    const events: Array<{ status: string; questionId?: string; questionTitle?: string }> = [];
+    const unsubscribe = subscribeVoiceMeetingRequest((event) => events.push(event));
+    try {
+      await startMeeting('session-1');
+      onEvent({ kind: 'status', state: 'listening' });
+      onEvent({ kind: 'snapshot', text: 'Verity, prüfe den monatlichen Preis.', final: true });
+      await waitFor(() => expect(events.some(({ status }) => status === 'sent')).toBe(true));
+      expect(sendTurn).toHaveBeenCalledWith(
+        'session-1',
+        expect.objectContaining({
+          prompt: expect.stringContaining('Meeting question reference: question-price'),
+        }),
+      );
+      expect(events.find(({ status }) => status === 'sent')?.questionId).toBe('question-price');
+      expect(events.find(({ status }) => status === 'sent')).toMatchObject({
+        questionTitle: 'What does the plan cost?',
+      });
+      expect(sendTurn.mock.calls[0]?.[1]?.prompt).toContain('Meeting question title:');
+    } finally {
+      unsubscribe();
+      await endMeeting();
+    }
+  },
+);

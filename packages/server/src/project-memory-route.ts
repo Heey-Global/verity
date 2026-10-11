@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   KnowledgeError,
   PROJECT_MEMORY_MAX_CHARS,
@@ -6,11 +6,16 @@ import {
 } from '@verity/store';
 import { bearerToken } from './auth.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
-import { internalConnectionIdentity } from './internal-listener.js';
+import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
+import type { McpGatewayCaller } from './mcp-gateway-tokens.js';
+import { internalConnectionIdentity, requestArrivedInternally } from './internal-listener.js';
 
 export interface ProjectMemoryRouteDeps {
   append: (projectId: string, text: string) => Promise<number | undefined>;
   capabilities?: GhTokenCapabilityRegistry | undefined;
+  resolveControlCaller?:
+    | ((input: { projectId: string; token: string }) => Promise<McpGatewayCaller | undefined>)
+    | undefined;
 }
 
 /** Registers the project-bound memory append broker. */
@@ -18,6 +23,22 @@ export function registerProjectMemoryRoute(
   app: FastifyInstance,
   deps: ProjectMemoryRouteDeps,
 ): void {
+  if (deps.resolveControlCaller !== undefined) {
+    const resolveCaller = deps.resolveControlCaller;
+    app.post('/internal/control-plane/memory', async (request, reply) => {
+      const token = bearerToken(request.headers.authorization);
+      if (
+        !requestArrivedInternally(request) ||
+        internalConnectionIdentity(request) !== undefined ||
+        token === undefined ||
+        (await resolveCaller({ projectId: CONTROL_PLANE_PROJECT_ID, token })) === undefined
+      ) {
+        return reply.code(401).send({ error: 'unauthorized' });
+      }
+      // The request never chooses the project, even when it carries a projectId field.
+      return appendMemory(request, reply, CONTROL_PLANE_PROJECT_ID, deps.append);
+    });
+  }
   // `POST /internal/project/memory` — called by the sandbox's `verity-memory`
   // wrapper, NOT the operator (ADR 0008). Like the gh-token broker it is pre-auth
   // allowlisted and authenticates with the per-container CAPABILITY, and the server
@@ -43,36 +64,42 @@ export function registerProjectMemoryRoute(
           reply.code(401);
           return { error: 'unauthorized' };
         }
-        const body = request.body as { text?: unknown } | null | undefined;
-        const text = typeof body?.text === 'string' ? body.text : undefined;
-        if (text === undefined) {
-          reply.code(400);
-          return { error: 'expected a JSON body with a string "text" field' };
-        }
-        try {
-          const length = await deps.append(binding.projectId, text);
-          if (length === undefined) {
-            // Capability resolved but the project row is gone (deprovisioned mid-flight).
-            reply.code(404);
-            return { error: 'project not found' };
-          }
-          request.log.info(
-            { projectId: binding.projectId, length },
-            'verity: appended project memory',
-          );
-          return { ok: true, length };
-        } catch (error) {
-          if (error instanceof KnowledgeError)
-            return reply.code(error.statusCode).send({ error: error.message });
-          if (error instanceof ProjectMemoryTooLargeError) {
-            reply.code(413);
-            return {
-              error: `project memory limit is ${PROJECT_MEMORY_MAX_CHARS} characters; edit or prune overview.md in the Explorer`,
-            };
-          }
-          throw error;
-        }
+        return appendMemory(request, reply, binding.projectId, deps.append);
       },
     );
+  }
+}
+
+async function appendMemory(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  projectId: string,
+  append: ProjectMemoryRouteDeps['append'],
+): Promise<{ ok: true; length: number } | { error: string }> {
+  const body = request.body as { text?: unknown } | null | undefined;
+  const text = typeof body?.text === 'string' ? body.text : undefined;
+  if (text === undefined) {
+    reply.code(400);
+    return { error: 'expected a JSON body with a string "text" field' };
+  }
+  try {
+    const length = await append(projectId, text);
+    if (length === undefined) {
+      // Capability resolved but the project row is gone (deprovisioned mid-flight).
+      reply.code(404);
+      return { error: 'project not found' };
+    }
+    request.log.info({ projectId: projectId, length }, 'verity: appended project memory');
+    return { ok: true, length };
+  } catch (error) {
+    if (error instanceof KnowledgeError)
+      return reply.code(error.statusCode).send({ error: error.message });
+    if (error instanceof ProjectMemoryTooLargeError) {
+      reply.code(413);
+      return {
+        error: `project memory limit is ${PROJECT_MEMORY_MAX_CHARS} characters; edit or prune overview.md in the Explorer`,
+      };
+    }
+    throw error;
   }
 }

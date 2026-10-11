@@ -69,6 +69,8 @@ export function createLiveMeetingAnalysisQuery(deps: {
   return async (input: {
     model: string;
     prompt: string;
+    instructions?: string;
+    maxOutputTokens?: number;
     signal?: AbortSignal;
   }): Promise<string> => {
     const codex = input.model.startsWith('codex/');
@@ -96,6 +98,7 @@ export function createLiveMeetingAnalysisQuery(deps: {
       body = {
         model: id,
         instructions:
+          input.instructions ??
           'Analyze the provided meeting transcript and return only the requested result.',
         input: [{ role: 'user', content: [{ type: 'input_text', text: input.prompt }] }],
         tools: [],
@@ -116,7 +119,7 @@ export function createLiveMeetingAnalysisQuery(deps: {
         messages: [{ role: 'user', content: input.prompt }],
         tools: [],
         tool_choice: 'none',
-        max_tokens: 2048,
+        max_tokens: input.maxOutputTokens ?? 2048,
         stream: false,
       };
     }

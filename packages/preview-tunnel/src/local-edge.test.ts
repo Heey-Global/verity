@@ -1,7 +1,13 @@
 import { afterEach, expect, it } from 'vitest';
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
+import WebSocket, { WebSocketServer } from 'ws';
 import { PreviewConnector, PreviewEdge, hashPreviewSecret } from './index.js';
 
+// A renamed Core cookie must remain isolated from applications on sibling ports.
+const coreCookie = /BROWSER_SESSION_COOKIE = '([^']+)'/.exec(
+  readFileSync(new URL('../../server/src/auth.ts', import.meta.url), 'utf8'),
+)![1]!;
 const edges: PreviewEdge[] = [];
 afterEach(async () => {
   await Promise.all(edges.splice(0).map((edge) => edge.close()));
@@ -40,6 +46,7 @@ it('does not redirect local API requests to the public PIN page', async () => {
 
 it('preserves target cookies and makes absolute target redirects relative for LAN clients', async () => {
   let targetOrigin = '';
+  const receivedCookies: Array<string | undefined> = [];
   const cookies = [
     'app=new; Path=/; HttpOnly',
     'other=value; Path=/',
@@ -49,15 +56,18 @@ it('preserves target cookies and makes absolute target redirects relative for LA
     ),
   ];
   const target = createServer((request, response) => {
+    receivedCookies.push(request.headers.cookie);
     if (request.url === '/chunked') {
-      expect(request.headers.cookie).toBe(cookies.map((cookie) => cookie.split(';')[0]).join('; '));
       response.end('ok');
       return;
     }
-    expect(request.headers.cookie).toBe('app=session');
     response.writeHead(302, {
       location: `${targetOrigin}/next`,
-      'set-cookie': cookies,
+      'set-cookie': [
+        ...cookies,
+        `${coreCookie}=forged; Path=/; Secure; HttpOnly`,
+        `${coreCookie}=; Path=/; Max-Age=0`,
+      ],
     });
     response.end();
   });
@@ -73,9 +83,13 @@ it('preserves target cookies and makes absolute target redirects relative for LA
   try {
     await connector.connect();
     const response = await fetch(`http://127.0.0.1:${port}/`, {
-      headers: { cookie: 'app=session', host: `192.168.1.10:${port}` },
+      headers: {
+        cookie: `${coreCookie}=private; app=session; ${coreCookie}=duplicate`,
+        host: `192.168.1.10:${port}`,
+      },
       redirect: 'manual',
     });
+    expect(receivedCookies[0]).toBe('app=session');
     expect(response.status).toBe(302);
     expect(response.headers.get('location')).toBe('/next');
     expect(response.headers.getSetCookie()).toEqual(cookies);
@@ -83,6 +97,13 @@ it('preserves target cookies and makes absolute target redirects relative for LA
       headers: { cookie: cookies.map((cookie) => cookie.split(';')[0]).join('; ') },
     });
     expect(await next.text()).toBe('ok');
+    expect(receivedCookies[1]).toBe(cookies.map((cookie) => cookie.split(';')[0]).join('; '));
+    const onlyCore = await fetch(`http://127.0.0.1:${port}/`, {
+      headers: { cookie: `${coreCookie}=private` },
+      redirect: 'manual',
+    });
+    expect(onlyCore.status).toBe(302);
+    expect(receivedCookies[2]).toBeUndefined();
   } finally {
     connector.close();
     await new Promise<void>((resolve, reject) =>
@@ -101,4 +122,53 @@ it('allows Docker edge addresses only for the explicit local mode', () => {
   expect(() => new PreviewConnector({ ...options, accessMode: 'local-open' })).not.toThrow();
   expect(() => new PreviewConnector(options)).toThrow('must use wss');
   expect(() => new PreviewConnector({ ...options, accessMode: 'pin' })).toThrow('must use wss');
+});
+
+it('does not forward Core login cookies in local WebSocket handshakes', async () => {
+  const target = createServer();
+  const sockets = new WebSocketServer({ server: target });
+  sockets.on('connection', (socket, request) => {
+    socket.send(request.headers.cookie ?? 'none');
+  });
+  await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve));
+  const targetPort = (target.address() as { port: number }).port;
+  const port = await localEdge().listen(0, '127.0.0.1');
+  const connector = new PreviewConnector({
+    accessMode: 'local-open',
+    edgeUrl: `ws://127.0.0.1:${port}/__verity/connector`,
+    connectorToken: 'connector',
+    targetOrigin: `http://127.0.0.1:${targetPort}`,
+  });
+  try {
+    await connector.connect();
+    for (const [cookie, expected] of [
+      [`app=session; ${coreCookie}=private`, 'app=session'],
+      [`${coreCookie}=private`, 'none'],
+    ]) {
+      const client = new WebSocket(`ws://127.0.0.1:${port}/socket`, { headers: { cookie } });
+      try {
+        const message = await new Promise<string>((resolve, reject) => {
+          client.once('message', (data) =>
+            resolve(
+              (Array.isArray(data)
+                ? Buffer.concat(data)
+                : Buffer.from(data as ArrayBuffer)
+              ).toString(),
+            ),
+          );
+          client.once('error', reject);
+        });
+        expect(message).toBe(expected);
+      } finally {
+        client.terminate();
+      }
+    }
+  } finally {
+    connector.close();
+    for (const client of sockets.clients) client.terminate();
+    await new Promise<void>((resolve) => sockets.close(() => resolve()));
+    await new Promise<void>((resolve, reject) =>
+      target.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
 });

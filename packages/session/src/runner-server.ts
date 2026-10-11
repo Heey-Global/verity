@@ -15,6 +15,7 @@ import type { Backend } from './backend.js';
 import { LoopbackRunnerClient, type RunnerClient, type RunnerTurn } from './runner-contract.js';
 import { stampFrame, writeFrame, type RunnerFrameBody } from './runner-transport.js';
 import { serveControl, type ControlSocketServer } from './runner-control.js';
+import { hydrateImageAttachments } from './image-references.js';
 import { initialRunnerTurnState, writeRunnerState, type RunnerTurnState } from './runner-state.js';
 
 /**
@@ -306,7 +307,18 @@ export class RunnerServer {
       controlServer = await serveControl(
         controlSocketPath,
         {
-          steer: (message) => turn.steer(message),
+          steer: async (message) => {
+            if (message.attachments === undefined) return turn.steer(message);
+            const attachments = await hydrateImageAttachments(
+              runOpts.cwd,
+              turnId,
+              message.attachments,
+            );
+            return turn.steer({
+              text: message.text,
+              ...(attachments === undefined ? {} : { attachments }),
+            });
+          },
           cancel: () => turn.cancel(),
           answerPermission,
         },

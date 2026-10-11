@@ -3,6 +3,7 @@ import AVFoundation
 import FluidAudio
 import Foundation
 import Speech
+import UIKit
 
 private enum LiveSTTError: LocalizedError {
   case unavailable(String)
@@ -46,13 +47,23 @@ class VerityLiveSTT: Module {
       return await SpeechTranscriber.supportedLocales.map { $0.identifier }
     }
 
-    AsyncFunction("startDictation") { (session: String, locale: String, vocabulary: [String]) async throws in
+    AsyncFunction("prepareDictation") { (locale: String) async throws in
+      guard #available(iOS 26.0, *) else { return }
+      try await LiveSTTService.shared.prepareDictation(locale: locale)
+    }
+
+    AsyncFunction("releasePreparedDictation") { () async in
+      guard #available(iOS 26.0, *) else { return }
+      await LiveSTTService.shared.releasePreparedDictation()
+    }
+
+    AsyncFunction("startDictation") { (session: String, locale: String, vocabulary: [String], tappedAt: Double) async throws in
       guard #available(iOS 26.0, *) else {
         throw LiveSTTError.unavailable("Voice input requires a supported iOS device.")
       }
       try await LiveSTTService.shared.start(
         engine: "apple-speech", locale: locale, vocabulary: vocabulary, participants: 0,
-        owner: session
+        owner: session, tappedAt: tappedAt
       ) { [weak self] event in
         var scoped = event
         scoped["session"] = session
@@ -199,6 +210,121 @@ private final class LiveSTTService {
   private var paused = false
   private var emittedWordCount = 0
 
+  private struct PreparedDictation {
+    let locale: String
+    let transcriber: SpeechTranscriber
+    let analyzer: SpeechAnalyzer
+    let format: AVAudioFormat
+  }
+
+  private var prepared: PreparedDictation?
+  private var preparationTask: Task<PreparedDictation?, Error>?
+  private var preparationLocale: String?
+  private var preparationGeneration = 0
+  private var desiredLocale: String?
+  private var observers: [NSObjectProtocol] = []
+  private var firstAudioReported = false
+  private var firstResultReported = false
+  private var dictationStartedAt: TimeInterval?
+
+  private init() {
+    for name in [UIApplication.didEnterBackgroundNotification, UIApplication.didReceiveMemoryWarningNotification] {
+      observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+        Task { @MainActor in
+          // A delayed background notification must not cancel a new foreground capture.
+          if name == UIApplication.didEnterBackgroundNotification,
+            UIApplication.shared.applicationState == .active { return }
+          if name == UIApplication.didReceiveMemoryWarningNotification {
+            self?.discardPreparation()
+          } else {
+            self?.releasePreparedDictation()
+          }
+          if name == UIApplication.didEnterBackgroundNotification, let session = self?.dictationOwner {
+            try? await self?.finishDictation(session: session, abort: true)
+          }
+        }
+      })
+    }
+  }
+
+  func releasePreparedDictation() {
+    desiredLocale = nil
+    discardPreparation()
+  }
+
+  private func discardPreparation() {
+    preparationGeneration += 1
+    preparationTask?.cancel()
+    preparationTask = nil
+    preparationLocale = nil
+    prepared = nil
+  }
+
+  func prepareDictation(locale: String) async throws {
+    desiredLocale = locale
+    guard activeEngine == nil, UIApplication.shared.applicationState == .active else { return }
+    if preparationLocale != locale { discardPreparation() }
+    if prepared != nil { return }
+    if let task = preparationTask { _ = try await task.value; return }
+    let epoch = preparationGeneration
+    preparationLocale = locale
+    let task = Task<PreparedDictation?, Error> {
+      guard SpeechTranscriber.isAvailable,
+        let supported = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: locale))
+      else { return nil }
+      try Task.checkCancellation()
+      let transcriber = SpeechTranscriber(locale: supported, preset: .timeIndexedProgressiveTranscription)
+      // Preparation must never install assets or activate the microphone.
+      guard await AssetInventory.status(forModules: [transcriber]) == .installed else { return nil }
+      guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
+        throw LiveSTTError.audioFormat
+      }
+      try Task.checkCancellation()
+      let analyzer = SpeechAnalyzer(modules: [transcriber],
+        options: SpeechAnalyzer.Options(priority: .userInitiated, modelRetention: .whileInUse))
+      try await analyzer.prepareToAnalyze(in: format)
+      try Task.checkCancellation()
+      return PreparedDictation(locale: locale, transcriber: transcriber, analyzer: analyzer, format: format)
+    }
+    preparationTask = task
+    do {
+      let result = try await task.value
+      guard preparationGeneration == epoch else { return }
+      prepared = result
+      preparationTask = nil
+    } catch {
+      if preparationGeneration == epoch {
+        preparationTask = nil
+        preparationLocale = nil
+      }
+      throw error
+    }
+  }
+
+  private func takePreparedDictation(locale: String, generation: Int) async throws -> PreparedDictation? {
+    if preparationLocale != locale { discardPreparation(); return nil }
+    let epoch = preparationGeneration
+    let pending = preparationTask
+    let result: PreparedDictation?
+    if let pending { result = try? await pending.value } else { result = prepared }
+    try ensureActive(generation)
+    guard preparationGeneration == epoch else { return nil }
+    discardPreparation()
+    return result
+  }
+
+  private func prepareNextDictation() {
+    guard let locale = desiredLocale, UIApplication.shared.applicationState == .active else { return }
+    Task { try? await self.prepareDictation(locale: locale) }
+  }
+
+  private func reportDictationTiming(_ phase: String, capturedAt: TimeInterval? = nil) {
+    #if DEBUG
+    guard let started = dictationStartedAt else { return }
+    print("Dictation timing \(phase): \(((capturedAt ?? Date().timeIntervalSince1970) - started) * 1000) ms")
+    #endif
+  }
+
   func engines() async -> [[String: Any]] {
     let appleAvailable = SpeechTranscriber.isAvailable
     return [
@@ -211,9 +337,17 @@ private final class LiveSTTService {
 
   func start(
     engine: String, locale: String, vocabulary: [String], participants: Int, owner: String? = nil,
-    emit: @escaping ([String: Any]) -> Void
+    tappedAt: Double? = nil, emit: @escaping ([String: Any]) -> Void
   ) async throws {
     guard activeEngine == nil else { throw LiveSTTError.alreadyRunning }
+    defer { if activeEngine == nil { prepareNextDictation() } }
+    if owner != nil && UIApplication.shared.applicationState != .active {
+      throw LiveSTTError.unavailable("Dictation requires the app to be active.")
+    }
+    if owner == nil { discardPreparation() }
+    dictationStartedAt = owner == nil ? nil : (tappedAt.map { $0 / 1000 } ?? Date().timeIntervalSince1970)
+    firstAudioReported = false
+    firstResultReported = false
     generation += 1
     let startGeneration = generation
     activeEngine = engine
@@ -299,18 +433,22 @@ private final class LiveSTTService {
 
   func finishDictation(session: String, abort: Bool) async throws {
     guard dictationOwner == session else { return }
+    defer { if activeEngine == nil { prepareNextDictation() } }
     if !abort { try await stop(); return }
     generation += 1
     stopMicrophone()
     let currentAnalyzer = analyzer
+    let stopped = emit
     resultsTask?.cancel()
     processingTask?.cancel()
     clear()
     await currentAnalyzer?.cancelAndFinishNow()
+    stopped?(["kind": "status", "state": "stopped", "engine": "apple-speech"])
   }
 
   func stop() async throws {
     guard let engine = activeEngine else { return }
+    defer { if activeEngine == nil { prepareNextDictation() } }
     generation += 1
     let stopGeneration = generation
     let wasCapturing = audioEngine != nil
@@ -415,18 +553,35 @@ private final class LiveSTTService {
     dictationOwner = nil
     paused = false
     emit = nil
+    dictationStartedAt = nil
   }
 
   private func startSpeechTranscriber(locale: String, vocabulary: [String], generation: Int) async throws {
-    guard SpeechTranscriber.isAvailable,
-      let supported = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: locale))
-    else {
-      throw LiveSTTError.unavailable("Apple SpeechTranscriber does not support this device or locale.")
-    }
-    let transcriber = SpeechTranscriber(locale: supported, preset: .timeIndexedProgressiveTranscription)
-    try await prepareApple(transcriber, generation: generation)
+    let ready = dictationOwner == nil ? nil : try await takePreparedDictation(locale: locale, generation: generation)
     try ensureActive(generation)
-    let analyzer = SpeechAnalyzer(modules: [transcriber])
+    let transcriber: SpeechTranscriber
+    if let ready {
+      transcriber = ready.transcriber
+    } else {
+      guard SpeechTranscriber.isAvailable,
+        let supported = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: locale))
+      else {
+        throw LiveSTTError.unavailable("Apple SpeechTranscriber does not support this device or locale.")
+      }
+      try ensureActive(generation)
+      transcriber = SpeechTranscriber(locale: supported, preset: .timeIndexedProgressiveTranscription)
+      try await prepareApple(transcriber, generation: generation)
+    }
+    try ensureActive(generation)
+    let analyzer: SpeechAnalyzer
+    if let ready {
+      analyzer = ready.analyzer
+    } else if dictationOwner != nil {
+      analyzer = SpeechAnalyzer(modules: [transcriber],
+        options: SpeechAnalyzer.Options(priority: .userInitiated, modelRetention: .whileInUse))
+    } else {
+      analyzer = SpeechAnalyzer(modules: [transcriber])
+    }
     if dictationOwner != nil && !vocabulary.isEmpty {
       // SpeechTranscriber currently ignores contextual strings; local correction
       // handles vocabulary until the framework supports recognition hints.
@@ -450,7 +605,7 @@ private final class LiveSTTService {
       }
     }
     try await startAppleMicrophone(
-      analyzer: analyzer, module: transcriber, generation: generation)
+      analyzer: analyzer, module: transcriber, generation: generation, preparedFormat: ready?.format)
   }
 
   private func startDictationTranscriber(
@@ -510,16 +665,15 @@ private final class LiveSTTService {
   }
 
   private func startAppleMicrophone(
-    analyzer: SpeechAnalyzer, module: any SpeechModule, generation: Int
+    analyzer: SpeechAnalyzer, module: any SpeechModule, generation: Int, preparedFormat: AVAudioFormat? = nil
   ) async throws {
-    guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]) else {
+    let negotiatedFormat = preparedFormat == nil ? await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]) : preparedFormat
+    guard let format = negotiatedFormat else {
       throw LiveSTTError.audioFormat
     }
     try ensureActive(generation)
-    let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
+    let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream(bufferingPolicy: .bufferingOldest(128))
     analyzerInput = continuation
-    try await analyzer.start(inputSequence: stream)
-    try ensureActive(generation)
     try startMicrophone { microphoneStream in
       self.processingTask = Task {
         defer { continuation.finish() }
@@ -550,7 +704,9 @@ private final class LiveSTTService {
               }
               if let conversionError { throw conversionError }
               if converted.frameLength > 0 {
-                continuation.yield(AnalyzerInput(buffer: converted))
+                if case .dropped = continuation.yield(AnalyzerInput(buffer: converted)) {
+                  throw LiveSTTError.unavailable("Speech recognition fell behind audio capture.")
+                }
               }
               if result != .haveData || converted.frameLength == 0 { break }
             }
@@ -561,9 +717,16 @@ private final class LiveSTTService {
         }
       }
     }
+    if dictationOwner != nil {
+      emit?(["kind": "status", "state": "listening", "engine": "apple-speech"])
+    }
+    // Capture and buffer the opening words while the analyzer starts.
+    try await analyzer.start(inputSequence: stream)
+    try ensureActive(generation)
   }
 
   private func emitAppleResult(text: AttributedString, start: CMTime, end: CMTime, final: Bool) {
+    if !firstResultReported { reportDictationTiming("first-result"); firstResultReported = true }
     var event: [String: Any] = [
       "kind": "segment", "text": String(text.characters), "final": final,
       "start": CMTimeGetSeconds(start), "end": CMTimeGetSeconds(end),
@@ -684,12 +847,17 @@ private final class LiveSTTService {
     let reportLevel = dictationOwner != nil
     input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
       guard let copy = Self.copyBuffer(buffer) else { return }
+      let capturedAt = Date().timeIntervalSince1970
       if reportLevel, let channel = copy.floatChannelData?.pointee, copy.frameLength > 0 {
         let samples = UnsafeBufferPointer(start: channel, count: Int(copy.frameLength))
         let rms = sqrt(samples.reduce(Float(0)) { $0 + $1 * $1 } / Float(copy.frameLength))
         let level = min(1, max(0, rms * 10))
         Task { @MainActor [weak self] in
           guard let self, self.generation == captureGeneration else { return }
+          if !self.firstAudioReported {
+            self.firstAudioReported = true
+            self.reportDictationTiming("first-audio", capturedAt: capturedAt)
+          }
           self.emit?(["kind": "level", "value": level])
         }
       }
@@ -778,6 +946,7 @@ private final class LiveSTTService {
   }
 
   private func failCapture(_ error: Error) async {
+    defer { if activeEngine == nil { prepareNextDictation() } }
     generation += 1
     stopMicrophone()
     emit?(["kind": "status", "state": "failed", "message": error.localizedDescription])

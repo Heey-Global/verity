@@ -61,7 +61,7 @@ function present(value: string | null | undefined): boolean {
  * sealed flag. Pure over its inputs (the two async store calls it awaits) so the
  * route handler is a thin wrapper and the logic is unit-testable directly.
  */
-async function computeOnboardingStatus(
+export async function computeOnboardingStatus(
   store: EventStore,
   cipher: SealableSecretCipher | undefined,
 ): Promise<OnboardingStatus> {
@@ -69,10 +69,11 @@ async function computeOnboardingStatus(
   // effectively always unlocked). `sealed` only reflects a real sealable cipher.
   const sealed = cipher?.isSealed() ?? false;
 
-  const [keyMeta, settings, projects] = await Promise.all([
+  const [keyMeta, settings, projects, starterProjectId] = await Promise.all([
     store.getSecretKeyMeta(),
     store.getVeritySettingsRaw(),
     store.listProjects({ includeHidden: true }),
+    store.getStarterProjectId(),
   ]);
 
   const masterPasswordSet = keyMeta !== undefined;
@@ -82,8 +83,14 @@ async function computeOnboardingStatus(
     present(settings?.githubAppPrivateKey);
   const signingKeyConfigured =
     present(settings?.gitSshPrivateKey) || present(settings?.gitSshPrivateKeyPath);
+  // The starter project is the server's own, created before the operator did
+  // anything. Counting it would make every fresh install look set up, and the app
+  // reads a pristine status as "this saved address now points at a reset server".
   const hasProject = projects.some(
-    (project) => project.id !== CONTROL_PLANE_PROJECT_ID && project.state !== 'absent',
+    (project) =>
+      project.id !== CONTROL_PLANE_PROJECT_ID &&
+      project.state !== 'absent' &&
+      project.id !== starterProjectId,
   );
   // INFORMATIONAL only (Doppler is optional): presence of the raw (non-decrypted)
   // account token column. Deliberately NOT part of `complete`/`nextStep`.

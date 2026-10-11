@@ -26,6 +26,7 @@ export function runTrustedCliViaBroker(
       secretAlias: string;
       env: string;
       injection?: 'env' | 'file';
+      encoding?: 'base64';
       secret: string;
     }[];
     command: string[];

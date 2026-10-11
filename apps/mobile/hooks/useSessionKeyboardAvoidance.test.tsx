@@ -79,6 +79,25 @@ describe('session keyboard avoidance', () => {
     visible = true;
     const { result } = renderHook(useSessionKeyboardAvoidance);
     expect(result.current.enabled).toBe(true);
+    expect(result.current.resetStyle).toHaveProperty('paddingBottom', undefined);
+  });
+
+  it('releases the reset padding when opening after a hidden keyboard', () => {
+    const { result } = renderHook(useSessionKeyboardAvoidance);
+    expect(result.current.resetStyle).toMatchObject({ paddingBottom: 0 });
+    act(() => events.keyboardDidShow());
+    expect(result.current.resetStyle).toHaveProperty('paddingBottom', undefined);
+  });
+
+  it('does not disable an opening iOS keyboard before cached visibility catches up', () => {
+    if (Platform.OS !== 'ios') return;
+    const { result } = renderHook(useSessionKeyboardAvoidance);
+    act(() => events.keyboardWillShow());
+    act(() => finishTransition());
+    expect(result.current.enabled).toBe(true);
+    act(() => events.keyboardDidHide());
+    act(() => finishTransition());
+    expect(result.current.enabled).toBe(false);
   });
 
   it('rejects a cached visible keyboard after its field lost focus', () => {

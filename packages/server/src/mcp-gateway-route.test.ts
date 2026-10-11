@@ -673,17 +673,24 @@ it('does not open an extra approval even when another card would have revised th
   expect((await harness.store.getSession('s1'))?.planning).toBe('implemented');
 });
 
-it.each(['p1', 'p2'])(
-  'delivers linked agent messages to project %s until a renewal card is needed',
-  async (targetProjectId) => {
+it.each([
+  ['p1', 'p1'],
+  ['p1', 'p2'],
+  ['p1', VERITY_CONTROL_PROJECT_ID],
+  [VERITY_CONTROL_PROJECT_ID, 'p2'],
+  [VERITY_CONTROL_PROJECT_ID, VERITY_CONTROL_PROJECT_ID],
+])(
+  'delivers linked agent messages from %s to %s until a renewal card is needed',
+  async (sourceProjectId, targetProjectId) => {
     const harness = build({ linkedTools: true });
     for (const [id, repo] of [
       ['p1', 'alpha'],
       ['p2', 'beta'],
+      [VERITY_CONTROL_PROJECT_ID, 'control'],
     ] as const) {
       await harness.store.createProject({
         id,
-        kind: 'local',
+        kind: id === VERITY_CONTROL_PROJECT_ID ? 'control_plane' : 'local',
         owner: '__local__',
         repo,
         cloneDir: `__local__-${repo}`,
@@ -693,7 +700,7 @@ it.each(['p1', 'p2'])(
     }
     await harness.store.createSession({
       sessionId: 's1',
-      projectId: 'p1',
+      projectId: sourceProjectId,
       worktree: '/tmp/verity-linked-s1',
       model: 'claude-opus-5',
     });
@@ -704,10 +711,24 @@ it.each(['p1', 'p2'])(
       model: 'claude-opus-5',
     });
     await harness.store.createSessionLink('s1', 's2');
-    const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
-    await withListener(harness, async (socketPath) => {
+    const token = harness.tokens.issue({
+      projectId: sourceProjectId,
+      sessionId: 's1',
+      turnId: 't1',
+    });
+    const runCalls = async (
+      send: (payload: unknown) => Promise<{ status: number; body: string }>,
+    ) => {
+      const listed = await send({
+        jsonrpc: '2.0',
+        id: 0,
+        method: 'tools/call',
+        params: { name: 'verity_list_linked_sessions', arguments: {} },
+      });
+      expect(listed.status).toBe(200);
+      expect(listed.body).toContain('s2');
       for (let id = 1; id <= 7; id += 1) {
-        const response = await postUnix(socketPath, `Bearer ${token}`, {
+        const response = await send({
           jsonrpc: '2.0',
           id,
           method: 'tools/call',
@@ -721,7 +742,7 @@ it.each(['p1', 'p2'])(
           (JSON.parse(response.body) as { result: { isError?: boolean } }).result.isError,
         ).toBeUndefined();
         if (id === 6) {
-          const retry = await postUnix(socketPath, `Bearer ${token}`, {
+          const retry = await send({
             jsonrpc: '2.0',
             id,
             method: 'tools/call',
@@ -735,14 +756,27 @@ it.each(['p1', 'p2'])(
           expect(harness.dispatches).toHaveLength(6);
         }
       }
-    });
+    };
+    if (sourceProjectId === VERITY_CONTROL_PROJECT_ID) {
+      await withInternalTcpListener(harness, (port) =>
+        runCalls((payload) =>
+          postTcp(port, '/internal/control-plane/mcp', `Bearer ${token}`, payload),
+        ),
+      );
+    } else {
+      await withListener(harness, (socketPath) =>
+        runCalls((payload) => postUnix(socketPath, `Bearer ${token}`, payload)),
+      );
+    }
     expect(harness.dispatches).toHaveLength(7);
     expect(
       harness.approvals.filter((approval) => approval.toolName === 'verity_send_session_message'),
     ).toHaveLength(1);
     expect(harness.dispatches[0]).toMatchObject({
       sessionId: 's2',
-      dispatchOpts: { peer: { sessionId: 's1', projectId: 'p1', message: 'Question 1' } },
+      dispatchOpts: {
+        peer: { sessionId: 's1', projectId: sourceProjectId, message: 'Question 1' },
+      },
     });
     expect(harness.dispatches[0]?.prompt).toContain('agent-to-agent material');
   },

@@ -1,3 +1,7 @@
+import {
+  switchRequestDiagnostic,
+  createSwitchDiagnosticBudget,
+} from './switch-request-diagnostic.js';
 import { performance } from 'node:perf_hooks';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
@@ -36,7 +40,28 @@ interface Probe {
 
 /** Slow reads log bounded measurements and route patterns, never raw URLs or SQL. */
 export function registerRequestLatencyDiagnostics(app: FastifyInstance): void {
+  const admitSwitchDiagnostic = createSwitchDiagnosticBudget();
   const probes = new Map<FastifyRequest, Probe>();
+  const switchRequests = new WeakMap<
+    FastifyRequest,
+    { started: number; diagnosticRequestId: string; kind: string }
+  >();
+  const finishSwitch = (request: FastifyRequest, outcome: string, statusCode?: number): void => {
+    const trace = switchRequests.get(request);
+    if (!trace) return;
+    switchRequests.delete(request);
+    request.log.info(
+      {
+        diagnosticRequestId: trace.diagnosticRequestId,
+        kind: trace.kind,
+        completedAt: Date.now(),
+        elapsedMs: performance.now() - trace.started,
+        outcome,
+        ...(statusCode === undefined ? {} : { statusCode }),
+      },
+      'session switch handler completed',
+    );
+  };
   const cpuProfiler = createLatencyCpuProfiler({
     directory: process.env.VERITY_LATENCY_CPU_PROFILE_DIR,
     log: (event) => app.log.warn(event, 'backend latency CPU profile'),
@@ -56,6 +81,12 @@ export function registerRequestLatencyDiagnostics(app: FastifyInstance): void {
   }
 
   app.addHook('onRequest', (request, reply, done) => {
+    const diagnostic = switchRequestDiagnostic(request.method, request.url, request.headers);
+    if (diagnostic && admitSwitchDiagnostic()) {
+      switchRequests.set(request, { ...diagnostic, started: performance.now() });
+      request.log = request.log.child(diagnostic);
+      request.log.info({ receivedAt: Date.now() }, 'session switch handler received');
+    }
     const trace = createRequestLatencyTrace();
     trace.owner = `${request.method} ${request.routeOptions.url ?? 'unmatched'} (${request.id})`;
     if (
@@ -93,6 +124,7 @@ export function registerRequestLatencyDiagnostics(app: FastifyInstance): void {
     done();
   });
   app.addHook('onResponse', (request, reply, done) => {
+    finishSwitch(request, 'finished', reply.statusCode);
     const probe = finish(request);
     if (probe && reply.elapsedTime >= SLOW_REQUEST_MS) {
       request.log.warn(
@@ -112,10 +144,12 @@ export function registerRequestLatencyDiagnostics(app: FastifyInstance): void {
     done();
   });
   app.addHook('onRequestAbort', (request, done) => {
+    finishSwitch(request, 'aborted');
     finish(request);
     done();
   });
   app.addHook('onTimeout', (request, _reply, done) => {
+    finishSwitch(request, 'timeout');
     finish(request);
     done();
   });

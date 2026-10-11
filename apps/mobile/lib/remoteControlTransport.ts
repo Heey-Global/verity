@@ -1,3 +1,4 @@
+import { markSwitchTransportRequest } from '@verity/mobile';
 import { requireNativeModule } from 'expo-modules-core';
 import { AppState } from 'react-native';
 
@@ -348,7 +349,9 @@ export function reportDirectRouteFailure(url: string): void {
   if (key !== null) directRoute = { key, reachable: false, checkedAt: Date.now() };
 }
 
-async function stopNativeTunnel(cause: 'profile_changed' | 'probe_failure'): Promise<void> {
+async function stopNativeTunnel(
+  cause: 'profile_changed' | 'probe_failure' | 'replacement',
+): Promise<void> {
   const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
   if (typeof native.stopWithCause === 'function') await native.stopWithCause(cause);
   else await native.stop();
@@ -437,13 +440,36 @@ function keyFor(url: string): string | null {
   return `${profile.serverId}:${url}:${remote.installationId}:${remote.installationHandle}:${remote.uplinkOrigin}`;
 }
 
+/** A disabled descriptor removes Remote Control from selectable routes. */
+export async function remoteControlAvailableForUrl(url: string): Promise<boolean> {
+  const target = new URL(url);
+  if (target.protocol === 'wss:') target.protocol = 'https:';
+  if (keyFor(target.origin) !== null) return true;
+  const cleanup = operation.then(async () => {
+    if (active === null || keyFor(target.origin) !== null) return;
+    active = null;
+    try {
+      await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').stop();
+    } catch {
+      // Direct Core requests remain usable if native cleanup fails.
+    }
+  });
+  operation = cleanup;
+  await cleanup;
+  return false;
+}
+
 /**
  * Return zero for a direct pinned connection. Admission failure never replays an
  * API request. `replayable` says the caller can repeat the request through
  * Uplink if the direct route loses it; a mutation cannot, and waits for the
  * route verdict instead.
  */
-export async function remoteControlPortForUrl(url: string, replayable = false): Promise<number> {
+export async function remoteControlPortForUrl(
+  url: string,
+  replayable = false,
+  diagnosticRequestId?: string,
+): Promise<number> {
   const target = new URL(url);
   if (target.protocol === 'wss:') target.protocol = 'https:';
   const key = keyFor(target.origin);
@@ -453,7 +479,11 @@ export async function remoteControlPortForUrl(url: string, replayable = false): 
     // the route from its outcome. Waiting for a probe to fail first costs its
     // full timeout on every VPN wake-up, and then an Uplink attempt that can
     // take far longer, before a request that would have worked directly is sent.
-    const probe = directRouteReachable(target.origin, key).catch(() => false);
+    const probe = directRouteReachable(
+      target.origin,
+      key,
+      replayable ? undefined : diagnosticRequestId,
+    ).catch(() => false);
     if (replayable) return 0;
     await probe;
   }
@@ -461,17 +491,22 @@ export async function remoteControlPortForUrl(url: string, replayable = false): 
   // must not wait behind their serialized native-tunnel lifecycle operations.
   if (
     key !== null &&
-    (await directRouteReachable(target.origin, key)) &&
+    (await directRouteReachable(target.origin, key, diagnosticRequestId)) &&
     keyFor(target.origin) === key &&
     (active === null || active.key === key)
   )
     return 0;
+  markSwitchTransportRequest(diagnosticRequestId, 'route-queue-start');
   const selected = operation.then(() => selectPort(url));
   operation = selected.then(
     () => undefined,
     () => undefined,
   );
-  return selected;
+  try {
+    return await selected;
+  } finally {
+    markSwitchTransportRequest(diagnosticRequestId, 'route-queue-end');
+  }
 }
 
 /** An explicit diagnostic uses Uplink even when the direct route is healthy. */
@@ -490,6 +525,9 @@ export async function testRemoteControlForUrl(
       if (typeof native.captureDataDiagnostics !== 'function') {
         return { ready: false, detail: 'update the app to record connection diagnostics' };
       }
+      // Arm on a fresh socket: recording an active tunnel misses its first sends.
+      await stopNativeTunnel('replacement');
+      active = null;
       if (!(await native.captureDataDiagnostics())) {
         return {
           ready: false,
@@ -659,13 +697,19 @@ async function selectPort(url: string): Promise<number> {
   return open(target, key);
 }
 
-async function directRouteReachable(coreUrl: string, key: string): Promise<boolean> {
+async function directRouteReachable(
+  coreUrl: string,
+  key: string,
+  diagnosticRequestId?: string,
+): Promise<boolean> {
   const known = directRoute?.key === key ? directRoute : null;
   if (
     known !== null &&
     Date.now() - known.checkedAt < (known.reachable ? DIRECT_ROUTE_TTL_MS : DIRECT_FAILURE_TTL_MS)
-  )
+  ) {
+    markSwitchTransportRequest(diagnosticRequestId, 'route-cache-hit', known.reachable ? 1 : 0);
     return known.reachable;
+  }
   const generation = routeGeneration;
   let currentProbe = directProbe?.key === key ? directProbe : null;
   if (currentProbe === null) {
@@ -685,9 +729,12 @@ async function directRouteReachable(coreUrl: string, key: string): Promise<boole
   // While a live tunnel carries traffic, look for the direct route without
   // stalling requests on it; the next request after it answers switches back.
   if (known?.reachable === false && active?.key === key) return false;
+  markSwitchTransportRequest(diagnosticRequestId, 'route-probe-start');
   const reachable = await currentProbe.promise;
+  markSwitchTransportRequest(diagnosticRequestId, 'route-probe-end', reachable ? 1 : 0);
   if (keyFor(coreUrl) !== key) return false;
-  if (routeGeneration !== generation) return directRouteReachable(coreUrl, key);
+  if (routeGeneration !== generation)
+    return directRouteReachable(coreUrl, key, diagnosticRequestId);
   return directRoute?.key === key ? directRoute.reachable : reachable;
 }
 

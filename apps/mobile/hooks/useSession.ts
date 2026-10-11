@@ -10,15 +10,15 @@ import {
   publishSettledPermission,
   publishSessionStatusMutation,
 } from '@verity/mobile';
-import type { LiveHint } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AppState } from 'react-native';
 
-import { liveConnectionFor, useLiveHints } from '../lib/liveConnection';
+import { liveConnectionFor } from '../lib/liveConnection';
 import { pendingSession } from '../lib/pendingSessions';
 
 export interface UseSession extends SessionModelState {
+  refreshMetadata: () => void;
   /** Fire-and-forget an operator turn; the agent's reply streams back over WS.
    * Optional turn options (e.g. image `attachments`) are forwarded to the model. */
   sendTurn: (prompt: string, opts?: Omit<TurnRequest, 'prompt'>) => Promise<boolean>;
@@ -160,21 +160,6 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
 
   // The activity snapshot (working indicator, queue, pending requests) is not
   // streamed; refresh it the moment the server says it changed.
-  const onHints = useCallback(
-    (hints: LiveHint[]) => {
-      if (
-        hints.some((hint) =>
-          hint.topics.some(
-            (topic) => topic === 'activity' || topic === 'status' || topic === 'permission',
-          ),
-        )
-      ) {
-        model.refreshActivity();
-      }
-    },
-    [model],
-  );
-  useLiveHints(baseUrl, onHints, sessionId);
   useEffect(
     () =>
       subscribeLiveRefresh(
@@ -232,6 +217,7 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
 
   return {
     ...state,
+    refreshMetadata: () => model.refreshMetadata(),
     sendTurn,
     loadOlder,
     loadOlderUntil,

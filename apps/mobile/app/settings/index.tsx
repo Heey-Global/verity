@@ -1,3 +1,4 @@
+import { resetFeatureHints } from '../../lib/featureHints';
 import { useTaskPreferences } from '../../lib/taskPreferences';
 // Settings, top level: what is left to set up, where everything lives, and the
 // two app-wide switches. Everything with a form of its own is one tap deeper.
@@ -27,7 +28,6 @@ import {
   SettingsToggleRow,
 } from '../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
-import { shareUpdateDiagnostics } from '../../lib/updateDiagnostics';
 import { checkForAppUpdate } from '../../lib/automaticUpdates';
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
@@ -94,19 +94,6 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       };
     }, [client]),
   );
-
-  const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
-  const exportDiagnostics = async () => {
-    if (exportingDiagnostics) return;
-    setExportingDiagnostics(true);
-    try {
-      await shareUpdateDiagnostics();
-    } catch {
-      Alert.alert('Export failed', 'Could not export update diagnostics. Try again later.');
-    } finally {
-      setExportingDiagnostics(false);
-    }
-  };
 
   const checkForManualUpdate = useCallback(() => {
     if (checkingForUpdate) return;
@@ -199,9 +186,10 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           />
           <SettingsNavRow
             icon="globe"
-            title="Remote access"
-            subtitle="Verity Uplink"
-            onPress={() => router.push('/settings/remote-access')}
+            title="Verity Premium"
+            subtitle="Online sharing and Remote access"
+            value={settings?.uplinkSubscriptionKeyConfigured ? 'Configured' : 'Not active'}
+            onPress={() => router.push('/settings/premium')}
           />
         </SettingsListPanel>
       </SettingsGroup>
@@ -227,11 +215,30 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           reconfigure mode; the only way back to it once a non-null URL is persisted. */}
       <SettingsGroup title="This app">
         <SettingsListPanel>
+          {!isDemoMode() ? (
+            <SettingsNavRow
+              icon="help-circle"
+              title="Show welcome tour again"
+              subtitle="Open the welcome session and reset feature hints on this device"
+              onPress={() => {
+                void resetFeatureHints()
+                  .then(() =>
+                    router.push({ pathname: '/onboarding/starter', params: { replay: '1' } }),
+                  )
+                  .catch((error: unknown) =>
+                    Alert.alert(
+                      'Could not reset hints',
+                      error instanceof Error ? error.message : 'Please try again.',
+                    ),
+                  );
+              }}
+            />
+          ) : null}
           <SettingsNavRow
             icon="file-text"
             title="Diagnostics"
-            subtitle={exportingDiagnostics ? 'Preparing…' : 'Export app update logs'}
-            onPress={() => void exportDiagnostics()}
+            subtitle="Connection, transcription and app logs"
+            onPress={() => router.push('/settings/diagnostics')}
           />
           {!isDemoMode() ? (
             <SettingsNavRow

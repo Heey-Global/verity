@@ -58,6 +58,19 @@ func verifyPinnedHTTPPool(origin: URL, pin: String) throws {
   defer { same.release() }
   try checkPool(first.session === same.session, "same origin/pin/route did not reuse session")
   let wrongPin = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  let interactive = try pool.acquire(origin: origin, pin: pin, proxyPort: 0, proxyMode: "socks", lane: .interactive)
+  defer { interactive.release() }
+  try checkPool(first.session !== interactive.session, "interactive and background reads shared a session")
+  let interactiveAgain = try pool.acquire(origin: origin, pin: pin, proxyPort: 0, proxyMode: "socks", lane: .interactive)
+  defer { interactiveAgain.release() }
+  try checkPool(interactive.session === interactiveAgain.session, "interactive reads did not reuse their session")
+  try checkPool(PinnedHTTPTransportLane(headers: [:]) == .background, "missing lane did not default to background")
+  try checkPool(PinnedHTTPTransportLane(headers: ["X-Verity-Transport-Lane": "interactive"]) == .interactive, "lane header name was case-sensitive")
+  try checkPool(PinnedHTTPTransportLane(headers: ["x-verity-transport-lane": "unknown"]) == .background, "invalid lane escaped background pool")
+  var internalHeader = URLRequest(url: origin)
+  internalHeader.setValue("interactive", forHTTPHeaderField: "X-Verity-Transport-Lane")
+  PinnedHTTPTransportLane.removeHeader(from: &internalHeader)
+  try checkPool(internalHeader.value(forHTTPHeaderField: "x-verity-transport-lane") == nil, "internal lane metadata reached the network")
   let otherPin = try pool.acquire(origin: origin, pin: wrongPin, proxyPort: 0, proxyMode: "socks")
   defer { otherPin.release() }
   try checkPool(first.session !== otherPin.session, "different pins shared TLS connections")

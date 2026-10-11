@@ -1,3 +1,5 @@
+import { PremiumBadge } from '../premium/PremiumBadge';
+import { premiumFeatures } from '../premium/premiumFeatures';
 import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { ManagedDevServer } from '@verity/mobile';
@@ -6,7 +8,7 @@ import { StatusPill } from '../StatusPill';
 import { Toggle } from '../Toggle';
 
 // Servers the agent set up and Verity runs (concept 2.6). Each has two access
-// switches, Local and Shared online; any switch on runs the server and none on
+// switches, Local and Online sharing; any switch on runs the server and none on
 // stops it. The sandbox port is internal and never shown.
 
 /** The public link of a managed instance, as far as the list needs it. */
@@ -20,7 +22,9 @@ export interface ManagedPublicLink {
   pending: boolean;
 }
 
-export type PublicSharing = 'available' | 'premium-required' | 'unavailable';
+const ONLINE_SHARING = premiumFeatures[0].name;
+
+export type PublicSharing = 'available' | 'premium-required' | 'unavailable' | 'disabled';
 
 /** Whether the Local switch reads on. Older Cores lack `localOn`; derive it. */
 export function managedLocalOn(server: ManagedDevServer): boolean {
@@ -181,7 +185,7 @@ export function ManagedServerBlock({
             />
           </View>
           <View style={styles.rowText}>
-            <Text style={styles.rowTitle}>Shared online</Text>
+            <Text style={styles.rowTitle}>{ONLINE_SHARING}</Text>
             {publicLink && !publicLink.origin ? (
               <Text style={styles.rowDetail}>Creating link…</Text>
             ) : publicLink?.origin ? (
@@ -245,22 +249,26 @@ export function ManagedServerBlock({
               <Icon name="share" size={20} color={theme.colors.primary} />
             </Pressable>
           ) : null}
-          {publicSharing === 'premium-required' && !publicLink ? (
+          {(publicSharing === 'premium-required' || publicSharing === 'disabled') && !publicLink ? (
             <Pressable
               style={styles.premium}
               onPress={onOpenSettings}
               disabled={!onOpenSettings}
               accessibilityRole="button"
-              accessibilityLabel="Shared online needs Verity Premium. Open settings"
+              accessibilityLabel="Manage Online sharing in Verity Premium"
             >
-              <Text style={styles.premiumText}>Premium</Text>
+              {publicSharing === 'disabled' ? (
+                <Text style={styles.premiumText}>Off · Settings</Text>
+              ) : (
+                <PremiumBadge />
+              )}
             </Pressable>
           ) : (
             <SwitchControl
-              label={`Shared online for ${server.name}`}
+              label={`${ONLINE_SHARING} for ${server.name}`}
               value={onlineOn}
               pending={pending === 'online'}
-              disabled={busy || (publicSharing === 'unavailable' && !publicLink)}
+              disabled={busy || (publicSharing !== 'available' && !publicLink)}
               onChange={onOnline}
             />
           )}

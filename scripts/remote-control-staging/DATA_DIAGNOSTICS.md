@@ -33,6 +33,32 @@ unknown enums, invalid ordering, and oversized output instead of silently
 discarding records. No URLs, addresses, tickets, headers, content, or close
 reason text are included.
 
+Native builds with stream export support also include `streams` and
+`streamUpdatesDropped`. Each generation retains at most 16 stream value
+snapshots, preserving the first observed streams and updating their counters
+within the recording window. The gap counter counts omitted snapshot updates,
+not unique streams. Older exports without these fields remain readable.
+
+Stream snapshots contain the full locally generated stream ID (32 uppercase
+hexadecimal characters), the SOCKS/CONNECT dialect, fixed termination category,
+completed-send/received/delivered payload counters, data-frame counts, and at most
+eight TLS record types per direction. The first remote TLS handshake is recorded
+as a numeric type or `none` / `hrr`; no TLS bytes or certificate content are
+exported. Exact IDs can be hashed using the broker's documented canonical input;
+a Core display prefix alone cannot reconstruct that hash.
+
+`stream_open_requested` and `stream_opened` bracket the local WebSocket send of
+an open frame. `stream_send_requested` and `stream_send_completed` bracket the
+first data send on a stream, and `stream_stalled` identifies the stream that
+triggered the watchdog. These events carry the full stream ID and the existing
+local sequence/UTC/monotonic timestamps. Send completion is local transport
+acceptance, not receipt at the other endpoint. Stream snapshots are seeded when
+recording an existing tunnel, refreshed during traffic and frozen at the same
+capture deadline. The native recorder retains them after stop or replacement
+and independently of the settings screen. `startedLate` still means events
+before capture are unavailable; a stream ID does not by itself identify which
+URLSession request created it.
+
 `cancel_requested` is recorded under the tunnel stop lock before cleanup;
 `socket_cancel` records the requested outgoing code before `socket.cancel`.
 Attachment/read/ping errors are recorded before their resulting teardown.

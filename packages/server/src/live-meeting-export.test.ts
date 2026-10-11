@@ -1,7 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { renderLiveMeetingMarkdown } from './live-meeting-export.js';
+import {
+  renderLiveMeetingMarkdown,
+  liveMeetingSavedMessage,
+  liveMeetingTitle,
+  liveMeetingLinkLabel,
+  liveMeetingAnswerCount,
+  liveMeetingPeopleCount,
+} from './live-meeting-export.js';
 
 const meeting = {
   id: 'meeting-1',
@@ -100,4 +107,102 @@ describe('renderLiveMeetingMarkdown', () => {
       body('../../../apps/mobile/lib/liveMeetingSpeakers.ts'),
     );
   });
+});
+
+it('uses the chosen meeting title in the export and saved notice', () => {
+  const named = { ...meeting, title: 'Pricing sync' };
+  expect(liveMeetingTitle(named)).toBe('Pricing sync');
+  expect(renderLiveMeetingMarkdown({ meeting: named, notes: [], insights: [] })).toContain(
+    '# Pricing sync',
+  );
+  const details = {
+    sessionId: meeting.sessionId,
+    meetingId: meeting.id,
+    durationMinutes: 42,
+    people: 2,
+    notes: 0,
+  };
+  const notice = liveMeetingSavedMessage('/knowledge/meetings/pricing.md', named.title, details);
+  expect(JSON.parse(notice.split('<!-- verity-meeting: ')[1]!.split(' -->')[0]!)).toEqual(details);
+});
+
+it('counts completed answers without counting tool progress or duplicate question replies', () => {
+  const prompt =
+    'Research this point raised during live meeting meeting-1:\n\nWhat costs?\n\nMeeting request reference: request-1\n\nMeeting question reference: question-1';
+  expect(
+    liveMeetingAnswerCount(
+      [
+        { t: 'prompt', text: prompt },
+        { t: 'text', delta: 'Checking…' },
+        { t: 'tool_call' },
+        { t: 'result' },
+        { t: 'prompt', text: prompt },
+        { t: 'text', delta: '€10' },
+        { t: 'result' },
+        { t: 'prompt', text: prompt },
+        { t: 'text', delta: '€10 updated' },
+        { t: 'result' },
+      ],
+      'meeting-1',
+    ),
+  ).toBe(1);
+});
+
+it('keeps title punctuation literal in saved links', () => {
+  const title = String.raw`Sync](https://example.com) [Q1] \ files`;
+  const label = String.raw`Sync\](https://example.com) \[Q1\] \\ files`;
+  expect(liveMeetingLinkLabel(title)).toBe(label);
+  expect(liveMeetingSavedMessage('/knowledge/meeting.md', title)).toBe(
+    `Meeting saved to the knowledge base: [${label}](/knowledge/meeting.md)`,
+  );
+});
+
+it('counts resolved people after speaker merges and manual corrections', () => {
+  const turns = [
+    { speaker: 0, start: 0, end: 1 },
+    { speaker: 1, start: 1, end: 2 },
+  ];
+  expect(liveMeetingPeopleCount({ speakerTurns: turns, speakerMerges: { '1': 0 } })).toBe(1);
+  expect(
+    liveMeetingPeopleCount({
+      speakerTurns: turns,
+      speakerMerges: { '1': 0 },
+      speakerCorrections: [
+        { start: 3, end: 4, speaker: 2 },
+        { start: 4, end: 5, speaker: null },
+      ],
+    }),
+  ).toBe(2);
+});
+
+it('counts repeated direct questions once across punctuation, prefixes and request IDs', () => {
+  const requests = ['What costs?', 'VERITY, research what costs!'];
+  const events = requests.flatMap((request, index) => [
+    {
+      t: 'prompt',
+      text: `During live meeting meeting-1, please respond to this request:\n\n${request}\n\nRecent meeting transcript:\ncontext\n\nMeeting request reference: request-${index}`,
+    },
+    { t: 'text', delta: '€10' },
+    { t: 'result' },
+  ]);
+  expect(liveMeetingAnswerCount(events, 'meeting-1')).toBe(1);
+});
+
+it('does not count combined or unfinished retries as completed answers', () => {
+  const prompt =
+    'During live meeting meeting-1, please respond to this request:\n\nWhat costs?\n\nRecent meeting transcript:\ncontext';
+  const answered = [{ t: 'prompt', text: prompt }, { t: 'text', delta: '€10' }, { t: 'result' }];
+  expect(liveMeetingAnswerCount(answered, 'meeting-1')).toBe(1);
+  expect(liveMeetingAnswerCount([...answered, { t: 'prompt', text: prompt }], 'meeting-1')).toBe(0);
+  expect(
+    liveMeetingAnswerCount(
+      [
+        { t: 'prompt', text: prompt },
+        { t: 'prompt', text: prompt, steered: true },
+        { t: 'text', delta: 'Combined' },
+        { t: 'result' },
+      ],
+      'meeting-1',
+    ),
+  ).toBe(0);
 });

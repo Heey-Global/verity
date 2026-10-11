@@ -2041,6 +2041,10 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
 
   it('binds the project turn to its supervisor socket and accepts the real prod option set', async () => {
     const projectId = 'proj-1';
+    const cloneRoot = join(dir, 'workspaces');
+    const worktree = join(cloneRoot, 'heey-global-verity', '.verity-sessions', 'agent-x');
+    const cwd = join(worktree, 'packages', 'server');
+    await mkdir(cwd, { recursive: true });
     const socket = join(dir, 'runners', projectId, 'supervisor.sock');
     await mkdir(join(dir, 'runners', projectId), { recursive: true });
     let request: Record<string, unknown> | undefined;
@@ -2058,12 +2062,12 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
     const wiring = buildRunnerConductorWiring({
       ...baseDeps(),
       runnerSupervisor: true,
-      hostCloneRoot: '/srv/verity/workspaces',
+      hostCloneRoot: cloneRoot,
     });
     const client = await wiring.runner?.(claudeAcpBackend, {
       sessionId: 'session-1',
       projectId,
-      worktree: '/srv/verity/workspaces/heey-global-verity/.verity-sessions/agent-x',
+      worktree,
     });
     // The exact option set the Conductor builds for a fresh prod turn on the flag path:
     // durable identity + steer/permission/attachments, and — crucially — NONE of the
@@ -2072,8 +2076,8 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
     const turn = client!.startTurn(
       {
         store: {} as never,
-        worktree: '/srv/verity/workspaces/heey-global-verity/.verity-sessions/agent-x',
-        cwd: '/srv/verity/workspaces/heey-global-verity/.verity-sessions/agent-x/packages/server',
+        worktree,
+        cwd,
         prompt: 'hello',
         appendSystemPrompt: 'policy',
         storeSessionId: 'session-1',
@@ -2099,8 +2103,24 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
       prompt: 'hello',
       steerable: true,
       permissionControl: true,
-      attachments: [{ kind: 'image', mediaType: 'image/png', data: 'aGk=' }],
+      attachments: [
+        {
+          kind: 'image',
+          mediaType: 'image/png',
+          filePath: expect.stringContaining(
+            '/work/.verity-sessions/agent-x/packages/server/.verity-sessions/attachments/turn-turn-1/',
+          ),
+          byteSize: 2,
+          sha256: expect.any(String),
+        },
+      ],
     });
+    const references = request?.attachments as { filePath: string }[];
+    const stagedPath = references[0]!.filePath.replace(
+      '/work',
+      join(cloneRoot, 'heey-global-verity'),
+    );
+    expect(await readFile(stagedPath, 'utf8')).toBe('hi');
   });
 });
 

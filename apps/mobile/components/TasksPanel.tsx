@@ -63,6 +63,7 @@ export function TasksPanel({
   const { width, height } = useWindowDimensions();
   const { tasks, pending, conflicts, errors } = useTasks();
   const [showDone, setShowDone] = useState(false);
+  const [descriptions, setDescriptions] = useState<string[]>([]);
   const [expanded, setExpanded] = useState<string[]>([]);
   const [moving, setMoving] = useState<Task | null>(null);
   const [busy, setBusy] = useState(false);
@@ -116,7 +117,11 @@ export function TasksPanel({
   }, [context.projectId, githubRetry]);
   const githubData = github?.projectId === context.projectId ? github.data : null;
   const githubConnected = githubData?.connected === true;
-  const tab = preferences.tab === 'issues' && !githubConnected ? 'mine' : preferences.tab;
+  const tab =
+    (preferences.tab === 'issues' && !githubConnected) ||
+    (preferences.tab === 'agent' && context.sessionId === null)
+      ? 'mine'
+      : preferences.tab;
   const selectTab = (value: 'mine' | 'agent' | 'issues') => {
     setMoving(null);
     void saveTaskPreferences({ tab: value }).catch(() =>
@@ -174,7 +179,11 @@ export function TasksPanel({
   );
   const mine = visible.filter((task) => !isStep(task));
   const agentAll = tasks.filter(
-    (task) => isStep(task) && task.sessionId !== null && task.status !== 'dropped',
+    (task) =>
+      isStep(task) &&
+      task.sessionId !== null &&
+      task.status !== 'dropped' &&
+      task.sessionId === context.sessionId,
   );
   const agentDone = agentAll.filter((task) => task.status === 'done').length;
   const groups: TaskGroup[] = [
@@ -260,6 +269,9 @@ export function TasksPanel({
       },
     });
     const isDone = task.status === 'done';
+    const descriptionFirst =
+      !!task.detail &&
+      (task.titleGenerationStatus === 'pending' || task.titleGenerationStatus === 'failed');
     const syncing = pending.some((op) => op.id === task.id);
     const meta = [
       taskAge(task.createdAt),
@@ -305,10 +317,21 @@ export function TasksPanel({
           </Pressable>
           {/* The text is the editor: tap to change it, leave the field to save. */}
           <View style={styles.rowBody}>
-            {isDone ? (
+            {descriptionFirst && isDone ? (
+              <Text selectable style={styles.title}>
+                {task.detail}
+              </Text>
+            ) : descriptionFirst ? (
+              <TaskTitleInput
+                key="description"
+                task={{ ...task, title: task.detail! }}
+                onSave={(detail) => patchTask(task, { detail })}
+              />
+            ) : isDone ? (
               <Text style={[styles.title, styles.titleDone]}>{task.title}</Text>
             ) : (
               <TaskTitleInput
+                key="title"
                 task={task}
                 onSave={(title) =>
                   patchTask(task, { title }).catch((error: unknown) => {
@@ -322,6 +345,30 @@ export function TasksPanel({
               />
             )}
             <Text style={styles.meta}>{meta}</Text>
+            {task.detail && !descriptionFirst ? (
+              <>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: descriptions.includes(task.id) }}
+                  onPress={() =>
+                    setDescriptions((ids) =>
+                      ids.includes(task.id)
+                        ? ids.filter((id) => id !== task.id)
+                        : [...ids, task.id],
+                    )
+                  }
+                >
+                  <Text style={styles.link}>
+                    {descriptions.includes(task.id) ? 'Hide description' : 'Show description'}
+                  </Text>
+                </Pressable>
+                {descriptions.includes(task.id) ? (
+                  <Text selectable style={styles.description}>
+                    {task.detail}
+                  </Text>
+                ) : null}
+              </>
+            ) : null}
           </View>
           <Pressable
             ref={(node) => {
@@ -588,46 +635,45 @@ export function TasksPanel({
             </View>
           ) : null}
           <View style={styles.tabs} accessibilityRole="tablist">
-            {(['mine', 'agent', ...(githubConnected ? (['issues'] as const) : [])] as const).map(
-              (value) => (
-                <Pressable
-                  key={value}
-                  accessibilityRole="tab"
-                  disabled={preferences.loaded === false}
-                  accessibilityLabel={
-                    value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'GitHub Issues'
-                  }
-                  accessibilityState={{ selected: tab === value }}
-                  onPress={() => selectTab(value)}
-                  style={[styles.tab, tab === value ? styles.tabSelected : null]}
-                >
-                  <Text style={[styles.tabLabel, tab === value ? styles.tabLabelSelected : null]}>
-                    {value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'Issues'}
+            {(
+              [
+                'mine',
+                ...(context.sessionId !== null ? (['agent'] as const) : []),
+                ...(githubConnected ? (['issues'] as const) : []),
+              ] as const
+            ).map((value) => (
+              <Pressable
+                key={value}
+                accessibilityRole="tab"
+                disabled={preferences.loaded === false}
+                accessibilityLabel={
+                  value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'GitHub Issues'
+                }
+                accessibilityState={{ selected: tab === value }}
+                onPress={() => selectTab(value)}
+                style={[styles.tab, tab === value ? styles.tabSelected : null]}
+              >
+                <Text style={[styles.tabLabel, tab === value ? styles.tabLabelSelected : null]}>
+                  {value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'Issues'}
+                </Text>
+                <View style={[styles.count, tab === value ? styles.tabCountSelected : null]}>
+                  <Text
+                    style={[styles.countLabel, tab === value ? styles.tabCountLabelSelected : null]}
+                  >
+                    {value === 'mine'
+                      ? String(
+                          tasks.filter(
+                            (task) =>
+                              !isStep(task) && task.status !== 'done' && task.status !== 'dropped',
+                          ).length,
+                        )
+                      : value === 'agent'
+                        ? `${String(agentDone)}/${String(agentAll.length)}`
+                        : String(githubData?.issues.length ?? 0)}
                   </Text>
-                  <View style={[styles.count, tab === value ? styles.tabCountSelected : null]}>
-                    <Text
-                      style={[
-                        styles.countLabel,
-                        tab === value ? styles.tabCountLabelSelected : null,
-                      ]}
-                    >
-                      {value === 'mine'
-                        ? String(
-                            tasks.filter(
-                              (task) =>
-                                !isStep(task) &&
-                                task.status !== 'done' &&
-                                task.status !== 'dropped',
-                            ).length,
-                          )
-                        : value === 'agent'
-                          ? `${String(agentDone)}/${String(agentAll.length)}`
-                          : String(githubData?.issues.length ?? 0)}
-                    </Text>
-                  </View>
-                </Pressable>
-              ),
-            )}
+                </View>
+              </Pressable>
+            ))}
           </View>
           {githubError ? (
             <View style={styles.footer}>
@@ -1003,6 +1049,11 @@ const styles = StyleSheet.create((theme) => ({
   link: {
     color: theme.colors.primary,
     fontSize: theme.text.sm,
+  },
+  description: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.sm,
+    lineHeight: 21 * theme.fontScale,
   },
   conflict: {
     color: theme.colors.text,

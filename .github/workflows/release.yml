@@ -516,13 +516,10 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: node scripts/release-lifecycle.mjs '${{ inputs.train }}' '${{ github.sha }}'
 
-      # GitHub's Releases API creates a missing tag as part of the release. If
-      # a delayed run targets a release commit behind HEAD and workflow files
-      # changed in between, that implicit ref creation requires workflows:write
-      # — a permission GITHUB_TOKEN cannot receive. Create only that recovery
-      # tag as an ordinary Git ref first; Release Please then attaches the
-      # release to the existing, verified tag. On-time release runs retain the
-      # normal draft-without-a-tag lifecycle.
+      # The dispatcher now registers tags before entering the train queue.
+      # Keep this fail-closed check for releases stranded before that registrar
+      # and the strict workflow-merge barrier were deployed: a historical
+      # workflow tree cannot always be tagged by GITHUB_TOKEN afterwards.
       - name: Require tags for delayed release commits
         if: (github.event_name == 'push' || inputs.reconcile) && steps.lifecycle.outputs.mode == 'release'
         env:
@@ -906,7 +903,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26.11.1'
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: native-staging-${{ env.MOBILE_TAG }}
           path: native-candidates
@@ -1336,7 +1333,7 @@ jobs:
       # Reuse the same trusted binaries and boundary ledger as both Server builds.
       # renovate: datasource=github-actions depName=actions/download-artifact
       - name: Download trusted Server build context
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: trusted-server-build-context-v${{ env.VERSION }}
           path: features/verity-sandbox-toolkit
@@ -1477,7 +1474,7 @@ jobs:
       # Only consume this run's already verified compiler outputs; no checkout
       # or candidate code executes in the cache-writing job.
       # renovate: datasource=github-actions depName=actions/download-artifact
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: trusted-server-build-context-v${{ needs.release-please.outputs.backend-version }}
           path: features/verity-sandbox-toolkit
@@ -1555,7 +1552,7 @@ jobs:
 
       # renovate: datasource=github-actions depName=actions/upload-artifact
       - name: Upload trusted Server build context
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: trusted-server-build-context-v${{ needs.release-please.outputs.backend-version }}
           path: |
@@ -1690,7 +1687,7 @@ jobs:
 
       # renovate: datasource=github-actions depName=actions/download-artifact
       - name: Download trusted Server build context
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: trusted-server-build-context-v${{ env.VERSION }}
           path: features/verity-sandbox-toolkit
@@ -2108,7 +2105,7 @@ jobs:
 
       # renovate: datasource=github-actions depName=actions/upload-artifact
       - name: Upload architecture release evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: server-release-evidence-v${{ env.VERSION }}-${{ matrix.architecture }}
           path: ${{ runner.temp }}/server-release-evidence-${{ matrix.architecture }}/*
@@ -2136,7 +2133,7 @@ jobs:
       packages: write
     steps:
       # renovate: datasource=github-actions depName=actions/download-artifact
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: server-release-evidence-v${{ needs.release-please.outputs.backend-version }}-*
           path: evidence
@@ -2188,7 +2185,7 @@ jobs:
       VERSION: ${{ needs.release-please.outputs.backend-version }}
     steps:
       # renovate: datasource=github-actions depName=actions/download-artifact
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: server-release-evidence-v${{ env.VERSION }}-*
           path: evidence
@@ -2607,7 +2604,7 @@ jobs:
 
       - name: Upload digest-pinned relay reference
         # renovate: datasource=github-actions depName=actions/upload-artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verity-project-relay-image
           path: verity-project-relay-image.txt
@@ -2824,7 +2821,7 @@ jobs:
 
       - name: Upload immutable image reference
         # renovate: datasource=github-actions depName=actions/upload-artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verity-preview-${{ matrix.component }}-image
           path: verity-preview-${{ matrix.component }}-image.txt

@@ -16,18 +16,31 @@ export function useSessionKeyboardAvoidance() {
 
   useFocusEffect(
     useCallback(() => {
-      const reconcile = () => setEnabled(hasFocusedKeyboard());
+      let opening = false;
+      const reconcile = () =>
+        setEnabled(
+          hasFocusedKeyboard() || (opening && TextInput.State.currentlyFocusedInput() != null),
+        );
       const show = (
         Platform.OS === 'ios' ? ['keyboardWillShow', 'keyboardDidShow'] : ['keyboardDidShow']
       ).map((event) =>
-        Keyboard.addListener(event as 'keyboardWillShow' | 'keyboardDidShow', () =>
-          setEnabled(true),
-        ),
+        Keyboard.addListener(event as 'keyboardWillShow' | 'keyboardDidShow', () => {
+          // RN's cached visibility stays false until did-show. A pending
+          // navigation reconciliation must not disable an opening keyboard.
+          opening = event === 'keyboardWillShow';
+          setEnabled(true);
+        }),
       );
       // Keep following the controller throughout the closing animation.
-      const hide = Keyboard.addListener('keyboardDidHide', () => setEnabled(false));
+      const hide = Keyboard.addListener('keyboardDidHide', () => {
+        opening = false;
+        setEnabled(false);
+      });
       const appState = AppState.addEventListener('change', (state) => {
-        if (state === 'active') reconcile();
+        if (state === 'active') {
+          opening = false;
+          reconcile();
+        }
       });
       reconcile();
       const transition = InteractionManager.runAfterInteractions(reconcile);
@@ -43,6 +56,11 @@ export function useSessionKeyboardAvoidance() {
 
   // Disabling the controller returns an empty animated style, which does not
   // unset padding already written by Reanimated on a retained screen.
-  const resetStyle = useAnimatedStyle(() => (enabled ? {} : { paddingBottom: 0 }), [enabled]);
+  // Returning {} again would retain our zero and compete with the controller
+  // when the keyboard opens. Explicitly release the animated override.
+  const resetStyle = useAnimatedStyle(
+    () => ({ paddingBottom: enabled ? undefined : 0 }),
+    [enabled],
+  );
   return { enabled, resetStyle };
 }

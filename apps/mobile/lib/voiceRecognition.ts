@@ -6,7 +6,7 @@ import {
   type ExpoSpeechRecognitionNativeEventMap,
 } from 'expo-speech-recognition';
 import { useEffect, useRef } from 'react';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import { loadVoiceVocabulary, correctVoiceText } from './voiceVocabulary';
 
 interface DictationEvent {
@@ -21,7 +21,14 @@ interface DictationEvent {
 }
 interface NativeDictation {
   dictationLocales(): Promise<string[]>;
-  startDictation(session: string, locale: string, vocabulary: string[]): Promise<void>;
+  prepareDictation(locale: string): Promise<void>;
+  releasePreparedDictation(): Promise<void>;
+  startDictation(
+    session: string,
+    locale: string,
+    vocabulary: string[],
+    tappedAt: number,
+  ): Promise<void>;
   stopDictation(session: string, abort: boolean): Promise<void>;
   addListener(
     name: 'onDictationEvent',
@@ -64,7 +71,83 @@ function fail(id: string, message: string) {
     .finally(() => end(id));
 }
 
+const preparationClients = new Map<symbol, string[]>();
+let releaseTimer: ReturnType<typeof setTimeout> | undefined;
+let applicationSubscription: { remove(): void } | undefined;
+let preparationRequest = 0;
+let warming: Promise<void> | undefined;
+
+function releasePreparation() {
+  preparationRequest += 1;
+  warming = undefined;
+  void native?.releasePreparedDictation?.().catch(() => undefined);
+}
+
+function warmPreparation() {
+  if (AppState.currentState !== 'active' || !native?.prepareDictation || warming) return;
+  const preferred = [...preparationClients.values()].at(-1);
+  if (!preferred) return;
+  const request = ++preparationRequest;
+  const work = (async () => {
+    try {
+      const locale = await voiceRecognition.prepare(preferred);
+      if (request !== preparationRequest || AppState.currentState !== 'active') return;
+      await native.prepareDictation(locale);
+    } catch {
+      // Explicit start reports unsupported languages and missing native builds.
+    }
+  })();
+  warming = work;
+  void work.finally(() => {
+    if (warming === work) warming = undefined;
+  });
+}
+
 export const voiceRecognition = {
+  retainPreparation(preferred: string[]) {
+    if (Platform.OS !== 'ios' || !native?.prepareDictation) return () => {};
+    const client = Symbol('dictation-preparation');
+    const previous = [...preparationClients.values()].at(-1);
+    preparationClients.set(client, preferred);
+    if (releaseTimer) clearTimeout(releaseTimer);
+    releaseTimer = undefined;
+    if (previous && previous.join() !== preferred.join()) releasePreparation();
+    if (!applicationSubscription) {
+      applicationSubscription = AppState.addEventListener('change', (state) => {
+        if (state === 'active') warmPreparation();
+        else if (state === 'background') {
+          releasePreparation();
+          // Dictation never keeps the microphone active after leaving the app.
+          voiceRecognition.abort();
+        }
+      });
+    }
+    warmPreparation();
+    let retained = true;
+    return () => {
+      if (!retained) return;
+      retained = false;
+      const previousPreferred = [...preparationClients.values()].at(-1);
+      preparationClients.delete(client);
+      const nextPreferred = [...preparationClients.values()].at(-1);
+      if (nextPreferred) {
+        if (previousPreferred?.join() !== nextPreferred.join()) {
+          releasePreparation();
+          warmPreparation();
+        }
+      } else {
+        // Invalidate pending JS locale selection immediately on blur.
+        preparationRequest += 1;
+        warming = undefined;
+        releaseTimer = setTimeout(() => {
+          releasePreparation();
+          applicationSubscription?.remove();
+          applicationSubscription = undefined;
+          releaseTimer = undefined;
+        }, 60_000);
+      }
+    };
+  },
   addListener(name: EventName, listener: (event: VoiceEvent) => void) {
     if (Platform.OS !== 'ios')
       return ExpoSpeechRecognitionModule.addListener(
@@ -83,7 +166,9 @@ export const voiceRecognition = {
       !native ||
       typeof native.dictationLocales !== 'function' ||
       typeof native.startDictation !== 'function' ||
-      typeof native.stopDictation !== 'function'
+      typeof native.stopDictation !== 'function' ||
+      typeof native.prepareDictation !== 'function' ||
+      typeof native.releasePreparedDictation !== 'function'
     )
       throw new Error('Voice input requires a new native app build.');
     const language = (tag: string) => tag.replace(/_/g, '-').split('-')[0]?.toLowerCase();
@@ -95,12 +180,14 @@ export const voiceRecognition = {
     if (!locale) throw new Error('Speech recognition is unavailable for your device or language.');
     return locale;
   },
-  async startIOS(locale: string) {
+  async startIOS(locale: string, tappedAt = Date.now()) {
     if (
       !native ||
       typeof native.dictationLocales !== 'function' ||
       typeof native.startDictation !== 'function' ||
-      typeof native.stopDictation !== 'function'
+      typeof native.stopDictation !== 'function' ||
+      typeof native.prepareDictation !== 'function' ||
+      typeof native.releasePreparedDictation !== 'function'
     )
       throw new Error('Voice input requires a new native app build.');
     if (session) throw new Error('Another voice recording is active.');
@@ -142,6 +229,7 @@ export const voiceRecognition = {
         id,
         locale,
         vocabulary.terms.map((entry) => entry.term),
+        tappedAt,
       );
     } catch (error) {
       if (session === id)

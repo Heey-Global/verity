@@ -38,6 +38,9 @@ type Header = {
 function hitsExcluded(header: Header, x: number, y: number) {
   'worklet';
   return (header.excluded ?? []).some((ref) => {
+    // Optional issue links may never mount. Reanimated passes their null shadow
+    // node to native measure(), which throws instead of returning null.
+    if (ref() === null) return false;
     const bounds = measure(ref);
     // Include the issue link's touch padding so a near-edge press stays a link.
     return (

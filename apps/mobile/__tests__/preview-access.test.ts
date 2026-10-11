@@ -60,3 +60,16 @@ it('offers Premium settings when the local network cannot be reached without ent
   alert.mock.calls[0]?.[2]?.find((choice) => choice.text === 'Open settings')?.onPress?.();
   expect(settings).toHaveBeenCalledTimes(1);
 });
+
+it('offers Premium settings when online sharing is disabled locally', async () => {
+  const alert = jest.spyOn(Alert, 'alert');
+  const settings = jest.fn();
+  await openLocalPreview(share, 'disabled', jest.fn(), settings);
+  expect(alert).toHaveBeenCalledWith(
+    expect.any(String),
+    expect.stringContaining('switched off'),
+    expect.any(Array),
+  );
+  alert.mock.calls[0]?.[2]?.find((button) => button.text === 'Open settings')?.onPress?.();
+  expect(settings).toHaveBeenCalled();
+});

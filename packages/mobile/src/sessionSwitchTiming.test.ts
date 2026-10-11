@@ -1,4 +1,9 @@
-import { exportSessionSwitchTimings, cancelSessionSwitch } from './sessionSwitchTiming.js';
+import {
+  exportSessionSwitchTimings,
+  cancelSessionSwitch,
+  beginSwitchTransportRequest,
+  markSwitchTransportRequest,
+} from './sessionSwitchTiming.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   beginSessionSwitch,
@@ -62,4 +67,34 @@ it('separates permission gestures from session loading without retaining approva
   expect(sessionSwitchTiming('same', 'permission')).toBe(allow);
   expect(session.phases).toEqual([]);
   expect(exportSessionSwitchTimings().at(-1)?.kind).toBe('permission');
+});
+
+// Activity aggregation previously silently displaced the final readiness markers.
+it('reserves lifecycle capacity after metrics fill their bounded budget', () => {
+  const trace = beginSessionSwitch('full-metrics');
+  for (let i = 0; i < 100; i++) markSessionSwitch(trace, 'activity-test');
+  markSessionSwitch(trace, 'anchor-read-end');
+  markSessionSwitch(trace, 'transcript-ready-react-commit');
+  markSessionSwitch(trace, 'flash-list-on-load');
+  expect(trace.phases).toHaveLength(67);
+  expect(trace.phases.at(-1)?.phase).toBe('flash-list-on-load');
+});
+
+it('bounds correlated requests and retains late callbacks on their original gesture', () => {
+  const first = beginSessionSwitch('private-target');
+  const requestId = beginSwitchTransportRequest(first, 'events')!;
+  beginSessionSwitch('other');
+  markSwitchTransportRequest(requestId, 'native-return', 123);
+  const report = exportSessionSwitchTimings();
+  const old = report.find((trace) => trace.switchId === first.id)!;
+  expect(old.transportRequests[0]?.phases.at(-1)?.phase).toBe('native-return');
+  expect(report.at(-1)?.transportRequests).toEqual([]);
+  expect(JSON.stringify(report)).not.toContain('private-target');
+  const current = beginSessionSwitch('bounded-transport');
+  for (let i = 0; i < 100; i++) beginSwitchTransportRequest(current, 'events');
+  const requests = exportSessionSwitchTimings().at(-1)!.transportRequests;
+  expect(requests).toHaveLength(16);
+  expect(exportSessionSwitchTimings().at(-1)!.transportOmissions.requests).toBe(84);
+  for (let i = 0; i < 100; i++) markSwitchTransportRequest(requests[0]!.requestId, 'route-ready');
+  expect(exportSessionSwitchTimings().at(-1)!.transportRequests[0]!.phases).toHaveLength(24);
 });

@@ -180,6 +180,11 @@ One decision per contested term. These labels are used **verbatim** on both surf
 | **Doppler binding** | The per-project mapping (project → config) that consumes the account token | Project Configure sub-screen | Account Doppler token (its prerequisite) |
 | **Minted** | Green: the Doppler binding has a live minted secret | Project Doppler binding, green pill only | `Bound` (the in-progress step) |
 | **Bound** | The binding exists but is not yet minted — an **in-progress**, not optional, state | Project Doppler binding, rendered as `transient` (spinner + word), **not** muted | `Minted` (done) / `Optional` (muted) |
+| **Verity Premium** | The umbrella for every paid Uplink feature | Settings row, hero panel, upsell dialogs and badges | "Uplink" as a product name in primary UI (it is the transport) |
+| **Uplink subscription key** | The credential that activates Verity Premium on a server | The one secret field on the Verity Premium screen | "Verity subscription key", "Premium key" |
+| **Online sharing** | Public preview links that work over the internet | Preview sheet, dev-server rows, Verity Premium feature switch, diagnostics | "Shared online", "Over the internet", "public sharing" |
+| **Remote access** | The app reaching Core from outside the local network through Uplink | Verity Premium feature switch, diagnostics, connection test | "Remote Control" |
+| **Off** | Muted state for a feature the operator switched off deliberately | Verity Premium and diagnostics feature rows, rendered as `optional` | `Needs setup` (a fault) / `Not included` (Uplink does not grant it) |
 
 ### Green-word convention
 

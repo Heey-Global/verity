@@ -145,6 +145,7 @@ export function projectSocketBindingName(identity: InternalConnectionIdentity): 
 export const PROJECT_UDS_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/git/sign',
   'POST /internal/project/memory',
+  'POST /internal/package-install',
   // `verity-dev-server`: managed dev servers (concept 2.6), same capability as memory.
   'POST /internal/dev-servers',
   // The loopback MCP gateway (ADR 0014 D1). It rides the project-bound socket for the same

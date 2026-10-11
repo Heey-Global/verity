@@ -78,6 +78,37 @@ describe('useBranches live updates', () => {
     jest.useRealTimers();
   });
 
+  it('aborts the previous identity and ignores its late response', async () => {
+    const old = deferred<BranchList>();
+    const next = deferred<BranchList>();
+    const getBranches = jest.fn().mockReturnValueOnce(old.promise).mockReturnValue(next.promise);
+    const client = { getBranches } as unknown as VerityClient;
+    const hook = renderHook(({ id }: { id: string }) => useBranches(client, id), {
+      initialProps: { id: 'old' },
+    });
+    const signal = getBranches.mock.calls[0][1] as AbortSignal;
+    expect(signal.aborted).toBe(false);
+    hook.rerender({ id: 'next' });
+    expect(signal.aborted).toBe(true);
+    await act(async () => old.resolve({ ...branches(), current: 'stale' }));
+    expect(hook.result.current.current).not.toBe('stale');
+    await act(async () => next.resolve({ ...branches(), current: 'next' }));
+    expect(hook.result.current.current).toBe('next');
+  });
+
+  it('aborts an unfinished read on blur without publishing its late snapshot', async () => {
+    const slow = deferred<BranchList>();
+    const getBranches = jest.fn().mockReturnValue(slow.promise);
+    const client = { getBranches } as unknown as VerityClient;
+    const hook = renderHook(() => useBranches(client, 's'));
+    const signal = getBranches.mock.calls[0][1] as AbortSignal;
+    mockFocused = false;
+    hook.rerender({});
+    expect(signal.aborted).toBe(true);
+    await act(async () => slow.resolve(branches()));
+    expect(hook.result.current.current).toBeUndefined();
+  });
+
   it('paints a known PR synchronously and revalidates without hiding it', async () => {
     const slow = deferred<BranchList>();
     const getBranches = jest.fn().mockReturnValue(slow.promise);

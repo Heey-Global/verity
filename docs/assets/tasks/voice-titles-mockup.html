@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Verity — Spoken task titles</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #000;
+        --surface: #0a0b16;
+        --alt: #15132b;
+        --border: #2a2552;
+        --text: #eef0ff;
+        --muted: #9a9ec9;
+        --blue: #2ab0ff;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #171720;
+        color: var(--text);
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+        padding: 24px 16px;
+      }
+      main {
+        max-width: 440px;
+        margin: auto;
+      }
+      .controls {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      button {
+        font: inherit;
+        color: inherit;
+        cursor: pointer;
+        border: 1px solid var(--border);
+        background: var(--alt);
+        border-radius: 12px;
+        padding: 8px 14px;
+      }
+      button:focus-visible,
+      summary:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 4px;
+      }
+      .controls button[aria-pressed='true'] {
+        border-color: var(--blue);
+        color: var(--blue);
+      }
+      .phone {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 32px;
+        min-height: 760px;
+        overflow: hidden;
+      }
+      .status {
+        display: flex;
+        justify-content: space-between;
+        padding: 20px 24px;
+        font-weight: 600;
+      }
+      .session {
+        padding: 12px 24px;
+        border-bottom: 1px solid var(--border);
+        text-align: center;
+        color: var(--muted);
+      }
+      .chat {
+        padding: 24px;
+        color: var(--muted);
+        min-height: 120px;
+      }
+      .sheet {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 28px;
+        margin: 0 8px 10px;
+        padding: 12px 20px 24px;
+      }
+      .handle {
+        width: 44px;
+        height: 5px;
+        border-radius: 5px;
+        background: var(--border);
+        margin: 0 auto 20px;
+      }
+      .head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 20px;
+      }
+      h1 {
+        font-size: 27px;
+        margin: 0;
+      }
+      .capture {
+        color: var(--blue);
+        font-size: 14px;
+      }
+      .tabs {
+        display: flex;
+        border: 1px solid var(--border);
+        background: var(--alt);
+        border-radius: 14px;
+        padding: 4px;
+        gap: 4px;
+      }
+      .tabs button {
+        flex: 1;
+        border: 0;
+        padding: 9px 4px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .tabs .selected {
+        background: var(--bg);
+        color: var(--text);
+      }
+      .badge {
+        background: var(--border);
+        border-radius: 12px;
+        padding: 1px 7px;
+        margin-left: 4px;
+        font-size: 12px;
+      }
+      .selected .badge {
+        background: var(--blue);
+        color: #00111f;
+      }
+      article {
+        padding: 22px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      article:last-child {
+        border: 0;
+        padding-bottom: 0;
+      }
+      .task {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+      }
+      .check {
+        appearance: none;
+        flex: none;
+        width: 22px;
+        height: 22px;
+        border: 2px solid var(--muted);
+        border-radius: 50%;
+        margin: 4px 0;
+        cursor: pointer;
+      }
+      .check:checked {
+        background: var(--blue);
+        border-color: var(--blue);
+      }
+      .task:has(.check:checked) h2 {
+        text-decoration: line-through;
+        color: var(--muted);
+      }
+      h2 {
+        font-size: 18px;
+        font-weight: 500;
+        line-height: 1.4;
+        margin: 0 0 6px;
+      }
+      .meta {
+        color: var(--muted);
+        font-size: 12px;
+        margin: 0;
+      }
+      details {
+        margin: 12px 0 0 34px;
+      }
+      summary {
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 13px;
+      }
+      .hide,
+      details[open] .show {
+        display: none;
+      }
+      details[open] .hide {
+        display: inline;
+      }
+      details p {
+        background: var(--alt);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px;
+        color: var(--muted);
+        font-size: 14px;
+        margin-bottom: 0;
+      }
+      .note {
+        color: var(--muted);
+        font-size: 12px;
+        margin: 16px 4px;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      @media (max-width: 380px) {
+        body {
+          padding: 12px 6px;
+        }
+        .sheet {
+          padding: 12px 14px 20px;
+        }
+      }
+      /* Match TasksPanel.tsx and the existing mobile theme tokens. */
+      .phone {
+        max-width: 393px;
+        margin: auto;
+        border-radius: 32px;
+      }
+      .sheet {
+        border-radius: 24px;
+        margin: 0 8px 24px;
+        padding: 8px 16px 12px;
+      }
+      .handle {
+        width: 38px;
+        height: 5px;
+        margin-bottom: 4px;
+      }
+      .head {
+        margin-bottom: 4px;
+        justify-content: initial;
+        gap: 0;
+      }
+      h1 {
+        flex: 1;
+        font-size: 20px;
+        font-weight: 700;
+      }
+      .icon-button {
+        width: 44px;
+        height: 44px;
+        padding: 10px;
+        border: 0;
+        background: transparent;
+        border-radius: 999px;
+        color: var(--muted);
+      }
+      .icon-button svg {
+        width: 20px;
+        height: 20px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .tabs {
+        padding: 3px;
+        gap: 3px;
+        border-radius: 10px;
+        margin-bottom: 4px;
+      }
+      .tabs button {
+        min-height: 40px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .tabs .selected {
+        background: var(--surface);
+        font-weight: 600;
+      }
+      .badge {
+        border: 1px solid var(--border);
+        background: var(--alt);
+        border-radius: 999px;
+        padding: 1px 8px;
+        font-size: 10px;
+        font-weight: 600;
+      }
+      .section-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 16px 0 4px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+        text-transform: uppercase;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        background: var(--blue);
+        border-radius: 50%;
+      }
+      article {
+        padding: 8px 0;
+      }
+      .task {
+        gap: 8px;
+      }
+      .task > div {
+        flex: 1;
+      }
+      .task::after {
+        content: '···';
+        color: var(--muted);
+        width: 32px;
+        text-align: right;
+        font-size: 22px;
+        line-height: 24px;
+      }
+      .check {
+        width: 20px;
+        height: 20px;
+        border-color: #5d6090;
+        margin-top: 2px;
+      }
+      h2 {
+        font-size: 16px;
+        font-weight: 400;
+        line-height: 21px;
+        margin-bottom: 2px;
+      }
+      .meta {
+        color: #5d6090;
+        font-size: 12px;
+      }
+      details {
+        margin: 8px 0 0 28px;
+      }
+      summary {
+        color: var(--blue);
+        font-size: 14px;
+      }
+      details p {
+        background: transparent;
+        border: 0;
+        border-radius: 0;
+        padding: 0;
+        font-size: 14px;
+        line-height: 21px;
+        margin: 8px 0 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <nav class="controls" aria-label="Mockup context">
+        <button id="session" aria-pressed="true">Session</button>
+        <button id="home" aria-pressed="false">Home screen</button>
+      </nav>
+      <div class="phone">
+        <div class="status"><span>9:41</span><span aria-label="Battery">90%</span></div>
+        <div class="session" id="context">App improvements</div>
+        <div class="chat">Capture an idea now.<br />Find it here when you are ready.</div>
+        <section class="sheet" aria-label="Tasks">
+          <div class="handle"></div>
+          <div class="head">
+            <h1>Tasks</h1>
+            <button class="icon-button" id="capture" aria-label="Simulate voice capture">
+              <svg viewBox="0 0 24 24">
+                <rect x="9" y="2" width="6" height="12" rx="3" />
+                <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" />
+              </svg></button
+            ><span class="icon-button" aria-hidden="true"
+              ><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg
+            ></span>
+          </div>
+          <nav class="tabs" aria-label="Task views">
+            <button class="selected" aria-current="page">
+              Mine <span class="badge" id="count">3</span>
+            </button>
+            <button id="agent" disabled>Agent <span class="badge">1/3</span></button>
+            <button disabled>Issues <span class="badge">14</span></button>
+          </nav>
+          <div class="section-label"><span class="dot"></span>App improvements</div>
+          <div id="tasks" aria-live="polite">
+            <article>
+              <div class="task">
+                <input
+                  class="check"
+                  type="checkbox"
+                  aria-label="Complete Shorten spoken task titles"
+                />
+                <div>
+                  <h2>Shorten spoken task titles</h2>
+                  <p class="meta">open · just now</p>
+                </div>
+              </div>
+              <details>
+                <summary>
+                  <span class="show">Show description</span
+                  ><span class="hide">Hide description</span>
+                </summary>
+                <p>
+                  I would like the agent to turn the tasks I dictate into short, clear titles. Keep
+                  everything I said available as a description behind the title.
+                </p>
+              </details>
+            </article>
+            <article>
+              <div class="task">
+                <input
+                  class="check"
+                  type="checkbox"
+                  aria-label="Complete Filter tasks by session"
+                />
+                <div>
+                  <h2>Filter tasks by session</h2>
+                  <p class="meta">open · 2 minutes ago</p>
+                </div>
+              </div>
+              <details open>
+                <summary>
+                  <span class="show">Show description</span
+                  ><span class="hide">Hide description</span>
+                </summary>
+                <p>
+                  When I open a session, only show the agent tasks for that session. Hide the Agent
+                  tab on the home screen.
+                </p>
+              </details>
+            </article>
+            <article>
+              <div class="task">
+                <input class="check" type="checkbox" aria-label="Complete Improve onboarding" />
+                <div>
+                  <h2>Improve onboarding</h2>
+                  <p class="meta">open · 5 minutes ago</p>
+                </div>
+              </div>
+              <details>
+                <summary>
+                  <span class="show">Show description</span
+                  ><span class="hide">Hide description</span>
+                </summary>
+                <p>
+                  Make the first steps easier to understand so I can connect my project and start my
+                  first session without searching through settings.
+                </p>
+              </details>
+            </article>
+          </div>
+        </section>
+      </div>
+      <p class="note" id="model">
+        Design preview · Session model · Capture is simulated; no microphone or model calls.
+      </p>
+    </main>
+    <script>
+      const session = document.getElementById('session');
+      const home = document.getElementById('home');
+      const model = document.getElementById('model');
+      function selectContext(isSession) {
+        session.setAttribute('aria-pressed', String(isSession));
+        home.setAttribute('aria-pressed', String(!isSession));
+        document.getElementById('agent').hidden = !isSession;
+        document.getElementById('context').textContent = isSession ? 'App improvements' : 'Verity';
+        model.textContent = `Design preview · ${isSession ? 'Session model' : 'Default model'} · Capture is simulated; no microphone or model calls.`;
+      }
+      session.addEventListener('click', () => selectContext(true));
+      home.addEventListener('click', () => selectContext(false));
+      document.getElementById('capture').addEventListener('click', () => {
+        const article = document.createElement('article');
+        article.innerHTML =
+          '<div class="task"><input class="check" type="checkbox" aria-label="Complete captured task" /><div><h2>I want the task list to update immediately after I dictate a new task, without waiting for the title to finish.</h2><p class="meta">saved · just now</p></div></div><details><summary><span class="show">Show description</span><span class="hide">Hide description</span></summary><p>I want the task list to update immediately after I dictate a new task, without waiting for the title to finish.</p></details>';
+        article.querySelector('details').hidden = true;
+        document.getElementById('tasks').prepend(article);
+        document.getElementById('count').textContent = String(
+          document.querySelectorAll('article').length,
+        );
+        setTimeout(() => {
+          article.querySelector('h2').textContent = 'Update tasks immediately';
+          article.querySelector('details').hidden = false;
+        }, 1500);
+      });
+    </script>
+  </body>
+</html>

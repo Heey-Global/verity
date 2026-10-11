@@ -1,3 +1,5 @@
+import { contextOverviewClient } from '../lib/sharedTaskContext';
+import { beginClientActivity } from '../lib/sessionSwitchTiming';
 import { subscribeLiveRefresh } from '../lib/liveConnection';
 import {
   type VerityClient,
@@ -40,10 +42,21 @@ export interface UseSessionList extends SessionListState {
 export function useSessionList(client: VerityClient): UseSessionList {
   // `onChange` is the React setter, wrapped so it resolves lazily (it's declared
   // below). This relies on the model emitting a FRESH state object on every change
-  // (its `state` getter returns a new literal + a new array), so React never bails
-  // out of a re-render on a same-reference no-op.
+  // so loading and time-dependent fields propagate even when sessions are unchanged.
   const model = useMemo(
-    () => new SessionListModel({ client, pollIntervalMs: 0, onChange: (s) => setState(s) }),
+    () =>
+      new SessionListModel({
+        client: contextOverviewClient(client),
+        pollIntervalMs: 0,
+        onChange: (s) => {
+          const finish = beginClientActivity('session-list-publish');
+          try {
+            setState(s);
+          } finally {
+            finish();
+          }
+        },
+      }),
     [client],
   );
 

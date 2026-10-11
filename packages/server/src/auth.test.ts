@@ -871,6 +871,7 @@ describe('global auth gate (onRequest)', () => {
           ['POST', '/internal/mcp'],
           ['GET', '/internal/mcp'],
           ['POST', '/internal/control-plane/mcp'],
+          ['POST', '/internal/control-plane/memory'],
           ['GET', '/internal/control-plane/mcp'],
         ] as const) {
           const response = await app.inject({

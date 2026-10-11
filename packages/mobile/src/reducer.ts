@@ -280,7 +280,7 @@ export class SessionReducer {
       case 'text':
         this.appendText(seq, ts, event.delta, event.parentToolId);
         break;
-      case 'notice':
+      case 'notice': {
         this.active = null;
         if (event.role === 'operator') {
           this.appendMessage({
@@ -291,6 +291,26 @@ export class SessionReducer {
             text: event.text,
           });
         } else {
+          // Refiling publishes fresh metrics without adding another saved-meeting card.
+          const savedLink =
+            /^Meeting saved to the knowledge base: \[.*\]\(([^\n]+)\)(?:\n<!-- verity-meeting: .+ -->)?$/.exec(
+              event.text,
+            )?.[1];
+          const previous =
+            savedLink &&
+            this._messages.find(
+              (message) =>
+                message.kind === 'agent-text' &&
+                message.id.startsWith('notice-') &&
+                /^Meeting saved to the knowledge base: \[.*\]\(([^\n]+)\)(?:\n<!-- verity-meeting: .+ -->)?$/.exec(
+                  message.text,
+                )?.[1] === savedLink,
+            );
+          if (previous && previous.kind === 'agent-text') {
+            previous.text = event.text;
+            this.messageChanged(previous);
+            break;
+          }
           this.appendMessage({
             kind: 'agent-text',
             id: `notice-${String(seq)}`,
@@ -300,6 +320,7 @@ export class SessionReducer {
           });
         }
         break;
+      }
       case 'prompt': {
         // The operator's steering prompt → a user-text message. A new turn
         // closes any open agent streaming block and marks the session running (#79).

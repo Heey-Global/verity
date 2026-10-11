@@ -110,3 +110,15 @@ never mints or forwards project credentials for those reads; GitHub rejects priv
 repositories. Foreign writes and foreign API access remain rejected. Redirects
 are not followed for Git requests. Project/container capability and `git-read`
 authorization are still required.
+
+## Merge diagnostics permissions
+
+Diagnostic requests use separate repository-scoped tokens and caches: `statuses: read`
+for commit statuses, `administration: read` for classic branch protection, and
+`contents: read` for repository rulesets and effective branch rules. Ordinary project
+tokens and App credential validation keep their existing permission requirements.
+Missing diagnostic grants deny only the affected diagnostic request; there is no
+fallback to broader credentials. If GitHub denies issuance, verify the App and
+installation grants from a trusted administrative context before requesting approval.
+All routes remain bound to the project repository. Protection/ruleset mutations
+remain denied. Installation grants and deployed behavior require live verification.

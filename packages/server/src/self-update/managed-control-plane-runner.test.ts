@@ -14,8 +14,11 @@ import {
   MANAGED_CONTROL_PLANE_RUNNER_INIT_NAME,
   MANAGED_CONTROL_PLANE_RUNNER_NAME,
   reconcileManagedControlPlaneRunner,
+  desiredSpec,
   type ManagedControlPlaneRunnerDocker,
 } from './managed-control-plane-runner.js';
+import { knowledgeSandboxBinds } from '../knowledge-folder.js';
+import { CONTROL_PLANE_PROJECT_ID } from '../control-plane-project.js';
 import { MANAGED_DEPLOYMENT_LABEL, MANAGED_ROLE_LABEL } from './managed-server-owner.js';
 
 const image = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
@@ -123,6 +126,18 @@ function client(
  *  implementation type-checks. */
 const spy = <T extends (...args: never[]) => unknown>(fn: unknown): Mock<T> => fn as Mock<T>;
 
+// Inspect echoes subpaths from HostConfig, not from daemon-resolved host sources.
+const knowledgeMounts = knowledgeSandboxBinds('/data', CONTROL_PLANE_PROJECT_ID).map((bind) => {
+  const [source, destination, mode] = bind.split(':');
+  return {
+    type: 'volume',
+    name: 'verity-data',
+    subpath: source!.slice('/data/'.length),
+    destination: destination!,
+    readWrite: mode !== 'ro',
+  };
+});
+
 const environment = {
   VERITY_CONTROL_PLANE_RUNNER: '1',
   VERITY_RUNNER_RUNTIME_GID: '1101',
@@ -151,6 +166,73 @@ function withoutCapability<T extends object, K extends keyof T>(value: T, key: K
 }
 
 describe('managed control-plane Runner ownership', () => {
+  it('mounts exactly the Control project Knowledge with ordinary project permissions', () => {
+    const actual = desiredSpec(image, 'deployment-1', 'amd64', '1101').volumeMounts!.filter(
+      (mount) => mount.target === '/knowledge' || mount.target.startsWith('/knowledge/'),
+    );
+    expect(
+      actual.map((mount) => ({
+        type: 'volume',
+        name: mount.volume,
+        subpath: mount.subpath,
+        destination: mount.target,
+        readWrite: !mount.readOnly,
+      })),
+    ).toEqual(knowledgeMounts);
+  });
+
+  it('repairs missing, writable or foreign project Knowledge on an otherwise healthy Runner', async () => {
+    for (const mounts of [
+      [],
+      knowledgeMounts.slice(1),
+      knowledgeMounts.map((mount) => ({ ...mount, readWrite: true })),
+      knowledgeMounts.map((mount) => ({
+        ...mount,
+        subpath: mount.subpath.replace(CONTROL_PLANE_PROJECT_ID, 'other-project'),
+      })),
+      [
+        ...knowledgeMounts,
+        {
+          type: 'volume',
+          name: 'verity-data',
+          subpath: 'knowledge/other-project',
+          destination: '/knowledge/other',
+          readWrite: false,
+        },
+      ],
+    ]) {
+      const docker = client(
+        [{ id: 'managed', imageId: 'sha256:new', names: [MANAGED_CONTROL_PLANE_RUNNER_NAME] }],
+        {
+          managed: {
+            id: 'managed',
+            running: true,
+            image,
+            labels: {
+              [MANAGED_DEPLOYMENT_LABEL]: 'deployment-1',
+              [MANAGED_ROLE_LABEL]: 'control-plane-runner',
+            },
+            mounts: [
+              ...mounts,
+              { type: 'bind', source: '/var/run/docker.sock', destination: '/var/run/docker.sock' },
+            ],
+            groupAdd: ['1101', '986'],
+          },
+        },
+      );
+      await reconcileManagedControlPlaneRunner({
+        managedRoot: await authority(),
+        docker,
+        environment,
+        ...immediate,
+      });
+      expect(docker.removeContainer).toHaveBeenCalledWith('managed');
+      expect(docker.createContainer).toHaveBeenCalledWith(
+        expect.objectContaining({ name: MANAGED_CONTROL_PLANE_RUNNER_NAME }),
+      );
+    }
+  });
+
   it('creates a digest-pinned Runner with the private runtime boundary', async () => {
     const docker = client();
     await reconcileManagedControlPlaneRunner({
@@ -249,6 +331,7 @@ describe('managed control-plane Runner ownership', () => {
           // and the up-to-date check now says so: mounts are fixed at creation,
           // so a Runner without it can only be brought into line by a recreate.
           mounts: [
+            ...knowledgeMounts,
             { type: 'bind', source: '/var/run/docker.sock', destination: '/var/run/docker.sock' },
           ],
           groupAdd: ['1101', '986'],
@@ -449,6 +532,7 @@ describe('managed control-plane Runner ownership', () => {
           // and the up-to-date check now says so: mounts are fixed at creation,
           // so a Runner without it can only be brought into line by a recreate.
           mounts: [
+            ...knowledgeMounts,
             { type: 'bind', source: '/var/run/docker.sock', destination: '/var/run/docker.sock' },
           ],
           groupAdd: ['1101', '986'],
@@ -511,6 +595,7 @@ describe('managed control-plane Runner ownership', () => {
           // and the up-to-date check now says so: mounts are fixed at creation,
           // so a Runner without it can only be brought into line by a recreate.
           mounts: [
+            ...knowledgeMounts,
             { type: 'bind', source: '/var/run/docker.sock', destination: '/var/run/docker.sock' },
           ],
           groupAdd: ['1101', '986'],
@@ -561,6 +646,9 @@ describe('managed control-plane Runner ownership', () => {
     );
     // Setgid is the whole mechanism: the Server publishes identity unprivileged and
     // cannot chown() it to the Runner, so the group has to be inherited.
+    expect(prepare.command?.join(' ')).toContain(
+      'setpriv --reuid=1000 --regid=1000 --clear-groups /usr/local/bin/verity-control-plane-knowledge-init /data',
+    );
     expect(prepare.command?.join(' ')).toContain('chmod 2770 /identity');
     expect(prepare.command?.join(' ')).toContain('chown 0:1101 /identity');
     expect(prepare.command?.join(' ')).toContain('chmod 0170 /runner');
@@ -1003,6 +1091,7 @@ describe('managed control-plane Runner ownership', () => {
             [MANAGED_ROLE_LABEL]: 'control-plane-runner',
           },
           mounts: [
+            ...knowledgeMounts,
             { type: 'bind', source: '/var/run/docker.sock', destination: '/var/run/docker.sock' },
           ],
           groupAdd: ['1101', '986'],

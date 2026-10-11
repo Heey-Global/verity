@@ -213,7 +213,7 @@ export interface RunTurnOptions {
   timeoutMs?: number;
   /**
    * Operator-cancel signal (issue #79). When it aborts, the spawned agent is
-   * killed with SIGTERM; the run then settles normally (partial output already
+   * killed immediately with SIGKILL; the run then settles normally (partial output already
    * persisted), so the caller distinguishes a cancel from a crash by checking
    * `signal.aborted`, not the exit code. The transcript-tail abort is separate.
    */
@@ -258,7 +258,7 @@ export interface RunResult {
   stderr: string;
   /**
    * True iff THIS run was terminated by its operator-cancel {@link
-   * RunTurnOptions.signal} (issue #79) — the abort handler fired and SIGTERMed
+   * RunTurnOptions.signal} (issue #79) — the abort handler fired and killed
    * the process. Captured at kill time, so a signal that aborts AFTER the run has
    * already settled (a cancel racing a natural finish) does NOT set it. Callers
    * key the `interrupted` marker off this, never off the live `signal.aborted`.

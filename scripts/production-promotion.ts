@@ -675,13 +675,30 @@ function assertReviewed(path: string, expectedBranch: string, candidate: unknown
     {
       number: number;
       merged_at: string | null;
+      merge_commit_sha?: string;
       head: { ref: string; sha: string };
       base: { ref: string };
     }[]
   >(`repos/${repository}/commits/${merge}/pulls`);
-  const pull = pulls.find(
+  let pull = pulls.find(
     (p) => p.merged_at && p.head.ref === expectedBranch && p.base.ref === 'main',
   );
+  if (!pull) {
+    // GitHub can omit merged PRs from the commit association endpoint.
+    const owner = repository.split('/')[0];
+    const candidates = api<(typeof pulls)[]>(
+      '--paginate',
+      '--slurp',
+      `repos/${repository}/pulls?state=closed&head=${encodeURIComponent(`${owner}:${expectedBranch}`)}&base=main&per_page=100`,
+    ).flat();
+    pull = candidates.find(
+      (p) =>
+        p.merged_at &&
+        p.merge_commit_sha === merge &&
+        p.head.ref === expectedBranch &&
+        p.base.ref === 'main',
+    );
+  }
   if (!pull) throw new Error('Production requires a merged promotion PR');
   const reviews = api<{ state: string; commit_id: string }[]>(
     '--paginate',

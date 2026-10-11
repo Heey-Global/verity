@@ -1,0 +1,19 @@
+#!/usr/bin/env node
+// Run as the data owner before Docker resolves the Control Knowledge subpaths.
+async function main() {
+  // Match project provisioning even when the caller uses a private secret umask.
+  process.umask(0o022);
+  const { ensureProjectKnowledge, ensureSharedKnowledge } =
+    await import('/app/packages/server/dist/knowledge-folder.js');
+  const { CONTROL_PLANE_PROJECT_ID } =
+    await import('/app/packages/server/dist/control-plane-project.js');
+  const dataRoot = process.argv[2];
+  if (!dataRoot) throw new Error('expected a data root');
+  await ensureSharedKnowledge(dataRoot);
+  await ensureProjectKnowledge(dataRoot, CONTROL_PLANE_PROJECT_ID);
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

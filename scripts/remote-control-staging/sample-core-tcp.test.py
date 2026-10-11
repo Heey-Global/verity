@@ -37,6 +37,27 @@ class SamplerTests(unittest.TestCase):
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
             self.assertIn("container_or_pid_changed", output.read_text())
 
+    def test_five_second_cadence_and_deadline(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "samples.jsonl"
+            current = [0.0]
+            def sleep(seconds):
+                current[0] += seconds
+            with patch("sys.argv", ["sampler", "--container", "core", "--output", str(output),
+                                    "--seconds", "12", "--interval", "5"]), \
+                    patch.object(sampler.shutil, "which", return_value="/usr/bin/tool"), \
+                    patch.object(sampler, "identity", return_value=("a", 2, "start", "1")), \
+                    patch.object(sampler, "run", return_value="") as command, \
+                    patch.object(sampler.time, "monotonic", side_effect=lambda: current[0]), \
+                    patch.object(sampler.time, "sleep", side_effect=sleep) as paused:
+                self.assertEqual(sampler.main(), 0)
+            records = [json.loads(line) for line in output.read_text().splitlines()]
+            self.assertEqual(records[0]["intervalSeconds"], 5)
+            self.assertEqual(records[-1]["samples"], 3)
+            self.assertEqual(command.call_count, 3)
+            self.assertEqual([call.args[0] for call in paused.call_args_list], [5, 5, 2])
+
     def test_existing_output_is_never_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
             output = pathlib.Path(directory) / "samples.jsonl"

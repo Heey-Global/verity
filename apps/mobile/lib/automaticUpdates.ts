@@ -77,7 +77,13 @@ async function applyUpdate(
     if (!fetched.isNew && !fetched.isRollBackToEmbedded) return 'current';
 
     phase = 'reload';
-    await client.reloadAsync();
+    // Expo's native reload screen defaults to white, even with a dark splash.
+    await client.reloadAsync({
+      reloadScreenOptions: {
+        backgroundColor: '#06030d',
+        spinner: { enabled: false },
+      },
+    });
     return 'reloading';
   } catch (error) {
     return updateFailure(phase, error);

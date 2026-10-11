@@ -1,3 +1,7 @@
+import { APP_HELP_TOPICS } from '@verity/events';
+import { useFeatureHint } from '../FeatureHint';
+import { PremiumBadge } from '../premium/PremiumBadge';
+import { premiumFeatures } from '../premium/premiumFeatures';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -147,7 +151,9 @@ function previewError(caught: unknown): string {
   return message;
 }
 
-type PublicSharing = 'available' | 'premium-required' | 'unavailable';
+const ONLINE_SHARING = premiumFeatures[0].name;
+
+type PublicSharing = 'available' | 'premium-required' | 'unavailable' | 'disabled';
 
 type PreviewTab = 'server' | 'folder';
 
@@ -160,6 +166,7 @@ export function StaticPreviewSheet({
   initialServer,
   onOpenSettings,
   onAskAgent,
+  onAskHelp,
   settleTimeoutMs = 1_000,
 }: {
   client: VerityClient;
@@ -171,11 +178,22 @@ export function StaticPreviewSheet({
   onOpenSettings?: (() => void) | undefined;
   /** Sends a request to the session's agent, for "Save as entry" and crashes. */
   onAskAgent?: ((prompt: string) => void) | undefined;
+  /** Prefill a help question without starting a turn. */
+  onAskHelp?: ((question: string) => void) | undefined;
   /** How long the default tab waits for slow lists before deciding. */
   settleTimeoutMs?: number;
 }) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
+  const hint = useFeatureHint(
+    onAskHelp
+      ? (question) => {
+          onAskHelp(question);
+          onClose();
+        }
+      : undefined,
+    sessionId,
+  );
   const [publicSharing, setPublicSharing] = useState<PublicSharing>('unavailable');
   const [capabilitiesLoaded, setCapabilitiesLoaded] = useState(false);
   const [localShares, setLocalShares] = useState<LocalPreviewShare[]>([]);
@@ -434,71 +452,76 @@ export function StaticPreviewSheet({
       if (link) stopPublic(link, () => void loadManaged());
       return;
     }
-    void managedAction(server, 'online', async () => {
-      if (publicSharing !== 'available') return;
-      const ttlSeconds = await askLinkLifetime();
-      if (ttlSeconds === undefined) return;
-      if (!server.accessSwitches) {
-        const confirmed = await new Promise<boolean>((resolve) =>
-          Alert.alert(
-            'Share online and on your network?',
-            'This Core also enables Local access when sharing online. Anyone on your network can open the server without a PIN. The public link requires its PIN.',
-            [
-              { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-              { text: 'Share', onPress: () => resolve(true) },
-            ],
-            { cancelable: true, onDismiss: () => resolve(false) },
-          ),
-        );
-        if (!confirmed) return;
-      }
-      const running = server.instance?.state === 'running' || server.instance?.state === 'starting';
-      let share: PublicPreviewShare;
-      try {
-        if (!(await approveManaged(server, 'Share', 'online'))) return;
-        if (!running || server.instance?.restartToApply)
-          await client.controlManagedDevServer(
-            sessionId,
-            server.id,
-            'start',
-            // An older Core ignores Local and opens the server on the network too;
-            // its Local switch then shows that honestly.
-            server.accessSwitches ? { local: managedLocalOn(server) } : {},
+    void (async () => {
+      if (!(await hint.confirm('preview-and-sharing'))) return;
+      if (!sheetOpen.current) return;
+      await managedAction(server, 'online', async () => {
+        if (publicSharing !== 'available') return;
+        const ttlSeconds = await askLinkLifetime();
+        if (ttlSeconds === undefined) return;
+        if (!server.accessSwitches) {
+          const confirmed = await new Promise<boolean>((resolve) =>
+            Alert.alert(
+              'Share online and on your network?',
+              'This Core also enables Local access when sharing online. Anyone on your network can open the server without a PIN. The public link requires its PIN.',
+              [
+                { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+                { text: 'Share', onPress: () => resolve(true) },
+              ],
+              { cancelable: true, onDismiss: () => resolve(false) },
+            ),
           );
-        const instance = await waitUntilRunning(server.id);
-        share = await client.createSessionPortPreviewShare(sessionId, {
-          targetPort: instance.sandboxPort,
-          managedInstanceId: instance.id,
-          pin: generatePreviewPin(),
-          ttlSeconds,
-        });
-      } catch (caught) {
-        // Started only for this link: with no access on, nothing may keep running.
-        if ((server.accessSwitches || !running) && !managedLocalOn(server))
-          await client
-            .controlManagedDevServer(
+          if (!confirmed) return;
+        }
+        const running =
+          server.instance?.state === 'running' || server.instance?.state === 'starting';
+        let share: PublicPreviewShare;
+        try {
+          if (!(await approveManaged(server, 'Share', 'online'))) return;
+          if (!running || server.instance?.restartToApply)
+            await client.controlManagedDevServer(
+              sessionId,
+              server.id,
+              'start',
+              // An older Core ignores Local and opens the server on the network too;
+              // its Local switch then shows that honestly.
+              server.accessSwitches ? { local: managedLocalOn(server) } : {},
+            );
+          const instance = await waitUntilRunning(server.id);
+          share = await client.createSessionPortPreviewShare(sessionId, {
+            targetPort: instance.sandboxPort,
+            managedInstanceId: instance.id,
+            pin: generatePreviewPin(),
+            ttlSeconds,
+          });
+        } catch (caught) {
+          // Started only for this link: with no access on, nothing may keep running.
+          if ((server.accessSwitches || !running) && !managedLocalOn(server))
+            await client
+              .controlManagedDevServer(
+                sessionId,
+                server.id,
+                'stop',
+                server.accessSwitches ? { onlyIfUnshared: true } : {},
+              )
+              .catch(() => undefined);
+          throw caught;
+        }
+        if (!sheetOpen.current) {
+          await client.stopPublicPreviewShare(share.id);
+          if ((server.accessSwitches || !running) && !managedLocalOn(server))
+            await client.controlManagedDevServer(
               sessionId,
               server.id,
               'stop',
               server.accessSwitches ? { onlyIfUnshared: true } : {},
-            )
-            .catch(() => undefined);
-        throw caught;
-      }
-      if (!sheetOpen.current) {
-        await client.stopPublicPreviewShare(share.id);
-        if ((server.accessSwitches || !running) && !managedLocalOn(server))
-          await client.controlManagedDevServer(
-            sessionId,
-            server.id,
-            'stop',
-            server.accessSwitches ? { onlyIfUnshared: true } : {},
-          );
-        return;
-      }
-      createdShareIds.current.add(share.id);
-      setShares((current) => [share, ...current]);
-    });
+            );
+          return;
+        }
+        createdShareIds.current.add(share.id);
+        setShares((current) => [share, ...current]);
+      });
+    })();
   };
 
   /** Start and Start again keep the switches; with both off they turn Local on. */
@@ -760,6 +783,7 @@ export function StaticPreviewSheet({
   };
 
   const createPublic = async (selection: PreviewTarget, ttlSeconds = duration) => {
+    if (!(await hint.confirm('preview-and-sharing')) || !sheetOpen.current) return;
     if (busy || publicSharing !== 'available') return;
     if (conflictingFolderShare(selection)) {
       setError('Stop the existing public folder link before sharing another folder.');
@@ -1173,9 +1197,7 @@ export function StaticPreviewSheet({
             {managed === null ? 'No dev server running' : 'No servers yet'}
           </Text>
           <Text style={[styles.caption, styles.centered]}>
-            {managed === null
-              ? 'Ask the agent to start your app. It appears here as soon as it is reachable.'
-              : 'Ask the agent to set up your app as a server. You can then switch it on and off here.'}
+            {APP_HELP_TOPICS.find((topic) => topic.id === 'preview-and-sharing')?.emptyState}
           </Text>
         </View>
       ) : null}
@@ -1462,11 +1484,11 @@ export function StaticPreviewSheet({
       return (
         <View
           style={[styles.card, styles.cardPublicActive, stopping ? styles.cardDimmed : null]}
-          accessibilityLabel="Over the internet"
+          accessibilityLabel={ONLINE_SHARING}
         >
           {renderCardHeading({
             icon: 'globe',
-            title: 'Over the internet',
+            title: ONLINE_SHARING,
             description: share.pinLocked
               ? 'Visitors need the link and the PIN.'
               : 'Send link and PIN to whoever should see it.',
@@ -1595,10 +1617,10 @@ export function StaticPreviewSheet({
     if (publicSharing !== 'available') {
       const premium = publicSharing === 'premium-required';
       return (
-        <View style={styles.card} accessibilityLabel="Over the internet">
+        <View style={styles.card} accessibilityLabel={ONLINE_SHARING}>
           {renderCardHeading({
             icon: 'globe',
-            title: 'Over the internet',
+            title: ONLINE_SHARING,
             description: publicDescription,
             status: (
               <View style={[styles.badge, premium ? styles.badgePremium : styles.badgeMuted]}>
@@ -1606,7 +1628,11 @@ export function StaticPreviewSheet({
                   style={[styles.badgeDot, premium ? styles.badgeDotPremium : styles.badgeDotMuted]}
                 />
                 <Text style={styles.badgeText}>
-                  {premium ? 'Premium' : 'Temporarily unavailable'}
+                  {premium
+                    ? 'Premium'
+                    : publicSharing === 'disabled'
+                      ? 'Off'
+                      : 'Temporarily unavailable'}
                 </Text>
               </View>
             ),
@@ -1614,9 +1640,11 @@ export function StaticPreviewSheet({
           <Text style={styles.body}>
             {premium
               ? 'Public sharing is part of Verity Premium.'
-              : 'Uplink is not reachable right now. Public links return once it is.'}
+              : publicSharing === 'disabled'
+                ? 'Online sharing is switched off in Verity Premium settings.'
+                : 'Uplink is not reachable right now. Public links return once it is.'}
           </Text>
-          {premium && onOpenSettings ? (
+          {(premium || publicSharing === 'disabled') && onOpenSettings ? (
             <Pressable
               onPress={onOpenSettings}
               accessibilityRole="button"
@@ -1632,10 +1660,10 @@ export function StaticPreviewSheet({
     const otherFolder = conflictingFolderShare(selection);
     if (otherFolder) {
       return (
-        <View style={styles.card} accessibilityLabel="Over the internet">
+        <View style={styles.card} accessibilityLabel={ONLINE_SHARING}>
           {renderCardHeading({
             icon: 'globe',
-            title: 'Over the internet',
+            title: ONLINE_SHARING,
             description:
               'Only one folder per session can be online. Stop the existing link before sharing another folder.',
           })}
@@ -1653,10 +1681,10 @@ export function StaticPreviewSheet({
       );
     }
     return (
-      <View style={styles.card} accessibilityLabel="Over the internet">
+      <View style={styles.card} accessibilityLabel={ONLINE_SHARING}>
         {renderCardHeading({
           icon: 'globe',
-          title: 'Over the internet',
+          title: ONLINE_SHARING,
           description: publicDescription,
           status: justStopped ? (
             <Text style={styles.caption} accessibilityLiveRegion="polite">
@@ -1875,7 +1903,7 @@ export function StaticPreviewSheet({
             color={online ? theme.colors.tone.done : theme.colors.textMuted}
           />
           <View style={styles.rowText}>
-            <Text style={styles.cardTitle}>Shared online</Text>
+            <Text style={styles.cardTitle}>{ONLINE_SHARING}</Text>
             {online?.publicOrigin ? (
               <Pressable
                 onPress={() => {
@@ -1947,14 +1975,18 @@ export function StaticPreviewSheet({
               <Icon name="share" size={20} color={theme.colors.primary} />
             </Pressable>
           ) : null}
-          {publicSharing === 'premium-required' && !online ? (
+          {(publicSharing === 'premium-required' || publicSharing === 'disabled') && !online ? (
             <Pressable
               onPress={onOpenSettings}
               disabled={!onOpenSettings}
               accessibilityRole="button"
               accessibilityLabel="Open Premium settings"
             >
-              <Text style={styles.accessLink}>Premium</Text>
+              {publicSharing === 'disabled' ? (
+                <Text style={styles.accessLink}>Off · Settings</Text>
+              ) : (
+                <PremiumBadge />
+              )}
             </Pressable>
           ) : (
             <Pressable
@@ -1963,8 +1995,8 @@ export function StaticPreviewSheet({
               accessibilityRole="switch"
               accessibilityLabel={
                 overview
-                  ? `Shared online for ${selection.server.name} on port ${String(selection.server.port)}`
-                  : 'Shared online'
+                  ? `${ONLINE_SHARING} for ${selection.server.name} on port ${String(selection.server.port)}`
+                  : ONLINE_SHARING
               }
               accessibilityState={{
                 checked: !!online,
@@ -2075,6 +2107,7 @@ export function StaticPreviewSheet({
           </View>
         </View>
       </KeyboardAvoidingView>
+      {hint.sheet}
     </Modal>
   );
 }

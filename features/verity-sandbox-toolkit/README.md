@@ -13,6 +13,14 @@ Feature so a single `install.sh` is the source of truth for both consume paths:
 
 Same script, same result — no drift between the baked base and per-user builds.
 
+## Dependency release delay
+
+Agent sessions put the toolkit's npm, pnpm, Yarn, Bun, pip, and uv wrappers first
+on PATH. Install commands use a project-bound broker to offer a persistent,
+optional three-day release delay before executing the real package manager.
+See [Dependency release delay](../../docs/package-release-delay.md) for supported
+versions, configuration files, and coverage limits.
+
 ## Trusted CLI argument policies
 
 A trusted CLI whose arguments are identifiers rather than filesystem operands
@@ -47,6 +55,39 @@ executable itself. The broker still validates every executable search-path entry
 before applying it. Product and project images own their concrete policy files;
 the generic Verity toolkit contains no executable names or domain-specific
 argument grammar.
+
+## Diagnosing trusted CLI validation
+
+A validation refusal occurs before the command starts or secrets are staged.
+Filesystem failures use closed codes: `validation_path_missing` (ENOENT or
+ENOTDIR), `validation_path_permissions` (EACCES or EPERM), and
+`validation_path_symlink_loop` (ELOOP). These codes omit exception text and paths.
+The broker must be able to read an approved entry script to verify its content
+hash; approval does not grant filesystem permissions.
+
+`validation_script_isolation_unavailable` means the broker's startup probe could
+not establish filesystem confinement. Both `isolated` and `dynamic` entry scripts
+require this capability. Dynamic loading grants reads within the approved
+session worktree while retaining confinement outside it; it does not disable
+isolation.
+
+In the affected container, collect the broker startup line
+`worktree entry scripts are disabled: ...` and run
+`/usr/local/bin/verity-script-sandbox --probe` with the same `setpriv` identity,
+groups, and capability restrictions as the trusted CLI launch. The broker uses
+that privilege drop for its startup probe; probing as the root broker itself
+can fail user-namespace mapping even when the agent can enforce isolation.
+Also check the Runner identity. Record the exit code and first stderr line;
+no secrets are needed. Compare the installed helper with the image's attested artifact.
+The helper uses Landlock when available and otherwise private user, mount, and
+PID namespaces on gVisor. A successful probe in another container or under a
+different identity does not establish the broker's capability.
+
+Probe results are cached at process startup. After correcting the diagnosed
+runtime or helper problem, restart the managed Runner stack through the normal
+provisioning flow and verify its capability before retrying the approved command.
+Do not bypass validation or widen container privileges without identifying the
+failed confinement operation.
 
 ## What it installs
 

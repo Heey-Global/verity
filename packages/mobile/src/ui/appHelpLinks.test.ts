@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { APP_HELP_TOPICS } from '@verity/events';
+import { APP_HELP_TOPICS, renderWelcomeOpener } from '@verity/events';
 import { describe, expect, it } from 'vitest';
 import { parseAppLink } from './appLink.js';
 
@@ -14,6 +14,20 @@ describe('app help catalog links', () => {
       expect(parseAppLink(topic.appLink ?? '')).not.toBeNull();
     },
   );
+
+  // The welcome message is the first chat a new user sees; a link in it that the
+  // app cannot open would render as dead text right there.
+  it('only puts links the app can open into the welcome message', () => {
+    const opener = renderWelcomeOpener({
+      aiProvider: false,
+      github: false,
+      doppler: false,
+      google: false,
+    });
+    const links = [...opener.matchAll(/\]\((verity:\/\/[^)]+)\)/g)].map((match) => match[1] ?? '');
+    expect(links.length).toBeGreaterThanOrEqual(5);
+    for (const link of links) expect(parseAppLink(link), link).not.toBeNull();
+  });
 
   // A connection added to the Connections screen without a catalog entry leaves
   // the agent unable to explain it. The routes are read from the screen itself,
@@ -68,4 +82,22 @@ describe('app help catalog docs', () => {
       );
     },
   );
+});
+
+// A resolver-only link can look valid while the chat has no handler for it.
+it('handles every catalog link target in the session screen', () => {
+  const source = readFileSync(
+    new URL('../../../../apps/mobile/app/session/[id].tsx', import.meta.url),
+    'utf8',
+  );
+  const dispatcher = source.slice(
+    source.indexOf('const openAppLink ='),
+    source.indexOf('// Index of a bookmarked message'),
+  );
+  expect(dispatcher).toContain('switch (target.kind)');
+  const handled = new Set([...dispatcher.matchAll(/case '([^']+)':/gu)].map((match) => match[1]));
+  for (const topic of APP_HELP_TOPICS) {
+    const target = parseAppLink(topic.appLink ?? '');
+    if (target) expect(handled, topic.id).toContain(target.kind);
+  }
 });

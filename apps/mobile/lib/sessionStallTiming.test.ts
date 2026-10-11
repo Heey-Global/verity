@@ -51,11 +51,35 @@ it('stops on background and at the bounded sampling deadline', () => {
   expect(jest.getTimerCount()).toBe(0);
 });
 
-it('captures overdue timer lag when loading completes before the timer callback', () => {
+it('separates a pending timer from an observed callback at completion', () => {
   const trace = beginSessionSwitch('completion');
   startStallSampling(trace);
   clock = 900;
   markInitialListLoad(trace);
-  expect(trace.phases.find((p) => p.phase === 'js-timer-lag-max-ms')?.value).toBe(800);
+  expect(trace.phases.find((p) => p.phase === 'js-timer-lag-max-ms')).toBeUndefined();
+  expect(trace.phases.find((p) => p.phase === 'js-timer-pending-at-list-load-ms')?.value).toBe(800);
   expect(jest.getTimerCount()).toBe(0);
+});
+
+// A retained maximum must identify the later interval, not its first sample time.
+it('locates the peak interval among client phases without growing on every sample', () => {
+  const trace = beginSessionSwitch('peak');
+  startStallSampling(trace);
+  clock = 150;
+  jest.advanceTimersByTime(100);
+  clock = 900;
+  jest.advanceTimersByTime(100);
+  clock = 1050;
+  jest.advanceTimersByTime(100);
+  const phase = (name: string) => trace.phases.find((p) => p.phase === name);
+  expect(phase('js-timer-lag-max-ms')?.value).toBe(650);
+  expect(phase('js-timer-peak-deadline-ms')?.value).toBe(250);
+  expect(phase('js-timer-peak-observed-ms')?.value).toBe(900);
+  expect(trace.phases).toHaveLength(3);
+  clock = 1900;
+  markInitialListLoad(trace);
+  expect(phase('js-timer-peak-deadline-ms')?.value).toBe(250);
+  expect(phase('js-timer-peak-observed-ms')?.value).toBe(900);
+  expect(phase('js-timer-lag-max-ms')?.value).toBe(650);
+  expect(phase('js-timer-pending-at-list-load-ms')?.value).toBe(750);
 });

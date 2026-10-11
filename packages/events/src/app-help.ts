@@ -36,6 +36,9 @@ export interface AppHelpTopic {
   docsPath?: string;
   /** Extra words a user might ask with that the title does not contain. */
   keywords: readonly string[];
+  /** Short contextual copy shared by the app and chat help. */
+  hint?: { text: string; question: string };
+  emptyState?: string;
 }
 
 export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
@@ -71,6 +74,22 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
       'container',
       'branch',
       'parallel',
+    ],
+  },
+  {
+    id: 'session-settings',
+    title: 'Session settings',
+    summary: 'Rename, link or manage the current session.',
+    details:
+      'Open Session settings from the session menu to rename the conversation, manage linked sessions or delete it. Moving between projects is available for idle sessions in local projects.',
+    appLink: 'verity://session/settings',
+    docsPath: 'docs/getting-started.md',
+    keywords: [
+      'session settings',
+      'rename session',
+      'delete session',
+      'move session',
+      'linked sessions',
     ],
   },
   {
@@ -206,6 +225,10 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
   },
   {
     id: 'live-meeting',
+    hint: {
+      text: 'A live meeting captures audio for transcription and adds the resulting notes to this session. Check the selected transcription service and get participants’ consent before you start recording.',
+      question: 'How does live meeting recording and transcription work?',
+    },
     title: 'Live meetings',
     summary: 'Transcribe meetings and analyse them with an agent.',
     details:
@@ -226,11 +249,18 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
   },
   {
     id: 'preview-and-sharing',
+    emptyState:
+      'Ask the agent to start your app as a Verity server. It will appear here, where you can switch it on and off. Local gives access on your trusted network without a PIN; Shared online creates a public link protected by a PIN and an expiry.',
+    hint: {
+      text: 'Shared online creates a public preview link through Uplink. Anyone with the link and PIN can access it until it expires or you stop sharing; Local access is a separate switch.',
+      question: 'How does Shared online preview sharing work?',
+    },
     title: 'Preview and sharing',
     summary: 'Open a web app an agent is running, locally or online.',
     details:
       "When an agent starts a development server, it appears in the session's Preview sheet. Local opens it from your own network without a login. Shared online publishes it through Uplink at a public address protected by a PIN, so treat it as visible to anyone you give the address and PIN to.",
     appLink: 'verity://session/preview',
+    docsPath: 'docs/getting-started.md',
     keywords: ['preview', 'share', 'dev server', 'web app', 'localhost', 'public', 'link', 'url'],
   },
   {
@@ -244,6 +274,10 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
   },
   {
     id: 'review-and-pull-requests',
+    hint: {
+      text: 'This bar shows the result of your session’s work and its checks. Opening a pull request lets you inspect it; merging or saving to the project applies the changes to the base branch.',
+      question: 'How do I review and merge my session’s changes?',
+    },
     title: 'Review and pull requests',
     summary: 'How agent changes reach your repository.',
     details:
@@ -282,6 +316,8 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
   },
   {
     id: 'secrets-storage',
+    emptyState:
+      'After a server restart, enter your master password once to unlock the encrypted logins, keys and tokens stored on your server.',
     title: 'How secrets are stored',
     summary: 'Encryption, the master password and unlocking after a restart.',
     details:
@@ -477,3 +513,109 @@ export const APP_HELP_TOOL_DESCRIPTION = `Look up how to use the Verity app itse
 export const APP_HELP_SYSTEM_PROMPT = `# App help (Verity)
 
 When the user asks how Verity itself works, where a setting is, or how to connect a service, call \`${APP_HELP_TOOL}\` instead of answering from memory. Pass on its \`appLink\` as a Markdown link, for example [Open GitHub settings](verity://settings/github); the app opens it directly. Use only \`verity://\` links the tool returned and never invent one. Add \`docsUrl\` only when the user wants more detail. If the catalog does not cover the question, say so.`;
+
+/** Connections the welcome message reports on; everything else stays reachable by asking. */
+export interface WelcomeSetupStatus {
+  aiProvider: boolean;
+  github: boolean;
+  doppler: boolean;
+  google: boolean;
+}
+
+/** Name of the per-session marker that identifies the onboarding welcome session. */
+export const WELCOME_SESSION_MARKER = 'welcome-session';
+
+function topicLink(id: string): string {
+  const link = APP_HELP_TOPICS.find((topic) => topic.id === id)?.appLink;
+  if (link === undefined) throw new Error(`app help topic ${id} has no in-app link`);
+  return link;
+}
+
+const WELCOME_CHECKLIST: readonly {
+  key: keyof WelcomeSetupStatus;
+  topic: string;
+  done: string;
+  todo: string;
+}[] = [
+  {
+    key: 'aiProvider',
+    topic: 'connections',
+    done: 'AI provider connected',
+    todo: 'Connect an AI provider',
+  },
+  {
+    key: 'github',
+    topic: 'github',
+    done: 'GitHub connected',
+    todo: 'Connect GitHub to work on your repositories',
+  },
+  {
+    key: 'doppler',
+    topic: 'doppler',
+    done: 'Doppler connected',
+    todo: 'Connect Doppler for API keys and other secrets',
+  },
+  {
+    key: 'google',
+    topic: 'google',
+    done: 'Google connected',
+    todo: 'Connect Google for Drive, mail and calendar',
+  },
+];
+
+/**
+ * The server-written first message of the welcome session. It is shown before
+ * any agent runs, so it costs no tokens and does not depend on a model's
+ * wording. Open items link straight to their settings screen.
+ */
+export function renderWelcomeOpener(status: WelcomeSetupStatus): string {
+  const checklist = WELCOME_CHECKLIST.map((item) =>
+    status[item.key] ? `- ✓ ${item.done}` : `- [${item.todo}](${topicLink(item.topic)})`,
+  ).join('\n');
+  return `**Welcome to Verity.** This is your starter project, a safe place to try things out. Ask me anything about Verity here, or give me a first task.
+
+**Your setup**
+${checklist}
+
+Matrix, MCP servers and online meetings are under [Connections](${topicLink('connections')}).`;
+}
+
+/** The Quick Actions under the welcome message. Each label is sent as the user's reply. */
+export function welcomeChoices(status: WelcomeSetupStatus): {
+  question: string;
+  options: { label: string; recommended?: true }[];
+} {
+  return {
+    question: 'Where would you like to start?',
+    options: [
+      { label: 'What can I do here?', recommended: true },
+      ...(status.github ? [] : [{ label: 'Connect GitHub' }]),
+      { label: 'Try a first task' },
+      { label: 'Later' },
+    ],
+  };
+}
+
+/**
+ * The system prompt section of the welcome session, appended on fresh contexts
+ * only. It adds the guide role and the link table; tool contracts stay in the
+ * regular turn prompt.
+ */
+export function renderWelcomeGuidePrompt(): string {
+  const table = APP_HELP_TOPICS.filter((topic) => topic.appLink !== undefined)
+    .map((topic) => `- ${topic.title}: ${topic.appLink}`)
+    .join('\n');
+  return `# Verity Guide (welcome session)
+
+This session is the user's introduction to Verity, in a local starter project Verity created for them. Before your first turn, Verity showed them a short welcome message with a setup checklist and the Quick Actions "What can I do here?", "Try a first task" and "Later", plus "Connect GitHub" when GitHub was not connected yet. Do not repeat that message.
+
+- Answer questions about using Verity briefly: two to five sentences or a few bullets, then stop.
+- Link instead of describing paths. Use the in-app links below as Markdown links; for anything not listed, call \`${APP_HELP_TOOL}\`.
+- End an answer with at most one \`verity:choices\` block offering the most useful next topics, and only when a choice helps.
+- Up front, suggest only GitHub, Doppler and Google besides the AI provider. Mention other connections only when asked.
+- "Try a first task": suggest one small, concrete task, for example a web page that shows the current time, and do it here when the user agrees. This project is disposable.
+- "Later": acknowledge in one sentence and say this session stays available.
+
+In-app links:
+${table}`;
+}

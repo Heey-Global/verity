@@ -970,6 +970,32 @@ describe('native iOS compile gate', () => {
     expect(smoke).toBeGreaterThan(prebuild);
   });
 
+  it('gives each tunnel protocol and platform its own bounded Apple smoke step', () => {
+    const workflow = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8')) as {
+      jobs: Record<string, { steps: Array<WorkflowStep & { 'timeout-minutes'?: number }> }>;
+    };
+    const steps = workflow.jobs['verify-ios'].steps;
+    const prebuild = steps.findIndex((step) => step.name === 'Generate the iOS project');
+    const smokes = steps.filter((step) =>
+      step.run?.includes('scripts/remote-control-tunnel/run-apple.sh'),
+    );
+    // Combining cold simulator builds silently consumes the shared deadline before h2 runs.
+    expect(smokes).toHaveLength(4);
+    const cases = smokes.map((step) => {
+      expect(step.run?.trim().split('\n')).toHaveLength(1);
+      expect(step['timeout-minutes']).toBeGreaterThan(0);
+      expect(step['timeout-minutes']).toBeLessThanOrEqual(10);
+      expect(step.if).toBe(
+        "needs.changes.outputs.compile == 'true' || needs.changes.outputs.tunnel == 'true'",
+      );
+      expect(steps.indexOf(step)).toBeGreaterThan(prebuild);
+      const command = step.run?.match(/run-apple\.sh (macos|ios) (h1|h2)$/u);
+      expect(command).not.toBeNull();
+      return command?.slice(1).join(' ');
+    });
+    expect(cases.sort()).toEqual(['ios h1', 'ios h2', 'macos h1', 'macos h2']);
+  });
+
   it('runs fixture Apple probes without compiling the iOS app', () => {
     const workflow = parse(readFileSync('.github/workflows/mobile-native-verify.yml', 'utf8')) as {
       jobs: Record<string, { outputs?: Record<string, string>; steps: WorkflowStep[] }>;

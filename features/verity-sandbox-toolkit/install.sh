@@ -36,21 +36,21 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.289}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.294}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.85.1}"
+CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.87.0}"
 # renovate: datasource=github-releases depName=cli/cli
 GH_VERSION="${GHVERSION:-2.100.0}"
 # renovate: datasource=github-releases depName=DopplerHQ/cli
-DOPPLER_VERSION="${DOPPLERVERSION:-3.76.6}"
+DOPPLER_VERSION="${DOPPLERVERSION:-3.77.0}"
 # renovate: datasource=github-releases depName=gitleaks/gitleaks
 GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
 # renovate: datasource=npm depName=@openai/codex
-CODEX_VERSION="${CODEXVERSION:-0.160.0}"
+CODEX_VERSION="${CODEXVERSION:-0.161.0}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
 CODEX_ACP_VERSION="${CODEXACPVERSION:-2.1.1}"
 # renovate: datasource=npm depName=opencode-ai
-OPENCODE_VERSION="${OPENCODEVERSION:-1.18.34}"
+OPENCODE_VERSION="${OPENCODEVERSION:-1.18.35}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
@@ -144,13 +144,13 @@ case "$ARCH" in
   amd64)
     GH_ARCH=amd64; DOPPLER_ARCH=amd64; GITLEAKS_ARCH=x64
     GH_SHA256=e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be
-    DOPPLER_SHA256=67e4e020761adf3ffe5a030712d61721b4e2752182670bf90de5a2a88e4961e3
+    DOPPLER_SHA256=92587cb89c2ff82fc2ddec2b2a9f275ff320994a44e16cd9310b55a429a82084
     GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
     ;;
   arm64)
     GH_ARCH=arm64; DOPPLER_ARCH=arm64; GITLEAKS_ARCH=arm64
     GH_SHA256=ea4e7a581a32ccad6cc7923cb1576ac5859ba4b9a16ab22eb8f8a96e78e2e961
-    DOPPLER_SHA256=621456ac08436c4037a72c8641e4bdcccd0e404ab43b79a61d449445bb02e6e5
+    DOPPLER_SHA256=3aa603d60bc8502ec67d9a57e917925f357ac2822eead484acda3875fe6a4d95
     GITLEAKS_SHA256=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
     ;;
 esac
@@ -179,7 +179,7 @@ esac
 # See the env and securityOpt comments in packages/server/src/provisioner.ts.
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  APT_PACKAGES=(tmux git curl ca-certificates less ripgrep gnupg wget jq openssh-client openssl util-linux)
+  APT_PACKAGES=(python3 tmux git curl ca-certificates less ripgrep gnupg wget jq openssh-client openssl util-linux)
   apt-get update
   apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"
   rm -rf /var/lib/apt/lists/*
@@ -513,6 +513,15 @@ WRITTEN_PATHS+=("$REMOTE_HOME/.tmux.conf")
 # FEATURE_DIR is resolved at the top of this script.
 install -m 0755 "$FEATURE_DIR/bin/wt" /usr/local/bin/wt
 install -m 0755 "$FEATURE_DIR/bin/verity-agent-run" /usr/local/bin/verity-agent-run
+# Session PATH puts these shims before real package managers, including calls
+# made by project scripts. The real binaries remain available on the rest of PATH.
+install -d /opt/verity/package-managers /usr/local/lib/verity
+install -m 0644 "$FEATURE_DIR/bin/verity-package-policy.mjs" /usr/local/lib/verity/verity-package-policy.mjs
+install -m 0755 "$FEATURE_DIR/bin/verity-package-install.mjs" /usr/local/lib/verity/verity-package-install.mjs
+for PACKAGE_MANAGER in npm pnpm yarn bun pip uv; do
+  printf '#!/bin/sh\nexec node /usr/local/lib/verity/verity-package-install.mjs %s "$@"\n' "$PACKAGE_MANAGER" > "/opt/verity/package-managers/$PACKAGE_MANAGER"
+  chmod 0755 "/opt/verity/package-managers/$PACKAGE_MANAGER"
+done
 # The PATH a root-owned launcher sees: no nvm, no shell profile. Used both by the
 # supervisor block below, which must resolve every binary the broker execs by
 # absolute path, and by the opencode-acp wrapper after it.
@@ -546,6 +555,8 @@ if [ "$INSTALL_RUNNER_SUPERVISOR" = 'true' ]; then
     /usr/local/bin/verity-node-modules-install
   install -m 0755 "$FEATURE_DIR/bin/verity-runner-worker.mjs" \
     /usr/local/bin/verity-runner-worker
+  install -m 0755 "$FEATURE_DIR/bin/verity-agent-signal-trace" \
+    /usr/local/bin/verity-agent-signal-trace
   install -m 0755 "$FEATURE_DIR/bin/verity-agent-spawn-broker.mjs" \
     /usr/local/bin/verity-agent-spawn-broker
   install -m 0755 "$FEATURE_DIR/bin/verity-egress-connector.mjs" \

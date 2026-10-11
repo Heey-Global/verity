@@ -11,6 +11,7 @@
 //   - `ready` (unlocked, or `unmanaged` deployment): a "done" note + Next.
 // Passwords live only in this component's local state — never logged, never
 // hoisted, never sent anywhere but the two POST bodies.
+import { APP_HELP_TOPICS } from '@verity/events';
 import {
   VerityApiError,
   MIN_MASTER_PASSWORD_LENGTH,
@@ -54,7 +55,13 @@ export default function OnboardingMasterPassword() {
   return <MasterPasswordRoute returnTo={returnTo} />;
 }
 
-export function MasterPasswordRoute({ returnTo }: { returnTo: Href | null }) {
+export function MasterPasswordRoute({
+  returnTo,
+  restartExplanation,
+}: {
+  returnTo: Href | null;
+  restartExplanation?: string | undefined;
+}) {
   const next = returnTo ? ({ href: returnTo, label: 'Continue' } as const) : NEXT;
   const back = returnTo ?? BACK;
   const client = useMemo(() => createVerityClient(), []);
@@ -72,7 +79,15 @@ export function MasterPasswordRoute({ returnTo }: { returnTo: Href | null }) {
       </OnboardingStepScaffold>
     );
   }
-  return <MasterPasswordStep client={client} back={back} next={next} returnTo={returnTo} />;
+  return (
+    <MasterPasswordStep
+      client={client}
+      back={back}
+      next={next}
+      returnTo={returnTo}
+      restartExplanation={restartExplanation}
+    />
+  );
 }
 
 function MasterPasswordStep({
@@ -80,11 +95,13 @@ function MasterPasswordStep({
   back,
   next,
   returnTo,
+  restartExplanation,
 }: {
   client: VerityClient;
   back: Href;
   next: { href: Href; label?: string };
   returnTo: Href | null;
+  restartExplanation?: string | undefined;
 }) {
   const { theme } = useUnistyles();
   const [status, setStatus] = useState<SecretStatus | undefined>(undefined);
@@ -339,7 +356,8 @@ function MasterPasswordStep({
           ? 'Enter the server master password to authorize this device for the selected Verity server.'
           : mode === 'set'
             ? 'This protects GitHub keys, signing keys, and service tokens stored on your Verity server. Choose a password you can keep safe; Verity cannot recover it.'
-            : 'Enter the server master password to unlock encrypted secrets after a restart.'}
+            : (restartExplanation ??
+              APP_HELP_TOPICS.find((topic) => topic.id === 'secrets-storage')?.emptyState)}
       </Text>
 
       {mode === 'set' ? (

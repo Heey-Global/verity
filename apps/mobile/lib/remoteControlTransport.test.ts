@@ -1,3 +1,8 @@
+import {
+  beginSessionSwitch,
+  beginSwitchTransportRequest,
+  exportSessionSwitchTimings,
+} from '@verity/mobile';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -143,7 +148,9 @@ describe('shared remote control transport', () => {
 
     // A revoked descriptor must stop the attachment before the next request.
     mockProfile.mockReturnValue({ ...profile, remoteControl: undefined });
-    expect(await remoteControlPortForUrl(`${coreUrl}/api/more`)).toBe(0);
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    expect(await transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
     expect(mockStop).toHaveBeenCalledTimes(1);
   });
 
@@ -270,7 +277,14 @@ describe('shared remote control transport', () => {
 
     // On VPN or LAN every request used to detour through the hosted Uplink,
     // which is what made the app slow exactly where it had been fast.
-    expect(await remoteControlPortForUrl(`${coreUrl}/api/sessions`)).toBe(0);
+    const trace = beginSessionSwitch('route-diagnostic');
+    const requestId = beginSwitchTransportRequest(trace, 'session')!;
+    expect(await remoteControlPortForUrl(`${coreUrl}/api/sessions`, false, requestId)).toBe(0);
+    expect(
+      exportSessionSwitchTimings()
+        .at(-1)!
+        .transportRequests[0]!.phases.map((p) => p.phase),
+    ).toEqual(['fetch-dispatch', 'route-probe-start', 'route-probe-end']);
     expect(mockRequest).toHaveBeenCalledWith(
       expect.stringMatching(/^remote-probe-/),
       `${coreUrl}/healthz`,
@@ -280,7 +294,10 @@ describe('shared remote control transport', () => {
       profile.endpoints[0]?.tlsPin,
       0,
     );
-    expect(await remoteControlPortForUrl(`${coreUrl}/api/status`)).toBe(0);
+    expect(await remoteControlPortForUrl(`${coreUrl}/api/status`, false, requestId)).toBe(0);
+    expect(exportSessionSwitchTimings().at(-1)!.transportRequests[0]!.phases.at(-1)?.phase).toBe(
+      'route-cache-hit',
+    );
     expect(mockRequest).toHaveBeenCalledTimes(1);
     expect(mockAdmission).not.toHaveBeenCalled();
 
@@ -1098,6 +1115,20 @@ describe('remote diagnostics', () => {
     });
   });
 
+  it('makes no admission or probe requests without an enabled descriptor', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    mockAdmission.mockClear();
+    mockRequest.mockClear();
+    mockStart.mockClear();
+    mockProfile.mockReturnValue({ ...profile, remoteControl: undefined });
+    expect(await transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
+    expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(0);
+    expect(mockAdmission).not.toHaveBeenCalled();
+    expect(mockRequest).not.toHaveBeenCalled();
+    expect(mockStart).not.toHaveBeenCalled();
+  });
+
   it('explains why Uplink was not attempted without a saved descriptor', () => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');
@@ -1434,7 +1465,7 @@ describe('direct routing across background and diagnostics', () => {
 });
 
 describe('opt-in DATA capture', () => {
-  it('records a selected test without replacing a live tunnel and clears pending capture', async () => {
+  it('replaces a live tunnel before arming the selected recording and clears pending capture', async () => {
     jest.resetModules();
     mockProfile.mockReturnValue(profile);
     mockToken.mockReturnValue('auth');
@@ -1460,13 +1491,48 @@ describe('opt-in DATA capture', () => {
     mockStart.mockClear();
     await transport.testRemoteControlForUrl(coreUrl, true);
     expect(mockCaptureDiagnostics).toHaveBeenCalledTimes(1);
-    expect(mockStart).not.toHaveBeenCalled();
+    expect(mockStart).toHaveBeenCalledTimes(1);
+    expect(mockStop.mock.invocationCallOrder.at(-1)).toBeLessThan(
+      mockCaptureDiagnostics.mock.invocationCallOrder[0]!,
+    );
+    expect(mockCaptureDiagnostics.mock.invocationCallOrder[0]).toBeLessThan(
+      mockStart.mock.invocationCallOrder[0]!,
+    );
     expect(mockRecordDiagnosticEvent.mock.calls.map((call: unknown[]) => call[0])).toEqual([
       'probe_started',
       'probe_succeeded',
     ]);
     expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(1);
   });
+});
+
+it('clears recording intent after a fresh attachment fails and permits another recording', async () => {
+  jest.resetModules();
+  mockProfile.mockReturnValue(profile);
+  mockToken.mockReturnValue('auth');
+  const cancel = jest.fn();
+  mockAdmission.mockResolvedValue({
+    ticket: 'ticket',
+    sessionId: 'session',
+    finish: jest.fn(),
+    cancel,
+  });
+  mockStart
+    .mockReset()
+    .mockRejectedValueOnce(new Error('attachment failed'))
+    .mockResolvedValueOnce(4999);
+  mockLastStopReason.mockResolvedValue(null);
+  mockRequest.mockResolvedValue({ status: 200 });
+  mockCaptureDiagnostics.mockClear();
+  mockClearPendingDiagnostics.mockClear();
+  const transport =
+    require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  expect((await transport.testRemoteControlForUrl(coreUrl, true)).ready).toBe(false);
+  expect(cancel).toHaveBeenCalledTimes(1);
+  expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(1);
+  expect((await transport.testRemoteControlForUrl(coreUrl, true)).ready).toBe(true);
+  expect(mockCaptureDiagnostics).toHaveBeenCalledTimes(2);
+  expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(2);
 });
 
 it('keeps selected capture armed until an automatic stall replacement finishes', async () => {

@@ -250,12 +250,14 @@ export function SettingsChoiceRow({
 
 export function SettingsToggleRow({
   label,
+  subtitle,
   value,
   onValueChange,
   disabled = false,
   icon,
 }: {
   label: string;
+  subtitle?: string;
   value: boolean;
   onValueChange: (value: boolean) => void;
   disabled?: boolean;
@@ -276,7 +278,14 @@ export function SettingsToggleRow({
       accessibilityLabel={label}
     >
       {icon !== undefined ? <View style={styles.navRowIcon}>{icon}</View> : null}
-      <Text style={styles.toggleLabel}>{label}</Text>
+      {subtitle === undefined ? (
+        <Text style={styles.toggleLabel}>{label}</Text>
+      ) : (
+        <View style={styles.navRowBody}>
+          <Text style={styles.navRowTitle}>{label}</Text>
+          <Text style={styles.navRowSubtitle}>{subtitle}</Text>
+        </View>
+      )}
       <Toggle value={value} />
     </Pressable>
   );

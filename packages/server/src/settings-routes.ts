@@ -30,6 +30,9 @@ export interface SettingsRouteDeps {
   };
   transcriptionConfigured: (settings: VeritySettingsRecord | null) => boolean;
   onUplinkCredentialsChanged?: (() => void) | undefined;
+  /** Apply the premium feature switches after either of them changed. */
+  onPremiumFeatureSwitchesChanged?:
+    ((settings: VeritySettingsRecord) => void | Promise<void>) | undefined;
   onOpenCodeSettingsChanged?:
     ((settings: VeritySettingsRecord) => void | Promise<void>) | undefined;
 }
@@ -211,6 +214,12 @@ export function registerSettingsRoutes(
       }
       if (settings === undefined) throw new Error('Verity settings disappeared after update');
       if (patch.uplinkSubscriptionKey !== undefined) deps.onUplinkCredentialsChanged?.();
+      if (
+        patch.premiumSharingEnabled !== undefined ||
+        patch.premiumRemoteAccessEnabled !== undefined
+      ) {
+        await deps.onPremiumFeatureSwitchesChanged?.(settings);
+      }
       if (changesOpenCode) {
         try {
           await deps.onOpenCodeSettingsChanged?.(settings);
