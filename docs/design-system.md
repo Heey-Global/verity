@@ -17,12 +17,11 @@ something _looks_ (for example the status pill and its tones), this document rep
    palette, one typeface and one set of shapes. No screen keeps its own palette.
 2. **Dark is the designed theme.** Every decision is made for the dark theme first. The light
    theme is derived from the same roles and must be clean and readable, but receives no
-   separate visual polish: no tuned gradients, and glow is replaced by the plain border (selected
-   card) or omitted (status dots).
+   separate visual polish: no tuned gradients and no glow (see Elevation).
 3. **Roles, not values.** Components use named roles (`action`, `surface`, `attention`…),
    never raw hex values or ad-hoc transparencies.
 4. **Calm by default.** Little text, quiet actions, color only where it carries meaning.
-   Glow is reserved for brand moments.
+   Glow is reserved for a few defined uses (see Elevation).
 5. **One of each.** Every component exists once, with all its states. A new screen is
    assembled from existing components; a genuinely new component is added here first.
 
@@ -37,7 +36,7 @@ something _looks_ (for example the status pill and its tones), this document rep
 | Raised surface  | `surfaceAlt`  | `#111422`           | `#eef0f5`              | Inputs, secondary buttons, toggle track (off)                                          |
 | Border          | `border`      | `#22263a`           | `#dde1ea`              | 1 px outline of cards and fields, dividers                                             |
 | Text            | `text`        | `#f5f5f8`           | `#0d0f17`              | Titles and body                                                                        |
-| Muted text      | `textMuted`   | `#a5a8b8`           | `#5a5f73`              | Subtitles, values, labels, section headers in lists, icons                             |
+| Muted text      | `textMuted`   | `#a5a8b8`           | `#4a4f62`              | Subtitles, values, labels, section headers in lists, icons                             |
 | Faint text      | `textFaint`   | `#80849a`           | `#62677c`              | Placeholders, footnotes, chevrons, inactive                                            |
 | Action          | `action`      | `#18c8f5`           | `#066a8c`              | Everything that can be tapped: buttons, links, focus, toggle (on)                      |
 | Action label    | `actionLabel` | `#6fdcf8`           | `#055a78`              | Label of the tonal primary button                                                      |
@@ -111,7 +110,7 @@ keys use the platform monospace font. All sizes scale with the in-app font-zoom 
 | --------- | ----------------------------------------------------------- | ------------------------------------------------ |
 | Flat      | 1 px `border`, no shadow                                    | Cards and lists — the default                    |
 | Floating  | Soft dark shadow downward (`0 18px 50px` black at 60 %)     | Sheets, menus, dialogs                           |
-| Glow      | Colored halo                                                | Two uses only: brand moments in `signature` (success check) and the selected card in `action`. Buttons never glow. Dark theme only. |
+| Glow      | Colored halo                                                | Three uses only: brand moments in `signature` (success check), the selected card in `action`, and success and attention status dots in their tone. Buttons never glow. Dark theme only — in light, the selected card keeps its plain border and dots have no halo. |
 
 ## 5. Components
 
@@ -165,9 +164,10 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 ### 5.4 Status
 
 - **Tag** — the state of a single element: uppercase `Label` text on a 14 % tint of its
-  tone, radius 6. Tones: success, attention, neutral. Examples: `ACTIVE`, `SOON`, `UPDATE`.
-- **Dot and word** — rows in pure status lists: an 8 px dot (with a soft glow for success
-  and attention) followed by a muted word. Example: `● Connected`.
+  tone, radius 6. Tones: success (`success`), attention (`attention`) and neutral
+  (`textMuted` label on a 6 % `text` tint). Examples: `ACTIVE`, `SOON`, `UPDATE`.
+- **Dot and word** — rows in pure status lists: an 8 px dot in its tone (`textFaint` when
+  neutral) followed by a muted word. Example: `● Connected`.
 - Bordered pills are retired. A state is never shown by color alone — a word is always
   present.
 - Mapping from the status intents in [`design-language.md`](./design-language.md#status-system):
@@ -181,7 +181,8 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 
 ### 5.5 Toggle
 
-- Filled track: off = `border` track, white knob; on = `action` track, white knob.
+- Filled track: off = `textFaint` track, white knob; on = `action` track, white knob. Both
+  tracks reach at least 3 : 1 against `surface`, so the state is visible without the knob.
 - States: on, off, disabled, switching (spinner in the knob until the server confirms).
 - The whole row is tappable, not just the toggle. Switching something off that has
   consequences (e.g. revoking public links) asks first.
@@ -245,6 +246,8 @@ For diagnostics and overviews:
   uses darker variants.
 - Every interactive element is at least 44 × 44 pt (rows 56, buttons 48 or 36 with padded
   hit area).
+- Non-text controls and their states (toggle tracks, field borders on focus, selected card
+  borders) reach at least 3 : 1 against their background.
 - State is always expressed in words as well as color.
 - All type scales with the in-app font zoom and the platform text size.
 - Focus order follows reading order. Sheets and confirmations trap focus while open.
