@@ -17,7 +17,8 @@ something _looks_ (for example the status pill and its tones), this document rep
    palette, one typeface and one set of shapes. No screen keeps its own palette.
 2. **Dark is the designed theme.** Every decision is made for the dark theme first. The light
    theme is derived from the same roles and must be clean and readable, but receives no
-   separate visual polish (no glow, no tuned gradients).
+   separate visual polish: no tuned gradients, and glow is replaced by the plain border (selected
+   card) or omitted (status dots).
 3. **Roles, not values.** Components use named roles (`action`, `surface`, `attention`…),
    never raw hex values or ad-hoc transparencies.
 4. **Calm by default.** Little text, quiet actions, color only where it carries meaning.
@@ -37,12 +38,12 @@ something _looks_ (for example the status pill and its tones), this document rep
 | Border          | `border`      | `#22263a`           | `#dde1ea`              | 1 px outline of cards and fields, dividers                                             |
 | Text            | `text`        | `#f5f5f8`           | `#0d0f17`              | Titles and body                                                                        |
 | Muted text      | `textMuted`   | `#a5a8b8`           | `#5a5f73`              | Subtitles, values, labels, section headers in lists, icons                             |
-| Faint text      | `textFaint`   | `#74788d`           | `#8a8fa3`              | Placeholders, footnotes, chevrons, inactive                                            |
-| Action          | `action`      | `#18c8f5`           | `#0a7ea4`              | Everything that can be tapped: buttons, links, focus, toggle (on)                      |
-| Action label    | `actionLabel` | `#6fdcf8`           | `#0a7ea4`              | Label of the tonal primary button                                                      |
-| Signature       | `signature`   | `#ff18b7`           | `#c8128e`              | Brand only: content-screen eyebrows, Premium icon, success moment. **Never an action** |
-| Success         | `success`     | `#2ee6a6`           | `#1f9d6e`              | Connected, active, done                                                                |
-| Attention       | `attention`   | `#a99bff`           | `#6b5bd6`              | Errors, rejected states, outline of destructive buttons                                |
+| Faint text      | `textFaint`   | `#80849a`           | `#62677c`              | Placeholders, footnotes, chevrons, inactive                                            |
+| Action          | `action`      | `#18c8f5`           | `#066a8c`              | Everything that can be tapped: buttons, links, focus, toggle (on)                      |
+| Action label    | `actionLabel` | `#6fdcf8`           | `#055a78`              | Label of the tonal primary button                                                      |
+| Signature       | `signature`   | `#ff18b7`           | `#b0107d`              | Brand only: content-screen eyebrows, Premium icon, success moment. **Never an action** |
+| Success         | `success`     | `#2ee6a6`           | `#13744f`              | Connected, active, done                                                                |
+| Attention       | `attention`   | `#a99bff`           | `#5b4bc4`              | Errors, rejected states, outline of destructive buttons                                |
 | Scrim           | `scrim`       | `rgba(3,4,8,0.72)`  | `rgba(10,12,20,0.40)`  | The single backdrop behind sheets and dialogs                                          |
 
 ### Rules
@@ -72,8 +73,8 @@ keys use the platform monospace font. All sizes scale with the in-app font-zoom 
 | Subtitle  | 13   | 400    | 0        | 1.4         | `textMuted` | Second line under titles                        |
 | Footnote  | 12   | 400    | 0        | 1.4         | `textFaint` | Versions, timestamps, hints                     |
 | Eyebrow   | 11   | 800    | 0.18em   | 1.2         | `signature` | Uppercase group header on content screens       |
-| Label     | 11   | 700    | 0.14em   | 1.2         | `textMuted` | Uppercase headers in lists, field labels, tags  |
-| Code      | 14   | 500    | 0        | 1.4         | `text`      | Branches, commands, keys (monospace)            |
+| Label     | 11   | 700    | 0.14em   | 1.2         | `textMuted` | Uppercase section headers in lists, tags  |
+| Code      | 14   | 400    | 0        | 1.4         | `text`      | Branches, commands, keys (monospace)            |
 
 - Weights in use: 400, 600, 700, plus 750 for Display and 800 for Eyebrow only.
 - **Section headers:** `Label` style (grey) in navigation and settings lists; `Eyebrow`
@@ -110,7 +111,7 @@ keys use the platform monospace font. All sizes scale with the in-app font-zoom 
 | --------- | ----------------------------------------------------------- | ------------------------------------------------ |
 | Flat      | 1 px `border`, no shadow                                    | Cards and lists — the default                    |
 | Floating  | Soft dark shadow downward (`0 18px 50px` black at 60 %)     | Sheets, menus, dialogs                           |
-| Glow      | Colored halo                                                | Brand moments (success check, in `signature`) and the selected card (in `action`). Buttons never glow. |
+| Glow      | Colored halo                                                | Two uses only: brand moments in `signature` (success check) and the selected card in `action`. Buttons never glow. Dark theme only. |
 
 ## 5. Components
 
@@ -169,11 +170,18 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
   and attention) followed by a muted word. Example: `● Connected`.
 - Bordered pills are retired. A state is never shown by color alone — a word is always
   present.
+- Mapping from the status intents in [`design-language.md`](./design-language.md#status-system):
+
+  | Intent       | Tag                  | Dot and word                 |
+  | ------------ | -------------------- | ---------------------------- |
+  | `ready`      | success tone         | success dot                  |
+  | `needsSetup` | attention tone       | attention dot                |
+  | `optional`   | no tag — muted word  | faint dot                    |
+  | `transient`  | spinner + muted word | spinner + muted word         |
 
 ### 5.5 Toggle
 
-- Filled track: off = `surfaceAlt`-like grey track, white knob; on = `action` track, white
-  knob.
+- Filled track: off = `border` track, white knob; on = `action` track, white knob.
 - States: on, off, disabled, switching (spinner in the knob until the server confirms).
 - The whole row is tappable, not just the toggle. Switching something off that has
   consequences (e.g. revoking public links) asks first.
@@ -231,8 +239,10 @@ For diagnostics and overviews:
 
 ## 7. Accessibility
 
-- Text on its intended background meets 4.5 : 1 in both themes. This is why `action` and
-  `signature` are darker in the light theme.
+- Every text role (`text`, `textMuted`, `textFaint`, `action`, `actionLabel`, `signature`,
+  `success`, `attention`) meets at least 4.5 : 1 on `background`, `surface` and `surfaceAlt` in
+  both themes; colored text also meets it on its own 14 % tint. This is why the light theme
+  uses darker variants.
 - Every interactive element is at least 44 × 44 pt (rows 56, buttons 48 or 36 with padded
   hit area).
 - State is always expressed in words as well as color.

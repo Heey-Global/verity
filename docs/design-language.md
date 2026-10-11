@@ -29,7 +29,8 @@ defined once, in a neutral place. This is that place.
 
 > The visual form of status indicators (tags, dots, colors) is now defined in
 > [`design-system.md`](./design-system.md#54-status). The intents and wording rules below
-> still apply; the pill shape and the raspberry tone are retired.
+> still apply and map to tags and dots as listed there; the pill shape and the raspberry
+> tone are retired.
 
 There is exactly **one** status pill across both surfaces, implemented by a single
 component (see [Shared components & tokens](#shared-components--tokens)) and driven by an
