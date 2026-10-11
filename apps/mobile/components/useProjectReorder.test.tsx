@@ -56,6 +56,7 @@ beforeEach(() => {
   jest.clearAllMocks();
 });
 afterEach(() => {
+  act(() => setGestureDiagnosticsEnabled(false));
   jest.useRealTimers();
   jest.restoreAllMocks();
 });
@@ -280,7 +281,6 @@ it('records whether it holds or releases a touch only while gesture recording is
     },
     { source: 'reorder', event: 'touch-down-fail', detail: { excluded: false } },
   ]);
-  act(() => setGestureDiagnosticsEnabled(false));
 });
 
 it('uses visible slot measurements even when earlier rows have never mounted', () => {

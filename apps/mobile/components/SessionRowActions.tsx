@@ -116,6 +116,15 @@ export function SwipeableSessionRow({
     }
   }, [disabled]);
 
+  // Toggling recording remounts the row under a new root; an open row must not
+  // stay registered after its swipeable is gone.
+  useEffect(
+    () => () => {
+      if (openRow === swipeable.current) openRow = null;
+    },
+    [],
+  );
+
   const recording = useGestureDiagnosticsEnabled();
   const widthRef = useRef(width);
   widthRef.current = width;
@@ -275,10 +284,16 @@ function rowTouchObserver(
         reported++;
       }
     })
-    .onTouchesUp((event) => record('row', 'touch-up', delta(event.changedTouches[0])))
-    .onTouchesCancelled((event) =>
-      record('row', 'touch-cancelled', delta(event.changedTouches[0])),
-    );
+    .onTouchesUp((event, manager) => {
+      record('row', 'touch-up', delta(event.changedTouches[0]));
+      // A manual gesture ends only when told to; fail it so it never lingers
+      // into the next touch.
+      if (event.numberOfTouches === 0) manager.fail();
+    })
+    .onTouchesCancelled((event, manager) => {
+      record('row', 'touch-cancelled', delta(event.changedTouches[0]));
+      manager.fail();
+    });
 }
 
 function SwipeAction({

@@ -35,6 +35,8 @@ recording, and labelled with their `projectKind` (`local`, `github`, …).
    and once to the right.
 4. Export the app update logs right away, then switch recording off.
 
-The observer exists only while recording. Because it adds a gesture recognizer
-to each row, a fault that disappears while recording points at gesture
-arbitration rather than at the row's content.
+The observer exists only while recording. Switching recording on or off
+remounts the overview's session rows, and the observer adds a gesture
+recognizer to each row. A fault that disappears while recording therefore
+narrows the cause to row mounting or gesture arbitration, without telling the
+two apart.

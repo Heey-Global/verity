@@ -46,15 +46,13 @@ export function setGestureDiagnosticsEnabled(next: boolean): void {
   listeners.forEach((listener) => listener());
 }
 
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 export function useGestureDiagnosticsEnabled(): boolean {
-  return useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    gestureDiagnosticsEnabled,
-    gestureDiagnosticsEnabled,
-  );
+  return useSyncExternalStore(subscribe, gestureDiagnosticsEnabled, gestureDiagnosticsEnabled);
 }
 
 /** Maps a row key to a small number so reports can tell rows apart without naming them. */

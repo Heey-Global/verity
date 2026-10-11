@@ -159,13 +159,15 @@ describe('SwipeableSessionRow gesture diagnostics', () => {
     act(() => setGestureDiagnosticsEnabled(true));
     const [observer] = observers();
     expect(observer).toBeDefined();
+    const fail = jest.fn();
     const touch = (x: number, y = 50) => ({ allTouches: [{ absoluteX: x, absoluteY: y }] });
     act(() => {
       observer!.handlers.onTouchesDown?.(touch(100));
       observer!.handlers.onTouchesMove?.(touch(114));
-      observer!.handlers.onTouchesCancelled?.({
-        changedTouches: [{ absoluteX: 114, absoluteY: 50 }],
-      });
+      observer!.handlers.onTouchesCancelled?.(
+        { changedTouches: [{ absoluteX: 114, absoluteY: 50 }], numberOfTouches: 0 },
+        { fail },
+      );
     });
     const { events } = exportGestureDiagnostics();
     expect(events.map((event) => event.event)).toEqual([
@@ -177,6 +179,8 @@ describe('SwipeableSessionRow gesture diagnostics', () => {
     expect(events[0]).toMatchObject({ source: 'row', projectKind: 'local', row: 1 });
     expect(events[3]).toMatchObject({ dx: 14, dy: 0 });
     expect(JSON.stringify(events)).not.toContain('private-id');
+    // A manual gesture left pending would sit in the arbitration it measures.
+    expect(fail).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -26,6 +26,7 @@ const readLogs = jest.mocked(Updates.readLogEntriesAsync);
 const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: Share.sharedAction });
 
 beforeEach(() => jest.clearAllMocks());
+afterEach(() => setGestureDiagnosticsEnabled(false));
 
 it('exports retained launch failures with the running update identity', async () => {
   readLogs.mockResolvedValue([
@@ -52,7 +53,6 @@ it('includes recorded overview gestures', async () => {
   setGestureDiagnosticsEnabled(true);
   recordGesture({ source: 'swipe', event: 'open-start-drag', projectKind: 'local' });
   await shareUpdateDiagnostics();
-  setGestureDiagnosticsEnabled(false);
   const report = JSON.parse((share.mock.calls[0]![0] as { message: string }).message);
   expect(report.gestureDiagnostics).toMatchObject({
     enabled: true,
