@@ -268,7 +268,7 @@ export function PublicPreviewDiagnostics({
               );
             })}
         </RowCard>
-        {statusError !== null ? (
+        {statusError === 'unavailable' ? (
           <RowCard>
             <CardRow
               title="Try again"
