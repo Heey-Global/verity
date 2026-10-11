@@ -36,6 +36,7 @@ export function SettingsScaffold({
   onRetry,
   detail = false,
   state,
+  footer,
   children,
 }: {
   title: string;
@@ -47,6 +48,9 @@ export function SettingsScaffold({
    *  (the project settings routes). Omitted → the shared store's error and
    *  save state drive the banners. */
   state?: { error: string | undefined; saving: boolean };
+  /** Pinned below the scroll view, clear of the home indicator: the one
+   *  primary action of a step-like screen (Verity Premium). */
+  footer?: ReactNode;
   children: ReactNode;
 }) {
   const { theme } = useUnistyles();
@@ -80,13 +84,16 @@ export function SettingsScaffold({
         contentContainerStyle={[
           styles.content,
           detail ? styles.detailContent : null,
-          { paddingBottom: insets.bottom + 24 },
+          { paddingBottom: footer === undefined ? insets.bottom + 24 : 24 },
         ]}
         keyboardShouldPersistTaps="handled"
         bottomOffset={KEYBOARD_BOTTOM_OFFSET}
       >
         {children}
       </KeyboardAwareScrollView>
+      {footer !== undefined ? (
+        <View style={[styles.scaffoldFooter, { paddingBottom: insets.bottom + 16 }]}>{footer}</View>
+      ) : null}
     </View>
   );
 }

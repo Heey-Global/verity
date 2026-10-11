@@ -185,10 +185,14 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             onPress={() => router.push('/settings/server-update')}
           />
           <SettingsNavRow
-            icon="globe"
+            icon="zap"
             title="Verity Premium"
-            subtitle="Online sharing and Remote access"
-            value={settings?.uplinkSubscriptionKeyConfigured ? 'Configured' : 'Not active'}
+            subtitle="Online sharing, remote access"
+            status={
+              settings?.uplinkSubscriptionKeyConfigured
+                ? { intent: 'ready', label: 'Active' }
+                : { intent: 'optional', label: 'Not active' }
+            }
             onPress={() => router.push('/settings/premium')}
           />
         </SettingsListPanel>
@@ -235,9 +239,8 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             />
           ) : null}
           <SettingsNavRow
-            icon="file-text"
+            icon="activity"
             title="Diagnostics"
-            subtitle="Connection, transcription and app logs"
             onPress={() => router.push('/settings/diagnostics')}
           />
           {!isDemoMode() ? (

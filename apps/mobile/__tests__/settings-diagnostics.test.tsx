@@ -33,8 +33,7 @@ it('groups diagnostics and keeps transcription and log export actionable', async
   await waitFor(() => expect(shareUpdateDiagnostics).toHaveBeenCalled());
   fireEvent.press(screen.getByLabelText('Export Remote Control test inputs'));
   await waitFor(() => expect(shareRemoteControlCiInputs).toHaveBeenCalled());
-  expect(screen.getByText('Connection')).toBeOnTheScreen();
-  expect(screen.getByText('Integrations')).toBeOnTheScreen();
+  expect(screen.getByText('More')).toBeOnTheScreen();
 });
 it('reports unavailable integration diagnostics instead of claiming no errors', async () => {
   mockCreateVerityClient.mockReturnValue(

@@ -61,8 +61,8 @@ under it; no dialog.
 toggles already on, confetti (~1.5 s, Reanimated + SVG, no new dependency), success haptic
 (not on web), CTA *Continue* → state 4. Fires once per activation.
 
-**4 · Manage** — *Subscription*: the Premium card with tag `Active` and a
-*Replace subscription key* action. The stored key is never read back. *Features*: one card per feature with a
+**4 · Manage** — *Subscription*: the Premium card with tag `Active`, below it a *Subscription
+key* row (*Stored encrypted on your server*, *Replace ›*). The stored key is never read back. *Features*: one card per feature with a
 toggle; Teams muted with `Soon`. A feature the subscription does not include keeps its
 toggle but is muted with the subtitle *Not included in your subscription*. *Diagnostics*:
 one row *Diagnostics* for connection status and tests. Bottom link *Remove subscription key* (danger,
@@ -74,11 +74,12 @@ confirmed; returns to state 1).
 
 ## 5. Diagnostics
 
-Phone 5. The implemented screen groups **Connection** (Uplink, Online sharing, Remote access with status dots
-and a one-line reason only when off), **Tests** (Test remote access, Record connection test,
-Copy last recording · time — today's `PublicPreviewDiagnostics` controls, renamed), **Transcription**, **Integrations**, and **App**
-(Live transcription test, Matrix import errors with a count tag, Export app update logs with
-app and server versions). Fetch on focus and after a test, never poll.
+Phone 5. Three cards: **Connection** (Uplink, Online sharing, Remote access with status dots
+and a one-line reason only when off or not included), **Tests** (Test remote access, Record
+connection test, Copy last recording — today's `PublicPreviewDiagnostics` controls, renamed),
+**More** (Live transcription test, Matrix import errors with a count tag that expands the
+details, Export app update logs with app and server versions). Fetch on focus and after a
+test, never poll.
 
 ## 6. Server contract
 
