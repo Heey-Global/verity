@@ -1155,6 +1155,8 @@ export interface ServerDeps {
   previewSharingCapability?:
     (() => Promise<PreviewSharingCapability> | PreviewSharingCapability) | undefined;
   previewShareManager?: PreviewShareManager | undefined;
+  returnPathActivation?: import('./remote-return-path-activation.js').ReturnPathActivation;
+  returnPathConnectorCount?: () => number;
   remoteControlDescriptor?: (() => RemoteControlDescriptor) | undefined;
   runtimeDiagnostics?: ReturnType<typeof createRuntimeDiagnostics> | undefined;
   uplinkDiagnostics?:
@@ -4324,6 +4326,60 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.secretJobRuntimeReadiness !== undefined
       ? { secretJobRuntimeReadiness: deps.secretJobRuntimeReadiness }
       : {}),
+  });
+  const authorizeReturnPath = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<boolean> => {
+    if (!request.localUserId) {
+      reply.code(404).send({ error: 'not found' });
+      return false;
+    }
+    if (!(await deps.eventStore.isActiveAdministrator(request.localUserId))) {
+      reply.code(403).send({ error: 'administrator required' });
+      return false;
+    }
+    if (!deps.returnPathActivation) {
+      reply.code(503).send({ error: 'diagnostics unavailable' });
+      return false;
+    }
+    return true;
+  };
+  app.get('/api/remote-control/diagnostics', async (request, reply) => {
+    if (!(await authorizeReturnPath(request, reply))) return;
+    return deps.returnPathActivation!.status(deps.returnPathConnectorCount?.() ?? 0);
+  });
+  app.post('/api/remote-control/diagnostics', async (request, reply) => {
+    if (!(await authorizeReturnPath(request, reply))) return;
+    const body = request.body as Record<string, unknown> | null;
+    if (
+      !body ||
+      typeof body !== 'object' ||
+      Object.keys(body).length !== 1 ||
+      typeof body.expiresAt !== 'string'
+    )
+      return reply.code(400).send({ error: 'absolute expiry required' });
+    try {
+      deps.returnPathActivation!.start(body.expiresAt);
+      return deps.returnPathActivation!.status(deps.returnPathConnectorCount?.() ?? 0);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      const reason = ['invalid_expiry', 'already_active', 'remote_unavailable'].includes(message)
+        ? message
+        : 'diagnostics_unavailable';
+      return reply
+        .code(reason === 'already_active' ? 409 : reason === 'remote_unavailable' ? 503 : 400)
+        .send({ error: reason });
+    }
+  });
+  app.delete('/api/remote-control/diagnostics', async (request, reply) => {
+    if (!(await authorizeReturnPath(request, reply))) return;
+    deps.returnPathActivation!.stop();
+    return deps.returnPathActivation!.status();
+  });
+  app.addHook('onClose', (_instance, done) => {
+    deps.returnPathActivation?.dispose();
+    done();
   });
   app.get('/api/remote-control/descriptor', async (request, reply) => {
     // This route is only for an authenticated paired device. Headless deployments
