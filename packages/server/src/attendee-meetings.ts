@@ -197,12 +197,9 @@ export class AttendeeMeetings {
     // Persisted bots continue; shutdown must not masquerade as an explicit End.
   }
   private async connect(state: OnlineMeeting) {
-    if (
-      !state.binding ||
-      this.connectors.has(state.meeting.id) ||
-      this.options.edge?.isAvailable?.() === false
-    )
-      return;
+    if (!state.binding || this.connectors.has(state.meeting.id)) return;
+    if (this.options.edge?.isAvailable?.() === false)
+      throw new Error('Online sharing authority lost before connection');
     const generation = this.sharingGeneration;
     const connector = new PreviewConnector({
       edgeUrl: state.binding.edgeUrl,
@@ -214,7 +211,7 @@ export class AttendeeMeetings {
     await connector.connect();
     if (generation !== this.sharingGeneration || this.options.edge?.isAvailable?.() === false) {
       connector.close();
-      return;
+      throw new Error('Online sharing authority lost during connection');
     }
     this.connectors.set(state.meeting.id, connector);
     void connector

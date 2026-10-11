@@ -350,7 +350,11 @@ export class UplinkControlClient implements PreviewEdgeControl {
       this.lastReject = undefined;
       this.idle = false;
     }
-    await this.waitForReady();
+    const ready = this.waitForReady();
+    if (this.welcomed && this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify({ type: 'renew' }));
+    }
+    await ready;
     if (!this.isAvailable()) throw new Error('Sharing is not granted by Uplink');
   }
 

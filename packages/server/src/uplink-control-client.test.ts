@@ -2971,6 +2971,31 @@ describe('Uplink connection demand', () => {
     await f.client.stop();
   });
 
+  it('refreshes sharing rights for a share start on an established remote connection', async () => {
+    const f = setup({
+      restoreShareIds: async () => [],
+      offerRemoteControl: true,
+      reserveRemoteConnector: async () => 'unavailable',
+    });
+    f.client.start();
+    await flush();
+    admit(f.socket, ['remote-control']);
+    await flush();
+    const creating = f.client.create({ pinHash: 'hash', durationSeconds: 900 });
+    await flush();
+    expect(JSON.parse(f.socket.sent.at(-1)!)).toEqual({ type: 'renew' });
+    f.socket.message({
+      type: 'renewed',
+      features: ['sharing', 'remote-control'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+    replyShare(f.socket, 'newly-granted');
+    expect((await creating).shareId).toBe('newly-granted');
+    expect(f.socketFactory).toHaveBeenCalledOnce();
+    await f.client.stop();
+  });
+
   it('rechecks denied remote rights after explicit disable and re-enable', async () => {
     const f = setup({
       restoreShareIds: async () => [],
