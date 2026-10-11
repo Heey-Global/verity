@@ -278,32 +278,41 @@ function rowTouchObserver(
     touch && origin
       ? { dx: Math.round(touch.absoluteX - origin.x), dy: Math.round(touch.absoluteY - origin.y) }
       : {};
+  const down = (event: { allTouches: { absoluteX: number; absoluteY: number }[] }) => {
+    const touch = event.allTouches[0];
+    origin = touch ? { x: touch.absoluteX, y: touch.absoluteY } : null;
+    reported = 0;
+    record('row', 'touch-down', { detail: { width: Math.round(width()) } });
+  };
+  const move = (event: { allTouches: { absoluteX: number; absoluteY: number }[] }) => {
+    const moved = delta(event.allTouches[0]);
+    const distance = Math.max(Math.abs(moved.dx ?? 0), Math.abs(moved.dy ?? 0));
+    while (reported < marks.length && distance >= marks[reported]!) {
+      record('row', `move-${String(marks[reported])}`, moved);
+      reported++;
+    }
+  };
+  const finish = (name: string, touch: { absoluteX: number; absoluteY: number } | undefined) => {
+    record('row', name, delta(touch));
+  };
   return Gesture.Manual()
-    .runOnJS(true)
     .onTouchesDown((event) => {
-      const touch = event.allTouches[0];
-      origin = touch ? { x: touch.absoluteX, y: touch.absoluteY } : null;
-      reported = 0;
-      record('row', 'touch-down', {
-        detail: { width: Math.round(width()) },
-      });
+      'worklet';
+      runOnJS(down)(event);
     })
     .onTouchesMove((event) => {
-      const moved = delta(event.allTouches[0]);
-      const distance = Math.max(Math.abs(moved.dx ?? 0), Math.abs(moved.dy ?? 0));
-      while (reported < marks.length && distance >= marks[reported]!) {
-        record('row', `move-${String(marks[reported])}`, moved);
-        reported++;
-      }
+      'worklet';
+      runOnJS(move)(event);
     })
     .onTouchesUp((event, manager) => {
-      record('row', 'touch-up', delta(event.changedTouches[0]));
-      // A manual gesture ends only when told to; fail it so it never lingers
-      // into the next touch.
+      'worklet';
+      runOnJS(finish)('touch-up', event.changedTouches[0]);
+      // Native recognizer state must be released on the UI runtime.
       if (event.numberOfTouches === 0) manager.fail();
     })
     .onTouchesCancelled((event, manager) => {
-      record('row', 'touch-cancelled', delta(event.changedTouches[0]));
+      'worklet';
+      runOnJS(finish)('touch-cancelled', event.changedTouches[0]);
       manager.fail();
     });
 }
