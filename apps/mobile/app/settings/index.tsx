@@ -78,6 +78,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
   const updateVersion = useServerUpdateBadge(true);
   const [connectedCount, setConnectedCount] = useState<number | undefined>(undefined);
+  const [uplinkRejected, setUplinkRejected] = useState(false);
   // Re-read on focus: this screen stays mounted under /devices, where the
   // count changes.
   useFocusEffect(
@@ -88,6 +89,11 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       client
         .listPairedDevices()
         .then((devices) => active && setConnectedCount(devices.length))
+        .catch(() => undefined);
+      // A stored key is not an active subscription: Uplink may have refused it.
+      client
+        .getUplinkDiagnostics()
+        .then((status) => active && setUplinkRejected(status.control === 'rejected'))
         .catch(() => undefined);
       return () => {
         active = false;
@@ -189,9 +195,11 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             title="Verity Premium"
             subtitle="Online sharing, remote access"
             status={
-              settings?.uplinkSubscriptionKeyConfigured
-                ? { intent: 'ready', label: 'Active' }
-                : { intent: 'optional', label: 'Not active' }
+              !settings?.uplinkSubscriptionKeyConfigured
+                ? { intent: 'optional', label: 'Not active' }
+                : uplinkRejected
+                  ? { intent: 'needsSetup', label: 'Key rejected' }
+                  : { intent: 'ready', label: 'Active' }
             }
             onPress={() => router.push('/settings/premium')}
           />

@@ -154,3 +154,11 @@ it('accepts a verified activation that already returned to idle', async () => {
   fireEvent.press(screen.getByLabelText('Activate'));
   expect(await screen.findByText('Premium is active')).toBeOnTheScreen();
 });
+
+it('ignores Return on an empty key field so a stored key is never overwritten', async () => {
+  const { update } = clientWithKey(true);
+  render(<PremiumScreen />);
+  fireEvent.press(await screen.findByLabelText('Replace subscription key'));
+  fireEvent(screen.getByLabelText('Uplink subscription key'), 'submitEditing');
+  expect(update).not.toHaveBeenCalled();
+});

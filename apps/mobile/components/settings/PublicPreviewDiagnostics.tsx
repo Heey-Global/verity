@@ -190,7 +190,7 @@ export function PublicPreviewDiagnostics({
     <CardRow
       title="Check subscription rights"
       subtitle={rightsChecking ? 'Checking…' : 'Asks Uplink which features your key includes'}
-      disabled={rightsChecking || keyConfigured !== true}
+      disabled={rightsChecking || checking || keyConfigured !== true}
       onPress={checkRights}
     />
   );
@@ -216,12 +216,15 @@ export function PublicPreviewDiagnostics({
               const notIncluded =
                 (status?.control === 'connected' || status?.entitlement === 'checked') &&
                 state?.granted === false;
+              // Only sharing dials Uplink on demand; Remote access keeps the
+              // channel up while it is usable, so an idle channel means it is not.
               const onDemand =
+                feature.id === 'sharing' &&
                 !ready &&
-                !notIncluded &&
                 status?.control === 'idle' &&
                 status.entitlement === 'checked' &&
-                state?.enabled !== false;
+                state?.granted === true &&
+                state.enabled !== false;
               return (
                 <CardRow
                   key={feature.id}
@@ -268,14 +271,14 @@ export function PublicPreviewDiagnostics({
               title="Test remote access"
               subtitle={checking ? 'Testing…' : (testResult ?? 'Round trip through Uplink')}
               accessibilityLabel="Test Remote access through Uplink"
-              disabled={checking}
+              disabled={checking || rightsChecking}
               onPress={() => void runTest()}
             />
             <CardRow
               title="Record connection test"
               subtitle="Up to two minutes. No addresses, credentials or content."
               accessibilityLabel="Record Remote access connection test"
-              disabled={checking}
+              disabled={checking || rightsChecking}
               onPress={() => void runTest(true)}
             />
             <CardRow

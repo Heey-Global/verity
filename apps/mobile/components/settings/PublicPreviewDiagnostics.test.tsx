@@ -261,3 +261,21 @@ it('shows idle sharing and explicitly checks rights without implying a reconnect
   expect(checkUplinkEntitlements).toHaveBeenCalledTimes(1);
   expect(getUplinkDiagnostics).toHaveBeenCalledTimes(1);
 });
+
+it('never reports Remote access as on demand while the channel idles', async () => {
+  // Only sharing dials Uplink on demand. An idle channel with Remote access
+  // granted means it is not reachable, and a green dot would hide that.
+  mockGetServerProfile.mockReturnValue(null);
+  const getUplinkDiagnostics = jest.fn().mockResolvedValue({
+    control: 'idle',
+    entitlement: 'checked',
+    sharing: 'unavailable',
+    remoteControl: 'unavailable',
+    features: {
+      sharing: { enabled: true, granted: true, effective: false },
+      remoteAccess: { enabled: true, granted: true, effective: false },
+    },
+  });
+  render(<PublicPreviewDiagnostics client={{ getUplinkDiagnostics } as never} keyConfigured />);
+  await waitFor(() => expect(screen.getAllByText('On demand')).toHaveLength(1));
+});

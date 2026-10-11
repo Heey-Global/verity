@@ -389,15 +389,7 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
                 title="Connection"
                 subtitle={
                   active
-                    ? `${connection === 'connected' ? 'Uplink connected' : 'Uplink on demand'} · ${
-                        remoteOff && sharingOff
-                          ? 'features off'
-                          : remoteOff
-                            ? 'remote access off'
-                            : sharingOff
-                              ? 'online sharing off'
-                              : 'all features on'
-                      }`
+                    ? `${connection === 'connected' ? 'Uplink connected' : 'Uplink on demand'} · ${featureSummary(status)}`
                     : connection === 'idle'
                       ? 'Uplink idle · rights not checked yet'
                       : connection === 'rejected'
@@ -438,13 +430,30 @@ function rejectionFor(reason: UplinkDiagnostics['reason']): { tag: string; sente
   };
 }
 
+/** A feature is on when it is switched on and Uplink granted it. While the
+ * control channel idles (#1519) `effective` stays false, so `granted` decides. */
+function featureOn(status: UplinkDiagnostics | null, id: 'sharing' | 'remoteAccess'): boolean {
+  const state = status?.features?.[id];
+  return state?.enabled !== false && (state?.effective === true || state?.granted === true);
+}
+
 function activatedSummary(status: UplinkDiagnostics | null): string {
-  const sharing = status?.features?.sharing.effective === true;
-  const remote = status?.features?.remoteAccess.effective === true;
+  const sharing = featureOn(status, 'sharing');
+  const remote = featureOn(status, 'remoteAccess');
   if (sharing && remote) return 'Online sharing and remote access are on.';
   if (sharing) return 'Online sharing is on.';
   if (remote) return 'Remote access is on.';
   return 'Your features turn on as soon as Uplink confirms them.';
+}
+
+/** "all features on", or which feature is off — switched off or not included. */
+function featureSummary(status: UplinkDiagnostics | null): string {
+  const off = premiumFeatures
+    .filter((feature) => feature.settingsKey !== null)
+    .filter((feature) => !featureOn(status, feature.id as 'sharing' | 'remoteAccess'))
+    .map((feature) => feature.name.toLowerCase());
+  if (off.length === 0) return 'all features on';
+  return off.length > 1 ? 'features off' : `${off[0]} off`;
 }
 
 const styles = StyleSheet.create((theme) => ({

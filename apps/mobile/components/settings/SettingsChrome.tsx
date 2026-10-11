@@ -9,7 +9,7 @@
 import { Children, Fragment, isValidElement, type ReactNode } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 import { Stack } from 'expo-router';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUnistyles } from 'react-native-unistyles';
 
@@ -59,8 +59,11 @@ export function SettingsScaffold({
   const error = state !== undefined ? state.error : verity.error;
   const saving = state !== undefined ? (state.saving ? 1 : 0) : verity.saving;
 
+  // A pinned footer sits outside the scroll view, so the frame itself has to
+  // shrink above the keyboard or the footer's action ends up behind it.
+  const Frame = footer === undefined ? View : KeyboardAvoidingView;
   return (
-    <View style={styles.flex}>
+    <Frame style={styles.flex} {...(footer === undefined ? {} : { behavior: 'padding' as const })}>
       <Stack.Screen options={{ title }} />
       {error !== undefined ? <SettingsBanner message={error} onRetry={onRetry} /> : null}
       {/* Only on screens backed by the Verity settings store — that store is
@@ -94,7 +97,7 @@ export function SettingsScaffold({
       {footer !== undefined ? (
         <View style={[styles.scaffoldFooter, { paddingBottom: insets.bottom + 16 }]}>{footer}</View>
       ) : null}
-    </View>
+    </Frame>
   );
 }
 
