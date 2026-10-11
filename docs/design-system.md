@@ -48,7 +48,7 @@ and restate nothing; if one disagrees with it, this document wins.
 | Action          | `action`      | `#18c8f5`           | `#066a8c`              | Everything that can be tapped: buttons, links, focus, toggle (on)                      |
 | Action label    | `actionLabel` | `#6fdcf8`           | `#055a78`              | Label of the tonal primary button                                                      |
 | Signature       | `signature`   | `#ff18b7`           | `#b0107d`              | Brand only: content-screen eyebrows, Premium icon, success moment. **Never an action** |
-| Success         | `success`     | `#2ee6a6`           | `#13744f`              | Connected, active, done                                                                |
+| Success         | `success`     | `#2ee6a6`           | `#0e6845`              | Connected, active, done                                                                |
 | Attention       | `attention`   | `#a99bff`           | `#5b4bc4`              | Errors, rejected states, outline of destructive buttons                                |
 | Scrim           | `scrim`       | `rgba(3,4,8,0.72)`  | `rgba(10,12,20,0.40)`  | The single backdrop behind sheets and dialogs                                          |
 
