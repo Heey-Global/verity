@@ -67,3 +67,40 @@ and dropped-event limitations. Match fingerprints and sequence/byte metadata;
 do not subtract unrelated counters across layers. If the evidence still cannot
 distinguish Core-to-Gateway and Gateway-to-Uplink legs, record that boundary as
 unknown instead of attributing the failure to the Gateway.
+
+## Activation from a paired app
+
+An administrator on a paired device can open Settings → Diagnostics → Connection
+diagnosis. Start requires an agreed absolute UTC expiry within ten minutes of
+Core's current clock. The app displays Core's UTC time through a suggested expiry;
+use the same deadline when preparing the separate Uplink recording. Starting Core
+alone does not activate Uplink or establish that a coordinated recording is ready.
+
+The authenticated `GET`, `POST` and `DELETE /api/remote-control/diagnostics` routes
+read, start and stop this temporary Core consent. POST accepts only `expiresAt`;
+the installation is taken from the current authenticated Uplink descriptor.
+Status includes a fingerprint, expiry, remaining duration, consent source and
+number of connector generations assigned to the recording. Status or export
+failure must not be interpreted as disabled recording.
+
+Runtime consent is kept only in memory and is lost on Core restart. It ends on
+explicit Stop, deadline, entitlement loss or installation change; a reconnect
+cannot renew it. Monotonic time also bounds consent if the wall clock rolls back.
+The existing startup selection remains supported and waits for its installation
+to authenticate. Stop suppresses that selection for the current process; if the
+startup settings remain configured and unexpired, a later process restart can
+apply them again. Remove both startup settings to disable that source permanently.
+
+Starting or stopping a runtime recording does not reconnect, close or reroute the
+transport. Already existing connector generations join the capture; earlier
+activity is not reconstructed. Repeated captures on one connector preserve its
+lifetime stream and output limits. Stop flushes available metadata before ending
+consent; a deadline never permits output after expiry. The app shows the most
+recently confirmed status and permits a Stop request even when status reads fail.
+
+For Uplink, use its separately reviewed activation and cleanup procedure. Its
+startup configuration may require a deployment restart and interrupt active
+connections. Verify both sides' actual metadata output for the selected session
+before a coordinated test; after the run, Stop Core and remove Uplink's temporary
+selection. Release installation, activation and the live test require separate
+approval.

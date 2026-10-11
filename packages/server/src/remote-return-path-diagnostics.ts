@@ -50,9 +50,14 @@ export class RemoteReturnPathDiagnostics {
 
   constructor(
     sessionId: string,
-    private readonly expiresAt = Infinity,
+    private expiresAt = Infinity,
   ) {
     this.session = fingerprint(sessionId);
+  }
+
+  /** A new consent window must not reset a socket's lifetime output or stream budget. */
+  resumeUntil(expiresAt: number): void {
+    this.expiresAt = expiresAt;
   }
 
   record(

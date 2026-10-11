@@ -457,6 +457,8 @@ export {
 } from './api.js';
 export { healthSchema, type Health } from './api.js';
 export {
+  returnPathStatusSchema,
+  type ReturnPathStatus,
   remoteControlDescriptorSchema,
   type RemoteControlDescriptor,
   uplinkDiagnosticsSchema,

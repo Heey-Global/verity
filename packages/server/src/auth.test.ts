@@ -1,3 +1,4 @@
+import { ReturnPathActivation } from './remote-return-path-activation.js';
 import type { Conductor } from '@verity/session';
 import { generateKeyPairSync } from 'node:crypto';
 import { sql } from 'kysely';
@@ -147,6 +148,71 @@ describe('paired device management', () => {
         sharing: 'ready',
         remoteControl: 'ready',
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('limits diagnostic consent to administrators on paired devices and accepts only an expiry', async () => {
+    const store = new EventStore(ctx.db);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const device = await registry.mint('diagnostic device');
+    const activation = new ReturnPathActivation(() => ({
+      enabled: true,
+      installationId: 'private-installation',
+    }));
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+      returnPathActivation: activation,
+    });
+    const headers = { authorization: `Bearer ${device.token}` };
+    const url = '/api/remote-control/diagnostics';
+    try {
+      for (const method of ['GET', 'POST', 'DELETE'] as const)
+        expect((await app.inject({ method, url })).statusCode).toBe(401);
+      const expiry = new Date(Date.now() + 60_000).toISOString();
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url,
+            headers,
+            payload: { expiresAt: expiry, installationId: 'other' },
+          })
+        ).statusCode,
+      ).toBe(400);
+      const started = await app.inject({
+        method: 'POST',
+        url,
+        headers,
+        payload: { expiresAt: expiry },
+      });
+      expect(started.statusCode).toBe(200);
+      expect(started.json()).toMatchObject({ enabled: true, source: 'runtime' });
+      expect(started.body).not.toContain('private-installation');
+      expect((await app.inject({ method: 'GET', url, headers })).json().enabled).toBe(true);
+      const admin = vi.spyOn(store, 'isActiveAdministrator').mockResolvedValue(false);
+      for (const method of ['GET', 'POST', 'DELETE'] as const)
+        expect(
+          (
+            await app.inject({
+              method,
+              url,
+              headers,
+              ...(method === 'POST' ? { payload: { expiresAt: expiry } } : {}),
+            })
+          ).statusCode,
+        ).toBe(403);
+      admin.mockRestore();
+      expect((await app.inject({ method: 'DELETE', url, headers })).json().enabled).toBe(false);
+      await registry.revoke(device.id);
+      expect(
+        (await app.inject({ method: 'POST', url, headers, payload: { expiresAt: expiry } }))
+          .statusCode,
+      ).toBe(401);
     } finally {
       await app.close();
     }

@@ -1,3 +1,4 @@
+import { ReturnPathDiagnostics } from '../../components/settings/ReturnPathDiagnostics';
 import { type IntegrationSource, type VerityClient } from '@verity/mobile';
 import * as Application from 'expo-application';
 import { router, useFocusEffect } from 'expo-router';
@@ -95,6 +96,7 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
   return (
     <SettingsScaffold title="Diagnostics" detail>
       <SettingsGroup title="Connection">
+        <ReturnPathDiagnostics client={client} />
         <PublicPreviewDiagnostics
           client={client}
           keyConfigured={settings?.uplinkSubscriptionKeyConfigured}
