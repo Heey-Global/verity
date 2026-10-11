@@ -404,9 +404,11 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
                     ? `${connection === 'connected' ? 'Uplink connected' : 'Uplink on demand'} · ${featureSummary(status)}`
                     : connection === 'idle'
                       ? 'Uplink idle · rights not checked yet'
-                      : connection === 'rejected'
-                        ? 'Subscription key rejected'
-                        : 'Waiting for Uplink'
+                      : connection === 'disabled'
+                        ? 'Uplink disabled on this server'
+                        : connection === 'rejected'
+                          ? 'Subscription key rejected'
+                          : 'Waiting for Uplink'
                 }
               />
               <StatusDot tone={active ? 'ok' : connection === 'rejected' ? 'error' : 'off'} />
