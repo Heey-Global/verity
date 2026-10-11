@@ -90,7 +90,7 @@ afterAll(async () => rm(dir, { recursive: true, force: true }));
 
 async function listen(server: Server | NetServer): Promise<number> {
   servers.push(server);
-  server.on('connection', (socket) => {
+  server.on('connection', (socket: Socket) => {
     sockets.add(socket);
     socket.once('close', () => sockets.delete(socket));
   });
