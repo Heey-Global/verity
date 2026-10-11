@@ -228,7 +228,7 @@ DOPPLER
   the sub-screen carries the same subtle global `Saving…` / `✓ All changes saved` line plus a
   `Last saved HH:MM` footer — it must not drop it.
 - **Sealed store.** The Doppler-token field inherits the sealed-store handling verbatim: a
-  `503` shows `Unlock the secret store first` under the field; retain the entered value without persisting it.
+  `503` shows `Unlock the secret store first` under the field; revert the entered secret as specified by the shared sealed-store policy.
 
 ## 6. Status system  (shared with the server spec)
 

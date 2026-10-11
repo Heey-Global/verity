@@ -215,7 +215,7 @@ No Save/Reset bar. Persistence is per-change:
 - Saves are partial `PATCH /settings` (already partial-friendly via `patchFromDraft` /
   `secretPatchFromDraft`) — send only the changed field.
 - **Errors are per-field and inline.** A sealed-store `503` on a secret field →
-  `Unlock the secret store first` under that field; retain the entered value without persisting it. No floating error bar.
+  `Unlock the secret store first` under that field; revert the entered secret as specified by the shared sealed-store policy. No floating error bar.
 - No global "Reset" — re-editing a field is the undo. (A per-field revert affordance is
   optional polish, not v1.)
 
