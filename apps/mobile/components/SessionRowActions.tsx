@@ -6,8 +6,9 @@
 // (the existing session settings). The row owns Long-Press for reordering, or
 // settings on servers without session ordering support.
 import * as Haptics from 'expo-haptics';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Modal, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import ReanimatedSwipeable, {
   type SwipeableMethods,
 } from 'react-native-gesture-handler/ReanimatedSwipeable';
@@ -19,6 +20,11 @@ import Reanimated, {
 } from 'react-native-reanimated';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import {
+  gestureRowNumber,
+  recordGesture,
+  useGestureDiagnosticsEnabled,
+} from '../lib/gestureDiagnostics';
 import { Icon, type IconName } from './Icon';
 
 /** Width an action rests at after a short swipe. */
@@ -60,6 +66,7 @@ export function SwipeableSessionRow({
   onEdit,
   children,
   disabled = false,
+  diagnostics,
 }: {
   favorite: boolean;
   /** Session title, shown as the menu header. */
@@ -69,6 +76,8 @@ export function SwipeableSessionRow({
   onEdit: () => void;
   children: ReactNode;
   disabled?: boolean;
+  /** Identifies the row in gesture diagnostics; only read while recording is on. */
+  diagnostics?: { rowKey: string; projectKind: string | undefined };
 }) {
   const { theme } = useUnistyles();
   const swipeable = useRef<SwipeableMethods>(null);
@@ -107,9 +116,38 @@ export function SwipeableSessionRow({
     }
   }, [disabled]);
 
-  return (
+  const recording = useGestureDiagnosticsEnabled();
+  const widthRef = useRef(width);
+  widthRef.current = width;
+  const diagnosticsRef = useRef(diagnostics);
+  diagnosticsRef.current = diagnostics;
+  const record = useCallback(
+    (
+      source: 'row' | 'swipe',
+      event: string,
+      extra?: { dx?: number; dy?: number; detail?: Record<string, string | number | boolean> },
+    ) => {
+      const tag = diagnosticsRef.current;
+      recordGesture({
+        source,
+        event,
+        ...(tag ? { row: gestureRowNumber(tag.rowKey) } : {}),
+        ...(tag?.projectKind ? { projectKind: tag.projectKind } : {}),
+        ...extra,
+      });
+    },
+    [],
+  );
+  const observer = useMemo(
+    () => (recording ? rowTouchObserver(record, () => widthRef.current, disabledRef) : null),
+    [recording, record],
+  );
+
+  const row = (
     <View
       ref={container}
+      // The observer below needs a native view to attach to.
+      collapsable={observer ? false : undefined}
       pointerEvents={disabled ? 'none' : 'auto'}
       onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
     >
@@ -126,7 +164,14 @@ export function SwipeableSessionRow({
         // row's style — background included — and would let the lanes and their
         // labels show through the session title.
         childrenContainerStyle={{ backgroundColor: theme.colors.surface }}
-        onSwipeableWillOpen={() => {
+        onSwipeableOpenStartDrag={(direction) =>
+          record('swipe', 'open-start-drag', { detail: { direction } })
+        }
+        onSwipeableCloseStartDrag={(direction) =>
+          record('swipe', 'close-start-drag', { detail: { direction } })
+        }
+        onSwipeableWillOpen={(direction) => {
+          record('swipe', 'will-open', { detail: { direction } });
           if (disabledRef.current) return;
           if (openRow && openRow !== swipeable.current) openRow.close();
           openRow = swipeable.current;
@@ -135,6 +180,7 @@ export function SwipeableSessionRow({
           if (side) run(side);
         }}
         onSwipeableClose={() => {
+          record('swipe', 'close');
           if (openRow === swipeable.current) openRow = null;
         }}
         renderLeftActions={(_progress, translation) => (
@@ -184,6 +230,55 @@ export function SwipeableSessionRow({
       ) : null}
     </View>
   );
+  // The observer only exists while recording, so a normal launch keeps the
+  // exact gesture tree it had before diagnostics were added.
+  return observer ? <GestureDetector gesture={observer}>{row}</GestureDetector> : row;
+}
+
+/**
+ * Records the touches a session row receives without ever activating, so it
+ * cannot claim the touch from the swipe or reorder gestures. A recognizer that
+ * activates on the same touch cancels it, which is itself recorded.
+ */
+function rowTouchObserver(
+  record: (
+    source: 'row',
+    event: string,
+    extra?: { dx?: number; dy?: number; detail?: Record<string, string | number | boolean> },
+  ) => void,
+  width: () => number,
+  disabled: { current: boolean },
+) {
+  let origin: { x: number; y: number } | null = null;
+  let reported = 0;
+  // Horizontal distances worth one entry each; the swipe activates past 12 pt.
+  const marks = [6, 12, 24, 48];
+  const delta = (touch: { absoluteX: number; absoluteY: number } | undefined) =>
+    touch && origin
+      ? { dx: Math.round(touch.absoluteX - origin.x), dy: Math.round(touch.absoluteY - origin.y) }
+      : {};
+  return Gesture.Manual()
+    .runOnJS(true)
+    .onTouchesDown((event) => {
+      const touch = event.allTouches[0];
+      origin = touch ? { x: touch.absoluteX, y: touch.absoluteY } : null;
+      reported = 0;
+      record('row', 'touch-down', {
+        detail: { width: Math.round(width()), disabled: disabled.current },
+      });
+    })
+    .onTouchesMove((event) => {
+      const moved = delta(event.allTouches[0]);
+      const distance = Math.max(Math.abs(moved.dx ?? 0), Math.abs(moved.dy ?? 0));
+      while (reported < marks.length && distance >= marks[reported]!) {
+        record('row', `move-${String(marks[reported])}`, moved);
+        reported++;
+      }
+    })
+    .onTouchesUp((event) => record('row', 'touch-up', delta(event.changedTouches[0])))
+    .onTouchesCancelled((event) =>
+      record('row', 'touch-cancelled', delta(event.changedTouches[0])),
+    );
 }
 
 function SwipeAction({

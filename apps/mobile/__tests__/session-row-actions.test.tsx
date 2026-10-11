@@ -1,5 +1,6 @@
-import { fireEvent, render, screen } from '@testing-library/react-native';
+import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { Text } from 'react-native';
+import { GestureDetector } from 'react-native-gesture-handler';
 
 import {
   isFullSwipe,
@@ -7,6 +8,7 @@ import {
   SessionContextMenu,
   SwipeableSessionRow,
 } from '../components/SessionRowActions';
+import { exportGestureDiagnostics, setGestureDiagnosticsEnabled } from '../lib/gestureDiagnostics';
 
 function renderMenu(favorite: boolean) {
   const handlers = {
@@ -116,6 +118,65 @@ describe('SwipeableSessionRow', () => {
 
     expect(screen.getByLabelText('Unfavorite')).toBeTruthy();
     expect(screen.queryByLabelText('Favorite')).toBeNull();
+  });
+});
+
+describe('SwipeableSessionRow gesture diagnostics', () => {
+  afterEach(() => act(() => setGestureDiagnosticsEnabled(false)));
+
+  type Observer = {
+    handlerName: string;
+    handlers: Record<string, ((event: unknown, manager?: unknown) => void) | undefined>;
+  };
+  const observers = () =>
+    screen
+      .UNSAFE_getAllByType(GestureDetector)
+      .map((detector) => detector.props.gesture as Observer)
+      .filter((gesture) => gesture.handlerName === 'ManualGestureHandler');
+  const renderRow = () =>
+    render(
+      <SwipeableSessionRow
+        favorite={false}
+        label="Fix login"
+        onToggleFavorite={jest.fn()}
+        onDelete={jest.fn()}
+        onEdit={jest.fn()}
+        diagnostics={{ rowKey: 'session:private-id', projectKind: 'local' }}
+      >
+        <Text>row content</Text>
+      </SwipeableSessionRow>,
+    );
+
+  it('adds no observer while recording is off', () => {
+    // An observer outside a recording session would change the gesture tree
+    // every user runs, which is what the switch exists to prevent.
+    renderRow();
+    expect(observers()).toHaveLength(0);
+  });
+
+  it('records touches the row receives, labelled by project kind but not by session', () => {
+    renderRow();
+    act(() => setGestureDiagnosticsEnabled(true));
+    const [observer] = observers();
+    expect(observer).toBeDefined();
+    const touch = (x: number, y = 50) => ({ allTouches: [{ absoluteX: x, absoluteY: y }] });
+    act(() => {
+      observer!.handlers.onTouchesDown?.(touch(100));
+      observer!.handlers.onTouchesMove?.(touch(114));
+      observer!.handlers.onTouchesCancelled?.({
+        changedTouches: [{ absoluteX: 114, absoluteY: 50 }],
+      });
+    });
+    const { events } = exportGestureDiagnostics();
+    expect(events.map((event) => event.event)).toEqual([
+      'touch-down',
+      'move-6',
+      'move-12',
+      'touch-cancelled',
+    ]);
+    expect(events[0]).toMatchObject({ source: 'row', projectKind: 'local', row: 1 });
+    expect(events[3]).toMatchObject({ dx: 14, dy: 0 });
+    expect(JSON.stringify(events)).not.toContain('private-id');
   });
 });
 

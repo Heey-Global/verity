@@ -13,6 +13,7 @@ jest.mock('../components/settings/PublicPreviewDiagnostics', () => ({
 }));
 import DiagnosticsScreen from '../app/settings/diagnostics';
 import { shareUpdateDiagnostics } from '../lib/updateDiagnostics';
+import { gestureDiagnosticsEnabled } from '../lib/gestureDiagnostics';
 import {
   makeClient,
   mockCreateVerityClient,
@@ -35,6 +36,16 @@ it('groups diagnostics and keeps transcription and log export actionable', async
   await waitFor(() => expect(shareRemoteControlCiInputs).toHaveBeenCalled());
   expect(screen.getByText('Connection')).toBeOnTheScreen();
   expect(screen.getByText('Integrations')).toBeOnTheScreen();
+});
+it('switches overview gesture recording on and off for this app run', async () => {
+  mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+  render(<DiagnosticsScreen />);
+  const toggle = await screen.findByLabelText('Record overview gestures');
+  expect(gestureDiagnosticsEnabled()).toBe(false);
+  fireEvent.press(toggle);
+  expect(gestureDiagnosticsEnabled()).toBe(true);
+  fireEvent.press(screen.getByLabelText('Record overview gestures'));
+  expect(gestureDiagnosticsEnabled()).toBe(false);
 });
 it('reports unavailable integration diagnostics instead of claiming no errors', async () => {
   mockCreateVerityClient.mockReturnValue(

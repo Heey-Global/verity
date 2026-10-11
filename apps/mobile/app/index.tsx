@@ -1356,6 +1356,7 @@ function ProjectGroup({
                         previewPublic={publicPreviews.has(session.sessionId)}
                         previewUrl={previewUrls.get(session.sessionId) ?? null}
                         repo={group.repo}
+                        projectKind={group.project?.kind}
                         selected={selectedId === session.sessionId}
                         renaming={renamingId === session.sessionId}
                       />
@@ -1659,6 +1660,7 @@ const SessionRow = memo(function SessionRow({
   previewPublic,
   previewUrl,
   repo,
+  projectKind,
   selected,
   renaming,
   dragHandleRef,
@@ -1685,6 +1687,8 @@ const SessionRow = memo(function SessionRow({
   previewUrl?: string | null;
   /** The GitHub repo the issue number links into; absent for local projects. */
   repo?: RepoIdentity | undefined;
+  /** Only labels gesture diagnostics; rows behave the same for every kind. */
+  projectKind?: string | undefined;
   selected?: boolean;
   renaming?: boolean;
   dragHandleRef?: RefCallback<View>;
@@ -1857,6 +1861,7 @@ const SessionRow = memo(function SessionRow({
       onDelete={onDelete}
       onEdit={onRename}
       disabled={interactionsLocked}
+      diagnostics={{ rowKey: `session:${session.sessionId}`, projectKind }}
     >
       {row}
     </SwipeableSessionRow>

@@ -12,10 +12,15 @@ import {
   SettingsNavRow,
   SettingsPanel,
   SettingsScaffold,
+  SettingsToggleRow,
 } from '../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient } from '../../lib/client';
+import {
+  setGestureDiagnosticsEnabled,
+  useGestureDiagnosticsEnabled,
+} from '../../lib/gestureDiagnostics';
 import { useLoadVeritySettings, useVeritySettings } from '../../lib/settingsStore';
 import { shareRemoteControlCiInputs } from '../../lib/remoteControlCiExport';
 import { shareUpdateDiagnostics } from '../../lib/updateDiagnostics';
@@ -35,6 +40,7 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
   const [error, setError] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [serverVersion, setServerVersion] = useState<string | null>(null);
+  const recordingGestures = useGestureDiagnosticsEnabled();
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -143,6 +149,12 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
       </SettingsGroup>
       <SettingsGroup title="App">
         <SettingsListPanel>
+          <SettingsToggleRow
+            label="Record overview gestures"
+            subtitle="Until the app restarts. Logs how session rows react to swipes and holds for the export below."
+            value={recordingGestures}
+            onValueChange={setGestureDiagnosticsEnabled}
+          />
           <SettingsNavRow
             icon="file-text"
             title="Export app update logs"

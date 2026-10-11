@@ -9,6 +9,7 @@ import {
 import * as Updates from 'expo-updates';
 import { Share } from 'react-native';
 import { shareUpdateDiagnostics } from './updateDiagnostics';
+import { recordGesture, setGestureDiagnosticsEnabled } from './gestureDiagnostics';
 
 jest.mock('expo-updates', () => ({
   isEnabled: true,
@@ -43,6 +44,19 @@ it('exports retained launch failures with the running update identity', async ()
     channel: 'staging',
     isEmbeddedLaunch: true,
     logs: [{ message: 'Fatal launch error' }],
+  });
+});
+
+it('includes recorded overview gestures', async () => {
+  readLogs.mockResolvedValue([]);
+  setGestureDiagnosticsEnabled(true);
+  recordGesture({ source: 'swipe', event: 'open-start-drag', projectKind: 'local' });
+  await shareUpdateDiagnostics();
+  setGestureDiagnosticsEnabled(false);
+  const report = JSON.parse((share.mock.calls[0]![0] as { message: string }).message);
+  expect(report.gestureDiagnostics).toMatchObject({
+    enabled: true,
+    events: [{ source: 'swipe', event: 'open-start-drag', projectKind: 'local' }],
   });
 });
 
