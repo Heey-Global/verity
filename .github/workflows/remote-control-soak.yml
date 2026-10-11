@@ -1,0 +1,78 @@
+name: verity-remote-control-soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit to probe
+        default: main
+        type: string
+      uplink_origin:
+        description: Public HTTPS Uplink origin
+        required: true
+        type: string
+      installation_handle:
+        description: Existing installation public routing handle
+        required: true
+        type: string
+      core_url:
+        description: Paired logical HTTPS Core URL
+        required: true
+        type: string
+      core_pin:
+        description: Paired Core SPKI pin (sha256-...)
+        required: true
+        type: string
+      soak_seconds:
+        description: Soak duration in seconds (30 to 600)
+        default: '180'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Do not cancel an active diagnostic session when another run is requested.
+concurrency:
+  group: remote-control-soak
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    runs-on: xcode-27
+    timeout-minutes: 20
+    steps:
+      - name: Validate soak duration
+        env:
+          SOAK_SECONDS: ${{ inputs.soak_seconds }}
+        run: |
+          set -euo pipefail
+          [[ "$SOAK_SECONDS" =~ ^[1-9][0-9]{1,2}$ ]] &&
+            (( SOAK_SECONDS >= 30 && SOAK_SECONDS <= 600 )) ||
+            { echo 'soak_seconds must be an integer from 30 to 600' >&2; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify admission regression tests
+        run: node --test scripts/remote-control-staging/probe.test.mjs scripts/remote-control-staging/workflow.test.mjs
+
+      - name: Run native app tunnel soak
+        timeout-minutes: 12
+        env:
+          VERITY_REMOTE_UPLINK_ORIGIN: ${{ inputs.uplink_origin }}
+          VERITY_REMOTE_INSTALLATION_HANDLE: ${{ inputs.installation_handle }}
+          VERITY_REMOTE_CORE_URL: ${{ inputs.core_url }}
+          VERITY_REMOTE_CORE_PIN: ${{ inputs.core_pin }}
+          VERITY_REMOTE_PROBE_MODE: app
+          VERITY_REMOTE_PROBE_SOAK_SECONDS: ${{ inputs.soak_seconds }}
+          VERITY_REMOTE_PROBE_SOAK_STREAMS: '6'
+        run: bash scripts/remote-control-staging/run.sh
