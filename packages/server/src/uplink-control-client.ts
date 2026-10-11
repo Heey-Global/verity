@@ -15,7 +15,7 @@ export const DEMAND_CHECK_TIMEOUT_MS = 15_000;
 export const REMOVAL_TIMEOUT_MS = 5_000;
 /** A WebSocket close handshake is cooperative. Do not let a peer that never
  * completes it strand the control client in CLOSING forever. */
-export const CLOSE_TIMEOUT_MS = 5_000;
+const CLOSE_TIMEOUT_MS = 5_000;
 /** Exported so the guards can derive their timings from the schedule rather
  * than restating it. */
 export const RECONNECT_MAX_MS = 30_000;
