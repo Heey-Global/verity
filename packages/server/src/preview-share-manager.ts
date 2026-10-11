@@ -1524,6 +1524,8 @@ export class PreviewShareInputError extends Error {}
 export class PreviewShareNotFoundError extends Error {}
 export class PreviewShareConflictError extends Error {}
 export class PreviewShareUpstreamError extends Error {}
+/** Revocation is durable locally, but Uplink has not acknowledged it yet. */
+export class PreviewShareRemovalQueuedError extends Error {}
 
 function publicShare(record: PublicPreviewShareRecord): PublicPreviewShare {
   return {

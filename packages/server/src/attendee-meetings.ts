@@ -3,7 +3,11 @@ import { createServer, type Server } from 'node:http';
 import { PreviewConnector, hashPreviewPin } from '@verity/preview-tunnel';
 import type { EventStore, LiveMeetingSyncRecord } from '@verity/store';
 import { z } from 'zod';
-import type { PreviewEdgeControl, PreviewEdgeBinding } from './preview-share-manager.js';
+import {
+  PreviewShareRemovalQueuedError,
+  type PreviewEdgeControl,
+  type PreviewEdgeBinding,
+} from './preview-share-manager.js';
 import {
   ATTENDEE_WEBHOOK_PATH,
   AttendeeClient,
@@ -78,7 +82,7 @@ export class AttendeeMeetings {
           if (!state.binding) continue;
           const shareId = state.binding.shareId;
           try {
-            await this.options.edge?.remove(shareId);
+            await this.revokeShare(shareId);
           } catch {
             // Retain the handle when durable revocation cannot be confirmed.
             continue;
@@ -88,6 +92,16 @@ export class AttendeeMeetings {
         }
       }).catch(() => undefined);
     });
+  }
+
+  private async revokeShare(shareId: string): Promise<void> {
+    if (!this.options.edge) throw new Error('Uplink cleanup is unavailable');
+    try {
+      await this.options.edge.remove(shareId);
+    } catch (error) {
+      // Provider completion can proceed once revocation survives a restart.
+      if (!(error instanceof PreviewShareRemovalQueuedError)) throw error;
+    }
   }
 
   private client(key: string) {
@@ -305,8 +319,7 @@ export class AttendeeMeetings {
       } catch (error) {
         if (error instanceof AttendeeRequestRejected) state.botCreateAttempted = false;
         if (!state.botCreateAttempted) {
-          if (state.binding)
-            await this.options.edge.remove(state.binding.shareId).catch(() => undefined);
+          if (state.binding) await this.revokeShare(state.binding.shareId).catch(() => undefined);
           this.connectors.get(id)?.close();
           this.connectors.delete(id);
           state.phase = 'ended';
@@ -443,7 +456,7 @@ export class AttendeeMeetings {
       // A restart before provider submission must not leave a phantom active meeting.
       if (state.binding) {
         if (!this.options.edge) throw new Error('Uplink cleanup is unavailable');
-        await this.options.edge.remove(state.binding.shareId);
+        await this.revokeShare(state.binding.shareId);
       }
       this.connectors.get(state.meeting.id)?.close();
       this.connectors.delete(state.meeting.id);
@@ -532,7 +545,7 @@ export class AttendeeMeetings {
       }
     }
     if (final) {
-      if (state.binding) await this.options.edge?.remove(state.binding.shareId);
+      if (state.binding) await this.revokeShare(state.binding.shareId);
       this.connectors.get(state.meeting.id)?.close();
       this.connectors.delete(state.meeting.id);
       state.phase = 'ended';

@@ -1,3 +1,4 @@
+import { PreviewShareRemovalQueuedError } from './preview-share-manager.js';
 import { EventEmitter } from 'node:events';
 import type { VeritySettingsPatch, EventStore } from '@verity/store';
 import WebSocket from 'ws';
@@ -2937,6 +2938,16 @@ describe('Uplink connection demand', () => {
     expect(f.client.diagnostics().control).toBe('idle');
     await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS);
     expect(f.socketFactory).toHaveBeenCalledOnce();
+    await f.client.stop();
+  });
+
+  it('distinguishes durable offline revocation from a failed queue write', async () => {
+    const f = setup({ restoreShareIds: async () => [], premiumRemoteAccessEnabled: false });
+    await expect(f.client.remove('queued')).rejects.toBeInstanceOf(PreviewShareRemovalQueuedError);
+    expect(f.store.addPendingUplinkShareRemoval).toHaveBeenCalledWith('queued');
+    const failure = new Error('queue storage failed');
+    f.store.addPendingUplinkShareRemoval.mockRejectedValueOnce(failure);
+    await expect(f.client.remove('unsaved')).rejects.toBe(failure);
     await f.client.stop();
   });
 

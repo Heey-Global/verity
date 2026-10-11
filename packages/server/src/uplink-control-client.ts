@@ -6,7 +6,10 @@ import type {
   PreviewEdgeControl,
   PreviewEdgeCreate,
 } from './preview-share-manager.js';
-import { PreviewShareUpstreamError } from './preview-share-manager.js';
+import {
+  PreviewShareUpstreamError,
+  PreviewShareRemovalQueuedError,
+} from './preview-share-manager.js';
 
 const PROTOCOL_VERSION = 1;
 const HEARTBEAT_MS = 15_000;
@@ -656,16 +659,23 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private async removeConnected(shareId: string): Promise<void> {
     await this.options.store.addPendingUplinkShareRemoval(shareId);
     this.orphanShareIds.add(shareId);
-    if (!this.controlReady) throw new Error('cannot revoke preview while Uplink is unavailable');
-    const response = await this.request('share.remove', { shareId });
-    if (response.type === 'remove.failed') {
-      throw new Error(
-        `Uplink failed to remove public preview: ${optionalString(response.code, 'internal')}`,
+    try {
+      if (!this.controlReady) throw new Error('cannot revoke preview while Uplink is unavailable');
+      const response = await this.request('share.remove', { shareId });
+      if (response.type === 'remove.failed') {
+        throw new Error(
+          `Uplink failed to remove public preview: ${optionalString(response.code, 'internal')}`,
+        );
+      }
+      if (response.type !== 'share.removed') throw new Error('unexpected Uplink removal response');
+      await this.options.store.deletePendingUplinkShareRemoval(shareId);
+      this.orphanShareIds.delete(shareId);
+    } catch (error) {
+      throw new PreviewShareRemovalQueuedError(
+        error instanceof Error ? error.message : 'Uplink revocation is queued',
+        { cause: error },
       );
     }
-    if (response.type !== 'share.removed') throw new Error('unexpected Uplink removal response');
-    await this.options.store.deletePendingUplinkShareRemoval(shareId);
-    this.orphanShareIds.delete(shareId);
   }
 
   private async connect(): Promise<void> {
