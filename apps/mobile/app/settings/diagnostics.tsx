@@ -7,6 +7,7 @@ import { StyleSheet } from 'react-native-unistyles';
 import { CardRow, Eyebrow, RowCard, Tag } from '../../components/premium/PremiumChrome';
 import { MatrixImportErrors } from '../../components/settings/MatrixImportErrors';
 import { PublicPreviewDiagnostics } from '../../components/settings/PublicPreviewDiagnostics';
+import { ReturnPathDiagnostics } from '../../components/settings/ReturnPathDiagnostics';
 import {
   SettingsGroup,
   SettingsMessage,
@@ -14,6 +15,10 @@ import {
 } from '../../components/settings/SettingsChrome';
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient } from '../../lib/client';
+import {
+  setGestureDiagnosticsEnabled,
+  useGestureDiagnosticsEnabled,
+} from '../../lib/gestureDiagnostics';
 import { useLoadVeritySettings, useVeritySettings } from '../../lib/settingsStore';
 import { shareRemoteControlCiInputs } from '../../lib/remoteControlCiExport';
 import { shareUpdateDiagnostics } from '../../lib/updateDiagnostics';
@@ -34,6 +39,7 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
   const [exporting, setExporting] = useState(false);
   const [showImportErrors, setShowImportErrors] = useState(false);
   const [serverVersion, setServerVersion] = useState<string | null>(null);
+  const recordingGestures = useGestureDiagnosticsEnabled();
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -99,6 +105,10 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
         keyConfigured={settings?.uplinkSubscriptionKeyConfigured}
       />
       <View style={local.section}>
+        <Eyebrow>Server recording</Eyebrow>
+        <ReturnPathDiagnostics client={client} />
+      </View>
+      <View style={local.section}>
         <Eyebrow>More</Eyebrow>
         <RowCard>
           <CardRow
@@ -127,6 +137,12 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
             {...(sources !== null && sources.length > 0
               ? { onPress: () => setShowImportErrors((shown) => !shown) }
               : {})}
+          />
+          <CardRow
+            title="Record overview gestures"
+            subtitle="Until the app restarts. Logs how session rows react to swipes and holds for the export below."
+            switchValue={recordingGestures}
+            onPress={() => setGestureDiagnosticsEnabled(!recordingGestures)}
           />
           <CardRow
             title="Export app update logs"

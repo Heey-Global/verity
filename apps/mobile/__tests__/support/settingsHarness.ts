@@ -61,11 +61,12 @@ export function expoRouterMock(): Record<string, unknown> {
       back: () => mockBack(),
       dismissTo: (href: string) => mockDismissTo(href),
     },
-    useFocusEffect: (cb: () => void) =>
+    useFocusEffect: (cb: () => void | (() => void)) =>
       react.useEffect(() => {
         focusCallbacks.add(cb);
-        cb();
+        const cleanup = cb();
         return () => {
+          cleanup?.();
           focusCallbacks.delete(cb);
         };
       }, [cb]),
@@ -202,6 +203,9 @@ export function makeProject(
 }
 
 export type ClientOverrides = {
+  getReturnPathStatus?: VerityClient['getReturnPathStatus'];
+  startReturnPathDiagnostics?: VerityClient['startReturnPathDiagnostics'];
+  stopReturnPathDiagnostics?: VerityClient['stopReturnPathDiagnostics'];
   settings?: VeritySettings;
   listPairedDevices?: jest.Mock;
   getUplinkDiagnostics?: jest.Mock;
@@ -242,6 +246,11 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     throw new Error(`unexpected client.${name} call`);
   };
   const client: Record<string, unknown> = {
+    getReturnPathStatus: opts.getReturnPathStatus ?? notImplemented('getReturnPathStatus'),
+    startReturnPathDiagnostics:
+      opts.startReturnPathDiagnostics ?? notImplemented('startReturnPathDiagnostics'),
+    stopReturnPathDiagnostics:
+      opts.stopReturnPathDiagnostics ?? notImplemented('stopReturnPathDiagnostics'),
     getVeritySettings:
       opts.getVeritySettings ?? jest.fn().mockResolvedValue(opts.settings ?? makeSettings()),
     getSigningKey:

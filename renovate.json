@@ -153,6 +153,12 @@
       "matchPackageNames": ["metro", "metro-config", "metro-transform-worker"],
       "matchFileNames": ["package.json"],
       "enabled": false
+    },
+    {
+      "description": "Keep the verified Node runtime and type definitions on the Node 26 release line; later majors require an explicit compatibility migration.",
+      "matchPackageNames": ["node", "@types/node"],
+      "allowedVersions": ">=26 <27",
+      "groupName": "Node runtime"
     }
   ],
   "customManagers": [
@@ -255,6 +261,36 @@
       ],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "gitleaks/gitleaks"
+    },
+    {
+      "customType": "regex",
+      "description": "Keep EAS builds and injected devcontainer Node aligned with the owned runtime pins.",
+      "managerFilePatterns": [
+        "/^apps/mobile/eas\\.json$/",
+        "/^packages/server/src/provisioner\\.ts$/"
+      ],
+      "matchStrings": [
+        "\"node\":\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
+        "DEVCONTAINER_NODE_FEATURE_OPTIONS = \\{ version: '(?<currentValue>\\d+\\.\\d+\\.\\d+)'"
+      ],
+      "datasourceTemplate": "node-version",
+      "depNameTemplate": "node",
+      "versioningTemplate": "node"
+    },
+    {
+      "customType": "regex",
+      "description": "Track digest-pinned Node images used by CI installer fixtures and container smoke scripts.",
+      "managerFilePatterns": [
+        "/^deploy/bin/verity-project-relay-.*smoke$/",
+        "/^scripts/test-runner-claude-live-.*\\.sh$/",
+        "/^\\.github/workflows/ci\\.yml$/"
+      ],
+      "matchStrings": [
+        "node:(?<currentValue>\\d+\\.\\d+\\.\\d+-bookworm(?:-slim)?)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "node",
+      "versioningTemplate": "docker"
     }
   ]
 }

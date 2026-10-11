@@ -203,3 +203,18 @@ describe('return-path diagnostics', () => {
     ).toBeLessThan(expiresAt + 1);
   });
 });
+
+it('does not replenish a socket output budget when consent resumes', () => {
+  const recorder = new RemoteReturnPathDiagnostics('socket', Date.now() + 60_000);
+  for (let index = 0; index < RETURN_PATH_LIMITS.events / 2; index++) recorder.exportSummary(true);
+  recorder.resumeUntil(Date.now() + 120_000);
+  expect(recorder.exportSummary(true)).toBeUndefined();
+  for (let index = 0; index < RETURN_PATH_LIMITS.streams + 76; index++)
+    recorder.record('send', 'observed', { type: 'stream.data', streamId: `stream_${index}` }, 1, 1);
+  recorder.resumeUntil(Date.now() + 120_000);
+  recorder.record('send', 'observed', { type: 'stream.data', streamId: 'another' }, 1, 1);
+  const snapshot = recorder.snapshot();
+  expect((snapshot.streams as unknown[]).length).toBe(RETURN_PATH_LIMITS.streams);
+  expect((snapshot.events as unknown[]).length).toBe(RETURN_PATH_LIMITS.events / 2);
+  expect(snapshot.droppedStreamObservations).toBe(77);
+});

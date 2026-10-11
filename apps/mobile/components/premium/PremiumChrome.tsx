@@ -7,6 +7,7 @@ import { ActivityIndicator, Platform, Pressable, Text, TextInput, View } from 'r
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../Icon';
+import { Toggle } from '../Toggle';
 
 const MONO = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
 
@@ -114,7 +115,8 @@ export function CardRow({
   onPress,
   accessibilityLabel,
   disabled = false,
-  chevron = onPress !== undefined,
+  switchValue,
+  chevron = onPress !== undefined && switchValue === undefined,
 }: {
   title: string;
   subtitle?: string | undefined;
@@ -122,6 +124,8 @@ export function CardRow({
   onPress?: () => void;
   accessibilityLabel?: string;
   disabled?: boolean;
+  /** Renders the row as a switch: a trailing toggle, and `onPress` flips it. */
+  switchValue?: boolean;
   chevron?: boolean;
 }) {
   const { theme } = useUnistyles();
@@ -133,6 +137,7 @@ export function CardRow({
       </View>
       <View style={styles.trailing}>
         {trailing}
+        {switchValue !== undefined ? <Toggle value={switchValue} /> : null}
         {chevron ? <Icon name="chevron-right" size={16} color={theme.colors.textMuted} /> : null}
       </View>
     </>
@@ -147,9 +152,11 @@ export function CardRow({
       ]}
       onPress={onPress}
       disabled={disabled}
-      accessibilityRole="button"
+      accessibilityRole={switchValue === undefined ? 'button' : 'switch'}
       accessibilityLabel={accessibilityLabel ?? title}
-      accessibilityState={{ disabled }}
+      accessibilityState={
+        switchValue === undefined ? { disabled } : { disabled, checked: switchValue }
+      }
     >
       {content}
     </Pressable>

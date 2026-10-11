@@ -3,6 +3,7 @@ import { createConnection, createServer, type Server as NetServer, type Socket }
 import WebSocket, { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRemoteConnectorPool, remoteDataUrlForControl } from './remote-control-connector.js';
+import { ReturnPathActivation } from './remote-return-path-activation.js';
 import type { RemoteConnectorReservation } from './uplink-control-client.js';
 
 const open = new Set<{ close: () => Promise<void> }>();
@@ -18,8 +19,10 @@ async function fixture(
   log?: Pick<Console, 'info' | 'warn'>,
   returnPathExpiry?: () => number | undefined,
   factory?: (url: string) => WebSocket,
+  activation?: ReturnPathActivation,
 ): Promise<{
   reserve: ReturnType<typeof createRemoteConnectorPool>['reserve'];
+  diagnosticConnectorCount: () => number;
   recentStreams: ReturnType<typeof createRemoteConnectorPool>['recentStreams'];
   received: unknown[];
   peer: () => WebSocket;
@@ -61,6 +64,13 @@ async function fixture(
   const pool = createRemoteConnectorPool({
     ...(log ? { log } : {}),
     ...(returnPathExpiry ? { returnPathExpiry } : {}),
+    ...(activation
+      ? {
+          returnPathExpiry: () => activation.expiry(),
+          returnPathBeforeStopSubscribe: (listener: () => void) => activation.beforeStop(listener),
+          returnPathSubscribe: (listener: () => void) => activation.subscribe(listener),
+        }
+      : {}),
     dataUrl: 'wss://uplink.example/data',
     localHost: '127.0.0.1',
     localPort: address.port,
@@ -70,6 +80,7 @@ async function fixture(
   });
   return {
     reserve: pool.reserve,
+    diagnosticConnectorCount: pool.diagnosticConnectorCount,
     recentStreams: pool.recentStreams,
     received,
     peer: () => {
@@ -98,6 +109,35 @@ async function reserve(
 }
 
 describe('remote control connector', () => {
+  it('activates and stops existing connectors without closing transport or renewing reconnect consent', async () => {
+    const activation = new ReturnPathActivation(() => ({
+      enabled: true,
+      installationId: 'paired',
+    }));
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const f = await fixture(undefined, {}, log, undefined, undefined, activation);
+    const first = await reserve(f);
+    let closed = false;
+    void first.closed!.then(() => {
+      closed = true;
+    });
+    expect(f.diagnosticConnectorCount()).toBe(0);
+    const expiry = new Date(Date.now() + 60_000).toISOString();
+    activation.start(expiry);
+    expect(f.diagnosticConnectorCount()).toBe(1);
+    const second = await reserve(f, 'second');
+    expect(f.diagnosticConnectorCount()).toBe(2);
+    expect(activation.status().expiresAt).toBe(expiry);
+    activation.stop();
+    expect(f.diagnosticConnectorCount()).toBe(0);
+    expect(closed).toBe(false);
+    first.release('done');
+    second.release('done');
+    activation.dispose();
+    expect(
+      log.info.mock.calls.filter(([entry]) => entry.event === 'remote.return_path'),
+    ).toHaveLength(2);
+  });
   it('keeps detailed diagnostics disabled by default and expires opt-in without ending transport', async () => {
     const log = { info: vi.fn(), warn: vi.fn() };
     const ordinary = await fixture(undefined, {}, log);
@@ -211,11 +251,12 @@ describe('remote control connector', () => {
       }
     }
     const log = { info: vi.fn(), warn: vi.fn() };
+    const expiry = Date.now() + 60_000;
     const f = await fixture(
       undefined,
       {},
       log,
-      () => Date.now() + 60_000,
+      () => expiry,
       (url) => new DeferredWebSocket(url),
     );
     const reservation = await reserve(f);
@@ -966,4 +1007,41 @@ describe('remote control connector', () => {
     ).toBe('object');
     for (const reservation of reservations) reservation.release('test complete');
   });
+});
+
+it('does not assign an old connector generation to a different installation', async () => {
+  const descriptor = { enabled: true, installationId: 'one' };
+  const activation = new ReturnPathActivation(() => descriptor);
+  const pool = createRemoteConnectorPool({
+    dataUrl: 'wss://uplink.example/data',
+    localHost: 'localhost',
+    localPort: 443,
+    log: { info: vi.fn(), warn: vi.fn() },
+    returnPathInstallation: () => descriptor.installationId,
+    returnPathExpiry: () => activation.expiry(),
+    returnPathSubscribe: (listener) => activation.subscribe(listener),
+  });
+  const request = {
+    requestId: 'request',
+    sessionId: 'session',
+    decisionExpiresAt: Date.now() + 15_000,
+  };
+  const first = await pool.reserve(request, new AbortController().signal);
+  if (typeof first === 'string') throw new Error(first);
+  activation.start(new Date(Date.now() + 60_000).toISOString());
+  expect(pool.diagnosticConnectorCount()).toBe(1);
+  descriptor.installationId = 'two';
+  expect(activation.status().enabled).toBe(false);
+  activation.start(new Date(Date.now() + 60_000).toISOString());
+  expect(pool.diagnosticConnectorCount()).toBe(0);
+  const second = await pool.reserve(
+    { ...request, sessionId: 'next' },
+    new AbortController().signal,
+  );
+  if (typeof second === 'string') throw new Error(second);
+  expect(pool.diagnosticConnectorCount()).toBe(1);
+  first.release('done');
+  second.release('done');
+  activation.dispose();
+  pool.disposeDiagnostics();
 });

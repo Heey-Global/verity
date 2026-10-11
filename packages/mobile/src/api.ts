@@ -988,6 +988,22 @@ export const healthSchema = z.object({
 });
 export type Health = z.infer<typeof healthSchema>;
 
+export const returnPathStatusSchema = z
+  .object({
+    enabled: z.boolean(),
+    source: z.enum(['runtime', 'environment', 'none']),
+    installationFingerprint: z
+      .string()
+      .regex(/^[a-f0-9]{16}$/u)
+      .nullable(),
+    expiresAt: z.string().nullable(),
+    currentUtc: z.string(),
+    remainingMs: z.number().nonnegative(),
+    matchedConnectors: z.number().int().nonnegative(),
+  })
+  .strict();
+export type ReturnPathStatus = z.infer<typeof returnPathStatusSchema>;
+
 export const remoteControlDescriptorSchema = z.discriminatedUnion('enabled', [
   z
     .object({
@@ -3203,6 +3219,28 @@ export class VerityClient {
   async getHealth(): Promise<Health> {
     const res = await this.request('/healthz', { method: 'GET' });
     return healthSchema.parse(await res.json());
+  }
+
+  async getReturnPathStatus(): Promise<ReturnPathStatus> {
+    return returnPathStatusSchema.parse(
+      await (await this.request('/api/remote-control/diagnostics', { method: 'GET' })).json(),
+    );
+  }
+  async startReturnPathDiagnostics(expiresAt: string): Promise<ReturnPathStatus> {
+    return returnPathStatusSchema.parse(
+      await (
+        await this.request('/api/remote-control/diagnostics', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ expiresAt }),
+        })
+      ).json(),
+    );
+  }
+  async stopReturnPathDiagnostics(): Promise<ReturnPathStatus> {
+    return returnPathStatusSchema.parse(
+      await (await this.request('/api/remote-control/diagnostics', { method: 'DELETE' })).json(),
+    );
   }
 
   async getRemoteControlDescriptor(): Promise<RemoteControlDescriptor> {
