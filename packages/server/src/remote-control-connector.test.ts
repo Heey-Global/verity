@@ -102,17 +102,14 @@ describe('remote control connector', () => {
     const ordinaryReservation = await reserve(ordinary);
     ordinaryReservation.release('test end');
     expect(log.info.mock.calls.some(([entry]) => entry.event === 'remote.return_path')).toBe(false);
-    const selected = await fixture(undefined, {}, log, () => Date.now() + 100);
+    const expiry = Date.now() + 100;
+    const selected = await fixture(undefined, {}, log, () => expiry);
     const selectedReservation = await reserve(selected);
     let ended = false;
     void selectedReservation.closed!.then(() => {
       ended = true;
     });
-    await vi.waitFor(() =>
-      expect(log.info.mock.calls.some(([entry]) => entry.event === 'remote.return_path')).toBe(
-        true,
-      ),
-    );
+    await vi.waitFor(() => expect(Date.now()).toBeGreaterThanOrEqual(expiry));
     const exported = log.info.mock.calls.filter(
       ([entry]) => entry.event === 'remote.return_path',
     ).length;

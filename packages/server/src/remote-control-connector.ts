@@ -209,7 +209,7 @@ class ConnectorSession implements RemoteConnectorReservation {
       expiry > Date.now() &&
       expiry - Date.now() <= 600_000
     ) {
-      this.returnPath = new RemoteReturnPathDiagnostics(request.sessionId);
+      this.returnPath = new RemoteReturnPathDiagnostics(request.sessionId, expiry);
       this.returnPathTimer = setInterval(() => this.logReturnPath(), 5_000);
       this.returnPathTimer.unref();
       this.returnPathDeadline = setTimeout(() => {
@@ -329,7 +329,7 @@ class ConnectorSession implements RemoteConnectorReservation {
         });
         ws.on('close', (code) => {
           this.returnPath?.record('close', 'observed', undefined, 0, 0, { code });
-          this.logReturnPath();
+          this.logReturnPath(true);
           this.logTransport(`socket_close_${String(code)}`);
           this.release(`remote data connection closed (${String(code)})`);
         });

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   RemoteReturnPathDiagnostics,
   RETURN_PATH_LIMITS,
@@ -132,6 +132,35 @@ describe('return-path diagnostics', () => {
       lastClose: { code: 1006 },
     });
     expect(JSON.stringify(diagnostics.snapshot())).not.toContain('private-error');
+  });
+  it('checks expiry during recording and export even before the expiry timer runs', () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(100);
+    try {
+      const diagnostics = new RemoteReturnPathDiagnostics('session', 200);
+      diagnostics.record('send', 'observed', frame);
+      clock.mockReturnValue(200);
+      diagnostics.record('callback', 'accepted', frame);
+      diagnostics.record('emitted_message', 'observed', undefined, 17);
+      expect(diagnostics.snapshot()).toMatchObject({
+        emittedMessages: 0,
+        streams: [{ completedFrames: 0 }],
+      });
+      expect(diagnostics.exportSummary(true)).toBeUndefined();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+  it('does not let unadmitted parser IDs exhaust retained send attribution', () => {
+    const diagnostics = new RemoteReturnPathDiagnostics('session');
+    for (let i = 0; i < RETURN_PATH_LIMITS.streams + 1; i++)
+      diagnostics.record('parser', 'observed', { ...frame, streamId: `rejected${i}` });
+    diagnostics.record('send', 'observed', frame);
+    diagnostics.record('callback', 'accepted', frame);
+    expect(diagnostics.snapshot()).toMatchObject({
+      droppedStreams: 0,
+      streams: [{ enqueuedFrames: 1, completedFrames: 1 }],
+    });
+    expect(diagnostics.snapshot().streams).toHaveLength(1);
   });
   it('requires explicit installation and absolute bounded expiry', () => {
     const now = Date.now();

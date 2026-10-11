@@ -48,7 +48,10 @@ export class RemoteReturnPathDiagnostics {
   private events: Record<string, unknown>[] = [];
   private streams = new Map<string, StreamTotals>();
 
-  constructor(sessionId: string) {
+  constructor(
+    sessionId: string,
+    private readonly expiresAt = Infinity,
+  ) {
     this.session = fingerprint(sessionId);
   }
 
@@ -60,12 +63,13 @@ export class RemoteReturnPathDiagnostics {
     decodedBytes = 0,
     error?: unknown,
   ): void {
+    if (Date.now() >= this.expiresAt) return;
     const id =
       typeof frame?.streamId === 'string' && /^[A-Za-z0-9_-]{1,128}$/u.test(frame.streamId)
         ? fingerprint(frame.streamId)
         : undefined;
     const type = typeof frame?.type === 'string' && TYPES.has(frame.type) ? frame.type : 'unknown';
-    if (id) {
+    if (id && (stage === 'send' || stage === 'callback')) {
       let totals = this.streams.get(id);
       if (!totals && this.streams.size < RETURN_PATH_LIMITS.streams) {
         totals = {
@@ -158,6 +162,7 @@ export class RemoteReturnPathDiagnostics {
   }
 
   exportSummary(final = false): Record<string, unknown> | undefined {
+    if (Date.now() >= this.expiresAt) return undefined;
     // Reserve one final summary so a busy socket cannot consume its close evidence.
     if (this.summaries >= RETURN_PATH_LIMITS.events / 2 - (final ? 0 : 1)) return undefined;
     this.summaries++;

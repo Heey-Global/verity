@@ -44,9 +44,10 @@ only once across successive summaries. `droppedEvents` and `droppedStreams`
 report omitted detail explicitly. Cumulative emitted-message counts and byte lengths, plus the latest allowlisted
 transport error and close observation, survive detail saturation. Totals for retained streams keep updating
 when the event budget is exhausted. Error, release and close paths export
-available metadata, including late callbacks until consent expires; the final
-expiry summary has reserved capacity. Summaries stop at release, and the
-absolute expiry stops all detailed recording.
+available metadata, including late callbacks until consent expires; a final
+summary has reserved capacity before expiry. Summaries stop at release, and the
+absolute expiry is checked during recording and export, independently of timer
+delivery, and stops all detailed recording and export.
 
 ## Coordinated verification
 
