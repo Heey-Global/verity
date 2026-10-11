@@ -6,8 +6,8 @@ Scope: this is the **server**-level settings screen. Per-project configuration (
 monitors/schedules, Doppler binding) lives in the project screen — see the companion
 [`project-screen-redesign.md`](./project-screen-redesign.md).
 
-This spec defers to [`design-language.md`](./design-language.md) for the status pill, the
-auto-save/interaction model, the wording glossary, and the credential-derivation pattern. It
+This spec defers to [`design-system.md`](./design-system.md) for appearance, status intents,
+the auto-save/interaction model, the wording glossary, and the credential-derivation pattern. It
 restates none of those; it owns only what is server-specific.
 
 This spec replaces the current server-level Settings screen. It is the product of a
@@ -191,7 +191,7 @@ CONNECTED SERVICES
 
 This group contains the Server self-update panel and reprovision-all. Sandbox update state is
 reported, not configured: see **Sandbox update stuck** in
-[`design-language.md`](./design-language.md#wording-glossary). There are no server-wide Sandbox
+[`design-system.md`](./design-system.md#11-wording). There are no server-wide Sandbox
 update-policy controls.
 
 ### Footer
@@ -279,7 +279,7 @@ State machine:
 - **running** — `Reprovisioning X/N…`.
 - **done with partial failure** — list failed containers + `Retry failed` only.
 
-Per design-language.md's single destructive-confirmation policy: every container recreation
+Per the design system's single destructive-confirmation policy: every container recreation
 (Reprovision here, and Update sandbox on the project) is confirmed, while a GitHub-token
 refresh and dev-server start / stop / restart are **not** destructive and need no confirmation.
 

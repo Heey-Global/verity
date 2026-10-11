@@ -3,8 +3,8 @@
 Status: proposed · Target: `apps/mobile/app/project/[id].tsx` (2409 lines) +
 `packages/mobile/src/projectSettings.ts`
 
-This spec defers to [`design-language.md`](./design-language.md) for the status pill, the
-auto-save/interaction model, the wording glossary, and the credential-derivation pattern. It
+This spec defers to [`design-system.md`](./design-system.md) for appearance, status intents,
+the auto-save/interaction model, the wording glossary, and the credential-derivation pattern. It
 restates none of those; it owns only what is project-specific.
 
 Companion to [`settings-redesign.md`](./settings-redesign.md) (the **server**-level screen).
@@ -164,8 +164,8 @@ Key moves:
   container and its provisioning".
 - **Config-changed banner.** After a relevant Configure auto-save (dev-server command/ports
   or the Doppler binding), the card raises a **"Config changed — Reprovision to apply"**
-  banner, per design-language.md's "applying config to a running container".
-- **Confirmation policy (per design-language.md).** Every container recreation —
+  banner, per the design system's "applying config to a running container".
+- **Confirmation policy (per the design system).** Every container recreation —
   **Reprovision** and **Update sandbox** — is confirmed; **Refresh token** and dev-server
   Start / Stop / Restart are not destructive and need no confirmation.
 - **Configuration is a door, not a section.** A single row routes to the project-settings
@@ -221,7 +221,7 @@ DOPPLER
   here it's a per-project *binding*/token, there it's the account token that makes binding
   possible. Copy names them reciprocally: **"Doppler binding (uses the account token from
   server Settings)"**.
-- **Aggregate save signal on this sub-screen.** Per design-language.md's auto-save model,
+- **Aggregate save signal on this sub-screen.** Per the design system's auto-save model,
   the sub-screen carries the same subtle global `Saving…` / `✓ All changes saved` line plus a
   `Last saved HH:MM` footer — it must not drop it.
 - **Sealed store.** The Doppler-token field inherits the sealed-store handling verbatim: a
