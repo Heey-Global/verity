@@ -238,10 +238,10 @@ Replaces the path-count `2/6` pill. Derivable **today, with zero server change**
 uses `resolveSigningPrivateKey`'s own inputs:
 
 ```
-green "Signing ready" · "Commits will be signed"
+ready "Signing ready" · "Commits will be signed"
    when  gitSshPrivateKeyConfigured  ||  trimOrNull(gitSshPrivateKeyPath)
 else
-   himbeer "Needs setup" · "No signing method configured"
+   needsSetup "Needs setup" · "No signing method configured"
 ```
 
 - The status **never** says `broker`, `key file`, or `verified` — the client cannot observe
@@ -291,7 +291,7 @@ refresh and dev-server start / stop / restart are **not** destructive and need n
 
 | # | Change | Effort |
 | --- | --- | --- |
-| 1 | `2/6` → green/himbeer from `gitSshPrivateKeyConfigured`; copy "Commits will be signed" / "No signing method configured" | quick-win |
+| 1 | `2/6` → `ready` / `needsSetup` from `gitSshPrivateKeyConfigured`; copy "Commits will be signed" / "No signing method configured" | quick-win |
 | 2 | Adopt the [shared status component](./design-system.md#54-status) and its four intents; retire the legacy status palette and bordered pills | quick-win |
 | 3 | Regroup flat ScrollView into 3 sections; combine GitHub access + verified commits; version → footer | medium |
 | 4 | Auto-save: text/secret on blur, per-field feedback; remove Save/Reset bar | medium |
