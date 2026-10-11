@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 
 /** Where a recorded gesture event came from. */
-export type GestureSource = 'row' | 'swipe' | 'reorder';
+type GestureSource = 'row' | 'swipe' | 'reorder';
 
 export type GestureEvent = {
   /** Wall clock for rough correlation with a screen recording. */
