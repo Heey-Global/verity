@@ -198,7 +198,8 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 
 - One bottom-sheet component for every overlay that slides up.
 - Single `scrim`, grab handle, top corners 16, `Floating` elevation.
-- Header: `Title` on the left, close control on the right.
+- Header: `Title` on the left, close control on the right. Confirmations ([§ 5.7](#57-confirmation))
+  omit the close control; Cancel and dismissal cover it.
 - Content uses the same components as screens. At most one primary button, full width, at
   the bottom. Dismissal by dragging down, tapping the scrim or the close control.
 
@@ -394,6 +395,8 @@ One decision per contested term. These labels are used **verbatim** everywhere.
 | **Uplink subscription key** | The credential that activates Verity Premium on a server | The one secret field on the Verity Premium screen | "Verity subscription key", "Premium key" |
 | **Online sharing** | Public preview links that work over the internet | Preview sheet, dev-server rows, Verity Premium feature switch, diagnostics | "Shared online", "Over the internet", "public sharing" |
 | **Remote access** | The app reaching Core from outside the local network through Uplink | Verity Premium feature switch, diagnostics, connection test | "Remote Control" |
+| **Soon** | `optional`: an announced feature that is not available yet | Verity Premium feature list (Teams) | `Off` (switched off) / `Not included` (not granted) |
+| **Update** | Short `needsSetup` tag for `Update available`, used where the row subtitle names the version | Settings row "Server update" | `Update sandbox` (the action) |
 | **Off** | Muted state for a feature the operator switched off deliberately | Verity Premium and diagnostics feature rows, rendered as `optional` | `Needs setup` (a fault) / `Not included` (Uplink does not grant it) |
 
 ### Ready-word convention
@@ -474,10 +477,15 @@ can never drift because there is only one copy of it.
 1. **Theme:** move the roles, type scale, spacing, radii and elevation into
    `apps/mobile/theme/tokens.ts` and bundle Inter. Retire the separate `colors.setup.*`
    palette and the meeting override palette (`components/meeting/meetingPalette.ts`).
+   The current status tones map as follows: `tone.done` becomes `success`, `tone.danger`
+   becomes `attention` (lavender), and the existing amber `tone.attention` is removed. Until
+   that lands, `tone.attention` in code still means amber and must not be used for errors.
 2. **Components:** implement section 5 as one shared module. It replaces the duplicated
    building blocks in `components/settings/SettingsChrome.tsx`,
    `components/premium/PremiumChrome.tsx` and the local button, pill, chip, input and sheet
-   styles across screens.
+   styles across screens. The shared status component (tag and dot, driven by `intent` and
+   `label`) replaces `apps/mobile/components/StatusPill.tsx`; surface specs that name
+   `StatusPill.tsx` refer to it.
 3. **Catalog:** add a developer screen that renders every component in every state. It
    becomes the visual reference for future work, also on the web.
 4. **Enforcement:** add a check that rejects raw colors and font sizes outside the theme, and

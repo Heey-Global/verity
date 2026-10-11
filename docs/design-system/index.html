@@ -154,7 +154,7 @@
     radial-gradient(circle at 48% 30%, var(--success) 0 3px, transparent 4px), radial-gradient(circle at 70% 12%, var(--signature) 0 3px, transparent 4px),
     radial-gradient(circle at 86% 34%, var(--action) 0 3px, transparent 4px), radial-gradient(circle at 20% 52%, var(--action) 0 2px, transparent 3px),
     radial-gradient(circle at 80% 60%, var(--signature) 0 2px, transparent 3px); }
-  .theme-light { --background:#f6f7fa;--surface:#ffffff;--surfaceAlt:#eef0f5;--border:#dde1ea;--text:#0d0f17;--textMuted:#4a4f62;--textFaint:#62677c;--action:#066a8c;--actionLabel:#055a78;--signature:#b0107d;--success:#13744f;--attention:#5b4bc4;--scrim:rgba(10,12,20,0.40); background: var(--background); color: var(--text); }
+  .theme-light { --background:#f6f7fa;--surface:#ffffff;--surfaceAlt:#eef0f5;--border:#dde1ea;--text:#0d0f17;--textMuted:#4a4f62;--textFaint:#62677c;--action:#066a8c;--actionLabel:#055a78;--signature:#b0107d;--success:#13744f;--attention:#5b4bc4;--scrim:rgba(10,12,20,0.40); --chrome: color-mix(in srgb, var(--surface) 55%, var(--background)); --chromeLine: color-mix(in srgb, var(--border) 55%, var(--background)); background: var(--background); color: var(--text); }
   .theme-light .panel { background: var(--background); }
   .theme-light .dot { box-shadow: none; }
   .theme-light .card.selected { box-shadow: none; }
@@ -323,7 +323,7 @@
   <div class="sbtns"><span class="btn secondary  ">Cancel</span><span class="btn destructive  ">Turn off</span></div></div></div></div>
   </div>
   <div class="grid g3" style="margin-top:18px">
-    <div class="rule"><b>Anatomy</b>Single scrim, grab handle, top corners 16, Title with close control, floating shadow, at most one primary.</div>
+    <div class="rule"><b>Anatomy</b>Single scrim, grab handle, top corners 16, Title with close control (confirmations omit it), floating shadow, at most one primary.</div>
     <div class="rule"><b>Safe dismissal</b>Dragging down, tapping the scrim or going back always cancels. Nothing runs on dismissal.</div>
     <div class="rule"><b>Accessible</b>VoiceOver reads the question on open and keeps focus inside. The action locks with a spinner while running.</div>
   </div></section>
