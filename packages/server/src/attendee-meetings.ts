@@ -266,6 +266,7 @@ export class AttendeeMeetings {
         processedRequests: {},
       };
       await this.publish(state);
+      const sharingGeneration = this.sharingGeneration;
       try {
         const binding = await this.options.edge.create({
           durationSeconds: 30 * 24 * 60 * 60,
@@ -279,6 +280,13 @@ export class AttendeeMeetings {
         webhookUrl.searchParams.set('pin', state.pin);
         state.botCreateAttempted = true;
         await this.save(state);
+        if (
+          sharingGeneration !== this.sharingGeneration ||
+          this.options.edge.isAvailable?.() === false
+        ) {
+          state.botCreateAttempted = false;
+          throw new Error('Online sharing authority lost before bot creation');
+        }
         const bot = z.object({ id: z.string() }).parse(
           await this.client(credentials.apiKey).request('bots', 'POST', {
             meeting_url: meetingUrl,

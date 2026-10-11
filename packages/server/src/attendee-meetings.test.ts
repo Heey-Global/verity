@@ -743,70 +743,83 @@ it('removes persisted webhook bindings on sharing shutdown while leaving provide
   await service.close();
 });
 
-it('does not create a bot when sharing is disabled during webhook connection', async () => {
-  const { PreviewConnector } = await import('@verity/preview-tunnel');
-  const rows = new Map<string, unknown>();
-  const store = {
-    getSession: async () => ({ id: 'session' }),
-    getAttendeeState: async (id: string) => rows.get(id),
-    putAttendeeState: async (id: string, state: unknown) => {
-      rows.set(id, structuredClone(state));
-    },
-    listAttendeeState: async () =>
-      [...rows].filter(([id]) => id !== 'config').map(([id, state]) => ({ id, state })),
-  } as unknown as EventStore;
-  let disable!: () => void;
-  let available = true;
-  const connect = vi.spyOn(PreviewConnector.prototype, 'connect').mockImplementation(async () => {
-    available = false;
-    disable();
-  });
-  const close = vi.spyOn(PreviewConnector.prototype, 'close');
-  const request = vi.fn();
-  const remove = vi.fn(async () => undefined);
-  const service = new AttendeeMeetings({
-    store,
-    ingest: vi.fn(),
-    edge: {
-      isAvailable: () => available,
-      onSharingDisabled: (listener) => {
-        disable = listener;
-        return () => undefined;
+it.each(['connection', 'save'])(
+  'does not create a bot when sharing is disabled during %s',
+  async (stage) => {
+    const { PreviewConnector } = await import('@verity/preview-tunnel');
+    const rows = new Map<string, unknown>();
+    const store = {
+      getSession: async () => ({ id: 'session' }),
+      getAttendeeState: async (id: string) => rows.get(id),
+      putAttendeeState: async (id: string, state: unknown) => {
+        rows.set(id, structuredClone(state));
+        if (stage === 'save' && (state as { botCreateAttempted?: boolean }).botCreateAttempted) {
+          available = false;
+          disable();
+        }
       },
-      remove,
-      create: async () => ({
-        shareId: 'share',
-        publicOrigin: 'https://meeting.example.test',
-        edgeUrl: 'wss://meeting.example.test/__verity/connector',
-        connectorToken: 'fixture',
-        sessionSecret: 'fixture',
-        expiresAt: new Date(Date.now() + 60_000),
-      }),
-    },
-    client: () => ({ request }) as unknown as import('./attendee-client.js').AttendeeClient,
-  });
-  await service.configure({
-    apiKey: 'fixture',
-    webhookSecret: Buffer.alloc(32).toString('base64'),
-  });
-  await service.open();
-  try {
-    await expect(
-      service.start('session', 'https://meet.google.com/abc-defg-hij', false),
-    ).rejects.toThrow('Check Uplink');
-    expect(request).not.toHaveBeenCalled();
-    expect(close).toHaveBeenCalled();
-    expect(remove).toHaveBeenCalledWith('share');
-    expect([...rows].find(([id]) => id.startsWith('meeting:'))?.[1]).toMatchObject({
-      phase: 'ended',
-      credentials: { apiKey: '', webhookSecret: '' },
+      listAttendeeState: async () =>
+        [...rows].filter(([id]) => id !== 'config').map(([id, state]) => ({ id, state })),
+    } as unknown as EventStore;
+    let disable!: () => void;
+    let available = true;
+    const connect = vi.spyOn(PreviewConnector.prototype, 'connect').mockImplementation(async () => {
+      if (stage === 'connection') {
+        available = false;
+        disable();
+      }
     });
-  } finally {
-    await service.close();
-    connect.mockRestore();
-    close.mockRestore();
-  }
-});
+    const disconnected = vi
+      .spyOn(PreviewConnector.prototype, 'waitForDisconnect')
+      .mockImplementation(() => new Promise(() => undefined));
+    const close = vi.spyOn(PreviewConnector.prototype, 'close');
+    const request = vi.fn();
+    const remove = vi.fn(async () => undefined);
+    const service = new AttendeeMeetings({
+      store,
+      ingest: vi.fn(),
+      edge: {
+        isAvailable: () => available,
+        onSharingDisabled: (listener) => {
+          disable = listener;
+          return () => undefined;
+        },
+        remove,
+        create: async () => ({
+          shareId: 'share',
+          publicOrigin: 'https://meeting.example.test',
+          edgeUrl: 'wss://meeting.example.test/__verity/connector',
+          connectorToken: 'fixture',
+          sessionSecret: 'fixture',
+          expiresAt: new Date(Date.now() + 60_000),
+        }),
+      },
+      client: () => ({ request }) as unknown as import('./attendee-client.js').AttendeeClient,
+    });
+    await service.configure({
+      apiKey: 'fixture',
+      webhookSecret: Buffer.alloc(32).toString('base64'),
+    });
+    await service.open();
+    try {
+      await expect(
+        service.start('session', 'https://meet.google.com/abc-defg-hij', false),
+      ).rejects.toThrow('Check Uplink');
+      expect(request).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalled();
+      expect(remove).toHaveBeenCalledWith('share');
+      expect([...rows].find(([id]) => id.startsWith('meeting:'))?.[1]).toMatchObject({
+        phase: 'ended',
+        credentials: { apiKey: '', webhookSecret: '' },
+      });
+    } finally {
+      await service.close();
+      connect.mockRestore();
+      close.mockRestore();
+      disconnected.mockRestore();
+    }
+  },
+);
 
 it('retains the webhook share handle when shutdown revocation fails', async () => {
   const state = { meeting: { id: 'restored' }, phase: 'running', binding: { shareId: 'share' } };
