@@ -1,3 +1,7 @@
+jest.mock('../lib/remoteControlCiExport', () => ({
+  shareRemoteControlCiInputs: jest.fn().mockResolvedValue(undefined),
+}));
+import { shareRemoteControlCiInputs } from '../lib/remoteControlCiExport';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
@@ -27,6 +31,8 @@ it('groups diagnostics and keeps transcription and log export actionable', async
   expect(mockPush).toHaveBeenCalledWith('/settings/live-meeting-stt');
   fireEvent.press(screen.getByLabelText('Export app update logs'));
   await waitFor(() => expect(shareUpdateDiagnostics).toHaveBeenCalled());
+  fireEvent.press(screen.getByLabelText('Export Remote Control test inputs'));
+  await waitFor(() => expect(shareRemoteControlCiInputs).toHaveBeenCalled());
   expect(screen.getByText('Connection')).toBeOnTheScreen();
   expect(screen.getByText('Integrations')).toBeOnTheScreen();
 });
