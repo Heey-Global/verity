@@ -44,7 +44,7 @@ export class RemoteReturnPathDiagnostics {
   private emittedOrder = 0;
   private summaries = 0;
   private droppedEvents = 0;
-  private droppedStreams = 0;
+  private droppedStreamObservations = 0;
   private events: Record<string, unknown>[] = [];
   private streams = new Map<string, StreamTotals>();
 
@@ -81,7 +81,7 @@ export class RemoteReturnPathDiagnostics {
         };
         this.streams.set(id, totals);
       }
-      if (!totals) this.droppedStreams++;
+      if (!totals) this.droppedStreamObservations++;
       else if (stage === 'send') {
         totals.firstSend ??= {
           eventOrder: this.order + 1,
@@ -192,7 +192,7 @@ export class RemoteReturnPathDiagnostics {
       emittedBytes: this.emittedBytes,
       lastError: this.lastError ? { ...this.lastError } : null,
       lastClose: this.lastClose ? { ...this.lastClose } : null,
-      droppedStreams: this.droppedStreams,
+      droppedStreamObservations: this.droppedStreamObservations,
       streams: [...this.streams].map(([stream, totals]) => ({ stream, ...totals })),
       events: this.events.map((event) => ({ ...event })),
     };

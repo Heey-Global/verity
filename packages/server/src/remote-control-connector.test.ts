@@ -17,6 +17,7 @@ async function fixture(
   serviceOptions: { autoPong?: boolean } = {},
   log?: Pick<Console, 'info' | 'warn'>,
   returnPathExpiry?: () => number | undefined,
+  factory?: (url: string) => WebSocket,
 ): Promise<{
   reserve: ReturnType<typeof createRemoteConnectorPool>['reserve'];
   recentStreams: ReturnType<typeof createRemoteConnectorPool>['recentStreams'];
@@ -63,7 +64,8 @@ async function fixture(
     dataUrl: 'wss://uplink.example/data',
     localHost: '127.0.0.1',
     localPort: address.port,
-    webSocketFactory: () => new WebSocket(`ws://127.0.0.1:${serviceAddress.port}/data`),
+    webSocketFactory: () =>
+      (factory ?? ((url) => new WebSocket(url)))(`ws://127.0.0.1:${serviceAddress.port}/data`),
     ...(connectLocal ? { connectLocal } : {}),
   });
   return {
@@ -186,6 +188,74 @@ describe('remote control connector', () => {
       ]),
     );
     expect(JSON.stringify(summary)).not.toContain('private');
+  });
+  it('retains a target callback arriving after socket close', async () => {
+    let late: (() => void) | undefined;
+    class DeferredWebSocket extends WebSocket {
+      override send(
+        data: Parameters<WebSocket['send']>[0],
+        options?: Parameters<WebSocket['send']>[1] | ((error?: Error) => void),
+        callback?: (error?: Error) => void,
+      ): void {
+        const cb = typeof options === 'function' ? options : callback;
+        if (
+          typeof data === 'string' &&
+          (JSON.parse(data) as { type: string }).type === 'stream.data'
+        ) {
+          super.send(data, (error) => {
+            late = () => cb?.(error);
+          });
+        } else if (typeof options === 'function') super.send(data, options);
+        else if (options) super.send(data, options, callback);
+        else super.send(data, callback);
+      }
+    }
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const f = await fixture(
+      undefined,
+      {},
+      log,
+      () => Date.now() + 60_000,
+      (url) => new DeferredWebSocket(url),
+    );
+    const reservation = await reserve(f);
+    const attaching = reservation.attach(
+      'ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(1));
+    f.peer().send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await attaching;
+    f.peer().send(
+      JSON.stringify({ type: 'stream.open', streamId: 'late', channel: 'remote', meta: {} }),
+    );
+    f.peer().send(
+      JSON.stringify({ type: 'stream.data', streamId: 'late', seq: 0, payload: 'eA==' }),
+    );
+    await vi.waitFor(() => expect(late).toBeTypeOf('function'));
+    reservation.release('test stop');
+    await vi.waitFor(() => expect(f.peer().readyState).toBe(WebSocket.CLOSED));
+    late?.();
+    const summary = log.info.mock.calls
+      .filter(([entry]) => entry.event === 'remote.return_path')
+      .at(-1)?.[0];
+    expect(summary.streams).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          enqueuedFrames: 1,
+          completedFrames: 1,
+          firstCallback: expect.objectContaining({ seq: 0, outcome: 'accepted' }),
+        }),
+      ]),
+    );
+    expect(summary.lastClose).not.toBeNull();
   });
   it('samples incomplete WebSocket bytes below message delivery and stops sampling on release', async () => {
     const log = { info: vi.fn(), warn: vi.fn() };

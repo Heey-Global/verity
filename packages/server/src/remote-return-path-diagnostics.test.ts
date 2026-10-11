@@ -44,8 +44,13 @@ describe('return-path diagnostics', () => {
     const diagnostics = new RemoteReturnPathDiagnostics('session');
     for (let i = 0; i < RETURN_PATH_LIMITS.streams + 1; i++)
       diagnostics.record('send', 'observed', { ...frame, streamId: `stream${i}` });
-    expect(diagnostics.snapshot()).toMatchObject({ droppedStreams: 1 });
+    expect(diagnostics.snapshot()).toMatchObject({ droppedStreamObservations: 1 });
     expect(diagnostics.snapshot().streams).toHaveLength(RETURN_PATH_LIMITS.streams);
+    diagnostics.record('callback', 'accepted', {
+      ...frame,
+      streamId: `stream${RETURN_PATH_LIMITS.streams}`,
+    });
+    expect(diagnostics.snapshot()).toMatchObject({ droppedStreamObservations: 2 });
   });
   it('uses independent generations and preserves event order and callback failures', () => {
     const first = new RemoteReturnPathDiagnostics('same');
@@ -157,7 +162,7 @@ describe('return-path diagnostics', () => {
     diagnostics.record('send', 'observed', frame);
     diagnostics.record('callback', 'accepted', frame);
     expect(diagnostics.snapshot()).toMatchObject({
-      droppedStreams: 0,
+      droppedStreamObservations: 0,
       streams: [{ enqueuedFrames: 1, completedFrames: 1 }],
     });
     expect(diagnostics.snapshot().streams).toHaveLength(1);
