@@ -65,7 +65,7 @@ toggles already on, confetti (~1.5 s, Reanimated + SVG, no new dependency), succ
 key* row (*Stored encrypted on your server*, *Replace ›*). The stored key is never read back. *Features*: one card per feature with a
 toggle; Teams muted with `Soon`. A feature the subscription does not include keeps its
 toggle but is muted with the subtitle *Not included in your subscription*. *Diagnostics*:
-one row *Diagnostics* for connection status and tests. Bottom link *Remove subscription key* (danger,
+a *Connection* card with a status dot and a one-line summary, leading to Settings › Diagnostics. Bottom link *Remove subscription key* (danger,
 confirmed; returns to state 1).
 
 - Online sharing off → confirm *Active public links will be revoked* before saving.

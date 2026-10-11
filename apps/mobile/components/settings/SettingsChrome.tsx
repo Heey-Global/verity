@@ -60,10 +60,12 @@ export function SettingsScaffold({
   const saving = state !== undefined ? (state.saving ? 1 : 0) : verity.saving;
 
   // A pinned footer sits outside the scroll view, so the frame itself has to
-  // shrink above the keyboard or the footer's action ends up behind it.
-  const Frame = footer === undefined ? View : KeyboardAvoidingView;
+  // shrink above the keyboard or the footer's action ends up behind it. Only one
+  // of the two may react to the keyboard, or the inset is applied twice. Both
+  // stay mounted either way so switching steps keeps the scroll position.
+  const pinned = footer !== undefined;
   return (
-    <Frame style={styles.flex} {...(footer === undefined ? {} : { behavior: 'padding' as const })}>
+    <KeyboardAvoidingView style={styles.flex} behavior="padding" enabled={pinned}>
       <Stack.Screen options={{ title }} />
       {error !== undefined ? <SettingsBanner message={error} onRetry={onRetry} /> : null}
       {/* Only on screens backed by the Verity settings store — that store is
@@ -87,17 +89,18 @@ export function SettingsScaffold({
         contentContainerStyle={[
           styles.content,
           detail ? styles.detailContent : null,
-          { paddingBottom: footer === undefined ? insets.bottom + 24 : 24 },
+          { paddingBottom: pinned ? 24 : insets.bottom + 24 },
         ]}
         keyboardShouldPersistTaps="handled"
         bottomOffset={KEYBOARD_BOTTOM_OFFSET}
+        enabled={!pinned}
       >
         {children}
       </KeyboardAwareScrollView>
       {footer !== undefined ? (
         <View style={[styles.scaffoldFooter, { paddingBottom: insets.bottom + 16 }]}>{footer}</View>
       ) : null}
-    </Frame>
+    </KeyboardAvoidingView>
   );
 }
 

@@ -78,7 +78,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
   const updateVersion = useServerUpdateBadge(true);
   const [connectedCount, setConnectedCount] = useState<number | undefined>(undefined);
-  const [uplinkRejected, setUplinkRejected] = useState(false);
+  const [uplinkState, setUplinkState] = useState<'active' | 'rejected' | 'pending'>('pending');
   // Re-read on focus: this screen stays mounted under /devices, where the
   // count changes.
   useFocusEffect(
@@ -93,7 +93,18 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       // A stored key is not an active subscription: Uplink may have refused it.
       client
         .getUplinkDiagnostics()
-        .then((status) => active && setUplinkRejected(status.control === 'rejected'))
+        .then(
+          (status) =>
+            active &&
+            setUplinkState(
+              status.control === 'connected' ||
+                (status.control === 'idle' && status.entitlement === 'checked')
+                ? 'active'
+                : status.control === 'rejected'
+                  ? 'rejected'
+                  : 'pending',
+            ),
+        )
         .catch(() => undefined);
       return () => {
         active = false;
@@ -197,9 +208,11 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             status={
               !settings?.uplinkSubscriptionKeyConfigured
                 ? { intent: 'optional', label: 'Not active' }
-                : uplinkRejected
+                : uplinkState === 'rejected'
                   ? { intent: 'needsSetup', label: 'Key rejected' }
-                  : { intent: 'ready', label: 'Active' }
+                  : uplinkState === 'active'
+                    ? { intent: 'ready', label: 'Active' }
+                    : { intent: 'optional', label: 'Configured' }
             }
             onPress={() => router.push('/settings/premium')}
           />

@@ -430,11 +430,23 @@ function rejectionFor(reason: UplinkDiagnostics['reason']): { tag: string; sente
   };
 }
 
-/** A feature is on when it is switched on and Uplink granted it. While the
- * control channel idles (#1519) `effective` stays false, so `granted` decides. */
+/** Whether a feature works now. While the control channel idles (#1519) only
+ * Online sharing dials Uplink on demand, so a granted share counts as on;
+ * Remote access keeps the channel up while usable, so idle means it is not.
+ * A Core that predates `features` reports readiness in the top-level fields. */
 function featureOn(status: UplinkDiagnostics | null, id: 'sharing' | 'remoteAccess'): boolean {
-  const state = status?.features?.[id];
-  return state?.enabled !== false && (state?.effective === true || state?.granted === true);
+  if (status?.features === undefined) {
+    return id === 'sharing' ? status?.sharing === 'ready' : status?.remoteControl === 'ready';
+  }
+  const state = status.features[id];
+  if (state.enabled === false) return false;
+  if (state.effective) return true;
+  return (
+    id === 'sharing' &&
+    state.granted &&
+    status.control === 'idle' &&
+    status.entitlement === 'checked'
+  );
 }
 
 function activatedSummary(status: UplinkDiagnostics | null): string {
