@@ -161,8 +161,9 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 - Field: height 48, radius 12, `surfaceAlt` fill, 1 px `border`, value in `Body`.
 - Focus: `action` border plus a 3 px `action` ring at 20 %.
 - Error: subtle `attention` border and a **hint box** below the field — lavender tint, a short
-  bold title ("Key not recognized") and one explanatory sentence. The entered value is kept.
-  No dialog.
+  bold title ("Key not recognized") and one explanatory sentence. The entered text stays in the
+  field so it can be corrected, but nothing is saved until it is valid (see
+  [§ 9](#errors-and-validation)). No dialog.
 - Variants:
   - **Single line**
   - **Secret:** masked, with a reveal control, never offered to the password manager
@@ -183,7 +184,7 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
   | ------------ | -------------------- | ---------------------------- |
   | `ready`      | success tone         | success dot                  |
   | `needsSetup` | attention tone       | attention dot                |
-  | `optional`   | no tag — muted word  | faint dot                    |
+  | `optional`   | muted word; neutral tag only for `Soon` on feature cards | faint dot |
   | `transient`  | spinner + muted word | spinner + muted word         |
 
 ### 5.5 Toggle
@@ -304,7 +305,7 @@ Settings auto-save. There is **no Save button and no Reset button anywhere**, an
 
 | Control type | When it saves | Feedback |
 | --- | --- | --- |
-| Toggle | immediately on flip | row `saving…` → settles |
+| Toggle | immediately on flip | spinner in the knob until the server confirms |
 | Text (name, email, paths, command, ports, branch) | on blur, debounced; **invalid values are not persisted** | per-field `saving… → saved ✓` |
 | Secret paste (SSH key, Doppler token) | on blur; write-only, never echoed back | per-field `saving… → saved ✓` |
 | Selection / picker (default model, Doppler binding) | on selection commit | per-field `saving… → saved ✓` |
@@ -320,8 +321,9 @@ it.
 
 - Errors are **per-field and inline**, shown as the hint box from [§ 5.3](#53-text-field) —
   never a toast, never a floating bar.
-- **Invalid values revert.** They are not persisted; the field returns to its last valid
-  state and shows the inline error.
+- **Invalid values are not saved.** The entered text stays visible with the inline hint box
+  so it can be corrected; the stored value remains the last valid one. Leaving the screen
+  without correcting it discards the invalid text.
 - **Sealed secret store:** a `503` from a sealed store on *any* secret field — the server
   SSH signing key **and** the project Doppler token — shows `Unlock the secret store first`
   under that field and reverts the value. The project Doppler-token field inherits this
@@ -344,7 +346,8 @@ Persisting a setting and applying it are two different things:
 
 - **Any container recreation is confirmed** with the confirmation sheet from
   [§ 5.7](#57-confirmation): server Reprovision, project Reprovision, and Update sandbox.
-- **Purge and Delete** keep their stronger, explicitly destructive confirmation.
+- **Purge and Delete** keep their existing, stronger confirmation flows; this sheet does not
+  replace them.
 - **Token refresh** and **dev-server start / stop / restart** are *not* destructive and
   need **no** confirmation.
 

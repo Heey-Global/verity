@@ -279,7 +279,8 @@ State machine:
 - **running** — `Reprovisioning X/N…`.
 - **done with partial failure** — list failed containers + `Retry failed` only.
 
-Per the design system's single destructive-confirmation policy: every container recreation
+Per the design system's single
+[destructive-confirmation policy](./design-system.md#destructive-action-confirmation-one-policy): every container recreation
 (Reprovision here, and Update sandbox on the project) is confirmed, while a GitHub-token
 refresh and dev-server start / stop / restart are **not** destructive and need no confirmation.
 

@@ -164,8 +164,10 @@ Key moves:
   container and its provisioning".
 - **Config-changed banner.** After a relevant Configure auto-save (dev-server command/ports
   or the Doppler binding), the card raises a **"Config changed — Reprovision to apply"**
-  banner, per the design system's "applying config to a running container".
-- **Confirmation policy (per the design system).** Every container recreation —
+  banner, per the design system's
+  ["applying config to a running container"](./design-system.md#applying-config-to-a-running-container).
+- **Confirmation policy (per the
+  [design system](./design-system.md#destructive-action-confirmation-one-policy)).** Every container recreation —
   **Reprovision** and **Update sandbox** — is confirmed; **Refresh token** and dev-server
   Start / Stop / Restart are not destructive and need no confirmation.
 - **Configuration is a door, not a section.** A single row routes to the project-settings
@@ -221,7 +223,8 @@ DOPPLER
   here it's a per-project *binding*/token, there it's the account token that makes binding
   possible. Copy names them reciprocally: **"Doppler binding (uses the account token from
   server Settings)"**.
-- **Aggregate save signal on this sub-screen.** Per the design system's auto-save model,
+- **Aggregate save signal on this sub-screen.** Per the design system's
+  [auto-save model](./design-system.md#9-saving-and-interaction),
   the sub-screen carries the same subtle global `Saving…` / `✓ All changes saved` line plus a
   `Last saved HH:MM` footer — it must not drop it.
 - **Sealed store.** The Doppler-token field inherits the sealed-store handling verbatim: a
