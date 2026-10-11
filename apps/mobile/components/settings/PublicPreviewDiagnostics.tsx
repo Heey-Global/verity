@@ -298,7 +298,7 @@ export function PublicPreviewDiagnostics({
             />
             <CardRow
               title="Record connection test"
-              subtitle="Up to two minutes. No addresses, credentials or content."
+              subtitle="Interrupts current remote requests. Up to two minutes. No addresses, credentials or content."
               accessibilityLabel="Record Remote access connection test"
               disabled={checking || rightsChecking}
               onPress={() => void runTest(true)}
