@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "version": "1.66.2",
+  "version": "1.66.5",
   "runtime": "1.66.0",
   "channel": "production",
-  "commit": "b01e0797b813f68cef80b12068295b3762e0ac59",
-  "tag": "mobile-v1.66.2",
-  "branch": "staging-mobile-v1.66.2-b01e0797b813f68cef80b12068295b3762e0ac59",
-  "baseline": "mobile-v1.66.1",
-  "group": "557de2fc-be9c-4f5f-a9e5-f741f9648540",
+  "commit": "28e0ddde4b12be308304ee2ade00811d1dbb8b4f",
+  "tag": "mobile-v1.66.5",
+  "branch": "staging-mobile-v1.66.5-28e0ddde4b12be308304ee2ade00811d1dbb8b4f",
+  "baseline": "mobile-v1.66.2",
+  "group": "2384b25f-f84e-4c4f-b75d-aa3b71a2e7e5",
   "notes": [
-    "correlate touch diagnostics and expose route waits (#1496)",
-    "correct session keyboard visibility and overlap (#1495)"
+    "prevent session keyboard padding from being overwritten (#1514)",
+    "export Remote Control CI test inputs (#1507)"
   ]
 }
