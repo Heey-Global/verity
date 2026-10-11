@@ -116,6 +116,23 @@ describe('return-path diagnostics', () => {
       ).toThrow();
     },
   );
+  it('retains emitted counts and terminal evidence after detail saturation', () => {
+    const diagnostics = new RemoteReturnPathDiagnostics('session');
+    for (let i = 0; i < RETURN_PATH_LIMITS.events; i++)
+      diagnostics.record('emitted_message', 'observed', undefined, 17);
+    diagnostics.record('ws_error', 'error', undefined, 0, 0, {
+      code: 'WS_ERR_INVALID_OPCODE',
+      message: 'private-error',
+    });
+    diagnostics.record('close', 'observed', undefined, 0, 0, { code: 1006 });
+    expect(diagnostics.exportSummary(true)).toMatchObject({
+      emittedMessages: RETURN_PATH_LIMITS.events,
+      emittedBytes: RETURN_PATH_LIMITS.events * 17,
+      lastError: { errorCode: 'WS_ERR_INVALID_OPCODE' },
+      lastClose: { code: 1006 },
+    });
+    expect(JSON.stringify(diagnostics.snapshot())).not.toContain('private-error');
+  });
   it('requires explicit installation and absolute bounded expiry', () => {
     const now = Date.now();
     expect(returnPathSelection({}, now)).toBeUndefined();

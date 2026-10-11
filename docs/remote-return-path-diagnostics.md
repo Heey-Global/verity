@@ -41,7 +41,8 @@ first send/callback metadata independently of the existing 16-entry trace.
 The lifetime output budget reserves 128 of 256 records for summaries and 128
 for detailed events. Summaries run every five seconds; detailed events appear
 only once across successive summaries. `droppedEvents` and `droppedStreams`
-report omitted detail explicitly. Totals for retained streams keep updating
+report omitted detail explicitly. Cumulative emitted-message counts and byte lengths, plus the latest allowlisted
+transport error and close observation, survive detail saturation. Totals for retained streams keep updating
 when the event budget is exhausted. Error, release and close paths export
 available metadata, including late callbacks until consent expires; the final
 expiry summary has reserved capacity. Summaries stop at release, and the

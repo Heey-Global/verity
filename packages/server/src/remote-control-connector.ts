@@ -328,7 +328,7 @@ class ConnectorSession implements RemoteConnectorReservation {
           this.release('remote data connection failed');
         });
         ws.on('close', (code) => {
-          this.returnPath?.record('close', 'observed');
+          this.returnPath?.record('close', 'observed', undefined, 0, 0, { code });
           this.logReturnPath();
           this.logTransport(`socket_close_${String(code)}`);
           this.release(`remote data connection closed (${String(code)})`);

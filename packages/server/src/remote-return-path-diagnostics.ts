@@ -37,6 +37,10 @@ export class RemoteReturnPathDiagnostics {
   private readonly generation = fingerprint(randomUUID());
   private readonly session: string;
   private order = 0;
+  private emittedMessages = 0;
+  private emittedBytes = 0;
+  private lastError: Record<string, unknown> | undefined;
+  private lastClose: Record<string, unknown> | undefined;
   private emittedOrder = 0;
   private summaries = 0;
   private droppedEvents = 0;
@@ -104,6 +108,27 @@ export class RemoteReturnPathDiagnostics {
     }
     const code =
       typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+    if (stage === 'emitted_message') {
+      this.emittedMessages++;
+      this.emittedBytes += encodedBytes;
+    }
+    if (stage === 'ws_error')
+      this.lastError = {
+        eventOrder: this.order + 1,
+        elapsedMs: performance.now() - this.started,
+        errorCode: typeof code === 'string' && ERROR_CODES.has(code) ? code : 'unknown',
+      };
+    if (stage === 'close')
+      this.lastClose = {
+        eventOrder: this.order + 1,
+        elapsedMs: performance.now() - this.started,
+        ...(typeof code === 'number' &&
+        [
+          1000, 1001, 1002, 1003, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015,
+        ].includes(code)
+          ? { code }
+          : {}),
+      };
     if (this.events.length >= RETURN_PATH_LIMITS.events / 2) {
       this.droppedEvents++;
       this.order++;
@@ -158,6 +183,10 @@ export class RemoteReturnPathDiagnostics {
       eventOrder: this.order,
       elapsedMs: performance.now() - this.started,
       droppedEvents: this.droppedEvents,
+      emittedMessages: this.emittedMessages,
+      emittedBytes: this.emittedBytes,
+      lastError: this.lastError ? { ...this.lastError } : null,
+      lastClose: this.lastClose ? { ...this.lastClose } : null,
       droppedStreams: this.droppedStreams,
       streams: [...this.streams].map(([stream, totals]) => ({ stream, ...totals })),
       events: this.events.map((event) => ({ ...event })),
