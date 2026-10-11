@@ -114,7 +114,9 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
                   ? 'Loading…'
                   : sources.length === 0
                     ? 'No import errors'
-                    : undefined
+                    : `${sources.length} ${sources.length === 1 ? 'source' : 'sources'} · ${
+                        showImportErrors ? 'hide details' : 'show details'
+                      }`
             }
             trailing={
               errorCount !== undefined && errorCount > 0 ? (
