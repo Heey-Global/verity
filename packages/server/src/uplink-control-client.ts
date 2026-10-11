@@ -390,6 +390,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
   /** Called after a settings write so a new/replaced key takes effect now rather
    * than waiting for an unrelated network reconnect. */
   refreshCredentials(notifyFeatureLoss = true): void {
+    if (this.checkTimer) clearTimeout(this.checkTimer);
+    this.checkTimer = undefined;
     if (this.offlineLeaseTimer) clearTimeout(this.offlineLeaseTimer);
     this.offlineLeaseTimer = undefined;
     this.grants = undefined;
@@ -668,7 +670,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
     if (!this.checkTimer && (this.grants === undefined || this.probing)) {
       this.checkTimer = setTimeout(() => {
         this.checkTimer = undefined;
-        if (!this.welcomed || this.probing) this.park();
+        if (!this.welcomed || this.probing) {
+          this.clearAuthority('Uplink rights check timed out');
+          this.park();
+        }
       }, DEMAND_CHECK_TIMEOUT_MS);
       this.checkTimer.unref();
     }

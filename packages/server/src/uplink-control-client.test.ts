@@ -2878,6 +2878,41 @@ describe('Uplink connection demand', () => {
     await f.client.stop();
   });
 
+  it('stops restored sharing and queues revocation after a stalled initial handshake', async () => {
+    const f = setup({
+      restoreShareIds: async () => ['restored'],
+      premiumRemoteAccessEnabled: false,
+    });
+    const shutdown = vi.fn();
+    f.client.onSharingDisabled(shutdown);
+    f.disabled.mockImplementation(async () => {
+      await f.client.remove('restored').catch(() => undefined);
+    });
+    f.client.start();
+    await flush();
+    await vi.advanceTimersByTimeAsync(DEMAND_CHECK_TIMEOUT_MS);
+    expect(shutdown).toHaveBeenCalled();
+    expect(f.disabled).toHaveBeenCalled();
+    expect(f.store.addPendingUplinkShareRemoval).toHaveBeenCalledWith('restored');
+    expect(f.client.diagnostics().control).toBe('idle');
+    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS);
+    expect(f.socketFactory).toHaveBeenCalledOnce();
+    await f.client.stop();
+  });
+
+  it('resets the initial handshake deadline for an explicit retry', async () => {
+    const f = setupReconnecting();
+    f.client.start();
+    await flush();
+    await vi.advanceTimersByTimeAsync(DEMAND_CHECK_TIMEOUT_MS - 1000);
+    const checking = f.client.checkEntitlements();
+    const assertion = expect(checking).resolves.toMatchObject({ control: 'connected' });
+    await vi.advanceTimersByTimeAsync(2000);
+    admit(f.sockets.at(-1)!, ['remote-control']);
+    await assertion;
+    await f.client.stop();
+  });
+
   it('connects for the first share and disconnects after the last removal', async () => {
     const f = setup({ restoreShareIds: async () => [], premiumRemoteAccessEnabled: false });
     f.client.start();
