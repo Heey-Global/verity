@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.40.0](https://github.com/Heey-Global/verity/compare/v4.39.0...v4.40.0) (2026-10-11)
+
+
+### Features
+
+* **diagnostics:** activate bounded Core recording from paired app ([#1526](https://github.com/Heey-Global/verity/issues/1526)) ([4549449](https://github.com/Heey-Global/verity/commit/454944926224eaada810012559f69965239e159e))
+
+
+### Bug Fixes
+
+* **uplink:** connect only while effective features need access ([#1519](https://github.com/Heey-Global/verity/issues/1519)) ([e868d76](https://github.com/Heey-Global/verity/commit/e868d766c3d66e8042a39ef8fa0ae48493556f60))
+
 ## [4.39.0](https://github.com/Heey-Global/verity/compare/v4.38.2...v4.39.0) (2026-10-11)
 
 
