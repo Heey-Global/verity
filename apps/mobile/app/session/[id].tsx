@@ -30,7 +30,7 @@ import { FileContentPreview } from '../../components/files/FileContentPreview';
 // (live WS stream → reducer → Message[]) and renders each canonical message kind
 // with our own components — user bubbles, agent text with fenced-code blocks, tool
 // cards, and lifecycle event rows. The input bar (text + mic/attach placeholders)
-// sits inside a KeyboardAvoidingView so it rises above the keyboard. All
+// sits inside an animated frame so it rises above the keyboard. All
 // StyleSheet.create-using components live in this file so the Unistyles Babel
 // plugin (root: 'app') processes them.
 import {
@@ -206,7 +206,7 @@ import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-syste
 // across reopens — the backlog of images never loads up front.
 import { Image as ExpoImage, type ImageSource } from 'expo-image';
 import { UITextView } from 'react-native-uitextview';
-import { KeyboardAvoidingView, KeyboardStickyView } from 'react-native-keyboard-controller';
+import { KeyboardStickyView } from 'react-native-keyboard-controller';
 import Reanimated from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -340,8 +340,6 @@ import {
 } from '../../lib/transcriptAnchor';
 import { settleTranscriptJump } from '../../lib/transcriptJump';
 import { formatResetDisplay, formatTurnTimestamp } from '../../lib/time';
-
-const AnimatedKeyboardAvoidingView = Reanimated.createAnimatedComponent(KeyboardAvoidingView);
 
 // In-memory per-session draft cache: keeps the typed/dictated draft when the
 // operator leaves a session and returns (within the app's lifetime), so input work
@@ -3909,20 +3907,11 @@ export const SessionChat = memo(function SessionChat({
 
   finishChatWork();
   return (
-    <AnimatedKeyboardAvoidingView
-      style={[styles.flex, keyboardAvoidance.resetStyle]}
-      enabled={keyboardAvoidance.enabled}
-      // The composer is pinned to the bottom of this frame, so the frame is what
-      // shrinks. `padding` on both platforms now that the keyboard controller
-      // drives it — it tracks the keyboard frame-by-frame instead of jumping on
-      // the show event, which is what the transcript's scroll position is
-      // measured against.
-      behavior="padding"
-      // Layout coordinates are relative to the navigator, while the keyboard
-      // uses screen coordinates. Measure the frame in the window so the custom
-      // header and embedded layouts do not leave the composer under the keyboard.
-      automaticOffset
-      keyboardVerticalOffset={0}
+    <Reanimated.View
+      ref={keyboardAvoidance.frameRef}
+      onLayout={keyboardAvoidance.onLayout}
+      collapsable={false}
+      style={[styles.flex, keyboardAvoidance.frameStyle]}
     >
       {embedded ? headerBar : <Stack.Screen options={{ header: () => headerBar }} />}
       {workspaceFile !== null ? (
@@ -4773,7 +4762,7 @@ export const SessionChat = memo(function SessionChat({
         onClose={() => setAttachMenuOpen(false)}
         onDismiss={runPendingPick}
       />
-    </AnimatedKeyboardAvoidingView>
+    </Reanimated.View>
   );
 });
 

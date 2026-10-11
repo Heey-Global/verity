@@ -1,7 +1,20 @@
-import { useCallback, useState } from 'react';
-import { AppState, InteractionManager, Keyboard, Platform, TextInput } from 'react-native';
+import { useCallback, useRef, useState } from 'react';
+import {
+  AppState,
+  InteractionManager,
+  Keyboard,
+  findNodeHandle,
+  Platform,
+  TextInput,
+  useWindowDimensions,
+  type View,
+} from 'react-native';
 import { useFocusEffect } from 'expo-router';
-import { useAnimatedStyle } from 'react-native-reanimated';
+import {
+  KeyboardControllerNative,
+  useReanimatedKeyboardAnimation,
+} from 'react-native-keyboard-controller';
+import { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 
 function hasFocusedKeyboard(): boolean {
   // Visibility is cached from keyboard events. A detached/blurred field must
@@ -10,6 +23,32 @@ function hasFocusedKeyboard(): boolean {
 }
 
 export function useSessionKeyboardAvoidance() {
+  const frameRef = useRef<View>(null);
+  const { height: windowHeight } = useWindowDimensions();
+  const frameBottom = useSharedValue(windowHeight);
+  const { height } = useReanimatedKeyboardAnimation();
+  const layoutRevision = useRef(0);
+  const onLayout = useCallback(() => {
+    // RN's parent-relative measurements can omit the navigation header.
+    // The controller measures the native host directly in window coordinates.
+    const revision = ++layoutRevision.current;
+    if (Platform.OS === 'web') {
+      frameRef.current?.measureInWindow((_x, y, _width, frameHeight) => {
+        if (revision === layoutRevision.current) frameBottom.value = y + frameHeight;
+      });
+      return;
+    }
+    const tag = findNodeHandle(frameRef.current);
+    if (tag === null) return;
+    return KeyboardControllerNative.viewPositionInWindow(tag)
+      .then(({ y, height: frameHeight }) => {
+        if (revision === layoutRevision.current) frameBottom.value = y + frameHeight;
+      })
+      .catch(() => {
+        // Keep the last valid window measurement if navigation detached the view.
+      });
+  }, [frameBottom]);
+
   // The controller can retain the previous screen's animated height while a
   // navigation transition dismisses its keyboard. Do not inherit that gap.
   const [enabled, setEnabled] = useState(hasFocusedKeyboard);
@@ -54,13 +93,14 @@ export function useSessionKeyboardAvoidance() {
     }, []),
   );
 
-  // Disabling the controller returns an empty animated style, which does not
-  // unset padding already written by Reanimated on a retained screen.
-  // Returning {} again would retain our zero and compete with the controller
-  // when the keyboard opens. Explicitly release the animated override.
-  const resetStyle = useAnimatedStyle(
-    () => ({ paddingBottom: enabled ? undefined : 0 }),
-    [enabled],
+  // One worklet owns padding both while following the keyboard and while
+  // clearing stale navigation height. Separate animated styles can overwrite
+  // each other: releasing a zero with `undefined` can erase the live padding.
+  const frameStyle = useAnimatedStyle(
+    () => ({
+      paddingBottom: enabled ? Math.max(0, frameBottom.value - windowHeight - height.value) : 0,
+    }),
+    [enabled, windowHeight],
   );
-  return { enabled, resetStyle };
+  return { enabled, frameRef, onLayout, frameStyle };
 }

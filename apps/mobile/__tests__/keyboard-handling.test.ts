@@ -58,12 +58,11 @@ describe('keyboard handling', () => {
     const binding = session.match(/const\s+(\w+)\s*=\s*useSessionKeyboardAvoidance\(\)/);
     expect(binding).not.toBeNull();
     // An unused visibility hook leaves the inherited controller height active.
-    const frame = session.match(/<AnimatedKeyboardAvoidingView\b[\s\S]*?>/);
-    expect(frame?.[0]).toContain(`enabled={${binding?.[1]}.enabled}`);
-    expect(frame?.[0]).toContain(`${binding?.[1]}.resetStyle`);
-    // Parent-relative measurements silently subtract the navigation header
-    // from the avoided height and leave the composer behind the keyboard.
-    expect(frame?.[0]).toMatch(/\bautomaticOffset\b/);
+    const frame = session.match(/<Reanimated\.View\s+ref=\{keyboardAvoidance\.frameRef\}[\s\S]*?>/);
+    expect(frame?.[0]).toContain(`${binding?.[1]}.frameStyle`);
+    expect(frame?.[0]).toContain(`onLayout={${binding?.[1]}.onLayout}`);
+    // A second animated padding writer can erase the keyboard's live offset.
+    expect(session).not.toContain('AnimatedKeyboardAvoidingView');
   });
 
   it('mounts the keyboard provider around the navigator', () => {
