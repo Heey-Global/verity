@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.66.3](https://github.com/Heey-Global/verity/compare/mobile-v1.66.2...mobile-v1.66.3) (2026-10-11)
+
+
+### Features
+
+* **mobile:** export Remote Control CI test inputs ([#1507](https://github.com/Heey-Global/verity/issues/1507)) ([58adde4](https://github.com/Heey-Global/verity/commit/58adde41ba272710c588638e68ce43f0ba7bd656))
+
 ## [1.66.2](https://github.com/Heey-Global/verity/compare/mobile-v1.66.1...mobile-v1.66.2) (2026-10-10)
 
 
