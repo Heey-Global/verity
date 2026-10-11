@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.66.6](https://github.com/Heey-Global/verity/compare/mobile-v1.66.5...mobile-v1.66.6) (2026-10-11)
+
+
+### Bug Fixes
+
+* **uplink:** connect only while effective features need access ([#1519](https://github.com/Heey-Global/verity/issues/1519)) ([e868d76](https://github.com/Heey-Global/verity/commit/e868d766c3d66e8042a39ef8fa0ae48493556f60))
+
 ## [1.66.5](https://github.com/Heey-Global/verity/compare/mobile-v1.66.4...mobile-v1.66.5) (2026-10-11)
 
 
