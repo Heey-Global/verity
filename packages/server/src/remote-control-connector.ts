@@ -280,7 +280,14 @@ class ConnectorSession implements RemoteConnectorReservation {
             return;
           }
           if (frame && typeof frame === 'object' && !Array.isArray(frame)) {
-            this.returnPath?.record('parser', 'observed', frame as Frame);
+            const parsed = frame as Frame;
+            const decodedBytes =
+              parsed.type === 'stream.data' &&
+              typeof parsed.payload === 'string' &&
+              BASE64.test(parsed.payload)
+                ? Buffer.byteLength(parsed.payload, 'base64')
+                : 0;
+            this.returnPath?.record('parser', 'observed', parsed, data.length, decodedBytes);
             this.diagnostics.frame('in', frame as Frame);
           }
           if (!this.ready) {

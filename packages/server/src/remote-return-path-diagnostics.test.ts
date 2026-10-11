@@ -105,6 +105,17 @@ describe('return-path diagnostics', () => {
       selectedReturnPathExpiry(undefined, { enabled: true, installationId: 'selected' }, 999),
     ).toBeUndefined();
   });
+  it.each(['1', '2026-10-11T12:00:00', '2026-10-11T12:00:00+02:00', '2026-02-30T12:00:00Z'])(
+    'rejects ambiguous or normalized expiry %s',
+    (expiry) => {
+      expect(() =>
+        returnPathSelection({
+          VERITY_RETURN_PATH_INSTALLATION_ID: 'id',
+          VERITY_RETURN_PATH_EXPIRES_AT: expiry,
+        }),
+      ).toThrow();
+    },
+  );
   it('requires explicit installation and absolute bounded expiry', () => {
     const now = Date.now();
     expect(returnPathSelection({}, now)).toBeUndefined();

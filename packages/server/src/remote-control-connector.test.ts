@@ -169,6 +169,23 @@ describe('remote control connector', () => {
         }),
       ]),
     );
+    expect(summary.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 'parser',
+          type: 'stream.data',
+          decodedBytes: 12,
+          encodedBytes: Buffer.byteLength(
+            JSON.stringify({
+              type: 'stream.data',
+              streamId: 'target',
+              seq: 0,
+              payload: Buffer.from('private-body').toString('base64'),
+            }),
+          ),
+        }),
+      ]),
+    );
     expect(JSON.stringify(summary)).not.toContain('private');
   });
   it('samples incomplete WebSocket bytes below message delivery and stops sampling on release', async () => {

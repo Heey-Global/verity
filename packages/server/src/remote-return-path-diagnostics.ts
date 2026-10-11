@@ -173,11 +173,16 @@ export function returnPathSelection(
   const installationId = env.VERITY_RETURN_PATH_INSTALLATION_ID;
   const expiry = env.VERITY_RETURN_PATH_EXPIRES_AT;
   if (installationId === undefined && expiry === undefined) return undefined;
-  const expiresAt = typeof expiry === 'string' ? Date.parse(expiry) : NaN;
+  const expiresAt =
+    typeof expiry === 'string' &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/u.test(expiry)
+      ? Date.parse(expiry)
+      : NaN;
   if (
     !installationId ||
     installationId.trim() !== installationId ||
     !Number.isFinite(expiresAt) ||
+    new Date(expiresAt).toISOString().slice(0, 19) !== expiry?.slice(0, 19) ||
     expiresAt - now > RETURN_PATH_LIMITS.durationMs
   )
     throw new Error(
