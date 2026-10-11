@@ -40,7 +40,7 @@ review confirmed:
 
 ## 2. Principles
 
-1. **One honest status model.** Green = works · Himbeere/raspberry = needs setup ·
+1. **One honest status model.** Success = works · attention = needs setup ·
    muted grey text = optional. Meaning never conveyed by colour alone.
 2. **Auto-save, no Save button. [decided]** Every change persists on its own; the screen
    never batches edits behind a Save gate.
@@ -54,7 +54,7 @@ review confirmed:
 
 ## 3. Layout
 
-Legend: `[▸]/[▾]` disclosure · `●` status pill · `‹grey›` muted detail.
+Legend: `[▸]/[▾]` disclosure · `●` status tag · `‹grey›` muted detail.
 
 ### Header — actionable setup checklist
 
@@ -71,8 +71,8 @@ Legend: `[▸]/[▾]` disclosure · `●` status pill · `‹grey›` muted deta
   each deep-linking (scroll-to) its card.
 - Required set: **secret store unlocked · GitHub repository access connected · verified commits
   ready**. Doppler and AI logins are **optional** → excluded from the count.
-- Computed by **one pure, unit-tested helper** from the *same booleans* the per-card pills
-  use, so header and pills can never disagree. **Not** derived from `onboarding.nextStep`
+- Computed by **one pure, unit-tested helper** from the *same booleans* the per-card statuses
+  use, so header and statuses can never disagree. **Not** derived from `onboarding.nextStep`
   (that signal is broker-blind and includes non-settings steps).
 - On settings-fetch failure: `Couldn't load settings — Retry`, **never** `0 to do`.
 - `accessibilityRole="header"`; count changes announced via a live region. `All set ✓`
@@ -164,7 +164,7 @@ CONNECTED SERVICES
 ┌───────────────────────────────────────┐
 │  AI backends                           │
 │  ‹Claude & Codex subscriptions›        │
-│  Claude                    ✓ Connected │   per-backend row: own pill,
+│  Claude                    ✓ Connected │   per-backend row: own status,
 │  ▭ Re-login   ▭ Logout                 │   own Re-login/Logout, full
 │  ────────────────────────────────────  │   device-code / failed / restart flow
 │  Codex                     ✓ Connected │
@@ -180,7 +180,7 @@ CONNECTED SERVICES
 ```
 
 - Claude + Codex share **one card** with a divider (were two near-identical panels), but
-  each keeps its **own** state pill and Re-login/Logout — no shared summary pill.
+  each keeps its **own** status tag and Re-login/Logout — no shared summary status.
 - When the server manages **no** secret store: show an explanatory
   `This server doesn't manage a secret store` line rather than letting the credential cards
   silently vanish.
@@ -244,9 +244,9 @@ else
    himbeer "Needs setup" · "No signing method configured"
 ```
 
-- The pill **never** says `broker`, `key file`, or `verified` — the client cannot observe
+- The status **never** says `broker`, `key file`, or `verified` — the client cannot observe
   those. It asserts only *that* commits will be signed, not the mechanism.
-- Do **not** bind the pill to `GET /settings/signing-key.configured` — that ORs
+- Do **not** bind the status to `GET /settings/signing-key.configured` — that ORs
   `publicKey !== null` and can paint a false green.
 - Identity (name/email) is evaluated **separately** from signing.
 
@@ -277,7 +277,7 @@ refresh and dev-server start / stop / restart are **not** destructive and need n
 ## 8. Accessibility  (fold-in, not optional)
 
 - Explicit `accessibilityLabel` on every `TextInput`.
-- `accessibilityRole`/`State` on pills, disclosures, actions, and the write-only Doppler row.
+- `accessibilityRole`/`State` on status indicators, disclosures, actions, and the write-only Doppler row.
 - Live-region announcements for save state, reprovision progress, and `Copied`.
 - Per-group loading **skeletons** (no full-page spinner, no `0 to do` during load);
   distinguish `couldn't load` from `loaded-and-empty`.
@@ -292,7 +292,7 @@ refresh and dev-server start / stop / restart are **not** destructive and need n
 | # | Change | Effort |
 | --- | --- | --- |
 | 1 | `2/6` → green/himbeer from `gitSshPrivateKeyConfigured`; copy "Commits will be signed" / "No signing method configured" | quick-win |
-| 2 | Adopt the shared [`apps/mobile/components/StatusPill.tsx`](../apps/mobile/components/StatusPill.tsx) (word in text colour ≥ 4.5:1 + glyph); retire amber; drop the dark-mode magenta collision | quick-win |
+| 2 | Adopt the [shared status component](./design-system.md#54-status) and its four intents; retire the legacy status palette and bordered pills | quick-win |
 | 3 | Regroup flat ScrollView into 3 sections; combine GitHub access + verified commits; version → footer | medium |
 | 4 | Auto-save: text/secret on blur, per-field feedback; remove Save/Reset bar | medium |
 | 5 | Header as tappable required-items checklist from one tested helper; suppress count on load-failure | medium |

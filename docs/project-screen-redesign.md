@@ -107,7 +107,7 @@ Operate-first. Live state at the top, maintenance below, recent activity kept sh
 ‹ Projects        owner/repo
 
 ┌───────────────────────────────────────┐
-│  owner/repo              ✓ Active      │   container state pill (unified vocab)
+│  owner/repo              ✓ Active      │   container status tag (unified vocab)
 │  ‹main · claude-sonnet-…›              │   default branch/model at a glance
 └───────────────────────────────────────┘
 
@@ -147,7 +147,7 @@ Key moves:
   edit command/ports rather than echoing them read-only (kills the two-places defect).
 - **Unconfigured Dev Server = one calm empty state.** Do not render Error, logs, PID, health,
   Start, and Stop when no command/URL exists. Show a short explanation and one
-  `Configure dev server` action. Reserve Himbeere `! Error` for a configured process that
+  `Configure dev server` action. Reserve attention `Needs setup` for a configured process that
   attempted to start or was running and then failed.
 - **Compact facts, prominent actions.** Container/image/version/timestamps become labelled
   rows inside the Container card or Advanced details, not individual full-width cards.
@@ -218,7 +218,7 @@ DOPPLER
   runtime card per entry. The navigation and Configure/Operate split already accommodate that
   expansion without another IA change.
 - **Doppler binding** (`DopplerBindingSection`, `:1289`) keeps its guided project→config
-  picker verbatim; only its status pill folds into the unified pill.
+  picker verbatim; only its status tag folds into the shared status component.
 - The two Doppler concepts stay distinguishable from the **server**-level account token:
   here it's a per-project *binding*/token, there it's the account token that makes binding
   possible. Copy names them reciprocally: **"Doppler binding (uses the account token from
@@ -261,7 +261,7 @@ redesign gives it a real home but is honest that it is not yet functional:
 | # | Change | Effort |
 | --- | --- | --- |
 | 1 | Retire `n/8` + Save button in the config → auto-save (text on blur, per-field feedback); reuse the server spec's model | quick-win |
-| 2 | Adopt the shared 3-state pill; map dev-server / sandbox / Doppler / container vocab onto it | quick-win |
+| 2 | Adopt the shared four-intent status component; map dev-server / sandbox / Doppler / container vocab onto it | quick-win |
 | 3 | Merge Dev-server config + runtime into one card; link to config instead of echoing it read-only | medium |
 | 4 | Fold Lifecycle + Sandbox + Concierge into one "Container" maintenance card; Purge under "More" | medium |
 | 5 | Split Configure into a dedicated `project/[id]/settings` sub-screen; overview becomes Operate-first | medium |
