@@ -226,3 +226,42 @@ it('distinguishes a local switch from an entitlement the subscription does not i
   expect(await screen.findByLabelText('Off')).toBeOnTheScreen();
   expect(screen.getByLabelText('Not included')).toBeOnTheScreen();
 });
+
+it('shows idle sharing and explicitly checks rights without implying a reconnect loop', async () => {
+  mockGetServerProfile.mockReturnValue(null);
+  const getUplinkDiagnostics = jest.fn().mockResolvedValue({
+    control: 'idle',
+    entitlement: 'unchecked',
+    sharing: 'unavailable',
+    remoteControl: 'unavailable',
+    features: {
+      sharing: { enabled: true, granted: false, effective: false },
+      remoteAccess: { enabled: false, granted: false, effective: false },
+    },
+  });
+  const checkUplinkEntitlements = jest.fn().mockResolvedValue({
+    control: 'idle',
+    entitlement: 'checked',
+    sharing: 'unavailable',
+    remoteControl: 'unavailable',
+    features: {
+      sharing: { enabled: true, granted: true, effective: false },
+      remoteAccess: { enabled: false, granted: false, effective: false },
+    },
+  });
+  render(
+    <PublicPreviewDiagnostics
+      client={{ getUplinkDiagnostics, checkUplinkEntitlements } as never}
+      keyConfigured
+    />,
+  );
+  fireEvent.press(screen.getByText('Refresh status'));
+  await waitFor(() =>
+    expect(screen.getByLabelText('Disconnected — no active use')).toBeOnTheScreen(),
+  );
+  expect(screen.getByLabelText('Not checked')).toBeOnTheScreen();
+  fireEvent.press(screen.getByText('Check subscription rights'));
+  await waitFor(() => expect(screen.getByLabelText('Ready on demand')).toBeOnTheScreen());
+  expect(checkUplinkEntitlements).toHaveBeenCalledTimes(1);
+  expect(getUplinkDiagnostics).toHaveBeenCalledTimes(1);
+});

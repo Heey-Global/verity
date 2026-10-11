@@ -1040,7 +1040,9 @@ export const uplinkDiagnosticsSchema = z.object({
       remoteAccess: premiumFeatureStateSchema,
     })
     .optional(),
-  control: z.enum(['connected', 'connecting', 'reconnecting', 'rejected', 'disabled']),
+  control: z.enum(['idle', 'connected', 'connecting', 'reconnecting', 'rejected', 'disabled']),
+  entitlement: z.enum(['unchecked', 'checked']).optional(),
+  idleReason: z.enum(['no-demand', 'not-granted']).optional(),
   sharing: z.enum(['ready', 'unavailable']),
   remoteControl: z.enum(['ready', 'unavailable']),
   reason: z.enum(['unknown_key', 'revoked', 'expired']).optional(),
@@ -3206,6 +3208,11 @@ export class VerityClient {
   async getRemoteControlDescriptor(): Promise<RemoteControlDescriptor> {
     const res = await this.request('/api/remote-control/descriptor', { method: 'GET' });
     return remoteControlDescriptorSchema.parse(await res.json());
+  }
+
+  async checkUplinkEntitlements(): Promise<UplinkDiagnostics> {
+    const res = await this.request('/api/uplink/check', { method: 'POST' });
+    return uplinkDiagnosticsSchema.parse(await res.json());
   }
 
   async getUplinkDiagnostics(): Promise<UplinkDiagnostics> {

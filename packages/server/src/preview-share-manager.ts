@@ -77,6 +77,8 @@ export interface PreviewEdgeControl {
   create(input: PreviewEdgeCreate): Promise<PreviewEdgeBinding>;
   remove(shareId: string): Promise<void>;
   isAvailable?(): boolean;
+  canStartSharing?(): boolean;
+  onSharingDisabled?(listener: () => void): () => void;
 }
 
 export interface PreviewShareManagerOptions {
@@ -238,7 +240,7 @@ export class PreviewShareManager {
   }
 
   isAvailable(): boolean {
-    return this.options.edge.isAvailable?.() ?? true;
+    return this.options.edge.canStartSharing?.() ?? this.options.edge.isAvailable?.() ?? true;
   }
 
   async listStaticDirectories(
@@ -564,7 +566,7 @@ export class PreviewShareManager {
     const staticMount =
       staticPath && staticRoot ? this.staticMount(staticRoot, staticPath) : undefined;
 
-    if (this.options.edge.isAvailable?.() === false) {
+    if ((this.options.edge.canStartSharing?.() ?? this.options.edge.isAvailable?.()) === false) {
       throw new PreviewShareConflictError(
         'public previews are not entitled or the Uplink is offline',
       );

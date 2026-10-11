@@ -49,6 +49,8 @@ export class AttendeeMeetings {
   private timer: NodeJS.Timeout | undefined;
   private tail: Promise<unknown> = Promise.resolve();
   private closed = false;
+  private sharingGeneration = 0;
+  private unsubscribeSharing: (() => void) | undefined;
   private polling: Promise<void> | undefined;
   private readonly researchJobs = new Map<string, Promise<void>>();
   private readonly connectors = new Map<string, PreviewConnector>();
@@ -64,7 +66,24 @@ export class AttendeeMeetings {
       ) => Promise<void>;
       client?: (key: string) => AttendeeClient;
     },
-  ) {}
+  ) {
+    this.unsubscribeSharing = options.edge?.onSharingDisabled?.(() => {
+      this.sharingGeneration += 1;
+      for (const connector of this.connectors.values()) connector.close();
+      this.connectors.clear();
+      // Provider recovery must not reopen a webhook after local authority loss.
+      void this.serial(async () => {
+        for (const row of await this.records()) {
+          const state = row.state;
+          if (!state.binding) continue;
+          const shareId = state.binding.shareId;
+          await this.options.edge?.remove(shareId).catch(() => undefined);
+          delete state.binding;
+          await this.save(state);
+        }
+      }).catch(() => undefined);
+    });
+  }
 
   private client(key: string) {
     return this.options.client?.(key) ?? new AttendeeClient(key);
@@ -163,6 +182,7 @@ export class AttendeeMeetings {
   }
   async close() {
     this.closed = true;
+    this.unsubscribeSharing?.();
     clearInterval(this.timer);
     await this.polling;
     await this.tail;
@@ -177,7 +197,13 @@ export class AttendeeMeetings {
     // Persisted bots continue; shutdown must not masquerade as an explicit End.
   }
   private async connect(state: OnlineMeeting) {
-    if (!state.binding || this.connectors.has(state.meeting.id)) return;
+    if (
+      !state.binding ||
+      this.connectors.has(state.meeting.id) ||
+      this.options.edge?.isAvailable?.() === false
+    )
+      return;
+    const generation = this.sharingGeneration;
     const connector = new PreviewConnector({
       edgeUrl: state.binding.edgeUrl,
       connectorToken: state.binding.connectorToken,
@@ -186,6 +212,10 @@ export class AttendeeMeetings {
       requestTimeoutMs: 8_000,
     });
     await connector.connect();
+    if (generation !== this.sharingGeneration || this.options.edge?.isAvailable?.() === false) {
+      connector.close();
+      return;
+    }
     this.connectors.set(state.meeting.id, connector);
     void connector
       .waitForDisconnect()

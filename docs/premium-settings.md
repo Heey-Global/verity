@@ -83,10 +83,37 @@ app and server versions). Fetch on focus and after a test, never poll.
 ## 6. Server contract
 
 - `GET/PATCH /settings`: `premiumSharingEnabled`, `premiumRemoteAccessEnabled` (default
-  `true`). Remote access changes renegotiate the Uplink connection; sharing off revokes active shares.
+  `true`). Remote access changes renegotiate only while a connection is needed; sharing off revokes active shares.
 - `GET /api/uplink/diagnostics`: `features.{sharing,remoteAccess} = { granted, enabled,
   effective }`; the existing `sharing` / `remoteControl` fields report the effective state.
+- `POST /api/uplink/check`: explicitly perform a bounded subscription-rights check.
 - `GET /preview-capabilities`: `publicSharing: 'disabled'` for "switched off locally".
+
+## Connection lifecycle
+
+A stored subscription key does not by itself keep a connection open. Online sharing
+connects when a preview or online-meeting share starts and disconnects after the last
+share ends. Leaving Online sharing switched on without a share does not connect.
+Remote access keeps a connection open to receive requests only when both the local
+switch and the current Uplink entitlement allow it.
+
+Switching a feature off or withdrawing its entitlement stops its data connections.
+Without remaining effective demand, the control connection closes too. Cancellation
+ends access when the entitlement expires, which may be later than the cancellation date.
+A lease that expires without renewal also closes access and stops background attempts.
+
+Initial and explicit entitlement checks are bounded to 15 seconds; final share
+revocation is bounded to 5 seconds. Failed revocations remain durably queued for the
+next explicitly requested connection. Local connectors are stopped independently of
+whether Uplink acknowledges revocation. No background connection is opened solely to
+retry queued revocations. A later tariff change is discovered by starting a share,
+re-enabling Remote access, replacing the key, or choosing **Check subscription rights**.
+
+Diagnostics report `control: 'idle'` for intentional disconnection and
+`entitlement: 'unchecked' | 'checked'` for the last rights check. Cached grants are
+historical when disconnected; every new connection verifies rights again.
+`publicSharing: 'available'` means a share can be requested, including from idle;
+it does not guarantee an active connection or entitlement before that check.
 
 ## 7. Open questions
 

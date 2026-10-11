@@ -58,7 +58,9 @@ const progressSchema = z.object({
   diagnostics: z.array(controlDiagnosticRecordSchema).max(20),
 });
 const uplinkSchema = z.object({
-  control: z.enum(['connected', 'connecting', 'reconnecting', 'rejected', 'disabled']),
+  control: z.enum(['idle', 'connected', 'connecting', 'reconnecting', 'rejected', 'disabled']),
+  entitlement: z.enum(['unchecked', 'checked']).optional(),
+  idleReason: z.enum(['no-demand', 'not-granted']).optional(),
   sharing: z.enum(['ready', 'unavailable']),
   remoteControl: z.enum(['ready', 'unavailable']),
   reason: z.enum(['unknown_key', 'revoked', 'expired']).optional(),

@@ -103,6 +103,7 @@ export interface ControlPlaneDeps {
   previewSharingCapability?: ServerDeps['previewSharingCapability'];
   remoteControlDescriptor?: ServerDeps['remoteControlDescriptor'];
   uplinkDiagnostics?: ServerDeps['uplinkDiagnostics'];
+  recheckUplink?: ServerDeps['recheckUplink'];
   runtimeDiagnostics?: ServerDeps['runtimeDiagnostics'];
   /** Reconnect the Uplink after its encrypted credential changes. */
   onUplinkCredentialsChanged?: ServerDeps['onUplinkCredentialsChanged'];
@@ -387,6 +388,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { runtimeDiagnostics: deps.runtimeDiagnostics }
       : {}),
     ...(deps.uplinkDiagnostics !== undefined ? { uplinkDiagnostics: deps.uplinkDiagnostics } : {}),
+    ...(deps.recheckUplink !== undefined ? { recheckUplink: deps.recheckUplink } : {}),
     ...(deps.onUplinkCredentialsChanged !== undefined
       ? { onUplinkCredentialsChanged: deps.onUplinkCredentialsChanged }
       : {}),

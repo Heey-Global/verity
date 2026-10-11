@@ -704,3 +704,41 @@ it('recovers a saved bot ID and requests leave before a failing Edge reconnect',
     connect.mockRestore();
   }
 });
+
+it('removes persisted webhook bindings on sharing shutdown while leaving provider recovery intact', async () => {
+  const state = {
+    meeting: { id: 'restored' },
+    phase: 'running',
+    botId: 'bot',
+    binding: { shareId: 'share' },
+  };
+  let disable!: () => void;
+  const saveState = vi.fn(async () => undefined);
+  const store = {
+    listAttendeeState: vi.fn(async () => [{ id: 'meeting:restored', state }]),
+    putAttendeeState: saveState,
+  } as unknown as EventStore;
+  const remove = vi.fn(async () => {
+    // The removal queue must receive the handle before the durable binding is erased.
+    expect(state.binding?.shareId).toBe('share');
+  });
+  const service = new AttendeeMeetings({
+    store,
+    ingest: vi.fn(),
+    edge: {
+      create: vi.fn(),
+      remove,
+      onSharingDisabled: (listener) => {
+        disable = listener;
+        return () => undefined;
+      },
+    },
+  });
+  disable();
+  await vi.waitFor(() => expect(saveState).toHaveBeenCalled());
+  expect(remove).toHaveBeenCalledWith('share');
+  expect(state.binding).toBeUndefined();
+  expect(state.botId).toBe('bot');
+  expect(state.phase).toBe('running');
+  await service.close();
+});
