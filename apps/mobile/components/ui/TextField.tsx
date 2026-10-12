@@ -73,7 +73,6 @@ export function TextField({
           placeholderTextColor={theme.colors.textFaint}
           editable={!disabled}
           multiline={multiline}
-          numberOfLines={multiline ? MAX_LINES : 1}
           secureTextEntry={masked}
           keyboardType={keyboardType}
           autoFocus={autoFocus}
