@@ -44,15 +44,15 @@ it('explains Premium before accepting a key and celebrates only confirmed activa
   const { update } = clientWithKey();
   render(<PremiumScreen />);
   expect(await screen.findByText('reachable anywhere.')).toBeOnTheScreen();
-  expect(screen.queryByLabelText('Uplink subscription key')).toBeNull();
-  fireEvent.press(screen.getByLabelText('Enter subscription key'));
+  expect(screen.queryByLabelText(/^Uplink subscription key(,|$)/)).toBeNull();
+  fireEvent.press(screen.getByLabelText(/^Enter subscription key(,|$)/));
   fireEvent.changeText(screen.getByPlaceholderText('Paste your subscription key'), 'fixture-key');
-  fireEvent.press(screen.getByLabelText('Activate'));
+  fireEvent.press(screen.getByLabelText(/^Activate(,|$)/));
   expect(await screen.findByText('Premium is active')).toBeOnTheScreen();
   expect(update).toHaveBeenCalledWith({ uplinkSubscriptionKey: 'fixture-key' });
-  fireEvent.press(screen.getByLabelText('Continue'));
+  fireEvent.press(screen.getByLabelText(/^Continue(,|$)/));
   expect(screen.getByText('Subscription')).toBeOnTheScreen();
-  expect(screen.getByLabelText('Online sharing')).toBeOnTheScreen();
+  expect(screen.getByLabelText(/^Online sharing(,|$)/)).toBeOnTheScreen();
 });
 it('does not celebrate a rejected key and keeps replacement available', async () => {
   const { client } = clientWithKey();
@@ -60,22 +60,22 @@ it('does not celebrate a rejected key and keeps replacement available', async ()
     .fn()
     .mockResolvedValue({ ...diagnostics('rejected'), reason: 'unknown_key' });
   render(<PremiumScreen />);
-  fireEvent.press(await screen.findByLabelText('Enter subscription key'));
+  fireEvent.press(await screen.findByLabelText(/^Enter subscription key(,|$)/));
   fireEvent.changeText(screen.getByPlaceholderText('Paste your subscription key'), 'bad-key');
-  fireEvent.press(screen.getByLabelText('Activate'));
+  fireEvent.press(screen.getByLabelText(/^Activate(,|$)/));
   expect(
     await screen.findByText('This key is not known to Verity Uplink. Check it in your account.'),
   ).toBeOnTheScreen();
-  // The reason sits on the field as a tag; the key stays so it can be corrected.
-  expect(screen.getByText('UNKNOWN')).toBeOnTheScreen();
-  expect(screen.getByLabelText('Uplink subscription key').props.value).toBe('bad-key');
+  // The reason is explained under the field; the key stays so it can be corrected.
+  expect(screen.getByRole('alert', { name: /^Unknown\. / })).toBeOnTheScreen();
+  expect(screen.getByLabelText(/^Uplink subscription key(,|$)/).props.value).toBe('bad-key');
   expect(screen.queryByText('Premium is active')).toBeNull();
 });
 it('confirms revocation before switching Online sharing off', async () => {
   const { update } = clientWithKey(true);
   const alert = jest.spyOn(Alert, 'alert');
   render(<PremiumScreen />);
-  fireEvent.press(await screen.findByLabelText('Online sharing'));
+  fireEvent.press(await screen.findByLabelText(/^Online sharing(,|$)/));
   expect(update).not.toHaveBeenCalled();
   expect(alert).toHaveBeenCalledWith(
     'Turn off Online sharing?',
@@ -105,9 +105,9 @@ it('allows activation after successfully loading an empty settings record', asyn
   const { client, update } = clientWithKey();
   client.getVeritySettings = jest.fn().mockResolvedValue(null);
   render(<PremiumScreen />);
-  fireEvent.press(await screen.findByLabelText('Enter subscription key'));
+  fireEvent.press(await screen.findByLabelText(/^Enter subscription key(,|$)/));
   fireEvent.changeText(screen.getByPlaceholderText('Paste your subscription key'), 'first-key');
-  fireEvent.press(screen.getByLabelText('Activate'));
+  fireEvent.press(screen.getByLabelText(/^Activate(,|$)/));
   expect(await screen.findByText('Premium is active')).toBeOnTheScreen();
   expect(update).toHaveBeenCalledWith({ uplinkSubscriptionKey: 'first-key' });
 });
@@ -117,7 +117,7 @@ it('retries failed switch writes from the error banner', async () => {
   update.mockRejectedValueOnce(new Error('offline'));
   const alert = jest.spyOn(Alert, 'alert');
   render(<PremiumScreen />);
-  fireEvent.press(await screen.findByLabelText('Online sharing'));
+  fireEvent.press(await screen.findByLabelText(/^Online sharing(,|$)/));
   await act(async () => {
     alert.mock.calls[0]?.[2]?.find((button) => button.text === 'Turn off')?.onPress?.();
   });
@@ -131,12 +131,12 @@ it('retries failed switch writes from the error banner', async () => {
 it('shows the managed subscription as one card with tag, switches and a diagnostics entry', async () => {
   clientWithKey(true);
   render(<PremiumScreen />);
-  expect(await screen.findByText('ACTIVE')).toBeOnTheScreen();
+  expect(await screen.findByText('Active')).toBeOnTheScreen();
   expect(screen.getByText('Connected to Uplink')).toBeOnTheScreen();
-  expect(screen.getByText('SOON')).toBeOnTheScreen();
+  expect(screen.getByText('Soon')).toBeOnTheScreen();
   expect(screen.getAllByRole('switch')).toHaveLength(2);
   expect(screen.getByText('Uplink connected · all features on')).toBeOnTheScreen();
-  expect(screen.queryByLabelText('Enter subscription key')).toBeNull();
+  expect(screen.queryByLabelText(/^Enter subscription key(,|$)/)).toBeNull();
 });
 
 it('accepts a verified activation that already returned to idle', async () => {
@@ -149,16 +149,16 @@ it('accepts a verified activation that already returned to idle', async () => {
     remoteControl: 'unavailable',
   });
   render(<PremiumScreen />);
-  fireEvent.press(await screen.findByLabelText('Enter subscription key'));
+  fireEvent.press(await screen.findByLabelText(/^Enter subscription key(,|$)/));
   fireEvent.changeText(screen.getByPlaceholderText('Paste your subscription key'), 'fixture-key');
-  fireEvent.press(screen.getByLabelText('Activate'));
+  fireEvent.press(screen.getByLabelText(/^Activate(,|$)/));
   expect(await screen.findByText('Premium is active')).toBeOnTheScreen();
 });
 
 it('ignores Return on an empty key field so a stored key is never overwritten', async () => {
   const { update } = clientWithKey(true);
   render(<PremiumScreen />);
-  fireEvent.press(await screen.findByLabelText('Replace subscription key'));
-  fireEvent(screen.getByLabelText('Uplink subscription key'), 'submitEditing');
+  fireEvent.press(await screen.findByLabelText(/^Replace subscription key(,|$)/));
+  fireEvent(screen.getByLabelText(/^Uplink subscription key(,|$)/), 'submitEditing');
   expect(update).not.toHaveBeenCalled();
 });

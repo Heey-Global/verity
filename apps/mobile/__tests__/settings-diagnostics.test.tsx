@@ -32,22 +32,22 @@ it('groups diagnostics and keeps transcription and log export actionable', async
   mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
   render(<DiagnosticsScreen />);
   expect(await screen.findByText('No import errors')).toBeOnTheScreen();
-  fireEvent.press(screen.getByLabelText('Live transcription test'));
+  fireEvent.press(screen.getByLabelText(/^Live transcription test(,|$)/));
   expect(mockPush).toHaveBeenCalledWith('/settings/live-meeting-stt');
-  fireEvent.press(screen.getByLabelText('Export app update logs'));
+  fireEvent.press(screen.getByLabelText(/^Export app update logs(,|$)/));
   await waitFor(() => expect(shareUpdateDiagnostics).toHaveBeenCalled());
-  fireEvent.press(screen.getByLabelText('Export Remote Control test inputs'));
+  fireEvent.press(screen.getByLabelText(/^Export Remote Control test inputs(,|$)/));
   await waitFor(() => expect(shareRemoteControlCiInputs).toHaveBeenCalled());
   expect(screen.getByText('More')).toBeOnTheScreen();
 });
 it('switches overview gesture recording on and off for this app run', async () => {
   mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
   render(<DiagnosticsScreen />);
-  const toggle = await screen.findByLabelText('Record overview gestures');
+  const toggle = await screen.findByLabelText(/^Record overview gestures(,|$)/);
   expect(gestureDiagnosticsEnabled()).toBe(false);
   fireEvent.press(toggle);
   expect(gestureDiagnosticsEnabled()).toBe(true);
-  fireEvent.press(screen.getByLabelText('Record overview gestures'));
+  fireEvent.press(screen.getByLabelText(/^Record overview gestures(,|$)/));
   expect(gestureDiagnosticsEnabled()).toBe(false);
 });
 it('reports unavailable integration diagnostics instead of claiming no errors', async () => {
@@ -67,13 +67,13 @@ it('links the design-system catalog only in advanced mode', async () => {
   mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
   const first = render(<DiagnosticsScreen />);
   expect(await screen.findByText('No import errors')).toBeOnTheScreen();
-  expect(screen.queryByLabelText('Design system')).toBeNull();
+  expect(screen.queryByLabelText(/^Design system(,|$)/)).toBeNull();
   first.unmount();
   resetSettingsHarness();
   mockCreateVerityClient.mockReturnValue(
     makeClient('unlocked', { settings: makeSettings({ advancedModeEnabled: true }) }),
   );
   render(<DiagnosticsScreen />);
-  fireEvent.press(await screen.findByLabelText('Design system'));
+  fireEvent.press(await screen.findByLabelText(/^Design system(,|$)/));
   expect(mockPush).toHaveBeenCalledWith('/settings/design-system');
 });

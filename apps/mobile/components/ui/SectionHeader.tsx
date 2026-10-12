@@ -10,12 +10,15 @@ import { StyleSheet } from 'react-native-unistyles';
 export function SectionHeader({
   title,
   variant = 'label',
+  flush = false,
 }: {
   title: string;
   variant?: 'label' | 'eyebrow';
+  /** Without the outer margin, for a heading that shares a row with an action. */
+  flush?: boolean;
 }) {
   return (
-    <Text style={[styles.base, styles[variant]]} accessibilityRole="header">
+    <Text style={[flush ? null : styles.base, styles[variant]]} accessibilityRole="header">
       {title}
     </Text>
   );

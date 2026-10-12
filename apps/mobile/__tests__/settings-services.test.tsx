@@ -38,6 +38,11 @@ import {
   setSearchParams,
 } from './support/settingsHarness';
 
+// A row is announced with its subtitle and status after the title, so find it
+// by the title its spoken label starts with.
+const rowLabel = (title: string) =>
+  new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(,|$)`);
+
 afterEach(() => {
   resetSettingsHarness();
   jest.restoreAllMocks();
@@ -54,7 +59,7 @@ describe('settings/services — secret store onboarding', () => {
     expect(
       await screen.findByText('Set a master password to protect secrets at rest.'),
     ).toBeOnTheScreen();
-    expect(screen.getByLabelText('Set master password')).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^Set master password(,|$)/)).toBeOnTheScreen();
     // A confirm field is unique to `set` (unlock has only one password box).
     expect(screen.getByText('Confirm password')).toBeOnTheScreen();
   });
@@ -66,11 +71,11 @@ describe('settings/services — secret store onboarding', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('uninitialized', { init, getSecretStatus }));
     render(<ServicesSettingsScreen />);
 
-    await screen.findByLabelText('Set master password');
+    await screen.findByLabelText(/^Set master password(,|$)/);
     const [passwordField, confirmField] = screen.getAllByPlaceholderText('••••••••');
     fireEvent.changeText(passwordField, 'correct-horse');
     fireEvent.changeText(confirmField, 'correct-horse');
-    fireEvent.press(screen.getByLabelText('Set master password'));
+    fireEvent.press(screen.getByLabelText(/^Set master password(,|$)/));
 
     await waitFor(() => expect(init).toHaveBeenCalledWith('correct-horse'));
     await waitFor(() => expect(getSecretStatus.mock.calls.length).toBeGreaterThanOrEqual(2));
@@ -81,11 +86,11 @@ describe('settings/services — secret store onboarding', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('uninitialized', { init }));
     render(<ServicesSettingsScreen />);
 
-    await screen.findByLabelText('Set master password');
+    await screen.findByLabelText(/^Set master password(,|$)/);
     const [passwordField, confirmField] = screen.getAllByPlaceholderText('••••••••');
     fireEvent.changeText(passwordField, 'correct-horse');
     fireEvent.changeText(confirmField, 'battery-staple');
-    fireEvent.press(screen.getByLabelText('Set master password'));
+    fireEvent.press(screen.getByLabelText(/^Set master password(,|$)/));
 
     expect(await screen.findByText('Passwords do not match.')).toBeOnTheScreen();
     expect(init).not.toHaveBeenCalled();
@@ -103,14 +108,14 @@ describe('settings/services — secret store onboarding', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('uninitialized', { init, getSecretStatus }));
     render(<ServicesSettingsScreen />);
 
-    await screen.findByLabelText('Set master password');
+    await screen.findByLabelText(/^Set master password(,|$)/);
     const [passwordField, confirmField] = screen.getAllByPlaceholderText('••••••••');
     fireEvent.changeText(passwordField, 'correct-horse');
     fireEvent.changeText(confirmField, 'correct-horse');
-    fireEvent.press(screen.getByLabelText('Set master password'));
+    fireEvent.press(screen.getByLabelText(/^Set master password(,|$)/));
 
     expect(await screen.findByText('Unlocked')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Set master password')).toBeNull();
+    expect(screen.queryByLabelText(/^Set master password(,|$)/)).toBeNull();
   });
 
   it('renders the unlock UI and shows an inline error on a wrong password', async () => {
@@ -126,7 +131,7 @@ describe('settings/services — secret store onboarding', () => {
     expect(screen.queryByText('Confirm password')).toBeNull();
 
     fireEvent.changeText(screen.getByPlaceholderText('••••••••'), 'wrong-password');
-    fireEvent.press(screen.getByLabelText('Unlock secret store'));
+    fireEvent.press(screen.getByLabelText(/^Unlock secret store(,|$)/));
 
     await waitFor(() => expect(unlock).toHaveBeenCalledWith('wrong-password'));
     // The 401 branch surfaces an inline field error rather than the top banner.
@@ -146,7 +151,7 @@ describe('settings/services — secret store onboarding', () => {
     ServicesSettingsScreen = DopplerScreen;
     mockCreateVerityClient.mockReturnValue(makeClient('sealed'));
     render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText('Doppler'));
+    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
 
     const doppler = await screen.findByPlaceholderText('Paste the Doppler token…');
     // A write while sealed 503s, so the box says why rather than failing later.
@@ -184,7 +189,7 @@ describe('settings/services — write-only credentials', () => {
       makeClient('unlocked', { settings: initial, updateVeritySettings }),
     );
     render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText('Doppler'));
+    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
 
     const doppler = await screen.findByPlaceholderText('Paste the Doppler token…');
     fireEvent.changeText(doppler, 'dp.sa.fixture-token');
@@ -202,7 +207,7 @@ describe('settings/services — write-only credentials', () => {
     const updateVeritySettings = jest.fn();
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { updateVeritySettings }));
     render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText('Doppler'));
+    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
 
     const doppler = await screen.findByPlaceholderText('Paste the Doppler token…');
     fireEvent(doppler, 'blur');
@@ -220,7 +225,7 @@ describe('settings/services — write-only credentials', () => {
       .mockResolvedValue(makeSettings({ dopplerServiceTokenConfigured: true }));
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { updateVeritySettings }));
     render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText('Doppler'));
+    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
 
     const doppler = await screen.findByPlaceholderText('Paste the Doppler token…');
     fireEvent.changeText(doppler, 'dp.sa.fixture-token');
@@ -260,12 +265,12 @@ describe('settings/services — AI backends', () => {
     );
     render(<ServicesSettingsScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Reconnect Claude'));
+    fireEvent.press(await screen.findByLabelText(/^Reconnect Claude(,|$)/));
 
     await waitFor(() => expect(startAgentLogin).toHaveBeenCalledWith('claude'));
-    expect(await screen.findByLabelText('Open Claude login page')).toBeOnTheScreen();
-    expect(screen.getByLabelText('Claude returned code')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Reconnect Claude')).toBeNull();
+    expect(await screen.findByLabelText(/^Open Claude login page(,|$)/)).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^Claude returned code(,|$)/)).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^Reconnect Claude(,|$)/)).toBeNull();
   });
 
   // The provider page is the provider: its actions must be reachable without a
@@ -358,7 +363,7 @@ describe('settings/services — AI backends', () => {
     );
     render(<CodexScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Connect Codex'));
+    fireEvent.press(await screen.findByLabelText(/^Connect Codex(,|$)/));
 
     expect(
       await screen.findByText('Codex Pro subscription, connected to this Verity server.'),
@@ -392,9 +397,9 @@ describe('settings/services — AI backends', () => {
     expect(await screen.findByText('42% used')).toBeOnTheScreen();
     expect(screen.getByText(/Claude Pro subscription/)).toBeOnTheScreen();
 
-    fireEvent.press(screen.getByLabelText('Logout Claude'));
+    fireEvent.press(screen.getByLabelText(/^Logout Claude(,|$)/));
 
-    expect(await screen.findByLabelText('Connect Claude')).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Connect Claude(,|$)/)).toBeOnTheScreen();
     expect(screen.queryByText('42% used')).toBeNull();
     expect(screen.queryByText(/Claude Pro subscription/)).toBeNull();
   });
@@ -409,7 +414,7 @@ describe('settings/services — AI backends', () => {
     );
     render(<ClaudeScreen />);
 
-    expect(await screen.findByLabelText('Connect Claude')).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Connect Claude(,|$)/)).toBeOnTheScreen();
     expect(screen.queryByText('Usage')).toBeNull();
     expect(listProviderLimits).not.toHaveBeenCalled();
   });
@@ -427,7 +432,7 @@ describe('settings/services — AI backends', () => {
 
     await waitFor(() => expect(startAgentLogin).toHaveBeenCalledTimes(1));
     expect(startAgentLogin).toHaveBeenCalledWith('claude');
-    expect(await screen.findByLabelText('Open Claude login page')).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Open Claude login page(,|$)/)).toBeOnTheScreen();
   });
 
   // The other end of the overview's "Sign in to Codex" banner action: the tap
@@ -464,13 +469,15 @@ describe('settings/services — AI backends', () => {
     expect(startAgentLogin).toHaveBeenCalledWith('codex');
     // And the flow is actually on screen: the call alone would be satisfied by a
     // login started into a panel the operator never sees.
-    expect(await screen.findByLabelText('Open Codex login page')).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Open Codex login page(,|$)/)).toBeOnTheScreen();
 
     // Tapping the banner again returns to THIS screen and must not start a
     // second login: the device code already on screen would be invalidated by
     // the one that replaced it, mid-entry.
     await act(async () => refocus());
-    await waitFor(() => expect(screen.getByLabelText('Open Codex login page')).toBeOnTheScreen());
+    await waitFor(() =>
+      expect(screen.getByLabelText(/^Open Codex login page(,|$)/)).toBeOnTheScreen(),
+    );
     expect(startAgentLogin).toHaveBeenCalledTimes(1);
   });
 
@@ -508,7 +515,7 @@ describe('settings/services — AI backends', () => {
   it('opens OpenCode connection and model settings on its own page', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<ConnectionsScreen />);
-    fireEvent.press(await screen.findByLabelText('OpenCode'));
+    fireEvent.press(await screen.findByLabelText(/^OpenCode(,|$)/));
     expect(mockPush).toHaveBeenCalledWith('/settings/services/opencode');
   });
 });
@@ -526,21 +533,19 @@ describe('settings/services — meeting transcription', () => {
       makeClient('unlocked', { settings: initial, updateVeritySettings }),
     );
     render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText('Transcription'));
+    fireEvent.press(await screen.findByLabelText(/^Transcription(,|$)/));
 
-    const pill = await screen.findByLabelText('Choose backend');
-    expect(within(pill).getByText('!')).toBeOnTheScreen();
+    // The status speaks its intent, so the state never rests on color alone.
+    expect(await screen.findByLabelText('Choose backend, needs attention')).toBeOnTheScreen();
 
-    fireEvent.press(screen.getByLabelText('Use external transcription'));
+    fireEvent.press(screen.getByLabelText(/^Use external transcription(,|$)/));
     await waitFor(() =>
       expect(updateVeritySettings).toHaveBeenCalledWith({ transcribeBackendMode: 'external' }),
     );
     // Picking external does not configure it: this fixture has no URL or model
     // on either side, so the section must keep asking for them rather than
     // reporting a backend that would reject the upload.
-    const chosen = await screen.findByLabelText('Add URL and model');
-    expect(within(chosen).getByText('!')).toBeOnTheScreen();
-    expect(within(chosen).queryByText('✓')).toBeNull();
+    expect(await screen.findByLabelText('Add URL and model, needs attention')).toBeOnTheScreen();
   });
 
   it('saves the transcription URL, token, and model without echoing the token', async () => {
@@ -552,11 +557,11 @@ describe('settings/services — meeting transcription', () => {
       makeClient('unlocked', { settings: initial, updateVeritySettings }),
     );
     render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText('Transcription'));
+    fireEvent.press(await screen.findByLabelText(/^Transcription(,|$)/));
 
-    const url = await screen.findByLabelText('Transcription API base URL');
+    const url = await screen.findByLabelText(/^Transcription API base URL(,|$)/);
     const token = screen.getByPlaceholderText('Paste the transcription token…');
-    const model = screen.getByLabelText('Transcription model');
+    const model = screen.getByLabelText(/^Transcription model(,|$)/);
     fireEvent.changeText(url, 'https://api.example.test/v1');
     fireEvent.changeText(model, 'whisper-test');
     fireEvent(model, 'blur');
@@ -592,10 +597,9 @@ describe('settings/services — meeting transcription', () => {
       }),
     );
     render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText('Transcription'));
+    fireEvent.press(await screen.findByLabelText(/^Transcription(,|$)/));
 
-    // The pill's glyph follows its intent (`✓` ready, `!` needs setup).
-    expect(within(await screen.findByLabelText('External')).getByText('✓')).toBeOnTheScreen();
+    expect(await screen.findByLabelText('External, ready')).toBeOnTheScreen();
   });
 
   it('never presents the removed local backend as ready or selectable', async () => {
@@ -607,12 +611,10 @@ describe('settings/services — meeting transcription', () => {
       makeClient('unlocked', { settings: makeSettings({ transcribeBackendMode: 'local' }) }),
     );
     render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText('Transcription'));
+    fireEvent.press(await screen.findByLabelText(/^Transcription(,|$)/));
 
-    const pill = await screen.findByLabelText('Local unavailable');
-    expect(within(pill).getByText('!')).toBeOnTheScreen();
-    expect(within(pill).queryByText('✓')).toBeNull();
-    expect(screen.getByLabelText('Use local transcription')).toBeDisabled();
+    expect(await screen.findByLabelText('Local unavailable, needs attention')).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^Use local transcription(,|$)/)).toBeDisabled();
     expect(screen.getByText('Not available in this deployment.')).toBeOnTheScreen();
   });
 });
@@ -625,11 +627,11 @@ describe('settings/services — tools', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<ServicesSettingsScreen />);
 
-    fireEvent.press(await screen.findByLabelText('MCP servers'));
+    fireEvent.press(await screen.findByLabelText(/^MCP servers(,|$)/));
     expect(mockPush).toHaveBeenCalledWith('/settings/services/mcp');
     // The add form lives on its own route; an inline one here is what made the
     // old single screen unreadable.
-    expect(screen.queryByLabelText('Remote HTTPS MCP URL')).toBeNull();
+    expect(screen.queryByLabelText(/^Remote HTTPS MCP URL(,|$)/)).toBeNull();
   });
 });
 
@@ -649,7 +651,7 @@ describe('settings/services — knowledge sources', () => {
     render(<ServicesSettingsScreen />);
 
     expect(await screen.findByText('online')).toBeOnTheScreen();
-    fireEvent.press(screen.getByLabelText('Matrix'));
+    fireEvent.press(screen.getByLabelText(/^Matrix(,|$)/));
     expect(mockPush).toHaveBeenCalledWith('/settings/services/matrix');
   });
 
@@ -660,7 +662,7 @@ describe('settings/services — knowledge sources', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unmanaged'));
     render(<ServicesSettingsScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Matrix'));
+    fireEvent.press(await screen.findByLabelText(/^Matrix(,|$)/));
     expect(mockPush).toHaveBeenCalledWith('/settings/services/matrix');
   });
 
@@ -672,8 +674,8 @@ describe('settings/services — knowledge sources', () => {
     );
     render(<ServicesSettingsScreen />);
 
-    expect(await screen.findByLabelText('Matrix')).toBeOnTheScreen();
-    expect(screen.getByLabelText('MCP servers')).toBeOnTheScreen();
+    expect(await screen.findByLabelText(/^Matrix(,|$)/)).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^MCP servers(,|$)/)).toBeOnTheScreen();
   });
 });
 
@@ -715,7 +717,7 @@ describe('connections catalog', () => {
     expect(
       screen.getByText(/Drive, Docs, Sheets, Slides, mail and calendar · Used in 2 projects/),
     ).toBeOnTheScreen();
-    fireEvent.press(screen.getByLabelText('Google'));
+    fireEvent.press(screen.getByLabelText(/^Google(,|$)/));
     expect(mockPush).toHaveBeenCalledWith('/settings/google');
     expect(screen.queryByText('Secret store')).toBeNull();
     expect(screen.queryByText('Transcription')).toBeNull();
@@ -735,9 +737,9 @@ it('keeps OpenCode available when all discovered models are disabled', async () 
   );
   render(<ConnectionsScreen />);
   await act(async () => undefined);
-  const openCode = await screen.findByLabelText('OpenCode');
-  expect(within(openCode).getByLabelText('Connect')).toBeOnTheScreen();
-  expect(within(openCode).queryByLabelText('Connected')).toBeNull();
+  const openCode = await screen.findByLabelText(/^OpenCode(,|$)/);
+  expect(within(openCode).getByLabelText(/^Connect(,|$)/)).toBeOnTheScreen();
+  expect(within(openCode).queryByLabelText(/^Connected(,|$)/)).toBeNull();
 });
 
 it.each([
@@ -746,7 +748,7 @@ it.each([
 ] as const)('keeps %s settings separate', async (title, DetailScreen, otherTitle, route) => {
   mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
   const catalog = render(<ConnectionsScreen />);
-  fireEvent.press(await screen.findByLabelText(title));
+  fireEvent.press(await screen.findByLabelText(rowLabel(title)));
   expect(mockPush).toHaveBeenCalledWith(route);
   catalog.unmount();
   render(<DetailScreen />);
@@ -770,7 +772,7 @@ it.each([false, true])('groups services consistently when connected=%s', async (
     }),
   );
   render(<ConnectionsScreen />);
-  await screen.findByLabelText('Claude');
+  await screen.findByLabelText(/^Claude(,|$)/);
   await act(async () => undefined);
 
   const categories = [
@@ -797,6 +799,6 @@ it.each([false, true])('groups services consistently when connected=%s', async (
   }
   expect(screen.queryByRole('header', { name: 'Connected' })).toBeNull();
   expect(screen.queryByRole('header', { name: 'Available' })).toBeNull();
-  const claude = within(screen.getByLabelText('Claude'));
-  expect(claude.getByLabelText(connected ? 'Connected' : 'Connect')).toBeOnTheScreen();
+  const claude = within(screen.getByLabelText(/^Claude(,|$)/));
+  expect(claude.getByLabelText(rowLabel(connected ? 'Connected' : 'Connect'))).toBeOnTheScreen();
 });

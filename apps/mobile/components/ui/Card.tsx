@@ -59,7 +59,9 @@ export function Group({ children }: { children: ReactNode }) {
   );
 }
 
-type Leading = { icon: IconName } | { dot: StatusIntent };
+/** A Feather icon or a status dot; `element` is for a mark that is not a
+ *  Feather glyph (an agent's logo), drawn in the same tile. */
+type Leading = { icon: IconName } | { dot: StatusIntent } | { element: ReactNode };
 
 // Rows already warned about a button inside a pressable row, so a list that
 // re-renders often warns once per row instead of on every render.
@@ -69,6 +71,9 @@ const warnedRows = new Set<string>();
  * One row: optional leading icon tile or status dot, a title with at most one
  * subtitle, and exactly one trailing element. The chevron appears only when the
  * row navigates (`navigates`), never just because it can be pressed.
+ *
+ * `selected` makes the row one option of a single-choice list: it is announced
+ * as a radio button and shows a check mark instead of a trailing element.
  */
 export function Row({
   title,
@@ -77,6 +82,7 @@ export function Row({
   trailing,
   onPress,
   navigates = false,
+  selected,
   disabled = false,
   accessibilityLabel,
   accessibilityHint,
@@ -90,10 +96,13 @@ export function Row({
   trailing?: ReactNode;
   onPress?: () => void;
   navigates?: boolean;
+  selected?: boolean;
   disabled?: boolean;
   accessibilityLabel?: string;
   accessibilityHint?: string;
 }) {
+  const { theme } = useUnistyles();
+  const choice = selected !== undefined;
   if (
     process.env.NODE_ENV !== 'production' &&
     onPress !== undefined &&
@@ -112,8 +121,16 @@ export function Row({
       title={title}
       subtitle={subtitle}
       leading={leading}
-      trailing={trailing}
-      chevron={navigates}
+      trailing={
+        choice ? (
+          selected ? (
+            <Icon name="check" size={18} color={theme.colors.action} />
+          ) : undefined
+        ) : (
+          trailing
+        )
+      }
+      chevron={navigates && !choice}
     />
   );
   if (onPress === undefined) {
@@ -123,10 +140,12 @@ export function Row({
     <Pressable
       onPress={onPress}
       disabled={disabled}
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel ?? spokenLabel(title, subtitle, trailing)}
+      accessibilityRole={choice ? 'radio' : 'button'}
+      accessibilityLabel={
+        accessibilityLabel ?? spokenLabel(title, subtitle, choice ? undefined : trailing)
+      }
       accessibilityHint={accessibilityHint}
-      accessibilityState={{ disabled }}
+      accessibilityState={choice ? { disabled, checked: selected } : { disabled }}
       style={({ pressed }) => [
         styles.row,
         disabled ? styles.muted : null,
@@ -225,6 +244,8 @@ function RowContent({
           <View style={styles.tile}>
             <Icon name={leading.icon} size={18} color={theme.colors.textMuted} />
           </View>
+        ) : 'element' in leading ? (
+          <View style={styles.tile}>{leading.element}</View>
         ) : (
           <View style={styles.dotSlot}>
             <Dot intent={leading.dot} />
