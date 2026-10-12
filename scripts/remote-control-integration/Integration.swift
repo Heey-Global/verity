@@ -21,20 +21,47 @@ private func persistIntegrationResult(_ result: String) {
   }
 }
 
+// The watchdog needs progress even when an awaited native operation never returns.
+private final class IntegrationProgress: @unchecked Sendable {
+  private let lock = NSLock()
+  private var currentStage = "decoder"
+  private var delegate: CertificatePinDelegate?
+
+  func update(_ stage: String) { lock.withLock { currentStage = stage } }
+  func bind(_ value: CertificatePinDelegate) { lock.withLock { delegate = value } }
+  func result(_ error: String) -> [String: Any] {
+    let (stage, outer) = lock.withLock { (currentStage, delegate) }
+    let known: Set<String> = ["CERTIFICATE_KEY_UNAVAILABLE", "PIN_MISMATCH",
+      "UNSUPPORTED_KEY_FORMAT", "CERTIFICATE_CHAIN_UNAVAILABLE"]
+    let failure = outer?.failure ?? "NONE"
+    let rejection = known.contains(failure) ? failure
+      : (failure.hasPrefix("PINNED_CHAIN_TRUST_FAILED:") ? "PINNED_CHAIN_TRUST_FAILED" : "NONE")
+    var value: [String: Any] = ["success": false, "error": error, "stage": stage,
+      "outerTLSPhase": outer?.phase ?? "NO_AUTH_CHALLENGE", "outerTLSRejection": rejection]
+    if let code = outer?.trustErrorCode { value["outerTrustErrorCode"] = code }
+    return value
+  }
+}
+
+private func persistIntegrationFailure(_ value: [String: Any]) {
+  if let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+    let json = String(data: data, encoding: .utf8) { persistIntegrationResult(json) }
+}
+
 @available(macOS 14.0, iOS 17.0, *)
 private func runIntegration() async -> Bool {
+  let progress = IntegrationProgress()
   let watchdog = Task {
     try? await Task.sleep(nanoseconds: 90_000_000_000)
     guard !Task.isCancelled else { return }
-    persistIntegrationResult("{\"success\":false,\"error\":\"watchdog\"}")
+    persistIntegrationFailure(progress.result("watchdog"))
     exit(1)
   }
   defer { watchdog.cancel() }
-  var stage = "decoder"
   var outerDiagnostics: CertificatePinDelegate?
   do {
     try runNativeProtocolChecks()
-    stage = "manifest"
+    progress.update("manifest")
     guard let manifestPath = ProcessInfo.processInfo.environment["VERITY_INTEGRATION_MANIFEST"]
     else { throw IntegrationFailure.invalidManifest }
     if let readyPath = ProcessInfo.processInfo.environment["VERITY_INTEGRATION_READY"] {
@@ -54,12 +81,13 @@ private func runIntegration() async -> Bool {
     outerOrigin.scheme = "https"
     let outerDelegate = try CertificatePinDelegate(pin: manifest.outerPin, origin: outerOrigin.url!)
     outerDiagnostics = outerDelegate
+    progress.bind(outerDelegate)
     let outer = URLSession(configuration: .ephemeral, delegate: outerDelegate, delegateQueue: nil)
     defer { outer.invalidateAndCancel() }
     let tunnel = try RemoteAppTunnel(dataURL: manifest.dataURL, coreURL: coreOrigin, outerSession: outer)
     tunnel.enableDataDiagnostics()
     defer { tunnel.stop() }
-    stage = "attachment"
+    progress.update("attachment")
     let port = try await tunnel.start(ticket: manifest.appTicket, sessionId: manifest.sessionId)
     guard let proxyPort = NWEndpoint.Port(rawValue: UInt16(port)) else { throw IntegrationFailure.receipt }
 
@@ -73,7 +101,7 @@ private func runIntegration() async -> Bool {
       return (URLSession(configuration: config, delegate: delegate, delegateQueue: nil), delegate)
     }
 
-    stage = "health"
+    progress.update("health")
     let (healthClient, _) = try client(pin: manifest.corePin)
     let (health, healthResponse) = try await healthClient.data(from: coreOrigin.appendingPathComponent("healthz"))
     healthClient.invalidateAndCancel()
@@ -81,7 +109,7 @@ private func runIntegration() async -> Bool {
     else { throw IntegrationFailure.receipt }
 
     // Separate sessions exercise parallel production streams. HTTP body completion is not a stream half-close assertion.
-    stage = "echo"
+    progress.update("echo")
     try await withThrowingTaskGroup(of: Void.self) { group in
       for size in [0, 1, 8192, 65536] {
         let (session, _) = try client(pin: manifest.corePin)
@@ -99,7 +127,7 @@ private func runIntegration() async -> Bool {
       try await group.waitForAll()
     }
 
-    stage = "pin_rejection"
+    progress.update("pin_rejection")
     let (wrongPinClient, wrongPinDelegate) = try client(pin: "sha256-" + String(repeating: "A", count: 43))
     defer { wrongPinClient.invalidateAndCancel() }
     var rejected = false
@@ -107,7 +135,7 @@ private func runIntegration() async -> Bool {
     catch { rejected = true }
     guard rejected, wrongPinDelegate.failure == "PIN_MISMATCH" else { throw IntegrationFailure.pin }
 
-    stage = "shutdown"
+    progress.update("shutdown")
     tunnel.stop()
     tunnel.stop()
     guard let export = tunnel.exportDataDiagnostics(),
@@ -125,22 +153,10 @@ private func runIntegration() async -> Bool {
     return true
   } catch {
     // Reuse the production allowlist; never serialize NSError descriptions or userInfo.
-    let knownRejections: Set<String> = [
-      "CERTIFICATE_KEY_UNAVAILABLE", "PIN_MISMATCH", "UNSUPPORTED_KEY_FORMAT",
-      "CERTIFICATE_CHAIN_UNAVAILABLE",
-    ]
-    let delegateFailure = outerDiagnostics?.failure ?? "NONE"
-    let rejection = knownRejections.contains(delegateFailure) ? delegateFailure
-      : (delegateFailure.hasPrefix("PINNED_CHAIN_TRUST_FAILED:")
-        ? "PINNED_CHAIN_TRUST_FAILED" : "NONE")
-    let result: [String: Any] = [
-      "outerTLSRejection": rejection,
-      "success": false, "error": "native_integration_failed", "stage": stage,
-      "transport": CertificatePinDelegate.transportFailure(error: error as NSError,
-        phase: outerDiagnostics?.phase ?? "NO_AUTH_CHALLENGE"),
-    ]
-    if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]),
-      let json = String(data: data, encoding: .utf8) { persistIntegrationResult(json) }
+    var result = progress.result("native_integration_failed")
+    result["transport"] = CertificatePinDelegate.transportFailure(error: error as NSError,
+      phase: outerDiagnostics?.phase ?? "NO_AUTH_CHALLENGE")
+    persistIntegrationFailure(result)
     return false
   }
 }

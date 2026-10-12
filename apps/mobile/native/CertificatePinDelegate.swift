@@ -7,6 +7,7 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
   private let expectedOrigin: URL
   private let failureLock = NSLock()
   private var storedFailure: String?
+  private var storedTrustErrorCode: Int?
   private var storedPhase = "NO_AUTH_CHALLENGE"
   private var storedMetrics = "tx0,proxy0,connect0,tls0,response0"
   var transportTiming: PinnedTransportTiming?
@@ -17,6 +18,12 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
     failureLock.lock()
     defer { failureLock.unlock() }
     return storedFailure
+  }
+
+  var trustErrorCode: Int? {
+    failureLock.lock()
+    defer { failureLock.unlock() }
+    return storedTrustErrorCode
   }
 
   var phase: String {
@@ -206,6 +213,9 @@ final class CertificatePinDelegate: NSObject, URLSessionDelegate, URLSessionWebS
       SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
       SecTrustEvaluateWithError(trust, &trustError)
     else {
+      failureLock.lock()
+      storedTrustErrorCode = trustError.map { CFErrorGetCode($0) }
+      failureLock.unlock()
       let detail = trustError.map { CFErrorCopyDescription($0) as String } ?? "UNKNOWN"
       reject("PINNED_CHAIN_TRUST_FAILED:\(detail)", completionHandler: completionHandler)
       return
