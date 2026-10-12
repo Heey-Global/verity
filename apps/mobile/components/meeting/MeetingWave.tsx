@@ -1,4 +1,3 @@
-import { meetingPalette } from './meetingPalette';
 import { useEffect, useId, useState } from 'react';
 import { AccessibilityInfo, Animated } from 'react-native';
 import Svg, { Defs, LinearGradient, Path, Stop } from 'react-native-svg';
@@ -13,7 +12,7 @@ export function MeetingWave({
   addressed?: boolean;
 }) {
   const { theme } = useUnistyles();
-  const colors = meetingPalette(theme.colors);
+  const colors = theme.colors;
   const gradient = useId();
   const [motion] = useState(() => new Animated.Value(0));
   const [reduceMotion, setReduceMotion] = useState(true);

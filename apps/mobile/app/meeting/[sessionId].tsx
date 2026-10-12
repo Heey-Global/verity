@@ -1,4 +1,3 @@
-import { meetingPalette } from '../../components/meeting/meetingPalette';
 import { meetingResearchModel } from '../../lib/meetingResearchModel';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
@@ -110,7 +109,7 @@ export default function MeetingScreen() {
   const { width } = useWindowDimensions();
   const wide = width >= 900;
   const { theme } = useUnistyles();
-  const colors = meetingPalette(theme.colors);
+  const colors = theme.colors;
   const [meeting, setMeeting] = useState<MeetingRecord | null>(null);
   const [notes, setNotes] = useState<MeetingNote[]>([]);
   const [insights, setInsights] = useState<LiveMeetingInsight[]>([]);
@@ -2203,7 +2202,7 @@ function timeOfDay(at: number) {
 }
 
 const styles = StyleSheet.create((theme) => {
-  const colors = meetingPalette(theme.colors);
+  const colors = theme.colors;
   return {
     root: { flex: 1, backgroundColor: colors.background },
     fill: { flex: 1 },

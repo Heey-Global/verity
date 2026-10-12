@@ -12069,7 +12069,9 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: 6,
     paddingHorizontal: 4,
     borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.scrim,
+    // A frosted surface, not the modal `scrim` dimmer: the stack has to stay
+    // readable over the transcript without darkening it.
+    backgroundColor: `${theme.colors.surface}d1`,
     borderWidth: 1,
     borderColor: theme.colors.border,
     shadowColor: '#000',

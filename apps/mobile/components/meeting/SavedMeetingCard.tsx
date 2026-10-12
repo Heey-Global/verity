@@ -1,5 +1,4 @@
 import { MeetingWave } from './MeetingWave';
-import { meetingPalette } from './meetingPalette';
 import { router } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -14,7 +13,7 @@ export function SavedMeetingCard({
   onOpenLegacy?: (() => void) | undefined;
 }) {
   const { theme } = useUnistyles();
-  const colors = meetingPalette(theme.colors);
+  const colors = theme.colors;
   const metrics = [
     card.durationMinutes === undefined ? null : `${card.durationMinutes} min`,
     card.people === undefined ? null : `${card.people} people`,
@@ -51,7 +50,7 @@ export function SavedMeetingCard({
   );
 }
 const styles = StyleSheet.create((theme) => {
-  const colors = meetingPalette(theme.colors);
+  const colors = theme.colors;
   return {
     card: {
       flexDirection: 'row',
