@@ -512,6 +512,7 @@ describe('AcpCodexBackend', () => {
     const fake = acpSpawner({
       capacityFailures: 1,
       capacityLifecycle: true,
+      capacityTool: true,
       onPrompt: () => accepted.push(steer?.({ text: 'change direction' }) ?? true),
       onCapacity: () => accepted.push(steer?.({ text: 'change direction' }) ?? true),
     });

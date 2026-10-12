@@ -30286,6 +30286,9 @@ async function runAcpTurn(opts, profile) {
     }
     if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
       if (parentToolId2(update._meta, metaNamespace) === void 0) {
+        if (profile.telemetryBackend === "codex-acp" && !capacityProse) {
+          turnHasAgentContent = false;
+        }
         for (const event of adapter.consume(update)) {
           if (event.t === "text" && profile.telemetryBackend === "codex-acp" && !capacityProse) {
             capacityText += event.delta;

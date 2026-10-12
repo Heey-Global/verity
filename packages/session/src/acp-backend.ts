@@ -801,6 +801,9 @@ export async function runAcpTurn(
     }
     if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
       if (parentToolId(update._meta, metaNamespace) === undefined) {
+        if (profile.telemetryBackend === 'codex-acp' && !capacityProse) {
+          turnHasAgentContent = false;
+        }
         // Keep lifecycle signals carried in `_meta`; bypassing the adapter to
         // coalesce prose used to discard task/compaction boundaries attached to
         // the same message chunk.
