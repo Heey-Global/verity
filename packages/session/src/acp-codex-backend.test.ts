@@ -82,6 +82,7 @@ function acpSpawner(
     capacityPrefix?: string;
     splitCapacityPrefix?: boolean;
     capacityTool?: boolean;
+    onPrompt?: () => void;
     processExit?: { code: number | null; signal: NodeJS.Signals | null };
     exitDelayMs?: number;
     exitDetailsBeforeClose?: boolean;
@@ -258,6 +259,7 @@ function acpSpawner(
             if (behavior.cancel.disconnect) close();
             else push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
           } else if (method === 'session/prompt') {
+            behavior.onPrompt?.();
             if ((behavior.capacityFailures ?? 0) > 0) {
               behavior.capacityFailures!--;
               if (behavior.capacityTool)
@@ -416,6 +418,36 @@ describe('AcpCodexBackend', () => {
       expect(events.filter((event) => event.t === 'error').map((event) => event.kind)).toEqual([
         'model_capacity_retry',
       ]);
+    } finally {
+      timer.mockRestore();
+    }
+  });
+
+  it('withholds steering before a capacity retry produces fresh agent content', async () => {
+    let steer: ((message: { text: string }) => boolean) | undefined;
+    const accepted: boolean[] = [];
+    const fake = acpSpawner({
+      capacityFailures: 1,
+      onPrompt: () => accepted.push(steer?.({ text: 'change direction' }) ?? true),
+    });
+    const timer = vi
+      .spyOn(globalThis, 'setTimeout')
+      .mockImplementation((handler, delay) =>
+        setTimeoutOriginal(handler, delay === 5_000 ? 1 : delay),
+      );
+    try {
+      await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        spawner: fake.spawner,
+        onSteer: (inject) => {
+          steer = inject;
+        },
+      });
+      expect(accepted).toEqual([false, false]);
+      expect(fake.writes.some((entry) => entry.method === '_session/steering')).toBe(false);
     } finally {
       timer.mockRestore();
     }

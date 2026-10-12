@@ -1087,6 +1087,7 @@ export async function runAcpTurn(
             capacityText = '';
             capacityProse = false;
             capacityFailure = false;
+            turnHasAgentContent = false;
             prompt = await agent.request(acp.methods.agent.session.prompt, {
               sessionId: session.sessionId,
               // Continuing the bound conversation preserves completed tool work
