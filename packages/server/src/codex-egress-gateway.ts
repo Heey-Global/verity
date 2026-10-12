@@ -110,6 +110,7 @@ const LOGGABLE_ERROR_CODES = new Set([
 const LOGGABLE_PATHS = new Set([
   '/codex/models',
   '/codex/responses',
+  '/codex/alpha/search',
   '/codex/images/generations',
   '/codex/images/edits',
 ]);
