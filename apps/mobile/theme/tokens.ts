@@ -146,13 +146,13 @@ const lightRoles = {
   onAction: '#ffffff',
   signature: '#b0107d',
   success: '#13744f',
-  attention: '#5b4bc4',
+  attention: '#d84f74',
   scrim: 'rgba(10,12,20,0.40)',
 } as const;
 
 // Dark is the designed theme: the website's neutrals, cyan for everything that
-// can be tapped, pink only as the brand signature, lavender instead of red or
-// amber for problems.
+// can be tapped, pink only as the brand signature, red for problems and never
+// amber.
 const darkRoles = {
   background: '#07080d',
   surface: '#0c0e17',
@@ -166,7 +166,7 @@ const darkRoles = {
   onAction: '#03141a',
   signature: '#ff18b7',
   success: '#2ee6a6',
-  attention: '#a99bff',
+  attention: '#ff5c8a',
   scrim: 'rgba(3,4,8,0.72)',
 } as const;
 
