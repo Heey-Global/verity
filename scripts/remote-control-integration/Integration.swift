@@ -125,7 +125,16 @@ private func runIntegration() async -> Bool {
     return true
   } catch {
     // Reuse the production allowlist; never serialize NSError descriptions or userInfo.
+    let knownRejections: Set<String> = [
+      "CERTIFICATE_KEY_UNAVAILABLE", "PIN_MISMATCH", "UNSUPPORTED_KEY_FORMAT",
+      "CERTIFICATE_CHAIN_UNAVAILABLE",
+    ]
+    let delegateFailure = outerDiagnostics?.failure ?? "NONE"
+    let rejection = knownRejections.contains(delegateFailure) ? delegateFailure
+      : (delegateFailure.hasPrefix("PINNED_CHAIN_TRUST_FAILED:")
+        ? "PINNED_CHAIN_TRUST_FAILED" : "NONE")
     let result: [String: Any] = [
+      "outerTLSRejection": rejection,
       "success": false, "error": "native_integration_failed", "stage": stage,
       "transport": CertificatePinDelegate.transportFailure(error: error as NSError,
         phase: outerDiagnostics?.phase ?? "NO_AUTH_CHALLENGE"),
