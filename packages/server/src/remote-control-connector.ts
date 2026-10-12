@@ -424,6 +424,7 @@ class ConnectorSession implements RemoteConnectorReservation {
         this.diagnostics.heartbeat('ping');
         ws.ping();
       } else if (Date.now() - this.unansweredPingSince > DATA_PONG_DEADLINE_MS) {
+        this.returnPathDiagnostics()?.record('close_requested', 'observed');
         ws.terminate();
         this.release('remote data heartbeat timeout');
       }

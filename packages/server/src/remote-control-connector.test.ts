@@ -989,7 +989,9 @@ describe('remote control connector', () => {
     // Without the heartbeat a half-open /data socket keeps its reservation
     // and local sockets forever now that attached sessions have no deadline.
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'], shouldAdvanceTime: true });
-    const f = await fixture(undefined, { autoPong: false });
+    const log = { info: vi.fn(), warn: vi.fn() };
+    const expiry = Date.now() + 120_000;
+    const f = await fixture(undefined, { autoPong: false }, log, () => expiry);
     const reservation = await reserve(f);
     const attached = reservation.attach(
       'installation_ticket',
@@ -1013,6 +1015,12 @@ describe('remote control connector', () => {
     expect(closed).toBe(false);
     await vi.advanceTimersByTimeAsync(30_000);
     await reservation.closed;
+    const summaries = log.info.mock.calls
+      .map(([entry]) => entry)
+      .filter((entry) => entry.event === 'remote.return_path');
+    expect(summaries.at(-1)).toMatchObject({
+      lastCloseRequest: { eventOrder: expect.any(Number), elapsedMs: expect.any(Number) },
+    });
   });
 
   it('keeps an attached session whose data socket answers pings', async () => {
