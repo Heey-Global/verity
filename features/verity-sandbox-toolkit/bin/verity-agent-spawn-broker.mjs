@@ -2555,6 +2555,8 @@ export async function runAgentSpawnBroker(options = {}) {
       `verity-agent-spawn-broker: worktree entry scripts are disabled: ${scriptIsolation.reason ?? 'script sandbox unavailable'}\n`,
     );
   }
+  const identity = validateIdentity(options);
+  const managedRoots = await resolveAgentWorktreeRoots(options);
   const lock = await acquireLock(join(controlDir, 'agent-spawn-broker.lock'));
   await removeLegacyTrustedCliSecretFiles(options);
   const socketPath = join(controlDir, 'agent-spawn-broker.sock');
@@ -2587,8 +2589,6 @@ export async function runAgentSpawnBroker(options = {}) {
       releaseSlot();
     };
   };
-  const identity = validateIdentity(options);
-  const managedRoots = await resolveAgentWorktreeRoots(options);
   const managedSecrets = createManagedSecretServers({
     uid: identity.uid,
     gid: identity.gid,
