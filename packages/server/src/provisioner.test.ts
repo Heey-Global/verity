@@ -5691,9 +5691,7 @@ describe('ProvisionerImpl (#174)', () => {
       expect(rebuilt.state).toBe('active');
       expect(build).toHaveBeenCalledOnce();
       expect(build.mock.calls[0]?.[0]).toMatchObject({ noCache: true });
-      // The forced prebuild bypasses the cache. The only new cache lookup is the
-      // cheap resolution after that build, immediately before replacement.
-      expect(imageExists).toHaveBeenCalledTimes(2);
+      expect(imageExists).toHaveBeenCalledOnce();
 
       dockerCalls.length = 0;
       removeContainer.mockRejectedValueOnce(new Error('remove failed'));
@@ -5715,6 +5713,53 @@ describe('ProvisionerImpl (#174)', () => {
         provisionError: null,
         provisionWarning: expect.stringContaining('devcontainer build failed'),
       });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('forceRebuild builds an external-context devcontainer only once before replacement', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'verity-recreate-external-context-'));
+    try {
+      const clonePath = join(root, 'example-org-example-repo');
+      const devcontainerDir = join(clonePath, '.devcontainer');
+      mkdirSync(devcontainerDir, { recursive: true });
+      writeFileSync(
+        join(devcontainerDir, 'devcontainer.json'),
+        JSON.stringify({ build: { dockerfile: 'Dockerfile', context: '..' } }),
+      );
+      writeFileSync(join(devcontainerDir, 'Dockerfile'), 'FROM node:24\n');
+      const id = await seedProject('active');
+      const imageExists = vi.fn(async () => true);
+      const { client: docker, calls: dockerCalls } = fakeDocker({ imageExists });
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => {
+        expect(dockerCalls.some((call) => call.method === 'stopContainer')).toBe(false);
+        return { stdout: '', stderr: '' };
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        hostCloneRoot: root,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: {
+          ref: '/opt/verity-features/verity-sandbox-toolkit',
+          version: '1.0.0',
+          identity: 'sha256:toolkit-v1',
+        },
+      });
+
+      const result = await provisioner.recreateContainer(id, { forceRebuild: true });
+
+      expect(result.state).toBe('active');
+      // A repository-root context bypasses tag reuse, so resolving again silently builds twice.
+      expect(build).toHaveBeenCalledOnce();
+      expect(build.mock.calls[0]?.[0]).toMatchObject({ noCache: true });
+      expect(imageExists).not.toHaveBeenCalled();
+      const created = dockerCalls.find((call) => call.method === 'createContainer');
+      expect((created?.payload as ContainerSpec).image).toBe(build.mock.calls[0]?.[0].imageName);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
