@@ -109,7 +109,13 @@ class VerityRemoteControlTunnel: Module {
     AsyncFunction("exportDataDiagnostics") { () -> [String] in
       guard #available(iOS 17.0, macOS 14.0, *) else { return [] }
       _ = (self.tunnel as? RemoteAppTunnel)?.exportDataDiagnostics()
-      if let store = self.recordingStore { store.flush(); return store.snapshots() }
+      if let store = self.recordingStore {
+        for diagnostics in self.diagnosticRecords {
+          store.schedule(generation: diagnostics.generation) { diagnostics.export() }
+        }
+        store.flush()
+        return store.snapshots()
+      }
       return self.diagnosticRecords.compactMap { $0.export() }
     }
 

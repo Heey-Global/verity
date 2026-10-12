@@ -140,6 +140,22 @@ struct DiagnosticsTest {
     store.flush()
     let restored = RemoteDataRecordingStore(file: file).snapshots()
     precondition(restored.count == 3)
+    for value in restored {
+      let object = try JSONSerialization.jsonObject(with: Data(value.utf8)) as! [String: Any]
+      precondition(object["expired"] as? Bool == true)
+    }
+    var persistenceClock: TimeInterval = 0
+    let expiring = RemoteDataDiagnostics(clock: { persistenceClock })
+    expiring.snapshotSink = { [weak expiring] in
+      guard let expiring else { return }
+      store.schedule(generation: expiring.generation) { expiring.export() }
+    }
+    expiring.enable(startedLate: false, delegateAvailable: true)
+    persistenceClock = RemoteDataDiagnostics.duration + 1
+    store.schedule(generation: expiring.generation) { expiring.export() }
+    store.flush()
+    let expiredSnapshot = try JSONSerialization.jsonObject(with: Data(store.snapshots().last!.utf8)) as! [String: Any]
+    precondition(expiredSnapshot["expired"] as? Bool == true)
     precondition(restored.allSatisfy { !$0.contains("SECRET") && !$0.contains("private-secret") })
     precondition(restored.allSatisfy { $0.contains("failure") })
     // Restart restores evidence only; capture intent never persists.

@@ -142,6 +142,10 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
     self.delegateAvailable = delegateAvailable
     lock.unlock()
     record(.captureStarted)
+    // Persist the terminal capture state even when no more traffic arrives.
+    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + captureDuration + 0.01) { [weak self] in
+      self?.snapshotSink?()
+    }
     return true
   }
 
@@ -249,10 +253,15 @@ final class RemoteDataRecordingStore: @unchecked Sendable {
       let data = try? Data(contentsOf: file), data.count <= Self.maximumBytes,
       let values = try? JSONDecoder().decode([String].self, from: data), values.count <= 3 {
       for value in values {
-        guard let object = try? JSONSerialization.jsonObject(with: Data(value.utf8)) as? [String: Any],
+        guard var object = try? JSONSerialization.jsonObject(with: Data(value.utf8)) as? [String: Any],
           let generation = object["generation"] as? String,
           UUID(uuidString: generation) != nil else { records = []; return }
-        records.append((generation, value))
+        // A restored recording is frozen: the process that owned its capture
+        // window no longer exists, even if it stopped before the deadline.
+        object["expired"] = true
+        guard let frozen = try? JSONSerialization.data(withJSONObject: object),
+          let text = String(data: frozen, encoding: .utf8) else { records = []; return }
+        records.append((generation, text))
       }
     }
   }

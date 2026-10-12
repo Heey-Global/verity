@@ -10,6 +10,9 @@ fresh attachment for a new recording. The native module keeps at most three
 recorded socket generations, including failed starts and stopped tunnels.
 Metadata snapshots are also saved in a bounded private file excluded from backups;
 restarting the app restores the latest saved snapshots without enabling recording.
+Restored snapshots are marked expired because their original capture process has
+ended. Export refreshes live snapshots, and a deadline callback saves expiry even
+when no further traffic arrives.
 Encoding and atomic writes run asynchronously, so abrupt termination can lose the
 last pending update. Export remains available without a profile, route or Core
 connection. No upload happens automatically.
