@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.42.0](https://github.com/Heey-Global/verity/compare/v4.41.1...v4.42.0) (2026-10-12)
+
+
+### Features
+
+* **diagnostics:** coordinate App, Core and Uplink recording ([#1546](https://github.com/Heey-Global/verity/issues/1546)) ([fb53784](https://github.com/Heey-Global/verity/commit/fb53784db2be914f711058205f32bdd36c5311d0))
+
 ## [4.41.1](https://github.com/Heey-Global/verity/compare/v4.41.0...v4.41.1) (2026-10-12)
 
 
