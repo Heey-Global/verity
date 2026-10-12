@@ -149,3 +149,65 @@ it('launches from the directory handle even if its pathname changes during valid
   expect(existsSync(join(root, 'original/launched'))).toBe(true);
   expect(existsSync(join(outside, 'launched'))).toBe(false);
 });
+
+describe('managed secret broker transport', () => {
+  it('sends secret values only on stdin and uses the broker for lifecycle control', async () => {
+    const calls: { args: readonly string[]; opts: Parameters<RuntimeRunner>[2] }[] = [];
+    const secret = 'synthetic-only-provider-value';
+    const runner: RuntimeRunner = async (_command, args, opts) => {
+      calls.push({ args, opts });
+      return {
+        stdout: JSON.stringify({ ok: true, found: true, alive: true, exitCode: null }),
+        stderr: '',
+      };
+    };
+    const secure = new DockerProjectRuntime({ runner, isSecretManagedServer: async () => true });
+    const instanceId = '00000000-0000-4000-8000-000000000001';
+    expect(
+      await secure.startManagedServer(project, {
+        instanceId,
+        command: 'node server.mjs',
+        worktree: '/work/session',
+        workdir: '.',
+        env: { PORT: '41000' },
+        secrets: [{ env: 'API_KEY', value: secret }],
+      }),
+    ).toEqual({ ok: true });
+    expect(calls[0]!.opts?.stdin).toContain(secret);
+    expect(JSON.stringify(calls[0]!.args)).not.toContain(secret);
+    expect(Object.values(calls[0]!.opts?.env ?? {}).some((value) => value?.includes(secret))).toBe(
+      false,
+    );
+    expect(calls[0]!.args.slice(0, 4)).toEqual(['exec', '-i', '--user', '0']);
+    await secure.managedServerStatus(project, instanceId);
+    await secure.stopManagedServer(project, instanceId);
+    expect(calls.map((call) => (JSON.parse(call.opts!.stdin!) as { kind: string }).kind)).toEqual([
+      'managed-secret-start',
+      'managed-secret-status',
+      'managed-secret-stop',
+    ]);
+    expect(await secure.managedServerLogs(project, instanceId)).toContain('disabled');
+    expect(calls).toHaveLength(3);
+  });
+
+  it('never falls back to the raw-log launcher or exposes transport errors when the broker refuses', async () => {
+    let count = 0;
+    const secure = new DockerProjectRuntime({
+      runner: async () => {
+        count++;
+        throw new Error('synthetic-sensitive-error');
+      },
+    });
+    const result = await secure.startManagedServer(project, {
+      instanceId: '00000000-0000-4000-8000-000000000001',
+      command: 'node server.mjs',
+      worktree: '/work',
+      workdir: '.',
+      env: {},
+      secrets: [{ env: 'API_KEY', value: 'fake-key' }],
+    });
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).not.toContain('synthetic-sensitive-error');
+    expect(count).toBe(2);
+  });
+});

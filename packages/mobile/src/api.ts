@@ -636,6 +636,7 @@ const sessionDevServerSchema = z.object({
 export type SessionDevServer = z.infer<typeof sessionDevServerSchema>;
 
 const managedDevServerSchema = z.object({
+  secretBindings: z.array(z.object({ secretAlias: z.string(), env: z.string() })).default([]),
   id: z.string(),
   name: z.string(),
   command: z.string(),
@@ -3979,7 +3980,11 @@ export class VerityClient {
   async approveManagedDevServer(
     sessionId: string,
     serverId: string,
-    seen: { command: string; workdir: string },
+    seen: {
+      command: string;
+      workdir: string;
+      secretBindings?: { secretAlias: string; env: string }[];
+    },
     options: { local?: boolean } = {},
   ): Promise<ManagedDevServer[]> {
     const res = await this.request(

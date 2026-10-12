@@ -1,5 +1,7 @@
 import {
   ManagedDevServerConflictError,
+  managedDevServerBindingsEqual,
+  type ManagedDevServerSecretBinding,
   ManagedDevServerInputError,
   ManagedDevServerPortsFullError,
   type EventStore,
@@ -36,6 +38,7 @@ export interface ManagedDevServerRuntime {
       worktree: string;
       workdir: string;
       env: Record<string, string>;
+      secrets?: { env: string; value: string }[];
     },
   ): Promise<{ ok: true } | { ok: false; reason: string }>;
   stopManagedServer(project: ProjectRecord, instanceId: string): Promise<void>;
@@ -67,6 +70,10 @@ export interface ManagedLocalShares {
 export interface ManagedDevServerManagerOptions {
   store: EventStore;
   runtime: ManagedDevServerRuntime;
+  resolveSecrets?: (
+    projectId: string,
+    bindings: readonly ManagedDevServerSecretBinding[],
+  ) => Promise<{ env: string; value: string }[]>;
   /** Defer supervision until durable preview ownership is loaded and the store is unlocked. */
   canSupervise?: () => boolean;
   /** Absent when local previews are unavailable; entries then run without an address. */
@@ -111,6 +118,7 @@ export interface ManagedServerView {
   name: string;
   command: string;
   workdir: string;
+  secretBindings: ManagedDevServerSecretBinding[];
   approved: boolean;
   /** This Core has the Local and Shared online switches (`/local`, `local` on
    *  start and approve). Lets newer apps fall back on older Cores. */
@@ -271,6 +279,7 @@ export class ManagedDevServerManager {
         id: entry.id,
         name: entry.name,
         command: entry.command,
+        secretBindings: entry.secretBindings,
         workdir: entry.workdir,
         approved: entry.approved,
         accessSwitches: true as const,
@@ -313,7 +322,9 @@ export class ManagedDevServerManager {
         (instance.desired === 'running' || instance.state === 'crashed'),
       restartToApply:
         (instance.state === 'running' || instance.state === 'starting') &&
-        (instance.lastRunCommand !== entry.command || instance.lastRunWorkdir !== entry.workdir),
+        (instance.lastRunCommand !== entry.command ||
+          instance.lastRunWorkdir !== entry.workdir ||
+          !managedDevServerBindingsEqual(instance.lastRunSecretBindings, entry.secretBindings)),
       startedAt: instance.startedAt?.toISOString() ?? null,
     };
   }
@@ -323,13 +334,19 @@ export class ManagedDevServerManager {
     return (
       entry.approved &&
       instance.lastRunCommand === entry.command &&
-      instance.lastRunWorkdir === entry.workdir
+      instance.lastRunWorkdir === entry.workdir &&
+      managedDevServerBindingsEqual(instance.lastRunSecretBindings, entry.secretBindings)
     );
   }
 
   async add(
     sessionId: string,
-    input: { name: string; command: string; workdir?: string | undefined },
+    input: {
+      name: string;
+      command: string;
+      workdir?: string | undefined;
+      secretBindings?: ManagedDevServerSecretBinding[] | undefined;
+    },
   ): Promise<ManagedDevServerRecord> {
     const { project } = await this.context(sessionId);
     return this.translate(() => this.servers.create({ projectId: project.id, ...input }));
@@ -342,6 +359,7 @@ export class ManagedDevServerManager {
       name?: string | undefined;
       command?: string | undefined;
       workdir?: string | undefined;
+      secretBindings?: ManagedDevServerSecretBinding[] | undefined;
     },
   ): Promise<ManagedDevServerRecord> {
     const { project } = await this.context(sessionId);
@@ -367,7 +385,11 @@ export class ManagedDevServerManager {
   async approve(
     sessionId: string,
     idOrName: string,
-    seen: { command: string; workdir: string },
+    seen: {
+      command: string;
+      workdir: string;
+      secretBindings?: ManagedDevServerSecretBinding[] | undefined;
+    },
     options: { local?: boolean | undefined } = {},
   ): Promise<ManagedServerView[]> {
     const { project } = await this.context(sessionId);
@@ -431,7 +453,7 @@ export class ManagedDevServerManager {
   ): Promise<ManagedServerView> {
     const context = await this.context(sessionId);
     const entry = await this.entry(context.project.id, idOrName);
-    if (by === 'operator') {
+    if (by === 'operator' || entry.secretBindings.length > 0) {
       // Switching an entry on is the operator's own act and approves what runs,
       // after the app showed the command (first approval goes through approve()).
       if (!entry.approved)
@@ -535,7 +557,7 @@ export class ManagedDevServerManager {
     const context = await this.context(sessionId);
     const entry = await this.entry(context.project.id, idOrName);
     // Refuse before stopping: a restart that cannot start must not kill what runs.
-    if (by === 'operator' && !entry.approved)
+    if ((by === 'operator' || entry.secretBindings.length > 0) && !entry.approved)
       throw new ManagedDevServerError('Review and approve the command first', 409);
     await this.locked(context.project.id, async () => {
       const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
@@ -645,8 +667,12 @@ export class ManagedDevServerManager {
         desired: 'running',
         state: 'starting',
         detail: WAKING_DETAIL,
-        lastRunCommand: entry.command,
-        lastRunWorkdir: entry.workdir,
+        lastRunCommand:
+          by === 'recovery' ? (instance.lastRunCommand ?? entry.command) : entry.command,
+        lastRunSecretBindings:
+          by === 'recovery' ? instance.lastRunSecretBindings : entry.secretBindings,
+        lastRunWorkdir:
+          by === 'recovery' ? (instance.lastRunWorkdir ?? entry.workdir) : entry.workdir,
         startedAt: new Date(this.now()),
         accessStartedAt:
           by === 'recovery'
@@ -718,9 +744,37 @@ export class ManagedDevServerManager {
     }
     const command = by === 'recovery' ? (instance.lastRunCommand ?? entry.command) : entry.command;
     const workdir = by === 'recovery' ? (instance.lastRunWorkdir ?? entry.workdir) : entry.workdir;
+    const secretBindings =
+      by === 'recovery' ? instance.lastRunSecretBindings : entry.secretBindings;
+    if (
+      secretBindings.length > 0 &&
+      !(await this.servers.isApproved(entry.id, command, workdir, secretBindings))
+    ) {
+      await this.servers.updateInstance(instance.id, {
+        desired: 'stopped',
+        state: 'crashed',
+        detail: 'Review and approve the secret bindings first.',
+      });
+      return;
+    }
     const siblings = await this.siblingEnv(project, sessionId, entry.id);
+    let secrets: { env: string; value: string }[] = [];
+    try {
+      if (secretBindings.length > 0) {
+        if (!this.options.resolveSecrets) throw new Error('secret resolver unavailable');
+        secrets = await this.options.resolveSecrets(project.id, secretBindings);
+      }
+    } catch {
+      await this.servers.updateInstance(instance.id, {
+        desired: 'stopped',
+        state: 'crashed',
+        detail: 'Could not resolve server secrets. No server was started.',
+      });
+      return;
+    }
     const result = await this.options.runtime.startManagedServer(project, {
       instanceId: instance.id,
+      ...(secrets.length > 0 ? { secrets } : {}),
       command: command.replaceAll('{port}', String(instance.sandboxPort)),
       worktree: this.options.sandboxWorktree(project, context.worktree),
       workdir,
@@ -735,8 +789,12 @@ export class ManagedDevServerManager {
       await this.servers.updateInstance(instance.id, {
         desired: 'stopped',
         state: 'crashed',
-        detail: result.reason,
+        detail:
+          secretBindings.length > 0
+            ? 'Could not start the server through the secret broker.'
+            : result.reason,
         lastRunCommand: command,
+        lastRunSecretBindings: secretBindings,
         lastRunWorkdir: workdir,
       });
       return;
@@ -747,6 +805,7 @@ export class ManagedDevServerManager {
       state: 'starting',
       detail: null,
       lastRunCommand: command,
+      lastRunSecretBindings: secretBindings,
       lastRunWorkdir: workdir,
       startedAt: now,
       accessStartedAt:
@@ -817,7 +876,12 @@ export class ManagedDevServerManager {
     if (
       !instance.lastRunCommand ||
       !instance.lastRunWorkdir ||
-      !(await this.servers.isApproved(entry.id, instance.lastRunCommand, instance.lastRunWorkdir))
+      !(await this.servers.isApproved(
+        entry.id,
+        instance.lastRunCommand,
+        instance.lastRunWorkdir,
+        instance.lastRunSecretBindings,
+      ))
     )
       return;
     const existing = this.shareFor(instance);

@@ -4163,7 +4163,7 @@ export const SessionChat = memo(function SessionChat({
                     const allowed = await new Promise<boolean>((resolve) =>
                       Alert.alert(
                         `Allow ${current.name} on your network?`,
-                        `It runs:\n\n${current.command}${current.workdir !== '.' ? `\nin ${current.workdir}` : ''}\n\nAnyone on your network can open it while it runs.`,
+                        `It runs:\n\n${current.command}${current.workdir !== '.' ? `\nin ${current.workdir}` : ''}${current.secretBindings?.length ? `\n\nSecrets: ${current.secretBindings.map((binding) => `${binding.secretAlias} → ${binding.env}`).join(', ')}` : ''}\n\nAnyone on your network can open it while it runs.`,
                         [
                           { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
                           { text: 'Allow', onPress: () => resolve(true) },
@@ -4175,6 +4175,9 @@ export const SessionChat = memo(function SessionChat({
                     const approved = await client.approveManagedDevServer(sessionId, current.id, {
                       command: current.command,
                       workdir: current.workdir,
+                      ...(current.secretBindings?.length
+                        ? { secretBindings: current.secretBindings }
+                        : {}),
                     });
                     current = approved.find((value) => value.id === current.id) ?? current;
                   }

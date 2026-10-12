@@ -979,6 +979,16 @@ export interface SessionAutomationsTable {
  *  name normalized to upper-case letters, digits and underscores; it is unique per
  *  project because it also names the sibling URL variable. No column holds a credential. */
 export interface ManagedDevServersTable {
+  secret_bindings: ColumnType<
+    import('./managed-dev-servers.js').ManagedDevServerSecretBinding[],
+    string | undefined,
+    string
+  >;
+  approved_secret_bindings: ColumnType<
+    import('./managed-dev-servers.js').ManagedDevServerSecretBinding[] | null,
+    string | null | undefined,
+    string | null
+  >;
   id: string;
   project_id: ColumnType<string, string, never>;
   name: string;
@@ -1032,6 +1042,11 @@ export interface TaskAttachment {
 
 /** One managed dev server bound to one session's worktree. */
 export interface ManagedDevServerInstancesTable {
+  last_run_secret_bindings: ColumnType<
+    import('./managed-dev-servers.js').ManagedDevServerSecretBinding[],
+    string | undefined,
+    string
+  >;
   id: string;
   server_id: ColumnType<string, string, never>;
   project_id: ColumnType<string, string, never>;

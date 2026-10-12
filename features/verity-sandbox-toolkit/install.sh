@@ -557,6 +557,7 @@ if [ "$INSTALL_RUNNER_SUPERVISOR" = 'true' ]; then
     /usr/local/bin/verity-runner-worker
   install -m 0755 "$FEATURE_DIR/bin/verity-agent-signal-trace" \
     /usr/local/bin/verity-agent-signal-trace
+  install -m 0644 "$FEATURE_DIR/bin/verity-managed-secret-servers.mjs" /usr/local/bin/verity-managed-secret-servers.mjs
   install -m 0755 "$FEATURE_DIR/bin/verity-agent-spawn-broker.mjs" \
     /usr/local/bin/verity-agent-spawn-broker
   install -m 0755 "$FEATURE_DIR/bin/verity-egress-connector.mjs" \

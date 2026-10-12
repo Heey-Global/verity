@@ -3866,7 +3866,10 @@ describe('managed dev server actions', () => {
       };
       const { fetch, calls } = fakeFetch(json({ server }));
       const client = new VerityClient({ baseUrl: 'http://host', fetch });
-      expect(await client.controlManagedDevServer('s/1', server.id, action)).toEqual(server);
+      expect(await client.controlManagedDevServer('s/1', server.id, action)).toEqual({
+        ...server,
+        secretBindings: [],
+      });
       expect(calls[0]?.url).toBe(
         `http://host/sessions/s%2F1/managed-dev-servers/entry%2F1/${action}`,
       );
@@ -3902,7 +3905,11 @@ describe('managed dev server actions', () => {
       new Response(null, { status: 204 }),
     );
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
-    const seen = { command: 'npm run dev', workdir: 'web' };
+    const seen = {
+      command: 'npm run dev',
+      workdir: 'web',
+      secretBindings: [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }],
+    };
     expect(await client.approveManagedDevServer('s/1', 'entry/1', seen)).toEqual([]);
     expect(jsonBody(calls[0])).toEqual(seen);
     expect(await client.managedDevServerLogs('s/1', 'entry/1')).toBe('ready\n');

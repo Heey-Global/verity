@@ -2655,6 +2655,7 @@ describe('managed public links', () => {
       state: 'stopped',
       desired: 'stopped',
       detail: null,
+      lastRunSecretBindings: [],
       lastRunCommand: 'node server.mjs',
       lastRunWorkdir: '.',
       startedAt: null,

@@ -222,3 +222,69 @@ it('protects a stopped pair with a live public link from eviction and publicatio
     first.id,
   );
 });
+
+describe('managed server secret bindings', () => {
+  it('persists only normalized alias metadata and binds approval to the displayed mapping', async () => {
+    const bindings = [{ secretAlias: 'ATTENDEE_API_KEY', env: 'ATTENDEE_API_KEY' }];
+    const entry = await servers().create({
+      projectId: 'p1',
+      name: 'api',
+      command: 'node server.mjs',
+      secretBindings: bindings,
+    });
+    expect(entry.secretBindings).toEqual(bindings);
+    expect(entry.approved).toBe(false);
+    // An older client that never displayed bindings must not silently approve secrets.
+    expect(
+      await servers().approve(entry.id, { command: entry.command, workdir: '.' }),
+    ).toBeUndefined();
+    expect(
+      (
+        await servers().approve(entry.id, {
+          command: entry.command,
+          workdir: '.',
+          secretBindings: bindings,
+        })
+      )?.approved,
+    ).toBe(true);
+    const changed = [{ secretAlias: 'ATTENDEE_API_KEY', env: 'PROVIDER_KEY' }];
+    expect((await servers().update(entry.id, { secretBindings: changed }))?.approved).toBe(false);
+    expect(await servers().isApproved(entry.id, entry.command, '.', bindings)).toBe(true);
+    expect(await servers().isApproved(entry.id, entry.command, '.', changed)).toBe(false);
+    const instance = await servers().ensureInstance({
+      serverId: entry.id,
+      sessionId: 's1',
+      sandboxPorts: [41000],
+    });
+    await servers().updateInstance(instance.id, { lastRunSecretBindings: bindings });
+    expect((await servers().getInstance(instance.id))?.lastRunSecretBindings).toEqual(bindings);
+  });
+
+  it.each(['NODE_OPTIONS', 'LD_PRELOAD', 'PATH', 'PORT', 'VERITY_SESSION_ID', 'DOPPLER_TOKEN'])(
+    'rejects secret bindings that alter execution controls: %s',
+    async (env) => {
+      await expect(
+        servers().create({
+          projectId: 'p1',
+          name: 'api',
+          command: 'node server.mjs',
+          secretBindings: [{ secretAlias: 'ATTENDEE_API_KEY', env }],
+        }),
+      ).rejects.toBeInstanceOf(ManagedDevServerInputError);
+    },
+  );
+
+  it('rejects duplicate destinations and accidental secret value fields', async () => {
+    const binding = { secretAlias: 'ATTENDEE_API_KEY', env: 'PROVIDER_KEY' };
+    for (const secretBindings of [[binding, binding], [{ ...binding, value: 'synthetic-value' }]]) {
+      await expect(
+        servers().create({
+          projectId: 'p1',
+          name: 'api',
+          command: 'node server.mjs',
+          secretBindings,
+        }),
+      ).rejects.toBeInstanceOf(ManagedDevServerInputError);
+    }
+  });
+});

@@ -16,6 +16,17 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+// The only secret-bearing transport is stdin; the fixed bridge has no secret argv,
+// environment or files. Neither peer errors nor partial frames are echoed.
+const MANAGED_SECRET_BRIDGE = `const net=require('node:net');
+let input='',output='';process.stdin.setEncoding('utf8');
+process.stdin.on('data',chunk=>{input+=chunk;if(input.length>2097152)process.exit(1)});
+process.stdin.on('end',()=>{const socket=net.createConnection('/run/verity-runner-broker/agent-spawn-broker.sock');
+socket.setTimeout(8000,()=>{socket.destroy();process.exit(1)});
+socket.on('error',()=>process.exit(1));socket.on('connect',()=>{socket.write(input);input='' });
+socket.on('data',chunk=>{output+=chunk.toString();if(output.length>4096)process.exit(1)});
+socket.on('end',()=>{try{const value=JSON.parse(output.trim());if(value.ok!==true)process.exit(1);process.stdout.write(JSON.stringify(value))}catch{process.exit(1)}});});`;
+
 const IPV4_PORT_PROBE = `const net=require('node:net'),os=require('node:os');
 const addresses=Object.values(os.networkInterfaces()).flat().filter(x=>x&&x.family==='IPv4'&&!x.internal).map(x=>x.address);
 const probe=(host,port)=>new Promise(resolve=>{const socket=net.connect({host,port});socket.setTimeout(400);socket.once('connect',()=>{socket.destroy();resolve(true)});socket.once('error',()=>resolve(false));socket.once('timeout',()=>{socket.destroy();resolve(false)})});
@@ -100,7 +111,7 @@ interface RuntimeRunResult {
 export type RuntimeRunner = (
   command: string,
   args: readonly string[],
-  opts?: { env?: NodeJS.ProcessEnv; timeoutMs?: number; maxBuffer?: number },
+  opts?: { env?: NodeJS.ProcessEnv; timeoutMs?: number; maxBuffer?: number; stdin?: string },
 ) => Promise<RuntimeRunResult | void>;
 
 export type RuntimeHealthFetch = (
@@ -151,6 +162,26 @@ child.on('message',value=>{fs.writeFileSync(path,JSON.stringify({pid:child.pid,p
 `;
 
 const defaultRunner: RuntimeRunner = async (command, args, opts) => {
+  if (opts?.stdin !== undefined) {
+    return await new Promise<RuntimeRunResult>((resolve, reject) => {
+      const child = execFile(
+        command,
+        [...args],
+        {
+          env: opts.env,
+          timeout: opts.timeoutMs,
+          maxBuffer: opts.maxBuffer,
+          encoding: 'utf8',
+        },
+        (error, stdout, stderr) => {
+          if (error) reject(new Error('Managed secret server transport failed.'));
+          else resolve({ stdout, stderr });
+        },
+      );
+      child.stdin?.on('error', () => undefined);
+      child.stdin?.end(opts.stdin);
+    });
+  }
   const { stdout, stderr } = await execFileAsync(command, [...args], {
     env: opts?.env,
     timeout: opts?.timeoutMs,
@@ -162,6 +193,7 @@ const defaultRunner: RuntimeRunner = async (command, args, opts) => {
 
 export interface DockerProjectRuntimeOptions {
   resolveUser?: (project: ProjectRecord) => Promise<string | undefined>;
+  isSecretManagedServer?: (instanceId: string) => Promise<boolean>;
   dockerCommand?: string | undefined;
   dockerBaseUrl?: string | undefined;
   containerProjectRoot?: string | undefined;
@@ -173,6 +205,7 @@ export interface DockerProjectRuntimeOptions {
 /** Starts a project's configured dev server inside its already-running project container. */
 export class DockerProjectRuntime implements ProjectRuntime {
   private readonly runner: RuntimeRunner;
+  private readonly secretInstances = new Set<string>();
   private readonly healthFetch: RuntimeHealthFetch;
 
   constructor(private readonly opts: DockerProjectRuntimeOptions = {}) {
@@ -307,6 +340,45 @@ export class DockerProjectRuntime implements ProjectRuntime {
    * Every process inherits `VERITY_DEV_SERVER_INSTANCE`, which is how the
    * supervisor finds the instance again after it forks or daemonizes.
    */
+  private async usesSecretBroker(instanceId: string): Promise<boolean> {
+    return (
+      this.secretInstances.has(instanceId) ||
+      (await this.opts.isSecretManagedServer?.(instanceId)) === true
+    );
+  }
+
+  private async managedSecretRequest(
+    project: ProjectRecord,
+    body: Record<string, unknown>,
+  ): Promise<{
+    found?: boolean;
+    alive?: boolean;
+    exitCode?: number | null;
+  }> {
+    try {
+      const result = await this.runner(
+        this.opts.dockerCommand ?? 'docker',
+        ['exec', '-i', '--user', '0', project.containerName, 'node', '-e', MANAGED_SECRET_BRIDGE],
+        {
+          env: this.dockerEnv(),
+          timeoutMs: 10_000,
+          maxBuffer: 4096,
+          stdin: JSON.stringify({ ...body, protocolVersion: 1 }) + '\n',
+        },
+      );
+      const response = JSON.parse(result?.stdout ?? '') as {
+        ok?: boolean;
+        found?: boolean;
+        alive?: boolean;
+        exitCode?: number | null;
+      };
+      if (response.ok !== true) throw new Error('broker refused');
+      return response;
+    } catch {
+      throw new Error('Managed secret server broker is unavailable or refused the request.');
+    }
+  }
+
   async startManagedServer(
     project: ProjectRecord,
     input: {
@@ -315,8 +387,30 @@ export class DockerProjectRuntime implements ProjectRuntime {
       worktree: string;
       workdir: string;
       env: Record<string, string>;
+      secrets?: { env: string; value: string }[];
     },
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (input.secrets?.length) {
+      this.secretInstances.add(input.instanceId);
+      try {
+        await this.managedSecretRequest(project, { kind: 'managed-secret-start', ...input });
+        return { ok: true };
+      } catch {
+        // A lost acknowledgement can follow a successful launch. Stop by its
+        // stable instance id before reporting failure; discovery also sweeps
+        // unwanted tagged listeners if the transport remains unavailable.
+        await this.managedSecretRequest(project, {
+          kind: 'managed-secret-stop',
+          instanceId: input.instanceId,
+        }).catch(() => undefined);
+        return {
+          ok: false,
+          reason:
+            'Could not start the server through the secret broker. No secret value was exposed.',
+        };
+      }
+    }
+    this.secretInstances.delete(input.instanceId);
     const passthrough = dockerEnvPassthrough({
       ...input.env,
       VERITY_DEV_SERVER_INSTANCE: input.instanceId,
@@ -357,6 +451,10 @@ export class DockerProjectRuntime implements ProjectRuntime {
   /** Ends every process tagged with the instance: TERM, up to five seconds, then KILL.
    *  Untagged processes are never touched, even on the instance's port. */
   async stopManagedServer(project: ProjectRecord, instanceId: string): Promise<void> {
+    if (await this.usesSecretBroker(instanceId)) {
+      await this.managedSecretRequest(project, { kind: 'managed-secret-stop', instanceId });
+      return;
+    }
     await this.runner(
       this.opts.dockerCommand ?? 'docker',
       [
@@ -378,6 +476,16 @@ export class DockerProjectRuntime implements ProjectRuntime {
     project: ProjectRecord,
     instanceId: string,
   ): Promise<{ alive: boolean; exitCode: number | null }> {
+    if (await this.usesSecretBroker(instanceId)) {
+      const response = await this.managedSecretRequest(project, {
+        kind: 'managed-secret-status',
+        instanceId,
+      });
+      return {
+        alive: response.found === true && response.alive === true,
+        exitCode: response.exitCode ?? null,
+      };
+    }
     const result = await this.runner(
       this.opts.dockerCommand ?? 'docker',
       [
@@ -400,6 +508,8 @@ export class DockerProjectRuntime implements ProjectRuntime {
     instanceId: string,
     lines = 300,
   ): Promise<string> {
+    if (await this.usesSecretBroker(instanceId))
+      return 'Output is disabled for servers with secret bindings.';
     const result = await this.runner(
       this.opts.dockerCommand ?? 'docker',
       [

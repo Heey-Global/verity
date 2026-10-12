@@ -2,6 +2,48 @@ import { randomUUID } from 'node:crypto';
 import { sql, type Kysely, type Selectable } from 'kysely';
 import type { Database, ManagedDevServerInstancesTable, ManagedDevServersTable } from './schema.js';
 
+export interface ManagedDevServerSecretBinding {
+  secretAlias: string;
+  env: string;
+}
+
+/** Alias metadata only. Environment controls must never be supplied as secrets. */
+export function normalizeManagedDevServerSecretBindings(
+  value: readonly ManagedDevServerSecretBinding[] = [],
+): ManagedDevServerSecretBinding[] {
+  if (!Array.isArray(value) || value.length > 16)
+    throw new ManagedDevServerInputError('at most 16 secret bindings are allowed');
+  const targets = new Set<string>();
+  const bindings = value.map(
+    (binding: ManagedDevServerSecretBinding): ManagedDevServerSecretBinding => {
+      if (
+        !binding ||
+        Object.keys(binding).some((key) => key !== 'secretAlias' && key !== 'env') ||
+        !/^[A-Z][A-Z0-9_]{0,127}$/u.test(binding.secretAlias) ||
+        !/^[A-Z_][A-Z0-9_]{0,127}$/u.test(binding.env) ||
+        /^(?:VERITY_|DOPPLER_|LD_|DYLD_|MALLOC_|LC_|NODE_|PYTHON|BASH|ENV$|PATH$|HOME$|SHELL$|LANG$|USER$|LOGNAME$|HOSTALIASES$|LOCALDOMAIN$|RES_OPTIONS$|TMPDIR$|TZDIR$|PORT$|IFS$|CDPATH$|SHELLOPTS$|BASHOPTS$|GCONV_PATH$|GETCONF_DIR$|GLIBC_TUNABLES$|LOCPATH$|NLSPATH$|PERL|RUBY|JAVA_TOOL_OPTIONS$|_JAVA_OPTIONS$|JDK_JAVA_OPTIONS$)/u.test(
+          binding.env,
+        ) ||
+        targets.has(binding.env)
+      )
+        throw new ManagedDevServerInputError('invalid or duplicate secret binding');
+      targets.add(binding.env);
+      return { secretAlias: binding.secretAlias, env: binding.env };
+    },
+  );
+  return bindings.sort((a, b) => (a.env < b.env ? -1 : a.env > b.env ? 1 : 0));
+}
+
+export function managedDevServerBindingsEqual(
+  left: readonly ManagedDevServerSecretBinding[] = [],
+  right: readonly ManagedDevServerSecretBinding[] = [],
+): boolean {
+  return (
+    JSON.stringify(normalizeManagedDevServerSecretBindings(left)) ===
+    JSON.stringify(normalizeManagedDevServerSecretBindings(right))
+  );
+}
+
 /** A dev server the agent set up for a project (concept 2.6). */
 export interface ManagedDevServerRecord {
   id: string;
@@ -15,6 +57,7 @@ export interface ManagedDevServerRecord {
   workdir: string;
   /** True when the operator approved exactly this command and subdirectory. */
   approved: boolean;
+  secretBindings: ManagedDevServerSecretBinding[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -35,6 +78,7 @@ export interface ManagedDevServerInstanceRecord {
   detail: string | null;
   lastRunCommand: string | null;
   lastRunWorkdir: string | null;
+  lastRunSecretBindings: ManagedDevServerSecretBinding[];
   startedAt: Date | null;
   accessStartedAt: Date | null;
   lastRanAt: Date | null;
@@ -125,7 +169,11 @@ function serverRecord(row: Selectable<ManagedDevServersTable>): ManagedDevServer
     nameKey: row.name_key,
     command: row.command,
     workdir: row.workdir,
-    approved: row.approved_command === row.command && row.approved_workdir === row.workdir,
+    secretBindings: row.secret_bindings,
+    approved:
+      row.approved_command === row.command &&
+      row.approved_workdir === row.workdir &&
+      managedDevServerBindingsEqual(row.approved_secret_bindings ?? [], row.secret_bindings),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -146,6 +194,7 @@ function instanceRecord(
     detail: row.detail,
     lastRunCommand: row.last_run_command,
     lastRunWorkdir: row.last_run_workdir,
+    lastRunSecretBindings: row.last_run_secret_bindings,
     startedAt: row.started_at,
     accessStartedAt: row.access_started_at,
     lastRanAt: row.last_ran_at,
@@ -159,6 +208,7 @@ export interface ManagedDevServerInstancePatch {
   detail?: string | null;
   lastRunCommand?: string | null;
   lastRunWorkdir?: string | null;
+  lastRunSecretBindings?: ManagedDevServerSecretBinding[];
   startedAt?: Date | null;
   accessStartedAt?: Date | null;
   lastRanAt?: Date | null;
@@ -203,6 +253,7 @@ export class ManagedDevServerStore {
     name: string;
     command: string;
     workdir?: string | undefined;
+    secretBindings?: ManagedDevServerSecretBinding[] | undefined;
   }): Promise<ManagedDevServerRecord> {
     const nameKey = managedDevServerNameKey(input.name);
     try {
@@ -215,6 +266,9 @@ export class ManagedDevServerStore {
           name_key: nameKey,
           command: validateCommand(input.command),
           workdir: normalizeManagedDevServerWorkdir(input.workdir),
+          secret_bindings: JSON.stringify(
+            normalizeManagedDevServerSecretBindings(input.secretBindings),
+          ),
         })
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -235,9 +289,16 @@ export class ManagedDevServerStore {
       name?: string | undefined;
       command?: string | undefined;
       workdir?: string | undefined;
+      secretBindings?: ManagedDevServerSecretBinding[] | undefined;
     },
   ): Promise<ManagedDevServerRecord | undefined> {
-    const values: { name?: string; name_key?: string; command?: string; workdir?: string } = {};
+    const values: {
+      name?: string;
+      name_key?: string;
+      command?: string;
+      workdir?: string;
+      secret_bindings?: string;
+    } = {};
     if (patch.name !== undefined) {
       values.name = patch.name.trim();
       values.name_key = managedDevServerNameKey(patch.name);
@@ -245,6 +306,10 @@ export class ManagedDevServerStore {
     if (patch.command !== undefined) values.command = validateCommand(patch.command);
     if (patch.workdir !== undefined)
       values.workdir = normalizeManagedDevServerWorkdir(patch.workdir);
+    if (patch.secretBindings !== undefined)
+      values.secret_bindings = JSON.stringify(
+        normalizeManagedDevServerSecretBindings(patch.secretBindings),
+      );
     try {
       const row = await this.db
         .updateTable('managed_dev_servers')
@@ -274,18 +339,32 @@ export class ManagedDevServerStore {
    *  changed either in the meantime, nothing is approved. */
   async approve(
     id: string,
-    seen: { command: string; workdir: string },
+    seen: {
+      command: string;
+      workdir: string;
+      secretBindings?: ManagedDevServerSecretBinding[] | undefined;
+    },
   ): Promise<ManagedDevServerRecord | undefined> {
     const row = await this.db
       .updateTable('managed_dev_servers')
       .set({
         approved_command: seen.command,
         approved_workdir: seen.workdir,
+        approved_secret_bindings: JSON.stringify(
+          normalizeManagedDevServerSecretBindings(seen.secretBindings),
+        ),
         updated_at: sql`now()` as unknown as string,
       })
       .where('id', '=', id)
       .where('command', '=', seen.command)
       .where('workdir', '=', seen.workdir)
+      .where(
+        'secret_bindings',
+        '=',
+        sql<
+          ManagedDevServerSecretBinding[]
+        >`${JSON.stringify(normalizeManagedDevServerSecretBindings(seen.secretBindings))}::jsonb`,
+      )
       .returningAll()
       .executeTakeFirst();
     return row ? serverRecord(row) : undefined;
@@ -293,13 +372,25 @@ export class ManagedDevServerStore {
 
   /** Whether a specific command and subdirectory carry the operator's approval.
    *  Used at restarts, which run the last-run values rather than the current ones. */
-  async isApproved(id: string, command: string, workdir: string): Promise<boolean> {
+  async isApproved(
+    id: string,
+    command: string,
+    workdir: string,
+    secretBindings: ManagedDevServerSecretBinding[] = [],
+  ): Promise<boolean> {
     const row = await this.db
       .selectFrom('managed_dev_servers')
       .select('id')
       .where('id', '=', id)
       .where('approved_command', '=', command)
       .where('approved_workdir', '=', workdir)
+      .where(
+        'approved_secret_bindings',
+        '=',
+        sql<
+          ManagedDevServerSecretBinding[]
+        >`${JSON.stringify(normalizeManagedDevServerSecretBindings(secretBindings))}::jsonb`,
+      )
       .executeTakeFirst();
     return row !== undefined;
   }
@@ -445,6 +536,13 @@ export class ManagedDevServerStore {
         ...(patch.detail !== undefined ? { detail: patch.detail } : {}),
         ...(patch.lastRunCommand !== undefined ? { last_run_command: patch.lastRunCommand } : {}),
         ...(patch.lastRunWorkdir !== undefined ? { last_run_workdir: patch.lastRunWorkdir } : {}),
+        ...(patch.lastRunSecretBindings !== undefined
+          ? {
+              last_run_secret_bindings: JSON.stringify(
+                normalizeManagedDevServerSecretBindings(patch.lastRunSecretBindings),
+              ),
+            }
+          : {}),
         ...(patch.startedAt !== undefined
           ? { started_at: patch.startedAt?.toISOString() ?? null }
           : {}),
