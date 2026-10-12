@@ -63,7 +63,7 @@ const fonts = {
   mono: Platform.select({ ios: 'Menlo', default: 'monospace' }),
 } as const;
 
-export type TypeStyle = {
+type TypeStyle = {
   fontFamily: string;
   fontSize: number;
   lineHeight: number;
