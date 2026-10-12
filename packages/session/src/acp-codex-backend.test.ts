@@ -11,6 +11,7 @@ import { PLANNING_PERMISSION_MODE } from './runner.js';
 import { GATEWAY_UNAVAILABLE_DIRECTIVE } from './acp-backend.js';
 import type { SpawnedProcess, Spawner } from './backend-contract.js';
 
+const setTimeoutOriginal = globalThis.setTimeout;
 let ctx: TestDb;
 beforeAll(async () => {
   ctx = await createTestDb();
@@ -77,6 +78,17 @@ function acpSpawner(
     loadSession?: boolean;
     startupFailure?: string;
     promptFailure?: string;
+    capacityFailures?: number;
+    capacityPrefix?: string;
+    splitCapacityPrefix?: boolean;
+    capacityInterleavedTool?: boolean;
+    capacityInterleavedRefusal?: boolean;
+    capacityLifecycle?: boolean;
+    capacityTool?: boolean;
+    capacityUsage?: boolean;
+    capacityTrailingTool?: boolean;
+    onPrompt?: () => void;
+    onCapacity?: () => void;
     processExit?: { code: number | null; signal: NodeJS.Signals | null };
     exitDelayMs?: number;
     exitDetailsBeforeClose?: boolean;
@@ -253,6 +265,107 @@ function acpSpawner(
             if (behavior.cancel.disconnect) close();
             else push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
           } else if (method === 'session/prompt') {
+            behavior.onPrompt?.();
+            if ((behavior.capacityFailures ?? 0) > 0) {
+              behavior.capacityFailures!--;
+              if (behavior.capacityTool)
+                push({
+                  jsonrpc: '2.0',
+                  method: 'session/update',
+                  params: {
+                    sessionId: 'codex-session-1',
+                    update: {
+                      sessionUpdate: 'tool_call',
+                      toolCallId: 'completed-before-capacity',
+                      kind: 'execute',
+                      title: 'write file',
+                      status: 'completed',
+                      rawInput: { command: 'touch completed' },
+                    },
+                  },
+                });
+              for (const text of [
+                ...(behavior.splitCapacityPrefix ? [behavior.capacityPrefix ?? ''] : []),
+                `${behavior.splitCapacityPrefix ? '' : (behavior.capacityPrefix ?? '')}Selected model is at `,
+                'capacity. Please try a different model.',
+              ]) {
+                if (
+                  (behavior.capacityInterleavedTool && text.startsWith('Selected')) ||
+                  (behavior.capacityInterleavedRefusal && text.startsWith('capacity.'))
+                )
+                  push({
+                    jsonrpc: '2.0',
+                    method: 'session/update',
+                    params: {
+                      sessionId: 'codex-session-1',
+                      update: {
+                        sessionUpdate: 'tool_call_update',
+                        toolCallId: 'completed-before-capacity',
+                        status: 'completed',
+                      },
+                    },
+                  });
+                push({
+                  jsonrpc: '2.0',
+                  method: 'session/update',
+                  params: {
+                    sessionId: 'codex-session-1',
+                    update: {
+                      sessionUpdate: 'agent_message_chunk',
+                      content: { type: 'text', text },
+                      ...(behavior.capacityLifecycle
+                        ? {
+                            _meta: {
+                              verity: {
+                                lifecycle: { type: 'compaction', id: 'capacity-compaction' },
+                              },
+                            },
+                          }
+                        : {}),
+                    },
+                  },
+                });
+              }
+              if (behavior.capacityTrailingTool)
+                push({
+                  jsonrpc: '2.0',
+                  method: 'session/update',
+                  params: {
+                    sessionId: 'codex-session-1',
+                    update: {
+                      sessionUpdate: 'tool_call_update',
+                      toolCallId: 'completed-before-capacity',
+                      status: 'completed',
+                    },
+                  },
+                });
+              const finishCapacity = () =>
+                push({
+                  jsonrpc: '2.0',
+                  id,
+                  result: {
+                    stopReason: 'cancelled',
+                    ...(behavior.capacityUsage
+                      ? {
+                          usage: {
+                            totalTokens: 16,
+                            inputTokens: 10,
+                            outputTokens: 6,
+                            cachedReadTokens: 2,
+                            cachedWriteTokens: 1,
+                          },
+                        }
+                      : {}),
+                  },
+                });
+              if (behavior.onCapacity)
+                setTimeoutOriginal(() => {
+                  behavior.onCapacity?.();
+                  finishCapacity();
+                }, 25);
+              else finishCapacity();
+              return true;
+            }
             if (behavior.promptFailure !== undefined) {
               close();
               return true;
@@ -343,6 +456,181 @@ function write(
 }
 
 describe('AcpCodexBackend', () => {
+  it.each([false, true])(
+    'continues after a split capacity refusal (trailing tool: %s)',
+    async (capacityTrailingTool) => {
+      const fake = acpSpawner({
+        capacityFailures: 1,
+        capacityTool: true,
+        capacityUsage: true,
+        capacityInterleavedRefusal: true,
+        capacityTrailingTool,
+      });
+      const timer = vi
+        .spyOn(globalThis, 'setTimeout')
+        .mockImplementation((handler, delay) =>
+          setTimeoutOriginal(handler, delay === 5_000 ? 1 : delay),
+        );
+      try {
+        const result = await new AcpCodexBackend().run({
+          store: ctx.store,
+          worktree: '/work',
+          cwd: '/work',
+          prompt: 'Run',
+          spawner: fake.spawner,
+        });
+        expect(result.exitCode).toBe(0);
+        expect(timer.mock.calls.some((call) => call[1] === 5_000)).toBe(true);
+        const prompts = fake.writes.filter((entry) => entry.method === 'session/prompt');
+        expect(prompts).toHaveLength(2);
+        expect(prompts[1]?.params).toMatchObject({
+          sessionId: 'codex-session-1',
+          prompt: [{ type: 'text', text: 'Continue from where you stopped.' }],
+        });
+        const events = await ctx.store.getEvents('codex-session-1');
+        expect(events.find((event) => event.t === 'result')).toMatchObject({
+          usage: { inputTokens: 14, outputTokens: 9, cacheReadTokens: 2, cacheCreationTokens: 1 },
+        });
+        expect(
+          events.some((event) => event.t === 'text' && event.delta.includes('at capacity')),
+        ).toBe(false);
+        expect(events.filter((event) => event.t === 'error').map((event) => event.kind)).toEqual([
+          'model_capacity_retry',
+        ]);
+      } finally {
+        timer.mockRestore();
+      }
+    },
+  );
+
+  it('withholds steering before a capacity retry produces fresh agent content', async () => {
+    let steer: ((message: { text: string }) => boolean) | undefined;
+    const accepted: boolean[] = [];
+    const appendEvent = ctx.store.appendEvent.bind(ctx.store);
+    vi.spyOn(ctx.store, 'appendEvent').mockImplementation(async (...args) => {
+      if (args[1].t === 'compaction') {
+        accepted.push(steer?.({ text: 'change direction' }) ?? true);
+        await new Promise<void>((resolve) => setTimeoutOriginal(resolve, 1));
+      }
+      return appendEvent(...args);
+    });
+    const fake = acpSpawner({
+      capacityFailures: 1,
+      capacityLifecycle: true,
+      capacityTool: true,
+      onPrompt: () => accepted.push(steer?.({ text: 'change direction' }) ?? true),
+      onCapacity: () => accepted.push(steer?.({ text: 'change direction' }) ?? true),
+    });
+    const timer = vi
+      .spyOn(globalThis, 'setTimeout')
+      .mockImplementation((handler, delay) =>
+        setTimeoutOriginal(handler, delay === 5_000 ? 1 : delay),
+      );
+    try {
+      await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        spawner: fake.spawner,
+        onSteer: (inject) => {
+          steer = inject;
+        },
+      });
+      expect(accepted.length).toBeGreaterThan(3);
+      expect(accepted.every((value) => !value)).toBe(true);
+      expect(fake.writes.some((entry) => entry.method === '_session/steering')).toBe(false);
+    } finally {
+      timer.mockRestore();
+    }
+  });
+
+  it('bounds capacity retries and records the final refusal as a system error', async () => {
+    const fake = acpSpawner({ capacityFailures: 5 });
+    const timer = vi
+      .spyOn(globalThis, 'setTimeout')
+      .mockImplementation((handler, delay) =>
+        setTimeoutOriginal(handler, delay === 5_000 ? 1 : delay),
+      );
+    try {
+      const result = await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        spawner: fake.spawner,
+      });
+      expect(result.exitCode).toBe(1);
+      expect(fake.writes.filter((entry) => entry.method === 'session/prompt')).toHaveLength(3);
+      const events = await ctx.store.getEvents('codex-session-1');
+      expect(events.filter((event) => event.t === 'error').map((event) => event.kind)).toEqual([
+        'model_capacity_retry',
+        'model_capacity_retry',
+        'model_capacity',
+      ]);
+      expect(events.some((event) => event.t === 'text')).toBe(false);
+      expect(events.some((event) => event.t === 'status' && event.state === 'crashed')).toBe(true);
+      expect(events.some((event) => event.t === 'diagnostic' && event.outcome === 'failed')).toBe(
+        true,
+      );
+    } finally {
+      timer.mockRestore();
+    }
+  });
+
+  it('stops during the capacity retry wait without dispatching another prompt', async () => {
+    const fake = acpSpawner({ capacityFailures: 1 });
+    const controller = new AbortController();
+    const timer = vi.spyOn(globalThis, 'setTimeout').mockImplementation((handler, delay) => {
+      if (delay === 5_000) setTimeoutOriginal(() => controller.abort(), 1);
+      return setTimeoutOriginal(handler, delay);
+    });
+    try {
+      await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        signal: controller.signal,
+        spawner: fake.spawner,
+      });
+      expect(fake.writes.filter((entry) => entry.method === 'session/prompt')).toHaveLength(1);
+      const events = await ctx.store.getEvents('codex-session-1');
+      expect(events.some((event) => event.t === 'status' && event.state === 'crashed')).toBe(false);
+      expect(events.some((event) => event.t === 'error' && event.kind === 'acp')).toBe(false);
+    } finally {
+      timer.mockRestore();
+    }
+  });
+
+  it.each([false, true, 'interleaved'] as const)(
+    'keeps quoted capacity prose without retrying (split prefix: %s)',
+    async (splitCapacityPrefix) => {
+      const fake = acpSpawner({
+        capacityFailures: 1,
+        capacityPrefix: 'The provider said: ',
+        splitCapacityPrefix: splitCapacityPrefix !== false,
+        capacityInterleavedTool: splitCapacityPrefix === 'interleaved',
+      });
+      await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        spawner: fake.spawner,
+      });
+      expect(fake.writes.filter((entry) => entry.method === 'session/prompt')).toHaveLength(1);
+      const events = await ctx.store.getEvents('codex-session-1');
+      expect(
+        events
+          .filter((event) => event.t === 'text')
+          .map((event) => event.delta)
+          .join(''),
+      ).toContain('The provider said: Selected model is at capacity.');
+      expect(events.some((event) => event.t === 'error')).toBe(false);
+    },
+  );
+
   it.each([
     { code: 1, signal: null },
     { code: null, signal: 'SIGKILL' as const },

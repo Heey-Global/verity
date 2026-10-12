@@ -30185,6 +30185,10 @@ async function runAcpTurn(opts, profile) {
   let promptDispatched = false;
   const isPrompting = () => promptDispatched;
   const topLevelText = new AcpTextStream();
+  const capacityMessage = "Selected model is at capacity. Please try a different model.";
+  let capacityText = "";
+  let capacityProse = false;
+  let capacityFailure = false;
   let updateTail = Promise.resolve();
   let updateError;
   let aborted = false;
@@ -30268,13 +30272,40 @@ async function runAcpTurn(opts, profile) {
   const onUpdate = async (update) => {
     if (stopped)
       return;
+    if (profile.telemetryBackend === "codex-acp" && isAgentContent(update) && capacityText === "" && !(update.sessionUpdate === "agent_message_chunk" && update.content.type === "text" && parentToolId2(update._meta, metaNamespace) === void 0)) {
+      turnHasAgentContent = true;
+    }
+    if (update.sessionUpdate === "tool_call" && capacityText.trim() !== capacityMessage) {
+      await writeAll(writer, topLevelText.push(capacityText));
+      capacityText = "";
+      capacityProse = false;
+    }
     if (update.sessionUpdate === "current_mode_update" && update.currentModeId !== activeMode && !closedOut) {
       restoreMode?.();
     }
     if (update.sessionUpdate === "agent_message_chunk" && update.content.type === "text") {
       if (parentToolId2(update._meta, metaNamespace) === void 0) {
+        if (profile.telemetryBackend === "codex-acp" && !capacityProse) {
+          turnHasAgentContent = false;
+        }
         for (const event of adapter.consume(update)) {
-          await writeAll(writer, event.t === "text" ? topLevelText.push(event.delta) : [event]);
+          if (event.t === "text" && profile.telemetryBackend === "codex-acp" && !capacityProse) {
+            capacityText += event.delta;
+            if (capacityMessage.startsWith(capacityText.trimStart())) {
+              turnHasAgentContent = false;
+              continue;
+            }
+            if (capacityText.trim() === capacityMessage)
+              continue;
+            await writeAll(writer, topLevelText.push(capacityText));
+            capacityText = "";
+            capacityProse = true;
+            turnHasAgentContent = true;
+          } else {
+            if (event.t === "text")
+              turnHasAgentContent = true;
+            await writeAll(writer, event.t === "text" ? topLevelText.push(event.delta) : [event]);
+          }
         }
         return;
       }
@@ -30299,7 +30330,10 @@ async function runAcpTurn(opts, profile) {
     const connect = () => client({ name: "verity" }).onRequest(methods.client.session.requestPermission, ({ params }) => onPermission(params)).onNotification(methods.client.session.update, ({ params }) => {
       if (loadingSession || stopped)
         return Promise.resolve();
-      if (isAgentContent(params.update))
+      if (profile.telemetryBackend === "codex-acp") {
+        if (params.update.sessionUpdate === "agent_message_chunk")
+          turnHasAgentContent = false;
+      } else if (isAgentContent(params.update))
         turnHasAgentContent = true;
       return queueUpdate(params.update);
     }).connectWith(processStream(child, opts.worktree), async (agent) => {
@@ -30438,10 +30472,58 @@ async function runAcpTurn(opts, profile) {
       };
       loadingSession = false;
       promptDispatched = true;
-      const prompt = await agent.request(methods.agent.session.prompt, {
-        sessionId: session.sessionId,
-        prompt: promptBlocks(turnOpts, profile)
-      });
+      let prompt;
+      const promptUsage = { ...ZERO_USAGE };
+      for (let attempt = 0; ; attempt += 1) {
+        capacityText = "";
+        capacityProse = false;
+        capacityFailure = false;
+        turnHasAgentContent = false;
+        prompt = await agent.request(methods.agent.session.prompt, {
+          sessionId: session.sessionId,
+          // Continuing the bound conversation preserves completed tool work
+          // instead of replaying the original request after side effects.
+          prompt: attempt === 0 ? promptBlocks(turnOpts, profile) : [{ type: "text", text: "Continue from where you stopped." }]
+        });
+        const attemptUsage = usage(prompt.usage);
+        promptUsage.inputTokens += attemptUsage.inputTokens;
+        promptUsage.outputTokens += attemptUsage.outputTokens;
+        promptUsage.cacheReadTokens += attemptUsage.cacheReadTokens;
+        promptUsage.cacheCreationTokens += attemptUsage.cacheCreationTokens;
+        await drainUpdates();
+        capacityFailure = capacityText.trim() === capacityMessage;
+        if (capacityText !== "" && !capacityFailure) {
+          await writeAll(writer, topLevelText.push(capacityText));
+        }
+        capacityText = "";
+        if (!capacityFailure || stopped)
+          break;
+        await writeAll(writer, topLevelText.flush());
+        if (attempt >= 2) {
+          await writer.write({ t: "error", kind: "model_capacity", message: capacityMessage });
+          break;
+        }
+        acceptingSteering = false;
+        await writer.write({
+          t: "error",
+          kind: "model_capacity_retry",
+          message: `Selected model is at capacity. Retrying in 5 seconds (${attempt + 1}/2).`
+        });
+        await new Promise((resolve4) => {
+          const timer = setTimeout(done, 5e3);
+          function done() {
+            clearTimeout(timer);
+            wakeRetry = void 0;
+            resolve4();
+          }
+          wakeRetry = done;
+          if (stopped)
+            done();
+        });
+        if (stopped)
+          throw new Error("ACP turn stopped during capacity retry");
+        acceptingSteering = true;
+      }
       acceptingSteering = false;
       if (aborted)
         throw new Error("ACP turn cancelled");
@@ -30475,7 +30557,7 @@ async function runAcpTurn(opts, profile) {
       }
       await writer.write({
         t: "result",
-        usage: usage(prompt.usage),
+        usage: promptUsage,
         stopReason: prompt.stopReason,
         telemetry: {
           backend: profile.telemetryBackend,
@@ -30483,7 +30565,9 @@ async function runAcpTurn(opts, profile) {
           resumed: opts.resumeSessionId !== void 0
         }
       });
-      if (prompt.stopReason !== "cancelled") {
+      if (capacityFailure) {
+        await writer.write({ t: "status", state: "crashed" });
+      } else if (prompt.stopReason !== "cancelled") {
         await writer.write({ t: "status", state: "completed" });
       } else if (!aborted) {
         await writer.write({ t: "status", state: "crashed" });
@@ -30491,7 +30575,7 @@ async function runAcpTurn(opts, profile) {
       await writer.write({
         t: "diagnostic",
         source: "agent",
-        outcome: prompt.stopReason === "cancelled" ? aborted ? "cancelled" : "failed" : "completed",
+        outcome: capacityFailure ? "failed" : prompt.stopReason === "cancelled" ? aborted ? "cancelled" : "failed" : "completed",
         phase: diagnosticPhase,
         backend: profile.telemetryBackend
       });
@@ -30544,7 +30628,7 @@ async function runAcpTurn(opts, profile) {
     }
     return {
       sessionId: boundSessionId,
-      exitCode: result3.stopReason === "cancelled" && !aborted ? 1 : 0,
+      exitCode: capacityFailure || result3.stopReason === "cancelled" && !aborted ? 1 : 0,
       stderr: child.stderr(),
       aborted
     };
@@ -30555,6 +30639,10 @@ async function runAcpTurn(opts, profile) {
     await drainUpdates().catch(() => void 0);
     closedOut = true;
     if (!aborted) {
+      if (capacityText !== "") {
+        await writeAll(writer, topLevelText.push(capacityText)).catch(() => void 0);
+        capacityText = "";
+      }
       await writeAll(writer, adapter.flush()).catch(() => void 0);
       await writeAll(writer, topLevelText.flush()).catch(() => void 0);
     }
