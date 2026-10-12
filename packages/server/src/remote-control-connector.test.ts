@@ -3,6 +3,7 @@ import { createConnection, createServer, type Server as NetServer, type Socket }
 import WebSocket, { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRemoteConnectorPool, remoteDataUrlForControl } from './remote-control-connector.js';
+import { CoordinatedRecordingManager } from './coordinated-recording.js';
 import { ReturnPathActivation } from './remote-return-path-activation.js';
 import type { RemoteConnectorReservation } from './uplink-control-client.js';
 
@@ -111,6 +112,64 @@ async function reserve(
 }
 
 describe('remote control connector', () => {
+  it('retains the activation baseline when recording starts on an attached socket', async () => {
+    const activation = new ReturnPathActivation(() => ({
+      enabled: true,
+      installationId: 'paired',
+    }));
+    const manager = new CoordinatedRecordingManager(activation, {
+      start: async () => {},
+      stop: async () => {},
+      export: async () => ({ records: [] }),
+    });
+    try {
+      const f = await fixture(
+        undefined,
+        {},
+        undefined,
+        undefined,
+        undefined,
+        activation,
+        (snapshot) => manager.observe(snapshot),
+      );
+      const reservation = await reserve(f);
+      const attached = reservation.attach(
+        'private_ticket',
+        Date.now() + 30_000,
+        new AbortController().signal,
+      );
+      await vi.waitFor(() => expect(f.received).toHaveLength(1));
+      f.peer().send(
+        JSON.stringify({
+          type: 'attached',
+          sessionId: 'session_one',
+          capability: 'remote-control-v1',
+        }),
+      );
+      await attached;
+      const runId = '11111111-1111-4111-8111-111111111111';
+      await manager.start(runId, 120_000);
+      expect(await manager.export(runId)).toMatchObject({
+        core: {
+          dropped: 0,
+          records: [
+            expect.objectContaining({
+              transport: expect.objectContaining({
+                wsState: WebSocket.OPEN,
+                socketBytesRead: expect.any(Number),
+              }),
+            }),
+          ],
+        },
+      });
+      await manager.stop(runId);
+      reservation.release('done');
+    } finally {
+      manager.dispose();
+      activation.dispose();
+    }
+  });
+
   it('delivers retained metadata without a logger and isolates sink errors from transport', async () => {
     const activation = new ReturnPathActivation(() => ({
       enabled: true,
@@ -1015,10 +1074,10 @@ describe('remote control connector', () => {
     expect(closed).toBe(false);
     await vi.advanceTimersByTimeAsync(30_000);
     await reservation.closed;
-    const summaries = log.info.mock.calls
-      .map(([entry]) => entry)
-      .filter((entry) => entry.event === 'remote.return_path');
-    expect(summaries.at(-1)).toMatchObject({
+    const summary = log.info.mock.calls
+      .filter(([entry]) => entry.event === 'remote.return_path')
+      .at(-1)?.[0];
+    expect(summary).toMatchObject({
       lastCloseRequest: { eventOrder: expect.any(Number), elapsedMs: expect.any(Number) },
     });
   });

@@ -272,7 +272,18 @@ class ConnectorSession implements RemoteConnectorReservation {
       this.retainedReturnPath ??= new RemoteReturnPathDiagnostics(this.request.sessionId, expiry);
       this.retainedReturnPath.beginWindow(expiry);
       this.returnPath = this.retainedReturnPath;
-      if (this.ws) this.logReturnPath();
+      if (this.ws) {
+        const diagnostics = this.returnPath;
+        const revision = diagnostics.windowRevision;
+        // Activation notifies synchronously before the coordinated recorder owns its run.
+        queueMicrotask(() => {
+          if (
+            this.returnPathDiagnostics() === diagnostics &&
+            diagnostics.windowRevision === revision
+          )
+            this.logReturnPath();
+        });
+      }
       this.returnPathTimer = setInterval(() => this.logReturnPath(), 5_000);
       this.returnPathTimer.unref();
       this.returnPathDeadline = setTimeout(

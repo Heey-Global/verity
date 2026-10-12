@@ -4,7 +4,10 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { describe, expect, it, vi } from 'vitest';
 import { recordingTransportState } from './recording-transport-state.js';
 import { parseRecordingResponse } from './uplink-recording.js';
-import { RemoteReturnPathDiagnostics } from './remote-return-path-diagnostics.js';
+import {
+  RemoteReturnPathDiagnostics,
+  RETURN_PATH_LIMITS,
+} from './remote-return-path-diagnostics.js';
 import { coreRecordingSummary as recordingCoreRecordSchema } from './coordinated-recording-schema.js';
 
 const runId = '11111111-1111-4111-8111-111111111111';
@@ -12,9 +15,12 @@ const runId = '11111111-1111-4111-8111-111111111111';
 describe('recording transport state', () => {
   it('retains close intent after detail overflow and clears it for a new consent window', () => {
     const diagnostics = new RemoteReturnPathDiagnostics('synthetic');
-    for (let i = 0; i < 300; i++) diagnostics.record('emitted_message', 'observed');
+    const observations = RETURN_PATH_LIMITS.events + 1;
+    for (let i = 0; i < observations; i++) diagnostics.record('emitted_message', 'observed');
     diagnostics.record('close_requested', 'observed');
-    expect(diagnostics.exportSummary()).toMatchObject({ lastCloseRequest: { eventOrder: 301 } });
+    const summary = diagnostics.exportSummary();
+    expect(summary?.droppedEvents).toBeGreaterThan(0);
+    expect(summary).toMatchObject({ lastCloseRequest: { eventOrder: observations + 1 } });
     diagnostics.beginWindow(Date.now() + 1000);
     expect(diagnostics.exportSummary()).toMatchObject({ lastCloseRequest: null });
   });
