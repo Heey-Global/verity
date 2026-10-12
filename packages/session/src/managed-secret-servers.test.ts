@@ -156,9 +156,11 @@ it('matches only complete managed identity tags without returning environment va
 
 it('stops a tagged descendant that detached into another process group', async () => {
   const { root, broker, request } = await fixture();
+  // CI installs Node outside the broker's deliberately restricted default PATH.
+  const node = "'" + process.execPath.replaceAll("'", "'\\''") + "'";
   await broker.handle({
     ...request,
-    command: `node -e "const cp=require('node:child_process');const child=cp.spawn('sleep',['30'],{detached:true,stdio:'ignore'});require('node:fs').writeFileSync('daemon.pid',String(child.pid));child.unref()"`,
+    command: `${node} -e "const cp=require('node:child_process');const child=cp.spawn('sleep',['30'],{detached:true,stdio:'ignore'});require('node:fs').writeFileSync('daemon.pid',String(child.pid));child.unref()"`,
   });
   let pid = 0;
   for (let attempt = 0; attempt < 100; attempt++) {
