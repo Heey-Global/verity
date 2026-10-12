@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.41.1](https://github.com/Heey-Global/verity/compare/v4.41.0...v4.41.1) (2026-10-12)
+
+
+### Bug Fixes
+
+* **diagnostics:** simplify recording controls and retain offline evidence ([#1544](https://github.com/Heey-Global/verity/issues/1544)) ([c10c90e](https://github.com/Heey-Global/verity/commit/c10c90eef54fdd30e3c7f82a5455622a6514a02b))
+
 ## [4.41.0](https://github.com/Heey-Global/verity/compare/v4.40.0...v4.41.0) (2026-10-12)
 
 
