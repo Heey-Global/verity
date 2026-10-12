@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 jest.mock('../lib/remoteControlCiExport', () => ({
   shareRemoteControlCiInputs: jest.fn().mockResolvedValue(undefined),
 }));
@@ -9,7 +10,8 @@ jest.mock('../lib/updateDiagnostics', () => ({
   shareUpdateDiagnostics: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('../components/settings/PublicPreviewDiagnostics', () => ({
-  PublicPreviewDiagnostics: () => null,
+  // The diagnostics container owns disclosure; route content is passed as children.
+  PublicPreviewDiagnostics: ({ children }: { children: ReactNode }) => children,
 }));
 import DiagnosticsScreen from '../app/settings/diagnostics';
 import { shareUpdateDiagnostics } from '../lib/updateDiagnostics';
