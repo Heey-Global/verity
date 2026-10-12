@@ -47,6 +47,10 @@ describe('Codex egress policy', () => {
   it.each([
     ['wrong path', 'POST', '/v1/responses', {}],
     ['wrong method', 'GET', '/codex/responses', {}],
+    ['wrong search method', 'GET', '/codex/alpha/search', {}],
+    ['unknown alpha route', 'POST', '/codex/alpha/other', {}],
+    ['search query', 'POST', '/codex/alpha/search?admin=true', {}],
+    ['search cookie', 'POST', '/codex/alpha/search', { cookie: 'session=attacker' }],
     ['wrong image method', 'GET', '/codex/images/generations', {}],
     ['unknown image route', 'POST', '/codex/images', {}],
     ['query', 'GET', '/codex/models?admin=true', {}],
