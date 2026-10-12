@@ -1,9 +1,12 @@
 # Bounded DATA disconnect capture
 
 The mobile Connection diagnostics panel offers **Record connection test** and
-**Copy connection recording**. Recording is opt-in for the current DATA socket
-or, if none is live, the next attachment used by that test, including any automatic stall replacement. It never replaces a
-live tunnel to obtain a recording. Ordinary tests and traffic do not enable it.
+**Copy connection recording**. Recording starts only after an explicit recording-test action. That action
+replaces the current tunnel to capture the first sends and can interrupt active
+remote requests. Ordinary tests and opening Diagnostics do not enable recording.
+The local recording status is read without contacting Core. **Stop local
+recording** ends the native capture window without waiting for a pending probe,
+keeps the saved evidence, and does not stop Core or Uplink recording.
 All generations in one test share the original 120-second deadline. After that deadline, recording and the network-path observer stop without stopping
 the transport. A recorded socket cannot be rearmed after its window ends; use a
 fresh attachment for a new recording. The native module keeps at most three

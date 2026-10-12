@@ -243,6 +243,7 @@ final class RemoteDataRecordingStore: @unchecked Sendable {
   private let lock = NSLock()
   private let writer = DispatchQueue(label: "verity.data.recording.store")
   private var records: [(String, String)] = []
+  private var generations: [String] = []
   private var pending: [(String, () -> String?)] = []
   private var writing = false
 
@@ -262,6 +263,7 @@ final class RemoteDataRecordingStore: @unchecked Sendable {
         guard let frozen = try? JSONSerialization.data(withJSONObject: object),
           let text = String(data: frozen, encoding: .utf8) else { records = []; return }
         records.append((generation, text))
+        generations.append(generation)
       }
     }
   }
@@ -279,12 +281,22 @@ final class RemoteDataRecordingStore: @unchecked Sendable {
     } catch { return nil }
   }
 
+  func register(generation: String) {
+    lock.lock(); defer { lock.unlock() }
+    guard !generations.contains(generation) else { return }
+    generations.append(generation)
+    if generations.count > 3 { generations.removeFirst() }
+    records.removeAll { !generations.contains($0.0) }
+    pending.removeAll { !generations.contains($0.0) }
+  }
+
   func retain(generation: String, snapshot: String) {
     schedule(generation: generation) { snapshot }
   }
 
   func schedule(generation: String, snapshot: @escaping () -> String?) {
     lock.lock()
+    guard generations.contains(generation) else { lock.unlock(); return }
     if let index = pending.firstIndex(where: { $0.0 == generation }) {
       pending[index] = (generation, snapshot)
     } else {
@@ -314,11 +326,12 @@ final class RemoteDataRecordingStore: @unchecked Sendable {
     for (generation, snapshot) in updates {
       guard let value = snapshot(), value.utf8.count <= Self.maximumBytes / 3 else { continue }
       lock.lock()
+      guard generations.contains(generation) else { lock.unlock(); continue }
       if let index = records.firstIndex(where: { $0.0 == generation }) {
         records[index] = (generation, value)
       } else {
         records.append((generation, value))
-        if records.count > 3 { records.removeFirst() }
+        records.sort { generations.firstIndex(of: $0.0)! < generations.firstIndex(of: $1.0)! }
       }
       lock.unlock()
     }

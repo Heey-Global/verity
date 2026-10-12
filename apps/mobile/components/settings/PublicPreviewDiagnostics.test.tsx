@@ -4,6 +4,8 @@ const mockTestRemoteControl = jest.fn();
 const mockGetServerProfile = jest.fn();
 const mockExportData = jest.fn();
 const mockCopy = jest.fn();
+const mockRecordingRemaining = jest.fn().mockResolvedValue(0);
+const mockStopRecording = jest.fn().mockResolvedValue(true);
 jest.mock('../../lib/remoteDataDiagnostics', () => ({
   exportRemoteDataDiagnostics: () => mockExportData(),
 }));
@@ -18,6 +20,8 @@ jest.mock('../../lib/serverProfile', () => ({
 }));
 jest.mock('../../lib/remoteControlTransport', () => ({
   testRemoteControlForUrl: (...args: unknown[]) => mockTestRemoteControl(...args),
+  remoteDataRecordingRemainingMs: () => mockRecordingRemaining(),
+  stopRemoteDataRecording: () => mockStopRecording(),
   remoteControlFailureForUrl: jest.fn(() => null),
 }));
 
@@ -309,3 +313,34 @@ it.each([null, { activeUrl: 'https://verity.example' }])(
     expect(getUplinkDiagnostics).toHaveBeenCalledTimes(1);
   },
 );
+
+it('only reads recording status on mount and stops locally while a probe and Core are pending', async () => {
+  mockGetServerProfile.mockReturnValue({ activeUrl: 'https://verity.example', remoteControl: {} });
+  mockRecordingRemaining.mockResolvedValue(60_000);
+  mockTestRemoteControl.mockClear().mockReturnValue(new Promise(() => undefined));
+  mockStopRecording.mockClear().mockResolvedValue(true);
+  const client = { getUplinkDiagnostics: jest.fn(() => new Promise(() => undefined)) } as never;
+  render(<PublicPreviewDiagnostics client={client} keyConfigured />);
+  await screen.findByText('Recording · 60 seconds remaining');
+  expect(mockTestRemoteControl).not.toHaveBeenCalled();
+  expect(mockStopRecording).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByLabelText('Test Remote access through Uplink'));
+  fireEvent.press(screen.getByText('Stop local recording'));
+  await screen.findByText('Not recording');
+  expect(mockStopRecording).toHaveBeenCalledTimes(1);
+  expect(mockTestRemoteControl).toHaveBeenCalledTimes(1);
+});
+
+it('keeps local stop available without a profile and reports a failed stop honestly', async () => {
+  mockGetServerProfile.mockReturnValue(null);
+  mockStopRecording.mockClear().mockResolvedValue(false);
+  render(
+    <PublicPreviewDiagnostics
+      client={{ getUplinkDiagnostics: jest.fn().mockRejectedValue(new Error('offline')) } as never}
+      keyConfigured
+    />,
+  );
+  fireEvent.press(screen.getByText('Stop local recording'));
+  await screen.findByText('Could not confirm recording stopped.');
+  expect(mockStopRecording).toHaveBeenCalledTimes(1);
+});

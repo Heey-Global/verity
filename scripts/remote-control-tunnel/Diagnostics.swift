@@ -127,8 +127,11 @@ struct DiagnosticsTest {
     defer { try? FileManager.default.removeItem(at: directory) }
     let file = directory.appendingPathComponent("recording.json")
     let store = RemoteDataRecordingStore(file: file)
+    var firstPersistent: RemoteDataDiagnostics?
     for _ in 0..<4 {
       let persistent = RemoteDataDiagnostics()
+      firstPersistent = firstPersistent ?? persistent
+      store.register(generation: persistent.generation)
       persistent.snapshotSink = { [weak persistent] in
         guard let persistent else { return }
         store.schedule(generation: persistent.generation) { persistent.export() }
@@ -138,6 +141,10 @@ struct DiagnosticsTest {
         userInfo: [NSLocalizedDescriptionKey: "ticket=SECRET"]))
     }
     store.flush()
+    let beforeLateUpdate = store.snapshots()
+    firstPersistent?.record(.socketClose, closeCode: 1001)
+    store.flush()
+    precondition(store.snapshots() == beforeLateUpdate)
     let restored = RemoteDataRecordingStore(file: file).snapshots()
     precondition(restored.count == 3)
     for value in restored {
@@ -150,6 +157,7 @@ struct DiagnosticsTest {
       guard let expiring else { return }
       store.schedule(generation: expiring.generation) { expiring.export() }
     }
+    store.register(generation: expiring.generation)
     expiring.enable(startedLate: false, delegateAvailable: true)
     persistenceClock = RemoteDataDiagnostics.duration + 1
     store.schedule(generation: expiring.generation) { expiring.export() }

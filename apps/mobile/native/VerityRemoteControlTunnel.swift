@@ -19,6 +19,8 @@ class VerityRemoteControlTunnel: Module {
     let remaining = captureWindow.remaining
     guard remaining > 0, tunnel.enableDataDiagnostics(duration: remaining) else { return false }
     if !diagnosticRecords.contains(where: { $0 === tunnel.dataDiagnostics }) {
+      recordingStore?.register(generation: diagnostics.generation)
+      recordingStore?.schedule(generation: diagnostics.generation) { diagnostics.export() }
       diagnosticRecords.append(tunnel.dataDiagnostics)
       if diagnosticRecords.count > 3 { diagnosticRecords.removeFirst() }
     }
@@ -95,6 +97,10 @@ class VerityRemoteControlTunnel: Module {
         guard let tunnel else { return false }
         return self.capture(tunnel)
       }
+    }
+
+    AsyncFunction("dataDiagnosticsRemainingMs") { () -> Int in
+      Int(self.captureWindow.remaining * 1000)
     }
 
     AsyncFunction("clearPendingDataDiagnostics") { self.captureWindow.clear() }

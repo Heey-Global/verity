@@ -6,7 +6,7 @@ import {
 } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -14,6 +14,8 @@ import { getServerProfile } from '../../lib/serverProfile';
 import { exportRemoteDataDiagnostics } from '../../lib/remoteDataDiagnostics';
 import {
   remoteControlFailureForUrl,
+  remoteDataRecordingRemainingMs,
+  stopRemoteDataRecording,
   testRemoteControlForUrl,
 } from '../../lib/remoteControlTransport';
 import { CardRow, DotValue, Eyebrow, RowCard, type DotTone } from '../premium/PremiumChrome';
@@ -74,6 +76,30 @@ export function PublicPreviewDiagnostics({
   const [rightsFailed, setRightsFailed] = useState(false);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
+  const recordingReadRevision = useRef(0);
+  const [recordingRemaining, setRecordingRemaining] = useState<number | null>(null);
+  const [recordingStopFailed, setRecordingStopFailed] = useState(false);
+  useEffect(() => {
+    let mounted = true;
+    const refreshRecording = async () => {
+      const revision = recordingReadRevision.current;
+      const remaining = await remoteDataRecordingRemainingMs();
+      if (mounted && revision === recordingReadRevision.current) setRecordingRemaining(remaining);
+    };
+    void refreshRecording();
+    const timer = setInterval(() => void refreshRecording(), 1_000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, []);
+  const stopRecording = async () => {
+    recordingReadRevision.current++;
+    const stopped = await stopRemoteDataRecording();
+    recordingReadRevision.current++;
+    setRecordingStopFailed(!stopped);
+    if (stopped) setRecordingRemaining(0);
+  };
   const refresh = useCallback(async () => {
     try {
       setStatus(await client.getUplinkDiagnostics());
@@ -315,6 +341,26 @@ export function PublicPreviewDiagnostics({
           </RowCard>
         )}
         <RowCard>
+          <CardRow
+            title="Local connection recording"
+            subtitle={
+              recordingRemaining === null
+                ? 'Recording status unavailable in this app build.'
+                : recordingRemaining > 0
+                  ? `Recording · ${String(Math.ceil(recordingRemaining / 1000))} seconds remaining`
+                  : 'Not recording'
+            }
+            chevron={false}
+          />
+          <CardRow
+            title="Stop local recording"
+            subtitle={
+              recordingStopFailed
+                ? 'Could not confirm recording stopped.'
+                : 'Stops this iPhone’s recording. Keeps the saved recording.'
+            }
+            onPress={() => void stopRecording()}
+          />
           <CardRow
             title="Copy last recording"
             subtitle={exportStatus ?? undefined}
