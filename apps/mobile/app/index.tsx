@@ -1,3 +1,4 @@
+import { DeferredSessionPane } from '../components/DeferredSessionPane';
 import { useSessionRowCallbacks } from '../hooks/useSessionRowCallbacks';
 import {
   beginRenderWork,
@@ -587,6 +588,43 @@ function SessionList({ client }: { client: VerityClient }) {
     [updateProjectSandbox],
   );
 
+  const toggleProjectGroup = useCallback(
+    (item: SessionProjectGroup, collapsed: boolean) => {
+      if (draggingAnything) return;
+      const nextValue = !collapsed;
+      setCollapsedOverride((current) => {
+        const next = new Map(current);
+        next.set(item.id, nextValue);
+        return next;
+      });
+      const project = item.project;
+      if (!project) return;
+      enqueueProjectCollapse(project.id, nextValue, {
+        // The override keeps holding the tapped value: the write's
+        // response is not adopted, so a server answering from a list
+        // memoised before the write cannot fold the group back. The
+        // polled list clears the override once it reports the same value.
+        success: () => void refreshProjects(),
+        failure: (caught) => {
+          // Roll the override back to server truth so a failed write doesn't
+          // strand the group in the wrong state.
+          setCollapsedOverride((current) => {
+            const next = new Map(current);
+            next.delete(item.id);
+            return next;
+          });
+          Alert.alert(
+            'Update failed',
+            caught instanceof VerityApiError
+              ? caught.message
+              : 'Could not save the collapse state.',
+          );
+        },
+      });
+    },
+    [draggingAnything, enqueueProjectCollapse, refreshProjects],
+  );
+
   const renderGroup = useCallback(
     (item: SessionProjectGroup, floating = false) => {
       return (
@@ -598,39 +636,7 @@ function SessionList({ client }: { client: VerityClient }) {
             draggingProjectId !== null ||
             (collapsedOverride.get(item.id) ?? item.project?.collapsed ?? false)
           }
-          onToggle={() => {
-            if (draggingAnything) return;
-            const nextValue = !(collapsedOverride.get(item.id) ?? item.project?.collapsed ?? false);
-            setCollapsedOverride((current) => {
-              const next = new Map(current);
-              next.set(item.id, nextValue);
-              return next;
-            });
-            const project = item.project;
-            if (!project) return;
-            enqueueProjectCollapse(project.id, nextValue, {
-              // The override keeps holding the tapped value: the write's
-              // response is not adopted, so a server answering from a list
-              // memoised before the write cannot fold the group back. The
-              // polled list clears the override once it reports the same value.
-              success: () => void refreshProjects(),
-              failure: (caught) => {
-                // Roll the override back to server truth so a failed write doesn't
-                // strand the group in the wrong state.
-                setCollapsedOverride((current) => {
-                  const next = new Map(current);
-                  next.delete(item.id);
-                  return next;
-                });
-                Alert.alert(
-                  'Update failed',
-                  caught instanceof VerityApiError
-                    ? caught.message
-                    : 'Could not save the collapse state.',
-                );
-              },
-            });
-          }}
+          onToggle={toggleProjectGroup}
           reorder={reorder}
           renderedOrder={activeGroupIds}
           sortable={isReorderableGroup(item)}
@@ -645,7 +651,7 @@ function SessionList({ client }: { client: VerityClient }) {
           onNewSession={wide ? createSessionInPane : undefined}
           onOpenSession={onOpenSession}
           onUpdateProject={confirmSandboxUpdate}
-          onRepairProject={(projectId) => void repairProjectRow(projectId)}
+          onRepairProject={repairProjectRow}
           defaultNewSessionProject={defaultNewSessionProject}
           unread={unread}
           previewUrls={previewUrls}
@@ -660,6 +666,7 @@ function SessionList({ client }: { client: VerityClient }) {
     [
       activeGroupIds,
       collapsedOverride,
+      toggleProjectGroup,
       draggingProjectId,
       draggingAnything,
       sessionReordering,
@@ -921,16 +928,28 @@ function SessionList({ client }: { client: VerityClient }) {
       <View style={styles.leftPane}>{master}</View>
       <View style={styles.rightPane}>
         {selectedId && baseUrl ? (
-          <SessionChat
+          <DeferredSessionPane
             key={`${selectedId}:${moveGeneration}`}
-            client={client}
-            sessionId={selectedId}
-            baseUrl={baseUrl}
-            embedded
-            initialTargetMessageId={targetMessageId}
-            initialTargetSearchQuery={targetSearchQuery}
-            retrySecret={retrySecret}
-          />
+            fallback={
+              <View style={styles.rightPanePlaceholder} accessibilityRole="progressbar">
+                <Text style={styles.rightPanePlaceholderText}>
+                  {sessions.find((session) => session.sessionId === selectedId)?.name ?? 'Session'}
+                </Text>
+                <ActivityIndicator />
+                <Text style={styles.rightPanePlaceholderText}>Loading session…</Text>
+              </View>
+            }
+          >
+            <SessionChat
+              client={client}
+              sessionId={selectedId}
+              baseUrl={baseUrl}
+              embedded
+              initialTargetMessageId={targetMessageId}
+              initialTargetSearchQuery={targetSearchQuery}
+              retrySecret={retrySecret}
+            />
+          </DeferredSessionPane>
         ) : (
           <RightPanePlaceholder />
         )}
@@ -996,7 +1015,7 @@ function statusToneStyle(tone: ProjectOverviewStatus['tone']) {
   }
 }
 
-function ProjectGroup({
+const ProjectGroup = memo(function ProjectGroup({
   group,
   floating = false,
   wide,
@@ -1030,7 +1049,7 @@ function ProjectGroup({
   floating?: boolean;
   wide: boolean;
   collapsed: boolean;
-  onToggle: () => void;
+  onToggle: (group: SessionProjectGroup, collapsed: boolean) => void;
   reorder: ProjectReorderController;
   /** The row order the list is painting right now. */
   renderedOrder: readonly string[];
@@ -1084,6 +1103,65 @@ function ProjectGroup({
     onOpen: onOpenSession,
     onReorder: onReorderSession,
   });
+  const sessionDragEnabled = sessionReordering && !collapsed;
+  const sessionRows = useMemo(
+    () => (
+      <View style={styles.projectSessions}>
+        {group.sessions.map((session, index) => (
+          <SessionDragSlot
+            key={session.sessionId}
+            id={`session:${session.sessionId}`}
+            scope={group.id}
+            order={sessionDragOrder}
+            reorder={reorder}
+            enabled={sessionDragEnabled}
+          >
+            {(handle, issue, markers) => (
+              <Fragment>
+                {/* Quiet inset hairline between sessions (never above the first — the
+                  project header already draws its own bottom border). Inset to start
+                  under the session title, leaving the dot gutter clear (iOS-style
+                  leading inset), so adjacent session blocks read as separate without
+                  the restless full-width line grid the group had before. */}
+                {index > 0 ? <View style={styles.sessionDivider} /> : null}
+                <SessionRow
+                  session={session}
+                  dragHandleRef={handle}
+                  dragIssueRef={issue}
+                  dragMarkersRef={markers}
+                  reorderable={sessionReordering}
+                  interactionsLocked={reordering}
+                  {...rowCallbacks.get(session.sessionId)!}
+                  unread={unread.has(session.sessionId)}
+                  previewActive={previewUrls.has(session.sessionId)}
+                  previewPublic={publicPreviews.has(session.sessionId)}
+                  previewUrl={previewUrls.get(session.sessionId) ?? null}
+                  repo={group.repo}
+                  projectKind={group.project?.kind}
+                  selected={selectedId === session.sessionId}
+                  renaming={renamingId === session.sessionId}
+                />
+              </Fragment>
+            )}
+          </SessionDragSlot>
+        ))}
+      </View>
+    ),
+    [
+      group,
+      sessionDragOrder,
+      reorder,
+      sessionDragEnabled,
+      sessionReordering,
+      reordering,
+      rowCallbacks,
+      unread,
+      previewUrls,
+      publicPreviews,
+      selectedId,
+      renamingId,
+    ],
+  );
   const [headerHovered, setHeaderHovered] = useState(false);
   // Container state for the leading dot. A group with no project row is either an
   // orphan (including soft-deleted projects, which are not repairable) or the
@@ -1148,7 +1226,7 @@ function ProjectGroup({
             style={({ pressed }) => [styles.projectToggle, pressed ? styles.rowPressed : null]}
             onHoverIn={() => setHeaderHovered(true)}
             onHoverOut={() => setHeaderHovered(false)}
-            onPress={reordering ? undefined : onToggle}
+            onPress={reordering ? undefined : () => onToggle(group, collapsed)}
             accessibilityRole="button"
             accessibilityState={{ expanded: !collapsed }}
             accessibilityLabel={
@@ -1324,53 +1402,12 @@ function ProjectGroup({
           </View>
         </View>
         {group.sessions.length > 0 ? (
-          <ProjectSessionsCollapse collapsed={collapsed}>
-            <View style={styles.projectSessions}>
-              {group.sessions.map((session, index) => (
-                <SessionDragSlot
-                  key={session.sessionId}
-                  id={`session:${session.sessionId}`}
-                  scope={group.id}
-                  order={sessionDragOrder}
-                  reorder={reorder}
-                  enabled={sessionReordering && !collapsed}
-                >
-                  {(handle, issue, markers) => (
-                    <Fragment>
-                      {/* Quiet inset hairline between sessions (never above the first — the
-                  project header already draws its own bottom border). Inset to start
-                  under the session title, leaving the dot gutter clear (iOS-style
-                  leading inset), so adjacent session blocks read as separate without
-                  the restless full-width line grid the group had before. */}
-                      {index > 0 ? <View style={styles.sessionDivider} /> : null}
-                      <SessionRow
-                        session={session}
-                        dragHandleRef={handle}
-                        dragIssueRef={issue}
-                        dragMarkersRef={markers}
-                        reorderable={sessionReordering}
-                        interactionsLocked={reordering}
-                        {...rowCallbacks.get(session.sessionId)!}
-                        unread={unread.has(session.sessionId)}
-                        previewActive={previewUrls.has(session.sessionId)}
-                        previewPublic={publicPreviews.has(session.sessionId)}
-                        previewUrl={previewUrls.get(session.sessionId) ?? null}
-                        repo={group.repo}
-                        projectKind={group.project?.kind}
-                        selected={selectedId === session.sessionId}
-                        renaming={renamingId === session.sessionId}
-                      />
-                    </Fragment>
-                  )}
-                </SessionDragSlot>
-              ))}
-            </View>
-          </ProjectSessionsCollapse>
+          <ProjectSessionsCollapse collapsed={collapsed}>{sessionRows}</ProjectSessionsCollapse>
         ) : null}
       </Reanimated.View>
     </Reanimated.View>
   );
-}
+});
 
 // Delete is destructive + irreversible (drops history, removes the worktree), so
 // confirm with a native alert before firing. Called from the rename modal (opened

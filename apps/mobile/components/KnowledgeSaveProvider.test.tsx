@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import ts from 'typescript';
 import { act, render } from '@testing-library/react-native';
 import type { Row } from '@verity/mobile';
 import { useContext, type ContextType } from 'react';
@@ -70,9 +71,51 @@ it('uses the stable provider around the chat list instead of recreating its cont
   const source = readFileSync(join(__dirname, '../app/session/[id].tsx'), 'utf8');
   // An isolated provider test would stay green if the chat switched back to its
   // own inline value, silently restoring the expensive context propagation.
-  expect(source).toMatch(
-    /<KnowledgeSaveProvider\b[^>]*>[\s\S]*?<FlashList\b[\s\S]*?<\/KnowledgeSaveProvider>/,
+  const ast = ts.createSourceFile(
+    'session.tsx',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
   );
+  const descendants = (node: ts.Node): ts.Node[] => {
+    const result: ts.Node[] = [];
+    node.forEachChild((child) => {
+      result.push(child, ...descendants(child));
+    });
+    return result;
+  };
+  const nodes = descendants(ast);
+  const isList = (node: ts.Node) =>
+    ts.isJsxSelfClosingElement(node) && node.tagName.getText(ast) === 'FlashList';
+  const listVariables = nodes
+    .filter(ts.isVariableDeclaration)
+    .filter(
+      (node) =>
+        node.initializer &&
+        ts.isIdentifier(node.name) &&
+        ts.isCallExpression(node.initializer) &&
+        node.initializer.expression.getText(ast) === 'useMemo' &&
+        descendants(node.initializer).some(isList),
+    )
+    .map((node) => node.name.getText(ast));
+  const providers = nodes
+    .filter(ts.isJsxElement)
+    .filter((node) => node.openingElement.tagName.getText(ast) === 'KnowledgeSaveProvider');
+  // Follow the memoized element into its actual JSX parent: its declaration sits
+  // outside the provider, but context is determined where the element is rendered.
+  expect(
+    providers.some((provider) =>
+      descendants(provider).some(
+        (node) =>
+          isList(node) ||
+          (ts.isJsxExpression(node) &&
+            node.expression &&
+            ts.isIdentifier(node.expression) &&
+            listVariables.includes(node.expression.text)),
+      ),
+    ),
+  ).toBe(true);
   expect(source).not.toMatch(/<KnowledgeSaveContext\.Provider\b/);
   expect(source).not.toMatch(/const KnowledgeSaveContext\s*=/);
 });
