@@ -6,8 +6,8 @@ Scope: this is the **server**-level settings screen. Per-project configuration (
 monitors/schedules, Doppler binding) lives in the project screen — see the companion
 [`project-screen-redesign.md`](./project-screen-redesign.md).
 
-This spec defers to [`design-language.md`](./design-language.md) for the status pill, the
-auto-save/interaction model, the wording glossary, and the credential-derivation pattern. It
+This spec defers to [`design-system.md`](./design-system.md) for appearance, status intents,
+the auto-save/interaction model, the wording glossary, and the credential-derivation pattern. It
 restates none of those; it owns only what is server-specific.
 
 This spec replaces the current server-level Settings screen. It is the product of a
@@ -40,7 +40,7 @@ review confirmed:
 
 ## 2. Principles
 
-1. **One honest status model.** Green = works · Himbeere/raspberry = needs setup ·
+1. **One honest status model.** Success = works · attention = needs setup ·
    muted grey text = optional. Meaning never conveyed by colour alone.
 2. **Auto-save, no Save button. [decided]** Every change persists on its own; the screen
    never batches edits behind a Save gate.
@@ -54,7 +54,7 @@ review confirmed:
 
 ## 3. Layout
 
-Legend: `[▸]/[▾]` disclosure · `●` status pill · `‹grey›` muted detail.
+Legend: `[▸]/[▾]` disclosure · `●` status tag · `‹grey›` muted detail.
 
 ### Header — actionable setup checklist
 
@@ -71,8 +71,8 @@ Legend: `[▸]/[▾]` disclosure · `●` status pill · `‹grey›` muted deta
   each deep-linking (scroll-to) its card.
 - Required set: **secret store unlocked · GitHub repository access connected · verified commits
   ready**. Doppler and AI logins are **optional** → excluded from the count.
-- Computed by **one pure, unit-tested helper** from the *same booleans* the per-card pills
-  use, so header and pills can never disagree. **Not** derived from `onboarding.nextStep`
+- Computed by **one pure, unit-tested helper** from the *same booleans* the per-card statuses
+  use, so header and statuses can never disagree. **Not** derived from `onboarding.nextStep`
   (that signal is broker-blind and includes non-settings steps).
 - On settings-fetch failure: `Couldn't load settings — Retry`, **never** `0 to do`.
 - `accessibilityRole="header"`; count changes announced via a live region. `All set ✓`
@@ -164,7 +164,7 @@ CONNECTED SERVICES
 ┌───────────────────────────────────────┐
 │  AI backends                           │
 │  ‹Claude & Codex subscriptions›        │
-│  Claude                    ✓ Connected │   per-backend row: own pill,
+│  Claude                    ✓ Connected │   per-backend row: own status,
 │  ▭ Re-login   ▭ Logout                 │   own Re-login/Logout, full
 │  ────────────────────────────────────  │   device-code / failed / restart flow
 │  Codex                     ✓ Connected │
@@ -180,7 +180,7 @@ CONNECTED SERVICES
 ```
 
 - Claude + Codex share **one card** with a divider (were two near-identical panels), but
-  each keeps its **own** state pill and Re-login/Logout — no shared summary pill.
+  each keeps its **own** status tag and Re-login/Logout — no shared summary status.
 - When the server manages **no** secret store: show an explanatory
   `This server doesn't manage a secret store` line rather than letting the credential cards
   silently vanish.
@@ -191,7 +191,7 @@ CONNECTED SERVICES
 
 This group contains the Server self-update panel and reprovision-all. Sandbox update state is
 reported, not configured: see **Sandbox update stuck** in
-[`design-language.md`](./design-language.md#wording-glossary). There are no server-wide Sandbox
+[`design-system.md`](./design-system.md#11-wording). There are no server-wide Sandbox
 update-policy controls.
 
 ### Footer
@@ -215,7 +215,7 @@ No Save/Reset bar. Persistence is per-change:
 - Saves are partial `PATCH /settings` (already partial-friendly via `patchFromDraft` /
   `secretPatchFromDraft`) — send only the changed field.
 - **Errors are per-field and inline.** A sealed-store `503` on a secret field →
-  `Unlock the secret store first` under that field, value reverts. No floating error bar.
+  `Unlock the secret store first` under that field; revert the entered secret as specified by the shared sealed-store policy. No floating error bar.
 - No global "Reset" — re-editing a field is the undo. (A per-field revert affordance is
   optional polish, not v1.)
 
@@ -223,24 +223,12 @@ No Save/Reset bar. Persistence is per-change:
 
 ## 5. Status system
 
-One pill component, driven by an intent — the **word is always rendered in `text`/`textMuted`
-colour at ≥ 4.5:1** and carries a **leading glyph**; the tone only drives dot/border/background.
+Status appearance follows [the design system's shared status component](./design-system.md#54-status).
+Intents and reserved labels follow [Status intents](./design-system.md#8-status-intents)
+and [Wording](./design-system.md#11-wording). This screen defines no separate palette,
+glyph policy, or status component.
 
-| Intent | Colour token | Glyph | Example labels |
-| --- | --- | --- | --- |
-| Ready / done | `tone.done` (green) `#3aa657` / `#28e6a4` | ✓ | `Signing ready`, `Connected`, `Unlocked` |
-| Needs setup | `tone.danger` (**Himbeere**) `#d84f74` / `#ff5c8a` | ! | `Needs setup` |
-| Optional / empty | muted `textMuted` detail text, **no pill** | – | `Optional`, `Not configured` |
-| Transient / in progress | neutral, no tone | spinner | `Saving…`, `Checking`, `Reprovisioning 2/5` |
-
-- **Amber (`tone.attention`) is retired from this screen. [decided]** It fails WCAG 1.4.3
-  in light (`#e8a33d` ≈ 2.2:1) and in dark mode was set to the exact accent magenta
-  (`#ff35da == accent`), making "act now" indistinguishable from decorative chrome.
-- **Himbeere for "needs setup". [decided]** Distinct from the magenta accent, respects the
-  "no orange" brand preference, one token for both themes. It also serves danger/destructive
-  buttons (Logout, Reprovision) — acceptable because those are **buttons**, needs-setup is a
-  **status pill**; context and the glyph+word redundancy disambiguate.
-- Retires `Missing` / `Not set` / `0/4 set` / `Incomplete · N/6`.
+Retire `Missing`, `Not set`, `0/4 set`, and `Incomplete · N/6`.
 
 ---
 
@@ -250,15 +238,15 @@ Replaces the path-count `2/6` pill. Derivable **today, with zero server change**
 uses `resolveSigningPrivateKey`'s own inputs:
 
 ```
-green "Signing ready" · "Commits will be signed"
+ready "Signing ready" · "Commits will be signed"
    when  gitSshPrivateKeyConfigured  ||  trimOrNull(gitSshPrivateKeyPath)
 else
-   himbeer "Needs setup" · "No signing method configured"
+   needsSetup "Needs setup" · "No signing method configured"
 ```
 
-- The pill **never** says `broker`, `key file`, or `verified` — the client cannot observe
+- The status **never** says `broker`, `key file`, or `verified` — the client cannot observe
   those. It asserts only *that* commits will be signed, not the mechanism.
-- Do **not** bind the pill to `GET /settings/signing-key.configured` — that ORs
+- Do **not** bind the status to `GET /settings/signing-key.configured` — that ORs
   `publicKey !== null` and can paint a false green.
 - Identity (name/email) is evaluated **separately** from signing.
 
@@ -279,7 +267,8 @@ State machine:
 - **running** — `Reprovisioning X/N…`.
 - **done with partial failure** — list failed containers + `Retry failed` only.
 
-Per design-language.md's single destructive-confirmation policy: every container recreation
+Per the design system's single
+[destructive-confirmation policy](./design-system.md#destructive-action-confirmation-one-policy): every container recreation
 (Reprovision here, and Update sandbox on the project) is confirmed, while a GitHub-token
 refresh and dev-server start / stop / restart are **not** destructive and need no confirmation.
 
@@ -288,7 +277,7 @@ refresh and dev-server start / stop / restart are **not** destructive and need n
 ## 8. Accessibility  (fold-in, not optional)
 
 - Explicit `accessibilityLabel` on every `TextInput`.
-- `accessibilityRole`/`State` on pills, disclosures, actions, and the write-only Doppler row.
+- `accessibilityRole`/`State` on status indicators, disclosures, actions, and the write-only Doppler row.
 - Live-region announcements for save state, reprovision progress, and `Copied`.
 - Per-group loading **skeletons** (no full-page spinner, no `0 to do` during load);
   distinguish `couldn't load` from `loaded-and-empty`.
@@ -302,8 +291,8 @@ refresh and dev-server start / stop / restart are **not** destructive and need n
 
 | # | Change | Effort |
 | --- | --- | --- |
-| 1 | `2/6` → green/himbeer from `gitSshPrivateKeyConfigured`; copy "Commits will be signed" / "No signing method configured" | quick-win |
-| 2 | Adopt the shared [`apps/mobile/components/StatusPill.tsx`](../apps/mobile/components/StatusPill.tsx) (word in text colour ≥ 4.5:1 + glyph); retire amber; drop the dark-mode magenta collision | quick-win |
+| 1 | `2/6` → `ready` / `needsSetup` from `gitSshPrivateKeyConfigured`; copy "Commits will be signed" / "No signing method configured" | quick-win |
+| 2 | Adopt the [shared status component](./design-system.md#54-status) and its four intents; retire the legacy status palette and bordered pills | quick-win |
 | 3 | Regroup flat ScrollView into 3 sections; combine GitHub access + verified commits; version → footer | medium |
 | 4 | Auto-save: text/secret on blur, per-field feedback; remove Save/Reset bar | medium |
 | 5 | Header as tappable required-items checklist from one tested helper; suppress count on load-failure | medium |

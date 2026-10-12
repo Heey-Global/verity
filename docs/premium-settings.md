@@ -3,7 +3,7 @@
 Status: implemented · Targets: `apps/mobile/app/settings/premium.tsx`,
 `apps/mobile/app/settings/diagnostics.tsx`, server-side feature switches.
 
-Defers to [`design-language.md`](./design-language.md) for auto-save and the glossary. The
+Defers to [`design-system.md`](./design-system.md) for appearance, auto-save and the glossary. The
 mockup is [`assets/premium/mockup.html`](assets/premium/mockup.html) (open it in a browser;
 it is the editable source, one phone per state).
 
