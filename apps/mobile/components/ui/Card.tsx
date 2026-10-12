@@ -17,13 +17,24 @@ export function Card({
   children,
   selected = false,
   muted = false,
+  flush = false,
 }: {
   children: ReactNode;
   selected?: boolean;
   muted?: boolean;
+  /** For a card that holds a single Row or ToggleRow: the row brings its own
+   *  padding and fills the card, so the card adds none. */
+  flush?: boolean;
 }) {
   return (
-    <View style={[styles.card, selected ? styles.cardSelected : null, muted ? styles.muted : null]}>
+    <View
+      style={[
+        styles.card,
+        flush ? styles.cardFlush : null,
+        selected ? styles.cardSelected : null,
+        muted ? styles.muted : null,
+      ]}
+    >
       {children}
     </View>
   );
@@ -49,6 +60,10 @@ export function Group({ children }: { children: ReactNode }) {
 }
 
 type Leading = { icon: IconName } | { dot: StatusIntent };
+
+// Rows already warned about a button inside a pressable row, so a list that
+// re-renders often warns once per row instead of on every render.
+const warnedRows = new Set<string>();
 
 /**
  * One row: optional leading icon tile or status dot, a title with at most one
@@ -83,8 +98,10 @@ export function Row({
     process.env.NODE_ENV !== 'production' &&
     onPress !== undefined &&
     isValidElement(trailing) &&
-    trailing.type === Button
+    trailing.type === Button &&
+    !warnedRows.has(title)
   ) {
+    warnedRows.add(title);
     console.warn(
       `Row "${title}": a button inside a pressable row cannot be reached by VoiceOver; ` +
         'drop onPress or move the action out of the row.',
@@ -161,7 +178,9 @@ export function ToggleRow({
         title={title}
         subtitle={subtitle}
         leading={leading}
-        trailing={<Toggle value={value} disabled={disabled} switching={switching} />}
+        // The row already dims as a whole when disabled; dimming the track
+        // again would leave the switch barely visible.
+        trailing={<Toggle value={value} switching={switching} />}
         chevron={false}
       />
     </Pressable>
@@ -245,6 +264,7 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
   },
+  cardFlush: { paddingVertical: 0, paddingHorizontal: 0 },
   cardSelected: {
     borderColor: theme.colors.action,
     shadowColor: theme.colors.action,
@@ -259,7 +279,10 @@ const styles = StyleSheet.create((theme) => ({
     overflow: 'hidden',
   },
   divider: { height: 1, backgroundColor: theme.colors.border },
+  // Rows fill their container, so a row inside a card spans the card's width.
   row: {
+    flexGrow: 1,
+    alignSelf: 'stretch',
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.md,

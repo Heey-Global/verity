@@ -118,7 +118,7 @@ export default function DesignSystemCatalog() {
           </View>
           <StatusTag intent="ready" label="Active" />
         </Card>
-        <Card>
+        <Card flush>
           <ToggleRow
             title="Online sharing"
             subtitle="Preview links over the internet"
@@ -126,7 +126,7 @@ export default function DesignSystemCatalog() {
             onValueChange={setSharing}
           />
         </Card>
-        <Card>
+        <Card flush>
           <ToggleRow
             title="Remote access"
             subtitle={
