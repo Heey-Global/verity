@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.68.0](https://github.com/Heey-Global/verity/compare/mobile-v1.67.0...mobile-v1.68.0) (2026-10-12)
+
+
+### Features
+
+* **mobile:** add the design-system building blocks ([#1542](https://github.com/Heey-Global/verity/issues/1542)) ([4afbb49](https://github.com/Heey-Global/verity/commit/4afbb49b81ed4bca6d10fc2ed72cf85323ac6592))
+* **mobile:** adopt the design-system palette ([#1535](https://github.com/Heey-Global/verity/issues/1535)) ([7bc0fe5](https://github.com/Heey-Global/verity/commit/7bc0fe5844eb6d02a68fda0c5335ccc23c82e226))
+* **mobile:** set type in Inter with the design-system type styles ([#1536](https://github.com/Heey-Global/verity/issues/1536)) ([5b00966](https://github.com/Heey-Global/verity/commit/5b00966a6355c5095574da021cf38795136f9e7c))
+
+
+### Bug Fixes
+
+* **diagnostics:** simplify recording controls and retain offline evidence ([#1544](https://github.com/Heey-Global/verity/issues/1544)) ([c10c90e](https://github.com/Heey-Global/verity/commit/c10c90eef54fdd30e3c7f82a5455622a6514a02b))
+* **mobile:** avoid direct request scheduling waits ([#1541](https://github.com/Heey-Global/verity/issues/1541)) ([7c25425](https://github.com/Heey-Global/verity/commit/7c25425aa2bde8249fe023b4a64c6b309672182b))
+
 ## [1.67.0](https://github.com/Heey-Global/verity/compare/mobile-v1.66.0...mobile-v1.67.0) (2026-10-11)
 
 
