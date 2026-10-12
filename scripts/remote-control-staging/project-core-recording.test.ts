@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { recordingTransportState } from '../../packages/server/src/recording-transport-state.js';
 import { RemoteReturnPathDiagnostics } from '../../packages/server/src/remote-return-path-diagnostics.js';
 import { projectCoreRecording, MAX_INPUT_BYTES } from './project-core-recording.mjs';
 
-function emittedSummary() {
+function emittedSummary(): Record<string, unknown> & {
+  transport: ReturnType<typeof recordingTransportState>;
+} {
   const recorder = new RemoteReturnPathDiagnostics('test-session');
   recorder.record(
     'send',
@@ -18,7 +21,8 @@ function emittedSummary() {
     42,
     10,
   );
-  return recorder.exportSummary()!;
+  recorder.record('close_requested', 'observed');
+  return { ...recorder.exportSummary()!, transport: recordingTransportState(undefined) };
 }
 
 describe('Core recording projection', () => {
@@ -50,6 +54,8 @@ describe('Core recording projection', () => {
     const injected = {
       ...record,
       authorization: secret,
+      transport: { ...record.transport, payload: secret, remoteAddress: secret },
+      lastCloseRequest: { eventOrder: 3, elapsedMs: 1, reason: secret },
       streams: streams.map((stream) => ({
         ...stream,
         payload: secret,
@@ -77,6 +83,23 @@ describe('Core recording projection', () => {
       ignoredLines: 1,
       complete: false,
     });
+  });
+
+  it('accepts older summaries and rejects malformed transport observations', () => {
+    const { transport, lastCloseRequest, ...legacy } = emittedSummary();
+    expect(projectCoreRecording(JSON.stringify(legacy)).records).toEqual([legacy]);
+    expect(lastCloseRequest).not.toBeNull();
+    for (const invalid of [
+      { receiverState: 7 },
+      { socketBytesRead: -1 },
+      { socketPaused: 'private' },
+    ]) {
+      expect(
+        projectCoreRecording(
+          JSON.stringify({ ...emittedSummary(), transport: { ...transport, ...invalid } }),
+        ).coverage.rejectedRecords,
+      ).toBe(1);
+    }
   });
 
   it('bounds input and rejects unsupported schemas', () => {
