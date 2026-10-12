@@ -4,6 +4,7 @@ import {
   Animated,
   Modal,
   PanResponder,
+  Platform,
   Pressable,
   ScrollView,
   Text,
@@ -57,13 +58,22 @@ export function Sheet({
       onPanResponderMove: (_, gesture) => drag.setValue(Math.max(0, gesture.dy)),
       onPanResponderRelease: (_, gesture) => {
         if (gesture.dy > DISMISS_DISTANCE) closeRef.current();
-        Animated.spring(drag, { toValue: 0, useNativeDriver: true }).start();
+        Animated.spring(drag, { toValue: 0, useNativeDriver: Platform.OS !== 'web' }).start();
       },
     }),
   ).current;
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={close}>
+    // On Android a Modal is its own window; keyboard-controller only receives
+    // the keyboard's insets there when the window draws behind the system bars.
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={close}
+      statusBarTranslucent
+      navigationBarTranslucent
+    >
       <Pressable
         style={styles.scrim}
         onPress={close}

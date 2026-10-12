@@ -4,7 +4,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../Icon';
 import { Dot, type StatusIntent } from './Status';
-import { Button } from './Button';
+import { Button, IconButton } from './Button';
 import { Toggle } from './Toggle';
 import { tint } from './tint';
 
@@ -98,7 +98,7 @@ export function Row({
     process.env.NODE_ENV !== 'production' &&
     onPress !== undefined &&
     isValidElement(trailing) &&
-    trailing.type === Button &&
+    (trailing.type === Button || trailing.type === IconButton) &&
     !warnedRows.has(title)
   ) {
     warnedRows.add(title);

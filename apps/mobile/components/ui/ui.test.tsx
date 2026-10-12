@@ -191,8 +191,11 @@ describe('ConfirmSheet', () => {
     renderSheet(onConfirm);
     // The Button component's own handler, called twice without a render between.
     const press = screen.UNSAFE_getByProps({ label: 'Turn off' }).props.onPress as () => void;
-    press();
-    press();
+    // One act(): both taps land before React renders again.
+    act(() => {
+      press();
+      press();
+    });
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
