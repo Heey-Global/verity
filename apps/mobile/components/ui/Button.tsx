@@ -125,7 +125,9 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: 'transparent',
   },
   large: { minHeight: 48, paddingHorizontal: theme.spacing.lg + theme.spacing.xs },
-  compact: { minHeight: 36, paddingHorizontal: theme.spacing.md + 2, alignSelf: 'flex-start' },
+  // No alignSelf: in a row the parent centers it; in a column, place it in a row
+  // to keep it as wide as its label.
+  compact: { minHeight: 36, paddingHorizontal: theme.spacing.md + 2 },
   fullWidth: { alignSelf: 'stretch' },
   primary: {
     backgroundColor: tint(theme.colors.action, 'fill'),

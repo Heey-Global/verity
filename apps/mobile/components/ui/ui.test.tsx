@@ -117,8 +117,6 @@ describe('TextField', () => {
     ).toBeOnTheScreen();
   });
 
-  // A subscription key offered to the password manager ends up stored as a
-  // password; the platform at least has to be told not to.
   // Autocorrect rewrites keys and addresses; it must stay on for prose.
   it('turns off autocorrect only for literal input', () => {
     render(
@@ -131,12 +129,15 @@ describe('TextField', () => {
     expect(screen.getByLabelText('Server address').props.autoCorrect).toBe(false);
   });
 
+  // A subscription key offered to the password manager ends up stored as a
+  // password; the platform at least has to be told not to.
   it('masks a secret, asks the platform to keep it out of autofill and reveals it', () => {
     render(<TextField label="Key" value="secret" onChangeText={jest.fn()} secret />);
     const input = screen.getByLabelText('Key');
     expect(input.props.secureTextEntry).toBe(true);
     expect(input.props.textContentType).toBe('none');
     expect(input.props.autoComplete).toBe('off');
+    expect(input.props.importantForAutofill).toBe('no');
     fireEvent.press(screen.getByRole('button', { name: 'Show Key' }));
     expect(screen.getByLabelText('Key').props.secureTextEntry).toBe(false);
   });

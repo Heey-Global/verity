@@ -103,7 +103,6 @@ function describe(intent: StatusIntent): string {
 
 const styles = StyleSheet.create((theme) => ({
   tag: {
-    alignSelf: 'flex-start',
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: theme.spacing.xs,
     borderRadius: theme.radius.tag,
