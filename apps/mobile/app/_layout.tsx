@@ -36,6 +36,13 @@ import { restoreUnprotectedAuthToken } from '../lib/authToken';
 import { applyStartupUpdate, downloadAppUpdate } from '../lib/automaticUpdates';
 import { getVerityBaseUrl, hydrateVerityBaseUrl } from '../lib/client';
 import { isDemoMode, useDemoRevision } from '../lib/demoMode';
+// One subpath per weight: the package root would pull all eighteen Inter
+// files (about 6 MB) into the bundle, not just the four the theme uses.
+import { Inter_400Regular } from '@expo-google-fonts/inter/400Regular';
+import { Inter_600SemiBold } from '@expo-google-fonts/inter/600SemiBold';
+import { Inter_700Bold } from '@expo-google-fonts/inter/700Bold';
+import { Inter_800ExtraBold } from '@expo-google-fonts/inter/800ExtraBold';
+import { useFonts } from 'expo-font';
 import { adjustFontScale, hydrateFontScale } from '../lib/fontZoom';
 import { prepareInstallationState } from '../lib/installationState';
 import { showsMessageSearch } from '../lib/headerRoutes';
@@ -77,6 +84,15 @@ export default function RootLayout() {
   // doing a biometric prompt here as well causes duplicate Face ID prompts during
   // setup. Restoring an unprotected token raises no prompt and must happen before
   // the first gate check, which routes to /unlock-device whenever it sees none.
+  // Inter (docs/design-system.md § 3). A font that fails to load is not worth a
+  // locked app: text then falls back to the system font and the app continues.
+  const [fontsLoaded, fontError] = useFonts({
+    Inter_400Regular,
+    Inter_600SemiBold,
+    Inter_700Bold,
+    Inter_800ExtraBold,
+  });
+  const fontsReady = fontsLoaded || fontError !== null;
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => {
     let active = true;
@@ -103,7 +119,7 @@ export default function RootLayout() {
     };
   }, []);
 
-  if (!hydrated) {
+  if (!hydrated || !fontsReady) {
     return (
       <GestureHandlerRootView style={{ flex: 1, backgroundColor: theme.colors.background }}>
         <View
@@ -504,8 +520,8 @@ const styles = StyleSheet.create((theme) => ({
   headerBackTitle: {
     flexShrink: 1,
     color: theme.colors.text,
+    fontFamily: theme.fonts.semibold,
     fontSize: theme.text.md,
-    fontWeight: '500',
   },
   headerPressed: {
     opacity: 0.62,
@@ -514,8 +530,7 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     textAlign: 'center',
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '700',
+    ...theme.typography.title,
   },
   headerTitleSettings: {
     flex: 3,
