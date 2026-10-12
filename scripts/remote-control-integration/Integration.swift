@@ -30,8 +30,11 @@ private func runIntegration() async -> Bool {
     exit(1)
   }
   defer { watchdog.cancel() }
+  var stage = "decoder"
+  var outerDiagnostics: CertificatePinDelegate?
   do {
     try runNativeProtocolChecks()
+    stage = "manifest"
     guard let manifestPath = ProcessInfo.processInfo.environment["VERITY_INTEGRATION_MANIFEST"]
     else { throw IntegrationFailure.invalidManifest }
     let manifest = try JSONDecoder().decode(IntegrationManifest.self,
@@ -42,11 +45,13 @@ private func runIntegration() async -> Bool {
     var outerOrigin = URLComponents(url: manifest.dataURL, resolvingAgainstBaseURL: false)!
     outerOrigin.scheme = "https"
     let outerDelegate = try CertificatePinDelegate(pin: manifest.outerPin, origin: outerOrigin.url!)
+    outerDiagnostics = outerDelegate
     let outer = URLSession(configuration: .ephemeral, delegate: outerDelegate, delegateQueue: nil)
     defer { outer.invalidateAndCancel() }
     let tunnel = try RemoteAppTunnel(dataURL: manifest.dataURL, coreURL: coreOrigin, outerSession: outer)
     tunnel.enableDataDiagnostics()
     defer { tunnel.stop() }
+    stage = "attachment"
     let port = try await tunnel.start(ticket: manifest.appTicket, sessionId: manifest.sessionId)
     guard let proxyPort = NWEndpoint.Port(rawValue: UInt16(port)) else { throw IntegrationFailure.receipt }
 
@@ -60,6 +65,7 @@ private func runIntegration() async -> Bool {
       return (URLSession(configuration: config, delegate: delegate, delegateQueue: nil), delegate)
     }
 
+    stage = "health"
     let (healthClient, _) = try client(pin: manifest.corePin)
     let (health, healthResponse) = try await healthClient.data(from: coreOrigin.appendingPathComponent("healthz"))
     healthClient.invalidateAndCancel()
@@ -67,6 +73,7 @@ private func runIntegration() async -> Bool {
     else { throw IntegrationFailure.receipt }
 
     // Separate sessions exercise parallel production streams. HTTP body completion is not a stream half-close assertion.
+    stage = "echo"
     try await withThrowingTaskGroup(of: Void.self) { group in
       for size in [0, 1, 8192, 65536] {
         let (session, _) = try client(pin: manifest.corePin)
@@ -84,6 +91,7 @@ private func runIntegration() async -> Bool {
       try await group.waitForAll()
     }
 
+    stage = "pin_rejection"
     let (wrongPinClient, wrongPinDelegate) = try client(pin: "sha256-" + String(repeating: "A", count: 43))
     defer { wrongPinClient.invalidateAndCancel() }
     var rejected = false
@@ -91,6 +99,7 @@ private func runIntegration() async -> Bool {
     catch { rejected = true }
     guard rejected, wrongPinDelegate.failure == "PIN_MISMATCH" else { throw IntegrationFailure.pin }
 
+    stage = "shutdown"
     tunnel.stop()
     tunnel.stop()
     guard let export = tunnel.exportDataDiagnostics(),
@@ -107,8 +116,14 @@ private func runIntegration() async -> Bool {
     persistIntegrationResult("{\"success\":true,\"checks\":[\"production_decoder\",\"app_attached\",\"health_receipt\",\"parallel_exact_echo\",\"core_pin_rejection\",\"ordered_idempotent_stop\"]}")
     return true
   } catch {
-    // Foundation errors can contain URLs and handshake input; export only a fixed classification.
-    persistIntegrationResult("{\"success\":false,\"error\":\"native_integration_failed\"}")
+    // Reuse the production allowlist; never serialize NSError descriptions or userInfo.
+    let result: [String: Any] = [
+      "success": false, "error": "native_integration_failed", "stage": stage,
+      "transport": CertificatePinDelegate.transportFailure(error: error as NSError,
+        phase: outerDiagnostics?.phase ?? "NO_AUTH_CHALLENGE"),
+    ]
+    if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]),
+      let json = String(data: data, encoding: .utf8) { persistIntegrationResult(json) }
     return false
   }
 }

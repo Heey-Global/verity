@@ -183,6 +183,11 @@ jobs:
             scripts/remote-control-tunnel/Diagnostics.swift -o "$RUNNER_TEMP/data-diagnostics-test"
           "$RUNNER_TEMP/data-diagnostics-test"
 
+      - name: Verify native protocol guard detects Boolean mutation
+        if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.tunnel == 'true'
+        timeout-minutes: 6
+        run: bash scripts/remote-control-tunnel/verify-native-protocol.sh
+
       - name: Verify enrollment reference model and macOS Keychain probe
         if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.enrollment == 'true'
         timeout-minutes: 5
