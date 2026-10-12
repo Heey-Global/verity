@@ -80,6 +80,7 @@ function acpSpawner(
     promptFailure?: string;
     capacityFailures?: number;
     capacityPrefix?: string;
+    splitCapacityPrefix?: boolean;
     capacityTool?: boolean;
     processExit?: { code: number | null; signal: NodeJS.Signals | null };
     exitDelayMs?: number;
@@ -276,7 +277,8 @@ function acpSpawner(
                   },
                 });
               for (const text of [
-                `${behavior.capacityPrefix ?? ''}Selected model is at `,
+                ...(behavior.splitCapacityPrefix ? [behavior.capacityPrefix ?? ''] : []),
+                `${behavior.splitCapacityPrefix ? '' : (behavior.capacityPrefix ?? '')}Selected model is at `,
                 'capacity. Please try a different model.',
               ]) {
                 push({
@@ -477,25 +479,32 @@ describe('AcpCodexBackend', () => {
     }
   });
 
-  it('keeps quoted capacity prose as ordinary text without retrying', async () => {
-    const fake = acpSpawner({ capacityFailures: 1, capacityPrefix: 'The provider said: ' });
-    await new AcpCodexBackend().run({
-      store: ctx.store,
-      worktree: '/work',
-      cwd: '/work',
-      prompt: 'Run',
-      spawner: fake.spawner,
-    });
-    expect(fake.writes.filter((entry) => entry.method === 'session/prompt')).toHaveLength(1);
-    const events = await ctx.store.getEvents('codex-session-1');
-    expect(
-      events
-        .filter((event) => event.t === 'text')
-        .map((event) => event.delta)
-        .join(''),
-    ).toContain('The provider said: Selected model is at capacity.');
-    expect(events.some((event) => event.t === 'error')).toBe(false);
-  });
+  it.each([false, true])(
+    'keeps quoted capacity prose without retrying (split prefix: %s)',
+    async (splitCapacityPrefix) => {
+      const fake = acpSpawner({
+        capacityFailures: 1,
+        capacityPrefix: 'The provider said: ',
+        splitCapacityPrefix,
+      });
+      await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        spawner: fake.spawner,
+      });
+      expect(fake.writes.filter((entry) => entry.method === 'session/prompt')).toHaveLength(1);
+      const events = await ctx.store.getEvents('codex-session-1');
+      expect(
+        events
+          .filter((event) => event.t === 'text')
+          .map((event) => event.delta)
+          .join(''),
+      ).toContain('The provider said: Selected model is at capacity.');
+      expect(events.some((event) => event.t === 'error')).toBe(false);
+    },
+  );
 
   it.each([
     { code: 1, signal: null },

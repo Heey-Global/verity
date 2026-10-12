@@ -603,6 +603,7 @@ export async function runAcpTurn(
   const topLevelText = new AcpTextStream();
   const capacityMessage = 'Selected model is at capacity. Please try a different model.';
   let capacityText = '';
+  let capacityProse = false;
   let capacityFailure = false;
   let updateTail: Promise<void> = Promise.resolve();
   let updateError: unknown;
@@ -759,6 +760,11 @@ export async function runAcpTurn(
 
   const onUpdate = async (update: SessionUpdate): Promise<void> => {
     if (stopped) return;
+    if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+      await writeAll(writer, topLevelText.push(capacityText));
+      capacityText = '';
+      capacityProse = false;
+    }
     // The agent switches modes on its own — a model switch that clamps a mode
     // the new model cannot run, an approval Verity answered generically. Its
     // posture is the operator's, not the turn's, so pull it back rather than
@@ -784,7 +790,7 @@ export async function runAcpTurn(
         // coalesce prose used to discard task/compaction boundaries attached to
         // the same message chunk.
         for (const event of adapter.consume(update)) {
-          if (event.t === 'text' && profile.telemetryBackend === 'codex-acp') {
+          if (event.t === 'text' && profile.telemetryBackend === 'codex-acp' && !capacityProse) {
             capacityText += event.delta;
             if (capacityMessage.startsWith(capacityText.trimStart())) continue;
             // Only the adapter's standalone refusal is infrastructure output;
@@ -792,6 +798,8 @@ export async function runAcpTurn(
             if (capacityText.trim() === capacityMessage) continue;
             await writeAll(writer, topLevelText.push(capacityText));
             capacityText = '';
+            // Chunk boundaries must not turn quoted provider text into a refusal.
+            capacityProse = true;
           } else {
             await writeAll(writer, event.t === 'text' ? topLevelText.push(event.delta) : [event]);
           }
@@ -1077,6 +1085,7 @@ export async function runAcpTurn(
           let prompt;
           for (let attempt = 0; ; attempt += 1) {
             capacityText = '';
+            capacityProse = false;
             capacityFailure = false;
             prompt = await agent.request(acp.methods.agent.session.prompt, {
               sessionId: session.sessionId,
