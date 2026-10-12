@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 export const DIAGNOSTICS_CAPABILITY = 'remote-diagnostics-v1';
 export const DIAGNOSTICS_TIMEOUT_MS = 10_000;
-export const DIAGNOSTICS_FRAME_BYTES = 32_768;
+const DIAGNOSTICS_FRAME_BYTES = 32_768;
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const hash = z.string().regex(/^[a-f0-9]{16}$/u);
 const reason = z.enum([
@@ -46,7 +46,7 @@ const stage = z.enum([
 ]);
 // Project known metadata only. Free-form errors, payloads and future fields must
 // never enter the downloadable recording through a control-channel response.
-export const uplinkRecordingEvent = z.object({
+const uplinkRecordingEvent = z.object({
   at: z.string().datetime().optional(),
   event: z.literal('remote.return_path'),
   schemaVersion: z.literal(1),
