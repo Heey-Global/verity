@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.43.2](https://github.com/Heey-Global/verity/compare/v4.43.1...v4.43.2) (2026-10-12)
+
+
+### Bug Fixes
+
+* **session:** read private trusted CLI entries as the agent ([#1563](https://github.com/Heey-Global/verity/issues/1563)) ([7cef184](https://github.com/Heey-Global/verity/commit/7cef1844f6aa7e6d0d2666f81d33d551c8fcd337))
+
 ## [4.43.1](https://github.com/Heey-Global/verity/compare/v4.43.0...v4.43.1) (2026-10-12)
 
 
