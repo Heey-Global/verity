@@ -73,7 +73,7 @@ export function Dot({ intent }: { intent: StatusIntent }) {
   );
 }
 
-/** Plain muted word, with a spinner for `transient`. Announced when it settles. */
+/** Plain muted word, with a spinner for `transient`. */
 export function StatusText({ intent, label }: { intent: StatusIntent; label: string }) {
   const { theme } = useUnistyles();
   return (

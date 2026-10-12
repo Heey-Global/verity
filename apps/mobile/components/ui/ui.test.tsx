@@ -102,8 +102,9 @@ describe('TextField', () => {
     ).toBeOnTheScreen();
   });
 
-  // A subscription key offered to the password manager ends up stored as a password.
-  it('masks a secret, keeps it out of autofill and reveals it on request', () => {
+  // A subscription key offered to the password manager ends up stored as a
+  // password; the platform at least has to be told not to.
+  it('masks a secret, asks the platform to keep it out of autofill and reveals it', () => {
     render(<TextField label="Key" value="secret" onChangeText={jest.fn()} secret />);
     const input = screen.getByLabelText('Key');
     expect(input.props.secureTextEntry).toBe(true);

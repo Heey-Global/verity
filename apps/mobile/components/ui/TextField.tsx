@@ -13,8 +13,8 @@ const MAX_LINES = 6;
  * text in place and explains it in a hint box below — saving the value stays the
  * caller's job and must not happen while `error` is set.
  *
- * `secret` masks the value behind a reveal control and keeps it away from the
- * password manager; `multiline` grows up to six lines.
+ * `secret` masks the value behind a reveal control and asks the platform not to
+ * offer it to the password manager; `multiline` grows up to six lines.
  */
 export function TextField({
   label,
@@ -79,8 +79,9 @@ export function TextField({
           autoCapitalize="none"
           autoCorrect={false}
           spellCheck={false}
-          // A key or token is not an account password: keep it out of autofill
-          // and the password manager's save prompt.
+          // A key or token is not an account password: ask the platform to keep
+          // it out of autofill and the save prompt. This is a hint, not a
+          // guarantee — browsers ignore it on masked inputs.
           {...(secret
             ? {
                 textContentType: 'none' as const,
@@ -166,11 +167,14 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     minHeight: 44,
     color: theme.colors.text,
-    ...theme.typography.body,
+    fontFamily: theme.typography.body.fontFamily,
+    fontSize: theme.typography.body.fontSize,
+    // No lineHeight on a single line: iOS would push text and caret off center.
     // TextInput adds its own vertical padding on Android; the field owns spacing.
     paddingVertical: 0,
   },
   inputMulti: {
+    lineHeight: theme.typography.body.lineHeight,
     minHeight: theme.typography.body.lineHeight * 2,
     maxHeight: theme.typography.body.lineHeight * MAX_LINES,
     textAlignVertical: 'top',

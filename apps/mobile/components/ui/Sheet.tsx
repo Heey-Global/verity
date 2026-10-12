@@ -5,6 +5,7 @@ import {
   Modal,
   PanResponder,
   Pressable,
+  ScrollView,
   Text,
   View,
 } from 'react-native';
@@ -100,7 +101,16 @@ export function Sheet({
               ) : null}
             </View>
           </View>
-          <View style={styles.content}>{children}</View>
+          {/* Tall content scrolls so the footer action stays reachable, also
+              above the keyboard. */}
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.content}
+            keyboardShouldPersistTaps="handled"
+            bounces={false}
+          >
+            {children}
+          </ScrollView>
           {footer !== undefined ? <View style={styles.footer}>{footer}</View> : null}
         </Animated.View>
       </KeyboardAvoidingView>
@@ -228,6 +238,7 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     backgroundColor: theme.colors.surfaceAlt,
   },
+  scroll: { flexGrow: 0, flexShrink: 1 },
   content: {
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.md,
