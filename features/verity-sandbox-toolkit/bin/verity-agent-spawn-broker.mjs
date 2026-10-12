@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
+import {
+  createManagedSecretServers,
+  stopTaggedManagedPids,
+} from './verity-managed-secret-servers.mjs';
 import { createHash } from 'node:crypto';
 import { createConnection, createServer } from 'node:net';
 import {
@@ -211,7 +215,11 @@ process.stdin.on('end', async () => {
   try {
     const { operation, path } = JSON.parse(input);
     let value;
-    if (operation === 'realpath' || operation === 'readdir') value = await fs[operation](path);
+    if (operation === 'managedStop') {
+      const { stopTaggedManagedPids } = await import('/usr/local/bin/verity-managed-secret-servers.mjs');
+      const [id, signal] = path.split(':');
+      value = await stopTaggedManagedPids(id, signal);
+    } else if (operation === 'realpath' || operation === 'readdir') value = await fs[operation](path);
     else if (operation === 'lstat') {
       const stat = await fs.lstat(path);
       value = { uid: stat.uid, mode: stat.mode, size: stat.size,
@@ -239,6 +247,10 @@ async function agentWorkspaceRead(operation, path, options) {
       : validateIdentity(options);
   let value;
   if (options.enforceRoot === false || (process.getuid?.() === uid && process.getgid?.() === gid)) {
+    if (operation === 'managedStop') {
+      const [id, signal] = path.split(':');
+      return await stopTaggedManagedPids(id, signal);
+    }
     if (operation === 'readEntry') {
       const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
@@ -2543,6 +2555,8 @@ export async function runAgentSpawnBroker(options = {}) {
       `verity-agent-spawn-broker: worktree entry scripts are disabled: ${scriptIsolation.reason ?? 'script sandbox unavailable'}\n`,
     );
   }
+  const identity = validateIdentity(options);
+  const managedRoots = await resolveAgentWorktreeRoots(options);
   const lock = await acquireLock(join(controlDir, 'agent-spawn-broker.lock'));
   await removeLegacyTrustedCliSecretFiles(options);
   const socketPath = join(controlDir, 'agent-spawn-broker.sock');
@@ -2575,6 +2589,17 @@ export async function runAgentSpawnBroker(options = {}) {
       releaseSlot();
     };
   };
+  const managedSecrets = createManagedSecretServers({
+    uid: identity.uid,
+    gid: identity.gid,
+    privilegeDropFlags: privilegeDropFlags(options.dockerGid, options.runnerGid),
+    setprivPath: options.setprivPath,
+    env: options.env,
+    spawnChild,
+    realpath: (path) => agentWorkspaceRead('realpath', path, options),
+    stopTagged: (id, signal) => agentWorkspaceRead('managedStop', id + ':' + signal, options),
+    allowedPath: (path) => withinAgentWorktreeRoots(path, managedRoots),
+  });
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.once('close', () => sockets.delete(socket));
@@ -2630,6 +2655,20 @@ export async function runAgentSpawnBroker(options = {}) {
           return;
         }
         if (closing) throw new Error('agent spawn broker is shutting down');
+        if (
+          isObject(raw) &&
+          typeof raw.kind === 'string' &&
+          raw.kind.startsWith('managed-secret-')
+        ) {
+          protocolFailed = true;
+          try {
+            send(socket, { ok: true, ...(await managedSecrets.handle(raw)) });
+          } catch {
+            send(socket, { ok: false, error: 'Managed secret server request failed.' });
+          }
+          socket.end();
+          return;
+        }
         if (isObject(raw) && raw.kind === 'spawn-trusted-cli') {
           trustedCliFailurePhase = 'validation';
         }
@@ -2895,6 +2934,7 @@ export async function runAgentSpawnBroker(options = {}) {
     socketPath,
     async close() {
       closing = true;
+      await managedSecrets.close();
       const running = [...children.values()];
       for (const record of running) record.stop('SIGTERM');
       const escalation = setTimeout(() => {

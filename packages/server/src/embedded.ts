@@ -1,3 +1,4 @@
+import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
 import { CoordinatedRecordingManager } from './coordinated-recording.js';
 import { ReturnPathActivation } from './remote-return-path-activation.js';
 import { returnPathSelection } from './remote-return-path-diagnostics.js';
@@ -3812,7 +3813,14 @@ export async function buildEmbeddedServer(
     managedDevServerManager = new ManagedDevServerManager({
       store: eventStore,
       canSupervise: () => previewRecoveryReady && !secretCipher.isSealed(),
+      resolveSecrets: createManagedDevServerSecretResolver({
+        getProjectBinding: getBrokeredProjectBinding,
+        resolveSecret: resolveBrokerDopplerSecret,
+      }),
       runtime: new DockerProjectRuntime({
+        isSecretManagedServer: async (id) =>
+          ((await eventStore.managedDevServers.getInstance(id))?.lastRunSecretBindings.length ??
+            0) > 0,
         resolveUser: resolvePreviewUser,
         dockerBaseUrl: config.dockerBaseUrl,
       }),

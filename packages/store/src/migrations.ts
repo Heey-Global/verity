@@ -4210,6 +4210,24 @@ migrations['0155_local_preview_shares'] = {
   },
 };
 
+migrations['0156_managed_dev_server_secret_bindings'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table managed_dev_servers
+      add column secret_bindings jsonb not null default '[]'::jsonb,
+      add column approved_secret_bindings jsonb not null default '[]'::jsonb`.execute(db);
+    await sql`alter table managed_dev_server_instances
+      add column last_run_secret_bindings jsonb not null default '[]'::jsonb`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table managed_dev_server_instances drop column last_run_secret_bindings`.execute(
+      db,
+    );
+    await sql`alter table managed_dev_servers drop column secret_bindings, drop column approved_secret_bindings`.execute(
+      db,
+    );
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

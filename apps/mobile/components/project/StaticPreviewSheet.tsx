@@ -315,7 +315,7 @@ export function StaticPreviewSheet({
         mode === 'local' ? `Allow ${server.name} locally?` : `Share ${server.name} online?`,
         `The agent set this server up. It runs:\n\n${server.command}${
           server.workdir !== '.' ? `\n\nin ${server.workdir}` : ''
-        }\n\n${
+        }${server.secretBindings?.length ? `\n\nSecrets: ${server.secretBindings.map((binding) => `${binding.secretAlias} → ${binding.env}`).join(', ')}` : ''}\n\n${
           mode === 'local'
             ? 'Anyone on your network can open it without a PIN while it runs.'
             : 'Anyone with the public link and its PIN can open it while it runs.'
@@ -367,7 +367,11 @@ export function StaticPreviewSheet({
     await client.approveManagedDevServer(
       sessionId,
       server.id,
-      { command: server.command, workdir: server.workdir },
+      {
+        command: server.command,
+        workdir: server.workdir,
+        ...(server.secretBindings?.length ? { secretBindings: server.secretBindings } : {}),
+      },
       // Approved for a public link only: the server must not also open locally.
       mode === 'online' && server.accessSwitches && !managedLocalOn(server) ? { local: false } : {},
     );

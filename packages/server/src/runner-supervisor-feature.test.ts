@@ -106,6 +106,7 @@ function runAgentSpawnBroker(options: Parameters<typeof runAgentSpawnBrokerRunti
   return runAgentSpawnBrokerRuntime({
     // The helper is not installed on a test host; script-isolation.test.ts owns the probe.
     scriptIsolation: { available: true },
+    worktreeRoot: options.runtimeDir ?? tmpdir(),
     ...options,
     ...testIdentity,
     env: { ...options.env, PATH: options.env?.PATH ?? IMMUTABLE_EXECUTABLE_PATH },
@@ -2675,6 +2676,22 @@ describe('verity-runner supervisor runtime', () => {
     await expect(probeAgentSpawnBroker(runtimeDir)).resolves.toBe(true);
     await broker.close();
     await expect(probeAgentSpawnBroker(runtimeDir, 50)).resolves.toBe(false);
+  });
+
+  it('rejects a missing worktree root before acquiring the broker lock', async () => {
+    await expect(
+      runAgentSpawnBroker({
+        runtimeDir,
+        enforceRoot: false,
+        worktreeRoot: join(runtimeDir, 'missing-worktree'),
+        agentUid: 1000,
+        agentGid: 1000,
+      }),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    // A failed preflight must not strand a FileHandle for garbage collection.
+    await expect(readFile(join(runtimeDir, 'agent-spawn-broker.lock'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
   });
 
   it('executes trusted CLI requests through the agent broker and returns only redacted output', async () => {

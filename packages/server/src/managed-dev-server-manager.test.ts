@@ -26,6 +26,7 @@ function fakeSandbox() {
     command: string;
     workdir: string;
     env: Record<string, string>;
+    secrets?: { env: string; value: string }[];
   }> = [];
   const stop = vi.fn<ManagedDevServerRuntime['stopManagedServer']>(async (_project, instanceId) => {
     alive.set(instanceId, { alive: false, exitCode: 143 });
@@ -1073,4 +1074,94 @@ it('removes network access when repeated external kills exhaust recovery', async
   }
   expect(await instanceOf()).toMatchObject({ state: 'crashed', desired: 'stopped' });
   expect(shares.shares).toHaveLength(0);
+});
+
+describe('managed servers with secret bindings', () => {
+  const secretBindings = [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }];
+  const withResolver = async (
+    resolveSecrets: NonNullable<
+      ConstructorParameters<typeof ManagedDevServerManager>[0]['resolveSecrets']
+    >,
+  ) => {
+    await manager.close();
+    manager = new ManagedDevServerManager({
+      store: ctx.store,
+      runtime: sandbox.runtime,
+      resolveSecrets,
+      networkPorts: [8100, 8101],
+      sandboxWorktree: (_project, worktree) => worktree.replace('/clone', '/work'),
+      now: () => now,
+    });
+  };
+
+  it('requires displayed binding approval for agent starts and resolves fresh values at restart', async () => {
+    const resolveSecrets = vi.fn(async () => [
+      { env: 'API_KEY', value: `synthetic-value-${resolveSecrets.mock.calls.length}` },
+    ]);
+    await withResolver(resolveSecrets);
+    const entry = await manager.add('s1', {
+      name: 'api',
+      command: 'node server.mjs',
+      secretBindings,
+    });
+    await expect(manager.start('s1', 'api', 'agent')).rejects.toThrow('approve');
+    expect(resolveSecrets).not.toHaveBeenCalled();
+    await expect(
+      manager.approve('s1', 'api', { command: entry.command, workdir: '.' }),
+    ).rejects.toThrow('changed');
+    await manager.approve('s1', 'api', { command: entry.command, workdir: '.', secretBindings });
+    await manager.start('s1', 'api', 'agent');
+    expect(resolveSecrets).toHaveBeenCalledWith('p1', secretBindings);
+    expect(sandbox.started[0]!.secrets).toEqual([{ env: 'API_KEY', value: 'synthetic-value-1' }]);
+    expect(sandbox.started[0]!.env).not.toHaveProperty('API_KEY');
+    await manager.restart('s1', 'api', 'agent');
+    expect(sandbox.started[1]!.secrets).toEqual([{ env: 'API_KEY', value: 'synthetic-value-2' }]);
+    const instance = (await ctx.store.managedDevServers.listInstances({ serverId: entry.id }))[0]!;
+    expect(instance.lastRunSecretBindings).toEqual(secretBindings);
+    expect(JSON.stringify(await manager.view('s1'))).not.toContain('synthetic-value');
+  });
+
+  it('never launches a partial secret set or stores resolver diagnostics', async () => {
+    await withResolver(async () => {
+      throw new Error('synthetic-private-value');
+    });
+    const entry = await manager.add('s1', {
+      name: 'api',
+      command: 'node server.mjs',
+      secretBindings,
+    });
+    await manager.approve('s1', 'api', { command: entry.command, workdir: '.', secretBindings });
+    await manager.start('s1', 'api', 'agent');
+    expect(sandbox.started).toHaveLength(0);
+    expect((await instanceOf()).state).toBe('crashed');
+    expect(JSON.stringify(await manager.view('s1'))).not.toContain('synthetic-private-value');
+  });
+
+  it('recovers with the last approved mapping rather than an unapproved edit', async () => {
+    const resolveSecrets = vi.fn(async () => [{ env: 'API_KEY', value: 'synthetic-value' }]);
+    await withResolver(resolveSecrets);
+    const entry = await manager.add('s1', {
+      name: 'api',
+      command: 'node server.mjs',
+      secretBindings,
+    });
+    await manager.approve('s1', 'api', { command: entry.command, workdir: '.', secretBindings });
+    await manager.start('s1', 'api', 'agent');
+    const run = sandbox.started[0]!;
+    sandbox.listen(run.instanceId, Number(run.env.PORT));
+    await manager.tick();
+    await manager.update('s1', 'api', {
+      secretBindings: [{ secretAlias: 'EXPO_TOKEN', env: 'OTHER_KEY' }],
+    });
+    expect((await instanceOf()).restartToApply).toBe(true);
+    sandbox.recreate();
+    now += 6000;
+    await manager.tick();
+    expect(resolveSecrets.mock.calls).toEqual([
+      ['p1', secretBindings],
+      ['p1', secretBindings],
+    ]);
+    expect(sandbox.started[1]!.secrets).toEqual([{ env: 'API_KEY', value: 'synthetic-value' }]);
+    await expect(manager.restart('s1', 'api', 'agent')).rejects.toThrow('approve');
+  });
 });

@@ -1241,3 +1241,24 @@ describe('deploy/bin/verity-compose', () => {
     expect(invocations).not.toContain('up -d verity');
   });
 });
+
+it('installs every local spawn broker module beside the image executable', () => {
+  const broker = readFileSync(
+    'features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs',
+    'utf8',
+  );
+  const dockerfile = readFileSync('deploy/Dockerfile', 'utf8');
+  const installed = new Map(
+    [...dockerfile.matchAll(/install -m [0-7]{4} (\S+) (\S+)/gu)].map((match) => [
+      match[2],
+      match[1],
+    ]),
+  );
+  // Source imports can change without the image's separate installation list changing.
+  for (const match of broker.matchAll(/from ['"]\.\/([^'"]+)['"]/gu)) {
+    const name = match[1]!;
+    expect(installed.get(`/usr/local/bin/${name}`)).toBe(
+      `/opt/verity-features/verity-sandbox-toolkit/bin/${name}`,
+    );
+  }
+});
