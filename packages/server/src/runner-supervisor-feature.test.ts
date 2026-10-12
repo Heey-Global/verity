@@ -1076,7 +1076,12 @@ describe('verity-runner supervisor runtime', () => {
           worktreeRoot: root,
         },
       },
-      { trustedCliEntryScriptDir: join(root, 'snapshots') },
+      {
+        trustedCliEntryScriptDir: join(root, 'snapshots'),
+        enforceRoot: false,
+        agentUid: process.getuid!(),
+        agentGid: process.getgid!(),
+      },
     );
     await writeFile(script, 'echo attacker replacement\n', { mode: 0o644 });
     expect(materialized.args[0]).not.toBe(script);
@@ -1107,7 +1112,12 @@ describe('verity-runner supervisor runtime', () => {
           worktreeRoot: root,
         },
       },
-      { trustedCliEntryScriptDir: join(root, 'snapshots') },
+      {
+        trustedCliEntryScriptDir: join(root, 'snapshots'),
+        enforceRoot: false,
+        agentUid: process.getuid!(),
+        agentGid: process.getgid!(),
+      },
     );
     expect(materialized.entrySandbox).toMatchObject({
       loading: 'dynamic',

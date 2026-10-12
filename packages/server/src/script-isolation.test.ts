@@ -675,7 +675,12 @@ describe('Trusted CLI snapshot permissions', () => {
               sha256: createHash('sha256').update(bytes).digest('hex'),
             },
           },
-          { trustedCliEntryScriptDir: join(root, 'snapshots') },
+          {
+            trustedCliEntryScriptDir: join(root, 'snapshots'),
+            enforceRoot: false,
+            agentUid: process.getuid!(),
+            agentGid: process.getgid!(),
+          },
         );
       } finally {
         process.umask(previous);

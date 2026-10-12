@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import {
   chmod,
@@ -18,6 +18,8 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
+  materializeTrustedCliEntryScript,
+  validateTrustedCliArguments,
   agentLaunchSpec,
   agentSignalTraceSeconds,
   validateAgentSignalTraceLease,
@@ -1656,4 +1658,96 @@ describe('trusted CLI entry-path failure classification', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+});
+
+describe('private trusted CLI workspace reads', () => {
+  it.each(['isolated', 'dynamic'] as const)(
+    'stages %s private entries through the identity reader',
+    async (loading) => {
+      const root = await mkdtemp(join(tmpdir(), 'verity-private-entry-'));
+      const scripts = join(root, 'work', 'scripts');
+      await mkdir(scripts, { recursive: true, mode: 0o700 });
+      const path = join(scripts, 'entry.cjs');
+      const bytes = 'console.log("nonsecret fixture");';
+      await writeFile(path, bytes, { mode: 0o600 });
+      const uid = process.getuid!() || 1000;
+      const gid = process.getgid!() || 1000;
+      // Exercise the subprocess transport without requiring root in the test runner.
+      // This shim checks the full privilege-drop prefix before running the fixed reader.
+      const setprivPath = join(root, 'setpriv');
+      const flags = [`--reuid=${uid}`, `--regid=${gid}`, ...PRIVILEGE_DROP_FLAGS];
+      await writeFile(
+        setprivPath,
+        `#!/bin/sh\n${flags.map((flag) => `[ "$1" = '${flag}' ] || exit 91; shift`).join('\n')}\nexec "$@"\n`,
+        { mode: 0o700 },
+      );
+      const identity = { agentUid: uid, agentGid: gid, setprivPath };
+      const entryScript = {
+        path,
+        projectPath: 'scripts/entry.cjs',
+        worktreeRoot: join(root, 'work'),
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        loading,
+      };
+      const getuid = vi.spyOn(process, 'getuid').mockReturnValue(0);
+      try {
+        await validateTrustedCliArguments(
+          process.execPath,
+          [path],
+          entryScript.worktreeRoot,
+          '/usr/bin:/bin',
+          [],
+          entryScript,
+          identity,
+        );
+        const staged = await materializeTrustedCliEntryScript(
+          { args: [path], cwd: entryScript.worktreeRoot, entryScript },
+          { ...identity, trustedCliEntryScriptDir: join(root, 'snapshots') },
+        );
+        try {
+          expect(await readFile(staged.args[0]!, 'utf8')).toBe(bytes);
+          await writeFile(path, 'changed after approval');
+          await expect(
+            materializeTrustedCliEntryScript(
+              { args: [path], cwd: entryScript.worktreeRoot, entryScript },
+              { ...identity, trustedCliEntryScriptDir: join(root, 'snapshots') },
+            ),
+          ).rejects.toThrow('content hash changed');
+          await rm(path);
+          await symlink(staged.args[0]!, path);
+          await expect(
+            materializeTrustedCliEntryScript(
+              { args: [path], cwd: entryScript.worktreeRoot, entryScript },
+              { ...identity, trustedCliEntryScriptDir: join(root, 'snapshots') },
+            ),
+          ).rejects.toMatchObject({ code: 'ELOOP' });
+          if (loading === 'dynamic') {
+            await rm(path);
+            await writeFile(path, bytes, { mode: 0o600 });
+            // Agent-identity IPC must not introduce traversal components into
+            // the broker's privileged snapshot construction.
+            const responseScript = `let input = ''; process.stdin.on('data', chunk => input += chunk);
+              process.stdin.on('end', () => process.stdout.write(JSON.stringify({ value:
+                JSON.parse(input).operation === 'readEntry' ? '${Buffer.from(bytes).toString('base64')}' : ['../../escape'] })));`;
+            await writeFile(
+              setprivPath,
+              `#!/bin/sh\n${flags.map(() => 'shift').join('\n')}\nexec "$1" -e '${responseScript.replaceAll("'", "'\\''")}'\n`,
+              { mode: 0o700 },
+            );
+            await expect(
+              materializeTrustedCliEntryScript(
+                { args: [path], cwd: entryScript.worktreeRoot, entryScript },
+                { ...identity, trustedCliEntryScriptDir: join(root, 'snapshots') },
+              ),
+            ).rejects.toThrow('invalid workspace directory response');
+          }
+        } finally {
+          await staged.cleanup();
+        }
+      } finally {
+        getuid.mockRestore();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 });
