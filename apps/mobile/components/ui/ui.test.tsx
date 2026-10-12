@@ -159,6 +159,23 @@ describe('TextField', () => {
     render(<TextField label="Private key" value="" onChangeText={jest.fn()} multiline literal />);
     expect(screen.getByLabelText('Private key').props.autoCorrect).toBe(false);
     expect(screen.getByLabelText('Private key').props.autoCapitalize).toBe('none');
+    expect(screen.getByLabelText('Private key').props.spellCheck).toBe(false);
+  });
+
+  // Two fields both labelled "Token" would be indistinguishable to VoiceOver,
+  // including the control that reveals one of them.
+  it('speaks the override label for the field and its reveal control', () => {
+    render(
+      <TextField
+        label="Token"
+        accessibilityLabel="Transcription token"
+        value="t"
+        onChangeText={jest.fn()}
+        secret
+      />,
+    );
+    expect(screen.getByLabelText('Transcription token')).toBeOnTheScreen();
+    expect(screen.getByRole('button', { name: 'Show Transcription token' })).toBeOnTheScreen();
   });
 
   // A subscription key offered to the password manager ends up stored as a
