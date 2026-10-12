@@ -30272,6 +30272,9 @@ async function runAcpTurn(opts, profile) {
   const onUpdate = async (update) => {
     if (stopped)
       return;
+    if (profile.telemetryBackend === "codex-acp" && isAgentContent(update) && capacityText === "") {
+      turnHasAgentContent = true;
+    }
     if ((update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") && capacityText.trim() !== capacityMessage) {
       await writeAll(writer, topLevelText.push(capacityText));
       capacityText = "";
@@ -30285,13 +30288,16 @@ async function runAcpTurn(opts, profile) {
         for (const event of adapter.consume(update)) {
           if (event.t === "text" && profile.telemetryBackend === "codex-acp" && !capacityProse) {
             capacityText += event.delta;
-            if (capacityMessage.startsWith(capacityText.trimStart()))
+            if (capacityMessage.startsWith(capacityText.trimStart())) {
+              turnHasAgentContent = false;
               continue;
+            }
             if (capacityText.trim() === capacityMessage)
               continue;
             await writeAll(writer, topLevelText.push(capacityText));
             capacityText = "";
             capacityProse = true;
+            turnHasAgentContent = true;
           } else {
             await writeAll(writer, event.t === "text" ? topLevelText.push(event.delta) : [event]);
           }
@@ -30319,7 +30325,10 @@ async function runAcpTurn(opts, profile) {
     const connect = () => client({ name: "verity" }).onRequest(methods.client.session.requestPermission, ({ params }) => onPermission(params)).onNotification(methods.client.session.update, ({ params }) => {
       if (loadingSession || stopped)
         return Promise.resolve();
-      if (isAgentContent(params.update))
+      if (profile.telemetryBackend === "codex-acp") {
+        if (params.update.sessionUpdate === "agent_message_chunk")
+          turnHasAgentContent = false;
+      } else if (isAgentContent(params.update))
         turnHasAgentContent = true;
       return queueUpdate(params.update);
     }).connectWith(processStream(child, opts.worktree), async (agent) => {

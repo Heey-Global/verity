@@ -760,6 +760,9 @@ export async function runAcpTurn(
 
   const onUpdate = async (update: SessionUpdate): Promise<void> => {
     if (stopped) return;
+    if (profile.telemetryBackend === 'codex-acp' && isAgentContent(update) && capacityText === '') {
+      turnHasAgentContent = true;
+    }
     if (
       (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') &&
       capacityText.trim() !== capacityMessage
@@ -795,7 +798,10 @@ export async function runAcpTurn(
         for (const event of adapter.consume(update)) {
           if (event.t === 'text' && profile.telemetryBackend === 'codex-acp' && !capacityProse) {
             capacityText += event.delta;
-            if (capacityMessage.startsWith(capacityText.trimStart())) continue;
+            if (capacityMessage.startsWith(capacityText.trimStart())) {
+              turnHasAgentContent = false;
+              continue;
+            }
             // Only the adapter's standalone refusal is infrastructure output;
             // quoted explanations and ordinary prose keep their original text.
             if (capacityText.trim() === capacityMessage) continue;
@@ -803,6 +809,7 @@ export async function runAcpTurn(
             capacityText = '';
             // Chunk boundaries must not turn quoted provider text into a refusal.
             capacityProse = true;
+            turnHasAgentContent = true;
           } else {
             await writeAll(writer, event.t === 'text' ? topLevelText.push(event.delta) : [event]);
           }
@@ -844,7 +851,11 @@ export async function runAcpTurn(
           // channel opens as soon as the agent has spoken instead of trailing the
           // persist queue.
           if (loadingSession || stopped) return Promise.resolve();
-          if (isAgentContent(params.update)) turnHasAgentContent = true;
+          if (profile.telemetryBackend === 'codex-acp') {
+            // A provider refusal is not assistant content safe for steering.
+            // Keep the channel closed until the ordered classifier accepts prose.
+            if (params.update.sessionUpdate === 'agent_message_chunk') turnHasAgentContent = false;
+          } else if (isAgentContent(params.update)) turnHasAgentContent = true;
           return queueUpdate(params.update);
         })
         .connectWith(processStream(child, opts.worktree), async (agent) => {

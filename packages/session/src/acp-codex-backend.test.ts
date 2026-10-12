@@ -85,6 +85,7 @@ function acpSpawner(
     capacityUsage?: boolean;
     capacityTrailingTool?: boolean;
     onPrompt?: () => void;
+    onCapacity?: () => void;
     processExit?: { code: number | null; signal: NodeJS.Signals | null };
     exitDelayMs?: number;
     exitDetailsBeforeClose?: boolean;
@@ -310,24 +311,31 @@ function acpSpawner(
                     },
                   },
                 });
-              push({
-                jsonrpc: '2.0',
-                id,
-                result: {
-                  stopReason: 'cancelled',
-                  ...(behavior.capacityUsage
-                    ? {
-                        usage: {
-                          totalTokens: 16,
-                          inputTokens: 10,
-                          outputTokens: 6,
-                          cachedReadTokens: 2,
-                          cachedWriteTokens: 1,
-                        },
-                      }
-                    : {}),
-                },
-              });
+              const finishCapacity = () =>
+                push({
+                  jsonrpc: '2.0',
+                  id,
+                  result: {
+                    stopReason: 'cancelled',
+                    ...(behavior.capacityUsage
+                      ? {
+                          usage: {
+                            totalTokens: 16,
+                            inputTokens: 10,
+                            outputTokens: 6,
+                            cachedReadTokens: 2,
+                            cachedWriteTokens: 1,
+                          },
+                        }
+                      : {}),
+                  },
+                });
+              if (behavior.onCapacity)
+                setTimeoutOriginal(() => {
+                  behavior.onCapacity?.();
+                  finishCapacity();
+                }, 25);
+              else finishCapacity();
               return true;
             }
             if (behavior.promptFailure !== undefined) {
@@ -472,6 +480,7 @@ describe('AcpCodexBackend', () => {
     const fake = acpSpawner({
       capacityFailures: 1,
       onPrompt: () => accepted.push(steer?.({ text: 'change direction' }) ?? true),
+      onCapacity: () => accepted.push(steer?.({ text: 'change direction' }) ?? true),
     });
     const timer = vi
       .spyOn(globalThis, 'setTimeout')
@@ -489,7 +498,7 @@ describe('AcpCodexBackend', () => {
           steer = inject;
         },
       });
-      expect(accepted).toEqual([false, false]);
+      expect(accepted).toEqual([false, false, false]);
       expect(fake.writes.some((entry) => entry.method === '_session/steering')).toBe(false);
     } finally {
       timer.mockRestore();
