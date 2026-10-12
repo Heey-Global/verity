@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import {
   chmod,
@@ -18,6 +18,8 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
+  materializeTrustedCliEntryScript,
+  validateTrustedCliArguments,
   agentLaunchSpec,
   agentSignalTraceSeconds,
   validateAgentSignalTraceLease,
@@ -1579,4 +1581,173 @@ describe('broker spawner protocol handling', () => {
     for await (const chunk of handle.stdout) chunks.push(chunk);
     expect(chunks).toEqual(['before']);
   });
+});
+
+describe('trusted CLI entry-path failure classification', () => {
+  it.each([
+    ['missing', 'validation_path_missing'],
+    ['not-directory', 'validation_path_missing'],
+    ['loop', 'validation_path_symlink_loop'],
+    ['outside', 'validation_entry_outside_worktree'],
+    ['escape', 'validation_entry_outside_worktree'],
+  ])('classifies %s without launching or exposing filesystem paths', async (kind, code) => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-entry-validation-'));
+    const worktree = join(root, 'work');
+    const runtimeDir = join(root, 'runtime');
+    await mkdir(worktree);
+    await mkdir(runtimeDir);
+    await writeFile(join(worktree, 'file'), 'nonsecret fixture');
+    await writeFile(join(root, 'outside'), 'nonsecret fixture');
+    await symlink('loop', join(worktree, 'loop'));
+    await symlink(join(root, 'outside'), join(worktree, 'escape'));
+    const path =
+      kind === 'outside'
+        ? join(root, 'outside')
+        : join(worktree, kind === 'not-directory' ? 'file/entry' : kind);
+    const spawnChild = vi.fn(() => {
+      throw new Error('validation must prevent launch');
+    });
+    const broker = await runAgentSpawnBroker({
+      runtimeDir,
+      worktreeRoot: worktree,
+      enforceRoot: false,
+      agentUid: 1000,
+      agentGid: 1000,
+      env: { PATH: '/usr/bin' },
+      spawnChild,
+    });
+    try {
+      const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
+        const socket = createConnection(broker.socketPath);
+        let buffered = '';
+        socket.once('error', reject);
+        socket.on('data', (chunk: Buffer) => {
+          buffered += chunk.toString('utf8');
+          if (!buffered.includes('\n')) return;
+          socket.destroy();
+          resolve(JSON.parse(buffered.split('\n')[0]!) as Record<string, unknown>);
+        });
+        socket.once('connect', () => {
+          socket.write(
+            `${JSON.stringify({
+              protocolVersion: 1,
+              kind: 'spawn-trusted-cli',
+              command: '/usr/bin/true',
+              args: [path],
+              cwd: worktree,
+              secrets: [{ name: 'VERITY_TEST_TOKEN', value: 'nonsecret fixture' }],
+              entryScript: {
+                path,
+                projectPath: kind === 'not-directory' ? 'file/entry' : kind,
+                sha256: '0'.repeat(64),
+                loading: 'dynamic',
+              },
+            })}\n`,
+          );
+        });
+      });
+      // Swallowing realpath errors misreports missing files as boundary violations.
+      expect(response).toMatchObject({
+        ok: false,
+        trustedCliFailure: { phase: 'validation', cause: 'validation failed', code },
+      });
+      expect(JSON.stringify(response.trustedCliFailure)).not.toContain(root);
+      expect(spawnChild).not.toHaveBeenCalled();
+    } finally {
+      await broker.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('private trusted CLI workspace reads', () => {
+  it.each(['isolated', 'dynamic'] as const)(
+    'stages %s private entries through the identity reader',
+    async (loading) => {
+      const root = await mkdtemp(join(tmpdir(), 'verity-private-entry-'));
+      const scripts = join(root, 'work', 'scripts');
+      await mkdir(scripts, { recursive: true, mode: 0o700 });
+      const path = join(scripts, 'entry.cjs');
+      const bytes = 'console.log("nonsecret fixture");';
+      await writeFile(path, bytes, { mode: 0o600 });
+      const uid = process.getuid!() || 1000;
+      const gid = process.getgid!() || 1000;
+      // Exercise the subprocess transport without requiring root in the test runner.
+      // This shim checks the full privilege-drop prefix before running the fixed reader.
+      const setprivPath = join(root, 'setpriv');
+      const flags = [`--reuid=${uid}`, `--regid=${gid}`, ...PRIVILEGE_DROP_FLAGS];
+      await writeFile(
+        setprivPath,
+        `#!/bin/sh\n${flags.map((flag) => `[ "$1" = '${flag}' ] || exit 91; shift`).join('\n')}\nexec "$@"\n`,
+        { mode: 0o700 },
+      );
+      const identity = { agentUid: uid, agentGid: gid, setprivPath };
+      const entryScript = {
+        path,
+        projectPath: 'scripts/entry.cjs',
+        worktreeRoot: join(root, 'work'),
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        loading,
+      };
+      const getuid = vi.spyOn(process, 'getuid').mockReturnValue(0);
+      try {
+        await validateTrustedCliArguments(
+          process.execPath,
+          [path],
+          entryScript.worktreeRoot,
+          '/usr/bin:/bin',
+          [],
+          entryScript,
+          identity,
+        );
+        const staged = await materializeTrustedCliEntryScript(
+          { args: [path], cwd: entryScript.worktreeRoot, entryScript },
+          { ...identity, trustedCliEntryScriptDir: join(root, 'snapshots') },
+        );
+        try {
+          expect(await readFile(staged.args[0]!, 'utf8')).toBe(bytes);
+          await writeFile(path, 'changed after approval');
+          await expect(
+            materializeTrustedCliEntryScript(
+              { args: [path], cwd: entryScript.worktreeRoot, entryScript },
+              { ...identity, trustedCliEntryScriptDir: join(root, 'snapshots') },
+            ),
+          ).rejects.toThrow('content hash changed');
+          await rm(path);
+          await symlink(staged.args[0]!, path);
+          await expect(
+            materializeTrustedCliEntryScript(
+              { args: [path], cwd: entryScript.worktreeRoot, entryScript },
+              { ...identity, trustedCliEntryScriptDir: join(root, 'snapshots') },
+            ),
+          ).rejects.toMatchObject({ code: 'ELOOP' });
+          if (loading === 'dynamic') {
+            await rm(path);
+            await writeFile(path, bytes, { mode: 0o600 });
+            // Agent-identity IPC must not introduce traversal components into
+            // the broker's privileged snapshot construction.
+            const responseScript = `let input = ''; process.stdin.on('data', chunk => input += chunk);
+              process.stdin.on('end', () => process.stdout.write(JSON.stringify({ value:
+                JSON.parse(input).operation === 'readEntry' ? '${Buffer.from(bytes).toString('base64')}' : ['../../escape'] })));`;
+            await writeFile(
+              setprivPath,
+              `#!/bin/sh\n${flags.map(() => 'shift').join('\n')}\nexec "$1" -e '${responseScript.replaceAll("'", "'\\''")}'\n`,
+              { mode: 0o700 },
+            );
+            await expect(
+              materializeTrustedCliEntryScript(
+                { args: [path], cwd: entryScript.worktreeRoot, entryScript },
+                { ...identity, trustedCliEntryScriptDir: join(root, 'snapshots') },
+              ),
+            ).rejects.toThrow('invalid workspace directory response');
+          }
+        } finally {
+          await staged.cleanup();
+        }
+      } finally {
+        getuid.mockRestore();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 });

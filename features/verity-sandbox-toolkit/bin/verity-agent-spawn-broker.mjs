@@ -198,6 +198,140 @@ function validateIdentity(options) {
   return { uid, gid };
 }
 
+// Keep workspace reads under the same identity as the eventual interpreter.
+// Dropping the broker itself would race concurrent requests and remove its ability
+// to create immutable snapshots in the protected runtime directory.
+const AGENT_FILE_READER = `
+const fs = require('node:fs/promises');
+const { constants } = require('node:fs');
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { input += chunk; });
+process.stdin.on('end', async () => {
+  try {
+    const { operation, path } = JSON.parse(input);
+    let value;
+    if (operation === 'realpath' || operation === 'readdir') value = await fs[operation](path);
+    else if (operation === 'lstat') {
+      const stat = await fs.lstat(path);
+      value = { uid: stat.uid, mode: stat.mode, size: stat.size,
+        file: stat.isFile(), directory: stat.isDirectory(), socket: stat.isSocket() };
+    } else if (operation === 'readEntry') {
+      const handle = await fs.open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        if (!(await handle.stat()).isFile()) throw new Error('trusted CLI entry script must be a regular file');
+        value = (await handle.readFile()).toString('base64');
+      } finally { await handle.close(); }
+    } else throw new Error('invalid workspace read operation');
+    process.stdout.write(JSON.stringify({ value }));
+  } catch (error) {
+    process.stdout.write(JSON.stringify({ error: { code: error.code,
+      message: error.code ? 'workspace read failed' : error.message } }));
+  }
+});
+`;
+
+async function agentWorkspaceRead(operation, path, options) {
+  // Non-root broker fixtures deliberately use synthetic agent identities.
+  const { uid, gid } =
+    options.enforceRoot === false
+      ? { uid: process.getuid?.(), gid: process.getgid?.() }
+      : validateIdentity(options);
+  let value;
+  if (options.enforceRoot === false || (process.getuid?.() === uid && process.getgid?.() === gid)) {
+    if (operation === 'readEntry') {
+      const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        if (!(await handle.stat()).isFile())
+          throw new Error('trusted CLI entry script must be a regular file');
+        return await handle.readFile();
+      } finally {
+        await handle.close();
+      }
+    }
+    if (operation === 'realpath') return await realpath(path);
+    if (operation === 'readdir') return await readdir(path);
+    return await lstat(path);
+  }
+  const response = await new Promise((resolveResponse, reject) => {
+    const child = spawn(
+      options.setprivPath ?? '/usr/bin/setpriv',
+      [
+        `--reuid=${uid}`,
+        `--regid=${gid}`,
+        ...PRIVILEGE_DROP_FLAGS,
+        process.execPath,
+        '--input-type=commonjs',
+        '-e',
+        AGENT_FILE_READER,
+      ],
+      { env: {}, cwd: '/', stdio: ['pipe', 'pipe', 'ignore'] },
+    );
+    const chunks = [];
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error('workspace reader timed out'));
+    }, 10000);
+    child.stdout.on('data', (chunk) => chunks.push(chunk));
+    child.once('error', reject);
+    child.stdin.on('error', reject);
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) return reject(new Error('workspace reader failed'));
+      try {
+        resolveResponse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch {
+        reject(new Error('invalid workspace reader response'));
+      }
+    });
+    child.stdin.end(JSON.stringify({ operation, path }));
+  });
+  if (response.error) {
+    const error = new Error(response.error.message);
+    error.code = response.error.code;
+    throw error;
+  }
+  value = response.value;
+  // A process running as the agent cannot supply path components for privileged
+  // snapshot writes. Validate the transport even though the reader is fixed code.
+  if (
+    operation === 'readdir' &&
+    (!Array.isArray(value) ||
+      value.some(
+        (name) =>
+          typeof name !== 'string' ||
+          name === '' ||
+          name === '.' ||
+          name === '..' ||
+          name.includes('/') ||
+          name.includes('\0'),
+      ))
+  ) {
+    throw new Error('invalid workspace directory response');
+  }
+  if (
+    operation === 'realpath' &&
+    (typeof value !== 'string' ||
+      !value.startsWith('/') ||
+      value.includes('\0') ||
+      resolve(value) !== value)
+  ) {
+    throw new Error('invalid workspace path response');
+  }
+  if (operation === 'readEntry') {
+    if (typeof value !== 'string') throw new Error('invalid workspace entry response');
+    return Buffer.from(value, 'base64');
+  }
+  if (operation === 'lstat')
+    return {
+      ...value,
+      isFile: () => value.file,
+      isDirectory: () => value.directory,
+      isSocket: () => value.socket,
+    };
+  return value;
+}
+
 function isSafeTrustedCliEnvName(name) {
   return (
     /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u.test(name) &&
@@ -384,7 +518,7 @@ async function validateSpawnRequest(raw, options) {
     }
     const [worktreeRoots, cwd] = await Promise.all([
       resolveAgentWorktreeRoots(options),
-      realpath(resolve(raw.cwd)),
+      agentWorkspaceRead('realpath', resolve(raw.cwd), options),
     ]);
     if (!withinAgentWorktreeRoots(cwd, worktreeRoots)) {
       throw new Error('trusted CLI cwd escaped the worktree root');
@@ -407,14 +541,16 @@ async function validateSpawnRequest(raw, options) {
       ) {
         throw new Error('invalid trusted CLI entry-script attestation');
       }
-      const canonical = await realpath(raw.entryScript.path).catch(() => undefined);
-      if (canonical === undefined || !withinAgentWorktreeRoots(canonical, worktreeRoots)) {
+      // Preserve filesystem errors so missing or inaccessible entries are not
+      // misreported as resolved paths outside the allowed worktrees.
+      const canonical = await agentWorkspaceRead('realpath', raw.entryScript.path, options);
+      if (!withinAgentWorktreeRoots(canonical, worktreeRoots)) {
         throw new Error('trusted CLI entry script escaped the worktree root');
       }
-      const entry = await lstat(canonical);
+      const entry = await agentWorkspaceRead('lstat', canonical, options);
       if (!entry.isFile()) throw new Error('trusted CLI entry script must be a regular file');
       const digest = createHash('sha256')
-        .update(await readFile(canonical))
+        .update(await agentWorkspaceRead('readEntry', canonical, options))
         .digest('hex');
       if (digest !== raw.entryScript.sha256) {
         throw new Error('trusted CLI entry script content hash changed after approval');
@@ -454,6 +590,7 @@ async function validateSpawnRequest(raw, options) {
         // reject the very path the command is about to be handed.
         .map((secret) => trustedCliSecretPath(secret.name, options, raw.correlationId)),
       approvedEntryScript,
+      options,
     );
     return {
       kind: 'trusted-cli',
@@ -1259,6 +1396,14 @@ export async function validateTrustedCliArguments(
   approvedEntryScript,
   options = {},
 ) {
+  const workspaceRealpath =
+    approvedEntryScript === undefined || options.agentUid === undefined
+      ? realpath
+      : (path) => agentWorkspaceRead('realpath', path, options);
+  const workspaceLstat =
+    approvedEntryScript === undefined || options.agentUid === undefined
+      ? lstat
+      : (path) => agentWorkspaceRead('lstat', path, options);
   // Production reaches this only after validateTrustedCliExecutable; retain the
   // basename fallback for direct validator callers and focused unit fixtures.
   const resolvedCommand = await realpath(command).catch(() => command);
@@ -1484,9 +1629,9 @@ export async function validateTrustedCliArguments(
       let stat;
       for (const path of group.locations) {
         try {
-          const canonical = await realpath(path);
+          const canonical = await workspaceRealpath(path);
           found = path;
-          stat = await lstat(canonical);
+          stat = await workspaceLstat(canonical);
           break;
         } catch {
           // Keep searching the effective PATH.
@@ -1513,7 +1658,7 @@ export async function validateTrustedCliArguments(
         !interpreter &&
         !bareExecutableOperand &&
         approvedDynamicScriptSeen &&
-        withinAgentWorktreeRoots(await realpath(found), [approvedEntryScript.worktreeRoot])
+        withinAgentWorktreeRoots(await workspaceRealpath(found), [approvedEntryScript.worktreeRoot])
       )
         continue;
       // A socket names an endpoint the command talks to, and is judged by whose
@@ -1536,7 +1681,7 @@ export async function validateTrustedCliArguments(
         else if (!(
           interpreter &&
           approvedEntryScript !== undefined &&
-          (await realpath(found)) === approvedEntryScript.path
+          (await workspaceRealpath(found)) === approvedEntryScript.path
         ))
           await validateTrustedCliFileIntegrity(found);
         continue;
@@ -1562,7 +1707,7 @@ export async function validateTrustedCliArguments(
       if (
         approvedEntryScript?.loading === 'dynamic' &&
         typeof approvedEntryScript.worktreeRoot === 'string' &&
-        (await realpath(candidate)) === approvedEntryScript.path
+        (await workspaceRealpath(candidate)) === approvedEntryScript.path
       )
         approvedDynamicScriptSeen = true;
       interpreter = false;
@@ -1858,15 +2003,7 @@ export async function materializeTrustedCliEntryScript(request, options) {
   if (request.entryScript === undefined) {
     return { args: request.args, cleanup: async () => true };
   }
-  const handle = await open(request.entryScript.path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  let bytes;
-  try {
-    const stats = await handle.stat();
-    if (!stats.isFile()) throw new Error('trusted CLI entry script must be a regular file');
-    bytes = await handle.readFile();
-  } finally {
-    await handle.close();
-  }
+  const bytes = await agentWorkspaceRead('readEntry', request.entryScript.path, options);
   const digest = createHash('sha256').update(bytes).digest('hex');
   if (digest !== request.entryScript.sha256) {
     throw new Error('trusted CLI entry script content hash changed after approval');
@@ -1924,7 +2061,7 @@ export async function materializeTrustedCliEntryScript(request, options) {
       let sourceDir = request.entryScript.worktreeRoot;
       let targetDir = snapshotRoot;
       for (const component of components) {
-        for (const entry of await readdir(sourceDir)) {
+        for (const entry of await agentWorkspaceRead('readdir', sourceDir, options)) {
           if (entry === component) continue;
           await symlink(join(sourceDir, entry), join(targetDir, entry));
         }

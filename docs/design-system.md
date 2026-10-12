@@ -49,14 +49,15 @@ and restate nothing; if one disagrees with it, this document wins.
 | Action label    | `actionLabel` | `#6fdcf8`           | `#055a78`              | Label of the tonal primary button                                                      |
 | Signature       | `signature`   | `#ff18b7`           | `#b0107d`              | Brand only: content-screen eyebrows, Premium icon, success moment. **Never an action** |
 | Success         | `success`     | `#2ee6a6`           | `#0e6845`              | Connected, active, done                                                                |
-| Attention       | `attention`   | `#a99bff`           | `#5b4bc4`              | Errors, rejected states, outline of destructive buttons                                |
+| Attention       | `attention`   | `#ff5c8a`           | `#d84f74`              | Errors, rejected states, outline of destructive buttons                                |
 | Scrim           | `scrim`       | `rgba(3,4,8,0.72)`  | `rgba(10,12,20,0.40)`  | The single backdrop behind sheets and dialogs                                          |
 
 ### Rules
 
 - **Action is cyan, signature is pink.** Pink never marks something tappable; cyan never
   decorates.
-- **There is no red and no orange/amber.** Problems use `attention` (lavender).
+- **Red means a problem, nothing else.** Errors, rejected states and destructive actions use
+  `attention` (red). There is no orange/amber, and red is never used for decoration.
 - **Transparencies are derived from roles** with a fixed set of strengths:
   - 6 % for neutral tints (icon tiles, pressed rows)
   - 14 % for tonal fills (primary button, tags)
@@ -160,7 +161,7 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 - Label above the field in `Subtitle` style (13, muted).
 - Field: height 48, radius 12, `surfaceAlt` fill, 1 px `border`, value in `Body`.
 - Focus: `action` border plus a 3 px `action` ring at 20 %.
-- Error: subtle `attention` border and a **hint box** below the field — lavender tint, a short
+- Error: subtle `attention` border and a **hint box** below the field — red tint, a short
   bold title ("Key not recognized") and one explanatory sentence. The entered text stays in the
   field so it can be corrected, but nothing is saved until it is valid (see
   [§ 9](#errors-and-validation)). No dialog.
@@ -482,7 +483,7 @@ can never drift because there is only one copy of it.
    `apps/mobile/theme/tokens.ts` and bundle Inter. Retire the separate `colors.setup.*`
    palette and the meeting override palette (`components/meeting/meetingPalette.ts`).
    The current status tones map as follows: `tone.done` becomes `success`, `tone.danger`
-   becomes `attention` (lavender), and the existing amber `tone.attention` is removed. Until
+   becomes `attention` (red), and the existing amber `tone.attention` is removed. Until
    that lands, `tone.attention` in code still means amber and must not be used for errors.
 2. **Components:** implement section 5 as one shared module. It replaces the duplicated
    building blocks in `components/settings/SettingsChrome.tsx`,

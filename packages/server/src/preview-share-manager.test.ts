@@ -7,7 +7,7 @@ import {
   GATEWAY_MOUNTS,
 } from './sandbox-standard-mounts.js';
 import { knowledgeSandboxBinds } from './knowledge-folder.js';
-import type { EventStore } from '@verity/store';
+import type { EventStore, PublicPreviewShareRecord } from '@verity/store';
 import { mkdtemp, mkdir, symlink, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -101,8 +101,11 @@ function fixture(
     user: 'dev',
   };
   const docker = {
-    inspectContainer: vi.fn(async () => inspect),
-    createContainer: vi.fn(async () => ({ id: 'connector-id', warnings: [] })),
+    inspectContainer: vi.fn<DockerClient['inspectContainer']>(async () => inspect),
+    createContainer: vi.fn<DockerClient['createContainer']>(async () => ({
+      id: 'connector-id',
+      warnings: [],
+    })),
     startContainer: vi.fn(async () => undefined),
     removeContainer: vi.fn(async () => undefined),
     containerLogs: vi.fn(async () => 'preview connector established\n'),
@@ -154,6 +157,21 @@ function fixture(
     resolveConnectorImage,
     log,
   };
+}
+
+function retainShare(
+  f: Pick<ReturnType<typeof fixture>, 'store' | 'record'>,
+  patch: Partial<PublicPreviewShareRecord> = {},
+) {
+  let current = { ...f.record, state: 'active', ...patch } as PublicPreviewShareRecord;
+  f.store.listPublicPreviewShares.mockImplementation(async () => [current]);
+  f.store.getPublicPreviewShare.mockImplementation(async () => current);
+  f.store.transitionPublicPreviewShare.mockImplementation(async (_id, from, state, update = {}) => {
+    if (!from.includes(current.state)) return undefined;
+    current = { ...current, ...update, state };
+    return current;
+  });
+  return () => current;
 }
 
 describe('public preview duration and PIN policy', () => {
@@ -1614,20 +1632,63 @@ describe('PreviewShareManager', () => {
     expect(edge.create).not.toHaveBeenCalled();
   });
 
-  it('revokes an active share when its dev server is no longer running', async () => {
-    const { manager, store, isDevServerRunning, edge, record } = fixture();
-    store.listPublicPreviewShares.mockResolvedValueOnce([{ ...record, state: 'active' }]);
-    isDevServerRunning.mockResolvedValueOnce(false);
-    await manager.reconcile();
-    expect(edge.remove).toHaveBeenCalledWith(record.id);
+  it('does not restore a share revoked while reconciliation waits for a project mutation', async () => {
+    const f = fixture();
+    const current = retainShare(f);
+    let release!: () => void;
+    let entered!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const mutation = f.manager.withProjectMutation('p1', async () => {
+      entered();
+      await held;
+    });
+    await ready;
+    const reconciliation = f.manager.reconcile();
+    await f.manager.stop(f.record.id);
+    f.docker.createContainer.mockClear();
+    f.docker.removeContainer.mockClear();
+    release();
+    await mutation;
+    await reconciliation;
+    expect(current().state).toBe('revoked');
+    expect(f.docker.createContainer).not.toHaveBeenCalled();
+    expect(f.docker.removeContainer).not.toHaveBeenCalled();
+  });
+
+  it('keeps the same URL and PIN offline while its dev server is stopped', async () => {
+    const f = fixture();
+    const current = retainShare(f);
+    f.isDevServerRunning.mockResolvedValue(false);
+    await f.manager.reconcile();
+    expect(f.docker.createContainer).toHaveBeenCalledWith(
+      expect.objectContaining({ env: expect.arrayContaining(['VERITY_PREVIEW_OFFLINE=1']) }),
+    );
+    expect(current()).toMatchObject({
+      state: 'active',
+      publicOrigin: f.record.publicOrigin,
+      pin: f.record.pin,
+    });
+    expect(f.edge.remove).not.toHaveBeenCalled();
+    f.isDevServerRunning.mockResolvedValue(true);
+    await f.manager.reconcile();
+    expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        env: expect.arrayContaining(['VERITY_PREVIEW_TARGET_ORIGIN=http://verity-project:3000']),
+      }),
+    );
+    expect(f.edge.create).not.toHaveBeenCalled();
   });
 
   it('revokes a session preview after its worktree is removed', async () => {
     const { manager, store, edge, record } = fixture();
-    store.listPublicPreviewShares.mockResolvedValueOnce([
+    retainShare(
+      { store, record },
       {
-        ...record,
-        state: 'active',
         targetKind: 'static-folder',
         devServerId: null,
         targetPort: null,
@@ -1635,11 +1696,34 @@ describe('PreviewShareManager', () => {
         sessionId: 's1',
         connectorContainerId: 'connector-id',
       },
-    ]);
+    );
     store.getSession.mockResolvedValueOnce(undefined);
     await manager.reconcile();
     expect(edge.remove).toHaveBeenCalledWith(record.id);
   });
+  it('revokes a static link whose session belongs to another project', async () => {
+    const f = fixture();
+    retainShare(f, {
+      targetKind: 'static-folder',
+      devServerId: null,
+      targetPort: null,
+      staticPath: 'dist',
+      sessionId: 's1',
+      connectorContainerId: 'connector-id',
+    });
+    f.store.getSession.mockResolvedValue({
+      sessionId: 's1',
+      projectId: 'other',
+      worktree: '/data/repo/sessions/s1',
+      model: 'test',
+      name: null,
+      lastSeenEventCount: null,
+    });
+    await f.manager.reconcile();
+    expect(f.edge.remove).toHaveBeenCalledWith(f.record.id);
+    expect(f.docker.createContainer).not.toHaveBeenCalled();
+  });
+
   it('revokes a static session link before moving its worktree', async () => {
     const { manager, store, edge, record } = fixture();
     store.listPublicPreviewShares.mockResolvedValueOnce([
@@ -1657,7 +1741,7 @@ describe('PreviewShareManager', () => {
     expect(edge.remove).toHaveBeenCalledWith(record.id);
   });
 
-  it('keeps a session preview only while the connector mounts that exact worktree folder', async () => {
+  it('restores a static connector with the exact worktree folder', async () => {
     const root = await mkdtemp(join(tmpdir(), 'verity-preview-reconcile-'));
     const worktree = join(root, 'repo', 'sessions', 's1');
     await mkdir(join(worktree, 'dist'), { recursive: true });
@@ -1686,7 +1770,7 @@ describe('PreviewShareManager', () => {
       sessionId: 's1',
       connectorContainerId: 'connector-id',
     };
-    store.listPublicPreviewShares.mockResolvedValue([active]);
+    const current = retainShare({ store, record }, active);
     const connector = {
       ...inspect,
       id: 'connector-id',
@@ -1709,29 +1793,130 @@ describe('PreviewShareManager', () => {
       mounts: [{ ...connector.mounts[0], subpath: 'repo/sessions/other/dist' }],
     });
     await manager.reconcile();
-    expect(edge.remove).toHaveBeenCalledWith(record.id);
+    expect(edge.remove).not.toHaveBeenCalled();
+    expect(current()).toMatchObject({
+      state: 'active',
+      publicOrigin: record.publicOrigin,
+      pin: record.pin,
+    });
+    expect(docker.createContainer).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        volumeMounts: [
+          expect.objectContaining({ subpath: 'repo/sessions/s1/dist', readOnly: true }),
+        ],
+      }),
+    );
   });
 
-  it('revokes an active share when its connector is no longer running', async () => {
-    const { manager, store, docker, edge, inspect, record } = fixture();
-    store.listPublicPreviewShares.mockResolvedValueOnce([
-      { ...record, state: 'active', connectorContainerId: 'connector-id' },
-    ]);
-    docker.inspectContainer
-      .mockResolvedValueOnce(inspect)
-      .mockResolvedValueOnce({ ...inspect, id: 'connector-id', running: false });
-    await manager.reconcile();
-    expect(edge.remove).toHaveBeenCalledWith(record.id);
+  it('keeps an ineligible replacement sandbox offline with the same link', async () => {
+    const f = fixture();
+    const current = retainShare(f);
+    f.docker.inspectContainer.mockResolvedValue({ ...f.inspect, privileged: true });
+    await f.manager.reconcile();
+    expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+      expect.objectContaining({ env: expect.arrayContaining(['VERITY_PREVIEW_OFFLINE=1']) }),
+    );
+    expect(current()).toMatchObject({
+      state: 'active',
+      publicOrigin: f.record.publicOrigin,
+      pin: f.record.pin,
+    });
+    expect(f.edge.remove).not.toHaveBeenCalled();
   });
 
-  it('revokes an active share when runtime status cannot be determined', async () => {
-    const { manager, store, isDevServerRunning, edge, record } = fixture();
-    store.listPublicPreviewShares.mockResolvedValueOnce([
-      { ...record, state: 'active', connectorContainerId: 'connector-id' },
-    ]);
-    isDevServerRunning.mockRejectedValueOnce(new Error('runtime unavailable'));
-    await manager.reconcile();
-    expect(edge.remove).toHaveBeenCalledWith(record.id);
+  it('removes a replacement connector when persisting its identity fails', async () => {
+    const f = fixture();
+    retainShare(f, { connectorContainerId: 'old-connector' });
+    f.store.transitionPublicPreviewShare.mockRejectedValueOnce(new Error('store unavailable'));
+    const mutation = vi.fn(async () => undefined);
+    await expect(f.manager.withProjectMutation('p1', mutation)).rejects.toThrow(
+      'store unavailable',
+    );
+    expect(mutation).not.toHaveBeenCalled();
+    expect(f.docker.removeContainer).toHaveBeenCalledWith('connector-id');
+    await f.manager.withProjectMutation('p1', mutation);
+    expect(mutation).toHaveBeenCalledOnce();
+  });
+
+  it('takes a static share offline without starting an unmounted static server', async () => {
+    const f = fixture();
+    retainShare(f, {
+      targetKind: 'static-folder',
+      targetPort: null,
+      staticPath: 'dist',
+      devServerId: null,
+    });
+    const mutation = vi.fn(async () => undefined);
+    await f.manager.withProjectMutation('p1', mutation);
+    expect(mutation).toHaveBeenCalledOnce();
+    const spec = f.docker.createContainer.mock.calls.at(-1)?.[0];
+    expect(spec?.env).toContain('VERITY_PREVIEW_OFFLINE=1');
+    expect(spec?.env?.some((entry: string) => entry.startsWith('VERITY_PREVIEW_STATIC_'))).toBe(
+      false,
+    );
+    expect(spec?.volumeMounts).toBeUndefined();
+  });
+
+  it('retargets the same registered dev-server link on update and rollback', async () => {
+    const f = fixture();
+    const current = retainShare(f, { connectorContainerId: 'connector-id' });
+    let generation = 'generation-2';
+    let env: string[] = [];
+    f.docker.inspectContainer.mockImplementation(async (id) => ({
+      ...f.inspect,
+      labels: { 'verity.container-generation': generation },
+      env: id === project.containerName ? [] : env,
+    }));
+    f.docker.createContainer.mockImplementation(async (spec) => {
+      env = spec.env ?? [];
+      return { id: 'connector-id', warnings: [] };
+    });
+    await f.manager.withProjectMutation('p1', async () => undefined);
+    expect(env).toContain('VERITY_PREVIEW_OFFLINE=1');
+    await f.manager.reconcile();
+    expect(current().containerGeneration).toBe('generation-2');
+    generation = 'generation-1';
+    await f.manager.reconcile();
+    expect(current()).toMatchObject({
+      containerGeneration: 'generation-1',
+      state: 'active',
+      publicOrigin: f.record.publicOrigin,
+      pin: f.record.pin,
+      connectorToken: f.record.connectorToken,
+    });
+    expect(f.edge.create).not.toHaveBeenCalled();
+    expect(f.edge.remove).not.toHaveBeenCalled();
+  });
+
+  it('recreates a missing connector without minting another URL or PIN', async () => {
+    const f = fixture();
+    const current = retainShare(f, { connectorContainerId: 'connector-id' });
+    f.docker.inspectContainer
+      .mockResolvedValueOnce(f.inspect)
+      .mockRejectedValueOnce(new Error('container missing'));
+    await f.manager.reconcile();
+    expect(f.docker.createContainer).toHaveBeenCalled();
+    expect(current()).toMatchObject({
+      state: 'active',
+      publicOrigin: f.record.publicOrigin,
+      pin: f.record.pin,
+    });
+    expect(f.edge.create).not.toHaveBeenCalled();
+    expect(f.edge.remove).not.toHaveBeenCalled();
+  });
+
+  it('keeps a link offline when runtime status cannot be determined', async () => {
+    const f = fixture();
+    const current = retainShare(f, { connectorContainerId: 'connector-id' });
+    f.isDevServerRunning.mockRejectedValueOnce(new Error('runtime unavailable'));
+    await f.manager.reconcile();
+    expect(f.docker.createContainer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.arrayContaining(['VERITY_PREVIEW_OFFLINE=1']),
+      }),
+    );
+    expect(current().state).toBe('active');
+    expect(f.edge.remove).not.toHaveBeenCalled();
   });
 
   it('finishes cleanup after losing a concurrent revocation claim', async () => {
@@ -2089,11 +2274,12 @@ describe('session port previews', () => {
     ).rejects.toBeInstanceOf(PreviewShareInputError);
   });
 
-  it('revokes a port link only after the session stopped listening for the grace period', async () => {
+  it('retains a port link beyond a temporary listener outage', async () => {
     const { manager, store, docker, edge, inspect, record, listListeningProcesses } = portFixture([
       listener(5173, 'any'),
     ]);
-    store.listPublicPreviewShares.mockResolvedValue([
+    const current = retainShare(
+      { store, record },
       {
         ...record,
         devServerId: null,
@@ -2104,7 +2290,7 @@ describe('session port previews', () => {
         state: 'active' as const,
         connectorContainerId: 'connector-id',
       },
-    ]);
+    );
     docker.inspectContainer.mockResolvedValue(inspect);
 
     let now = new Date('2030-01-01T00:00:00Z').getTime();
@@ -2121,7 +2307,7 @@ describe('session port previews', () => {
     await manager.reconcile();
     expect(edge.remove).not.toHaveBeenCalled();
 
-    // Back before the grace ran out: the miss is forgotten, not carried forward.
+    // A long outage must not discard the URL and PIN.
     listListeningProcesses.mockResolvedValue([listener(5173, 'any')]);
     await manager.reconcile();
     now += 60_000;
@@ -2131,14 +2317,20 @@ describe('session port previews', () => {
 
     now += 90_000;
     await manager.reconcile();
-    expect(edge.remove).toHaveBeenCalledWith(record.id);
+    expect(edge.remove).not.toHaveBeenCalled();
+    expect(current()).toMatchObject({
+      state: 'active',
+      publicOrigin: record.publicOrigin,
+      pin: record.pin,
+    });
   });
 
-  it('revokes immediately when another session takes over a shared port', async () => {
-    const { manager, store, edge, record, listListeningProcesses } = portFixture([
+  it('keeps a retained link offline when another session takes over its port', async () => {
+    const { manager, store, docker, edge, record, listListeningProcesses } = portFixture([
       listener(5173, 'any'),
     ]);
-    store.listPublicPreviewShares.mockResolvedValue([
+    const current = retainShare(
+      { store, record },
       {
         ...record,
         devServerId: null,
@@ -2149,12 +2341,16 @@ describe('session port previews', () => {
         state: 'active' as const,
         connectorContainerId: 'connector-id',
       },
-    ]);
+    );
     listListeningProcesses.mockResolvedValue([listener(5173, 'any', '/work/sessions/s2')]);
 
     await manager.reconcile();
 
-    expect(edge.remove).toHaveBeenCalled();
+    expect(edge.remove).not.toHaveBeenCalled();
+    expect(current().state).toBe('active');
+    expect(docker.createContainer).toHaveBeenCalledWith(
+      expect.objectContaining({ env: expect.arrayContaining(['VERITY_PREVIEW_OFFLINE=1']) }),
+    );
   });
 });
 

@@ -3806,10 +3806,12 @@ export async function buildEmbeddedServer(
         })
       : undefined;
   // Dev servers the agent sets up and Verity runs (concept 2.6).
+  let previewRecoveryReady = false;
   if (projectDocker && config.hostCloneRoot) {
     const hostCloneRoot = config.hostCloneRoot;
     managedDevServerManager = new ManagedDevServerManager({
       store: eventStore,
+      canSupervise: () => previewRecoveryReady && !secretCipher.isSealed(),
       runtime: new DockerProjectRuntime({
         resolveUser: resolvePreviewUser,
         dockerBaseUrl: config.dockerBaseUrl,
@@ -5218,27 +5220,28 @@ export async function buildEmbeddedServer(
       sweepOrphanedLocalPreviews(projectDocker, hostname(), (id, shareId) =>
         localPreviewManager.ownsConnector(id, shareId),
       );
-    await sweepLocalConnectors().catch((error) =>
-      app.log.warn({ err: error }, 'local connector cleanup deferred until Docker recovers'),
+    const reconcileLocal = async (): Promise<void> => {
+      if (secretCipher.isSealed()) return;
+      // Restore durable ownership before cleanup can classify surviving connectors.
+      await localPreviewManager.reconcile();
+      previewRecoveryReady = true;
+      await sweepLocalConnectors();
+    };
+    await reconcileLocal().catch((error) =>
+      app.log.warn({ err: error }, 'local preview recovery deferred until dependencies recover'),
     );
-    let reconcilingLocal = false;
-    const localTimer = setInterval(() => {
-      if (reconcilingLocal) return;
-      reconcilingLocal = true;
-      void sweepLocalConnectors()
-        .then(() => localPreviewManager.reconcile())
-        .catch((error) => app.log.warn({ err: error }, 'local preview reconciliation failed'))
-        .finally(() => {
-          reconcilingLocal = false;
-        });
-    }, 10000);
-    localTimer.unref();
+    const stopLocalReconciler = startRunnerSupervisorReconciler(reconcileLocal, 10_000, (error) =>
+      app.log.warn({ err: error }, 'local preview reconciliation failed'),
+    );
     app.addHook('onClose', async () => {
-      clearInterval(localTimer);
+      previewRecoveryReady = false;
+      await stopLocalReconciler();
+      await managedDevServerManager?.close();
       await localPreviewManager.close();
     });
   }
   app.addHook('onClose', () => listenerDiscovery?.close());
+  if (!localPreviewManager) previewRecoveryReady = true;
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
   app.addHook('onClose', () => managedDevServerManager?.close());
   void listenerDiscovery?.reconcile();
@@ -5260,25 +5263,20 @@ export async function buildEmbeddedServer(
       : (projectRelayLifecycle?.close() ?? Promise.resolve()),
   );
   if (previewShareManager !== undefined) {
+    const reconcile = async (): Promise<void> => {
+      if (secretCipher.isSealed()) return;
+      await previewShareManager.reconcile();
+    };
+    await reconcile().catch((error) =>
+      app.log.warn({ err: error }, 'public preview reconciliation failed'),
+    );
+    const stopPreviewReconciler = startRunnerSupervisorReconciler(reconcile, 30_000, (error) =>
+      app.log.warn({ err: error }, 'public preview reconciliation failed'),
+    );
     app.addHook('onClose', async () => {
+      await stopPreviewReconciler();
       await uplinkControl?.stop();
     });
-    let reconciling = false;
-    const reconcile = async (): Promise<void> => {
-      if (reconciling) return;
-      reconciling = true;
-      try {
-        await previewShareManager.reconcile();
-      } catch (error) {
-        app.log.warn({ err: error }, 'public preview reconciliation failed');
-      } finally {
-        reconciling = false;
-      }
-    };
-    void reconcile();
-    const previewTimer = setInterval(() => void reconcile(), 30_000);
-    previewTimer.unref?.();
-    app.addHook('onClose', () => clearInterval(previewTimer));
   } else if (projectDocker !== undefined) {
     // No edge control means no manager and therefore no reconciliation loop, so
     // shares an earlier version created would run on untouched. Close them out

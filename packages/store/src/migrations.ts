@@ -4186,6 +4186,30 @@ migrations['0154_task_generated_titles'] = {
   },
 };
 
+migrations['0155_local_preview_shares'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table local_preview_shares (
+      id text primary key,
+      project_id text not null references projects(id) on delete cascade,
+      session_id text not null references sessions(session_id) on delete cascade,
+      managed_instance_id text,
+      network_port integer not null unique check (network_port between 1 and 65535),
+      url text not null,
+      target_port integer check (target_port between 1 and 65535),
+      static_path text,
+      connector_secret text not null,
+      state text not null check (state in ('active', 'revoking')),
+      expires_at timestamptz not null,
+      check ((target_port is null) <> (static_path is null))
+    )`.execute(db);
+    await sql`create unique index local_preview_target_idx on local_preview_shares
+      (session_id, coalesce(target_port, 0), coalesce(static_path, ''))`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table local_preview_shares`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

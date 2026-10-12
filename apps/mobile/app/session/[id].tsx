@@ -1,3 +1,4 @@
+import { useDeferredSessionWork } from '../../hooks/useDeferredSessionWork';
 import { meetingSavedCard } from '../../lib/meetingSavedCard';
 import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
 import { isLinkableSession } from '../../lib/sessionLinks';
@@ -737,6 +738,10 @@ export const SessionChat = memo(function SessionChat({
     loadOlder,
     loadOlderUntil,
   } = useSession(client, sessionId, baseUrl);
+  const optionalWorkReady = useDeferredSessionWork(
+    sessionId,
+    initialListLoaded || (loaded && session.messages.length === 0) || locallyCreated,
+  );
   const [linkedSessions, setLinkedSessions] = useState<
     Awaited<ReturnType<VerityClient['listSessionLinks']>>
   >([]);
@@ -857,14 +862,14 @@ export const SessionChat = memo(function SessionChat({
   // taps open a picker to switch the session's backend mid-flight (#switch-engine).
   // `currentModel` is the persisted choice (survives a switch + remount); fall back
   // to the reducer's spawn model until the detail loads.
+  const [enginePickerOpen, setEnginePickerOpen] = useState(false);
   const {
     models,
     modelOrder,
     moreModels,
     allowedAgents,
     refresh: refreshModels,
-  } = useModels(client, loaded, projectId);
-  const [enginePickerOpen, setEnginePickerOpen] = useState(false);
+  } = useModels(client, optionalWorkReady, projectId);
   const effectiveModel = currentModel ?? session.model;
   const [automation, setAutomation] = useState<SessionAutomation | null>(null);
   const [automationReady, setAutomationReady] = useState(false);
@@ -915,8 +920,8 @@ export const SessionChat = memo(function SessionChat({
   }, [client, sessionId]);
   useEffect(() => {
     setAutomationReady(false);
-    if (loaded) void loadAutomation();
-  }, [loadAutomation, loaded]);
+    if (optionalWorkReady) void loadAutomation();
+  }, [loadAutomation, optionalWorkReady]);
   const applyAutomation = useCallback(
     (next: SessionAutomation | null) => {
       automationGeneration.current += 1;
@@ -990,9 +995,13 @@ export const SessionChat = memo(function SessionChat({
   const [previewServer, setPreviewServer] =
     useState<NonNullable<typeof session.devServers>[number]>();
   const [previewOpening, setPreviewOpening] = useState<number | null>(null);
-  const completedServerTools = session.messages.filter(
-    (message) => message.kind === 'tool-call' && message.tool.state === 'completed',
-  ).length;
+  const completedServerTools = useMemo(
+    () =>
+      session.messages.filter(
+        (message) => message.kind === 'tool-call' && message.tool.state === 'completed',
+      ).length,
+    [session.messages],
+  );
   const { managedByInstance, hasActiveStaticPreview, hasRunningDevServer, refreshStaticPreview } =
     useSessionPreviewReads({
       client,
@@ -1000,6 +1009,7 @@ export const SessionChat = memo(function SessionChat({
       projectId,
       loaded,
       completedServerTools,
+      enabled: optionalWorkReady || staticPreviewOpen,
       devServers: session.devServers,
     });
   const openDetectedLocally = async (server: NonNullable<typeof session.devServers>[number]) => {
@@ -3905,6 +3915,99 @@ export const SessionChat = memo(function SessionChat({
     </View>
   );
 
+  // Unrelated composer and auxiliary state must not invalidate FlashList's
+  // measured cells through fresh style, footer and callback identities.
+  const transcriptList = useMemo(
+    () => (
+      <FlashList
+        onLoad={() => {
+          markInitialListLoad(switchTiming);
+          setLoadedListSessionId(sessionId);
+        }}
+        ref={listRef}
+        data={data}
+        keyExtractor={rowKey}
+        renderItem={renderItem}
+        getItemType={getItemType}
+        // Render further beyond the viewport (default ~250px) so rows above are
+        // MEASURED before a scroll-up reveals them — their height correction then
+        // happens off-screen instead of jumping the visible offset (cause-2 fix).
+        drawDistance={500}
+        // Visual inversion: newest-first data flipped back the right way up.
+        // Each row is counter-flipped in renderItem (styles.invertedItem).
+        // FlashList consumes plain styles; Unistyles metadata loses the web flip.
+        style={{
+          transform: [{ scaleY: -1 }],
+          marginLeft: embedded ? 0 : insets.left,
+          marginRight: embedded ? 0 : insets.right,
+        }}
+        contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.lg }}
+        onScroll={onListScroll}
+        onContentSizeChange={onListContentSizeChange}
+        onTouchEnd={clearSearchHighlightAfterTouch}
+        scrollEventThrottle={64}
+        // Only a real finger drag/fling summons the message-nav stack (see
+        // revealNav) — programmatic/content-driven scrolls (session open, agent
+        // streaming) fire none of these, so the stack never pops up on its own. The
+        // hold-then-fade starts on motion END (drag lift / fling settle), so the
+        // 1.8s is measured from the list coming to REST.
+        onScrollBeginDrag={onListScrollBeginDrag}
+        onMomentumScrollBegin={onListMomentumScrollBegin}
+        onScrollEndDrag={onListScrollEndDrag}
+        onMomentumScrollEnd={onListMomentumScrollEnd}
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={viewabilityConfig}
+        // Paging is driven by our scroll/viewability callbacks (see
+        // requestOlderHistory), which also own the settle window between
+        // pages that the native edge callbacks have no notion of.
+        //
+        // The spinner belongs to the OLDEST end, which in the newest-first
+        // list is the footer. It sits behind the viewport, so unlike the
+        // former header spinner it cannot shift a single visible row.
+        ListFooterComponent={
+          <View style={[styles.olderSpinner, styles.invertedItem]}>
+            <ActivityIndicator
+              color={theme.colors.textMuted}
+              animating={loadingOlder}
+              hidesWhenStopped={false}
+              style={!loadingOlder ? styles.olderSpinnerHidden : undefined}
+              accessibilityLabel="Loading older messages"
+              accessibilityElementsHidden={!loadingOlder}
+              importantForAccessibility={loadingOlder ? 'auto' : 'no-hide-descendants'}
+            />
+          </View>
+        }
+        maintainVisibleContentPosition={maintainVisibleContentPosition}
+        // Drag down to dismiss the keyboard; keep taps working (e.g. tool cards).
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
+      />
+    ),
+    [
+      switchTiming,
+      sessionId,
+      data,
+      renderItem,
+      getItemType,
+      embedded,
+      insets.left,
+      insets.right,
+      theme.spacing.lg,
+      theme.colors.textMuted,
+      onListScroll,
+      onListContentSizeChange,
+      clearSearchHighlightAfterTouch,
+      onListScrollBeginDrag,
+      onListMomentumScrollBegin,
+      onListScrollEndDrag,
+      onListMomentumScrollEnd,
+      onViewableItemsChanged,
+      viewabilityConfig,
+      loadingOlder,
+      maintainVisibleContentPosition,
+    ],
+  );
+
   finishChatWork();
   return (
     <Reanimated.View
@@ -4417,71 +4520,7 @@ export const SessionChat = memo(function SessionChat({
                     sessionId={sessionId}
                     projectId={projectId}
                   >
-                    <FlashList
-                      onLoad={() => {
-                        markInitialListLoad(switchTiming);
-                        setLoadedListSessionId(sessionId);
-                      }}
-                      ref={listRef}
-                      data={data}
-                      keyExtractor={rowKey}
-                      renderItem={renderItem}
-                      getItemType={getItemType}
-                      // Render further beyond the viewport (default ~250px) so rows above are
-                      // MEASURED before a scroll-up reveals them — their height correction then
-                      // happens off-screen instead of jumping the visible offset (cause-2 fix).
-                      drawDistance={500}
-                      // Visual inversion: newest-first data flipped back the right way up.
-                      // Each row is counter-flipped in renderItem (styles.invertedItem).
-                      // FlashList consumes plain styles; Unistyles metadata loses the web flip.
-                      style={{
-                        transform: [{ scaleY: -1 }],
-                        marginLeft: embedded ? 0 : insets.left,
-                        marginRight: embedded ? 0 : insets.right,
-                      }}
-                      contentContainerStyle={{ padding: theme.spacing.lg, gap: theme.spacing.lg }}
-                      onScroll={onListScroll}
-                      onContentSizeChange={onListContentSizeChange}
-                      onTouchEnd={clearSearchHighlightAfterTouch}
-                      scrollEventThrottle={64}
-                      // Only a real finger drag/fling summons the message-nav stack (see
-                      // revealNav) — programmatic/content-driven scrolls (session open, agent
-                      // streaming) fire none of these, so the stack never pops up on its own. The
-                      // hold-then-fade starts on motion END (drag lift / fling settle), so the
-                      // 1.8s is measured from the list coming to REST.
-                      onScrollBeginDrag={onListScrollBeginDrag}
-                      onMomentumScrollBegin={onListMomentumScrollBegin}
-                      onScrollEndDrag={onListScrollEndDrag}
-                      onMomentumScrollEnd={onListMomentumScrollEnd}
-                      onViewableItemsChanged={onViewableItemsChanged}
-                      viewabilityConfig={viewabilityConfig}
-                      // Paging is driven by our scroll/viewability callbacks (see
-                      // requestOlderHistory), which also own the settle window between
-                      // pages that the native edge callbacks have no notion of.
-                      //
-                      // The spinner belongs to the OLDEST end, which in the newest-first
-                      // list is the footer. It sits behind the viewport, so unlike the
-                      // former header spinner it cannot shift a single visible row.
-                      ListFooterComponent={
-                        <View style={[styles.olderSpinner, styles.invertedItem]}>
-                          <ActivityIndicator
-                            color={theme.colors.textMuted}
-                            animating={loadingOlder}
-                            hidesWhenStopped={false}
-                            style={!loadingOlder ? styles.olderSpinnerHidden : undefined}
-                            accessibilityLabel="Loading older messages"
-                            accessibilityElementsHidden={!loadingOlder}
-                            importantForAccessibility={
-                              loadingOlder ? 'auto' : 'no-hide-descendants'
-                            }
-                          />
-                        </View>
-                      }
-                      maintainVisibleContentPosition={maintainVisibleContentPosition}
-                      // Drag down to dismiss the keyboard; keep taps working (e.g. tool cards).
-                      keyboardDismissMode="interactive"
-                      keyboardShouldPersistTaps="handled"
-                    />
+                    {transcriptList}
                     {/* Keep intermediate history pages hidden while resolving a jump, and
                 cover measurement correction while restoring a saved position. */}
                     {restoring || pendingUserJump !== null || jumpTarget !== null ? (

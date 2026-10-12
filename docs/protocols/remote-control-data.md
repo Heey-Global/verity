@@ -34,7 +34,8 @@ Frames are complete UTF-8 JSON WebSocket text messages with exactly these fields
 Only the app opens streams. IDs match `[A-Za-z0-9_-]{1,128}`. A pair has at most
 eight live streams and 4096 distinct stream IDs over its lifetime. IDs cannot be
 reopened after completion, reset or refused concurrency admission. A ninth live
-open receives `concurrency_limit` without terminating sibling streams; exhausting
+open receives `concurrency_limit` only at the opening app, without terminating
+sibling streams; Core receives neither that open nor its reset; exhausting
 the lifetime ID budget ends the pair. Capacity is counted per logical stream,
 not separately for its two directions.
 

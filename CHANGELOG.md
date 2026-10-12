@@ -1,5 +1,32 @@
 # Changelog
 
+## [4.43.2](https://github.com/Heey-Global/verity/compare/v4.43.1...v4.43.2) (2026-10-12)
+
+
+### Bug Fixes
+
+* **session:** read private trusted CLI entries as the agent ([#1563](https://github.com/Heey-Global/verity/issues/1563)) ([7cef184](https://github.com/Heey-Global/verity/commit/7cef1844f6aa7e6d0d2666f81d33d551c8fcd337))
+
+## [4.43.1](https://github.com/Heey-Global/verity/compare/v4.43.0...v4.43.1) (2026-10-12)
+
+
+### Bug Fixes
+
+* **previews:** preserve active shares across system updates ([#1560](https://github.com/Heey-Global/verity/issues/1560)) ([7eba1ae](https://github.com/Heey-Global/verity/commit/7eba1ae1819b3f2aa6f181adf305e0e505f62f47))
+
+## [4.43.0](https://github.com/Heey-Global/verity/compare/v4.42.0...v4.43.0) (2026-10-12)
+
+
+### Features
+
+* **diagnostics:** record bounded socket and receiver state ([#1557](https://github.com/Heey-Global/verity/issues/1557)) ([a0839a2](https://github.com/Heey-Global/verity/commit/a0839a208d4eea1c266f5d5cc272176308dd86da))
+
+
+### Bug Fixes
+
+* **session:** preserve entry script filesystem failure codes ([#1558](https://github.com/Heey-Global/verity/issues/1558)) ([ca707f6](https://github.com/Heey-Global/verity/commit/ca707f63fcafbc20611f90f0742ba4204bbb3fc4))
+* **session:** retry model capacity failures with system notices ([#1553](https://github.com/Heey-Global/verity/issues/1553)) ([42395f9](https://github.com/Heey-Global/verity/commit/42395f93ee87c0407212d6164242cbc64cad133e))
+
 ## [4.42.0](https://github.com/Heey-Global/verity/compare/v4.41.1...v4.42.0) (2026-10-12)
 
 
