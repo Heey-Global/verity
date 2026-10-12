@@ -769,7 +769,7 @@ export async function runAcpTurn(
     ) {
       await writeAll(writer, topLevelText.push(capacityText));
       capacityText = '';
-      capacityProse = false;
+      if (update.sessionUpdate === 'tool_call') capacityProse = false;
     }
     // The agent switches modes on its own — a model switch that clamps a mode
     // the new model cannot run, an approval Verity answered generically. Its

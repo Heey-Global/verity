@@ -30278,7 +30278,8 @@ async function runAcpTurn(opts, profile) {
     if ((update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") && capacityText.trim() !== capacityMessage) {
       await writeAll(writer, topLevelText.push(capacityText));
       capacityText = "";
-      capacityProse = false;
+      if (update.sessionUpdate === "tool_call")
+        capacityProse = false;
     }
     if (update.sessionUpdate === "current_mode_update" && update.currentModeId !== activeMode && !closedOut) {
       restoreMode?.();

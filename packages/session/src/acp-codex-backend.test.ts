@@ -81,6 +81,7 @@ function acpSpawner(
     capacityFailures?: number;
     capacityPrefix?: string;
     splitCapacityPrefix?: boolean;
+    capacityInterleavedTool?: boolean;
     capacityTool?: boolean;
     capacityUsage?: boolean;
     capacityTrailingTool?: boolean;
@@ -286,6 +287,19 @@ function acpSpawner(
                 `${behavior.splitCapacityPrefix ? '' : (behavior.capacityPrefix ?? '')}Selected model is at `,
                 'capacity. Please try a different model.',
               ]) {
+                if (behavior.capacityInterleavedTool && text.startsWith('Selected'))
+                  push({
+                    jsonrpc: '2.0',
+                    method: 'session/update',
+                    params: {
+                      sessionId: 'codex-session-1',
+                      update: {
+                        sessionUpdate: 'tool_call_update',
+                        toolCallId: 'completed-before-capacity',
+                        status: 'completed',
+                      },
+                    },
+                  });
                 push({
                   jsonrpc: '2.0',
                   method: 'session/update',
@@ -563,13 +577,14 @@ describe('AcpCodexBackend', () => {
     }
   });
 
-  it.each([false, true])(
+  it.each([false, true, 'interleaved'] as const)(
     'keeps quoted capacity prose without retrying (split prefix: %s)',
     async (splitCapacityPrefix) => {
       const fake = acpSpawner({
         capacityFailures: 1,
         capacityPrefix: 'The provider said: ',
-        splitCapacityPrefix,
+        splitCapacityPrefix: splitCapacityPrefix !== false,
+        capacityInterleavedTool: splitCapacityPrefix === 'interleaved',
       });
       await new AcpCodexBackend().run({
         store: ctx.store,
