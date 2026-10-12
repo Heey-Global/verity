@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Text, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
+import { ConnectionRecording } from './ConnectionRecording';
 import { getServerProfile } from '../../lib/serverProfile';
 import { exportRemoteDataDiagnostics } from '../../lib/remoteDataDiagnostics';
 import {
@@ -315,59 +316,7 @@ export function PublicPreviewDiagnostics({
           </RowCard>
         ) : null}
       </View>
-      <View style={styles.section}>
-        <Eyebrow>Connection recording</Eyebrow>
-        <RowCard>
-          <CardRow
-            title="Local connection recording"
-            subtitle={
-              recordingRemaining === null
-                ? 'Recording status unavailable in this app build.'
-                : recordingRemaining > 0
-                  ? `Recording · ${String(Math.ceil(recordingRemaining / 1000))} seconds remaining`
-                  : 'Not recording'
-            }
-            chevron={false}
-          />
-          {profile && route ? (
-            <CardRow
-              title="Record connection test"
-              subtitle={
-                checking && recordingTest
-                  ? 'Testing the connection… Recording can be stopped below.'
-                  : ((recordingTest ? testResult : null) ??
-                    'Tests the connection and records this iPhone for up to two minutes. Interrupts current remote requests.')
-              }
-              accessibilityLabel="Record Remote access connection test"
-              disabled={checking || rightsChecking || (recordingRemaining ?? 0) > 0}
-              onPress={() => void runTest(true)}
-            />
-          ) : (
-            <CardRow
-              title="Recording test unavailable"
-              subtitle="Connect through your local network or VPN once to enable a new test. Saved recordings can still be copied below."
-              chevron={false}
-            />
-          )}
-          <CardRow
-            title="Stop local recording"
-            subtitle={
-              recordingStopFailed
-                ? 'Could not confirm recording stopped.'
-                : 'Stops this iPhone’s recording. Keeps the saved recording.'
-            }
-            onPress={() => void stopRecording()}
-          />
-          <CardRow
-            title="Copy last recording"
-            subtitle={
-              exportStatus ?? 'Copies the saved iPhone recording for support. Works offline.'
-            }
-            accessibilityLabel="Copy connection recording"
-            onPress={() => void copyCapture()}
-          />
-        </RowCard>
-      </View>
+      <ConnectionRecording client={client} />
       <RowCard>
         <CardRow
           title={showAdvanced ? 'Hide advanced diagnostics' : 'Advanced diagnostics'}
@@ -377,6 +326,59 @@ export function PublicPreviewDiagnostics({
       </RowCard>
       {showAdvanced ? (
         <>
+          <View style={styles.section}>
+            <Eyebrow>Connection recording</Eyebrow>
+            <RowCard>
+              <CardRow
+                title="Local connection recording"
+                subtitle={
+                  recordingRemaining === null
+                    ? 'Recording status unavailable in this app build.'
+                    : recordingRemaining > 0
+                      ? `Recording · ${String(Math.ceil(recordingRemaining / 1000))} seconds remaining`
+                      : 'Not recording'
+                }
+                chevron={false}
+              />
+              {profile && route ? (
+                <CardRow
+                  title="Record connection test"
+                  subtitle={
+                    checking && recordingTest
+                      ? 'Testing the connection… Recording can be stopped below.'
+                      : ((recordingTest ? testResult : null) ??
+                        'Tests the connection and records this iPhone for up to two minutes. Interrupts current remote requests.')
+                  }
+                  accessibilityLabel="Record Remote access connection test"
+                  disabled={checking || rightsChecking || (recordingRemaining ?? 0) > 0}
+                  onPress={() => void runTest(true)}
+                />
+              ) : (
+                <CardRow
+                  title="Recording test unavailable"
+                  subtitle="Connect through your local network or VPN once to enable a new test. Saved recordings can still be copied below."
+                  chevron={false}
+                />
+              )}
+              <CardRow
+                title="Stop local recording"
+                subtitle={
+                  recordingStopFailed
+                    ? 'Could not confirm recording stopped.'
+                    : 'Stops this iPhone’s recording. Keeps the saved recording.'
+                }
+                onPress={() => void stopRecording()}
+              />
+              <CardRow
+                title="Copy last recording"
+                subtitle={
+                  exportStatus ?? 'Copies the saved iPhone recording for support. Works offline.'
+                }
+                accessibilityLabel="Copy connection recording"
+                onPress={() => void copyCapture()}
+              />
+            </RowCard>
+          </View>
           <View style={styles.section}>
             <Eyebrow>Technical details</Eyebrow>
             <RowCard>

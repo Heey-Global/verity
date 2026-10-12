@@ -218,3 +218,45 @@ it('does not replenish a socket output budget when consent resumes', () => {
   expect((snapshot.events as unknown[]).length).toBe(RETURN_PATH_LIMITS.events / 2);
   expect(snapshot.droppedStreamObservations).toBe(77);
 });
+
+it('starts a separately authorized window without leaking old evidence or changing socket identity', () => {
+  const recorder = new RemoteReturnPathDiagnostics('same-socket');
+  recorder.record('send', 'observed', { ...frame, streamId: 'old-stream' }, 101, 71);
+  recorder.record('emitted_message', 'observed', undefined, 101);
+  recorder.record('ws_error', 'error', undefined, 0, 0, { code: 'EPIPE' });
+  recorder.record('close', 'observed', undefined, 0, 0, { code: 1006 });
+  const before = recorder.exportSummary(true)!;
+  for (let index = 0; index < RETURN_PATH_LIMITS.events; index++) {
+    recorder.exportSummary(true);
+    recorder.record('send', 'observed', { ...frame, streamId: `old-${index}` }, 1, 1);
+  }
+  expect(recorder.exportSummary(true)).toBeUndefined();
+  const last = recorder.snapshot();
+  const oldWindow = recorder.windowRevision;
+  recorder.beginWindow(Date.now() + 120000);
+  expect(recorder.windowRevision).not.toBe(oldWindow);
+  const empty = recorder.exportSummary()!;
+  expect(empty).toMatchObject({
+    generation: before.generation,
+    session: before.session,
+    emittedMessages: 0,
+    emittedBytes: 0,
+    droppedEvents: 0,
+    droppedStreamObservations: 0,
+    lastError: null,
+    lastClose: null,
+    events: [],
+    streams: [],
+  });
+  expect(empty.eventOrder as number).toBeGreaterThan(last.eventOrder as number);
+  expect(empty.summaryOrder as number).toBeGreaterThan(before.summaryOrder as number);
+  expect(empty.elapsedMs as number).toBeGreaterThanOrEqual(last.elapsedMs as number);
+  recorder.record('send', 'observed', { ...frame, streamId: 'new-stream' }, 11, 7);
+  const next = recorder.exportSummary()!;
+  expect(next.events).toHaveLength(1);
+  expect(next.streams).toEqual([
+    expect.objectContaining({ enqueuedFrames: 1, encodedBytes: 11, decodedBytes: 7 }),
+  ]);
+  const oldHash = createHash('sha256').update('old-stream').digest('hex').slice(0, 16);
+  expect(JSON.stringify(next)).not.toContain(oldHash);
+});

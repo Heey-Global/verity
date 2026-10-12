@@ -241,3 +241,34 @@ export async function exportRemoteDataDiagnostics(): Promise<RemoteDataDiagnosti
     return { status: 'failed' };
   }
 }
+
+/** Revalidate retained storage before combining it into a support export. */
+export function validateStoredRemoteRecording(value: string): string | null {
+  if (value.length > 200_000) return null;
+  try {
+    const raw: unknown = JSON.parse(value);
+    if (!Array.isArray(raw) || raw.length > 3) return null;
+    const snapshots = raw.map((entry: unknown) => acceptedDataDiagnostics(JSON.stringify(entry)));
+    return snapshots.some((snapshot) => snapshot === null) ? null : `[${snapshots.join(',')}]`;
+  } catch {
+    return null;
+  }
+}
+
+/** A fresh coordinated run excludes snapshots retained from earlier captures. */
+export function selectRemoteRecording(
+  value: string,
+  startedAt: number,
+  expiresAt: number,
+): string | null {
+  const safe = validateStoredRemoteRecording(value);
+  if (!safe) return null;
+  const snapshots = JSON.parse(safe) as Array<{ events: Array<{ utc: string; event: string }> }>;
+  const selected = snapshots.filter((snapshot) => {
+    const first = snapshot.events[0];
+    if (first?.event !== 'capture_started') return false;
+    const timestamp = Date.parse(first.utc);
+    return timestamp >= startedAt && timestamp <= expiresAt;
+  });
+  return selected.length ? JSON.stringify(selected) : null;
+}

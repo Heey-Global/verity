@@ -1,12 +1,40 @@
 # Bounded DATA disconnect capture
 
-The mobile Connection diagnostics panel offers **Record connection test** and
-**Copy connection recording**. Recording starts only after an explicit recording-test action. That action
-replaces the current tunnel to capture the first sends and can interrupt active
-remote requests. Ordinary tests and opening Diagnostics do not enable recording.
-The local recording status is read without contacting Core. **Stop local
-recording** ends the native capture window without waiting for a pending probe,
-keeps the saved evidence, and does not stop Core or Uplink recording.
+The mobile Connection diagnostics panel offers **Record connection** and
+**Stop and collect**. Opening the screen only restores saved state; it never
+starts a recording. The coordinated flow requires a paired administrator, a
+reachable Core, and an Uplink that negotiates `remote-diagnostics-v1`.
+
+1. Connect VPN, then tap **Record connection**. The app arms its local recorder;
+   Core arms its retained metadata sink and requests an Uplink recorder over the
+   existing authenticated control connection.
+2. Wait for **Ready** before disabling VPN. This means all three collectors
+   acknowledged readiness, not that test traffic has already reached them.
+3. Disable VPN and use the app normally. Each collector expires independently
+   within 120 seconds; no test request or continuous VPN connection keeps it alive.
+4. Reconnect VPN and tap **Stop and collect**. Local recording stops first,
+   independently of server availability. The app stops Core/Uplink and copies a
+   combined metadata report. Without VPN, it copies the available local evidence
+   and reports the missing sources; repeat collection after reconnecting.
+
+A failed or incomplete preparation stops the local/Core capture and attempts to
+stop Uplink. A lost acknowledgement never renews the original deadline. The app
+retains the run identifier for collection after navigation or restart, and never
+replays Start automatically. Core/Uplink retain bounded in-memory reports for up
+to one hour; restarting those processes loses their reports and does not resume
+capture. Old Uplinks without the negotiated capability fail preparation explicitly.
+
+The report groups the selected run and retains socket generation/session hashes.
+Use matching hashes and per-socket order to investigate; clocks on different hosts
+are not synchronized by this feature. Missing records, overflow and unavailable
+sources remain visible. The collectors record bounded transport metadata, not
+payloads, tickets, headers or arbitrary error text. This flow does not start TCP
+samplers or Gateway logging, and does not by itself establish a transport cause.
+
+**Advanced diagnostics** retains local-only recording/probe/export and manual
+Core controls for troubleshooting. A local recording test replaces the current
+tunnel and can interrupt active remote requests. Local-only Stop preserves the
+saved evidence and does not stop remote recordings.
 All generations in one test share the original 120-second deadline. After that deadline, recording and the network-path observer stop without stopping
 the transport. A recorded socket cannot be rearmed after its window ends; use a
 fresh attachment for a new recording. The native module keeps at most three

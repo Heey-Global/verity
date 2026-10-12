@@ -457,6 +457,10 @@ export {
 } from './api.js';
 export { healthSchema, type Health } from './api.js';
 export {
+  connectionRecordingStatusSchema,
+  connectionRecordingExportSchema,
+  type ConnectionRecordingStatus,
+  type ConnectionRecordingExport,
   returnPathStatusSchema,
   type ReturnPathStatus,
   remoteControlDescriptorSchema,

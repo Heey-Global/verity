@@ -374,7 +374,11 @@ describe('UplinkControlClient', () => {
     await flush();
     probe.socket.open();
     const hello = JSON.parse(probe.socket.sent[0]!) as Record<string, unknown>;
-    expect(hello.capabilities).toEqual(['remote-control-v1', 'webhook-v1']);
+    expect(hello.capabilities).toEqual([
+      'remote-control-v1',
+      'remote-diagnostics-v1',
+      'webhook-v1',
+    ]);
     expect(hello.channels).toEqual(['http', 'ws', 'remote']);
     await probe.client.stop();
   });
@@ -3208,5 +3212,149 @@ describe('Uplink connection demand', () => {
     admit(f.sockets.at(-1)!, ['remote-control']);
     await assertion;
     await f.client.stop();
+  });
+});
+
+describe('coordinated Uplink recordings', () => {
+  const runId = '11111111-1111-4111-8111-111111111111';
+  async function ready(capability = true) {
+    const fixture = setup({ offerRemoteControl: true, reserveRemoteConnector: vi.fn() });
+    fixture.client.start();
+    await flush();
+    fixture.socket.open();
+    fixture.socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      handle: Buffer.alloc(16, 7).toString('base64url'),
+      features: ['sharing', 'remote-control'],
+      leaseUntil: new Date(Date.now() + 60000).toISOString(),
+      capabilities: ['remote-control-v1', ...(capability ? ['remote-diagnostics-v1'] : [])],
+      channels: ['http', 'ws', 'remote'],
+    });
+    await flush();
+    return fixture;
+  }
+  function reply(socket: FakeSocket, fields: Record<string, unknown> = {}) {
+    const request = JSON.parse(socket.sent.at(-1)!) as Record<string, unknown>;
+    socket.message({
+      type: 'diagnostics.started',
+      requestId: request.requestId,
+      runId,
+      state: 'recording',
+      expiresAt: new Date(Date.now() + 120000).toISOString(),
+      retainedUntil: new Date(Date.now() + 3600000).toISOString(),
+      collectorReady: true,
+      recordCount: 0,
+      droppedRecords: 0,
+      ...fields,
+    });
+    return request;
+  }
+  it('requires negotiated capture support and leaves old Uplinks untouched', async () => {
+    const { client, socket } = await ready(false);
+    await expect(client.startRecording(runId, 120000)).rejects.toThrow('diagnostics_not_available');
+    expect(socket.sent.some((raw) => raw.includes('diagnostics.start'))).toBe(false);
+    await client.stop();
+  });
+  it('sends an installation-bound request and waits for the armed acknowledgement', async () => {
+    const { client, socket } = await ready();
+    const pending = client.startRecording(runId, 120000);
+    const request = reply(socket);
+    expect(request).toEqual({
+      type: 'diagnostics.start',
+      requestId: expect.any(String),
+      runId,
+      durationMs: 120000,
+    });
+    await expect(pending).resolves.toBeUndefined();
+    await client.stop();
+  });
+  it.each([
+    { runId: '22222222-2222-4222-8222-222222222222' },
+    { collectorReady: false },
+    { state: 'stopped' },
+    { recordCount: -1 },
+    { payload: 'x'.repeat(33000) },
+  ])('rejects malformed or mismatched acknowledgement %j', async (fields) => {
+    const { client, socket } = await ready();
+    const pending = client.startRecording(runId, 120000);
+    reply(socket, fields);
+    await expect(pending).rejects.toThrow();
+    await client.stop();
+  });
+  it('bounds a lost acknowledgement and ignores its late response', async () => {
+    vi.useFakeTimers();
+    const { client, socket } = await ready();
+    const pending = client.startRecording(runId, 120000);
+    const assertion = expect(pending).rejects.toThrow('timed out');
+    await vi.advanceTimersByTimeAsync(10000);
+    await assertion;
+    reply(socket);
+    await flush();
+    expect(socket.close).not.toHaveBeenCalled();
+    await client.stop();
+    vi.useRealTimers();
+  });
+  it('projects a stopped paginated export and rejects a stalled cursor', async () => {
+    const { client, socket } = await ready();
+    const event = {
+      event: 'remote.return_path',
+      schemaVersion: 1,
+      session: '0000000000000000',
+      generation: '1111111111111111',
+      party: 'installation',
+      direction: 'in',
+      stage: 'emitted_message',
+      outcome: 'observed',
+      eventOrder: 1,
+      elapsedMs: 3,
+      encodedBytes: 100,
+      payload: 'secret',
+    };
+    const dates = {
+      expiresAt: new Date(Date.now() + 120000).toISOString(),
+      retainedUntil: new Date(Date.now() + 3600000).toISOString(),
+    };
+    const pending = client.exportRecording(runId);
+    reply(socket, {
+      ...dates,
+      type: 'diagnostics.exported',
+      state: 'stopped',
+      cursor: 0,
+      nextCursor: 1,
+      recordCount: 2,
+      records: [event],
+    });
+    await flush();
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      type: 'diagnostics.export',
+      cursor: 1,
+    });
+    reply(socket, {
+      ...dates,
+      type: 'diagnostics.exported',
+      state: 'stopped',
+      cursor: 1,
+      nextCursor: null,
+      recordCount: 2,
+      records: [{ ...event, eventOrder: 2 }],
+    });
+    const result = await pending;
+    expect(JSON.stringify(result)).not.toContain('secret');
+    expect(result).toMatchObject({
+      recordCount: 2,
+      records: [{ eventOrder: 1 }, { eventOrder: 2 }],
+    });
+    const stalled = client.exportRecording(runId);
+    reply(socket, {
+      type: 'diagnostics.exported',
+      state: 'stopped',
+      cursor: 0,
+      nextCursor: 0,
+      recordCount: 1,
+      records: [],
+    });
+    await expect(stalled).rejects.toThrow('invalid_diagnostics_cursor');
+    await client.stop();
   });
 });

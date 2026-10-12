@@ -1,5 +1,12 @@
 import { fireEvent, render as renderScreen, screen, waitFor } from '@testing-library/react-native';
 
+jest.mock('./ConnectionRecording', () => ({
+  ConnectionRecording: () => {
+    const { Text } = require('react-native');
+    return <Text>Unified recording</Text>;
+  },
+}));
+
 const mockTestRemoteControl = jest.fn();
 const mockGetServerProfile = jest.fn();
 const mockExportData = jest.fn();
@@ -353,7 +360,7 @@ it('keeps local stop available without a profile and reports a failed stop hones
   expect(mockStopRecording).toHaveBeenCalledTimes(1);
 });
 
-it('keeps advanced tools hidden while local recording and offline export stay visible', async () => {
+it('keeps standalone controls advanced while unified recording stays visible', async () => {
   mockGetServerProfile.mockReturnValue(null);
   mockRecordingRemaining.mockResolvedValue(0);
   mockTestRemoteControl.mockClear();
@@ -364,9 +371,9 @@ it('keeps advanced tools hidden while local recording and offline export stay vi
   );
   expect(screen.queryByText('Server-only controls')).toBeNull();
   expect(screen.queryByText('Check subscription rights')).toBeNull();
-  expect(screen.getByLabelText('Copy connection recording')).toBeOnTheScreen();
-  expect(screen.getByText('Stop local recording')).toBeOnTheScreen();
-  await screen.findByText('Not recording');
+  expect(screen.queryByLabelText('Copy connection recording')).toBeNull();
+  expect(screen.queryByText('Stop local recording')).toBeNull();
+  expect(screen.getByText('Unified recording')).toBeOnTheScreen();
   expect(mockTestRemoteControl).not.toHaveBeenCalled();
   fireEvent.press(screen.getByText('Advanced diagnostics'));
   expect(screen.getByText('Server-only controls')).toBeOnTheScreen();

@@ -1,3 +1,4 @@
+import { CoordinatedRecordingManager } from './coordinated-recording.js';
 import { ReturnPathActivation } from './remote-return-path-activation.js';
 import type { Conductor } from '@verity/session';
 import { generateKeyPairSync } from 'node:crypto';
@@ -213,6 +214,56 @@ describe('paired device management', () => {
         (await app.inject({ method: 'POST', url, headers, payload: { expiresAt: expiry } }))
           .statusCode,
       ).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('restricts coordinated recordings and retained exports to paired administrators', async () => {
+    const store = new EventStore(ctx.db);
+    const registry = await createAuthTokenRegistry(store, { enabled: true });
+    const device = await registry.mint('recording device');
+    const activation = new ReturnPathActivation(() => ({
+      enabled: true,
+      installationId: 'private-installation',
+    }));
+    const manager = new CoordinatedRecordingManager(activation, {
+      start: async () => {},
+      stop: async () => {},
+      export: async () => ({ records: [] }),
+    });
+    const app = buildServer({
+      eventStore: store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+      returnPathActivation: activation,
+      coordinatedRecording: manager,
+    });
+    const base = '/api/remote-control/recordings';
+    const runId = '01234567-0123-4123-8123-0123456789ab';
+    const headers = { authorization: `Bearer ${device.token}` };
+    const operations = [
+      { method: 'POST' as const, url: base, payload: { runId, durationMs: 120000 } },
+      { method: 'GET' as const, url: `${base}/${runId}` },
+      { method: 'DELETE' as const, url: `${base}/${runId}` },
+      { method: 'GET' as const, url: `${base}/${runId}/export` },
+    ];
+    try {
+      for (const op of operations) expect((await app.inject(op)).statusCode).toBe(401);
+      expect((await app.inject({ ...operations[0], headers })).json().phase).toBe('recording');
+      expect(
+        (await app.inject({ ...operations[0], headers, payload: { runId, durationMs: 120001 } }))
+          .statusCode,
+      ).toBe(400);
+      const admin = vi.spyOn(store, 'isActiveAdministrator').mockResolvedValue(false);
+      for (const op of operations)
+        expect((await app.inject({ ...op, headers })).statusCode).toBe(403);
+      admin.mockRestore();
+      expect((await app.inject({ ...operations[2], headers })).json().phase).toBe('stopped');
+      expect((await app.inject({ ...operations[3], headers })).json().status.runId).toBe(runId);
+      await registry.revoke(device.id);
+      expect((await app.inject({ ...operations[3], headers })).statusCode).toBe(401);
     } finally {
       await app.close();
     }

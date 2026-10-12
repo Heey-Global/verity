@@ -1157,6 +1157,7 @@ export interface ServerDeps {
   previewShareManager?: PreviewShareManager | undefined;
   returnPathActivation?: import('./remote-return-path-activation.js').ReturnPathActivation;
   returnPathConnectorCount?: () => number;
+  coordinatedRecording?: import('./coordinated-recording.js').CoordinatedRecordingManager;
   remoteControlDescriptor?: (() => RemoteControlDescriptor) | undefined;
   runtimeDiagnostics?: ReturnType<typeof createRuntimeDiagnostics> | undefined;
   uplinkDiagnostics?:
@@ -4379,6 +4380,72 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   app.addHook('onClose', (_instance, done) => {
     deps.returnPathActivation?.dispose();
+    done();
+  });
+  const recordingRequest = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    operation: (
+      manager: import('./coordinated-recording.js').CoordinatedRecordingManager,
+    ) => unknown,
+  ): Promise<unknown> => {
+    if (!(await authorizeReturnPath(request, reply))) return;
+    if (!deps.coordinatedRecording)
+      return reply.code(503).send({ error: 'recordings_unavailable' });
+    try {
+      return await operation(deps.coordinatedRecording);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      const reasons = [
+        'invalid_recording',
+        'recording_conflict',
+        'recording_capacity',
+        'recording_not_found',
+        'remote_unavailable',
+      ];
+      const reason = reasons.includes(message) ? message : 'recording_failed';
+      const code =
+        reason === 'recording_not_found'
+          ? 404
+          : reason === 'invalid_recording'
+            ? 400
+            : reason === 'recording_conflict' || reason === 'recording_capacity'
+              ? 409
+              : 503;
+      return reply.code(code).send({ error: reason });
+    }
+  };
+  app.post('/api/remote-control/recordings', async (request, reply) =>
+    recordingRequest(request, reply, (manager) => {
+      const body = request.body as Record<string, unknown> | null;
+      if (
+        !body ||
+        typeof body !== 'object' ||
+        Object.keys(body).length !== 2 ||
+        typeof body.runId !== 'string' ||
+        typeof body.durationMs !== 'number'
+      )
+        throw new Error('invalid_recording');
+      return manager.start(body.runId, body.durationMs);
+    }),
+  );
+  app.get('/api/remote-control/recordings/:runId', async (request, reply) =>
+    recordingRequest(request, reply, (manager) =>
+      manager.status((request.params as { runId: string }).runId),
+    ),
+  );
+  app.delete('/api/remote-control/recordings/:runId', async (request, reply) =>
+    recordingRequest(request, reply, (manager) =>
+      manager.stop((request.params as { runId: string }).runId),
+    ),
+  );
+  app.get('/api/remote-control/recordings/:runId/export', async (request, reply) =>
+    recordingRequest(request, reply, (manager) =>
+      manager.export((request.params as { runId: string }).runId),
+    ),
+  );
+  app.addHook('onClose', (_instance, done) => {
+    deps.coordinatedRecording?.dispose();
     done();
   });
   app.get('/api/remote-control/descriptor', async (request, reply) => {

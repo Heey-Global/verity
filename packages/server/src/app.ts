@@ -102,6 +102,7 @@ export interface ControlPlaneDeps {
   managedDevServerManager?: ServerDeps['managedDevServerManager'];
   previewSharingCapability?: ServerDeps['previewSharingCapability'];
   returnPathActivation?: ServerDeps['returnPathActivation'];
+  coordinatedRecording?: ServerDeps['coordinatedRecording'];
   returnPathConnectorCount?: ServerDeps['returnPathConnectorCount'];
   remoteControlDescriptor?: ServerDeps['remoteControlDescriptor'];
   uplinkDiagnostics?: ServerDeps['uplinkDiagnostics'];
@@ -382,6 +383,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.previewShareManager !== undefined
       ? { previewShareManager: deps.previewShareManager }
+      : {}),
+    ...(deps.coordinatedRecording !== undefined
+      ? { coordinatedRecording: deps.coordinatedRecording }
       : {}),
     ...(deps.returnPathActivation !== undefined
       ? { returnPathActivation: deps.returnPathActivation }

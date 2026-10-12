@@ -1639,3 +1639,28 @@ it('disarms a capture whose native activation finishes after stop', async () => 
   expect(mockDisableDiagnostics).toHaveBeenCalledTimes(2);
   expect(mockStart).not.toHaveBeenCalled();
 });
+
+it('arms coordinated recording on a fresh tunnel without admission or a health probe', async () => {
+  jest.resetModules();
+  mockCaptureDiagnostics.mockReset().mockResolvedValue(true);
+  mockRecordingRemaining.mockReset().mockResolvedValueOnce(0).mockResolvedValueOnce(119_000);
+  mockAdmission.mockClear();
+  mockRequest.mockClear();
+  mockStart.mockClear();
+  const transport =
+    require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  expect(await transport.startRemoteDataRecording()).toBe(119_000);
+  expect(mockCaptureDiagnostics).toHaveBeenCalledTimes(1);
+  expect(mockAdmission).not.toHaveBeenCalled();
+  expect(mockRequest).not.toHaveBeenCalled();
+  expect(mockStart).not.toHaveBeenCalled();
+});
+it('does not renew an already active coordinated capture', async () => {
+  jest.resetModules();
+  mockRecordingRemaining.mockReset().mockResolvedValue(60_000);
+  mockCaptureDiagnostics.mockClear();
+  const transport =
+    require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  await expect(transport.startRemoteDataRecording()).rejects.toThrow('Recording already active');
+  expect(mockCaptureDiagnostics).not.toHaveBeenCalled();
+});

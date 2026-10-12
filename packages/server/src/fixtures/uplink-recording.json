@@ -1,0 +1,132 @@
+{
+  "synthetic": true,
+  "responses": [
+    {
+      "type": "diagnostics.started",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "runId": "00000000-0000-4000-8000-000000000002",
+      "state": "recording",
+      "expiresAt": "2026-10-12T10:02:00.000Z",
+      "retainedUntil": "2026-10-12T11:00:00.000Z",
+      "collectorReady": true,
+      "recordCount": 0,
+      "droppedRecords": 0
+    },
+    {
+      "type": "diagnostics.status",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "runId": "00000000-0000-4000-8000-000000000002",
+      "state": "recording",
+      "expiresAt": "2026-10-12T10:02:00.000Z",
+      "retainedUntil": "2026-10-12T11:00:00.000Z",
+      "collectorReady": true,
+      "recordCount": 0,
+      "droppedRecords": 0
+    },
+    {
+      "type": "diagnostics.stopped",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "runId": "00000000-0000-4000-8000-000000000002",
+      "state": "stopped",
+      "expiresAt": "2026-10-12T10:02:00.000Z",
+      "retainedUntil": "2026-10-12T11:00:00.000Z",
+      "collectorReady": true,
+      "recordCount": 2,
+      "droppedRecords": 0
+    },
+    {
+      "type": "diagnostics.exported",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "runId": "00000000-0000-4000-8000-000000000002",
+      "state": "stopped",
+      "expiresAt": "2026-10-12T10:02:00.000Z",
+      "retainedUntil": "2026-10-12T11:00:00.000Z",
+      "collectorReady": true,
+      "recordCount": 2,
+      "droppedRecords": 0,
+      "cursor": 0,
+      "nextCursor": 1,
+      "records": [
+        {
+          "event": "remote.return_path",
+          "schemaVersion": 1,
+          "session": "0000000000000000",
+          "generation": "1111111111111111",
+          "party": "installation",
+          "direction": "in",
+          "stage": "emitted_message",
+          "outcome": "observed",
+          "eventOrder": 1,
+          "elapsedMs": 3,
+          "encodedBytes": 100
+        }
+      ]
+    },
+    {
+      "type": "diagnostics.exported",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "runId": "00000000-0000-4000-8000-000000000002",
+      "state": "stopped",
+      "expiresAt": "2026-10-12T10:02:00.000Z",
+      "retainedUntil": "2026-10-12T11:00:00.000Z",
+      "collectorReady": true,
+      "recordCount": 2,
+      "droppedRecords": 0,
+      "cursor": 1,
+      "nextCursor": null,
+      "records": [
+        {
+          "event": "remote.return_path",
+          "schemaVersion": 1,
+          "session": "0000000000000000",
+          "generation": "1111111111111111",
+          "party": "installation",
+          "direction": "in",
+          "stage": "emitted_message",
+          "outcome": "observed",
+          "eventOrder": 2,
+          "elapsedMs": 4,
+          "encodedBytes": 100
+        }
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "type": "diagnostics.error",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "runId": "00000000-0000-4000-8000-000000000002",
+      "code": "not_available"
+    },
+    {
+      "type": "diagnostics.error",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "runId": "00000000-0000-4000-8000-000000000002",
+      "code": "not_entitled"
+    },
+    {
+      "type": "diagnostics.error",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "runId": "00000000-0000-4000-8000-000000000002",
+      "code": "not_found"
+    },
+    {
+      "type": "diagnostics.error",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "runId": "00000000-0000-4000-8000-000000000002",
+      "code": "conflict"
+    },
+    {
+      "type": "diagnostics.error",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "runId": "00000000-0000-4000-8000-000000000002",
+      "code": "limit_reached"
+    },
+    {
+      "type": "diagnostics.error",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "runId": "00000000-0000-4000-8000-000000000002",
+      "code": "invalid_cursor"
+    }
+  ]
+}

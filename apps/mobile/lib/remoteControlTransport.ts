@@ -513,6 +513,49 @@ export async function remoteControlPortForUrl(
   }
 }
 
+/** Arms recording only; the normal app flow supplies requests during the window. */
+export async function startRemoteDataRecording(): Promise<number> {
+  const revision = diagnosticCaptureRevision;
+  const selected = operation.then(async () => {
+    if (revision !== diagnosticCaptureRevision) throw new Error('Recording stopped');
+    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+    if (
+      !native.captureDataDiagnostics ||
+      !native.dataDiagnosticsRemainingMs ||
+      !native.disableDataDiagnostics
+    ) {
+      throw new Error('Recording requires a newer native app build');
+    }
+    const existing = await native.dataDiagnosticsRemainingMs();
+    if (revision !== diagnosticCaptureRevision || existing > 0)
+      throw new Error('Recording already active or stopped');
+    await stopNativeTunnel('replacement');
+    active = null;
+    if (revision !== diagnosticCaptureRevision) throw new Error('Recording stopped');
+    const armed = await native.captureDataDiagnostics();
+    if (revision !== diagnosticCaptureRevision) {
+      await native.disableDataDiagnostics();
+      throw new Error('Recording stopped');
+    }
+    const remaining = await native.dataDiagnosticsRemainingMs();
+    if (!armed || !Number.isFinite(remaining) || remaining <= 0 || remaining > 120_000) {
+      await native.disableDataDiagnostics();
+      throw new Error('Recording unavailable');
+    }
+    if (revision !== diagnosticCaptureRevision) {
+      await native.disableDataDiagnostics();
+      throw new Error('Recording stopped');
+    }
+    diagnosticCaptureUntil = Date.now() + remaining;
+    return remaining;
+  });
+  operation = selected.then(
+    () => undefined,
+    () => undefined,
+  );
+  return selected;
+}
+
 /** Local-only status; reading it never starts a recording or contacts Core. */
 export async function remoteDataRecordingRemainingMs(): Promise<number | null> {
   try {
