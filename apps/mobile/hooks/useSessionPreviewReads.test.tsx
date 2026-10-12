@@ -288,3 +288,30 @@ it('aborts actual preview and managed requests on session switch and unmount, ig
   unmount();
   for (const signal of secondSignals) expect(signal.aborted).toBe(true);
 });
+
+it('admits preview work only when enabled and aborts an early-open read on session change', async () => {
+  const { read, pending } = deferredRead();
+  const client = { listManagedDevServers: read } as unknown as VerityClient;
+  const hook = renderHook(
+    ({ enabled, sessionId }: { enabled: boolean; sessionId: string }) =>
+      useSessionPreviewReads({
+        client,
+        sessionId,
+        projectId: null,
+        loaded: false,
+        enabled,
+        completedServerTools: 0,
+        devServers: undefined,
+      }),
+    { initialProps: { enabled: false, sessionId: 'a' } },
+  );
+  expect(read).not.toHaveBeenCalled();
+  hook.rerender({ enabled: true, sessionId: 'a' });
+  expect(read).toHaveBeenCalledTimes(1);
+  const signal = read.mock.calls[0]![1];
+  hook.rerender({ enabled: false, sessionId: 'b' });
+  expect(signal.aborted).toBe(true);
+  await act(async () => pending[0]!.resolve([]));
+  expect(hook.result.current.managedByInstance.size).toBe(0);
+  expect(read).toHaveBeenCalledTimes(1);
+});
