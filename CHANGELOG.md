@@ -1,5 +1,22 @@
 # Changelog
 
+## [4.41.0](https://github.com/Heey-Global/verity/compare/v4.40.0...v4.41.0) (2026-10-12)
+
+
+### Features
+
+* **mobile:** set type in Inter with the design-system type styles ([#1536](https://github.com/Heey-Global/verity/issues/1536)) ([5b00966](https://github.com/Heey-Global/verity/commit/5b00966a6355c5095574da021cf38795136f9e7c))
+* **opencode:** enable Exa web search for custom providers ([#1540](https://github.com/Heey-Global/verity/issues/1540)) ([a164660](https://github.com/Heey-Global/verity/commit/a164660e024fa009ce1cd2b3cbab22c3c4e11c89))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1534](https://github.com/Heey-Global/verity/issues/1534)) ([4f6a6a8](https://github.com/Heey-Global/verity/commit/4f6a6a8f83caadf636484671b4f7ebe04760cf84))
+* **deps:** update dependency @fastify/compress to v9.2.1 ([#1531](https://github.com/Heey-Global/verity/issues/1531)) ([5691c79](https://github.com/Heey-Global/verity/commit/5691c79150cab6de855e631e3c8112f157d09f62))
+* **deps:** update dependency @fastify/rate-limit to v11.2.1 ([#1532](https://github.com/Heey-Global/verity/issues/1532)) ([9f378dc](https://github.com/Heey-Global/verity/commit/9f378dcf5b04817d1c1e6960a0ed44513dd2bb5d))
+* **server:** allow Codex standalone web search through gateway ([#1539](https://github.com/Heey-Global/verity/issues/1539)) ([ea9435d](https://github.com/Heey-Global/verity/commit/ea9435de5c1f897b4ab5c89d632654b9f5d1a6da))
+* **server:** avoid duplicate builds during forced recreation ([#1543](https://github.com/Heey-Global/verity/issues/1543)) ([5c6f085](https://github.com/Heey-Global/verity/commit/5c6f0851b289310e427a21c4053e2420b09eb9a4))
+
 ## [4.40.0](https://github.com/Heey-Global/verity/compare/v4.39.0...v4.40.0) (2026-10-11)
 
 
