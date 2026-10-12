@@ -142,12 +142,15 @@ private func runIntegration() async -> Bool {
       let snapshot = try JSONSerialization.jsonObject(with: Data(export.utf8)) as? [String: Any],
       let events = snapshot["events"] as? [[String: Any]]
     else { throw IntegrationFailure.diagnostics }
-    let names = events.compactMap { $0["event"] as? String }
+    let names = events.map { $0["event"] as? String ?? "unknown" }
     guard names.contains("attached"),
       names.filter({ $0 == "cancel_requested" }).count == 1,
       names.filter({ $0 == "socket_cancel" }).count == 1,
       let requested = names.firstIndex(of: "cancel_requested"),
-      let cancelled = names.firstIndex(of: "socket_cancel"), requested < cancelled
+      let cancelled = names.firstIndex(of: "socket_cancel"), requested < cancelled,
+      events[requested]["cause"] as? String == "app_stop",
+      events[cancelled]["cause"] as? String == "app_stop",
+      !events.prefix(requested).contains(where: { $0["event"] as? String == "failure" })
     else { throw IntegrationFailure.diagnostics }
     persistIntegrationResult("{\"success\":true,\"checks\":[\"production_decoder\",\"app_attached\",\"health_receipt\",\"parallel_exact_echo\",\"core_pin_rejection\",\"ordered_idempotent_stop\"]}")
     return true
