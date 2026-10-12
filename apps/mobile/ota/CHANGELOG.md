@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.68.2](https://github.com/Heey-Global/verity/compare/mobile-v1.68.1...mobile-v1.68.2) (2026-10-12)
+
+
+### Features
+
+* **diagnostics:** record bounded socket and receiver state ([#1557](https://github.com/Heey-Global/verity/issues/1557)) ([a0839a2](https://github.com/Heey-Global/verity/commit/a0839a208d4eea1c266f5d5cc272176308dd86da))
+
+
+### Bug Fixes
+
+* **mobile:** restore red attention colors ([#1554](https://github.com/Heey-Global/verity/issues/1554)) ([ecd42c3](https://github.com/Heey-Global/verity/commit/ecd42c36a75b37ef7b67bd25a212675788f984c7))
+* **session:** retry model capacity failures with system notices ([#1553](https://github.com/Heey-Global/verity/issues/1553)) ([42395f9](https://github.com/Heey-Global/verity/commit/42395f93ee87c0407212d6164242cbc64cad133e))
+
 ## [1.68.1](https://github.com/Heey-Global/verity/compare/mobile-v1.68.0...mobile-v1.68.1) (2026-10-12)
 
 
