@@ -120,7 +120,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: github.event_name == 'push' && inputs.train == 'mobile'
         continue-on-error: true
         timeout-minutes: 3
@@ -343,7 +343,7 @@ jobs:
       # Native compatibility uses Expo's installed dependency graph, installed
       # below only when the verdict of `classify-native-changes` is unusable.
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: github.event_name == 'push' && inputs.train == 'mobile'
         with:
           node-version: '26.11.1'
@@ -780,7 +780,7 @@ jobs:
           steps.release-backend.outputs.prs_created == 'true' ||
           steps.release-mobile.outputs.prs_created == 'true' ||
           steps.release-website.outputs.prs_created == 'true'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.11.1'
 
@@ -900,7 +900,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.11.1'
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1326,7 +1326,7 @@ jobs:
           fetch-depth: 0
 
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.11.1'
 
@@ -1507,7 +1507,7 @@ jobs:
           fetch-depth: 0
 
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.11.1'
 
@@ -1608,7 +1608,7 @@ jobs:
           sparse-checkout: scripts
           persist-credentials: false
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.11.1'
       - name: Stage multi-architecture relay and Matrix connector indexes
@@ -1681,7 +1681,7 @@ jobs:
           fetch-depth: 0
 
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.11.1'
 
@@ -1857,7 +1857,7 @@ jobs:
           fetch-depth: 0
 
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.11.1'
 
@@ -2441,7 +2441,7 @@ jobs:
       # The relay smoke harness uses host-side Node; provision it explicitly on
       # runner Docker daemons before validating the exact release image.
       # renovate: datasource=github-actions depName=actions/setup-node
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.11.1'
 
@@ -2922,7 +2922,7 @@ jobs:
           path: .release-tools
           sparse-checkout: scripts
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.11.1'
       - name: Publish multi-architecture Matrix connector index
@@ -2990,7 +2990,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '26.11.1'
       - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
