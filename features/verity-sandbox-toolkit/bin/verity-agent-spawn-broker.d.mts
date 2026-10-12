@@ -144,6 +144,10 @@ export function validateTrustedCliArguments(
     worktreeRoot?: string;
   },
   options?: {
+    enforceRoot?: boolean;
+    agentUid?: number;
+    agentGid?: number;
+    setprivPath?: string;
     /** Test seam. Production always uses the immutable adjacent sidecar loader. */
     loadArgvPolicy?: (resolvedCommand: string) => Promise<unknown | undefined>;
   },
@@ -170,7 +174,15 @@ export function materializeTrustedCliEntryScript(
       worktreeRoot: string;
     };
   },
-  options: Pick<AgentSpawnBrokerOptions, 'secretDir' | 'trustedCliEntryScriptDir'>,
+  options: Pick<
+    AgentSpawnBrokerOptions,
+    | 'secretDir'
+    | 'trustedCliEntryScriptDir'
+    | 'agentUid'
+    | 'agentGid'
+    | 'setprivPath'
+    | 'enforceRoot'
+  >,
 ): Promise<{
   args: string[];
   entrySandbox?: {
