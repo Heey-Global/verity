@@ -5,7 +5,12 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import WebSocket from 'ws';
-import { createRemoteConnectorPool } from '../../packages/server/dist/remote-control-connector.js';
+import type * as CoreConnector from '../../packages/server/src/remote-control-connector.js';
+
+// Lint runs before build; derive types from source while executing the built connector.
+const { createRemoteConnectorPool } = (await import(
+  new URL('../../packages/server/dist/remote-control-connector.js', import.meta.url).href
+)) as typeof CoreConnector;
 
 interface UplinkFixture {
   dataURL: string;
