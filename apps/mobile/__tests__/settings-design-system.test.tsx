@@ -27,6 +27,7 @@ it('renders every building block and keeps the interactive examples working', ()
   expect(
     screen.getByRole('switch', { name: 'Online sharing' }).props.accessibilityState,
   ).toMatchObject({ checked: false });
-  fireEvent.press(screen.getByRole('button', { name: 'Remove key' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Remove subscription key' }));
   expect(screen.getByText('Remove subscription key?')).toBeOnTheScreen();
+  expect(screen.getByRole('button', { name: 'Remove key' })).toBeOnTheScreen();
 });

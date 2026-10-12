@@ -136,18 +136,23 @@ export function ConfirmSheet({
   onCancel: () => void;
 }) {
   const [running, setRunning] = useState(false);
+  // State only locks the button after the next render; two taps delivered
+  // before it would both start the action. The ref locks synchronously.
+  const inFlight = useRef(false);
   useEffect(() => {
     if (visible) AccessibilityInfo.announceForAccessibility(`${title} ${message}`);
     else setRunning(false);
   }, [visible, title, message]);
   const confirm = async () => {
-    if (running) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
     setRunning(true);
     try {
       await onConfirm();
     } catch {
       // The caller reports the failure; the sheet stays open for another try.
     } finally {
+      inFlight.current = false;
       setRunning(false);
     }
   };

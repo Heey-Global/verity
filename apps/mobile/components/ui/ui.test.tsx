@@ -169,6 +169,17 @@ describe('ConfirmSheet', () => {
     announce.mockRestore();
   });
 
+  // Two taps in the same frame both see the unlocked state; only one may run.
+  it('starts the action once for two taps before the next render', () => {
+    const onConfirm = jest.fn(() => new Promise<void>(() => undefined));
+    renderSheet(onConfirm);
+    // The Button component's own handler, called twice without a render between.
+    const press = screen.UNSAFE_getByProps({ label: 'Turn off' }).props.onPress as () => void;
+    press();
+    press();
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
   it('locks itself while the action runs and reopens for another try after a failure', async () => {
     let fail!: (error: Error) => void;
     const onConfirm = jest.fn(

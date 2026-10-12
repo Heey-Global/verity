@@ -71,9 +71,10 @@ export default function DesignSystemCatalog() {
           <IconButton icon="plus" accessibilityLabel="Add" onPress={() => undefined} />
           <IconButton icon="more-horizontal" accessibilityLabel="More" onPress={() => undefined} />
         </View>
+        {/* Destructive is only the confirming action; the trigger stays secondary. */}
         <Button
-          label="Remove key"
-          variant="destructive"
+          label="Remove subscription key"
+          variant="secondary"
           onPress={() => setConfirmOpen(true)}
           fullWidth
         />
