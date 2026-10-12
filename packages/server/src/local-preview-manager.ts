@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { PreviewEdge, hashPreviewSecret } from '@verity/preview-tunnel';
-import type { EventStore } from '@verity/store';
+import type { EventStore, LocalPreviewShareRecord } from '@verity/store';
 import { DockerError } from './docker.js';
 import { projectNetworkName } from './provisioner.js';
 import { containerGenerationOf } from './project-relay-migration.js';
@@ -48,16 +48,22 @@ export interface LocalPreviewManagerOptions extends Omit<PreviewShareManagerOpti
   reservedNetworkPorts?: () => ReadonlySet<number>;
 }
 
-/** Local edges are process-owned. Restarting Server closes their sockets; startup
- * removes the labelled orphan connectors instead of restoring stale URLs. */
+/** Durable share intent survives resource shutdown and is restored on activation. */
 export class LocalPreviewManager {
   private readonly active = new Map<string, ActiveShare>();
   private readonly reserved = new Set<number>();
+  private readonly durableIds = new Set<string>();
+  private readonly durable = new Map<string, LocalPreviewShareRecord>();
+  private readonly restoring = new Map<string, Promise<LocalPreviewShare>>();
+  private readonly stopping = new Set<string>();
+  // Share IDs are never reused: a stale recovery snapshot must not resurrect a stopped share.
+  private readonly stopped = new Set<string>();
   private readonly targets: PreviewShareManager;
   private readonly ports: number[];
   private readonly blockedProjects = new Set<string>();
   private readonly creating = new Set<Promise<unknown>>();
   private closing = false;
+  private recovering?: Promise<void>;
   private readonly blockedSessions = new Set<string>();
   private readonly pendingTargets = new Map<string, Promise<LocalPreviewShare>>();
   private bufferedRequests = 0;
@@ -86,28 +92,54 @@ export class LocalPreviewManager {
     return this.targets.listStaticEntries(projectId, path, sessionId);
   }
   list(sessionId: string): LocalPreviewShare[] {
-    return [...this.active.values()]
-      .filter((v) => v.ready && v.share.sessionId === sessionId)
-      .map((v) => v.share);
+    return this.visibleShares().filter((share) => share.sessionId === sessionId);
   }
   listProject(projectId: string): LocalPreviewShare[] {
-    return [...this.active.values()]
-      .filter((v) => v.ready && v.share.projectId === projectId)
-      .map((v) => v.share);
+    return this.visibleShares().filter((share) => share.projectId === projectId);
+  }
+  private publicShare(saved: LocalPreviewShareRecord): LocalPreviewShare {
+    return {
+      id: saved.id,
+      url: saved.url,
+      projectId: saved.projectId,
+      sessionId: saved.sessionId,
+      targetPort: saved.targetPort,
+      staticPath: saved.staticPath,
+      expiresAt: saved.expiresAt,
+    };
+  }
+  private visibleShares(): LocalPreviewShare[] {
+    const shares = new Map<string, LocalPreviewShare>();
+    for (const saved of this.durable.values())
+      if (saved.state === 'active' && !this.stopping.has(saved.id) && !this.stopped.has(saved.id))
+        shares.set(saved.id, this.publicShare(saved));
+    for (const state of this.active.values())
+      if (state.ready && !this.stopping.has(state.share.id) && !this.stopped.has(state.share.id))
+        shares.set(state.share.id, state.share);
+    return [...shares.values()];
   }
   /** Network ports held by shares right now, with the share that holds each. */
   heldPorts(): Map<number, LocalPreviewShare> {
-    return new Map([...this.active.values()].map((state) => [state.port, state.share]));
+    return new Map([
+      ...[...this.durable.values()].map((saved): [number, LocalPreviewShare] => [
+        saved.networkPort,
+        this.publicShare(saved),
+      ]),
+      ...[...this.active.values()].map((state): [number, LocalPreviewShare] => [
+        state.port,
+        state.share,
+      ]),
+    ]);
   }
   portOf(shareId: string): number | undefined {
-    return this.active.get(shareId)?.port;
+    return this.active.get(shareId)?.port ?? this.durable.get(shareId)?.networkPort;
   }
   ownsConnector(id: string, shareId?: string): boolean {
-    if (shareId && this.active.has(shareId)) return true;
+    if (shareId && (this.active.has(shareId) || this.durableIds.has(shareId))) return true;
     return [...this.active.values()].some((state) => state.connectorId === id);
   }
   hasProjectShares(projectId: string): boolean {
-    return [...this.active.values()].some((v) => v.share.projectId === projectId);
+    return this.visibleShares().some((share) => share.projectId === projectId);
   }
   async create(
     sessionId: string,
@@ -117,8 +149,10 @@ export class LocalPreviewManager {
       ttlSeconds?: number | undefined;
       /** The managed dev server's reserved network port. */
       networkPort?: number | undefined;
+      managedInstanceId?: string | undefined;
     },
   ): Promise<LocalPreviewShare> {
+    await this.hydrate();
     const key = JSON.stringify([sessionId, input.targetPort ?? null, input.staticPath ?? null]);
     const pending = this.pendingTargets.get(key);
     if (pending) return pending;
@@ -139,7 +173,9 @@ export class LocalPreviewManager {
       staticPath?: string | undefined;
       ttlSeconds?: number | undefined;
       networkPort?: number | undefined;
+      managedInstanceId?: string | undefined;
     },
+    saved?: LocalPreviewShareRecord,
   ): Promise<LocalPreviewShare> {
     if (this.closing || this.blockedSessions.has(sessionId))
       throw new PreviewShareConflictError('local previews are stopping');
@@ -153,18 +189,21 @@ export class LocalPreviewManager {
       this.blockedProjects.has(target.project.id)
     )
       throw new PreviewShareConflictError('project is changing');
-    const existing = this.list(sessionId).find(
+    const existing = this.visibleShares().find(
       (s) =>
-        s.targetPort === (input.targetPort ?? null) && s.staticPath === (input.staticPath ?? null),
+        s.id !== saved?.id &&
+        s.sessionId === sessionId &&
+        s.targetPort === (input.targetPort ?? null) &&
+        s.staticPath === (input.staticPath ?? null),
     );
-    const existingPort = existing ? this.active.get(existing.id)?.port : undefined;
+    const existingPort = existing ? this.portOf(existing.id) : undefined;
     if (
       existing &&
       existing.expiresAt.getTime() > Date.now() &&
       (input.networkPort === undefined || existingPort === input.networkPort)
     )
       return existing;
-    if (existing) await this.stop(existing.id);
+    if (existing) await this.stopInner(existing.id);
     const managed = this.options.reservedNetworkPorts?.() ?? new Set<number>();
     const port =
       input.networkPort !== undefined
@@ -179,10 +218,10 @@ export class LocalPreviewManager {
         'local preview ports are full; stop a preview or expand VERITY_LOCAL_PREVIEW_PORT_RANGE',
       );
     this.reserved.add(port);
-    const id = `local-${randomBytes(16).toString('hex')}`;
-    const secret = randomBytes(32).toString('base64url');
-    const url = new URL(`http://${this.options.publicHost}:${port}`).origin;
-    const expiresAt = new Date(Date.now() + ttl * 1000);
+    const id = saved?.id ?? `local-${randomBytes(16).toString('hex')}`;
+    const secret = saved?.connectorSecret ?? randomBytes(32).toString('base64url');
+    const url = saved?.url ?? new URL(`http://${this.options.publicHost}:${port}`).origin;
+    const expiresAt = saved?.expiresAt ?? new Date(Date.now() + ttl * 1000);
     const edge = new PreviewEdge({
       shareId: id,
       accessMode: 'local-open',
@@ -213,6 +252,35 @@ export class LocalPreviewManager {
     };
     this.active.set(id, state);
     try {
+      if (!saved)
+        await this.options.store.createLocalPreviewShare({
+          ...state.share,
+          managedInstanceId:
+            input.managedInstanceId ??
+            (await this.options.store.managedDevServers?.listInstances({ sessionId }))?.find(
+              (instance) =>
+                instance.sandboxPort === input.targetPort && instance.networkPort === port,
+            )?.id ??
+            null,
+          networkPort: port,
+          connectorSecret: secret,
+        });
+      const record = (await this.options.store.listLocalPreviewShares()).find(
+        (entry) => entry.id === id,
+      );
+      if (record) {
+        this.durable.set(id, record);
+        this.durableIds.add(id);
+      }
+      // A process handoff may leave the old connector behind; replace it with the
+      // same credentials after claiming its durable identity.
+      if (saved) {
+        try {
+          await this.options.docker.removeContainer(`verity-preview-${id}`);
+        } catch (error) {
+          if (!(error instanceof DockerError && error.kind === 'container_not_found')) throw error;
+        }
+      }
       await edge.listen(port, '0.0.0.0');
       state.edgeStarted = true;
       const image = await this.options.resolveConnectorImage();
@@ -291,6 +359,7 @@ export class LocalPreviewManager {
       if (!ready) throw new Error('local connector did not become ready');
       const current = await this.targets.prepareLocalTarget(sessionId, input);
       if (
+        this.stopping.has(id) ||
         current.generation !== state.generation ||
         this.blockedProjects.has(target.project.id) ||
         this.closing ||
@@ -302,11 +371,45 @@ export class LocalPreviewManager {
       return state.share;
     } catch (error) {
       state.provisioning = false;
-      await this.stop(id);
+      if (saved) await this.release(id);
+      else await this.stopInner(id);
       throw error;
     }
   }
   async stop(id: string): Promise<boolean> {
+    this.stopped.add(id);
+    this.stopping.add(id);
+    try {
+      await this.options.store.revokeLocalPreviewShare(id);
+      await this.restoring.get(id)?.catch(() => {});
+      if (this.active.get(id)?.provisioning)
+        await Promise.allSettled([...this.pendingTargets.values()]);
+      return await this.stopInner(id);
+    } finally {
+      this.stopping.delete(id);
+    }
+  }
+  private async stopInner(id: string): Promise<boolean> {
+    this.stopped.add(id);
+    const saved = (await this.options.store.listLocalPreviewShares()).find(
+      (share) => share.id === id,
+    );
+    await this.options.store.revokeLocalPreviewShare(id);
+    const removed = await this.release(id);
+    if (!removed) {
+      try {
+        await this.options.docker.removeContainer(`verity-preview-${id}`);
+      } catch (error) {
+        if (!(error instanceof DockerError && error.kind === 'container_not_found')) throw error;
+      }
+    }
+    this.durableIds.delete(id);
+    this.durable.delete(id);
+    if (saved) this.reserved.delete(saved.networkPort);
+    await this.options.store.deleteLocalPreviewShare(id);
+    return removed || saved !== undefined;
+  }
+  private async release(id: string): Promise<boolean> {
     const state = this.active.get(id);
     if (!state) return false;
     // Keep the lease until both resources are closed; a failed Docker removal is retried.
@@ -326,14 +429,15 @@ export class LocalPreviewManager {
     return true;
   }
   async stopProject(projectId: string): Promise<void> {
-    for (const state of this.active.values())
-      if (state.share.projectId === projectId) await this.stop(state.share.id);
+    for (const share of await this.options.store.listLocalPreviewShares())
+      if (share.projectId === projectId) await this.stop(share.id);
   }
   async stopSession(sessionId: string): Promise<void> {
     this.blockedSessions.add(sessionId);
     try {
       await Promise.allSettled([...this.creating]);
-      for (const share of this.list(sessionId)) await this.stop(share.id);
+      for (const share of await this.options.store.listLocalPreviewShares())
+        if (share.sessionId === sessionId) await this.stop(share.id);
     } finally {
       this.blockedSessions.delete(sessionId);
     }
@@ -341,7 +445,11 @@ export class LocalPreviewManager {
   async withProjectMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
     const release = await this.beginSessionMove(projectId);
     try {
-      await this.stopProject(projectId);
+      for (const share of this.listProject(projectId)) {
+        const port = this.portOf(share.id);
+        await this.release(share.id);
+        if (port !== undefined) this.reserved.add(port);
+      }
       return await mutation();
     } finally {
       release();
@@ -361,11 +469,124 @@ export class LocalPreviewManager {
       this.blockedProjects.delete(projectId);
     };
   }
+  restore(): Promise<void> {
+    if (this.closing) return Promise.resolve();
+    if (this.recovering) return this.recovering;
+    const work = this.restoreInner();
+    this.recovering = work;
+    this.creating.add(work);
+    void work
+      .finally(() => {
+        this.creating.delete(work);
+        delete this.recovering;
+      })
+      .catch(() => {});
+    return work;
+  }
+  private async hydrate(): Promise<LocalPreviewShareRecord[]> {
+    const records = await this.options.store.listLocalPreviewShares();
+    const ids = new Set(records.map((record) => record.id));
+    for (const [id, saved] of this.durable) {
+      if (!ids.has(id)) {
+        this.durable.delete(id);
+        this.durableIds.delete(id);
+        if (!this.active.has(id)) this.reserved.delete(saved.networkPort);
+      }
+    }
+    for (const saved of records) {
+      if (this.stopped.has(saved.id)) continue;
+      this.durableIds.add(saved.id);
+      this.durable.set(saved.id, saved);
+      if (!this.active.has(saved.id)) this.reserved.add(saved.networkPort);
+    }
+    return records;
+  }
+  private async restoreInner(): Promise<void> {
+    const records = await this.hydrate();
+    for (const saved of records) {
+      if (this.closing) return;
+      if (this.stopped.has(saved.id)) {
+        await this.stopInner(saved.id);
+        continue;
+      }
+      if (saved.state === 'revoking' || saved.expiresAt.getTime() <= Date.now()) {
+        await this.stop(saved.id);
+        continue;
+      }
+      if (this.active.has(saved.id)) continue;
+      const project = await this.options.store.getProject(saved.projectId);
+      const session = await this.options.store.getSession(saved.sessionId);
+      if (!project || session?.projectId !== project.id) {
+        await this.stop(saved.id);
+        continue;
+      }
+      if (
+        project.state !== 'active' ||
+        this.blockedProjects.has(project.id) ||
+        this.blockedSessions.has(saved.sessionId) ||
+        this.stopping.has(saved.id) ||
+        this.stopped.has(saved.id)
+      )
+        continue;
+      if (saved.managedInstanceId) {
+        const instance = await this.options.store.managedDevServers.getInstance(
+          saved.managedInstanceId,
+        );
+        if (
+          !instance ||
+          instance.sessionId !== saved.sessionId ||
+          instance.projectId !== saved.projectId ||
+          !instance.localAccess ||
+          instance.networkPort !== saved.networkPort
+        ) {
+          await this.stop(saved.id);
+          continue;
+        }
+        if (
+          instance.desired !== 'running' ||
+          !instance.lastRunCommand ||
+          !instance.lastRunWorkdir ||
+          !(await this.options.store.managedDevServers.isApproved(
+            instance.serverId,
+            instance.lastRunCommand,
+            instance.lastRunWorkdir,
+          ))
+        )
+          continue;
+        if (instance.sandboxPort !== saved.targetPort) {
+          await this.options.store.updateLocalPreviewShareTarget(saved.id, instance.sandboxPort);
+          saved.targetPort = instance.sandboxPort;
+        }
+      }
+      if (this.stopped.has(saved.id)) continue;
+      // Keep failed recoveries reserved and durable for the next reconciliation.
+      this.reserved.delete(saved.networkPort);
+      try {
+        const pending = this.createInner(
+          saved.sessionId,
+          {
+            ...(saved.targetPort === null ? {} : { targetPort: saved.targetPort }),
+            ...(saved.staticPath === null ? {} : { staticPath: saved.staticPath }),
+            networkPort: saved.networkPort,
+          },
+          saved,
+        );
+        this.restoring.set(saved.id, pending);
+        await pending;
+      } catch {
+        if (!this.stopping.has(saved.id)) this.reserved.add(saved.networkPort);
+      } finally {
+        this.restoring.delete(saved.id);
+      }
+    }
+  }
   async reconcile(): Promise<void> {
+    await this.restore();
     for (const state of this.active.values()) {
       if (state.provisioning) continue;
       if (!state.ready) {
-        await this.stop(state.share.id);
+        await this.release(state.share.id);
+        this.reserved.add(state.port);
         continue;
       }
       if (state.share.expiresAt.getTime() <= Date.now()) {
@@ -374,9 +595,45 @@ export class LocalPreviewManager {
       }
       const project = await this.options.store.getProject(state.share.projectId);
       const session = await this.options.store.getSession(state.share.sessionId);
-      if (!project || project.state !== 'active' || session?.projectId !== project.id) {
+      if (!project || session?.projectId !== project.id) {
         await this.stop(state.share.id);
         continue;
+      }
+      if (project.state !== 'active') {
+        await this.release(state.share.id);
+        this.reserved.add(state.port);
+        continue;
+      }
+      const saved = this.durable.get(state.share.id);
+      if (saved?.managedInstanceId) {
+        const instance = await this.options.store.managedDevServers.getInstance(
+          saved.managedInstanceId,
+        );
+        if (
+          !instance ||
+          instance.sessionId !== state.share.sessionId ||
+          instance.projectId !== project.id ||
+          !instance.localAccess ||
+          instance.networkPort !== state.port
+        ) {
+          await this.stop(state.share.id);
+          continue;
+        }
+        if (
+          instance.desired !== 'running' ||
+          instance.sandboxPort !== state.share.targetPort ||
+          !instance.lastRunCommand ||
+          !instance.lastRunWorkdir ||
+          !(await this.options.store.managedDevServers.isApproved(
+            instance.serverId,
+            instance.lastRunCommand,
+            instance.lastRunWorkdir,
+          ))
+        ) {
+          await this.release(state.share.id);
+          this.reserved.add(state.port);
+          continue;
+        }
       }
       try {
         const sandbox = await this.options.docker.inspectContainer(project.containerName);
@@ -386,7 +643,8 @@ export class LocalPreviewManager {
           !state.connectorId ||
           !(await this.options.docker.inspectContainer(state.connectorId)).running
         ) {
-          await this.stop(state.share.id);
+          await this.release(state.share.id);
+          this.reserved.add(state.port);
           continue;
         }
         await this.targets.prepareLocalTarget(state.share.sessionId, {
@@ -398,7 +656,8 @@ export class LocalPreviewManager {
             (await this.options.prepareTargetPort?.(project, state.share.targetPort)) ??
             state.share.targetPort;
           if (preparedPort !== state.preparedPort) {
-            await this.stop(state.share.id);
+            await this.release(state.share.id);
+            this.reserved.add(state.port);
             continue;
           }
         }
@@ -414,13 +673,13 @@ export class LocalPreviewManager {
           }
         }
         state.missingSince ??= Date.now();
-        if (Date.now() - state.missingSince >= 90_000) await this.stop(state.share.id);
+        state.ready = false;
       }
     }
   }
   async close(): Promise<void> {
     this.closing = true;
     await Promise.allSettled([...this.creating]);
-    for (const id of this.active.keys()) await this.stop(id);
+    for (const id of this.active.keys()) await this.release(id);
   }
 }

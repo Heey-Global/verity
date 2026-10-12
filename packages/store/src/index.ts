@@ -76,6 +76,7 @@ export {
   type DevServerPatch,
   type DevServerDetectionStateRecord,
   type PublicPreviewShareRecord,
+  type LocalPreviewShareRecord,
   type PublicPreviewShareCreateInput,
   type PublicPreviewShareState,
   type ClaudeEgressCaRecord,

@@ -1113,6 +1113,21 @@ export interface PublicPreviewPinLocksTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+/** Durable local share intent; connector credentials are encrypted by EventStore. */
+export interface LocalPreviewSharesTable {
+  id: string;
+  project_id: string;
+  session_id: string;
+  managed_instance_id: string | null;
+  network_port: number;
+  url: string;
+  target_port: number | null;
+  static_path: string | null;
+  connector_secret: string;
+  state: 'active' | 'revoking';
+  expires_at: ColumnType<Date, string, never>;
+}
+
 /** One temporary public link to a generation-bound project dev server. Secret
  * material is encrypted by EventStore before it reaches the three *_secret
  * columns. */
@@ -1450,6 +1465,7 @@ export interface Database {
   dev_servers: DevServersTable;
   dev_server_detection_state: DevServerDetectionStateTable;
   public_preview_shares: PublicPreviewSharesTable;
+  local_preview_shares: LocalPreviewSharesTable;
   public_preview_pin_locks: PublicPreviewPinLocksTable;
   uplink_pending_share_removals: UplinkPendingShareRemovalsTable;
   claude_egress_ca: ClaudeEgressCaTable;
