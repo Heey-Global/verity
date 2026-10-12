@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.67.1](https://github.com/Heey-Global/verity/compare/mobile-v1.67.0...mobile-v1.67.1) (2026-10-12)
+
+
+### Features
+
+* **mobile:** add the design-system building blocks ([#1542](https://github.com/Heey-Global/verity/issues/1542)) ([4afbb49](https://github.com/Heey-Global/verity/commit/4afbb49b81ed4bca6d10fc2ed72cf85323ac6592))
+* **mobile:** adopt the design-system palette ([#1535](https://github.com/Heey-Global/verity/issues/1535)) ([7bc0fe5](https://github.com/Heey-Global/verity/commit/7bc0fe5844eb6d02a68fda0c5335ccc23c82e226))
+* **mobile:** set type in Inter with the design-system type styles ([#1536](https://github.com/Heey-Global/verity/issues/1536)) ([5b00966](https://github.com/Heey-Global/verity/commit/5b00966a6355c5095574da021cf38795136f9e7c))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1534](https://github.com/Heey-Global/verity/issues/1534)) ([4f6a6a8](https://github.com/Heey-Global/verity/commit/4f6a6a8f83caadf636484671b4f7ebe04760cf84))
+* **deps:** update dependency @fastify/compress to v9.2.1 ([#1531](https://github.com/Heey-Global/verity/issues/1531)) ([5691c79](https://github.com/Heey-Global/verity/commit/5691c79150cab6de855e631e3c8112f157d09f62))
+* **deps:** update dependency @fastify/rate-limit to v11.2.1 ([#1532](https://github.com/Heey-Global/verity/issues/1532)) ([9f378dc](https://github.com/Heey-Global/verity/commit/9f378dcf5b04817d1c1e6960a0ed44513dd2bb5d))
+* **mobile:** avoid direct request scheduling waits ([#1541](https://github.com/Heey-Global/verity/issues/1541)) ([7c25425](https://github.com/Heey-Global/verity/commit/7c25425aa2bde8249fe023b4a64c6b309672182b))
+
 ## [1.66.5](https://github.com/Heey-Global/verity/compare/mobile-v1.66.4...mobile-v1.66.5) (2026-10-11)
 
 
