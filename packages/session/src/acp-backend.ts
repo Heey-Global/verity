@@ -1086,6 +1086,7 @@ export async function runAcpTurn(
           loadingSession = false;
           promptDispatched = true;
           let prompt;
+          const promptUsage = { ...ZERO_USAGE };
           for (let attempt = 0; ; attempt += 1) {
             capacityText = '';
             capacityProse = false;
@@ -1100,6 +1101,11 @@ export async function runAcpTurn(
                   ? promptBlocks(turnOpts, profile)
                   : [{ type: 'text', text: 'Continue from where you stopped.' }],
             });
+            const attemptUsage = usage(prompt.usage);
+            promptUsage.inputTokens += attemptUsage.inputTokens;
+            promptUsage.outputTokens += attemptUsage.outputTokens;
+            promptUsage.cacheReadTokens += attemptUsage.cacheReadTokens;
+            promptUsage.cacheCreationTokens += attemptUsage.cacheCreationTokens;
             await drainUpdates();
             capacityFailure = capacityText.trim() === capacityMessage;
             if (capacityText !== '' && !capacityFailure) {
@@ -1185,7 +1191,7 @@ export async function runAcpTurn(
           }
           await writer.write({
             t: 'result',
-            usage: usage(prompt.usage),
+            usage: promptUsage,
             stopReason: prompt.stopReason,
             telemetry: {
               backend: profile.telemetryBackend,

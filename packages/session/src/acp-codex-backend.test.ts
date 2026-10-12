@@ -82,6 +82,7 @@ function acpSpawner(
     capacityPrefix?: string;
     splitCapacityPrefix?: boolean;
     capacityTool?: boolean;
+    capacityUsage?: boolean;
     capacityTrailingTool?: boolean;
     onPrompt?: () => void;
     processExit?: { code: number | null; signal: NodeJS.Signals | null };
@@ -309,7 +310,24 @@ function acpSpawner(
                     },
                   },
                 });
-              push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
+              push({
+                jsonrpc: '2.0',
+                id,
+                result: {
+                  stopReason: 'cancelled',
+                  ...(behavior.capacityUsage
+                    ? {
+                        usage: {
+                          totalTokens: 16,
+                          inputTokens: 10,
+                          outputTokens: 6,
+                          cachedReadTokens: 2,
+                          cachedWriteTokens: 1,
+                        },
+                      }
+                    : {}),
+                },
+              });
               return true;
             }
             if (behavior.promptFailure !== undefined) {
@@ -405,7 +423,12 @@ describe('AcpCodexBackend', () => {
   it.each([false, true])(
     'continues after a split capacity refusal (trailing tool: %s)',
     async (capacityTrailingTool) => {
-      const fake = acpSpawner({ capacityFailures: 1, capacityTool: true, capacityTrailingTool });
+      const fake = acpSpawner({
+        capacityFailures: 1,
+        capacityTool: true,
+        capacityUsage: true,
+        capacityTrailingTool,
+      });
       const timer = vi
         .spyOn(globalThis, 'setTimeout')
         .mockImplementation((handler, delay) =>
@@ -428,6 +451,9 @@ describe('AcpCodexBackend', () => {
           prompt: [{ type: 'text', text: 'Continue from where you stopped.' }],
         });
         const events = await ctx.store.getEvents('codex-session-1');
+        expect(events.find((event) => event.t === 'result')).toMatchObject({
+          usage: { inputTokens: 14, outputTokens: 9, cacheReadTokens: 2, cacheCreationTokens: 1 },
+        });
         expect(
           events.some((event) => event.t === 'text' && event.delta.includes('at capacity')),
         ).toBe(false);
