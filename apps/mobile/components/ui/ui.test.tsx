@@ -1,7 +1,10 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { AccessibilityInfo } from 'react-native';
 
 import { Button, ConfirmSheet, Row, StatusDot, StatusTag, TextField, ToggleRow } from './index';
+import { darkTheme, lightTheme } from '../../theme/tokens';
 import { tint } from './tint';
 
 describe('Button', () => {
@@ -38,6 +41,23 @@ describe('Row', () => {
     expect(chevrons()).toHaveLength(0);
     rerender(<Row title="Diagnostics" onPress={jest.fn()} navigates />);
     expect(chevrons()).toHaveLength(1);
+  });
+
+  // VoiceOver hears a pressable row as one element; a status left out of its
+  // label is a state nobody hears.
+  it('speaks the subtitle and trailing status as part of a pressable row', () => {
+    render(
+      <Row
+        title="Server update"
+        subtitle="4.36.0 available"
+        trailing={<StatusTag intent="needsSetup" label="Update" />}
+        onPress={jest.fn()}
+        navigates
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Server update, 4.36.0 available, Update' }),
+    ).toBeOnTheScreen();
   });
 
   it('renders a plain trailing value as muted text', () => {
@@ -172,6 +192,34 @@ describe('ConfirmSheet', () => {
 
 describe('tint', () => {
   // A role that is not six-digit hex would turn `${color}24` into an invalid color.
+  // Components tint roles inside StyleSheet.create; a role that cannot be
+  // tinted would crash every screen as soon as that theme is active. The roles
+  // are read from the components, so a newly tinted role is covered too.
+  const tintedRoles = [
+    ...new Set(
+      readdirSync(__dirname)
+        .filter((file) => file.endsWith('.tsx') && !file.endsWith('.test.tsx'))
+        .flatMap((file) =>
+          [
+            ...readFileSync(join(__dirname, file), 'utf8').matchAll(/tint\(theme\.colors\.(\w+)/g),
+          ].map((match) => match[1] as keyof typeof darkTheme.colors),
+        ),
+    ),
+  ];
+
+  it('finds the tinted roles', () => {
+    expect(tintedRoles.length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ['dark', darkTheme],
+    ['light', lightTheme],
+  ])('can tint every role the components tint in the %s theme', (_, theme) => {
+    for (const role of tintedRoles) {
+      expect(() => tint(theme.colors[role] as string, 'fill')).not.toThrow();
+    }
+  });
+
   it('rejects colors it cannot derive a transparency from', () => {
     expect(tint('#18c8f5', 'fill')).toBe('#18c8f524');
     expect(() => tint('rgba(3,4,8,0.72)', 'fill')).toThrow(/six-digit hex/);

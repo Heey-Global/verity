@@ -93,7 +93,7 @@ export function Row({
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel ?? title}
+      accessibilityLabel={accessibilityLabel ?? spokenLabel(title, subtitle, trailing)}
       accessibilityHint={accessibilityHint}
       accessibilityState={{ disabled }}
       style={({ pressed }) => [
@@ -148,6 +148,23 @@ export function ToggleRow({
       />
     </Pressable>
   );
+}
+
+/**
+ * A pressable row is one element for VoiceOver, so its own label has to carry
+ * everything the row shows: the title, the subtitle and the trailing value or
+ * status — otherwise "Server update · UPDATE" is heard as just "Server update".
+ */
+function spokenLabel(title: string, subtitle: string | undefined, trailing: ReactNode): string {
+  const trailingText =
+    typeof trailing === 'string'
+      ? trailing
+      : isValidElement<{ label?: unknown }>(trailing) && typeof trailing.props.label === 'string'
+        ? trailing.props.label
+        : undefined;
+  return [title, subtitle, trailingText]
+    .filter((part) => part !== undefined && part !== '')
+    .join(', ');
 }
 
 function RowContent({

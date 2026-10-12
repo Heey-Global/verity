@@ -98,6 +98,8 @@ export function IconButton({
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       accessibilityState={{ disabled, selected: active }}
+      // 40 pt drawn, 44 pt touchable.
+      hitSlop={2}
       style={({ pressed }) => [
         styles.icon,
         active ? styles.iconActive : null,
