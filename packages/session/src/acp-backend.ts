@@ -760,7 +760,16 @@ export async function runAcpTurn(
 
   const onUpdate = async (update: SessionUpdate): Promise<void> => {
     if (stopped) return;
-    if (profile.telemetryBackend === 'codex-acp' && isAgentContent(update) && capacityText === '') {
+    if (
+      profile.telemetryBackend === 'codex-acp' &&
+      isAgentContent(update) &&
+      capacityText === '' &&
+      !(
+        update.sessionUpdate === 'agent_message_chunk' &&
+        update.content.type === 'text' &&
+        parentToolId(update._meta, metaNamespace) === undefined
+      )
+    ) {
       turnHasAgentContent = true;
     }
     if (
@@ -811,6 +820,7 @@ export async function runAcpTurn(
             capacityProse = true;
             turnHasAgentContent = true;
           } else {
+            if (event.t === 'text') turnHasAgentContent = true;
             await writeAll(writer, event.t === 'text' ? topLevelText.push(event.delta) : [event]);
           }
         }

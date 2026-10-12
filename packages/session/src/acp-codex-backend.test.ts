@@ -82,6 +82,7 @@ function acpSpawner(
     capacityPrefix?: string;
     splitCapacityPrefix?: boolean;
     capacityInterleavedTool?: boolean;
+    capacityLifecycle?: boolean;
     capacityTool?: boolean;
     capacityUsage?: boolean;
     capacityTrailingTool?: boolean;
@@ -308,6 +309,15 @@ function acpSpawner(
                     update: {
                       sessionUpdate: 'agent_message_chunk',
                       content: { type: 'text', text },
+                      ...(behavior.capacityLifecycle
+                        ? {
+                            _meta: {
+                              verity: {
+                                lifecycle: { type: 'compaction', id: 'capacity-compaction' },
+                              },
+                            },
+                          }
+                        : {}),
                     },
                   },
                 });
@@ -491,8 +501,17 @@ describe('AcpCodexBackend', () => {
   it('withholds steering before a capacity retry produces fresh agent content', async () => {
     let steer: ((message: { text: string }) => boolean) | undefined;
     const accepted: boolean[] = [];
+    const appendEvent = ctx.store.appendEvent.bind(ctx.store);
+    vi.spyOn(ctx.store, 'appendEvent').mockImplementation(async (...args) => {
+      if (args[1].t === 'compaction') {
+        accepted.push(steer?.({ text: 'change direction' }) ?? true);
+        await new Promise<void>((resolve) => setTimeoutOriginal(resolve, 1));
+      }
+      return appendEvent(...args);
+    });
     const fake = acpSpawner({
       capacityFailures: 1,
+      capacityLifecycle: true,
       onPrompt: () => accepted.push(steer?.({ text: 'change direction' }) ?? true),
       onCapacity: () => accepted.push(steer?.({ text: 'change direction' }) ?? true),
     });
@@ -512,7 +531,8 @@ describe('AcpCodexBackend', () => {
           steer = inject;
         },
       });
-      expect(accepted).toEqual([false, false, false]);
+      expect(accepted.length).toBeGreaterThan(3);
+      expect(accepted.every((value) => !value)).toBe(true);
       expect(fake.writes.some((entry) => entry.method === '_session/steering')).toBe(false);
     } finally {
       timer.mockRestore();
