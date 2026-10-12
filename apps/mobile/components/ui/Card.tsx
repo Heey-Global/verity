@@ -4,6 +4,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../Icon';
 import { Dot, type StatusIntent } from './Status';
+import { Button } from './Button';
 import { Toggle } from './Toggle';
 import { tint } from './tint';
 
@@ -68,7 +69,9 @@ export function Row({
   title: string;
   subtitle?: string | undefined;
   leading?: Leading;
-  /** Exactly one of: a value, a status, a toggle, a compact button. */
+  /** Exactly one of: a value, a status, a toggle, or — only on a row without
+   *  `onPress` — a compact button. Inside a pressable row a button would be
+   *  unreachable for VoiceOver, which hears the row as one element. */
   trailing?: ReactNode;
   onPress?: () => void;
   navigates?: boolean;
@@ -76,6 +79,17 @@ export function Row({
   accessibilityLabel?: string;
   accessibilityHint?: string;
 }) {
+  if (
+    process.env.NODE_ENV !== 'production' &&
+    onPress !== undefined &&
+    isValidElement(trailing) &&
+    trailing.type === Button
+  ) {
+    console.warn(
+      `Row "${title}": a button inside a pressable row cannot be reached by VoiceOver; ` +
+        'drop onPress or move the action out of the row.',
+    );
+  }
   const content = (
     <RowContent
       title={title}
@@ -137,7 +151,11 @@ export function ToggleRow({
       accessibilityLabel={title}
       accessibilityHint={subtitle}
       accessibilityState={{ checked: value, disabled: locked, busy: switching }}
-      style={({ pressed }) => [styles.row, pressed && !locked ? styles.pressed : null]}
+      style={({ pressed }) => [
+        styles.row,
+        disabled ? styles.muted : null,
+        pressed && !locked ? styles.pressed : null,
+      ]}
     >
       <RowContent
         title={title}

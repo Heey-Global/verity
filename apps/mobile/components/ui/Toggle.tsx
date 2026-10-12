@@ -1,5 +1,10 @@
 import { ActivityIndicator, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
+
+// The knob is white in both themes, so what sits on it is a fixed dark ink
+// rather than a theme role that turns light in one of them.
+const KNOB = '#ffffff';
+const KNOB_INK = '#03141a';
 
 /**
  * The switch visual (docs/design-system.md § 5.5): a filled track — `textFaint`
@@ -18,7 +23,6 @@ export function Toggle({
   disabled?: boolean;
   switching?: boolean;
 }) {
-  const { theme } = useUnistyles();
   return (
     <View
       style={[styles.track, value ? styles.trackOn : null, disabled ? styles.disabled : null]}
@@ -26,7 +30,7 @@ export function Toggle({
     >
       <View style={[styles.knob, value ? styles.knobOn : null]}>
         {switching ? (
-          <ActivityIndicator size="small" color={theme.colors.onAction} style={styles.spinner} />
+          <ActivityIndicator size="small" color={KNOB_INK} style={styles.spinner} />
         ) : null}
       </View>
     </View>
@@ -47,7 +51,7 @@ const styles = StyleSheet.create((theme) => ({
     width: 24,
     height: 24,
     borderRadius: theme.radius.pill,
-    backgroundColor: '#ffffff',
+    backgroundColor: KNOB,
     borderWidth: 1,
     borderColor: theme.colors.background,
     alignItems: 'center',

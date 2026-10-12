@@ -145,12 +145,12 @@ export function ConfirmSheet({
   onConfirm: () => void | Promise<void>;
   onCancel: () => void;
 }) {
+  // `running` follows the action, not visibility: a sheet reopened while its
+  // previous action is still pending shows the spinner until that settles.
   const [running, setRunning] = useState(false);
   // State only locks the button after the next render; two taps delivered
   // before it would both start the action. The ref locks synchronously.
   const inFlight = useRef(false);
-  // `running` follows the action, not visibility: a sheet reopened while its
-  // previous action is still pending shows the spinner until that settles.
   useEffect(() => {
     if (visible) AccessibilityInfo.announceForAccessibility(`${title} ${message}`);
   }, [visible, title, message]);

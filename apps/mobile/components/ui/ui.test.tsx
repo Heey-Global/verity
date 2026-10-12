@@ -60,6 +60,21 @@ describe('Row', () => {
     ).toBeOnTheScreen();
   });
 
+  // VoiceOver hears a pressable row as one element, so a button inside it is
+  // an action nobody using VoiceOver can reach.
+  it('warns about a button inside a pressable row', () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    render(
+      <Row
+        title="Recording"
+        onPress={jest.fn()}
+        trailing={<Button label="Copy" size="compact" onPress={jest.fn()} />}
+      />,
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('cannot be reached by VoiceOver'));
+    warn.mockRestore();
+  });
+
   it('renders a plain trailing value as muted text', () => {
     render(<Row title="Tasks" trailing="On" />);
     expect(screen.getByText('On')).toBeOnTheScreen();
