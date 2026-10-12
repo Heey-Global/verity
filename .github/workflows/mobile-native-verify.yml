@@ -32,6 +32,7 @@ on:
       - 'scripts/pinned-http-pool-smoke.swift'
       - 'scripts/*ios_pinned_tls_relay.py'
       - 'scripts/remote-control-tunnel/**'
+      - 'scripts/remote-control-integration/**'
       - 'scripts/remote-control-staging/**'
       - 'scripts/enrollment-proof/**'
       - 'docs/protocols/uplink-enrollment-v1.md'
@@ -116,7 +117,7 @@ jobs:
           if ! git diff --quiet "$BASE_SHA" HEAD -- 'scripts/ios-pinned-tls-smoke*' scripts/pinned-http-pool-smoke.swift 'scripts/*ios_pinned_tls_relay.py'; then
             tls=true
           fi
-          if ! git diff --quiet "$BASE_SHA" HEAD -- scripts/remote-control-tunnel scripts/remote-control-staging; then
+          if ! git diff --quiet "$BASE_SHA" HEAD -- scripts/remote-control-tunnel scripts/remote-control-staging scripts/remote-control-integration; then
             tunnel=true
           fi
           native_changes="$(node scripts/mobile-native-compatibility.mjs "$BASE_SHA" HEAD)"
@@ -170,6 +171,14 @@ jobs:
             apps/mobile/native/RemoteDataDiagnostics.swift \
             apps/mobile/native/RemoteAppTunnel.swift \
             scripts/remote-control-staging/StagingProbe.swift
+          xcrun swiftc -typecheck -parse-as-library -target "$(uname -m)-apple-macosx14.0" \
+            apps/mobile/native/CertificatePinDelegate.swift \
+            apps/mobile/native/PinnedHTTPSessionPool.swift \
+            apps/mobile/native/RemoteSmokeTunnel.swift \
+            apps/mobile/native/RemoteDataDiagnostics.swift \
+            apps/mobile/native/RemoteAppTunnel.swift \
+            scripts/remote-control-tunnel/NativeProtocol.swift \
+            scripts/remote-control-integration/Integration.swift
           xcrun swiftc -parse-as-library apps/mobile/native/RemoteDataDiagnostics.swift \
             scripts/remote-control-tunnel/Diagnostics.swift -o "$RUNNER_TEMP/data-diagnostics-test"
           "$RUNNER_TEMP/data-diagnostics-test"
