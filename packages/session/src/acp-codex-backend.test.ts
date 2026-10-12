@@ -82,6 +82,7 @@ function acpSpawner(
     capacityPrefix?: string;
     splitCapacityPrefix?: boolean;
     capacityTool?: boolean;
+    capacityTrailingTool?: boolean;
     onPrompt?: () => void;
     processExit?: { code: number | null; signal: NodeJS.Signals | null };
     exitDelayMs?: number;
@@ -295,6 +296,19 @@ function acpSpawner(
                   },
                 });
               }
+              if (behavior.capacityTrailingTool)
+                push({
+                  jsonrpc: '2.0',
+                  method: 'session/update',
+                  params: {
+                    sessionId: 'codex-session-1',
+                    update: {
+                      sessionUpdate: 'tool_call_update',
+                      toolCallId: 'completed-before-capacity',
+                      status: 'completed',
+                    },
+                  },
+                });
               push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
               return true;
             }
@@ -388,40 +402,43 @@ function write(
 }
 
 describe('AcpCodexBackend', () => {
-  it('continues the bound session after a split capacity refusal without replaying the request', async () => {
-    const fake = acpSpawner({ capacityFailures: 1, capacityTool: true });
-    const timer = vi
-      .spyOn(globalThis, 'setTimeout')
-      .mockImplementation((handler, delay) =>
-        setTimeoutOriginal(handler, delay === 5_000 ? 1 : delay),
-      );
-    try {
-      const result = await new AcpCodexBackend().run({
-        store: ctx.store,
-        worktree: '/work',
-        cwd: '/work',
-        prompt: 'Run',
-        spawner: fake.spawner,
-      });
-      expect(result.exitCode).toBe(0);
-      expect(timer.mock.calls.some((call) => call[1] === 5_000)).toBe(true);
-      const prompts = fake.writes.filter((entry) => entry.method === 'session/prompt');
-      expect(prompts).toHaveLength(2);
-      expect(prompts[1]?.params).toMatchObject({
-        sessionId: 'codex-session-1',
-        prompt: [{ type: 'text', text: 'Continue from where you stopped.' }],
-      });
-      const events = await ctx.store.getEvents('codex-session-1');
-      expect(
-        events.some((event) => event.t === 'text' && event.delta.includes('at capacity')),
-      ).toBe(false);
-      expect(events.filter((event) => event.t === 'error').map((event) => event.kind)).toEqual([
-        'model_capacity_retry',
-      ]);
-    } finally {
-      timer.mockRestore();
-    }
-  });
+  it.each([false, true])(
+    'continues after a split capacity refusal (trailing tool: %s)',
+    async (capacityTrailingTool) => {
+      const fake = acpSpawner({ capacityFailures: 1, capacityTool: true, capacityTrailingTool });
+      const timer = vi
+        .spyOn(globalThis, 'setTimeout')
+        .mockImplementation((handler, delay) =>
+          setTimeoutOriginal(handler, delay === 5_000 ? 1 : delay),
+        );
+      try {
+        const result = await new AcpCodexBackend().run({
+          store: ctx.store,
+          worktree: '/work',
+          cwd: '/work',
+          prompt: 'Run',
+          spawner: fake.spawner,
+        });
+        expect(result.exitCode).toBe(0);
+        expect(timer.mock.calls.some((call) => call[1] === 5_000)).toBe(true);
+        const prompts = fake.writes.filter((entry) => entry.method === 'session/prompt');
+        expect(prompts).toHaveLength(2);
+        expect(prompts[1]?.params).toMatchObject({
+          sessionId: 'codex-session-1',
+          prompt: [{ type: 'text', text: 'Continue from where you stopped.' }],
+        });
+        const events = await ctx.store.getEvents('codex-session-1');
+        expect(
+          events.some((event) => event.t === 'text' && event.delta.includes('at capacity')),
+        ).toBe(false);
+        expect(events.filter((event) => event.t === 'error').map((event) => event.kind)).toEqual([
+          'model_capacity_retry',
+        ]);
+      } finally {
+        timer.mockRestore();
+      }
+    },
+  );
 
   it('withholds steering before a capacity retry produces fresh agent content', async () => {
     let steer: ((message: { text: string }) => boolean) | undefined;

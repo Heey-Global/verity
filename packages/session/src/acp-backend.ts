@@ -760,7 +760,10 @@ export async function runAcpTurn(
 
   const onUpdate = async (update: SessionUpdate): Promise<void> => {
     if (stopped) return;
-    if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+    if (
+      (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') &&
+      capacityText.trim() !== capacityMessage
+    ) {
       await writeAll(writer, topLevelText.push(capacityText));
       capacityText = '';
       capacityProse = false;
