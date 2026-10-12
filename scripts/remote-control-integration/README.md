@@ -2,7 +2,9 @@
 
 This runner compiles the production `RemoteAppTunnel` and connects it through
 the real Uplink test adapter to the production `createRemoteConnectorPool`.
-Only tickets and certificates generated for the local fixture are used.
+Only tickets and certificates generated for the local fixture are used. Certificate
+extensions come from explicit local OpenSSL configuration so host defaults cannot
+add duplicate extensions that Apple trust evaluation rejects.
 
 Prerequisites: Node matching the repository engines, installed dependencies in
 both checkouts, macOS with Xcode, and an iOS simulator for the iOS variant.

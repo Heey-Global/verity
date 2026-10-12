@@ -27,18 +27,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-openssl ecparam -name prime256v1 -genkey -noout -out "$tmp/ca-key.pem"
-openssl req -new -x509 -key "$tmp/ca-key.pem" -out "$tmp/ca.pem" -days 1 \
-  -subj '/CN=Remote tunnel test CA' -addext 'basicConstraints=critical,CA:true,pathlen:0' \
-  -addext 'keyUsage=critical,keyCertSign,cRLSign'
-openssl ecparam -name prime256v1 -genkey -noout -out "$tmp/key.pem"
-openssl req -new -key "$tmp/key.pem" -out "$tmp/leaf.csr" -subj '/CN=core.test'
-printf '%s\n' 'subjectAltName=DNS:core.test,IP:127.0.0.1' \
-  'basicConstraints=critical,CA:false' 'keyUsage=critical,digitalSignature,keyEncipherment' \
-  'extendedKeyUsage=serverAuth' >"$tmp/leaf.ext"
-openssl x509 -req -in "$tmp/leaf.csr" -CA "$tmp/ca.pem" -CAkey "$tmp/ca-key.pem" \
-  -set_serial 1 -out "$tmp/leaf.pem" -days 1 -extfile "$tmp/leaf.ext"
-cat "$tmp/leaf.pem" "$tmp/ca.pem" >"$tmp/cert.pem"
+bash scripts/remote-control-integration/create-certificate.sh "$tmp"
 pin="sha256-$(openssl pkey -in "$tmp/key.pem" -pubout -outform DER | tail -c 65 | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')"
 start_fixture() {
 node scripts/remote-control-integration/fixture.ts "$uplink_root" "$tmp" "$pin" >"$tmp/fixture.log" 2>&1 &
