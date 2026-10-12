@@ -264,7 +264,9 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
   },
-  cardFlush: { paddingVertical: 0, paddingHorizontal: 0 },
+  // Clips the row's pressed background to the rounded corners. Not on `card`
+  // itself: that would clip the selected glow on iOS.
+  cardFlush: { paddingVertical: 0, paddingHorizontal: 0, overflow: 'hidden' },
   cardSelected: {
     borderColor: theme.colors.action,
     shadowColor: theme.colors.action,

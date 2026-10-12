@@ -52,14 +52,22 @@ export function Sheet({
   };
   const closeRef = useRef(close);
   closeRef.current = close;
+  const settle = () =>
+    Animated.spring(drag, { toValue: 0, useNativeDriver: Platform.OS !== 'web' }).start();
+  // A sheet closed mid-drag must not reopen shifted down.
+  useEffect(() => {
+    if (visible) drag.setValue(0);
+  }, [visible, drag]);
   const pan = useRef(
     PanResponder.create({
       onMoveShouldSetPanResponder: (_, gesture) => gesture.dy > 4,
       onPanResponderMove: (_, gesture) => drag.setValue(Math.max(0, gesture.dy)),
       onPanResponderRelease: (_, gesture) => {
         if (gesture.dy > DISMISS_DISTANCE) closeRef.current();
-        Animated.spring(drag, { toValue: 0, useNativeDriver: Platform.OS !== 'web' }).start();
+        settle();
       },
+      // A gesture taken over by the system never releases; spring back anyway.
+      onPanResponderTerminate: () => settle(),
     }),
   ).current;
 
