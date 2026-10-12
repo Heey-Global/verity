@@ -122,6 +122,32 @@ struct DiagnosticsTest {
     let invalidState = try JSONSerialization.jsonObject(with: Data(invalidRecorder.export()!.utf8)) as! [String: Any]
     precondition((invalidState["streams"] as! [[String: Any]]).isEmpty)
     precondition(!invalidRecorder.export()!.contains("secret"))
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = directory.appendingPathComponent("recording.json")
+    let store = RemoteDataRecordingStore(file: file)
+    for _ in 0..<4 {
+      let persistent = RemoteDataDiagnostics()
+      persistent.snapshotSink = { [weak persistent] in
+        guard let persistent else { return }
+        store.schedule(generation: persistent.generation) { persistent.export() }
+      }
+      persistent.enable(startedLate: false, delegateAvailable: true)
+      persistent.record(.failure, error: NSError(domain: "private-secret", code: -1,
+        userInfo: [NSLocalizedDescriptionKey: "ticket=SECRET"]))
+    }
+    store.flush()
+    let restored = RemoteDataRecordingStore(file: file).snapshots()
+    precondition(restored.count == 3)
+    precondition(restored.allSatisfy { !$0.contains("SECRET") && !$0.contains("private-secret") })
+    precondition(restored.allSatisfy { $0.contains("failure") })
+    // Restart restores evidence only; capture intent never persists.
+    precondition(RemoteDataCaptureWindow().remaining == 0)
+    try Data("incomplete{".utf8).write(to: file)
+    precondition(RemoteDataRecordingStore(file: file).snapshots().isEmpty)
+    try Data(repeating: 65, count: RemoteDataRecordingStore.maximumBytes + 1).write(to: file)
+    precondition(RemoteDataRecordingStore(file: file).snapshots().isEmpty)
     print("DATA diagnostic recorder tests passed")
   }
 }

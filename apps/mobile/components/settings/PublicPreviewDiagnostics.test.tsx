@@ -295,3 +295,17 @@ it('offers a retry when the status could not be loaded', async () => {
   await waitFor(() => expect(screen.getByText('Connected')).toBeOnTheScreen());
   expect(screen.queryByLabelText('Try again')).toBeNull();
 });
+// Route loss is precisely when the retained local evidence must remain accessible.
+it.each([null, { activeUrl: 'https://verity.example' }])(
+  'exports locally without a saved route or reachable Core (%s)',
+  async (profile) => {
+    mockGetServerProfile.mockReturnValue(profile);
+    mockExportData.mockResolvedValue({ status: 'ready', recording: '[{"version":1}]' });
+    mockCopy.mockClear().mockResolvedValue(undefined);
+    const getUplinkDiagnostics = jest.fn().mockRejectedValue(new Error('offline'));
+    render(<PublicPreviewDiagnostics client={{ getUplinkDiagnostics } as never} keyConfigured />);
+    fireEvent.press(screen.getByLabelText('Copy connection recording'));
+    await waitFor(() => expect(mockCopy).toHaveBeenCalledWith('[{"version":1}]'));
+    expect(getUplinkDiagnostics).toHaveBeenCalledTimes(1);
+  },
+);

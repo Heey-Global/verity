@@ -303,12 +303,6 @@ export function PublicPreviewDiagnostics({
               disabled={checking || rightsChecking}
               onPress={() => void runTest(true)}
             />
-            <CardRow
-              title="Copy last recording"
-              subtitle={exportStatus ?? undefined}
-              accessibilityLabel="Copy connection recording"
-              onPress={() => void copyCapture()}
-            />
           </RowCard>
         ) : (
           <RowCard>
@@ -320,6 +314,14 @@ export function PublicPreviewDiagnostics({
             />
           </RowCard>
         )}
+        <RowCard>
+          <CardRow
+            title="Copy last recording"
+            subtitle={exportStatus ?? undefined}
+            accessibilityLabel="Copy connection recording"
+            onPress={() => void copyCapture()}
+          />
+        </RowCard>
       </View>
     </>
   );

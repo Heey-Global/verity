@@ -6,10 +6,16 @@ class VerityRemoteControlTunnel: Module {
   private var retired: [AnyObject] = []
   private var lastStartFailure: String?
   private let captureWindow = RemoteDataCaptureWindow()
+  private let recordingStore = RemoteDataRecordingStore.applicationStore()
   private var diagnosticRecords: [RemoteDataDiagnostics] = []
 
   @available(iOS 17.0, macOS 14.0, *)
   private func capture(_ tunnel: RemoteAppTunnel) -> Bool {
+    let diagnostics = tunnel.dataDiagnostics
+    diagnostics.snapshotSink = { [weak self, weak diagnostics] in
+      guard let diagnostics else { return }
+      self?.recordingStore?.schedule(generation: diagnostics.generation) { diagnostics.export() }
+    }
     let remaining = captureWindow.remaining
     guard remaining > 0, tunnel.enableDataDiagnostics(duration: remaining) else { return false }
     if !diagnosticRecords.contains(where: { $0 === tunnel.dataDiagnostics }) {
@@ -103,6 +109,7 @@ class VerityRemoteControlTunnel: Module {
     AsyncFunction("exportDataDiagnostics") { () -> [String] in
       guard #available(iOS 17.0, macOS 14.0, *) else { return [] }
       _ = (self.tunnel as? RemoteAppTunnel)?.exportDataDiagnostics()
+      if let store = self.recordingStore { store.flush(); return store.snapshots() }
       return self.diagnosticRecords.compactMap { $0.export() }
     }
 

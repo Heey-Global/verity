@@ -99,6 +99,7 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
   private let lock = NSLock()
   private let clock: () -> TimeInterval
   private let utc: () -> Date
+  var snapshotSink: (() -> Void)?
   private var sessionHash: String?
   private var start: TimeInterval?
   private var entries: [Entry] = []
@@ -149,10 +150,15 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
   func record(_ event: Event, streamId: String? = nil, cause: Cause? = nil, error: Error? = nil,
     closeCode: Int? = nil, path: Path? = nil,
     sentBytes: Int? = nil, receivedBytes: Int? = nil, deliveredBytes: Int? = nil) {
-    lock.lock(); defer { lock.unlock() }
+    var changed = false
+    lock.lock(); defer {
+      lock.unlock()
+      if changed { snapshotSink?() }
+    }
     guard let start, !disabled else { return }
     let elapsed = max(0, clock() - start)
     guard elapsed <= captureDuration else { return }
+    changed = true
     sequence += 1
     let value = error.map { $0 as NSError }
     let domains: Set<String> = ["NSURLErrorDomain", "kCFErrorDomainCFNetwork",
@@ -172,7 +178,11 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
   // The recorder owns value snapshots, never live streams or payload buffers.
   // Freeze at the same deadline as events, including exports made after teardown.
   func retainStream(_ stream: StreamSnapshot) {
-    lock.lock(); defer { lock.unlock() }
+    var changed = false
+    lock.lock(); defer {
+      lock.unlock()
+      if changed { snapshotSink?() }
+    }
     guard let start, !disabled, clock() - start <= captureDuration,
       stream.streamId.range(of: "^[A-F0-9]{32}$", options: .regularExpression) != nil,
       stream.outgoingTLSRecords.count <= 8, stream.incomingTLSRecords.count <= 8,
@@ -180,6 +190,7 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
       stream.firstHandshake == "none" || stream.firstHandshake == "hrr"
         || UInt8(stream.firstHandshake) != nil
     else { return }
+    changed = true
     if let index = streams.firstIndex(where: { $0.streamId == stream.streamId }) {
       streams[index] = stream
     } else if streams.count < Self.streamCapacity {
@@ -219,3 +230,102 @@ final class RemoteDataDiagnosticDelegate: NSObject, URLSessionWebSocketDelegate,
   }
 }
 #endif
+
+// Only recorder-produced metadata enters this store. One coalesced pending
+// write avoids making disk throughput part of the WebSocket send path.
+final class RemoteDataRecordingStore: @unchecked Sendable {
+  static let maximumBytes = 512 * 1024
+  private let file: URL
+  private let lock = NSLock()
+  private let writer = DispatchQueue(label: "verity.data.recording.store")
+  private var records: [(String, String)] = []
+  private var pending: [(String, () -> String?)] = []
+  private var writing = false
+
+  init(file: URL) {
+    self.file = file
+    if let attributes = try? FileManager.default.attributesOfItem(atPath: file.path),
+      let size = attributes[.size] as? NSNumber, size.intValue <= Self.maximumBytes,
+      let data = try? Data(contentsOf: file), data.count <= Self.maximumBytes,
+      let values = try? JSONDecoder().decode([String].self, from: data), values.count <= 3 {
+      for value in values {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(value.utf8)) as? [String: Any],
+          let generation = object["generation"] as? String,
+          UUID(uuidString: generation) != nil else { records = []; return }
+        records.append((generation, value))
+      }
+    }
+  }
+
+  static func applicationStore() -> RemoteDataRecordingStore? {
+    guard let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+    else { return nil }
+    var directory = root.appendingPathComponent("RemoteConnectionRecording", isDirectory: true)
+    do {
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+      var values = URLResourceValues(); values.isExcludedFromBackup = true
+      try directory.setResourceValues(values)
+      return RemoteDataRecordingStore(file: directory.appendingPathComponent("recording.json"))
+    } catch { return nil }
+  }
+
+  func retain(generation: String, snapshot: String) {
+    schedule(generation: generation) { snapshot }
+  }
+
+  func schedule(generation: String, snapshot: @escaping () -> String?) {
+    lock.lock()
+    if let index = pending.firstIndex(where: { $0.0 == generation }) {
+      pending[index] = (generation, snapshot)
+    } else {
+      pending.append((generation, snapshot))
+      if pending.count > 3 { pending.removeFirst() }
+    }
+    let start = !writing
+    writing = true
+    lock.unlock()
+    if start { writer.async { self.drain() } }
+  }
+
+  func snapshots() -> [String] {
+    lock.lock(); defer { lock.unlock() }
+    return records.map { $0.1 }
+  }
+
+  // Test/export synchronization only; record() never waits for disk.
+  func flush() { writer.sync { self.drain() } }
+
+  private func drain() {
+    lock.lock()
+    let updates = pending
+    pending.removeAll()
+    lock.unlock()
+    // Snapshot encoding runs on this serial worker, never on DATA callbacks.
+    for (generation, snapshot) in updates {
+      guard let value = snapshot(), value.utf8.count <= Self.maximumBytes / 3 else { continue }
+      lock.lock()
+      if let index = records.firstIndex(where: { $0.0 == generation }) {
+        records[index] = (generation, value)
+      } else {
+        records.append((generation, value))
+        if records.count > 3 { records.removeFirst() }
+      }
+      lock.unlock()
+    }
+    let values = snapshots()
+    if let data = try? JSONEncoder().encode(values), data.count <= Self.maximumBytes {
+      #if os(iOS)
+      try? data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+      #else
+      try? data.write(to: file, options: .atomic)
+      #endif
+      try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+    lock.lock()
+    if pending.isEmpty { writing = false; lock.unlock(); return }
+    lock.unlock()
+    writer.async { self.drain() }
+    return
+  }
+}

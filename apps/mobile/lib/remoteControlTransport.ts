@@ -537,33 +537,30 @@ export async function testRemoteControlForUrl(
       }
       diagnosticCaptureUntil = Date.now() + 120_000;
     }
-    try {
-      const attachment = active;
-      if (attachment?.key === key) {
-        try {
-          if (await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive()) {
-            const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
-            if (pin !== undefined) {
-              await probeCoreThroughEitherProxy(target, pin, attachment.port);
-              return { ready: true, detail: 'Core health check passed through Uplink' };
-            }
+    // Native capture keeps its original deadline across later replacements.
+    const attachment = active;
+    if (attachment?.key === key) {
+      try {
+        if (await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive()) {
+          const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
+          if (pin !== undefined) {
+            await probeCoreThroughEitherProxy(target, pin, attachment.port);
+            return { ready: true, detail: 'Core health check passed through Uplink' };
           }
-        } catch (error) {
-          // A diagnostic must not replace a tunnel that may be carrying transfers.
-          const summary = await tunnelDiagnosticSummary();
-          return {
-            ready: false,
-            detail: `probe (${probeFailureDetail(error) ?? 'Core did not answer'}${summary ? `; tunnel ${summary}` : ''})`,
-          };
         }
+      } catch (error) {
+        // A diagnostic must not replace a tunnel that may be carrying transfers.
+        const summary = await tunnelDiagnosticSummary();
+        return {
+          ready: false,
+          detail: `probe (${probeFailureDetail(error) ?? 'Core did not answer'}${summary ? `; tunnel ${summary}` : ''})`,
+        };
       }
-      const port = await open(target, key);
-      return port > 0
-        ? { ready: true, detail: 'Core health check passed through Uplink' }
-        : { ready: false, detail: remoteControlFailureForUrl(target) ?? 'connection failed' };
-    } finally {
-      if (capture) await native.clearPendingDataDiagnostics?.().catch(() => undefined);
     }
+    const port = await open(target, key);
+    return port > 0
+      ? { ready: true, detail: 'Core health check passed through Uplink' }
+      : { ready: false, detail: remoteControlFailureForUrl(target) ?? 'connection failed' };
   });
   operation = selected.then(
     () => undefined,

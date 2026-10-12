@@ -1471,7 +1471,7 @@ describe('direct routing across background and diagnostics', () => {
 });
 
 describe('opt-in DATA capture', () => {
-  it('replaces a live tunnel before arming the selected recording and clears pending capture', async () => {
+  it('replaces a live tunnel before arming the selected recording without clearing the capture window', async () => {
     jest.resetModules();
     mockProfile.mockReturnValue(profile);
     mockToken.mockReturnValue('auth');
@@ -1508,11 +1508,11 @@ describe('opt-in DATA capture', () => {
       'probe_started',
       'probe_succeeded',
     ]);
-    expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(1);
+    expect(mockClearPendingDiagnostics).not.toHaveBeenCalled();
   });
 });
 
-it('clears recording intent after a fresh attachment fails and permits another recording', async () => {
+it('retains recording intent after an attachment fails and permits a new explicit recording', async () => {
   jest.resetModules();
   mockProfile.mockReturnValue(profile);
   mockToken.mockReturnValue('auth');
@@ -1535,10 +1535,10 @@ it('clears recording intent after a fresh attachment fails and permits another r
     require('./remoteControlTransport') as typeof import('./remoteControlTransport');
   expect((await transport.testRemoteControlForUrl(coreUrl, true)).ready).toBe(false);
   expect(cancel).toHaveBeenCalledTimes(1);
-  expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(1);
+  expect(mockClearPendingDiagnostics).not.toHaveBeenCalled();
   expect((await transport.testRemoteControlForUrl(coreUrl, true)).ready).toBe(true);
   expect(mockCaptureDiagnostics).toHaveBeenCalledTimes(2);
-  expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(2);
+  expect(mockClearPendingDiagnostics).not.toHaveBeenCalled();
 });
 
 it('keeps selected capture armed until an automatic stall replacement finishes', async () => {
@@ -1567,10 +1567,7 @@ it('keeps selected capture armed until an automatic stall replacement finishes',
   expect((await transport.testRemoteControlForUrl(coreUrl, true)).ready).toBe(true);
   expect(mockStart).toHaveBeenCalledTimes(2);
   expect(mockCaptureDiagnostics).toHaveBeenCalledTimes(1);
-  expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(1);
-  expect(mockClearPendingDiagnostics.mock.invocationCallOrder[0]).toBeGreaterThan(
-    mockStart.mock.invocationCallOrder[1]!,
-  );
+  expect(mockClearPendingDiagnostics).not.toHaveBeenCalled();
 });
 
 it('arms capture before starting the selected replacement of an inactive tunnel', async () => {
