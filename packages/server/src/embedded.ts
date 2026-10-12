@@ -1,3 +1,4 @@
+import { CoordinatedRecordingManager } from './coordinated-recording.js';
 import { ReturnPathActivation } from './remote-return-path-activation.js';
 import { returnPathSelection } from './remote-return-path-diagnostics.js';
 import { listProjectGitHubIssues } from './project-github-issues.js';
@@ -2603,10 +2604,12 @@ export async function buildEmbeddedServer(
     () => uplinkControl?.remoteControlDescriptor() ?? { enabled: false },
     returnPathSelection(process.env),
   );
+  let coordinatedRecording: CoordinatedRecordingManager | undefined;
   const remoteConnector = config.publicPreviews?.remoteControl
     ? createRemoteConnectorPool({
         dataUrl: remoteDataUrlForControl(config.publicPreviews.uplinkUrl),
         ...config.publicPreviews.remoteControl,
+        onReturnPathSnapshot: (snapshot) => coordinatedRecording?.observe(snapshot),
         returnPathExpiry: (): number | undefined => returnPath.expiry(),
         returnPathInstallation: (): string | undefined => {
           const descriptor = uplinkControl?.remoteControlDescriptor();
@@ -2658,6 +2661,13 @@ export async function buildEmbeddedServer(
             previewShareManager?.finishExpiredByUplink(shareId) ?? Promise.resolve(),
         })
       : undefined;
+  if (uplinkControl && remoteConnector) {
+    coordinatedRecording = new CoordinatedRecordingManager(returnPath, {
+      start: (runId, durationMs) => uplinkControl.startRecording(runId, durationMs),
+      stop: (runId) => uplinkControl.stopRecording(runId),
+      export: (runId) => uplinkControl.exportRecording(runId),
+    });
+  }
   if (
     uplinkControl !== undefined &&
     projectDocker !== undefined &&
@@ -4287,6 +4297,7 @@ export async function buildEmbeddedServer(
     },
     ...(previewShareManager !== undefined ? { previewShareManager } : {}),
     returnPathActivation: returnPath,
+    ...(coordinatedRecording ? { coordinatedRecording } : {}),
     returnPathConnectorCount: () => remoteConnector?.diagnosticConnectorCount() ?? 0,
     ...(uplinkControl !== undefined
       ? { remoteControlDescriptor: () => uplinkControl.remoteControlDescriptor() }

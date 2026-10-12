@@ -175,6 +175,30 @@ let directRefusal: { key: string; reason: string } | null = null;
 let routeGeneration = 0;
 let diagnosticCaptureUntil = 0;
 let diagnosticCaptureRevision = 0;
+let diagnosticCaptureScope: string | null = null;
+function recordingScope(): string | null {
+  const profile = getServerProfile();
+  return profile?.remoteControl
+    ? JSON.stringify([profile.serverId, profile.identityKey, profile.remoteControl.installationId])
+    : null;
+}
+async function recordingScopeAllowed(): Promise<boolean> {
+  if (diagnosticCaptureScope !== null) {
+    return diagnosticCaptureScope === recordingScope() || (await stopRemoteDataRecording());
+  }
+  // A JavaScript reload loses consent ownership while the native window survives.
+  // Older native builds have no capture window API and retain their normal route.
+  try {
+    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+    if (!native.dataDiagnosticsRemainingMs) return true;
+    const remaining = await native.dataDiagnosticsRemainingMs();
+    if (!Number.isFinite(remaining) || remaining < 0) return false;
+    return remaining === 0 || (await stopRemoteDataRecording());
+  } catch {
+    return false;
+  }
+}
+
 let previousAppState = AppState.currentState;
 AppState.addEventListener('change', (state) => {
   if (state === 'active' && previousAppState !== 'active') {
@@ -355,6 +379,7 @@ export function reportDirectRouteFailure(url: string): void {
 async function stopNativeTunnel(
   cause: 'profile_changed' | 'probe_failure' | 'replacement',
 ): Promise<void> {
+  if (cause === 'profile_changed') await recordingScopeAllowed();
   const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
   if (typeof native.stopWithCause === 'function') await native.stopWithCause(cause);
   else await native.stop();
@@ -513,9 +538,62 @@ export async function remoteControlPortForUrl(
   }
 }
 
+/** Arms recording only; the normal app flow supplies requests during the window. */
+export async function startRemoteDataRecording(): Promise<number> {
+  const revision = diagnosticCaptureRevision;
+  const scope = recordingScope();
+  const selected = operation.then(async () => {
+    if (revision !== diagnosticCaptureRevision || scope === null || scope !== recordingScope())
+      throw new Error('Recording stopped');
+    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+    if (
+      !native.captureDataDiagnostics ||
+      !native.dataDiagnosticsRemainingMs ||
+      !native.disableDataDiagnostics
+    ) {
+      throw new Error('Recording requires a newer native app build');
+    }
+    const existing = await native.dataDiagnosticsRemainingMs();
+    if (
+      revision !== diagnosticCaptureRevision ||
+      scope === null ||
+      scope !== recordingScope() ||
+      existing > 0
+    )
+      throw new Error('Recording already active or stopped');
+    await stopNativeTunnel('replacement');
+    active = null;
+    if (revision !== diagnosticCaptureRevision || scope === null || scope !== recordingScope())
+      throw new Error('Recording stopped');
+    diagnosticCaptureScope = scope;
+    const armed = await native.captureDataDiagnostics();
+    if (revision !== diagnosticCaptureRevision || scope === null || scope !== recordingScope()) {
+      await stopRemoteDataRecording();
+      throw new Error('Recording stopped');
+    }
+    const remaining = await native.dataDiagnosticsRemainingMs();
+    if (!armed || !Number.isFinite(remaining) || remaining <= 0 || remaining > 120_000) {
+      await stopRemoteDataRecording();
+      throw new Error('Recording unavailable');
+    }
+    if (revision !== diagnosticCaptureRevision || scope === null || scope !== recordingScope()) {
+      await stopRemoteDataRecording();
+      throw new Error('Recording stopped');
+    }
+    diagnosticCaptureUntil = Date.now() + remaining;
+    return remaining;
+  });
+  operation = selected.then(
+    () => undefined,
+    () => undefined,
+  );
+  return selected;
+}
+
 /** Local-only status; reading it never starts a recording or contacts Core. */
 export async function remoteDataRecordingRemainingMs(): Promise<number | null> {
   try {
+    if (!(await recordingScopeAllowed())) return null;
     const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
     const remaining = await native.dataDiagnosticsRemainingMs?.();
     return typeof remaining === 'number' && Number.isFinite(remaining) && remaining >= 0
@@ -534,6 +612,7 @@ export async function stopRemoteDataRecording(): Promise<boolean> {
     const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
     if (typeof native.disableDataDiagnostics !== 'function') return false;
     await native.disableDataDiagnostics();
+    diagnosticCaptureScope = null;
     return true;
   } catch {
     return false;
@@ -546,6 +625,7 @@ export async function testRemoteControlForUrl(
   capture = false,
 ): Promise<{ ready: boolean; detail: string }> {
   const captureRevision = diagnosticCaptureRevision;
+  const captureScope = recordingScope();
   const selected = operation.then(async () => {
     const target = new URL(url).origin;
     const key = keyFor(target);
@@ -554,7 +634,11 @@ export async function testRemoteControlForUrl(
     }
     const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
     if (capture) {
-      if (captureRevision !== diagnosticCaptureRevision) {
+      if (
+        captureRevision !== diagnosticCaptureRevision ||
+        captureScope === null ||
+        captureScope !== recordingScope()
+      ) {
         return { ready: false, detail: 'connection recording was stopped' };
       }
       if (typeof native.captureDataDiagnostics !== 'function') {
@@ -563,12 +647,21 @@ export async function testRemoteControlForUrl(
       // Arm on a fresh socket: recording an active tunnel misses its first sends.
       await stopNativeTunnel('replacement');
       active = null;
-      if (captureRevision !== diagnosticCaptureRevision) {
+      if (
+        captureRevision !== diagnosticCaptureRevision ||
+        captureScope === null ||
+        captureScope !== recordingScope()
+      ) {
         return { ready: false, detail: 'connection recording was stopped' };
       }
+      diagnosticCaptureScope = captureScope;
       const armed = await native.captureDataDiagnostics();
-      if (captureRevision !== diagnosticCaptureRevision) {
-        await native.disableDataDiagnostics?.();
+      if (
+        captureRevision !== diagnosticCaptureRevision ||
+        captureScope === null ||
+        captureScope !== recordingScope()
+      ) {
+        await stopRemoteDataRecording();
         return { ready: false, detail: 'connection recording was stopped' };
       }
       if (!armed) {
@@ -673,6 +766,12 @@ export async function recoverRemoteControlRead(url: string, port: number): Promi
 }
 
 async function selectPort(url: string): Promise<number> {
+  if (
+    diagnosticCaptureScope !== null &&
+    diagnosticCaptureScope !== recordingScope() &&
+    !(await recordingScopeAllowed())
+  )
+    return 0;
   const targetUrl = new URL(url);
   if (targetUrl.protocol === 'wss:') targetUrl.protocol = 'https:';
   const target = targetUrl.origin;
@@ -833,6 +932,13 @@ async function open(
     const dataUrl = new URL(descriptor.uplinkOrigin);
     dataUrl.protocol = 'wss:';
     dataUrl.pathname = '/data';
+    if (
+      (diagnosticCaptureScope === null || diagnosticCaptureScope !== recordingScope()) &&
+      !(await recordingScopeAllowed())
+    ) {
+      admission.cancel();
+      return 0;
+    }
     const port = await native.start(dataUrl.href, admission.ticket, admission.sessionId, coreUrl);
     tunnelStarted = true;
     stage = 'probe';

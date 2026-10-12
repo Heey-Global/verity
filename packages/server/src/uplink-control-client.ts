@@ -1,3 +1,8 @@
+import {
+  DIAGNOSTICS_CAPABILITY,
+  DIAGNOSTICS_TIMEOUT_MS,
+  parseRecordingResponse,
+} from './uplink-recording.js';
 import { randomUUID } from 'node:crypto';
 import type { VeritySettingsPatch, VeritySettingsRecord, EventStore } from '@verity/store';
 import WebSocket from 'ws';
@@ -188,6 +193,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   // switches behaves exactly as before they existed.
   private switches: PremiumFeatureSwitches = { sharing: true, remoteAccess: true };
   private remoteNegotiated = false;
+  private diagnosticsNegotiated = false;
   private lastRemoteDescriptorState: string | undefined;
   private remoteInstallation:
     { readonly installationId: string; readonly installationHandle: string } | undefined;
@@ -568,6 +574,95 @@ export class UplinkControlClient implements PreviewEdgeControl {
     };
   }
 
+  private async recordingRequest(
+    action: 'start' | 'status' | 'stop' | 'export',
+    runId: string,
+    fields: Record<string, unknown> = {},
+  ) {
+    if (
+      !this.diagnosticsNegotiated ||
+      !this.remoteControlDescriptor().enabled ||
+      this.grantExpiresAt <= Date.now()
+    )
+      throw new Error('diagnostics_not_available');
+    if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/iu.test(runId))
+      throw new Error('invalid_recording');
+    const reply =
+      action === 'start'
+        ? 'started'
+        : action === 'stop'
+          ? 'stopped'
+          : action === 'export'
+            ? 'exported'
+            : 'status';
+    return parseRecordingResponse(
+      await this.request(`diagnostics.${action}`, { runId, ...fields }, [
+        `diagnostics.${reply}`,
+        'diagnostics.error',
+      ]),
+      runId,
+    );
+  }
+
+  async startRecording(runId: string, durationMs: number): Promise<void> {
+    if (!Number.isInteger(durationMs) || durationMs < 1 || durationMs > 120000)
+      throw new Error('invalid_recording');
+    const result = await this.recordingRequest('start', runId, { durationMs });
+    if (result.state !== 'recording' || Date.parse(result.expiresAt) <= Date.now())
+      throw new Error('diagnostics_not_recording');
+  }
+
+  async stopRecording(runId: string): Promise<void> {
+    const result = await this.recordingRequest('stop', runId);
+    if (result.state === 'recording') throw new Error('diagnostics_not_stopped');
+  }
+
+  async exportRecording(runId: string): Promise<unknown> {
+    const records: unknown[] = [];
+    let cursor = 0;
+    let bytes = 0;
+    let identity: string | undefined;
+    for (let page = 0; page < 128; page++) {
+      const result = await this.recordingRequest('export', runId, { cursor });
+      if (
+        result.type !== 'diagnostics.exported' ||
+        result.state === 'recording' ||
+        result.cursor !== cursor
+      )
+        throw new Error('invalid_diagnostics_export');
+      const { records: batch, nextCursor } = result;
+      const metadata = {
+        runId: result.runId,
+        state: result.state,
+        expiresAt: result.expiresAt,
+        retainedUntil: result.retainedUntil,
+        collectorReady: result.collectorReady,
+        recordCount: result.recordCount,
+        droppedRecords: result.droppedRecords,
+      };
+      const currentIdentity = JSON.stringify(metadata);
+      if (identity !== undefined && identity !== currentIdentity)
+        throw new Error('diagnostics_export_changed');
+      identity = currentIdentity;
+      bytes += Buffer.byteLength(JSON.stringify(batch));
+      if (bytes > 900_000 || records.length + batch.length > 2048)
+        throw new Error('diagnostics_export_limit');
+      records.push(...batch);
+      if (nextCursor === null) {
+        if (records.length !== result.recordCount) throw new Error('incomplete_diagnostics_export');
+        return { version: 1, ...metadata, records };
+      }
+      if (
+        batch.length === 0 ||
+        nextCursor !== cursor + batch.length ||
+        nextCursor > result.recordCount
+      )
+        throw new Error('invalid_diagnostics_cursor');
+      cursor = nextCursor;
+    }
+    throw new Error('diagnostics_export_limit');
+  }
+
   async create(input: PreviewEdgeCreate): Promise<PreviewEdgeBinding> {
     this.shareOperations += 1;
     try {
@@ -770,7 +865,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
           serverVersion: this.options.serverVersion,
           ...(this.options.offerRemoteControl === true && this.switches.remoteAccess
             ? {
-                capabilities: [REMOTE_CAPABILITY, 'webhook-v1'],
+                capabilities: [REMOTE_CAPABILITY, DIAGNOSTICS_CAPABILITY, 'webhook-v1'],
                 channels: ['http', 'ws', REMOTE_CHANNEL],
               }
             : { capabilities: ['webhook-v1'], channels: ['http', 'ws'] }),
@@ -917,6 +1012,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
         return;
       }
     }
+    // A timed-out diagnostic operation may finish after local rollback. It must
+    // not tear down the shared control channel or restart a recording.
+    if (requestId && /^diagnostics\.(started|status|stopped|exported|error)$/u.test(frameType))
+      return;
     if (frame.type === 'welcome') {
       const welcomeSocket = this.socket;
       const welcomeGeneration = this.generation;
@@ -982,6 +1081,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
           this.options.offerRemoteControl === true &&
           negotiation.capabilities.has(REMOTE_CAPABILITY) &&
           negotiation.channels.has(REMOTE_CHANNEL);
+        this.diagnosticsNegotiated =
+          this.remoteNegotiated && negotiation.capabilities.has(DIAGNOSTICS_CAPABILITY);
         this.remoteSupported = this.remoteNegotiated;
         this.remoteInstallation =
           installationHandle === undefined ? undefined : { installationId, installationHandle };
@@ -1292,6 +1393,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
     }
     this.features.clear();
     this.remoteNegotiated = false;
+    this.diagnosticsNegotiated = false;
     this.webhookNegotiated = false;
     this.remoteInstallation = undefined;
     this.clearRemoteSessions(reason);
@@ -1475,7 +1577,11 @@ export class UplinkControlClient implements PreviewEdgeControl {
     this.authorityLossNotified = false;
   }
 
-  private request(type: string, fields: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private request(
+    type: string,
+    fields: Record<string, unknown>,
+    responses?: readonly string[],
+  ): Promise<Record<string, unknown>> {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       if (type === 'share.create') {
@@ -1511,12 +1617,17 @@ export class UplinkControlClient implements PreviewEdgeControl {
           if (type === 'share.create') this.rememberAbandonedCreate(requestId);
           fail(new Error(`Uplink ${type} timed out`), 'timeout');
         },
-        type === 'share.remove' ? REMOVAL_TIMEOUT_MS : REQUEST_TIMEOUT_MS,
+        type.startsWith('diagnostics.')
+          ? DIAGNOSTICS_TIMEOUT_MS
+          : type === 'share.remove'
+            ? REMOVAL_TIMEOUT_MS
+            : REQUEST_TIMEOUT_MS,
       );
       this.pending.set(requestId, {
         type,
-        expectedResponseTypes:
-          type === 'share.create'
+        expectedResponseTypes: responses
+          ? new Set(responses)
+          : type === 'share.create'
             ? new Set(['share.ready', 'share.error'])
             : new Set(['share.removed', 'remove.failed']),
         ...(type === 'share.remove' && typeof fields.shareId === 'string'

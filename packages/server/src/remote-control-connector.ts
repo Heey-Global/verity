@@ -95,6 +95,7 @@ export interface RemoteConnectorPoolOptions {
   /** Records why sessions end and streams reset; otherwise a failure only surfaces as a generic app error. */
   log?: Pick<Console, 'info' | 'warn'>;
   /** Returns an absolute expiry only for the authenticated selected installation. */
+  onReturnPathSnapshot?: (snapshot: unknown) => void;
   returnPathExpiry?: () => number | undefined;
   returnPathInstallation?: () => string | undefined;
   returnPathBeforeStopSubscribe?: (listener: () => void) => () => void;
@@ -261,14 +262,14 @@ class ConnectorSession implements RemoteConnectorReservation {
     if (this.terminated) return;
     const expiry = this.selectedReturnPathExpiry();
     if (
-      this.options.log &&
+      (this.options.log || this.options.onReturnPathSnapshot) &&
       expiry !== undefined &&
       expiry > Date.now() &&
       expiry - Date.now() <= 600_000
     ) {
       this.returnPathExpiresAt = expiry;
       this.retainedReturnPath ??= new RemoteReturnPathDiagnostics(this.request.sessionId, expiry);
-      this.retainedReturnPath.resumeUntil(expiry);
+      this.retainedReturnPath.beginWindow(expiry);
       this.returnPath = this.retainedReturnPath;
       this.returnPathTimer = setInterval(() => this.logReturnPath(), 5_000);
       this.returnPathTimer.unref();
@@ -529,7 +530,14 @@ class ConnectorSession implements RemoteConnectorReservation {
 
   private logReturnPath(final = false): void {
     const snapshot = this.returnPathDiagnostics()?.exportSummary(final);
-    if (snapshot) this.options.log?.info(snapshot, 'remote return-path diagnostics');
+    if (snapshot) {
+      try {
+        this.options.onReturnPathSnapshot?.(snapshot);
+      } catch {
+        /* A diagnostic sink cannot interrupt transport. */
+      }
+      this.options.log?.info(snapshot, 'remote return-path diagnostics');
+    }
   }
 
   private send(frame: Frame, onSent?: () => void): void {
@@ -552,23 +560,24 @@ class ConnectorSession implements RemoteConnectorReservation {
       frame.type === 'stream.data' && typeof frame.payload === 'string'
         ? Buffer.byteLength(frame.payload, 'base64')
         : 0;
-    this.returnPathDiagnostics()?.record(
-      'send',
-      'observed',
-      frame,
-      Buffer.byteLength(raw),
-      decodedBytes,
-    );
+    const returnPath = this.returnPathDiagnostics();
+    const windowRevision = returnPath?.windowRevision;
+    returnPath?.record('send', 'observed', frame, Buffer.byteLength(raw), decodedBytes);
     this.diagnostics.frame('out', frame, write);
     try {
       ws.send(raw, (error) => {
-        this.returnPathDiagnostics()?.record(
-          'callback',
-          error ? 'error' : 'accepted',
-          frame,
-          Buffer.byteLength(raw),
-          decodedBytes,
-        );
+        if (
+          returnPath &&
+          returnPath === this.returnPathDiagnostics() &&
+          returnPath.windowRevision === windowRevision
+        )
+          returnPath.record(
+            'callback',
+            error ? 'error' : 'accepted',
+            frame,
+            Buffer.byteLength(raw),
+            decodedBytes,
+          );
         if (this.terminated) this.logReturnPath();
         this.diagnostics.complete(write, Boolean(error));
         if (error) this.release('remote data send failed');
@@ -579,13 +588,12 @@ class ConnectorSession implements RemoteConnectorReservation {
       });
       this.diagnostics.observeBuffer(ws.bufferedAmount);
     } catch {
-      this.returnPathDiagnostics()?.record(
-        'callback',
-        'error',
-        frame,
-        Buffer.byteLength(raw),
-        decodedBytes,
-      );
+      if (
+        returnPath &&
+        returnPath === this.returnPathDiagnostics() &&
+        returnPath.windowRevision === windowRevision
+      )
+        returnPath.record('callback', 'error', frame, Buffer.byteLength(raw), decodedBytes);
       this.diagnostics.complete(write, true);
       this.release('remote data send failed');
     }

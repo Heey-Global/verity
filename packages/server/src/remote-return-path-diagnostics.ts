@@ -43,6 +43,8 @@ export class RemoteReturnPathDiagnostics {
   private lastClose: Record<string, unknown> | undefined;
   private emittedOrder = 0;
   private summaries = 0;
+  private windowSummaries = 0;
+  private window = 0;
   private droppedEvents = 0;
   private droppedStreamObservations = 0;
   private events: Record<string, unknown>[] = [];
@@ -58,6 +60,27 @@ export class RemoteReturnPathDiagnostics {
   /** A new consent window must not reset a socket's lifetime output or stream budget. */
   resumeUntil(expiresAt: number): void {
     this.expiresAt = expiresAt;
+  }
+
+  /** A separately authorized capture starts fresh counters without inventing a new socket. */
+  beginWindow(expiresAt: number): void {
+    this.expiresAt = expiresAt;
+    this.window++;
+    this.windowSummaries = 0;
+    this.emittedMessages = 0;
+    this.emittedBytes = 0;
+    this.lastError = undefined;
+    this.lastClose = undefined;
+    this.emittedOrder = this.order;
+    this.droppedEvents = 0;
+    this.droppedStreamObservations = 0;
+    this.events = [];
+    this.streams.clear();
+  }
+
+  /** Async callbacks must retain this token at send time to avoid crossing capture windows. */
+  get windowRevision(): number {
+    return this.window;
   }
 
   record(
@@ -169,7 +192,8 @@ export class RemoteReturnPathDiagnostics {
   exportSummary(final = false): Record<string, unknown> | undefined {
     if (Date.now() >= this.expiresAt) return undefined;
     // Reserve one final summary so a busy socket cannot consume its close evidence.
-    if (this.summaries >= RETURN_PATH_LIMITS.events / 2 - (final ? 0 : 1)) return undefined;
+    if (this.windowSummaries >= RETURN_PATH_LIMITS.events / 2 - (final ? 0 : 1)) return undefined;
+    this.windowSummaries++;
     this.summaries++;
     const snapshot = this.snapshot();
     snapshot.eventOrder = ++this.order;

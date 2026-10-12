@@ -1,4 +1,8 @@
 import {
+  recordingCoreRecordSchema,
+  recordingUplinkRecordSchema,
+} from './connection-recording-schema.js';
+import {
   markSessionSwitch,
   beginSwitchTransportRequest,
   markSwitchTransportRequest,
@@ -1003,6 +1007,68 @@ export const returnPathStatusSchema = z
   })
   .strict();
 export type ReturnPathStatus = z.infer<typeof returnPathStatusSchema>;
+
+export const connectionRecordingStatusSchema = z
+  .object({
+    version: z.literal(1),
+    runId: z.string().uuid(),
+    phase: z.enum(['starting', 'recording', 'stopped', 'expired', 'failed']),
+    startedAt: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+    installationFingerprint: z.string().regex(/^[a-f0-9]{16}$/u),
+    core: z
+      .object({
+        state: z.enum(['recording', 'stopped']),
+        records: z.number().int().nonnegative(),
+        dropped: z.number().int().nonnegative(),
+      })
+      .strict(),
+    uplink: z
+      .object({ state: z.enum(['pending', 'recording', 'stopped', 'unavailable']) })
+      .strict(),
+    error: z.enum(['uplink_start_failed', 'uplink_stop_failed', 'capture_interrupted']).nullable(),
+  })
+  .strict();
+export type ConnectionRecordingStatus = z.infer<typeof connectionRecordingStatusSchema>;
+export const connectionRecordingExportSchema = z
+  .object({
+    version: z.literal(1),
+    status: connectionRecordingStatusSchema,
+    core: z
+      .object({
+        records: z.array(recordingCoreRecordSchema).max(256),
+        dropped: z.number().int().nonnegative(),
+      })
+      .strict(),
+    uplink: z
+      .object({
+        available: z.boolean(),
+        data: z
+          .object({
+            version: z.literal(1),
+            runId: z.string().uuid(),
+            state: z.enum(['recording', 'stopped', 'expired']),
+            expiresAt: z.string().datetime(),
+            retainedUntil: z.string().datetime(),
+            collectorReady: z.literal(true),
+            recordCount: z.number().int().nonnegative().max(2048),
+            droppedRecords: z.number().int().nonnegative(),
+            records: z.array(recordingUplinkRecordSchema).max(2048),
+          })
+          .strict()
+          .nullable(),
+        error: z.literal('uplink_export_failed').nullable(),
+      })
+      .strict(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.uplink.available === (value.uplink.data !== null) &&
+      (value.uplink.data === null || value.uplink.data.runId === value.status.runId),
+    'Uplink recording does not match run',
+  );
+export type ConnectionRecordingExport = z.infer<typeof connectionRecordingExportSchema>;
 
 export const remoteControlDescriptorSchema = z.discriminatedUnion('enabled', [
   z
@@ -3241,6 +3307,49 @@ export class VerityClient {
     return returnPathStatusSchema.parse(
       await (await this.request('/api/remote-control/diagnostics', { method: 'DELETE' })).json(),
     );
+  }
+
+  async startConnectionRecording(
+    runId: string,
+    durationMs: number,
+  ): Promise<ConnectionRecordingStatus> {
+    z.string().uuid().parse(runId);
+    z.number().int().min(1).max(120_000).parse(durationMs);
+    return connectionRecordingStatusSchema.parse(
+      await (
+        await this.request('/api/remote-control/recordings', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ runId, durationMs }),
+        })
+      ).json(),
+    );
+  }
+  async getConnectionRecording(runId: string): Promise<ConnectionRecordingStatus> {
+    z.string().uuid().parse(runId);
+    return connectionRecordingStatusSchema.parse(
+      await (
+        await this.request(`/api/remote-control/recordings/${runId}`, { method: 'GET' })
+      ).json(),
+    );
+  }
+  async stopConnectionRecording(runId: string): Promise<ConnectionRecordingStatus> {
+    z.string().uuid().parse(runId);
+    return connectionRecordingStatusSchema.parse(
+      await (
+        await this.request(`/api/remote-control/recordings/${runId}`, { method: 'DELETE' })
+      ).json(),
+    );
+  }
+  async exportConnectionRecording(runId: string): Promise<ConnectionRecordingExport> {
+    z.string().uuid().parse(runId);
+    const response = await this.request(`/api/remote-control/recordings/${runId}/export`, {
+      method: 'GET',
+    });
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > 2 * 1024 * 1024)
+      throw new Error('Recording export too large');
+    return connectionRecordingExportSchema.parse(JSON.parse(text));
   }
 
   async getRemoteControlDescriptor(): Promise<RemoteControlDescriptor> {

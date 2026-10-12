@@ -20,6 +20,7 @@ async function fixture(
   returnPathExpiry?: () => number | undefined,
   factory?: (url: string) => WebSocket,
   activation?: ReturnPathActivation,
+  onReturnPathSnapshot?: (snapshot: unknown) => void,
 ): Promise<{
   reserve: ReturnType<typeof createRemoteConnectorPool>['reserve'];
   diagnosticConnectorCount: () => number;
@@ -62,6 +63,7 @@ async function fixture(
     });
   });
   const pool = createRemoteConnectorPool({
+    ...(onReturnPathSnapshot ? { onReturnPathSnapshot } : {}),
     ...(log ? { log } : {}),
     ...(returnPathExpiry ? { returnPathExpiry } : {}),
     ...(activation
@@ -109,6 +111,31 @@ async function reserve(
 }
 
 describe('remote control connector', () => {
+  it('delivers retained metadata without a logger and isolates sink errors from transport', async () => {
+    const activation = new ReturnPathActivation(() => ({
+      enabled: true,
+      installationId: 'paired',
+    }));
+    const sink = vi.fn(() => {
+      throw new Error('sink unavailable');
+    });
+    const f = await fixture(undefined, {}, undefined, undefined, undefined, activation, sink);
+    const reservation = await reserve(f);
+    let closed = false;
+    void reservation.closed!.then(() => {
+      closed = true;
+    });
+    activation.start(new Date(Date.now() + 60000).toISOString());
+    activation.stop();
+    expect(sink).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'remote.return_path', stage: 'summary' }),
+    );
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    reservation.release('done');
+    activation.dispose();
+  });
+
   it('activates and stops existing connectors without closing transport or renewing reconnect consent', async () => {
     const activation = new ReturnPathActivation(() => ({
       enabled: true,
@@ -229,75 +256,99 @@ describe('remote control connector', () => {
     );
     expect(JSON.stringify(summary)).not.toContain('private');
   });
-  it('retains a target callback arriving after socket close', async () => {
-    let late: (() => void) | undefined;
-    class DeferredWebSocket extends WebSocket {
-      override send(
-        data: Parameters<WebSocket['send']>[0],
-        options?: Parameters<WebSocket['send']>[1] | ((error?: Error) => void),
-        callback?: (error?: Error) => void,
-      ): void {
-        const cb = typeof options === 'function' ? options : callback;
-        if (
-          typeof data === 'string' &&
-          (JSON.parse(data) as { type: string }).type === 'stream.data'
-        ) {
-          super.send(data, (error) => {
-            late = () => cb?.(error);
-          });
-        } else if (typeof options === 'function') super.send(data, options);
-        else if (options) super.send(data, options, callback);
-        else super.send(data, callback);
+  it.each(['socket close', 'new recording window'])(
+    'attributes delayed callbacks across %s',
+    async (transition) => {
+      let late: (() => void) | undefined;
+      class DeferredWebSocket extends WebSocket {
+        override send(
+          data: Parameters<WebSocket['send']>[0],
+          options?: Parameters<WebSocket['send']>[1] | ((error?: Error) => void),
+          callback?: (error?: Error) => void,
+        ): void {
+          const cb = typeof options === 'function' ? options : callback;
+          if (
+            typeof data === 'string' &&
+            (JSON.parse(data) as { type: string }).type === 'stream.data'
+          ) {
+            super.send(data, (error) => {
+              late = () => cb?.(error);
+            });
+          } else if (typeof options === 'function') super.send(data, options);
+          else if (options) super.send(data, options, callback);
+          else super.send(data, callback);
+        }
       }
-    }
-    const log = { info: vi.fn(), warn: vi.fn() };
-    const expiry = Date.now() + 60_000;
-    const f = await fixture(
-      undefined,
-      {},
-      log,
-      () => expiry,
-      (url) => new DeferredWebSocket(url),
-    );
-    const reservation = await reserve(f);
-    const attaching = reservation.attach(
-      'ticket',
-      Date.now() + 30_000,
-      new AbortController().signal,
-    );
-    await vi.waitFor(() => expect(f.received).toHaveLength(1));
-    f.peer().send(
-      JSON.stringify({
-        type: 'attached',
-        sessionId: 'session_one',
-        capability: 'remote-control-v1',
-      }),
-    );
-    await attaching;
-    f.peer().send(
-      JSON.stringify({ type: 'stream.open', streamId: 'late', channel: 'remote', meta: {} }),
-    );
-    f.peer().send(
-      JSON.stringify({ type: 'stream.data', streamId: 'late', seq: 0, payload: 'eA==' }),
-    );
-    await vi.waitFor(() => expect(late).toBeTypeOf('function'));
-    reservation.release('test stop');
-    await vi.waitFor(() => expect(f.peer().readyState).toBe(WebSocket.CLOSED));
-    late?.();
-    const summary = log.info.mock.calls
-      .filter(([entry]) => entry.event === 'remote.return_path')
-      .at(-1)?.[0];
-    expect(summary.streams).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          enqueuedFrames: 1,
-          completedFrames: 1,
-          firstCallback: expect.objectContaining({ seq: 0, outcome: 'accepted' }),
+      const log = { info: vi.fn(), warn: vi.fn() };
+      const activation = new ReturnPathActivation(() => ({
+        enabled: true,
+        installationId: 'paired',
+      }));
+      const expiry = Date.now() + 60_000;
+      const f = await fixture(
+        undefined,
+        {},
+        log,
+        () => expiry,
+        (url) => new DeferredWebSocket(url),
+        activation,
+      );
+      activation.start(new Date(expiry).toISOString());
+      const reservation = await reserve(f);
+      const attaching = reservation.attach(
+        'ticket',
+        Date.now() + 30_000,
+        new AbortController().signal,
+      );
+      await vi.waitFor(() => expect(f.received).toHaveLength(1));
+      f.peer().send(
+        JSON.stringify({
+          type: 'attached',
+          sessionId: 'session_one',
+          capability: 'remote-control-v1',
         }),
-      ]),
-    );
-    expect(summary.lastClose).not.toBeNull();
-  });
+      );
+      await attaching;
+      f.peer().send(
+        JSON.stringify({ type: 'stream.open', streamId: 'late', channel: 'remote', meta: {} }),
+      );
+      f.peer().send(
+        JSON.stringify({ type: 'stream.data', streamId: 'late', seq: 0, payload: 'eA==' }),
+      );
+      await vi.waitFor(() => expect(late).toBeTypeOf('function'));
+      if (transition === 'socket close') {
+        reservation.release('test stop');
+        await vi.waitFor(() => expect(f.peer().readyState).toBe(WebSocket.CLOSED));
+      } else {
+        activation.stop();
+        activation.start(new Date(Date.now() + 60000).toISOString());
+      }
+      late?.();
+      if (transition === 'new recording window') activation.stop();
+      const summary = log.info.mock.calls
+        .filter(([entry]) => entry.event === 'remote.return_path')
+        .at(-1)?.[0];
+      if (transition === 'new recording window') {
+        expect(summary.streams).toEqual([]);
+        expect(summary.events).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ stage: 'callback' })]),
+        );
+        reservation.release('test stop');
+      } else {
+        expect(summary.streams).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              enqueuedFrames: 1,
+              completedFrames: 1,
+              firstCallback: expect.objectContaining({ seq: 0, outcome: 'accepted' }),
+            }),
+          ]),
+        );
+        expect(summary.lastClose).not.toBeNull();
+      }
+      activation.dispose();
+    },
+  );
   it('samples incomplete WebSocket bytes below message delivery and stops sampling on release', async () => {
     const log = { info: vi.fn(), warn: vi.fn() };
     const f = await fixture(undefined, {}, log);
