@@ -51,7 +51,12 @@ export interface ManagedDevServerRuntime {
 export interface ManagedLocalShares {
   create(
     sessionId: string,
-    input: { targetPort: number; ttlSeconds: number; networkPort: number },
+    input: {
+      targetPort: number;
+      ttlSeconds: number;
+      networkPort: number;
+      managedInstanceId?: string;
+    },
   ): Promise<LocalPreviewShare>;
   stop(id: string): Promise<boolean>;
   list(sessionId: string): LocalPreviewShare[];
@@ -62,6 +67,8 @@ export interface ManagedLocalShares {
 export interface ManagedDevServerManagerOptions {
   store: EventStore;
   runtime: ManagedDevServerRuntime;
+  /** Defer supervision until durable preview ownership is loaded and the store is unlocked. */
+  canSupervise?: () => boolean;
   /** Absent when local previews are unavailable; entries then run without an address. */
   localShares?: ManagedLocalShares | undefined;
   /** The local preview range, the only ports anyone sees. */
@@ -193,9 +200,11 @@ export class ManagedDevServerManager {
       .catch(() => undefined);
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.closed = true;
     clearInterval(this.timer);
+    await this.ticking;
+    await Promise.all(this.locks.values());
   }
 
   private get servers() {
@@ -812,12 +821,9 @@ export class ManagedDevServerManager {
     )
       return;
     const existing = this.shareFor(instance);
-    if (
-      existing &&
-      existing.targetPort === instance.sandboxPort &&
-      existing.expiresAt.getTime() - this.now() > 86_400_000
-    )
-      return;
+    // Recovery follows the instance's current sandbox port without replacing
+    // the durable local identity when a sandbox is recreated.
+    if (existing && existing.expiresAt.getTime() - this.now() > 86_400_000) return;
     // A share close to its end is replaced on the same port; the local manager
     // would otherwise hand the old one back unchanged.
     if (existing) await this.options.localShares?.stop(existing.id).catch(() => false);
@@ -853,6 +859,7 @@ export class ManagedDevServerManager {
         targetPort: instance.sandboxPort,
         ttlSeconds: MANAGED_SHARE_TTL_SECONDS,
         networkPort: reservation.port,
+        managedInstanceId: instance.id,
       });
       this.publishRetryAt.delete(instance.id);
       if (instance.detail) await this.servers.updateInstance(instance.id, { detail: null });
@@ -912,7 +919,7 @@ export class ManagedDevServerManager {
 
   /** One pass over active instances. Exposed for tests and for discovery pushes. */
   tick(): Promise<void> {
-    if (this.closed) return Promise.resolve();
+    if (this.closed || this.options.canSupervise?.() === false) return Promise.resolve();
     this.ticking ??= this.supervise().finally(() => {
       this.ticking = undefined;
     });

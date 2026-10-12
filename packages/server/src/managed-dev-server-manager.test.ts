@@ -108,6 +108,7 @@ let now = Date.parse('2026-10-05T10:00:00Z');
 let sandbox: ReturnType<typeof fakeSandbox>;
 let shares: ReturnType<typeof fakeShares>;
 let manager: ManagedDevServerManager;
+let supervisionReady = true;
 
 beforeEach(async () => {
   await truncateAll(ctx.db);
@@ -132,9 +133,11 @@ beforeEach(async () => {
   });
   sandbox = fakeSandbox();
   shares = fakeShares();
+  supervisionReady = true;
   manager = new ManagedDevServerManager({
     store: ctx.store,
     runtime: sandbox.runtime,
+    canSupervise: () => supervisionReady,
     localShares: shares.local,
     networkPorts: [8100, 8101],
     sandboxWorktree: (_project: ProjectRecord, worktree: string) =>
@@ -147,6 +150,19 @@ afterEach(() => manager.close());
 const instanceOf = async (sessionId = 's1') => (await manager.view(sessionId))[0]!.instance!;
 
 describe('managed dev servers', () => {
+  it('defers supervision until preview ownership is ready', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s1', 'Demo', 'agent');
+    const instance = await instanceOf();
+    sandbox.listen(instance.id, instance.sandboxPort);
+    supervisionReady = false;
+    await manager.tick();
+    expect((await instanceOf()).state).toBe('starting');
+    supervisionReady = true;
+    await manager.tick();
+    expect((await instanceOf()).state).toBe('running');
+  });
+
   it('starts an entry with its own port and reports running only once the port answers', async () => {
     await manager.add('s1', {
       name: 'Curtis Demo',
@@ -197,6 +213,31 @@ describe('managed dev servers', () => {
     await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
     await expect(manager.start('s1', 'Demo', 'operator')).rejects.toThrow(/approve/u);
     expect(sandbox.started).toHaveLength(0);
+  });
+
+  it('retains the durable local identity when the sandbox target port changes', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.approve('s1', 'Demo', { command: 'node server.mjs', workdir: '.' });
+    await manager.start('s1', 'Demo', 'operator');
+    const instance = await instanceOf();
+    sandbox.listen(instance.id, instance.sandboxPort);
+    await manager.tick();
+    const share = shares.shares[0]!;
+    expect(shares.create).toHaveBeenCalledWith(
+      's1',
+      expect.objectContaining({ managedInstanceId: instance.id }),
+    );
+    sandbox.listeners.splice(0);
+    const nextPort = instance.sandboxPort + 1;
+    await ctx.db
+      .updateTable('managed_dev_server_instances')
+      .set({ sandbox_port: nextPort })
+      .where('id', '=', instance.id)
+      .execute();
+    sandbox.listen(instance.id, nextPort);
+    await manager.tick();
+    expect(shares.shares).toEqual([share]);
+    expect(shares.create).toHaveBeenCalledTimes(1);
   });
 
   // A changed command keeps running the old one until a restart, and the old
@@ -283,8 +324,38 @@ describe('managed dev servers', () => {
     sandbox.listen(second.instanceId, Number(second.env.PORT));
     await manager.tick();
     expect(shares.shares).toHaveLength(1);
-    expect(shares.shares[0]!.targetPort).toBe(Number(second.env.PORT));
+    expect(shares.shares[0]!.id).toBe(old.localShareId);
+    expect((await instanceOf()).sandboxPort).toBe(Number(second.env.PORT));
     expect((await manager.view('s1'))[0]!.instance!.url).toBe(old.url);
+  });
+
+  it('waits for in-flight supervision on close without cancelling the running wish', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s1', 'Demo', 'agent');
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    vi.spyOn(sandbox.runtime, 'listListeningProcesses').mockImplementation(async () => {
+      entered();
+      await blocked;
+      return [...sandbox.listeners];
+    });
+    const tick = manager.tick();
+    await started;
+    let closed = false;
+    const close = manager.close().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    release();
+    await Promise.all([tick, close]);
+    expect((await instanceOf()).desired).toBe('running');
   });
 
   it('restarts after sandbox recreation with the command that last ran', async () => {
@@ -306,7 +377,7 @@ describe('managed dev servers', () => {
     const wake = vi.fn(async () => {
       await ctx.store.updateProjectState('p1', 'active');
     });
-    manager.close();
+    await manager.close();
     manager = new ManagedDevServerManager({
       store: ctx.store,
       runtime: sandbox.runtime,
@@ -384,7 +455,7 @@ describe('managed dev servers', () => {
   // A sandbox put to sleep keeps its /tmp; an exit code from an earlier run
   // must not be read as the woken start crashing.
   it('launches a woken instance even when an old exit code is left behind', async () => {
-    manager.close();
+    await manager.close();
     manager = new ManagedDevServerManager({
       store: ctx.store,
       runtime: sandbox.runtime,
@@ -680,7 +751,7 @@ describe('managed dev servers', () => {
       const id = await listen();
       const share = await publicLink(id);
       await ctx.store.transitionPublicPreviewShare(share.id, ['creating', 'active'], 'revoked', {});
-      manager.close();
+      await manager.close();
       manager = new ManagedDevServerManager({
         store: ctx.store,
         runtime: sandbox.runtime,
@@ -796,7 +867,7 @@ describe('managed dev servers', () => {
         desired: 'stopped',
         state: 'stopped',
       });
-      manager.close();
+      await manager.close();
       manager = new ManagedDevServerManager({
         store: ctx.store,
         runtime: sandbox.runtime,

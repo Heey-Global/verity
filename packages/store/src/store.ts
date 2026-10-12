@@ -540,6 +540,20 @@ export interface DevServerDetectionStateRecord {
   reviewedAt: Date | null;
 }
 
+export interface LocalPreviewShareRecord {
+  id: string;
+  projectId: string;
+  sessionId: string;
+  managedInstanceId: string | null;
+  networkPort: number;
+  url: string;
+  targetPort: number | null;
+  staticPath: string | null;
+  connectorSecret: string;
+  state: 'active' | 'revoking';
+  expiresAt: Date;
+}
+
 export type PublicPreviewShareState =
   'creating' | 'active' | 'revoking' | 'revoked' | 'expired' | 'failed';
 
@@ -5591,6 +5605,7 @@ export class EventStore implements EventSink {
         union all select 1 from secret_execution_profiles where project_id = ${projectId}
         union all select 1 from brokered_http_consumptions where project_id = ${projectId}
         union all select 1 from public_preview_shares where project_id = ${projectId}
+        union all select 1 from local_preview_shares where project_id = ${projectId}
       ) as has_dependents
     `.execute(tx);
     return result.rows[0]?.has_dependents === true;
@@ -6951,6 +6966,66 @@ export class EventStore implements EventSink {
   async deleteDevServer(id: string): Promise<boolean> {
     const result = await this.db.deleteFrom('dev_servers').where('id', '=', id).executeTakeFirst();
     return result.numDeletedRows > 0n;
+  }
+
+  async createLocalPreviewShare(input: Omit<LocalPreviewShareRecord, 'state'>): Promise<void> {
+    await this.db
+      .insertInto('local_preview_shares')
+      .values({
+        id: input.id,
+        project_id: input.projectId,
+        session_id: input.sessionId,
+        managed_instance_id: input.managedInstanceId,
+        network_port: input.networkPort,
+        url: input.url,
+        target_port: input.targetPort,
+        static_path: input.staticPath,
+        connector_secret: this.encryptSecret(input.connectorSecret)!,
+        state: 'active',
+        expires_at: input.expiresAt.toISOString(),
+      })
+      .execute();
+  }
+
+  async listLocalPreviewShares(): Promise<LocalPreviewShareRecord[]> {
+    const rows = await this.db.selectFrom('local_preview_shares').selectAll().execute();
+    return rows.map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      sessionId: row.session_id,
+      managedInstanceId: row.managed_instance_id,
+      networkPort: row.network_port,
+      url: row.url,
+      targetPort: row.target_port,
+      staticPath: row.static_path,
+      connectorSecret: this.decryptSecret(row.connector_secret)!,
+      state: row.state,
+      expiresAt: row.expires_at,
+    }));
+  }
+
+  /** Follow a managed listener without changing its public binding. */
+  async updateLocalPreviewShareTarget(id: string, targetPort: number): Promise<void> {
+    await this.db
+      .updateTable('local_preview_shares')
+      .set({ target_port: targetPort })
+      .where('id', '=', id)
+      .where('state', '=', 'active')
+      .where('static_path', 'is', null)
+      .execute();
+  }
+
+  /** Persist stop intent before removing sockets or containers. */
+  async revokeLocalPreviewShare(id: string): Promise<void> {
+    await this.db
+      .updateTable('local_preview_shares')
+      .set({ state: 'revoking' })
+      .where('id', '=', id)
+      .execute();
+  }
+
+  async deleteLocalPreviewShare(id: string): Promise<void> {
+    await this.db.deleteFrom('local_preview_shares').where('id', '=', id).execute();
   }
 
   private publicPreviewShare(row: Selectable<PublicPreviewSharesTable>): PublicPreviewShareRecord {
