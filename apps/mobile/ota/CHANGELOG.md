@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.68.4](https://github.com/Heey-Global/verity/compare/mobile-v1.68.3...mobile-v1.68.4) (2026-10-12)
+
+
+### Features
+
+* **preview:** inject alias-bound secrets into managed servers ([#1565](https://github.com/Heey-Global/verity/issues/1565)) ([ca26935](https://github.com/Heey-Global/verity/commit/ca269359a1adbdc341fc3a7e5518861d0f636ddb))
+
 ## [1.68.3](https://github.com/Heey-Global/verity/compare/mobile-v1.68.2...mobile-v1.68.3) (2026-10-12)
 
 
