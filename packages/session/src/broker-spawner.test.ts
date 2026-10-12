@@ -588,6 +588,7 @@ describe('agent spawn broker', () => {
     const spawnChild = vi.fn();
     const broker = await runAgentSpawnBroker({
       runtimeDir,
+      worktreeRoot: runtimeDir,
       enforceRoot: false,
       agentUid: 1000,
       agentGid: 1000,
@@ -1174,6 +1175,7 @@ describe('agent spawn broker', () => {
     const spawnChild = vi.fn();
     const broker = await runAgentSpawnBroker({
       runtimeDir,
+      worktreeRoot: runtimeDir,
       enforceRoot: false,
       agentUid: 1000,
       agentGid: 1000,
