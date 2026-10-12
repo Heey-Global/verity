@@ -640,6 +640,9 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
       ? {
           ...copy('XDG_CONFIG_HOME'),
           ...copy('OPENCODE_CONFIG'),
+          // Custom providers otherwise hide websearch; pin the tested search provider.
+          OPENCODE_ENABLE_EXA: '1',
+          OPENCODE_WEBSEARCH_PROVIDER: 'exa',
           XDG_DATA_HOME: `${OPENCODE_STATE_DIR}/data`,
           XDG_STATE_HOME: `${OPENCODE_STATE_DIR}/state`,
           XDG_CACHE_HOME: `${OPENCODE_STATE_DIR}/cache`,

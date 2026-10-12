@@ -747,6 +747,9 @@ describe('verity-runner supervisor runtime', () => {
         env: {
           XDG_CONFIG_HOME: '/run/verity/xdg',
           OPENCODE_CONFIG: '/run/verity/opencode-config/opencode.json',
+          OPENCODE_ENABLE_EXA: '0',
+          OPENCODE_WEBSEARCH_PROVIDER: 'parallel',
+          EXA_API_KEY: 'must-not-cross',
           OPENAI_API_KEY: 'must-not-cross',
           DOPPLER_TOKEN: 'must-not-cross',
           GITHUB_TOKEN: 'must-not-cross',
@@ -764,6 +767,12 @@ describe('verity-runner supervisor runtime', () => {
       XDG_CONFIG_HOME: '/run/verity/xdg',
       OPENCODE_CONFIG: '/run/verity/opencode-config/opencode.json',
     });
+    // A custom model provider otherwise hides websearch even when inference succeeds.
+    expect(spec.spawnOptions.env).toMatchObject({
+      OPENCODE_ENABLE_EXA: '1',
+      OPENCODE_WEBSEARCH_PROVIDER: 'exa',
+    });
+    expect(spec.spawnOptions.env).not.toHaveProperty('EXA_API_KEY');
     expect(spec.spawnOptions.env).not.toHaveProperty('OPENAI_API_KEY');
     expect(spec.spawnOptions.env).not.toHaveProperty('DOPPLER_TOKEN');
     expect(spec.spawnOptions.env).not.toHaveProperty('GITHUB_TOKEN');
