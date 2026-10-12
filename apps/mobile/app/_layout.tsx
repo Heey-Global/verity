@@ -78,6 +78,9 @@ export default function RootLayout() {
 
   // Inter (docs/design-system.md § 3). A font that fails to load is not worth a
   // locked app: text then falls back to the system font and the app continues.
+  // Styles carry their weight in the Inter family name only, so in that case
+  // all text renders at the system font's regular weight. The four files are
+  // bundled with the app, which makes the failure path rare enough to accept.
   const [fontsLoaded, fontError] = useFonts({
     Inter_400Regular,
     Inter_600SemiBold,

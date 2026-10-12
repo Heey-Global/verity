@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -35,9 +35,15 @@ export default function DesignSystemCatalog() {
   const [loading, setLoading] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // Demo timers, cleared when the catalog closes mid-way.
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  useEffect(() => () => timers.current.forEach(clearTimeout), []);
+  const later = (run: () => void, ms: number) => {
+    timers.current.push(setTimeout(run, ms));
+  };
   const simulateLoading = () => {
     setLoading(true);
-    setTimeout(() => setLoading(false), 1500);
+    later(() => setLoading(false), 1500);
   };
   return (
     <SettingsScaffold title="Design system" detail>
@@ -220,7 +226,7 @@ export default function DesignSystemCatalog() {
         destructive
         onConfirm={() =>
           new Promise<void>((resolve) =>
-            setTimeout(() => {
+            later(() => {
               setConfirmOpen(false);
               resolve();
             }, 1200),

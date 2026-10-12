@@ -139,9 +139,10 @@ export function ConfirmSheet({
   // State only locks the button after the next render; two taps delivered
   // before it would both start the action. The ref locks synchronously.
   const inFlight = useRef(false);
+  // `running` follows the action, not visibility: a sheet reopened while its
+  // previous action is still pending shows the spinner until that settles.
   useEffect(() => {
     if (visible) AccessibilityInfo.announceForAccessibility(`${title} ${message}`);
-    else setRunning(false);
   }, [visible, title, message]);
   const confirm = async () => {
     if (inFlight.current) return;
