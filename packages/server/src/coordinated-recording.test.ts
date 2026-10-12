@@ -4,6 +4,7 @@ import {
   CoordinatedRecordingManager,
   type RecordingUplinkAdapter,
 } from './coordinated-recording.js';
+import { recordingTransportState } from './recording-transport-state.js';
 import { RemoteReturnPathDiagnostics } from './remote-return-path-diagnostics.js';
 
 const id = '01234567-0123-4123-8123-0123456789ab';
@@ -127,10 +128,19 @@ describe('coordinated recording', () => {
     const { manager } = fixture();
     await manager.start(id, 120000);
     const diagnostics = new RemoteReturnPathDiagnostics('secret-session');
-    const summary = diagnostics.exportSummary();
+    const transport = recordingTransportState(undefined);
+    const summary = {
+      ...diagnostics.exportSummary(),
+      transport: { ...transport, payload: 'secret-payload' },
+    };
     for (let i = 0; i < 258; i++) manager.observe({ ...summary, token: 'secret-token' });
     expect(manager.status(id).core).toMatchObject({ records: 256, dropped: 2 });
-    const exported = JSON.stringify(await manager.export(id));
+    const result = await manager.export(id);
+    expect(result).toMatchObject({
+      core: { records: expect.arrayContaining([expect.objectContaining({ transport })]) },
+    });
+    const exported = JSON.stringify(result);
+    expect(exported).not.toContain('secret-payload');
     expect(exported).not.toContain('secret-token');
     expect(exported).not.toContain('secret-session');
     await manager.stop(id);

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { recordingTransportSchema } from './recording-transport-schema.js';
+
 export const DIAGNOSTICS_CAPABILITY = 'remote-diagnostics-v1';
 export const DIAGNOSTICS_TIMEOUT_MS = 10_000;
 const DIAGNOSTICS_FRAME_BYTES = 32_768;
@@ -50,6 +52,7 @@ const uplinkRecordingEvent = z.object({
   at: z.string().datetime().optional(),
   event: z.literal('remote.return_path'),
   schemaVersion: z.literal(1),
+  transport: recordingTransportSchema.optional(),
   session: hash,
   generation: hash,
   party: z.enum(['app', 'installation']),

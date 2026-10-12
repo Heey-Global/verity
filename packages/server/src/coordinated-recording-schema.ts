@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { recordingTransportSchema } from './recording-transport-schema.js';
 
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const elapsed = z.number().nonnegative().finite();
@@ -44,6 +45,7 @@ export const coreRecordingSummary = z.object({
   time: count.optional(),
   event: z.literal('remote.return_path'),
   schemaVersion: z.literal(1),
+  transport: recordingTransportSchema.optional(),
   session: hash,
   generation: hash,
   party: z.literal('installation'),
@@ -55,6 +57,7 @@ export const coreRecordingSummary = z.object({
   emittedMessages: count,
   emittedBytes: count,
   lastError: z.object({ ...position, errorCode }).nullable(),
+  lastCloseRequest: z.object(position).nullable().optional(),
   lastClose: z
     .object({ ...position, code: z.number().int().min(1000).max(1015).optional() })
     .nullable(),

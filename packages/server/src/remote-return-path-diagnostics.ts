@@ -19,7 +19,15 @@ const ERROR_CODES = new Set([
   'WS_ERR_INVALID_CONTROL_PAYLOAD_LENGTH',
   'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH',
 ]);
-type Stage = 'send' | 'callback' | 'emitted_message' | 'parser' | 'accepted' | 'ws_error' | 'close';
+type Stage =
+  | 'send'
+  | 'callback'
+  | 'emitted_message'
+  | 'parser'
+  | 'accepted'
+  | 'ws_error'
+  | 'close'
+  | 'close_requested';
 type Outcome = 'observed' | 'accepted' | 'error';
 interface StreamTotals {
   firstSend?: Record<string, unknown>;
@@ -41,6 +49,7 @@ export class RemoteReturnPathDiagnostics {
   private emittedBytes = 0;
   private lastError: Record<string, unknown> | undefined;
   private lastClose: Record<string, unknown> | undefined;
+  private lastCloseRequest: Record<string, unknown> | undefined;
   private emittedOrder = 0;
   private summaries = 0;
   private windowSummaries = 0;
@@ -71,6 +80,7 @@ export class RemoteReturnPathDiagnostics {
     this.emittedBytes = 0;
     this.lastError = undefined;
     this.lastClose = undefined;
+    this.lastCloseRequest = undefined;
     this.emittedOrder = this.order;
     this.droppedEvents = 0;
     this.droppedStreamObservations = 0;
@@ -150,6 +160,14 @@ export class RemoteReturnPathDiagnostics {
         elapsedMs: performance.now() - this.started,
         errorCode: typeof code === 'string' && ERROR_CODES.has(code) ? code : 'unknown',
       };
+    if (stage === 'close_requested') {
+      this.lastCloseRequest ??= {
+        eventOrder: ++this.order,
+        elapsedMs: performance.now() - this.started,
+      };
+      // Keep the event enum compatible with older recording consumers.
+      return;
+    }
     if (stage === 'close')
       this.lastClose = {
         eventOrder: this.order + 1,
@@ -221,6 +239,7 @@ export class RemoteReturnPathDiagnostics {
       emittedBytes: this.emittedBytes,
       lastError: this.lastError ? { ...this.lastError } : null,
       lastClose: this.lastClose ? { ...this.lastClose } : null,
+      lastCloseRequest: this.lastCloseRequest ? { ...this.lastCloseRequest } : null,
       droppedStreamObservations: this.droppedStreamObservations,
       streams: [...this.streams].map(([stream, totals]) => ({ stream, ...totals })),
       events: this.events.map((event) => ({ ...event })),

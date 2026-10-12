@@ -104,3 +104,34 @@ connections. Verify both sides' actual metadata output for the selected session
 before a coordinated test; after the run, Stop Core and remove Uplink's temporary
 selection. Release installation, activation and the live test require separate
 approval.
+
+### Socket and receiver observations
+
+Selected recordings include an optional `transport` object in summaries, at socket
+open or recording activation and on teardown as well as the five-second cadence.
+Older producers omit it. Every observation inside the versioned object is nullable:
+`null` means the runtime did not expose a supported value, never zero activity.
+The existing consent deadline, event, stream and export size limits still apply.
+
+The object contains WebSocket state and buffered bytes, socket lifetime read/write
+counters and queue lengths, actual socket pause/drain state, receiver frame progress,
+and close-frame sent/received flags. Core also records `lastCloseRequest` before its
+local close or termination call. No payloads, addresses, ports, headers or tickets
+are copied. Reading these values adds no socket listeners and does not pause,
+resume or consume the stream.
+
+Socket counters are Node socket API observations for the entire socket lifetime,
+including time before recording activation. Compare snapshots from the same socket
+generation; do not equate them with recording-window message counters, TCP ACKs or
+TLS wire bytes. `socketEncrypted` identifies a TLS socket wrapper, not the byte
+accounting layer. Receiver fields depend on private `ws` internals: state 0–6 means
+header, 16-bit length, 64-bit length, mask, payload, inflation or deferred event;
+fragmented opcode 0/1/2 means no fragmented message/text/binary. FIN and payload
+length may describe the last processed frame rather than an active frame. Interpret
+them together with receiver state, byte changes and complete-message counts.
+
+A sampled pause is an observation, not its cause; pauses between samples can be
+missed. Increasing socket bytes with no complete message can expose incomplete
+frame reception, but cannot identify a Gateway fault. Gateway legs and encrypted
+wire delivery require separately correlated evidence. Transport diagnostics do not
+change routing or authorize a new capture.
