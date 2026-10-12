@@ -82,6 +82,7 @@ function acpSpawner(
     capacityPrefix?: string;
     splitCapacityPrefix?: boolean;
     capacityInterleavedTool?: boolean;
+    capacityInterleavedRefusal?: boolean;
     capacityLifecycle?: boolean;
     capacityTool?: boolean;
     capacityUsage?: boolean;
@@ -288,7 +289,10 @@ function acpSpawner(
                 `${behavior.splitCapacityPrefix ? '' : (behavior.capacityPrefix ?? '')}Selected model is at `,
                 'capacity. Please try a different model.',
               ]) {
-                if (behavior.capacityInterleavedTool && text.startsWith('Selected'))
+                if (
+                  (behavior.capacityInterleavedTool && text.startsWith('Selected')) ||
+                  (behavior.capacityInterleavedRefusal && text.startsWith('capacity.'))
+                )
                   push({
                     jsonrpc: '2.0',
                     method: 'session/update',
@@ -459,6 +463,7 @@ describe('AcpCodexBackend', () => {
         capacityFailures: 1,
         capacityTool: true,
         capacityUsage: true,
+        capacityInterleavedRefusal: true,
         capacityTrailingTool,
       });
       const timer = vi

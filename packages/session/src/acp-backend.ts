@@ -772,13 +772,10 @@ export async function runAcpTurn(
     ) {
       turnHasAgentContent = true;
     }
-    if (
-      (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') &&
-      capacityText.trim() !== capacityMessage
-    ) {
+    if (update.sessionUpdate === 'tool_call' && capacityText.trim() !== capacityMessage) {
       await writeAll(writer, topLevelText.push(capacityText));
       capacityText = '';
-      if (update.sessionUpdate === 'tool_call') capacityProse = false;
+      capacityProse = false;
     }
     // The agent switches modes on its own — a model switch that clamps a mode
     // the new model cannot run, an approval Verity answered generically. Its

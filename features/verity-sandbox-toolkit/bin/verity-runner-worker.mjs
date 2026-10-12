@@ -30275,11 +30275,10 @@ async function runAcpTurn(opts, profile) {
     if (profile.telemetryBackend === "codex-acp" && isAgentContent(update) && capacityText === "" && !(update.sessionUpdate === "agent_message_chunk" && update.content.type === "text" && parentToolId2(update._meta, metaNamespace) === void 0)) {
       turnHasAgentContent = true;
     }
-    if ((update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") && capacityText.trim() !== capacityMessage) {
+    if (update.sessionUpdate === "tool_call" && capacityText.trim() !== capacityMessage) {
       await writeAll(writer, topLevelText.push(capacityText));
       capacityText = "";
-      if (update.sessionUpdate === "tool_call")
-        capacityProse = false;
+      capacityProse = false;
     }
     if (update.sessionUpdate === "current_mode_update" && update.currentModeId !== activeMode && !closedOut) {
       restoreMode?.();
