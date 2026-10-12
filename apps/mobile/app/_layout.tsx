@@ -263,6 +263,7 @@ function HydratedRoot() {
               <Stack.Screen name="settings/google" options={{ title: 'Google' }} />
               <Stack.Screen name="settings/premium" options={{ title: 'Verity Premium' }} />
               <Stack.Screen name="settings/diagnostics" options={{ title: 'Diagnostics' }} />
+              <Stack.Screen name="settings/design-system" options={{ title: 'Design system' }} />
               <Stack.Screen name="settings/remote-access" options={{ title: 'Verity Premium' }} />
               <Stack.Screen name="settings/secret-store" options={{ title: 'Secret store' }} />
               <Stack.Screen

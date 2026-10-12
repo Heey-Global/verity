@@ -160,6 +160,13 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
             disabled={exporting}
             onPress={() => void exportRemoteInputs()}
           />
+          {settings?.advancedModeEnabled === true ? (
+            <CardRow
+              title="Design system"
+              subtitle="Every building block in every state"
+              onPress={() => router.push('/settings/design-system')}
+            />
+          ) : null}
         </RowCard>
       </View>
       {showImportErrors && sources !== null && sources.length > 0
