@@ -2,6 +2,31 @@ import { describe, expect, it } from 'vitest';
 import { agentEventDescriptor } from './agentEvent.js';
 
 describe('agentEventDescriptor', () => {
+  it('shows capacity retries as a neutral system notice', () => {
+    expect(
+      agentEventDescriptor({
+        t: 'error',
+        kind: 'model_capacity_retry',
+        message: 'Retrying in 5 seconds (1/3).',
+      }),
+    ).toEqual({ kind: 'model-capacity', label: 'Retrying in 5 seconds (1/3).', tone: 'neutral' });
+  });
+
+  it('offers recovery after capacity retries are exhausted', () => {
+    expect(
+      agentEventDescriptor({
+        t: 'error',
+        kind: 'model_capacity',
+        message: 'Selected model is at capacity.',
+      }),
+    ).toEqual({
+      kind: 'model-capacity',
+      label: 'Model temporarily unavailable',
+      detail: 'Try again later or select a different model.',
+      tone: 'warning',
+    });
+  });
+
   it('describes a compaction boundary (neutral, no detail)', () => {
     const d = agentEventDescriptor({ t: 'compaction', boundary: true });
     expect(d).toEqual({ kind: 'compaction', label: 'Context compacted', tone: 'neutral' });

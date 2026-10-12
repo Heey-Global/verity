@@ -11,6 +11,7 @@ import { PLANNING_PERMISSION_MODE } from './runner.js';
 import { GATEWAY_UNAVAILABLE_DIRECTIVE } from './acp-backend.js';
 import type { SpawnedProcess, Spawner } from './backend-contract.js';
 
+const setTimeoutOriginal = globalThis.setTimeout;
 let ctx: TestDb;
 beforeAll(async () => {
   ctx = await createTestDb();
@@ -77,6 +78,9 @@ function acpSpawner(
     loadSession?: boolean;
     startupFailure?: string;
     promptFailure?: string;
+    capacityFailures?: number;
+    capacityPrefix?: string;
+    capacityTool?: boolean;
     processExit?: { code: number | null; signal: NodeJS.Signals | null };
     exitDelayMs?: number;
     exitDetailsBeforeClose?: boolean;
@@ -253,6 +257,43 @@ function acpSpawner(
             if (behavior.cancel.disconnect) close();
             else push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
           } else if (method === 'session/prompt') {
+            if ((behavior.capacityFailures ?? 0) > 0) {
+              behavior.capacityFailures!--;
+              if (behavior.capacityTool)
+                push({
+                  jsonrpc: '2.0',
+                  method: 'session/update',
+                  params: {
+                    sessionId: 'codex-session-1',
+                    update: {
+                      sessionUpdate: 'tool_call',
+                      toolCallId: 'completed-before-capacity',
+                      kind: 'execute',
+                      title: 'write file',
+                      status: 'completed',
+                      rawInput: { command: 'touch completed' },
+                    },
+                  },
+                });
+              for (const text of [
+                `${behavior.capacityPrefix ?? ''}Selected model is at `,
+                'capacity. Please try a different model.',
+              ]) {
+                push({
+                  jsonrpc: '2.0',
+                  method: 'session/update',
+                  params: {
+                    sessionId: 'codex-session-1',
+                    update: {
+                      sessionUpdate: 'agent_message_chunk',
+                      content: { type: 'text', text },
+                    },
+                  },
+                });
+              }
+              push({ jsonrpc: '2.0', id, result: { stopReason: 'cancelled' } });
+              return true;
+            }
             if (behavior.promptFailure !== undefined) {
               close();
               return true;
@@ -343,6 +384,119 @@ function write(
 }
 
 describe('AcpCodexBackend', () => {
+  it('continues the bound session after a split capacity refusal without replaying the request', async () => {
+    const fake = acpSpawner({ capacityFailures: 1, capacityTool: true });
+    const timer = vi
+      .spyOn(globalThis, 'setTimeout')
+      .mockImplementation((handler, delay) =>
+        setTimeoutOriginal(handler, delay === 5_000 ? 1 : delay),
+      );
+    try {
+      const result = await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        spawner: fake.spawner,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(timer.mock.calls.some((call) => call[1] === 5_000)).toBe(true);
+      const prompts = fake.writes.filter((entry) => entry.method === 'session/prompt');
+      expect(prompts).toHaveLength(2);
+      expect(prompts[1]?.params).toMatchObject({
+        sessionId: 'codex-session-1',
+        prompt: [{ type: 'text', text: 'Continue from where you stopped.' }],
+      });
+      const events = await ctx.store.getEvents('codex-session-1');
+      expect(
+        events.some((event) => event.t === 'text' && event.delta.includes('at capacity')),
+      ).toBe(false);
+      expect(events.filter((event) => event.t === 'error').map((event) => event.kind)).toEqual([
+        'model_capacity_retry',
+      ]);
+    } finally {
+      timer.mockRestore();
+    }
+  });
+
+  it('bounds capacity retries and records the final refusal as a system error', async () => {
+    const fake = acpSpawner({ capacityFailures: 5 });
+    const timer = vi
+      .spyOn(globalThis, 'setTimeout')
+      .mockImplementation((handler, delay) =>
+        setTimeoutOriginal(handler, delay === 5_000 ? 1 : delay),
+      );
+    try {
+      const result = await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        spawner: fake.spawner,
+      });
+      expect(result.exitCode).toBe(1);
+      expect(fake.writes.filter((entry) => entry.method === 'session/prompt')).toHaveLength(3);
+      const events = await ctx.store.getEvents('codex-session-1');
+      expect(events.filter((event) => event.t === 'error').map((event) => event.kind)).toEqual([
+        'model_capacity_retry',
+        'model_capacity_retry',
+        'model_capacity',
+      ]);
+      expect(events.some((event) => event.t === 'text')).toBe(false);
+      expect(events.some((event) => event.t === 'status' && event.state === 'crashed')).toBe(true);
+      expect(events.some((event) => event.t === 'diagnostic' && event.outcome === 'failed')).toBe(
+        true,
+      );
+    } finally {
+      timer.mockRestore();
+    }
+  });
+
+  it('stops during the capacity retry wait without dispatching another prompt', async () => {
+    const fake = acpSpawner({ capacityFailures: 1 });
+    const controller = new AbortController();
+    const timer = vi.spyOn(globalThis, 'setTimeout').mockImplementation((handler, delay) => {
+      if (delay === 5_000) setTimeoutOriginal(() => controller.abort(), 1);
+      return setTimeoutOriginal(handler, delay);
+    });
+    try {
+      await new AcpCodexBackend().run({
+        store: ctx.store,
+        worktree: '/work',
+        cwd: '/work',
+        prompt: 'Run',
+        signal: controller.signal,
+        spawner: fake.spawner,
+      });
+      expect(fake.writes.filter((entry) => entry.method === 'session/prompt')).toHaveLength(1);
+      const events = await ctx.store.getEvents('codex-session-1');
+      expect(events.some((event) => event.t === 'status' && event.state === 'crashed')).toBe(false);
+      expect(events.some((event) => event.t === 'error' && event.kind === 'acp')).toBe(false);
+    } finally {
+      timer.mockRestore();
+    }
+  });
+
+  it('keeps quoted capacity prose as ordinary text without retrying', async () => {
+    const fake = acpSpawner({ capacityFailures: 1, capacityPrefix: 'The provider said: ' });
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      worktree: '/work',
+      cwd: '/work',
+      prompt: 'Run',
+      spawner: fake.spawner,
+    });
+    expect(fake.writes.filter((entry) => entry.method === 'session/prompt')).toHaveLength(1);
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(
+      events
+        .filter((event) => event.t === 'text')
+        .map((event) => event.delta)
+        .join(''),
+    ).toContain('The provider said: Selected model is at capacity.');
+    expect(events.some((event) => event.t === 'error')).toBe(false);
+  });
+
   it.each([
     { code: 1, signal: null },
     { code: null, signal: 'SIGKILL' as const },

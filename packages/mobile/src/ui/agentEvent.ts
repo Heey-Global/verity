@@ -61,6 +61,17 @@ export function agentEventDescriptor(event: AgentEvent): AgentEventDescriptor {
     case 'merged':
       return { kind: 'merged', label: `Merged PR #${String(event.number)}`, tone: 'neutral' };
     case 'error':
+      if (event.kind === 'model_capacity_retry') {
+        return { kind: 'model-capacity', label: event.message, tone: 'neutral' };
+      }
+      if (event.kind === 'model_capacity') {
+        return {
+          kind: 'model-capacity',
+          label: 'Model temporarily unavailable',
+          detail: 'Try again later or select a different model.',
+          tone: 'warning',
+        };
+      }
       if (CLAUDE_OAUTH_FAILURE.test(event.message)) {
         return {
           kind: 'authentication-required',
