@@ -645,7 +645,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
         throw new Error('diagnostics_export_changed');
       identity = currentIdentity;
       bytes += Buffer.byteLength(JSON.stringify(batch));
-      if (bytes > 900_000 || records.length + batch.length > 8192)
+      if (bytes > 900_000 || records.length + batch.length > 2048)
         throw new Error('diagnostics_export_limit');
       records.push(...batch);
       if (nextCursor === null) {

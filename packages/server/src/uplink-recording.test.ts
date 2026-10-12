@@ -82,3 +82,10 @@ describe('Uplink recording boundary', () => {
     ).toMatchObject({ collectorReady: true, recordCount: 0, records: [] });
   });
 });
+
+it('rejects a declared export beyond the negotiated per-run record budget', () => {
+  expect(() => parseRecordingResponse({ ...response, recordCount: 2048 }, runId)).not.toThrow();
+  expect(() => parseRecordingResponse({ ...response, recordCount: 2049 }, runId)).toThrow(
+    'invalid_diagnostics_response',
+  );
+});

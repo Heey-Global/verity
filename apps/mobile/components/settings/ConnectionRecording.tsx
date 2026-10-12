@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import { randomUUID } from 'expo-crypto';
 import { useEffect, useRef, useState } from 'react';
-import { Text, View } from 'react-native';
+import { View } from 'react-native';
 import { CardRow, Eyebrow, RowCard } from '../premium/PremiumChrome';
 import { getServerProfile } from '../../lib/serverProfile';
 import {
@@ -49,7 +49,6 @@ function parseSaved(raw: string | null): SavedRun | null {
 export function ConnectionRecording({ client }: { client: VerityClient | null }) {
   const serverId = getServerProfile()?.serverId;
   const key = serverId ? `verity.connectionRecording.v1.${serverId}` : null;
-  const [run, setRun] = useState<SavedRun | null>(null);
   const runRef = useRef<SavedRun | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [preparing, setPreparing] = useState(false);
@@ -59,14 +58,13 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   const [ready, setReady] = useState(false);
   const [remaining, setRemaining] = useState(0);
   const [message, setMessage] = useState(
-    'Connect through VPN to prepare App, Core and Uplink together.',
+    'Connect through VPN to prepare App, Core and Uplink together for up to 2 minutes.',
   );
   const revision = useRef(0);
   const mounted = useRef(true);
   const saving = useRef<Promise<void>>(Promise.resolve());
   const save = (value: SavedRun) => {
     runRef.current = value;
-    setRun(value);
     const write = saving.current
       .catch(() => undefined)
       .then(async () => {
@@ -87,14 +85,12 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     preparingRef.current = null;
     collectingRef.current = null;
     runRef.current = null;
-    setRun(null);
-    setMessage('Connect through VPN to prepare App, Core and Uplink together.');
+    setMessage('Connect through VPN to prepare App, Core and Uplink together for up to 2 minutes.');
     void (async () => {
       try {
         const saved = key ? parseSaved(await AsyncStorage.getItem(key)) : null;
         if (current) {
           runRef.current = saved;
-          setRun(saved);
           if (saved)
             setMessage('Saved run available. Stop and collect, or retry collection with VPN.');
         }
@@ -306,7 +302,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         <CardRow
           title="Record connection"
           subtitle={message}
-          disabled={!loaded || preparing || collecting || !key || remaining > 0}
+          disabled={!loaded || preparing || collecting || !key || !client || remaining > 0}
           onPress={() => void start()}
         />
         <CardRow
@@ -321,7 +317,6 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
           />
         ) : null}
       </RowCard>
-      {run ? <Text>Run {run.runId}</Text> : null}
     </View>
   );
 }

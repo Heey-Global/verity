@@ -1036,7 +1036,7 @@ export const connectionRecordingExportSchema = z
     status: connectionRecordingStatusSchema,
     core: z
       .object({
-        records: z.array(recordingCoreRecordSchema).max(4096),
+        records: z.array(recordingCoreRecordSchema).max(256),
         dropped: z.number().int().nonnegative(),
       })
       .strict(),
@@ -1051,9 +1051,9 @@ export const connectionRecordingExportSchema = z
             expiresAt: z.string().datetime(),
             retainedUntil: z.string().datetime(),
             collectorReady: z.literal(true),
-            recordCount: z.number().int().nonnegative(),
+            recordCount: z.number().int().nonnegative().max(2048),
             droppedRecords: z.number().int().nonnegative(),
-            records: z.array(recordingUplinkRecordSchema).max(4096),
+            records: z.array(recordingUplinkRecordSchema).max(2048),
           })
           .strict()
           .nullable(),

@@ -50,7 +50,14 @@ connection. No upload happens automatically.
 
 ## Export schema
 
-The clipboard export is a JSON array of at most three version-1 DATA snapshots.
+**Stop and collect** copies a version-1 object with `runId`, `startedAt`, `app`
+and `remote`. Each source includes availability/stopped state and its recording,
+or an explicit missing source. `remote.recording` contains the Core run status,
+Core summaries/drop count, and the Uplink availability/data/error result. Up to
+256 Core summaries and 2048 Uplink records are accepted, additionally constrained
+by byte budgets. A full envelope does not imply that packets reached every hop.
+
+The **Advanced diagnostics** local-only clipboard export is a JSON array of at most three version-1 DATA snapshots.
 Each snapshot includes:
 
 - `generation`: a local UUID for this socket, **not** the Uplink connection ID.

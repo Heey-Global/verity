@@ -111,7 +111,7 @@ const status = {
   expiresAt: z.string().datetime(),
   retainedUntil: z.string().datetime(),
   collectorReady: z.literal(true),
-  recordCount: count,
+  recordCount: count.max(2048),
   droppedRecords: count,
 };
 const response = z.discriminatedUnion('type', [

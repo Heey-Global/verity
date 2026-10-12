@@ -102,3 +102,43 @@ it('projects Uplink metadata and rejects mismatched export ownership', async () 
     }),
   ).toThrow();
 });
+
+it('accepts the Uplink retention boundary and rejects oversized batches', async () => {
+  const { connectionRecordingExportSchema } = await import('./api.js');
+  const record = {
+    event: 'remote.return_path',
+    schemaVersion: 1,
+    session: '0123456789abcdef',
+    generation: '0123456789abcdef',
+    party: 'app',
+    direction: 'in',
+    stage: 'emitted_message',
+    outcome: 'observed',
+    eventOrder: 0,
+    elapsedMs: 0,
+  };
+  const envelope = {
+    version: 1,
+    status,
+    core: { records: [], dropped: 0 },
+    uplink: {
+      available: true,
+      error: null,
+      data: {
+        version: 1,
+        runId,
+        state: 'stopped',
+        expiresAt: status.expiresAt,
+        retainedUntil: status.expiresAt,
+        collectorReady: true,
+        recordCount: 2048,
+        droppedRecords: 0,
+        records: Array.from({ length: 2048 }, () => record),
+      },
+    },
+  };
+  expect(connectionRecordingExportSchema.parse(envelope).uplink.data?.records).toHaveLength(2048);
+  envelope.uplink.data.records.push(record);
+  envelope.uplink.data.recordCount++;
+  expect(() => connectionRecordingExportSchema.parse(envelope)).toThrow();
+});
