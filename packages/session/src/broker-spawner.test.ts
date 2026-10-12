@@ -1580,3 +1580,80 @@ describe('broker spawner protocol handling', () => {
     expect(chunks).toEqual(['before']);
   });
 });
+
+describe('trusted CLI entry-path failure classification', () => {
+  it.each([
+    ['missing', 'validation_path_missing'],
+    ['not-directory', 'validation_path_missing'],
+    ['loop', 'validation_path_symlink_loop'],
+    ['outside', 'validation_entry_outside_worktree'],
+    ['escape', 'validation_entry_outside_worktree'],
+  ])('classifies %s without launching or exposing filesystem paths', async (kind, code) => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-entry-validation-'));
+    const worktree = join(root, 'work');
+    const runtimeDir = join(root, 'runtime');
+    await mkdir(worktree);
+    await mkdir(runtimeDir);
+    await writeFile(join(worktree, 'file'), 'nonsecret fixture');
+    await writeFile(join(root, 'outside'), 'nonsecret fixture');
+    await symlink('loop', join(worktree, 'loop'));
+    await symlink(join(root, 'outside'), join(worktree, 'escape'));
+    const path =
+      kind === 'outside'
+        ? join(root, 'outside')
+        : join(worktree, kind === 'not-directory' ? 'file/entry' : kind);
+    const spawnChild = vi.fn(() => {
+      throw new Error('validation must prevent launch');
+    });
+    const broker = await runAgentSpawnBroker({
+      runtimeDir,
+      worktreeRoot: worktree,
+      enforceRoot: false,
+      agentUid: 1000,
+      agentGid: 1000,
+      env: { PATH: '/usr/bin' },
+      spawnChild,
+    });
+    try {
+      const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
+        const socket = createConnection(broker.socketPath);
+        let buffered = '';
+        socket.once('error', reject);
+        socket.on('data', (chunk: Buffer) => {
+          buffered += chunk.toString('utf8');
+          if (!buffered.includes('\n')) return;
+          socket.destroy();
+          resolve(JSON.parse(buffered.split('\n')[0]!) as Record<string, unknown>);
+        });
+        socket.once('connect', () => {
+          socket.write(
+            `${JSON.stringify({
+              protocolVersion: 1,
+              kind: 'spawn-trusted-cli',
+              command: '/usr/bin/true',
+              args: [path],
+              cwd: worktree,
+              secrets: [{ name: 'VERITY_TEST_TOKEN', value: 'nonsecret fixture' }],
+              entryScript: {
+                path,
+                projectPath: kind === 'not-directory' ? 'file/entry' : kind,
+                sha256: '0'.repeat(64),
+                loading: 'dynamic',
+              },
+            })}\n`,
+          );
+        });
+      });
+      // Swallowing realpath errors misreports missing files as boundary violations.
+      expect(response).toMatchObject({
+        ok: false,
+        trustedCliFailure: { phase: 'validation', cause: 'validation failed', code },
+      });
+      expect(JSON.stringify(response.trustedCliFailure)).not.toContain(root);
+      expect(spawnChild).not.toHaveBeenCalled();
+    } finally {
+      await broker.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

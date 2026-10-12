@@ -407,8 +407,10 @@ async function validateSpawnRequest(raw, options) {
       ) {
         throw new Error('invalid trusted CLI entry-script attestation');
       }
-      const canonical = await realpath(raw.entryScript.path).catch(() => undefined);
-      if (canonical === undefined || !withinAgentWorktreeRoots(canonical, worktreeRoots)) {
+      // Preserve filesystem errors so missing or inaccessible entries are not
+      // misreported as resolved paths outside the allowed worktrees.
+      const canonical = await realpath(raw.entryScript.path);
+      if (!withinAgentWorktreeRoots(canonical, worktreeRoots)) {
         throw new Error('trusted CLI entry script escaped the worktree root');
       }
       const entry = await lstat(canonical);
