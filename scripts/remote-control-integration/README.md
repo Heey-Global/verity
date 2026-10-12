@@ -27,7 +27,7 @@ independently requires successful attachment and four completed echo requests.
 The runner exports only fixed results and repository revisions. Ephemeral keys,
 tickets and fixture logs live in a private temporary directory removed on exit.
 
-Build and simulator boot precede the admission window. Each invocation uses a
+Build, simulator boot and native app readiness precede the admission window. Each invocation uses a
 fresh pair. A successful invocation is not proof of native half-close, slow
 reader, directional blackhole, heartbeat deadline or replacement behavior;
 those require separate fault scenarios. Component regression results must be

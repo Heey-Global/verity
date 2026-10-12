@@ -37,6 +37,14 @@ private func runIntegration() async -> Bool {
     stage = "manifest"
     guard let manifestPath = ProcessInfo.processInfo.environment["VERITY_INTEGRATION_MANIFEST"]
     else { throw IntegrationFailure.invalidManifest }
+    if let readyPath = ProcessInfo.processInfo.environment["VERITY_INTEGRATION_READY"] {
+      try "ready".write(toFile: readyPath, atomically: true, encoding: .utf8)
+      // Simulator launch latency must not consume the fixture's admission lifetime.
+      for _ in 0..<300 {
+        if FileManager.default.fileExists(atPath: manifestPath) { break }
+        try await Task.sleep(nanoseconds: 100_000_000)
+      }
+    }
     let manifest = try JSONDecoder().decode(IntegrationManifest.self,
       from: Data(contentsOf: URL(fileURLWithPath: manifestPath)))
     guard manifest.dataURL.host == "127.0.0.1", manifest.dataURL.scheme == "wss"

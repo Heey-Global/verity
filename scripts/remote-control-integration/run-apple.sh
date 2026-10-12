@@ -52,22 +52,34 @@ done
 }
 sources=(apps/mobile/native/RemoteDataDiagnostics.swift apps/mobile/native/RemoteAppTunnel.swift apps/mobile/native/RemoteSmokeTunnel.swift apps/mobile/native/CertificatePinDelegate.swift apps/mobile/native/PinnedHTTPSessionPool.swift scripts/remote-control-tunnel/NativeProtocol.swift scripts/remote-control-integration/Integration.swift)
 verify_result() {
-  kill "$fixture_pid"
-  wait "$fixture_pid"
+  local fixture_status=0
+  kill "$fixture_pid" 2>/dev/null || true
+  wait "$fixture_pid" || fixture_status=$?
   fixture_pid=''
-  python3 - "$1" "$tmp/core-result.json" "$tmp/provenance.json" <<'VERIFY'
+  python3 - "$1" "$tmp/core-result.json" "$tmp/provenance.json" "$fixture_status" "${2:-0}" <<'VERIFY'
 import json,sys
-native,core,provenance=[json.load(open(p)) for p in sys.argv[1:]]
-if native.get('success') is not True or core.get('success') is not True:
+from pathlib import Path
+results=[]
+for name,path in zip(['native','core','provenance'],sys.argv[1:4]):
+    try:
+        results.append(json.loads(Path(path).read_text()))
+    except (OSError,ValueError):
+        results.append({'success':False,'error':name+'_result_unavailable'})
+native,core,provenance=results
+success=(native.get('success') is True and core.get('success') is True
+         and sys.argv[4]=='0' and sys.argv[5]=='0')
+print(json.dumps({'success':success,'native':native,'core':core,'provenance':provenance,
+                  'fixtureExit':int(sys.argv[4]),'nativeExit':int(sys.argv[5])}))
+if not success:
     raise SystemExit('Native/Core integration assertions failed')
-print(json.dumps({'success': True, 'native':native, 'core':core, 'provenance':provenance}))
 VERIFY
 }
 if [[ "$platform" == macos ]]; then
   xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macosx14.0" "${sources[@]}" -o "$tmp/integration"
   start_fixture
-  VERITY_INTEGRATION_MANIFEST="$tmp/manifest.json" VERITY_INTEGRATION_RESULT="$tmp/native-result.json" "$tmp/integration"
-  verify_result "$tmp/native-result.json"
+  native_status=0
+  VERITY_INTEGRATION_MANIFEST="$tmp/manifest.json" VERITY_INTEGRATION_RESULT="$tmp/native-result.json" "$tmp/integration" || native_status=$?
+  verify_result "$tmp/native-result.json" "$native_status"
   exit 0
 fi
 app_plist="${VERITY_SMOKE_APP_PLIST:-}"
@@ -117,11 +129,19 @@ xcrun simctl install "$simulator_udid" "$app"
 container="$(xcrun simctl get_app_container "$simulator_udid" app.verity.remote-integration data)"
 result="$container/Documents/result.txt"
 mkdir -p "$(dirname "$result")"
-start_fixture
-cp "$tmp/manifest.json" "$container/Documents/manifest.json"
+ready="$container/Documents/ready.txt"
 SIMCTL_CHILD_VERITY_INTEGRATION_MANIFEST="$container/Documents/manifest.json" \
 SIMCTL_CHILD_VERITY_INTEGRATION_RESULT="$result" \
+SIMCTL_CHILD_VERITY_INTEGRATION_READY="$ready" \
   xcrun simctl launch "$simulator_udid" app.verity.remote-integration
+for _ in {1..100}; do
+  [[ -f "$ready" ]] && break
+  sleep 0.1
+done
+[[ -f "$ready" ]] || { echo 'Native app did not reach fixture readiness.' >&2; exit 1; }
+start_fixture
+cp "$tmp/manifest.json" "$container/Documents/manifest.pending"
+mv "$container/Documents/manifest.pending" "$container/Documents/manifest.json"
 for _ in {1..180}; do
   if [[ -f "$result" ]]; then
     cat "$result"
