@@ -1,4 +1,3 @@
-import { meetingPalette } from './meetingPalette';
 import { useId, type ReactNode } from 'react';
 import Svg, { Defs, LinearGradient, Rect, Stop, Text as SvgText } from 'react-native-svg';
 import { ActivityIndicator, Linking, Pressable, Text, View } from 'react-native';
@@ -7,7 +6,11 @@ import { parseInline } from '@verity/mobile';
 
 import { Icon } from '../Icon';
 
-type Colors = ReturnType<typeof meetingPalette>;
+// Both themes' literal color types, widened so one helper accepts either.
+type ThemeColors = ReturnType<typeof useUnistyles>['theme']['colors'];
+type Colors = {
+  [Key in keyof ThemeColors]: ThemeColors[Key] extends string ? string : ThemeColors[Key];
+};
 
 // Speakers keep one color for the whole meeting; accents appear only as rings and dots.
 export function speakerTone(colors: Colors, speaker: number): string {
@@ -32,7 +35,7 @@ export function SectionLabel({ children, right }: { children: ReactNode; right?:
 
 export function MeetingMetrics({ values }: { values: { label: string; value: number }[] }) {
   const { theme } = useUnistyles();
-  const colors = meetingPalette(theme.colors);
+  const colors = theme.colors;
   const gradient = useId();
   return (
     <View style={{ flexDirection: 'row', gap: 8 }}>
@@ -209,7 +212,7 @@ export function NoticedCard({
 }) {
   const gradient = useId();
   const { theme } = useUnistyles();
-  const colors = meetingPalette(theme.colors);
+  const colors = theme.colors;
   return (
     <View style={styles.card}>
       <View
@@ -269,7 +272,7 @@ const BULLET = /^\s*(?:[-*•]|\d{1,2}[.)])\s+/;
 // never run together, and inline bold and links render instead of showing raw markup.
 export function MeetingAnswerText({ text }: { text: string }) {
   const { theme } = useUnistyles();
-  const colors = meetingPalette(theme.colors);
+  const colors = theme.colors;
   const lines = text.split('\n').filter((line) => line.trim());
   return (
     <View style={styles.answer} testID="meeting-answer">
@@ -308,7 +311,7 @@ export function MeetingAnswerText({ text }: { text: string }) {
 }
 
 const styles = StyleSheet.create((theme) => {
-  const colors = meetingPalette(theme.colors);
+  const colors = theme.colors;
   return {
     sectionRow: {
       flexDirection: 'row',
