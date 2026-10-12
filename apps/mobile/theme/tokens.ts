@@ -11,6 +11,8 @@
 // whole app already renders the design-system palette; they are removed once no
 // screen reads them.
 
+import { Platform } from 'react-native';
+
 // 2 and 48 complete the design-system spacing scale (2 · 4 · 8 · 12 · 16 · 24 · 32 · 48).
 const spacing = { xxs: 2, xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32, xxxl: 48 } as const;
 // `sm`/`md`/`lg` predate the design system; the named radii are what new code uses.
@@ -50,11 +52,79 @@ export type TypeRamp = {
 };
 const baseText: TypeRamp = { micro: 10, xs: 12, sm: 14, md: 16, lg: 20, xl: 28 };
 
+// Inter, loaded in app/_layout.tsx from @expo-google-fonts/inter. Each weight is
+// its own family, so a style picks the weight through `fontFamily` and never sets
+// `fontWeight` as well — that would make iOS or the browser embolden it again.
+const fonts = {
+  regular: 'Inter_400Regular',
+  semibold: 'Inter_600SemiBold',
+  bold: 'Inter_700Bold',
+  extrabold: 'Inter_800ExtraBold',
+  mono: Platform.select({ ios: 'Menlo', default: 'monospace' }),
+} as const;
+
+type TypeStyle = {
+  fontFamily: string;
+  fontSize: number;
+  lineHeight: number;
+  letterSpacing: number;
+  textTransform?: 'uppercase';
+};
+export type TypeStyles = Record<
+  | 'display'
+  | 'title'
+  | 'row'
+  | 'body'
+  | 'button'
+  | 'subtitle'
+  | 'footnote'
+  | 'eyebrow'
+  | 'label'
+  | 'code',
+  TypeStyle
+>;
+// The ten named styles from docs/design-system.md § 3, unscaled. Colors are not
+// part of a style: each component applies the role its spec names. Display uses
+// ExtraBold, the nearest static weight to the specified 750.
+const baseTypography: TypeStyles = {
+  display: { fontFamily: fonts.extrabold, fontSize: 28, lineHeight: 32, letterSpacing: -0.98 },
+  title: { fontFamily: fonts.bold, fontSize: 20, lineHeight: 25, letterSpacing: -0.4 },
+  row: { fontFamily: fonts.semibold, fontSize: 17, lineHeight: 22, letterSpacing: 0 },
+  body: { fontFamily: fonts.regular, fontSize: 15, lineHeight: 22, letterSpacing: 0 },
+  button: { fontFamily: fonts.bold, fontSize: 15, lineHeight: 18, letterSpacing: 0 },
+  subtitle: { fontFamily: fonts.regular, fontSize: 13, lineHeight: 18, letterSpacing: 0 },
+  footnote: { fontFamily: fonts.regular, fontSize: 12, lineHeight: 17, letterSpacing: 0 },
+  eyebrow: {
+    fontFamily: fonts.extrabold,
+    fontSize: 11,
+    lineHeight: 13,
+    letterSpacing: 1.98,
+    textTransform: 'uppercase',
+  },
+  label: {
+    fontFamily: fonts.bold,
+    fontSize: 11,
+    lineHeight: 13,
+    letterSpacing: 1.54,
+    textTransform: 'uppercase',
+  },
+  code: { fontFamily: fonts.mono, fontSize: 14, lineHeight: 20, letterSpacing: 0 },
+};
+
 // `fontScale` is the ⌘+/⌘−/⌘0 zoom factor (1 = default). It multiplies the type
-// ramp above and every explicit `lineHeight`/`fontSize` literal in a themed
-// StyleSheet, so text and its leading grow together. Both `text` and `fontScale`
-// are mutable (no `as const`) so UnistylesRuntime.updateTheme can rewrite them.
-const shared = { spacing, radius, elevation, text: baseText, fontScale: 1 };
+// ramp above, the named `typography` styles, and every explicit
+// `lineHeight`/`fontSize` literal in a themed StyleSheet, so text and its
+// leading grow together. `text`, `typography` and `fontScale` are mutable (no
+// `as const`) so UnistylesRuntime.updateTheme can rewrite them.
+const shared = {
+  spacing,
+  radius,
+  elevation,
+  fonts,
+  text: baseText,
+  typography: baseTypography,
+  fontScale: 1,
+};
 
 // Light is derived from the same roles and only has to stay readable: action,
 // signature, success and attention are darker so text on them reaches 4.5:1.
@@ -149,4 +219,4 @@ const darkTheme = {
   },
 } as const;
 
-export { lightTheme, darkTheme, baseText };
+export { lightTheme, darkTheme, baseText, baseTypography };

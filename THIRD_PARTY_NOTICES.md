@@ -63,6 +63,7 @@ separately by `TRADEMARKS.md`.
 | LGPL-3.0-or-later | 10 |
 | MIT | 1037 |
 | MIT AND Apache-2.0 | 1 |
+| MIT AND OFL-1.1 | 1 |
 | MPL-2.0 | 12 |
 | Python-2.0 | 1 |
 | SEE LICENSE IN LICENSE.md | 8 |
@@ -215,6 +216,7 @@ separately by `TRADEMARKS.md`.
 | @eslint/js | MIT | [source](https://www.npmjs.com/package/%40eslint%2Fjs) |
 | @eslint/object-schema | Apache-2.0 | [source](https://www.npmjs.com/package/%40eslint%2Fobject-schema) |
 | @eslint/plugin-kit | Apache-2.0 | [source](https://www.npmjs.com/package/%40eslint%2Fplugin-kit) |
+| @expo-google-fonts/inter | MIT AND OFL-1.1 | [source](https://www.npmjs.com/package/%40expo-google-fonts%2Finter) |
 | @expo-google-fonts/material-symbols | MIT AND Apache-2.0 | [source](https://www.npmjs.com/package/%40expo-google-fonts%2Fmaterial-symbols) |
 | @expo/cli | MIT | [source](https://www.npmjs.com/package/%40expo%2Fcli) |
 | @expo/code-signing-certificates | MIT | [source](https://www.npmjs.com/package/%40expo%2Fcode-signing-certificates) |
