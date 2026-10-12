@@ -16,6 +16,7 @@ import { shareUpdateDiagnostics } from '../lib/updateDiagnostics';
 import { gestureDiagnosticsEnabled, setGestureDiagnosticsEnabled } from '../lib/gestureDiagnostics';
 import {
   makeClient,
+  makeSettings,
   mockCreateVerityClient,
   mockPush,
   resetSettingsHarness,
@@ -56,4 +57,21 @@ it('reports unavailable integration diagnostics instead of claiming no errors', 
     await screen.findByText('Could not load import errors. Reopen Diagnostics to retry.'),
   ).toBeOnTheScreen();
   expect(screen.queryByText('No import errors')).toBeNull();
+});
+
+// The catalog is a developer reference; it must not clutter Diagnostics for
+// everyone, but has to stay reachable once advanced mode is on.
+it('links the design-system catalog only in advanced mode', async () => {
+  mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
+  const first = render(<DiagnosticsScreen />);
+  expect(await screen.findByText('No import errors')).toBeOnTheScreen();
+  expect(screen.queryByLabelText('Design system')).toBeNull();
+  first.unmount();
+  resetSettingsHarness();
+  mockCreateVerityClient.mockReturnValue(
+    makeClient('unlocked', { settings: makeSettings({ advancedModeEnabled: true }) }),
+  );
+  render(<DiagnosticsScreen />);
+  fireEvent.press(await screen.findByLabelText('Design system'));
+  expect(mockPush).toHaveBeenCalledWith('/settings/design-system');
 });

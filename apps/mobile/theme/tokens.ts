@@ -55,13 +55,18 @@ const baseText: TypeRamp = { micro: 10, xs: 12, sm: 14, md: 16, lg: 20, xl: 28 }
 // Inter, loaded in app/_layout.tsx from @expo-google-fonts/inter. Each weight is
 // its own family, so a style picks the weight through `fontFamily` and never sets
 // `fontWeight` as well — that would make iOS or the browser embolden it again.
+// If loading fails, native falls back to the system font on its own; the browser
+// would fall back to its default (often a serif), so the web gets an explicit
+// system sans-serif chain behind each family.
+const inter = (family: string): string =>
+  Platform.OS === 'web' ? `${family}, system-ui, -apple-system, 'Segoe UI', sans-serif` : family;
 const fonts = {
-  regular: 'Inter_400Regular',
-  semibold: 'Inter_600SemiBold',
-  bold: 'Inter_700Bold',
-  extrabold: 'Inter_800ExtraBold',
+  regular: inter('Inter_400Regular'),
+  semibold: inter('Inter_600SemiBold'),
+  bold: inter('Inter_700Bold'),
+  extrabold: inter('Inter_800ExtraBold'),
   mono: Platform.select({ ios: 'Menlo', default: 'monospace' }),
-} as const;
+};
 
 type TypeStyle = {
   fontFamily: string;
