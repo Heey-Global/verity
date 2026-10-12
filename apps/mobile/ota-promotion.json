@@ -1,15 +1,17 @@
 {
   "schema": 1,
-  "version": "1.66.2",
-  "runtime": "1.66.0",
+  "version": "1.67.1",
+  "runtime": "1.67.0",
   "channel": "production",
-  "commit": "b01e0797b813f68cef80b12068295b3762e0ac59",
-  "tag": "mobile-v1.66.2",
-  "branch": "staging-mobile-v1.66.2-b01e0797b813f68cef80b12068295b3762e0ac59",
-  "baseline": "mobile-v1.66.1",
-  "group": "557de2fc-be9c-4f5f-a9e5-f741f9648540",
+  "commit": "d8c21ce572f9488c84b103162bf608d114ada2ee",
+  "tag": "mobile-v1.67.1",
+  "branch": "staging-mobile-v1.67.1-d8c21ce572f9488c84b103162bf608d114ada2ee",
+  "baseline": "mobile-v1.67.0",
+  "group": "5412880e-0849-4e6f-961d-9131261e5d2c",
   "notes": [
-    "correlate touch diagnostics and expose route waits (#1496)",
-    "correct session keyboard visibility and overlap (#1495)"
+    "add the design-system building blocks (#1542)",
+    "avoid direct request scheduling waits (#1541)",
+    "set type in Inter with the design-system type styles (#1536)",
+    "adopt the design-system palette (#1535)"
   ]
 }
