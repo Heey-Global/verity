@@ -119,6 +119,18 @@ describe('TextField', () => {
 
   // A subscription key offered to the password manager ends up stored as a
   // password; the platform at least has to be told not to.
+  // Autocorrect rewrites keys and addresses; it must stay on for prose.
+  it('turns off autocorrect only for literal input', () => {
+    render(
+      <>
+        <TextField label="Notes" value="" onChangeText={jest.fn()} multiline />
+        <TextField label="Server address" value="" onChangeText={jest.fn()} keyboardType="url" />
+      </>,
+    );
+    expect(screen.getByLabelText('Notes').props.autoCorrect).toBeUndefined();
+    expect(screen.getByLabelText('Server address').props.autoCorrect).toBe(false);
+  });
+
   it('masks a secret, asks the platform to keep it out of autofill and reveals it', () => {
     render(<TextField label="Key" value="secret" onChangeText={jest.fn()} secret />);
     const input = screen.getByLabelText('Key');
@@ -231,7 +243,9 @@ describe('tint', () => {
         .filter((file) => file.endsWith('.tsx') && !file.endsWith('.test.tsx'))
         .flatMap((file) =>
           [
-            ...readFileSync(join(__dirname, file), 'utf8').matchAll(/tint\(theme\.colors\.(\w+)/g),
+            ...readFileSync(join(__dirname, file), 'utf8').matchAll(
+              /tint\(\s*theme\.colors\.(\w+)/g,
+            ),
           ].map((match) => match[1] as keyof typeof darkTheme.colors),
         ),
     ),

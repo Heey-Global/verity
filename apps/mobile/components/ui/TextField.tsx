@@ -47,6 +47,7 @@ export function TextField({
   const [focused, setFocused] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const masked = secret && !revealed;
+  const literal = secret || keyboardType === 'url' || keyboardType === 'email-address';
   return (
     <View style={styles.wrap}>
       <Text style={styles.label}>{label}</Text>
@@ -74,11 +75,16 @@ export function TextField({
           editable={!disabled}
           multiline={multiline}
           secureTextEntry={masked}
-          keyboardType={keyboardType}
+          // A revealed key is still a key: Android keyboards must not learn it.
+          keyboardType={
+            secret && revealed && Platform.OS === 'android' ? 'visible-password' : keyboardType
+          }
           autoFocus={autoFocus}
-          autoCapitalize="none"
-          autoCorrect={false}
-          spellCheck={false}
+          // Keys, addresses and emails must arrive exactly as typed; prose keeps
+          // the platform's capitalization, correction and spell check.
+          {...(literal
+            ? { autoCapitalize: 'none' as const, autoCorrect: false, spellCheck: false }
+            : {})}
           // A key or token is not an account password: ask the platform to keep
           // it out of autofill and the save prompt. This is a hint, not a
           // guarantee — browsers ignore it on masked inputs.

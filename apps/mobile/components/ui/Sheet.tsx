@@ -77,6 +77,7 @@ export function Sheet({
       <Pressable
         style={styles.scrim}
         onPress={close}
+        disabled={!dismissible}
         accessibilityRole="button"
         accessibilityLabel="Close"
         testID="sheet-scrim"
