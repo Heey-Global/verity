@@ -146,11 +146,12 @@ describe('shared remote control transport', () => {
     expect(await remoteControlPortForUrl(`${coreUrl}/api/more`)).toBe(4_321);
     expect(mockAdmission).toHaveBeenCalledTimes(1);
 
-    // A revoked descriptor must stop the attachment before the next request.
+    // Revocation disables routing immediately while native cleanup stays serialized.
     mockProfile.mockReturnValue({ ...profile, remoteControl: undefined });
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');
-    expect(await transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
+    expect(transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(mockStop).toHaveBeenCalledTimes(1);
   });
 
@@ -179,6 +180,11 @@ describe('shared remote control transport', () => {
     const first = remoteControlPortForUrl(`${coreUrl}/api/first`);
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(resolveFirst).toBeDefined();
+    mockProfile.mockReturnValue({ ...profile, remoteControl: undefined });
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    // A stalled admission must not hold direct requests behind the lifecycle queue.
+    expect(transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
     mockProfile.mockReturnValue(next);
     reportDirectRouteFailure(coreUrl);
     const second = remoteControlPortForUrl(`${coreUrl}/api/second`);
@@ -1122,7 +1128,7 @@ describe('remote diagnostics', () => {
     mockRequest.mockClear();
     mockStart.mockClear();
     mockProfile.mockReturnValue({ ...profile, remoteControl: undefined });
-    expect(await transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
+    expect(transport.remoteControlAvailableForUrl(coreUrl)).toBe(false);
     expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(0);
     expect(mockAdmission).not.toHaveBeenCalled();
     expect(mockRequest).not.toHaveBeenCalled();

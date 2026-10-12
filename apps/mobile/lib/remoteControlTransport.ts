@@ -441,10 +441,12 @@ function keyFor(url: string): string | null {
 }
 
 /** A disabled descriptor removes Remote Control from selectable routes. */
-export async function remoteControlAvailableForUrl(url: string): Promise<boolean> {
+export function remoteControlAvailableForUrl(url: string): boolean {
   const target = new URL(url);
   if (target.protocol === 'wss:') target.protocol = 'https:';
   if (keyFor(target.origin) !== null) return true;
+  // Direct requests do not depend on stale tunnel cleanup. Keep cleanup ordered
+  // with pending admission so a late attachment cannot survive revocation.
   const cleanup = operation.then(async () => {
     if (active === null || keyFor(target.origin) !== null) return;
     active = null;
@@ -455,7 +457,6 @@ export async function remoteControlAvailableForUrl(url: string): Promise<boolean
     }
   });
   operation = cleanup;
-  await cleanup;
   return false;
 }
 
