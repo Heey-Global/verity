@@ -27,6 +27,20 @@ function packageDir() {
 }
 
 function replaceOnce(source, from, to, label) {
+  // Newer adapters reject events from earlier task runs. Keep that boundary
+  // ahead of our metadata emission so stale events cannot revive settled tasks.
+  const taskCase = from.match(/^ {28}case "(task_[a-z]+)":\n/);
+  if (taskCase && !source.includes(from)) {
+    const header = taskCase[0];
+    const name = taskCase[1];
+    const guard = `                                if (isLateTaskRun(session, message.task_id, message.run_id)) {
+                                    this.logger.log(\`Ignoring ${name} for task \${message.task_id} from earlier run \${message.run_id}\`);
+                                    break;
+                                }
+`;
+    from = from.replace(header, header + guard);
+    to = to.replace(header, header + guard);
+  }
   const first = source.indexOf(from);
   if (first === -1 || source.indexOf(from, first + from.length) !== -1) {
     fail(`${label} seam is missing or ambiguous; re-derive against the pinned adapter`);
