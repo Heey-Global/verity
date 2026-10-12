@@ -183,12 +183,22 @@ function recordingScope(): string | null {
     : null;
 }
 async function recordingScopeAllowed(): Promise<boolean> {
-  return (
-    diagnosticCaptureScope === null ||
-    diagnosticCaptureScope === recordingScope() ||
-    (await stopRemoteDataRecording())
-  );
+  if (diagnosticCaptureScope !== null) {
+    return diagnosticCaptureScope === recordingScope() || (await stopRemoteDataRecording());
+  }
+  // A JavaScript reload loses consent ownership while the native window survives.
+  // Older native builds have no capture window API and retain their normal route.
+  try {
+    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+    if (!native.dataDiagnosticsRemainingMs) return true;
+    const remaining = await native.dataDiagnosticsRemainingMs();
+    if (!Number.isFinite(remaining) || remaining < 0) return false;
+    return remaining === 0 || (await stopRemoteDataRecording());
+  } catch {
+    return false;
+  }
 }
+
 let previousAppState = AppState.currentState;
 AppState.addEventListener('change', (state) => {
   if (state === 'active' && previousAppState !== 'active') {
@@ -923,8 +933,7 @@ async function open(
     dataUrl.protocol = 'wss:';
     dataUrl.pathname = '/data';
     if (
-      diagnosticCaptureScope !== null &&
-      diagnosticCaptureScope !== recordingScope() &&
+      (diagnosticCaptureScope === null || diagnosticCaptureScope !== recordingScope()) &&
       !(await recordingScopeAllowed())
     ) {
       admission.cancel();

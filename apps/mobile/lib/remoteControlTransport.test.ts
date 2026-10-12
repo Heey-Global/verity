@@ -1719,3 +1719,27 @@ it('does not attach another server if stopping the old consent fails', async () 
   expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(false);
   expect(mockStart).not.toHaveBeenCalled();
 });
+
+it('disables a surviving native window after JavaScript reload before attaching another server', async () => {
+  await armScopedRecording();
+  jest.resetModules();
+  mockProfile.mockReturnValue({ ...profile, serverId: 'other-server' });
+  mockDisableDiagnostics.mockClear();
+  mockStart.mockClear();
+  const reloaded = require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  expect((await reloaded.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
+  expect(mockDisableDiagnostics).toHaveBeenCalledTimes(1);
+  expect(mockDisableDiagnostics.mock.invocationCallOrder[0]).toBeLessThan(
+    mockStart.mock.invocationCallOrder[0]!,
+  );
+});
+it('reconciles a surviving native recording when status is read after JavaScript reload', async () => {
+  await armScopedRecording();
+  jest.resetModules();
+  mockDisableDiagnostics.mockClear().mockImplementationOnce(async () => {
+    mockRecordingRemaining.mockResolvedValue(0);
+  });
+  const reloaded = require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  expect(await reloaded.remoteDataRecordingRemainingMs()).toBe(0);
+  expect(mockDisableDiagnostics).toHaveBeenCalledTimes(1);
+});
