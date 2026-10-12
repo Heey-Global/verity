@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { fireEvent, render as renderScreen, screen, waitFor } from '@testing-library/react-native';
 
 const mockTestRemoteControl = jest.fn();
 const mockGetServerProfile = jest.fn();
@@ -26,6 +26,14 @@ jest.mock('../../lib/remoteControlTransport', () => ({
 }));
 
 import { PublicPreviewDiagnostics } from './PublicPreviewDiagnostics';
+import type { ReactElement } from 'react';
+import { Text } from 'react-native';
+
+function render(element: ReactElement) {
+  const result = renderScreen(element);
+  fireEvent.press(screen.getByText('Advanced diagnostics'));
+  return result;
+}
 
 it('finishes the tunnel test while the separate Core status refresh is pending', async () => {
   mockGetServerProfile.mockReturnValue({
@@ -343,4 +351,25 @@ it('keeps local stop available without a profile and reports a failed stop hones
   fireEvent.press(screen.getByText('Stop local recording'));
   await screen.findByText('Could not confirm recording stopped.');
   expect(mockStopRecording).toHaveBeenCalledTimes(1);
+});
+
+it('keeps advanced tools hidden while local recording and offline export stay visible', async () => {
+  mockGetServerProfile.mockReturnValue(null);
+  mockRecordingRemaining.mockResolvedValue(0);
+  mockTestRemoteControl.mockClear();
+  renderScreen(
+    <PublicPreviewDiagnostics client={null} keyConfigured={undefined}>
+      <Text>Server-only controls</Text>
+    </PublicPreviewDiagnostics>,
+  );
+  expect(screen.queryByText('Server-only controls')).toBeNull();
+  expect(screen.queryByText('Check subscription rights')).toBeNull();
+  expect(screen.getByLabelText('Copy connection recording')).toBeOnTheScreen();
+  expect(screen.getByText('Stop local recording')).toBeOnTheScreen();
+  await screen.findByText('Not recording');
+  expect(mockTestRemoteControl).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByText('Advanced diagnostics'));
+  expect(screen.getByText('Server-only controls')).toBeOnTheScreen();
+  fireEvent.press(screen.getByText('Hide advanced diagnostics'));
+  expect(screen.queryByText('Server-only controls')).toBeNull();
 });
