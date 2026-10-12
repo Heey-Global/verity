@@ -3968,10 +3968,10 @@ export class ProvisionerImpl implements Provisioner {
 
     // A cacheless devcontainer build can take minutes. Complete it while the
     // current container is still serving traffic; only retire that container
-    // after the replacement image exists. runContainerPhase resolves the same
-    // derived tag again below, but with forceRebuild cleared that second lookup
-    // is a cheap cache hit rather than another build.
+    // after the replacement image exists. Keep that result: resolving again
+    // bypasses tag reuse for repository-root contexts and builds a second time.
     let containerPhaseOpts = opts;
+    let rebuiltImage: ProjectImage | undefined;
     if (opts.forceRebuild === true) {
       const dirs = projectDirs(this.opts.hostCloneRoot, project);
       await this.opts.store.updateProjectState(
@@ -3981,7 +3981,7 @@ export class ProvisionerImpl implements Provisioner {
         PROJECT_IMAGE_REBUILDING_WARNING,
       );
       try {
-        await this.resolveOrBuildImage(project, dirs, true);
+        rebuiltImage = await this.resolveOrBuildImage(project, dirs, true);
       } catch (cause) {
         const detail = redactSensitive(buildFailureMessage(cause), [
           process.env.GITHUB_TOKEN,
@@ -4010,7 +4010,7 @@ export class ProvisionerImpl implements Provisioner {
     const dirs = projectDirs(this.opts.hostCloneRoot, project);
     let replacementImage: ProjectImage;
     try {
-      replacementImage = await this.resolveOrBuildImage(project, dirs, false);
+      replacementImage = rebuiltImage ?? (await this.resolveOrBuildImage(project, dirs, false));
       if (!replacementImage.usesDevcontainerImage && this.opts.docker.pullImage !== undefined) {
         await this.opts.docker.pullImage(replacementImage.imageRef);
       }
