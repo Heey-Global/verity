@@ -228,6 +228,14 @@ describe('remote control connector', () => {
     const summary = log.info.mock.calls
       .filter(([entry]) => entry.event === 'remote.return_path')
       .at(-1)?.[0];
+    expect(summary.transport).toMatchObject({
+      wsState: WebSocket.OPEN,
+      socketPaused: false,
+      socketEncrypted: false,
+      socketBytesRead: expect.any(Number),
+      socketBytesWritten: expect.any(Number),
+    });
+    expect(summary.lastCloseRequest).toMatchObject({ eventOrder: expect.any(Number) });
     expect(summary.streams).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

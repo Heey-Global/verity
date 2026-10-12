@@ -1,5 +1,31 @@
 import { z } from 'zod';
 
+const transportCount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable();
+// An absent object is an older producer; null fields are unavailable observations.
+const recordingTransportSchema = z.object({
+  schemaVersion: z.literal(1),
+  wsState: z.number().int().min(0).max(3).nullable(),
+  bufferedBytes: transportCount,
+  socketEncrypted: z.boolean().nullable(),
+  socketBytesRead: transportCount,
+  socketBytesWritten: transportCount,
+  socketReadableLength: transportCount,
+  socketWritableLength: transportCount,
+  socketPaused: z.boolean().nullable(),
+  socketNeedDrain: z.boolean().nullable(),
+  socketDestroyed: z.boolean().nullable(),
+  receiverState: z.number().int().min(0).max(6).nullable(),
+  receiverBufferedBytes: transportCount,
+  receiverPayloadLength: transportCount,
+  receiverTotalPayloadLength: transportCount,
+  receiverMessageLength: transportCount,
+  receiverFragmented: z.number().int().min(0).max(2).nullable(),
+  receiverFin: z.boolean().nullable(),
+  receiverNeedDrain: z.boolean().nullable(),
+  closeFrameSent: z.boolean().nullable(),
+  closeFrameReceived: z.boolean().nullable(),
+});
+
 // Keep the support export boundary metadata-only even when the server changes.
 export const recordingCoreRecordSchema = (() => {
   const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -61,6 +87,7 @@ export const recordingCoreRecordSchema = (() => {
     time: count.optional(),
     event: z.literal('remote.return_path'),
     schemaVersion: z.literal(1),
+    transport: recordingTransportSchema.optional(),
     session: hash,
     generation: hash,
     party: z.literal('installation'),
@@ -72,6 +99,7 @@ export const recordingCoreRecordSchema = (() => {
     emittedMessages: count,
     emittedBytes: count,
     lastError: z.object({ ...position, errorCode }).nullable(),
+    lastCloseRequest: z.object(position).nullable().optional(),
     lastClose: z
       .object({ ...position, code: z.number().int().min(1000).max(1015).optional() })
       .nullable(),
@@ -144,6 +172,7 @@ export const recordingUplinkRecordSchema = (() => {
     at: z.string().datetime().optional(),
     event: z.literal('remote.return_path'),
     schemaVersion: z.literal(1),
+    transport: recordingTransportSchema.optional(),
     session: hash,
     generation: hash,
     party: z.enum(['app', 'installation']),

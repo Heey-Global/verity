@@ -2,6 +2,7 @@ import { createConnection, type Socket } from 'node:net';
 import WebSocket from 'ws';
 import { RemoteReturnPathDiagnostics } from './remote-return-path-diagnostics.js';
 import { RemoteTransportDiagnostics } from './remote-transport-diagnostics.js';
+import { recordingTransportState } from './recording-transport-state.js';
 import type {
   RemoteConnectorRequest,
   RemoteConnectorReservation,
@@ -271,6 +272,7 @@ class ConnectorSession implements RemoteConnectorReservation {
       this.retainedReturnPath ??= new RemoteReturnPathDiagnostics(this.request.sessionId, expiry);
       this.retainedReturnPath.beginWindow(expiry);
       this.returnPath = this.retainedReturnPath;
+      if (this.ws) this.logReturnPath();
       this.returnPathTimer = setInterval(() => this.logReturnPath(), 5_000);
       this.returnPathTimer.unref();
       this.returnPathDeadline = setTimeout(
@@ -312,6 +314,7 @@ class ConnectorSession implements RemoteConnectorReservation {
         ws.on('open', () => {
           if (!this.terminated) {
             this.logTransport('socket_open');
+            this.logReturnPath();
             if (this.options.log) {
               this.diagnosticTimer = setInterval(() => this.logTransport('sample'), 5_000);
               this.diagnosticTimer.unref();
@@ -455,6 +458,8 @@ class ConnectorSession implements RemoteConnectorReservation {
   release(reason: string): void {
     if (this.terminated) return;
     this.terminated = true;
+    if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING)
+      this.returnPathDiagnostics()?.record('close_requested', 'observed');
     if (this.returnPathTimer) clearInterval(this.returnPathTimer);
     this.logReturnPath();
     if (this.heartbeat) clearInterval(this.heartbeat);
@@ -503,7 +508,10 @@ class ConnectorSession implements RemoteConnectorReservation {
       { sessionId: this.request.sessionId, frameType: type, attached: this.ready },
       'remote connector rejected an invalid data frame',
     );
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.close(1008, 'invalid remote frame');
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.returnPathDiagnostics()?.record('close_requested', 'observed');
+      this.ws.close(1008, 'invalid remote frame');
+    }
     this.release('invalid remote frame');
   }
 
@@ -531,6 +539,7 @@ class ConnectorSession implements RemoteConnectorReservation {
   private logReturnPath(final = false): void {
     const snapshot = this.returnPathDiagnostics()?.exportSummary(final);
     if (snapshot) {
+      snapshot.transport = recordingTransportState(this.ws);
       try {
         this.options.onReturnPathSnapshot?.(snapshot);
       } catch {
