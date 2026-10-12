@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.43.1](https://github.com/Heey-Global/verity/compare/v4.43.0...v4.43.1) (2026-10-12)
+
+
+### Bug Fixes
+
+* **previews:** preserve active shares across system updates ([#1560](https://github.com/Heey-Global/verity/issues/1560)) ([7eba1ae](https://github.com/Heey-Global/verity/commit/7eba1ae1819b3f2aa6f181adf305e0e505f62f47))
+
 ## [4.43.0](https://github.com/Heey-Global/verity/compare/v4.42.0...v4.43.0) (2026-10-12)
 
 
