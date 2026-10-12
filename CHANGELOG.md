@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.44.0](https://github.com/Heey-Global/verity/compare/v4.43.2...v4.44.0) (2026-10-12)
+
+
+### Features
+
+* **preview:** inject alias-bound secrets into managed servers ([#1565](https://github.com/Heey-Global/verity/issues/1565)) ([ca26935](https://github.com/Heey-Global/verity/commit/ca269359a1adbdc341fc3a7e5518861d0f636ddb))
+
 ## [4.43.2](https://github.com/Heey-Global/verity/compare/v4.43.1...v4.43.2) (2026-10-12)
 
 
