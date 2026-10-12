@@ -6,13 +6,21 @@ class VerityRemoteControlTunnel: Module {
   private var retired: [AnyObject] = []
   private var lastStartFailure: String?
   private let captureWindow = RemoteDataCaptureWindow()
+  private let recordingStore = RemoteDataRecordingStore.applicationStore()
   private var diagnosticRecords: [RemoteDataDiagnostics] = []
 
   @available(iOS 17.0, macOS 14.0, *)
   private func capture(_ tunnel: RemoteAppTunnel) -> Bool {
+    let diagnostics = tunnel.dataDiagnostics
+    diagnostics.snapshotSink = { [weak self, weak diagnostics] in
+      guard let diagnostics else { return }
+      self?.recordingStore?.schedule(generation: diagnostics.generation) { diagnostics.export() }
+    }
     let remaining = captureWindow.remaining
     guard remaining > 0, tunnel.enableDataDiagnostics(duration: remaining) else { return false }
     if !diagnosticRecords.contains(where: { $0 === tunnel.dataDiagnostics }) {
+      recordingStore?.register(generation: diagnostics.generation)
+      recordingStore?.schedule(generation: diagnostics.generation) { diagnostics.export() }
       diagnosticRecords.append(tunnel.dataDiagnostics)
       if diagnosticRecords.count > 3 { diagnosticRecords.removeFirst() }
     }
@@ -91,6 +99,10 @@ class VerityRemoteControlTunnel: Module {
       }
     }
 
+    AsyncFunction("dataDiagnosticsRemainingMs") { () -> Int in
+      Int(self.captureWindow.remaining * 1000)
+    }
+
     AsyncFunction("clearPendingDataDiagnostics") { self.captureWindow.clear() }
 
     AsyncFunction("disableDataDiagnostics") {
@@ -103,6 +115,13 @@ class VerityRemoteControlTunnel: Module {
     AsyncFunction("exportDataDiagnostics") { () -> [String] in
       guard #available(iOS 17.0, macOS 14.0, *) else { return [] }
       _ = (self.tunnel as? RemoteAppTunnel)?.exportDataDiagnostics()
+      if let store = self.recordingStore {
+        for diagnostics in self.diagnosticRecords {
+          store.schedule(generation: diagnostics.generation) { diagnostics.export() }
+        }
+        store.flush()
+        return store.snapshots()
+      }
       return self.diagnosticRecords.compactMap { $0.export() }
     }
 

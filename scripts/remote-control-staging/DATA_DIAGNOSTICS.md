@@ -1,14 +1,24 @@
 # Bounded DATA disconnect capture
 
 The mobile Connection diagnostics panel offers **Record connection test** and
-**Copy connection recording**. Recording is opt-in for the current DATA socket
-or, if none is live, the next attachment used by that test, including any automatic stall replacement. It never replaces a
-live tunnel to obtain a recording. Ordinary tests and traffic do not enable it.
+**Copy connection recording**. Recording starts only after an explicit recording-test action. That action
+replaces the current tunnel to capture the first sends and can interrupt active
+remote requests. Ordinary tests and opening Diagnostics do not enable recording.
+The local recording status is read without contacting Core. **Stop local
+recording** ends the native capture window without waiting for a pending probe,
+keeps the saved evidence, and does not stop Core or Uplink recording.
 All generations in one test share the original 120-second deadline. After that deadline, recording and the network-path observer stop without stopping
 the transport. A recorded socket cannot be rearmed after its window ends; use a
 fresh attachment for a new recording. The native module keeps at most three
-recorded socket generations in memory, including failed starts and stopped
-tunnels. Restarting the app discards them. No upload happens automatically.
+recorded socket generations, including failed starts and stopped tunnels.
+Metadata snapshots are also saved in a bounded private file excluded from backups;
+restarting the app restores the latest saved snapshots without enabling recording.
+Restored snapshots are marked expired because their original capture process has
+ended. Export refreshes live snapshots, and a deadline callback saves expiry even
+when no further traffic arrives.
+Encoding and atomic writes run asynchronously, so abrupt termination can lose the
+last pending update. Export remains available without a profile, route or Core
+connection. No upload happens automatically.
 
 ## Export schema
 
@@ -133,3 +143,7 @@ Remove copied exports when the investigation is finished. Reverting the
 diagnostics change is independent of transport routing. A dedicated diagnostic
 Gateway/hostname, controller configuration or route switch requires a separate
 concrete design and approval; this capture procedure does not authorize it.
+
+For independent collection and explicit missing-source reports, see
+[Independent capture collection](CAPTURE_BUNDLE.md). This local tool does not
+activate remote recording or replace the administrative collectors.

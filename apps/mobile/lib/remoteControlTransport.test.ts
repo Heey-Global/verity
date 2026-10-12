@@ -26,6 +26,8 @@ const mockRequest = jest.fn();
 const mockCancelRequest = jest.fn();
 const mockLastStopReason = jest.fn();
 const mockDiagnosticSummary = jest.fn();
+const mockDisableDiagnostics = jest.fn().mockResolvedValue(undefined);
+const mockRecordingRemaining = jest.fn().mockResolvedValue(0);
 const mockCaptureDiagnostics = jest.fn().mockResolvedValue(true);
 const mockClearPendingDiagnostics = jest.fn().mockResolvedValue(undefined);
 const mockRecordDiagnosticEvent = jest.fn().mockResolvedValue(undefined);
@@ -48,6 +50,8 @@ jest.mock('expo-modules-core', () => ({
           stop: mockStop,
           lastStopReason: mockLastStopReason,
           diagnosticSummary: mockDiagnosticSummary,
+          disableDataDiagnostics: mockDisableDiagnostics,
+          dataDiagnosticsRemainingMs: mockRecordingRemaining,
           captureDataDiagnostics: mockCaptureDiagnostics,
           clearPendingDataDiagnostics: mockClearPendingDiagnostics,
           recordDataDiagnosticEvent: mockRecordDiagnosticEvent,
@@ -1471,7 +1475,7 @@ describe('direct routing across background and diagnostics', () => {
 });
 
 describe('opt-in DATA capture', () => {
-  it('replaces a live tunnel before arming the selected recording and clears pending capture', async () => {
+  it('replaces a live tunnel before arming the selected recording without clearing the capture window', async () => {
     jest.resetModules();
     mockProfile.mockReturnValue(profile);
     mockToken.mockReturnValue('auth');
@@ -1508,11 +1512,11 @@ describe('opt-in DATA capture', () => {
       'probe_started',
       'probe_succeeded',
     ]);
-    expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(1);
+    expect(mockClearPendingDiagnostics).not.toHaveBeenCalled();
   });
 });
 
-it('clears recording intent after a fresh attachment fails and permits another recording', async () => {
+it('retains recording intent after an attachment fails and permits a new explicit recording', async () => {
   jest.resetModules();
   mockProfile.mockReturnValue(profile);
   mockToken.mockReturnValue('auth');
@@ -1535,10 +1539,10 @@ it('clears recording intent after a fresh attachment fails and permits another r
     require('./remoteControlTransport') as typeof import('./remoteControlTransport');
   expect((await transport.testRemoteControlForUrl(coreUrl, true)).ready).toBe(false);
   expect(cancel).toHaveBeenCalledTimes(1);
-  expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(1);
+  expect(mockClearPendingDiagnostics).not.toHaveBeenCalled();
   expect((await transport.testRemoteControlForUrl(coreUrl, true)).ready).toBe(true);
   expect(mockCaptureDiagnostics).toHaveBeenCalledTimes(2);
-  expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(2);
+  expect(mockClearPendingDiagnostics).not.toHaveBeenCalled();
 });
 
 it('keeps selected capture armed until an automatic stall replacement finishes', async () => {
@@ -1567,10 +1571,7 @@ it('keeps selected capture armed until an automatic stall replacement finishes',
   expect((await transport.testRemoteControlForUrl(coreUrl, true)).ready).toBe(true);
   expect(mockStart).toHaveBeenCalledTimes(2);
   expect(mockCaptureDiagnostics).toHaveBeenCalledTimes(1);
-  expect(mockClearPendingDiagnostics).toHaveBeenCalledTimes(1);
-  expect(mockClearPendingDiagnostics.mock.invocationCallOrder[0]).toBeGreaterThan(
-    mockStart.mock.invocationCallOrder[1]!,
-  );
+  expect(mockClearPendingDiagnostics).not.toHaveBeenCalled();
 });
 
 it('arms capture before starting the selected replacement of an inactive tunnel', async () => {
@@ -1598,4 +1599,43 @@ it('arms capture before starting the selected replacement of an inactive tunnel'
   expect(mockCaptureDiagnostics.mock.invocationCallOrder[0]).toBeLessThan(
     mockStart.mock.invocationCallOrder[0]!,
   );
+});
+
+it('stops recording without waiting for the serialized probe', async () => {
+  jest.resetModules();
+  mockProfile.mockReturnValue(profile);
+  mockToken.mockReturnValue('auth');
+  mockAdmission.mockReturnValue(new Promise(() => undefined));
+  mockDisableDiagnostics.mockClear();
+  const transport =
+    require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  void transport.testRemoteControlForUrl(coreUrl);
+  await Promise.resolve();
+  expect(await transport.stopRemoteDataRecording()).toBe(true);
+  expect(mockDisableDiagnostics).toHaveBeenCalledTimes(1);
+});
+
+it('disarms a capture whose native activation finishes after stop', async () => {
+  jest.resetModules();
+  mockProfile.mockReturnValue(profile);
+  mockToken.mockReturnValue('auth');
+  let completeArm!: (value: boolean) => void;
+  mockCaptureDiagnostics.mockImplementationOnce(
+    () =>
+      new Promise<boolean>((resolve) => {
+        completeArm = resolve;
+      }),
+  );
+  mockDisableDiagnostics.mockClear();
+  mockStart.mockClear();
+  const transport =
+    require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+  const test = transport.testRemoteControlForUrl(coreUrl, true);
+  for (let i = 0; i < 10 && !completeArm; i++) await Promise.resolve();
+  expect(completeArm).toBeDefined();
+  expect(await transport.stopRemoteDataRecording()).toBe(true);
+  completeArm(true);
+  expect(await test).toEqual({ ready: false, detail: 'connection recording was stopped' });
+  expect(mockDisableDiagnostics).toHaveBeenCalledTimes(2);
+  expect(mockStart).not.toHaveBeenCalled();
 });

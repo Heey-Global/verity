@@ -1,9 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { fireEvent, render as renderScreen, screen, waitFor } from '@testing-library/react-native';
 
 const mockTestRemoteControl = jest.fn();
 const mockGetServerProfile = jest.fn();
 const mockExportData = jest.fn();
 const mockCopy = jest.fn();
+const mockRecordingRemaining = jest.fn().mockResolvedValue(0);
+const mockStopRecording = jest.fn().mockResolvedValue(true);
 jest.mock('../../lib/remoteDataDiagnostics', () => ({
   exportRemoteDataDiagnostics: () => mockExportData(),
 }));
@@ -18,10 +20,20 @@ jest.mock('../../lib/serverProfile', () => ({
 }));
 jest.mock('../../lib/remoteControlTransport', () => ({
   testRemoteControlForUrl: (...args: unknown[]) => mockTestRemoteControl(...args),
+  remoteDataRecordingRemainingMs: () => mockRecordingRemaining(),
+  stopRemoteDataRecording: () => mockStopRecording(),
   remoteControlFailureForUrl: jest.fn(() => null),
 }));
 
 import { PublicPreviewDiagnostics } from './PublicPreviewDiagnostics';
+import type { ReactElement } from 'react';
+import { Text } from 'react-native';
+
+function render(element: ReactElement) {
+  const result = renderScreen(element);
+  fireEvent.press(screen.getByText('Advanced diagnostics'));
+  return result;
+}
 
 it('finishes the tunnel test while the separate Core status refresh is pending', async () => {
   mockGetServerProfile.mockReturnValue({
@@ -294,4 +306,70 @@ it('offers a retry when the status could not be loaded', async () => {
   fireEvent.press(await screen.findByLabelText('Try again'));
   await waitFor(() => expect(screen.getByText('Connected')).toBeOnTheScreen());
   expect(screen.queryByLabelText('Try again')).toBeNull();
+});
+// Route loss is precisely when the retained local evidence must remain accessible.
+it.each([null, { activeUrl: 'https://verity.example' }])(
+  'exports locally without a saved route or reachable Core (%s)',
+  async (profile) => {
+    mockGetServerProfile.mockReturnValue(profile);
+    mockExportData.mockResolvedValue({ status: 'ready', recording: '[{"version":1}]' });
+    mockCopy.mockClear().mockResolvedValue(undefined);
+    const getUplinkDiagnostics = jest.fn().mockRejectedValue(new Error('offline'));
+    render(<PublicPreviewDiagnostics client={{ getUplinkDiagnostics } as never} keyConfigured />);
+    fireEvent.press(screen.getByLabelText('Copy connection recording'));
+    await waitFor(() => expect(mockCopy).toHaveBeenCalledWith('[{"version":1}]'));
+    expect(getUplinkDiagnostics).toHaveBeenCalledTimes(1);
+  },
+);
+
+it('only reads recording status on mount and stops locally while a probe and Core are pending', async () => {
+  mockGetServerProfile.mockReturnValue({ activeUrl: 'https://verity.example', remoteControl: {} });
+  mockRecordingRemaining.mockResolvedValue(60_000);
+  mockTestRemoteControl.mockClear().mockReturnValue(new Promise(() => undefined));
+  mockStopRecording.mockClear().mockResolvedValue(true);
+  const client = { getUplinkDiagnostics: jest.fn(() => new Promise(() => undefined)) } as never;
+  render(<PublicPreviewDiagnostics client={client} keyConfigured />);
+  await screen.findByText('Recording · 60 seconds remaining');
+  expect(mockTestRemoteControl).not.toHaveBeenCalled();
+  expect(mockStopRecording).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByLabelText('Test Remote access through Uplink'));
+  fireEvent.press(screen.getByText('Stop local recording'));
+  await screen.findByText('Not recording');
+  expect(mockStopRecording).toHaveBeenCalledTimes(1);
+  expect(mockTestRemoteControl).toHaveBeenCalledTimes(1);
+});
+
+it('keeps local stop available without a profile and reports a failed stop honestly', async () => {
+  mockGetServerProfile.mockReturnValue(null);
+  mockStopRecording.mockClear().mockResolvedValue(false);
+  render(
+    <PublicPreviewDiagnostics
+      client={{ getUplinkDiagnostics: jest.fn().mockRejectedValue(new Error('offline')) } as never}
+      keyConfigured
+    />,
+  );
+  fireEvent.press(screen.getByText('Stop local recording'));
+  await screen.findByText('Could not confirm recording stopped.');
+  expect(mockStopRecording).toHaveBeenCalledTimes(1);
+});
+
+it('keeps advanced tools hidden while local recording and offline export stay visible', async () => {
+  mockGetServerProfile.mockReturnValue(null);
+  mockRecordingRemaining.mockResolvedValue(0);
+  mockTestRemoteControl.mockClear();
+  renderScreen(
+    <PublicPreviewDiagnostics client={null} keyConfigured={undefined}>
+      <Text>Server-only controls</Text>
+    </PublicPreviewDiagnostics>,
+  );
+  expect(screen.queryByText('Server-only controls')).toBeNull();
+  expect(screen.queryByText('Check subscription rights')).toBeNull();
+  expect(screen.getByLabelText('Copy connection recording')).toBeOnTheScreen();
+  expect(screen.getByText('Stop local recording')).toBeOnTheScreen();
+  await screen.findByText('Not recording');
+  expect(mockTestRemoteControl).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByText('Advanced diagnostics'));
+  expect(screen.getByText('Server-only controls')).toBeOnTheScreen();
+  fireEvent.press(screen.getByText('Hide advanced diagnostics'));
+  expect(screen.queryByText('Server-only controls')).toBeNull();
 });

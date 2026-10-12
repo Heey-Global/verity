@@ -37,6 +37,8 @@ it('requires confirmation and sends only the agreed expiry, then shows status an
   });
   render(<ReturnPathDiagnostics client={client} />);
   await screen.findByText('Inactive');
+  expect(start).not.toHaveBeenCalled();
+  expect(stop).not.toHaveBeenCalled();
   fireEvent.press(screen.getByLabelText('Start connection diagnosis'));
   expect(start).not.toHaveBeenCalled();
   const buttons = alert.mock.calls[0]?.[2];

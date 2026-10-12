@@ -6,7 +6,7 @@ import {
 } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Text, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -14,6 +14,8 @@ import { getServerProfile } from '../../lib/serverProfile';
 import { exportRemoteDataDiagnostics } from '../../lib/remoteDataDiagnostics';
 import {
   remoteControlFailureForUrl,
+  remoteDataRecordingRemainingMs,
+  stopRemoteDataRecording,
   testRemoteControlForUrl,
 } from '../../lib/remoteControlTransport';
 import { CardRow, DotValue, Eyebrow, RowCard, type DotTone } from '../premium/PremiumChrome';
@@ -63,18 +65,50 @@ function controlLabel(value: UplinkDiagnostics): string {
 export function PublicPreviewDiagnostics({
   client,
   keyConfigured,
+  children,
 }: {
-  client: VerityClient;
+  client: VerityClient | null;
+  children?: ReactNode;
   keyConfigured: boolean | undefined;
 }) {
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [status, setStatus] = useState<UplinkDiagnostics | null>(null);
   const [statusError, setStatusError] = useState<'unsupported' | 'unavailable' | null>(null);
   const [checking, setChecking] = useState(false);
   const [rightsChecking, setRightsChecking] = useState(false);
   const [rightsFailed, setRightsFailed] = useState(false);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [recordingTest, setRecordingTest] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+  const recordingReadRevision = useRef(0);
+  const [recordingRemaining, setRecordingRemaining] = useState<number | null>(null);
+  const [recordingStopFailed, setRecordingStopFailed] = useState(false);
+  useEffect(() => {
+    let mounted = true;
+    const refreshRecording = async () => {
+      const revision = recordingReadRevision.current;
+      const remaining = await remoteDataRecordingRemainingMs();
+      if (mounted && revision === recordingReadRevision.current) setRecordingRemaining(remaining);
+    };
+    void refreshRecording();
+    const timer = setInterval(() => void refreshRecording(), 1_000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, []);
+  const stopRecording = async () => {
+    recordingReadRevision.current++;
+    const stopped = await stopRemoteDataRecording();
+    recordingReadRevision.current++;
+    setRecordingStopFailed(!stopped);
+    if (stopped) setRecordingRemaining(0);
+  };
   const refresh = useCallback(async () => {
+    if (!client) {
+      setStatusError('unavailable');
+      return;
+    }
     try {
       setStatus(await client.getUplinkDiagnostics());
       setStatusError(null);
@@ -96,6 +130,7 @@ export function PublicPreviewDiagnostics({
   const runTest = async (capture = false) => {
     if (profile === null) return;
     setChecking(true);
+    setRecordingTest(capture);
     setTestResult(null);
     try {
       const result = await testRemoteControlForUrl(profile.activeUrl, capture);
@@ -178,6 +213,7 @@ export function PublicPreviewDiagnostics({
   ].filter((line): line is string => line !== null);
 
   const checkRights = () => {
+    if (!client) return;
     setRightsChecking(true);
     setRightsFailed(false);
     void client
@@ -199,7 +235,7 @@ export function PublicPreviewDiagnostics({
             ? 'Could not reach Uplink. Try again.'
             : 'Asks Uplink which features your key includes'
       }
-      disabled={rightsChecking || checking || keyConfigured !== true}
+      disabled={!client || rightsChecking || checking || keyConfigured !== true}
       onPress={checkRights}
     />
   );
@@ -278,49 +314,97 @@ export function PublicPreviewDiagnostics({
             />
           </RowCard>
         ) : null}
-        {details.map((line, index) => (
-          <Text key={index} style={styles.footnote}>
-            {line}
-          </Text>
-        ))}
       </View>
       <View style={styles.section}>
-        <Eyebrow>Tests</Eyebrow>
-        {profile && route ? (
-          <RowCard>
-            {checkRow}
-            <CardRow
-              title="Test remote access"
-              subtitle={checking ? 'Testing…' : (testResult ?? 'Round trip through Uplink')}
-              accessibilityLabel="Test Remote access through Uplink"
-              disabled={checking || rightsChecking}
-              onPress={() => void runTest()}
-            />
+        <Eyebrow>Connection recording</Eyebrow>
+        <RowCard>
+          <CardRow
+            title="Local connection recording"
+            subtitle={
+              recordingRemaining === null
+                ? 'Recording status unavailable in this app build.'
+                : recordingRemaining > 0
+                  ? `Recording · ${String(Math.ceil(recordingRemaining / 1000))} seconds remaining`
+                  : 'Not recording'
+            }
+            chevron={false}
+          />
+          {profile && route ? (
             <CardRow
               title="Record connection test"
-              subtitle="Interrupts current remote requests. Up to two minutes. No addresses, credentials or content."
+              subtitle={
+                checking && recordingTest
+                  ? 'Testing the connection… Recording can be stopped below.'
+                  : ((recordingTest ? testResult : null) ??
+                    'Tests the connection and records this iPhone for up to two minutes. Interrupts current remote requests.')
+              }
               accessibilityLabel="Record Remote access connection test"
-              disabled={checking || rightsChecking}
+              disabled={checking || rightsChecking || (recordingRemaining ?? 0) > 0}
               onPress={() => void runTest(true)}
             />
+          ) : (
             <CardRow
-              title="Copy last recording"
-              subtitle={exportStatus ?? undefined}
-              accessibilityLabel="Copy connection recording"
-              onPress={() => void copyCapture()}
-            />
-          </RowCard>
-        ) : (
-          <RowCard>
-            {checkRow}
-            <CardRow
-              title="Test remote access"
-              subtitle="Connect through your local network or VPN once to enable tests."
+              title="Recording test unavailable"
+              subtitle="Connect through your local network or VPN once to enable a new test. Saved recordings can still be copied below."
               chevron={false}
             />
-          </RowCard>
-        )}
+          )}
+          <CardRow
+            title="Stop local recording"
+            subtitle={
+              recordingStopFailed
+                ? 'Could not confirm recording stopped.'
+                : 'Stops this iPhone’s recording. Keeps the saved recording.'
+            }
+            onPress={() => void stopRecording()}
+          />
+          <CardRow
+            title="Copy last recording"
+            subtitle={
+              exportStatus ?? 'Copies the saved iPhone recording for support. Works offline.'
+            }
+            accessibilityLabel="Copy connection recording"
+            onPress={() => void copyCapture()}
+          />
+        </RowCard>
       </View>
+      <RowCard>
+        <CardRow
+          title={showAdvanced ? 'Hide advanced diagnostics' : 'Advanced diagnostics'}
+          subtitle="Server recording, technical details and other tools"
+          onPress={() => setShowAdvanced((shown) => !shown)}
+        />
+      </RowCard>
+      {showAdvanced ? (
+        <>
+          <View style={styles.section}>
+            <Eyebrow>Technical details</Eyebrow>
+            <RowCard>
+              {checkRow}
+              {profile && route ? (
+                <CardRow
+                  title="Test remote access"
+                  subtitle={
+                    checking && !recordingTest
+                      ? 'Testing…'
+                      : ((!recordingTest ? testResult : null) ??
+                        'Connection check without recording')
+                  }
+                  accessibilityLabel="Test Remote access through Uplink"
+                  disabled={checking || rightsChecking}
+                  onPress={() => void runTest()}
+                />
+              ) : null}
+            </RowCard>
+            {details.map((line, index) => (
+              <Text key={index} style={styles.footnote}>
+                {line}
+              </Text>
+            ))}
+          </View>
+          {children}
+        </>
+      ) : null}
     </>
   );
 }

@@ -14,6 +14,8 @@ interface NativeTunnel {
   stopWithCause?(cause: string): Promise<void>;
   captureDataDiagnostics?(): Promise<boolean>;
   clearPendingDataDiagnostics?(): Promise<void>;
+  disableDataDiagnostics?(): Promise<void>;
+  dataDiagnosticsRemainingMs?(): Promise<number>;
   recordDataDiagnosticEvent?(event: string): Promise<void>;
   /** Absent in native builds older than the JavaScript bundle. */
   lastStopReason?(): Promise<string | null>;
@@ -172,6 +174,7 @@ let directRoute: { key: string; reachable: boolean; checkedAt: number } | null =
 let directRefusal: { key: string; reason: string } | null = null;
 let routeGeneration = 0;
 let diagnosticCaptureUntil = 0;
+let diagnosticCaptureRevision = 0;
 let previousAppState = AppState.currentState;
 AppState.addEventListener('change', (state) => {
   if (state === 'active' && previousAppState !== 'active') {
@@ -510,11 +513,39 @@ export async function remoteControlPortForUrl(
   }
 }
 
+/** Local-only status; reading it never starts a recording or contacts Core. */
+export async function remoteDataRecordingRemainingMs(): Promise<number | null> {
+  try {
+    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+    const remaining = await native.dataDiagnosticsRemainingMs?.();
+    return typeof remaining === 'number' && Number.isFinite(remaining) && remaining >= 0
+      ? Math.min(remaining, 120_000)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Stop must not queue behind a probe waiting for an unreachable server. */
+export async function stopRemoteDataRecording(): Promise<boolean> {
+  diagnosticCaptureRevision++;
+  diagnosticCaptureUntil = 0;
+  try {
+    const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
+    if (typeof native.disableDataDiagnostics !== 'function') return false;
+    await native.disableDataDiagnostics();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** An explicit diagnostic uses Uplink even when the direct route is healthy. */
 export async function testRemoteControlForUrl(
   url: string,
   capture = false,
 ): Promise<{ ready: boolean; detail: string }> {
+  const captureRevision = diagnosticCaptureRevision;
   const selected = operation.then(async () => {
     const target = new URL(url).origin;
     const key = keyFor(target);
@@ -523,13 +554,24 @@ export async function testRemoteControlForUrl(
     }
     const native = requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel');
     if (capture) {
+      if (captureRevision !== diagnosticCaptureRevision) {
+        return { ready: false, detail: 'connection recording was stopped' };
+      }
       if (typeof native.captureDataDiagnostics !== 'function') {
         return { ready: false, detail: 'update the app to record connection diagnostics' };
       }
       // Arm on a fresh socket: recording an active tunnel misses its first sends.
       await stopNativeTunnel('replacement');
       active = null;
-      if (!(await native.captureDataDiagnostics())) {
+      if (captureRevision !== diagnosticCaptureRevision) {
+        return { ready: false, detail: 'connection recording was stopped' };
+      }
+      const armed = await native.captureDataDiagnostics();
+      if (captureRevision !== diagnosticCaptureRevision) {
+        await native.disableDataDiagnostics?.();
+        return { ready: false, detail: 'connection recording was stopped' };
+      }
+      if (!armed) {
         return {
           ready: false,
           detail: 'the recording window ended; reconnect before recording another test',
@@ -537,33 +579,30 @@ export async function testRemoteControlForUrl(
       }
       diagnosticCaptureUntil = Date.now() + 120_000;
     }
-    try {
-      const attachment = active;
-      if (attachment?.key === key) {
-        try {
-          if (await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive()) {
-            const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
-            if (pin !== undefined) {
-              await probeCoreThroughEitherProxy(target, pin, attachment.port);
-              return { ready: true, detail: 'Core health check passed through Uplink' };
-            }
+    // Native capture keeps its original deadline across later replacements.
+    const attachment = active;
+    if (attachment?.key === key) {
+      try {
+        if (await requireNativeModule<NativeTunnel>('VerityRemoteControlTunnel').isActive()) {
+          const pin = getServerProfile()?.endpoints.find((entry) => entry.url === target)?.tlsPin;
+          if (pin !== undefined) {
+            await probeCoreThroughEitherProxy(target, pin, attachment.port);
+            return { ready: true, detail: 'Core health check passed through Uplink' };
           }
-        } catch (error) {
-          // A diagnostic must not replace a tunnel that may be carrying transfers.
-          const summary = await tunnelDiagnosticSummary();
-          return {
-            ready: false,
-            detail: `probe (${probeFailureDetail(error) ?? 'Core did not answer'}${summary ? `; tunnel ${summary}` : ''})`,
-          };
         }
+      } catch (error) {
+        // A diagnostic must not replace a tunnel that may be carrying transfers.
+        const summary = await tunnelDiagnosticSummary();
+        return {
+          ready: false,
+          detail: `probe (${probeFailureDetail(error) ?? 'Core did not answer'}${summary ? `; tunnel ${summary}` : ''})`,
+        };
       }
-      const port = await open(target, key);
-      return port > 0
-        ? { ready: true, detail: 'Core health check passed through Uplink' }
-        : { ready: false, detail: remoteControlFailureForUrl(target) ?? 'connection failed' };
-    } finally {
-      if (capture) await native.clearPendingDataDiagnostics?.().catch(() => undefined);
     }
+    const port = await open(target, key);
+    return port > 0
+      ? { ready: true, detail: 'Core health check passed through Uplink' }
+      : { ready: false, detail: remoteControlFailureForUrl(target) ?? 'connection failed' };
   });
   operation = selected.then(
     () => undefined,
