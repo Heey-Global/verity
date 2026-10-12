@@ -1,15 +1,19 @@
 {
   "schema": 1,
-  "version": "1.66.2",
-  "runtime": "1.66.0",
+  "version": "1.68.4",
+  "runtime": "1.68.0",
   "channel": "production",
-  "commit": "b01e0797b813f68cef80b12068295b3762e0ac59",
-  "tag": "mobile-v1.66.2",
-  "branch": "staging-mobile-v1.66.2-b01e0797b813f68cef80b12068295b3762e0ac59",
-  "baseline": "mobile-v1.66.1",
-  "group": "557de2fc-be9c-4f5f-a9e5-f741f9648540",
+  "commit": "205adb55ca25534a23c83f09d75a389804389466",
+  "tag": "mobile-v1.68.4",
+  "branch": "staging-mobile-v1.68.4-205adb55ca25534a23c83f09d75a389804389466",
+  "baseline": "mobile-v1.68.0",
+  "group": "ddf905ef-ebde-4ab1-8524-3d5a7112bb7d",
   "notes": [
-    "correlate touch diagnostics and expose route waits (#1496)",
-    "correct session keyboard visibility and overlap (#1495)"
+    "inject alias-bound secrets into managed servers (#1565)",
+    "reduce session startup and sidebar render work (#1559)",
+    "record bounded socket and receiver state (#1557)",
+    "restore red attention colors (#1554)",
+    "retry model capacity failures with system notices (#1553)",
+    "coordinate App, Core and Uplink recording (#1546)"
   ]
 }
