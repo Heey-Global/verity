@@ -140,7 +140,7 @@ export function TextField({
 }
 
 /**
- * The lavender hint box under a field or in a flow: a short bold title and one
+ * The red hint box under a field or in a flow: a short bold title and one
  * sentence. Announced as an alert so the problem is heard, not just seen.
  */
 export function HintBox({ title, message }: { title: string; message: string }) {
