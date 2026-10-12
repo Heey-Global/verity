@@ -57,7 +57,7 @@ it('opens the Matrix settings directly when connecting an account', async () => 
   } as unknown as VerityClient;
   render(<ProjectMatrixRooms client={client} projectId="project-a" />);
 
-  fireEvent.press(await screen.findByLabelText('Connect Matrix'));
+  fireEvent.press(await screen.findByLabelText(/^Connect Matrix(,|$)/));
   expect(mockPush).toHaveBeenCalledWith('/settings/services/matrix');
 });
 

@@ -296,20 +296,26 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
               setMessage(null);
             }}
             editable={writable && !checking}
-            error={rejection?.tag}
+            error={
+              rejection !== null ? { title: rejection.tag, message: rejection.sentence } : undefined
+            }
             onSubmit={() => {
               // Same gate as the Activate button: Return on an empty field must
               // never overwrite a stored key.
               if (writable && key.trim()) void activate();
             }}
           />
-          <Text
-            style={[styles.help, message ? styles.error : null]}
-            accessibilityRole={message ? 'alert' : undefined}
-          >
-            {message ??
-              'From your Verity account. Stored encrypted on your server, never shown again.'}
-          </Text>
+          {/* A rejection is explained by the field's hint box; repeating its
+              sentence here would say it twice. */}
+          {rejection === null ? (
+            <Text
+              style={[styles.help, message ? styles.error : null]}
+              accessibilityRole={message ? 'alert' : undefined}
+            >
+              {message ??
+                'From your Verity account. Stored encrypted on your server, never shown again.'}
+            </Text>
+          ) : null}
           <Pressable
             accessibilityRole="button"
             disabled={checking}

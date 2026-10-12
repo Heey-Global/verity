@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Platform, Pressable, Text, TextInput, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -28,7 +28,10 @@ export function TextField({
   multiline = false,
   disabled = false,
   keyboardType,
+  literal: literalInput = false,
   autoFocus,
+  accessibilityLabel,
+  labelAccessory,
 }: {
   label: string;
   value: string;
@@ -41,16 +44,32 @@ export function TextField({
   multiline?: boolean;
   disabled?: boolean;
   keyboardType?: 'default' | 'url' | 'email-address' | 'number-pad';
+  /** Input that must arrive exactly as typed (a pasted certificate): no
+   *  capitalization, correction or spell check. Implied by `secret`, `url`
+   *  and `email-address`. */
+  literal?: boolean;
   autoFocus?: boolean;
+  /** When the visible label alone would be ambiguous to VoiceOver. */
+  accessibilityLabel?: string;
+  /** A status beside the label, e.g. whether a write-only secret is stored. */
+  labelAccessory?: ReactNode;
 }) {
   const { theme } = useUnistyles();
   const [focused, setFocused] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const masked = secret && !revealed;
-  const literal = secret || keyboardType === 'url' || keyboardType === 'email-address';
+  const literal =
+    literalInput || secret || keyboardType === 'url' || keyboardType === 'email-address';
   return (
     <View style={styles.wrap}>
-      <Text style={styles.label}>{label}</Text>
+      {labelAccessory !== undefined ? (
+        <View style={styles.labelRow}>
+          <Text style={styles.label}>{label}</Text>
+          {labelAccessory}
+        </View>
+      ) : (
+        <Text style={styles.label}>{label}</Text>
+      )}
       <View
         style={[
           styles.field,
@@ -95,7 +114,7 @@ export function TextField({
                 importantForAutofill: 'no' as const,
               }
             : {})}
-          accessibilityLabel={label}
+          accessibilityLabel={accessibilityLabel ?? label}
           accessibilityHint={error !== undefined ? error.message : undefined}
           accessibilityState={{ disabled }}
         />
@@ -103,7 +122,11 @@ export function TextField({
           <Pressable
             onPress={() => setRevealed((shown) => !shown)}
             accessibilityRole="button"
-            accessibilityLabel={revealed ? `Hide ${label}` : `Show ${label}`}
+            accessibilityLabel={
+              revealed
+                ? `Hide ${accessibilityLabel ?? label}`
+                : `Show ${accessibilityLabel ?? label}`
+            }
             hitSlop={8}
             style={styles.reveal}
           >
@@ -142,6 +165,12 @@ export function HintBox({ title, message }: { title: string; message: string }) 
 const styles = StyleSheet.create((theme) => ({
   wrap: { gap: theme.spacing.sm - theme.spacing.xxs },
   label: { ...theme.typography.subtitle, color: theme.colors.textMuted },
+  labelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
   field: {
     minHeight: 48,
     flexDirection: 'row',

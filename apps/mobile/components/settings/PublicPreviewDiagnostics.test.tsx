@@ -274,7 +274,7 @@ it('shows idle sharing and explicitly checks rights without implying a reconnect
   );
   expect(screen.getByText('Idle')).toBeOnTheScreen();
   expect(screen.getByText('Not checked')).toBeOnTheScreen();
-  fireEvent.press(screen.getByLabelText('Check subscription rights'));
+  fireEvent.press(screen.getByLabelText(/^Check subscription rights(,|$)/));
   await waitFor(() => expect(screen.getAllByText('On demand')).toHaveLength(2));
   expect(screen.getByText('Connects when a feature is in use')).toBeOnTheScreen();
   expect(checkUplinkEntitlements).toHaveBeenCalledTimes(1);
@@ -310,9 +310,9 @@ it('offers a retry when the status could not be loaded', async () => {
     .mockRejectedValueOnce(new Error('offline'))
     .mockResolvedValue({ control: 'connected', sharing: 'ready', remoteControl: 'ready' });
   render(<PublicPreviewDiagnostics client={{ getUplinkDiagnostics } as never} keyConfigured />);
-  fireEvent.press(await screen.findByLabelText('Try again'));
+  fireEvent.press(await screen.findByLabelText(/^Try again(,|$)/));
   await waitFor(() => expect(screen.getByText('Connected')).toBeOnTheScreen());
-  expect(screen.queryByLabelText('Try again')).toBeNull();
+  expect(screen.queryByLabelText(/^Try again(,|$)/)).toBeNull();
 });
 // Route loss is precisely when the retained local evidence must remain accessible.
 it.each([null, { activeUrl: 'https://verity.example' }])(

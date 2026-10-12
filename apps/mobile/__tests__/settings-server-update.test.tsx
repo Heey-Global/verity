@@ -322,7 +322,7 @@ describe('release notes', () => {
     expect(screen.getByText('Keep sessions alive')).toBeOnTheScreen();
     expect(screen.queryByText('Already installed')).toBeNull();
 
-    fireEvent.press(screen.getByLabelText('Full release notes on GitHub'));
+    fireEvent.press(screen.getByLabelText(/^Full release notes on GitHub(,|$)/));
     expect(mockOpenURL).toHaveBeenCalledWith(
       'https://github.com/Heey-Global/verity/releases/tag/v1.4.0',
     );
@@ -334,7 +334,7 @@ describe('release notes', () => {
     mockFetch.mockResolvedValue({ ok: false, json: () => Promise.resolve({}) });
     renderAvailable('1.2.0');
 
-    expect(await screen.findByLabelText('Install 1.4.0')).toBeEnabled();
+    expect(await screen.findByLabelText(/^Install 1\.4\.0(,|$)/)).toBeEnabled();
     await waitFor(() => expect(mockFetch).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByText("What's new")).toBeNull());
   });
@@ -350,10 +350,10 @@ describe('settings/server-update', () => {
     });
     mockCreateVerityClient.mockReturnValue(client);
     render(<ServerUpdateScreen />);
-    await screen.findByLabelText('Install 1.4.0');
+    await screen.findByLabelText(/^Install 1\.4\.0(,|$)/);
     expect(screen.queryByText('Stable')).toBeNull();
     expect(screen.queryByText('Prereleases')).toBeNull();
-    fireEvent.press(screen.getByLabelText('Update channel'));
+    fireEvent.press(screen.getByLabelText(/^Update channel(,|$)/));
     expect(mockPush).toHaveBeenCalledWith('/settings/server-update-channel');
     expect(client.getServerUpdateChannel).not.toHaveBeenCalled();
   });
@@ -371,7 +371,7 @@ describe('settings/server-update', () => {
     render(<ServerUpdateScreen />);
 
     expect(await screen.findByText(/updates itself externally/)).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+    expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
   });
 
   it('refreshes a transiently unreachable release channel when the screen regains focus', async () => {
@@ -445,7 +445,7 @@ describe('settings/server-update', () => {
     );
     render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
+    fireEvent.press(await screen.findByLabelText(/^Install 1\.4\.0(,|$)/));
 
     await waitFor(() => expect(requestServerUpdate).toHaveBeenCalledTimes(1));
     expect(requestServerUpdate.mock.calls[0]?.[0]).toEqual(
@@ -454,7 +454,7 @@ describe('settings/server-update', () => {
     // Once accepted, the panel reports progress instead of offering the action
     // again — a second press would race the operation already running.
     expect(await screen.findByText('Step 1 of 14')).toBeOnTheScreen();
-    expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+    expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
   });
 
   // A failed attempt stays the current journal entry, so retrying under the key
@@ -486,7 +486,7 @@ describe('settings/server-update', () => {
     render(<ServerUpdateScreen />);
 
     expect(await screen.findByText('The new version could not be downloaded.')).toBeOnTheScreen();
-    fireEvent.press(await screen.findByLabelText('Try again'));
+    fireEvent.press(await screen.findByLabelText(/^Try again(,|$)/));
 
     await waitFor(() => expect(requestServerUpdate).toHaveBeenCalledTimes(1));
     const sent: unknown = requestServerUpdate.mock.calls[0]?.[0];
@@ -528,11 +528,11 @@ describe('settings/server-update', () => {
     );
     render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
+    fireEvent.press(await screen.findByLabelText(/^Install 1\.4\.0(,|$)/));
 
     expect(await screen.findByText('Step 2 of 14')).toBeOnTheScreen();
     expect(screen.queryByText('Could not start the update.')).toBeNull();
-    expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+    expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
   });
 
   // The reported failure: the update ran to completion while the request was
@@ -570,11 +570,11 @@ describe('settings/server-update', () => {
     );
     render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
+    fireEvent.press(await screen.findByLabelText(/^Install 1\.4\.0(,|$)/));
 
     expect(await screen.findByText('Verity is up to date')).toBeOnTheScreen();
     expect(screen.queryByText('Could not start the update.')).toBeNull();
-    expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+    expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
   });
 
   // Mid-cutover neither the request nor the follow-up check is answered. That is
@@ -596,7 +596,7 @@ describe('settings/server-update', () => {
     );
     render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
+    fireEvent.press(await screen.findByLabelText(/^Install 1\.4\.0(,|$)/));
     expect(await screen.findByText('Starting…')).toBeOnTheScreen();
     await waitFor(() => expect(mockLiveRefresh.size).toBeGreaterThan(0));
     await act(async () => {});
@@ -651,7 +651,7 @@ describe('settings/server-update', () => {
     );
     render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
+    fireEvent.press(await screen.findByLabelText(/^Install 1\.4\.0(,|$)/));
     await screen.findByText('Starting…');
     await waitFor(() => expect(mockLiveRefresh.size).toBeGreaterThan(0));
     await act(async () => {});
@@ -677,7 +677,7 @@ describe('settings/server-update', () => {
     );
     render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
+    fireEvent.press(await screen.findByLabelText(/^Install 1\.4\.0(,|$)/));
     await act(() => jest.advanceTimersByTimeAsync(10_000));
     expect(screen.queryByText('Could not start the update.')).toBeNull();
 
@@ -685,7 +685,7 @@ describe('settings/server-update', () => {
       await jest.advanceTimersByTimeAsync(14_000);
     });
     expect(await screen.findByText('Could not start the update.')).toBeOnTheScreen();
-    expect(screen.getByLabelText('Install 1.4.0')).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^Install 1\.4\.0(,|$)/)).toBeOnTheScreen();
     jest.useRealTimers();
   });
 
@@ -702,7 +702,7 @@ describe('settings/server-update', () => {
     );
     render(<ServerUpdateScreen />);
 
-    fireEvent.press(await screen.findByLabelText('Install 1.4.0'));
+    fireEvent.press(await screen.findByLabelText(/^Install 1\.4\.0(,|$)/));
 
     expect(
       await screen.findByText('Set a master password before updating Verity.'),
@@ -735,7 +735,7 @@ describe('server update channel selection', () => {
     jest.mocked(client.getServerUpdates).mockClear();
     render(<ServerUpdateScreen />);
     await act(async () => undefined);
-    expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+    expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
     expect(client.getServerUpdates).not.toHaveBeenCalled();
     const originalServer = clientConfig.getVerityBaseUrl();
     const serverUrl = jest
@@ -744,7 +744,7 @@ describe('server update channel selection', () => {
     await act(async () => finishWrite('staging'));
     expect(isServerUpdateChannelWritePending(originalServer)).toBe(false);
     serverUrl.mockRestore();
-    expect(await screen.findByLabelText('Install 1.4.0')).toBeEnabled();
+    expect(await screen.findByLabelText(/^Install 1\.4\.0(,|$)/)).toBeEnabled();
   });
 
   it('shows preferences without version, installation or release notes', async () => {
@@ -760,7 +760,7 @@ describe('server update channel selection', () => {
     await screen.findByText('Prereleases');
     expect(screen.queryByText('Version')).toBeNull();
     expect(screen.queryByText('Version 1.4.0 available')).toBeNull();
-    expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+    expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
     expect(screen.queryByText("What's new")).toBeNull();
     expect(mockFetch).not.toHaveBeenCalled();
   });
@@ -818,7 +818,7 @@ describe('server update channel selection', () => {
       await act(async () => {
         alert.mock.calls[0]![2]!.find((action) => action.text === 'Change channel')!.onPress!();
       });
-      expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+      expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
       expect(
         await screen.findByText('The channel change is unconfirmed. Checking the server…'),
       ).toBeTruthy();
@@ -852,12 +852,12 @@ describe('server update channel selection', () => {
     );
     render(<ServerUpdateChannelScreen />);
     await screen.findByText('Prereleases');
-    expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+    expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
     fireEvent.press(await screen.findByText('Prereleases'));
     await act(async () => {
       alert.mock.calls[0]![2]!.find((action) => action.text === 'Change channel')!.onPress!();
     });
-    expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+    expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
     expect(
       await screen.findByText(
         'Checking the selected channel… Retrying if the server is unavailable.',
@@ -896,14 +896,14 @@ describe('server update channel selection', () => {
     await act(async () => {
       alert.mock.calls[0]![2]!.find((action) => action.text === 'Change channel')!.onPress!();
     });
-    expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+    expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
     expect(requestServerUpdate).not.toHaveBeenCalled();
     expect(screen.getByRole('radio', { name: 'Stable' })).toBeDisabled();
     await act(async () => {
       finish('staging');
     });
     await waitFor(() => expect(screen.getByRole('radio', { name: 'Prereleases' })).toBeEnabled());
-    expect(screen.queryByLabelText('Install 1.4.0')).toBeNull();
+    expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
   });
 
   it.each([false, true])(

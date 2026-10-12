@@ -1,21 +1,23 @@
 // The shared furniture of the Settings screens: the scaffold every route renders
 // into, the grouped-list row that navigates between them, and the small field
-// primitives the forms are built from.
+// primitives the forms are built from. Rows, fields, headings and buttons are
+// drawn by the design system's building blocks (components/ui); these wrappers
+// keep the screens' props until each screen is migrated to them directly.
 //
 // Keeping these in one place is what makes the split invisible to the operator:
 // a card, a row and a text field look and behave identically whichever of the
 // five screens they happen to be on, and the auto-save banner reports work
 // started on a screen that has since been popped.
-import { Children, Fragment, isValidElement, type ReactNode } from 'react';
-import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
+import { type ReactNode } from 'react';
+import { ActivityIndicator, Text, View } from 'react-native';
 import { Stack } from 'expo-router';
 import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useUnistyles } from 'react-native-unistyles';
 
-import { Icon, type IconName } from '../Icon';
-import { StatusPill } from '../StatusPill';
-import { Toggle } from '../Toggle';
+import { type IconName } from '../Icon';
+import { Button, Group, Row, SectionHeader, StatusDot, TextField, ToggleRow } from '../ui';
+import { type StatusIntent } from '../ui/Status';
 import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
 import { useVeritySettings } from '../../lib/settingsStore';
 import { ApplyPendingBanner } from './ApplyPendingBanner';
@@ -120,9 +122,9 @@ export function SettingsGroup({
   return (
     <View style={styles.settingsGroup}>
       <View style={styles.sectionHeaderRow}>
-        <Text style={styles.groupHeader} accessibilityRole="header">
-          {title}
-        </Text>
+        <View style={styles.sectionHeaderLabel}>
+          <SectionHeader title={title} flush />
+        </View>
         {trailing}
       </View>
       {description !== undefined ? (
@@ -140,21 +142,9 @@ export function SettingsPanel({ children }: { children: ReactNode }) {
 
 export { SettingsDisclosure } from './SettingsDisclosure';
 
-/** A grouped list of rows, hairline-separated. The
- *  separators are inserted here so a screen cannot forget one (or leave a
- *  dangling one behind a row it conditionally hides). */
+/** A grouped list of rows, divided by the design system's `Group`. */
 export function SettingsListPanel({ children }: { children: ReactNode }) {
-  const rows = Children.toArray(children).filter(isValidElement);
-  return (
-    <View style={styles.listPanel}>
-      {rows.map((row, index) => (
-        <Fragment key={row.key ?? index}>
-          {index > 0 ? <View style={styles.rowSeparator} /> : null}
-          {row}
-        </Fragment>
-      ))}
-    </View>
-  );
+  return <Group>{children}</Group>;
 }
 
 /**
@@ -177,44 +167,40 @@ export function SettingsNavRow({
   title: string;
   subtitle?: string;
   value?: string;
-  status?: { intent: 'ready' | 'needsSetup' | 'optional' | 'transient'; label: string };
+  status?: { intent: StatusIntent; label: string };
   onPress: () => void;
   accessibilityLabel?: string;
   disabled?: boolean;
 }) {
-  const { theme } = useUnistyles();
-  return (
-    <Pressable
-      style={({ pressed }) => [
-        styles.navRow,
-        disabled ? styles.buttonDisabled : null,
-        pressed ? styles.pressed : null,
-      ]}
-      onPress={onPress}
-      disabled={disabled}
-      accessibilityState={{ disabled }}
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel ?? title}
-    >
-      <View style={styles.navRowIcon}>
-        <Icon name={icon} size={18} color={theme.colors.primary} />
-      </View>
-      <View style={styles.navRowBody}>
-        <Text style={styles.navRowTitle}>{title}</Text>
-        {subtitle !== undefined ? <Text style={styles.navRowSubtitle}>{subtitle}</Text> : null}
-      </View>
-      <View style={styles.navRowTrailing}>
-        {value !== undefined ? (
+  const trailing =
+    status !== undefined ? (
+      value !== undefined ? (
+        <View style={styles.navRowTrailing}>
           <Text style={styles.navRowValue} numberOfLines={1}>
             {value}
           </Text>
-        ) : null}
-        {status !== undefined ? (
-          <StatusPill quiet intent={status.intent} label={status.label} />
-        ) : null}
-        <Icon name="chevron-right" size={18} color={theme.colors.textFaint} />
-      </View>
-    </Pressable>
+          <StatusDot intent={status.intent} label={status.label} />
+        </View>
+      ) : (
+        <StatusDot intent={status.intent} label={status.label} />
+      )
+    ) : (
+      value
+    );
+  return (
+    <Row
+      leading={{ icon }}
+      title={title}
+      subtitle={subtitle}
+      trailing={trailing}
+      onPress={onPress}
+      navigates
+      disabled={disabled}
+      accessibilityLabel={
+        accessibilityLabel ??
+        [title, subtitle, value, status?.label].filter((part) => part !== undefined).join(', ')
+      }
+    />
   );
 }
 
@@ -238,26 +224,15 @@ export function SettingsChoiceRow({
   onPress: () => void;
   accessibilityLabel?: string;
 }) {
-  const { theme } = useUnistyles();
   return (
-    <Pressable
-      style={({ pressed }) => [
-        styles.navRow,
-        disabled ? styles.buttonDisabled : null,
-        pressed ? styles.pressed : null,
-      ]}
-      onPress={onPress}
+    <Row
+      title={title}
+      subtitle={subtitle}
+      selected={selected}
       disabled={disabled}
-      accessibilityRole="radio"
-      accessibilityState={{ checked: selected, disabled }}
+      onPress={onPress}
       accessibilityLabel={accessibilityLabel ?? title}
-    >
-      <View style={styles.navRowBody}>
-        <Text style={styles.navRowTitle}>{title}</Text>
-        {subtitle !== undefined ? <Text style={styles.navRowSubtitle}>{subtitle}</Text> : null}
-      </View>
-      {selected ? <Icon name="check" size={18} color={theme.colors.primary} /> : null}
-    </Pressable>
+    />
   );
 }
 
@@ -278,29 +253,14 @@ export function SettingsToggleRow({
   icon?: ReactNode;
 }) {
   return (
-    <Pressable
-      style={({ pressed }) => [
-        styles.toggleRow,
-        disabled ? styles.buttonDisabled : null,
-        pressed ? styles.pressed : null,
-      ]}
-      onPress={() => onValueChange(!value)}
+    <ToggleRow
+      title={label}
+      subtitle={subtitle}
+      {...(icon !== undefined ? { leading: { element: icon } } : {})}
+      value={value}
+      onValueChange={onValueChange}
       disabled={disabled}
-      accessibilityRole="switch"
-      accessibilityState={{ checked: value, disabled }}
-      accessibilityLabel={label}
-    >
-      {icon !== undefined ? <View style={styles.navRowIcon}>{icon}</View> : null}
-      {subtitle === undefined ? (
-        <Text style={styles.toggleLabel}>{label}</Text>
-      ) : (
-        <View style={styles.navRowBody}>
-          <Text style={styles.navRowTitle}>{label}</Text>
-          <Text style={styles.navRowSubtitle}>{subtitle}</Text>
-        </View>
-      )}
-      <Toggle value={value} />
-    </Pressable>
+    />
   );
 }
 
@@ -325,35 +285,31 @@ export function SettingsField({
   keyboardType?: 'url' | 'email-address';
   multiline?: boolean;
 }) {
-  const { theme } = useUnistyles();
   return (
-    <View style={styles.pathContent}>
-      <Text style={styles.pathLabel}>{label}</Text>
-      <TextInput
-        style={[styles.secretInput, multiline ? null : { minHeight: 44 }]}
-        value={value}
-        onChangeText={onChangeText}
-        onBlur={onBlur}
-        placeholder={placeholder}
-        placeholderTextColor={theme.colors.textFaint}
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType={keyboardType}
-        multiline={multiline}
-        accessibilityLabel={accessibilityLabel}
-      />
-    </View>
+    <TextField
+      label={label}
+      value={value}
+      onChangeText={onChangeText}
+      onBlur={onBlur}
+      placeholder={placeholder}
+      accessibilityLabel={accessibilityLabel}
+      keyboardType={keyboardType}
+      // Settings fields hold names, hosts and identifiers, never prose.
+      literal
+      multiline={multiline}
+    />
   );
 }
 
 /**
  * A write-only secret paste box.
  *
- * The value is never read back from the server, so the pill reflects the
+ * The value is never read back from the server, so the status reflects the
  * server's `*Configured` boolean rather than the (always empty on load) box.
  * PEM callers stay multiline because newlines must survive and React Native
  * cannot reliably mask a multiline input; single-line tokens opt into `masked`,
- * which uses `secureTextEntry` and drops the visible-value warning.
+ * which hides the value behind a reveal control and drops the visible-value
+ * warning.
  */
 export function SecretPasteField({
   label,
@@ -376,31 +332,25 @@ export function SecretPasteField({
   masked?: boolean;
   accessibilityLabel?: string;
 }) {
-  const { theme } = useUnistyles();
   return (
     <View style={styles.pathContent}>
-      <View style={styles.secretLabelRow}>
-        <Text style={styles.pathLabel}>{label}</Text>
-        <StatusPill
-          quiet
-          intent={configured ? 'ready' : 'optional'}
-          label={configured ? 'Configured' : 'Not configured'}
-        />
-      </View>
-      <TextInput
-        style={[styles.secretInput, !editable ? styles.secretInputDisabled : null]}
+      <TextField
+        label={label}
+        labelAccessory={
+          <StatusDot
+            intent={configured ? 'ready' : 'optional'}
+            label={configured ? 'Configured' : 'Not configured'}
+          />
+        }
         value={value}
         onChangeText={onChangeText}
         onBlur={onBlur}
         placeholder={placeholder}
-        placeholderTextColor={theme.colors.textFaint}
-        editable={editable}
+        disabled={!editable}
+        secret={masked}
         multiline={!masked}
-        secureTextEntry={masked}
-        autoCapitalize="none"
-        autoCorrect={false}
-        spellCheck={false}
-        accessibilityLabel={accessibilityLabel}
+        literal
+        {...(accessibilityLabel !== undefined ? { accessibilityLabel } : {})}
       />
       {editable && !masked ? (
         <Text style={styles.footnote}>The key is visible while entering.</Text>
@@ -431,9 +381,7 @@ function SettingsBanner({ message, onRetry }: { message: string; onRetry?: () =>
         {message}
       </Text>
       {onRetry !== undefined ? (
-        <Pressable onPress={onRetry} hitSlop={8} accessibilityRole="button">
-          <Text style={styles.bannerAction}>Retry</Text>
-        </Pressable>
+        <Button label="Retry" variant="text" size="compact" onPress={onRetry} />
       ) : null}
     </View>
   );
@@ -456,9 +404,7 @@ export function SettingsMessage({
       <Text style={styles.centerTitle}>{title}</Text>
       {subtitle !== undefined ? <Text style={styles.centerSubtitle}>{subtitle}</Text> : null}
       {onRetry !== undefined ? (
-        <Pressable style={styles.retryButton} onPress={onRetry} accessibilityRole="button">
-          <Text style={styles.retryButtonLabel}>Retry</Text>
-        </Pressable>
+        <Button label="Retry" variant="secondary" onPress={onRetry} />
       ) : null}
     </View>
   );

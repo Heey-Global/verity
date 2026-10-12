@@ -75,6 +75,31 @@ describe('Row', () => {
     warn.mockRestore();
   });
 
+  // A single-choice list must read as one control: the selected option is
+  // announced as checked, and no option promises navigation.
+  it('announces an option of a single-choice list as a checked or unchecked radio', () => {
+    render(
+      <>
+        <Row title="Claude" selected onPress={jest.fn()} navigates />
+        <Row title="Codex" selected={false} onPress={jest.fn()} trailing="Default" />
+      </>,
+    );
+    expect(screen.getByRole('radio', { name: 'Claude' }).props.accessibilityState).toMatchObject({
+      checked: true,
+    });
+    // An unselected option shows nothing trailing, so the check mark is the only mark.
+    expect(screen.getByRole('radio', { name: 'Codex' }).props.accessibilityState).toMatchObject({
+      checked: false,
+    });
+    expect(screen.queryByText('Default')).toBeNull();
+    const glyphs = (name: string) =>
+      screen
+        .UNSAFE_queryAllByProps({ name })
+        .filter((node) => (node.type as unknown) === 'Feather');
+    expect(glyphs('check')).toHaveLength(1);
+    expect(glyphs('chevron-right')).toHaveLength(0);
+  });
+
   it('renders a plain trailing value as muted text', () => {
     render(<Row title="Tasks" trailing="On" />);
     expect(screen.getByText('On')).toBeOnTheScreen();
@@ -127,6 +152,30 @@ describe('TextField', () => {
     );
     expect(screen.getByLabelText('Notes').props.autoCorrect).toBeUndefined();
     expect(screen.getByLabelText('Server address').props.autoCorrect).toBe(false);
+  });
+
+  // A pasted certificate corrected or capitalized by the keyboard no longer verifies.
+  it('turns off autocorrect for literal multiline input', () => {
+    render(<TextField label="Private key" value="" onChangeText={jest.fn()} multiline literal />);
+    expect(screen.getByLabelText('Private key').props.autoCorrect).toBe(false);
+    expect(screen.getByLabelText('Private key').props.autoCapitalize).toBe('none');
+    expect(screen.getByLabelText('Private key').props.spellCheck).toBe(false);
+  });
+
+  // Two fields both labelled "Token" would be indistinguishable to VoiceOver,
+  // including the control that reveals one of them.
+  it('speaks the override label for the field and its reveal control', () => {
+    render(
+      <TextField
+        label="Token"
+        accessibilityLabel="Transcription token"
+        value="t"
+        onChangeText={jest.fn()}
+        secret
+      />,
+    );
+    expect(screen.getByLabelText('Transcription token')).toBeOnTheScreen();
+    expect(screen.getByRole('button', { name: 'Show Transcription token' })).toBeOnTheScreen();
   });
 
   // A subscription key offered to the password manager ends up stored as a
