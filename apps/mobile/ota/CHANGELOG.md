@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.68.3](https://github.com/Heey-Global/verity/compare/mobile-v1.68.2...mobile-v1.68.3) (2026-10-12)
+
+
+### Performance Improvements
+
+* **mobile:** reduce session startup and sidebar render work ([#1559](https://github.com/Heey-Global/verity/issues/1559)) ([83f83e5](https://github.com/Heey-Global/verity/commit/83f83e564fdd2558ad7f1c2e2c01a8e0031a4c32))
+
 ## [1.68.2](https://github.com/Heey-Global/verity/compare/mobile-v1.68.1...mobile-v1.68.2) (2026-10-12)
 
 
