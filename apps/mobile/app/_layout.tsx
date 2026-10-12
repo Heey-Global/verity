@@ -42,7 +42,9 @@ import { Inter_400Regular } from '@expo-google-fonts/inter/400Regular';
 import { Inter_600SemiBold } from '@expo-google-fonts/inter/600SemiBold';
 import { Inter_700Bold } from '@expo-google-fonts/inter/700Bold';
 import { Inter_800ExtraBold } from '@expo-google-fonts/inter/800ExtraBold';
-import { useFonts } from 'expo-font';
+// The package's own hook loads through the expo-font copy the icon font already
+// uses, so Inter adds no further copy of that native module.
+import { useFonts } from '@expo-google-fonts/inter/useFonts';
 import { adjustFontScale, hydrateFontScale } from '../lib/fontZoom';
 import { prepareInstallationState } from '../lib/installationState';
 import { showsMessageSearch } from '../lib/headerRoutes';
@@ -74,6 +76,16 @@ export default function RootLayout() {
     void hydrateFontScale();
   }, []);
 
+  // Inter (docs/design-system.md § 3). A font that fails to load is not worth a
+  // locked app: text then falls back to the system font and the app continues.
+  const [fontsLoaded, fontError] = useFonts({
+    Inter_400Regular,
+    Inter_600SemiBold,
+    Inter_700Bold,
+    Inter_800ExtraBold,
+  });
+  const fontsReady = fontsLoaded || fontError !== null;
+
   // Apply a compatible OTA update before the UI becomes interactive, then load
   // the persisted server base URL before the first app render. A successful
   // update schedules a native reload and deliberately leaves this launch behind
@@ -84,15 +96,6 @@ export default function RootLayout() {
   // doing a biometric prompt here as well causes duplicate Face ID prompts during
   // setup. Restoring an unprotected token raises no prompt and must happen before
   // the first gate check, which routes to /unlock-device whenever it sees none.
-  // Inter (docs/design-system.md § 3). A font that fails to load is not worth a
-  // locked app: text then falls back to the system font and the app continues.
-  const [fontsLoaded, fontError] = useFonts({
-    Inter_400Regular,
-    Inter_600SemiBold,
-    Inter_700Bold,
-    Inter_800ExtraBold,
-  });
-  const fontsReady = fontsLoaded || fontError !== null;
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => {
     let active = true;
