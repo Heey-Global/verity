@@ -6,6 +6,18 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.46.0](https://github.com/Heey-Global/verity/compare/v4.45.0...v4.46.0) (2026-10-13)
+
+
+### Features
+
+* **matrix:** add approval-gated session messaging ([#1604](https://github.com/Heey-Global/verity/issues/1604)) ([ab7f59e](https://github.com/Heey-Global/verity/commit/ab7f59edfd3d401a2f9176913df5b40826338fdf))
+
+
+### Bug Fixes
+
+* **mobile:** keep concurrent probe failure details together ([#1608](https://github.com/Heey-Global/verity/issues/1608)) ([5f4d1e7](https://github.com/Heey-Global/verity/commit/5f4d1e74cb66eefb5db1302a954c94c070d9c8d7))
+
 ## [4.45.0](https://github.com/Heey-Global/verity/compare/v4.44.3...v4.45.0) (2026-10-13)
 
 
