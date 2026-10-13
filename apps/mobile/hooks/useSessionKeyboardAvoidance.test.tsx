@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import * as ReactNative from 'react-native';
 import {
+  KeyboardController,
   KeyboardControllerNative,
   KeyboardEvents,
   useReanimatedKeyboardAnimation,
@@ -39,6 +40,7 @@ jest.mock('expo-router', () => ({
 
 describe('session keyboard avoidance', () => {
   let visible: boolean;
+  let controllerVisible: boolean;
   let events: Record<string, () => void>;
   let controllerEvents: Record<string, () => void>;
   let resume: (state: AppStateStatus) => void;
@@ -49,6 +51,7 @@ describe('session keyboard avoidance', () => {
   beforeEach(() => {
     mockFocused = true;
     visible = false;
+    controllerVisible = false;
     jest.spyOn(require('react-native'), 'findNodeHandle').mockReturnValue(1);
     jest.mocked(useReanimatedKeyboardAnimation).mockReturnValue({
       height: { value: -300 },
@@ -57,7 +60,8 @@ describe('session keyboard avoidance', () => {
     events = {};
     controllerEvents = {};
     jest.spyOn(KeyboardEvents, 'addListener').mockImplementation((name, handler) => {
-      controllerEvents[name] = () =>
+      controllerEvents[name] = () => {
+        controllerVisible = name !== 'keyboardDidHide';
         handler({
           height: 0,
           duration: 250,
@@ -66,12 +70,14 @@ describe('session keyboard avoidance', () => {
           type: 'default',
           appearance: 'light',
         });
+      };
       const subscription = DeviceEventEmitter.addListener(`controller:${name}`, handler);
       removals.push(jest.spyOn(subscription, 'remove'));
       return subscription;
     });
     removals = [];
     cancelTransition = jest.fn();
+    jest.spyOn(KeyboardController, 'isVisible').mockImplementation(() => controllerVisible);
     jest.spyOn(Keyboard, 'isVisible').mockImplementation(() => visible);
     jest
       .spyOn(TextInput.State, 'currentlyFocusedInput')
@@ -197,6 +203,45 @@ describe('session keyboard avoidance', () => {
     expect(result.current.frameStyle).toMatchObject({ paddingBottom: 300 });
   });
 
+  it('keeps the composer above a controller-only opening through reconciliation and resume', () => {
+    const { result } = renderHook(useSessionKeyboardAvoidance);
+    // RN's cached visibility can remain false despite a visible native keyboard.
+    act(() => controllerEvents.keyboardWillShow?.());
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 300 });
+    act(() => controllerEvents.keyboardDidShow?.());
+    act(() => finishTransition());
+    expect(result.current.enabled).toBe(true);
+    act(() => resume('active'));
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 300 });
+    act(() => controllerEvents.keyboardDidHide?.());
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 0 });
+  });
+
+  it('does not restore dismissed keyboard space from a stale RN visibility cache', () => {
+    visible = true;
+    const { result } = renderHook(useSessionKeyboardAvoidance);
+    act(() => controllerEvents.keyboardDidHide());
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 0 });
+    // Android can retain input focus after dismissal, so focus alone cannot
+    // reject RN's stale visibility during a later reconciliation.
+    act(() => finishTransition());
+    act(() => resume('active'));
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 0 });
+  });
+
+  it('avoids an already visible controller keyboard when RN missed its opening', () => {
+    controllerVisible = true;
+    const { result } = renderHook(useSessionKeyboardAvoidance);
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 300 });
+  });
+
+  it('rejects controller visibility when its focused input has detached', () => {
+    controllerVisible = true;
+    jest.mocked(TextInput.State.currentlyFocusedInput).mockReturnValue(noFocusedInput);
+    const { result } = renderHook(useSessionKeyboardAvoidance);
+    expect(result.current.frameStyle).toMatchObject({ paddingBottom: 0 });
+  });
+
   it('does not disable an opening iOS keyboard before cached visibility catches up', () => {
     if (Platform.OS !== 'ios') return;
     const { result } = renderHook(useSessionKeyboardAvoidance);
@@ -276,7 +321,7 @@ describe('session keyboard avoidance', () => {
     const { unmount } = renderHook(useSessionKeyboardAvoidance);
     unmount();
     expect(cancelTransition).toHaveBeenCalledTimes(1);
-    expect(removals).toHaveLength(Platform.OS === 'ios' ? 5 : 4);
+    expect(removals).toHaveLength(Platform.OS === 'ios' ? 7 : 6);
     for (const remove of removals) expect(remove).toHaveBeenCalledTimes(1);
   });
 });

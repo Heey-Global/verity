@@ -11,16 +11,19 @@ import {
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import {
+  KeyboardController,
   KeyboardControllerNative,
   KeyboardEvents,
   useReanimatedKeyboardAnimation,
 } from 'react-native-keyboard-controller';
 import { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 
-function hasFocusedKeyboard(): boolean {
+function hasFocusedKeyboard(
+  visible = Keyboard.isVisible() || KeyboardController.isVisible(),
+): boolean {
   // Visibility is cached from keyboard events. A detached/blurred field must
   // not keep an old "shown" value alive after navigation dismissed its keyboard.
-  return Keyboard.isVisible() && TextInput.State.currentlyFocusedInput() != null;
+  return visible && TextInput.State.currentlyFocusedInput() != null;
 }
 
 export function useSessionKeyboardAvoidance() {
@@ -52,14 +55,18 @@ export function useSessionKeyboardAvoidance() {
 
   // The controller can retain the previous screen's animated height while a
   // navigation transition dismisses its keyboard. Do not inherit that gap.
-  const [enabled, setEnabled] = useState(hasFocusedKeyboard);
+  const [enabled, setEnabled] = useState(() => hasFocusedKeyboard());
+  const controllerObserved = useRef(false);
 
   useFocusEffect(
     useCallback(() => {
       let opening = false;
       const reconcile = () =>
         setEnabled(
-          hasFocusedKeyboard() || (opening && TextInput.State.currentlyFocusedInput() != null),
+          hasFocusedKeyboard(
+            controllerObserved.current ? KeyboardController.isVisible() : undefined,
+          ) ||
+            (opening && TextInput.State.currentlyFocusedInput() != null),
         );
       const show = (
         Platform.OS === 'ios' ? ['keyboardWillShow', 'keyboardDidShow'] : ['keyboardDidShow']
@@ -67,6 +74,16 @@ export function useSessionKeyboardAvoidance() {
         Keyboard.addListener(event as 'keyboardWillShow' | 'keyboardDidShow', () => {
           // RN's cached visibility stays false until did-show. A pending
           // navigation reconciliation must not disable an opening keyboard.
+          opening = event === 'keyboardWillShow';
+          setEnabled(true);
+        }),
+      );
+      // The controller can receive native opening events that RN misses. Read
+      // its cached visibility during reconciliation so a visible keyboard never
+      // loses avoidance merely because RN's cache still reports it as hidden.
+      const controllerShow = (['keyboardWillShow', 'keyboardDidShow'] as const).map((event) =>
+        KeyboardEvents.addListener(event, () => {
+          controllerObserved.current = true;
           opening = event === 'keyboardWillShow';
           setEnabled(true);
         }),
@@ -79,7 +96,12 @@ export function useSessionKeyboardAvoidance() {
       const hide = Keyboard.addListener('keyboardDidHide', onHide);
       // Clearing/remounting the composer can lose RN's did-hide event. The
       // controller completes its own dismissal and must release the padding too.
-      const controllerHide = KeyboardEvents.addListener('keyboardDidHide', onHide);
+      const controllerHide = KeyboardEvents.addListener('keyboardDidHide', () => {
+        // Once the controller has reported visibility, prefer its cache over
+        // RN's: a missed RN hide event must not resurrect dismissed padding.
+        controllerObserved.current = true;
+        onHide();
+      });
       const appState = AppState.addEventListener('change', (state) => {
         if (state === 'active') {
           opening = false;
@@ -91,6 +113,7 @@ export function useSessionKeyboardAvoidance() {
       return () => {
         transition.cancel();
         show.forEach((listener) => listener.remove());
+        controllerShow.forEach((listener) => listener.remove());
         hide.remove();
         controllerHide.remove();
         appState.remove();
