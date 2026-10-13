@@ -268,3 +268,60 @@ for (const sessionId of [123, ['test_session']]) {
     assert.doesNotMatch(result.stderr, /TypeError|test_ticket|test_session/u);
   });
 }
+
+for (const first of [
+  { worker: 2, own: 3, total: 19, kind: 'transport', code: '-1009', phase: 'NO_AUTH_CHALLENGE' },
+  { worker: 1, own: 0, total: 4, kind: 'tunnel_stopped', code: 'unknown', phase: 'unknown' },
+]) {
+  test(`first complete worker failure survives competing output: ${first.kind}`, async (t) => {
+    const input = await fixture(t, (connect) => ({
+      type: 'connect.ready',
+      requestId: connect.requestId,
+      sessionId: 'test_session',
+      ticket: 'test_ticket',
+      expiresAt: Date.now() + 60_000,
+      capability: 'remote-control-v1',
+    }));
+    const record = `probe-soak-failure:${first.worker}:${first.own}:${first.total}:${first.kind}:${first.code}:${first.phase}`;
+    writeFileSync(
+      input.binary,
+      `#!/usr/bin/env node
+console.log('probe-error:-1001');
+console.log('probe-tls:PIN_AND_CHAIN_TRUST_ACCEPTED');
+console.log('probe-soak-failure:8:0:0:transport:-1:unknown');
+console.log('probe-soak-failure:0:9:1:transport:-1:unknown');
+console.log('probe-soak-failure:0:0:0:transport:-1:secret_ticket');
+process.stdout.write(${JSON.stringify(record.slice(0, 25))});
+setTimeout(() => {
+ process.stdout.write(${JSON.stringify(record.slice(25) + '\n')});
+ console.log('probe-soak-failure:5:8:30:transport:-999:AUTH_CHALLENGE_RECEIVED');
+ console.log('probe-error:-999');
+ console.log('probe-soak:5:8:30');
+ console.log('probe-tls:AUTH_CHALLENGE_RECEIVED');
+ console.log('probe-stage:http_response');
+ console.error('secret_ticket');
+ process.exitCode = 7;
+}, 5);
+`,
+      { mode: 0o755 },
+    );
+    const result = await runProbe(input);
+    assert.equal(result.code, 7);
+    const line = result.stderr
+      .split('\n')
+      .find((line) => line.startsWith('Probe failure receipt: '));
+    assert.ok(line, result.stderr);
+    const receipt = JSON.parse(line.slice('Probe failure receipt: '.length));
+    assert.equal(receipt.stage, 'soak_failed');
+    assert.equal(receipt.nativeErrorCode, first.code === 'unknown' ? null : Number(first.code));
+    assert.equal(receipt.tlsPhase, first.phase);
+    assert.deepEqual(receipt.soak, {
+      worker: first.worker,
+      ownRequests: first.own,
+      totalRequests: first.total,
+      requestNumber: first.own + 1,
+      failureKind: first.kind,
+    });
+    assert.doesNotMatch(result.stdout + result.stderr, /secret_ticket|test_ticket|test_session/u);
+  });
+}

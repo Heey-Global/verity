@@ -73,7 +73,31 @@ const phases = new Set([
   'AUTH_CHALLENGE_RECEIVED',
   'PIN_AND_CHAIN_TRUST_ACCEPTED',
 ]);
+let soakFailureReceived = false;
 function consumeLine(line) {
+  // Later worker cleanup must not overwrite the first complete failure record.
+  if (soakFailureReceived) return;
+  const failure =
+    /^probe-soak-failure:([0-7]):(\d{1,9}):(\d{1,9}):(tunnel_stopped|configuration|http_response|transport):(unknown|-?\d{1,9}):(unknown|NO_AUTH_CHALLENGE|AUTH_CHALLENGE_RECEIVED|PIN_AND_CHAIN_TRUST_ACCEPTED)$/u.exec(
+      line,
+    );
+  if (failure) {
+    const ownRequests = Number(failure[2]);
+    const totalRequests = Number(failure[3]);
+    if (ownRequests > totalRequests) return;
+    receipt.soak = {
+      worker: Number(failure[1]),
+      ownRequests,
+      totalRequests,
+      requestNumber: ownRequests + 1,
+      failureKind: failure[4],
+    };
+    receipt.nativeErrorCode = failure[5] === 'unknown' ? null : Number(failure[5]);
+    receipt.tlsPhase = failure[6];
+    receipt.stage = 'soak_failed';
+    soakFailureReceived = true;
+    return;
+  }
   const soak = /^probe-soak:(\d{1,2}):(\d{1,9}):(\d{1,9})$/u.exec(line);
   if (soak)
     receipt.soak = {

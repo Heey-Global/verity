@@ -25,9 +25,7 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
         // with its own diagnostic, not the host's watchdog.
         while Date().addingTimeInterval(12) < deadline {
           guard tunnel.isActive else {
-            let total = await counters.requests
-            print("probe-soak:\(worker):\(own):\(total)")
-            fflush(stdout)
+            let total = await counters.failure(worker: worker, own: own, kind: "tunnel_stopped")
             throw ProbeFailure.soakFailed(
               "worker \(worker) after \(own) own and \(total) total requests: tunnel stopped: "
                 + "\(tunnel.stopReason ?? "unknown"); \(tunnel.diagnosticSummary)")
@@ -43,9 +41,8 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
           let delegate: CertificatePinDelegate
           do { delegate = try CertificatePinDelegate(pin: corePin, origin: coreURL) }
           catch {
-            let total = await counters.requests
-            print("probe-soak:\(worker):\(own):\(total)")
-            fflush(stdout)
+            let total = await counters.failure(worker: worker, own: own, kind: "configuration",
+              code: (error as NSError).code)
             throw ProbeFailure.soakFailed(
               "worker \(worker) after \(own) own and \(total) total requests: \(error)")
           }
@@ -55,9 +52,8 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
           do {
             let (_, response) = try await client.data(for: URLRequest(url: coreURL))
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-              let total = await counters.requests
-              print("probe-soak:\(worker):\(own):\(total)")
-              fflush(stdout)
+              let total = await counters.failure(worker: worker, own: own, kind: "http_response",
+                phase: delegate.phase)
               throw ProbeFailure.soakFailed(
                 "worker \(worker) after \(own) own and \(total) total requests: status "
                   + "\((response as? HTTPURLResponse)?.statusCode ?? 0); \(tunnel.diagnosticSummary)")
@@ -67,11 +63,8 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
           } catch let failure as ProbeFailure {
             throw failure
           } catch {
-            print("probe-error:\((error as NSError).code)")
-            print("probe-tls:\(delegate.phase)")
-            let total = await counters.requests
-            print("probe-soak:\(worker):\(own):\(total)")
-            fflush(stdout)
+            let total = await counters.failure(worker: worker, own: own, kind: "transport",
+              code: (error as NSError).code, phase: delegate.phase)
             throw ProbeFailure.soakFailed(
               "worker \(worker) after \(own) own and \(total) total requests: "
                 + CertificatePinDelegate.transportFailure(error: error as NSError, phase: delegate.phase)
@@ -98,6 +91,21 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
 actor SoakCounters {
   var requests = 0
   var maxMs = 0
+  private var failureEmitted = false
+
+  // Serialize the first observed failure before another worker can replace its fields.
+  func failure(worker: Int, own: Int, kind: String, code: Int? = nil,
+    phase: String = "unknown") -> Int
+  {
+    if !failureEmitted {
+      failureEmitted = true
+      let errorCode = code.map { String($0) } ?? "unknown"
+      print("probe-soak-failure:\(worker):\(own):\(requests):\(kind):\(errorCode):\(phase)")
+      fflush(stdout)
+    }
+    return requests
+  }
+
   func record(_ seconds: TimeInterval) {
     requests += 1
     maxMs = max(maxMs, Int(seconds * 1000))
