@@ -201,11 +201,13 @@ export async function collectTrustedCliOutput(
         }
       }
     }
-    const metadata = {
+    const metadata: TrustedCliToolResult = {
       ...result,
       stdout: '',
       stderr: '',
-      ...(failure === undefined ? {} : { terminationReason: failure, exitCode: 1 }),
+      ...(failure === undefined
+        ? {}
+        : { terminationReason: failure, exitCode: 1, exitCodeKnown: false }),
     };
     if (
       failure === undefined &&
@@ -225,6 +227,7 @@ export async function collectTrustedCliOutput(
         terminationReason: 'storage_failure',
         invocationId: id,
         exitCode: 1,
+        exitCodeKnown: false,
       };
     }
     return {

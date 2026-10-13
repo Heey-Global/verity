@@ -120,7 +120,7 @@ export function createTrustedCliOutputStore(
         invocationId: id,
         frames: frame === undefined ? [] : [frame],
         nextCursor: frame === undefined ? cursor : frame.sequence + 1,
-        hasMore: frame !== undefined && frame.sequence + 1 < row.next_sequence,
+        hasMore: page.frames.length > 1 || page.hasMore,
         complete: row.result !== null,
         expiresAt: new Date(row.expires_at).toISOString(),
         ...(row.result === null

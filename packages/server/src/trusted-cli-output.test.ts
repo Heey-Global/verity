@@ -3,6 +3,7 @@ import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { sql } from 'kysely';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTrustedCliOutputStore } from './trusted-cli-output.js';
+import * as frameSpool from './secret-job-frame-spool.js';
 import {
   collectTrustedCliOutput,
   createTrustedCliOutputRedactors,
@@ -75,6 +76,40 @@ describe('trusted CLI retained output', () => {
     await store.append(id, 'stderr', 'failure detail');
     await expect(store.read({ ...owner, sessionId: 'other' }, id)).rejects.toThrow('not found');
     await expect(store.read({ ...owner, projectId: 'other' }, id)).rejects.toThrow('not found');
+  });
+
+  it('keeps pagination open when frames arrive after the ownership lookup', async () => {
+    const original = frameSpool.createPostgresSecretJobFrameSpool;
+    let appendDuringRead: (() => Promise<void>) | undefined;
+    const spy = vi
+      .spyOn(frameSpool, 'createPostgresSecretJobFrameSpool')
+      .mockImplementation((...args) => {
+        const spool = original(...args);
+        return {
+          ...spool,
+          readPage: async (...readArgs) => {
+            await appendDuringRead?.();
+            return spool.readPage(...readArgs);
+          },
+        };
+      });
+    try {
+      const store = createTrustedCliOutputStore(ctx.db, cipher);
+      const id = await store.begin(owner);
+      await store.append(id, 'stdout', 'first');
+      // The ownership receipt predates these committed frames; its count must not end paging.
+      appendDuringRead = async () => {
+        appendDuringRead = undefined;
+        await store.append(id, 'stdout', 'second');
+      };
+      await expect(store.read(owner, id)).resolves.toMatchObject({ hasMore: true, nextCursor: 1 });
+      await expect(store.read(owner, id, 1)).resolves.toMatchObject({
+        hasMore: false,
+        frames: [expect.objectContaining({ payload: 'second' })],
+      });
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('retains small complete inline output', async () => {
@@ -226,6 +261,7 @@ describe('trusted CLI retained output', () => {
       },
     );
     expect(result.terminationReason).toBe('storage_failure');
+    expect(result.exitCodeKnown).toBe(false);
     expect(JSON.stringify(result)).not.toContain('private storage');
     await expect(store.read(owner, result.invocationId!)).resolves.toMatchObject({
       frames: [expect.objectContaining({ stream: 'stdout' })],
@@ -256,11 +292,44 @@ describe('trusted CLI retained output', () => {
     );
     expect(result.terminationReason).toBe('storage_failure');
     expect(result.invocationId).toEqual(expect.any(String));
+    expect(result.exitCodeKnown).toBe(false);
     expect(result.outputAvailable).toBeUndefined();
     expect(JSON.stringify(result)).not.toContain('private database detail');
     await expect(store.read(owner, result.invocationId!)).resolves.toMatchObject({
       complete: false,
       hasMore: true,
+    });
+  });
+
+  it('marks the failure exit code as synthetic when the final output flush fails', async () => {
+    const store = createTrustedCliOutputStore(ctx.db, cipher);
+    const result = await collectTrustedCliOutput(
+      {
+        ...store,
+        append: async () => {
+          throw new Error('storage unavailable');
+        },
+      },
+      owner,
+      redactors(),
+      async ({ onOutput }) => {
+        await onOutput('stdout', Buffer.from('short'));
+        return {
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          outputMode: 'stream-v1',
+          terminationReason: 'process_exit',
+        };
+      },
+    );
+    expect(result).toMatchObject({
+      terminationReason: 'storage_failure',
+      exitCode: 1,
+      exitCodeKnown: false,
+    });
+    await expect(store.read(owner, result.invocationId!)).resolves.toMatchObject({
+      result: { exitCode: 1, exitCodeKnown: false },
     });
   });
 
