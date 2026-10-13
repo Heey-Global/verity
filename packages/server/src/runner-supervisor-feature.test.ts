@@ -3078,6 +3078,89 @@ describe('verity-runner supervisor runtime', () => {
         truncated: true,
       });
       expect(JSON.stringify(truncated)).not.toContain('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
+      // A large successful command must reach its exit without the old inline cap killing it.
+      const streamed: Buffer[] = [];
+      const large = await runTrustedCliViaBroker(
+        {
+          turnId,
+          streamOutput: true,
+          secrets: [{ secretAlias: 'API_KEY', env: 'CLI_SECRET', secret: 'synthetic-secret' }],
+          command: ['/bin/sh', '-c', 'head -c 100000 /dev/zero'],
+        },
+        {
+          runtimeDir,
+          onOutput: async (_stream: string, bytes: Buffer) => {
+            streamed.push(Buffer.from(bytes));
+          },
+        },
+      );
+      expect(large).toMatchObject({
+        outputMode: 'stream-v1',
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        terminationReason: 'process_exit',
+        stdoutBytes: 100000,
+        stderrBytes: 0,
+      });
+      expect(Buffer.concat(streamed)).toHaveLength(100000);
+      const failedSink = await runTrustedCliViaBroker(
+        {
+          turnId,
+          streamOutput: true,
+          secrets: [{ secretAlias: 'API_KEY', env: 'CLI_SECRET', secret: 'synthetic-secret' }],
+          command: ['/bin/sh', '-c', 'yes synthetic'],
+        },
+        {
+          runtimeDir,
+          onOutput: async () => {
+            throw Object.assign(new Error('private error'), { outputFailure: 'storage_failure' });
+          },
+        },
+      );
+      expect(failedSink).toMatchObject({
+        outputMode: 'stream-v1',
+        terminationReason: 'storage_failure',
+        terminationRequested: true,
+      });
+      expect(JSON.stringify(failedSink)).not.toContain('private error');
+      let acceptedBytes = 0;
+      const limited = await runTrustedCliViaBroker(
+        {
+          turnId,
+          streamOutput: true,
+          secrets: [{ secretAlias: 'API_KEY', env: 'CLI_SECRET', secret: 'synthetic-secret' }],
+          command: ['/bin/sh', '-c', 'yes synthetic'],
+        },
+        {
+          runtimeDir,
+          onOutput: async (_stream: string, bytes: Buffer) => {
+            acceptedBytes += bytes.length;
+          },
+        },
+      );
+      expect(limited).toMatchObject({
+        terminationReason: 'output_limit',
+        terminationRequested: true,
+        truncated: true,
+      });
+      expect(acceptedBytes).toBeGreaterThan(24 * 1024);
+      expect(acceptedBytes).toBeLessThanOrEqual(10 * 1024 * 1024);
+      const deadline = await runTrustedCliViaBroker(
+        {
+          turnId,
+          streamOutput: true,
+          secrets: [{ secretAlias: 'API_KEY', env: 'CLI_SECRET', secret: 'synthetic-secret' }],
+          command: ['/bin/sh', '-c', 'sleep 5'],
+        },
+        { runtimeDir, timeoutMs: 100, onOutput: async () => {} },
+      );
+      expect(deadline).toMatchObject({
+        terminationReason: 'timeout',
+        timedOut: true,
+        terminationRequested: true,
+      });
+
       const directoryRefusal = await run({
         protocolVersion: 1,
         kind: 'run-trusted-cli',
@@ -3235,6 +3318,45 @@ describe('verity-runner supervisor runtime', () => {
         exitCode: 0,
         stdout: '[REDACTED]',
         stderr: '[REDACTED]',
+      });
+      const output: Buffer[] = [];
+      const streamed = await runSupervisorTrustedCli(
+        runtimeDir,
+        {
+          turnId,
+          secrets: [{ secretAlias: 'TOKEN', env: 'TOKEN', secret: 'synthetic-secret' }],
+          command: ['/bin/sh', '-c', 'head -c 100000 /dev/zero'],
+        },
+        {
+          onOutput: async (_stream, bytes) => {
+            await new Promise((resolve) => setTimeout(resolve, 1));
+            output.push(Buffer.from(bytes));
+          },
+        },
+      );
+      expect(streamed).toMatchObject({
+        outputMode: 'stream-v1',
+        terminationReason: 'process_exit',
+        exitCode: 0,
+        stdoutBytes: 100000,
+      });
+      expect(Buffer.concat(output)).toHaveLength(100000);
+      const rejected = await runSupervisorTrustedCli(
+        runtimeDir,
+        {
+          turnId,
+          secrets: [{ secretAlias: 'TOKEN', env: 'TOKEN', secret: 'synthetic-secret' }],
+          command: ['/bin/sh', '-c', 'yes synthetic'],
+        },
+        {
+          onOutput: async () => {
+            throw Object.assign(new Error('private'), { outputFailure: 'redaction_failure' });
+          },
+        },
+      );
+      expect(rejected).toMatchObject({
+        terminationReason: 'redaction_failure',
+        terminationRequested: true,
       });
       await expect(readFile(join(secretDir, 'KUBECONFIG'))).rejects.toThrow(/ENOENT/u);
       const cancellation = supervisorRequest(supervisor.socketPath, {

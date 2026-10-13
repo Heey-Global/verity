@@ -1,6 +1,7 @@
 import { requestRunnerSupervisor, runSupervisorTrustedCli } from '@verity/session';
 import { join } from 'node:path';
 
+import type { TrustedCliOutputStore } from './trusted-cli-output.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
 import { ControlPlaneSessionToolError } from './session-handoff-tool.js';
 import type { createBrokeredHttpTool } from './brokered-http-tool.js';
@@ -12,6 +13,7 @@ type TrustedCliTool = ReturnType<typeof createTrustedCliTool>;
 export function createMcpGatewayToolExecutor(options: {
   brokeredHttpTool: BrokeredHttpTool;
   trustedCliTool: TrustedCliTool;
+  trustedCliOutput?: TrustedCliOutputStore;
   /** Root containing one supervisor runtime directory per project. */
   runnerRoot?: string | undefined;
   runTrustedCli?: typeof runSupervisorTrustedCli | undefined;
@@ -92,6 +94,15 @@ export function createMcpGatewayToolExecutor(options: {
     request,
     approvedByCard,
   }) => {
+    if (toolName === 'verity_secret_output') {
+      if (options.trustedCliOutput === undefined) throw new Error('trusted CLI output unavailable');
+      const input = request as { invocationId: string; cursor?: number };
+      return options.trustedCliOutput.read(
+        { projectId, sessionId },
+        input.invocationId,
+        input.cursor,
+      );
+    }
     if (toolName === 'verity_secret_run') {
       if (runnerRoot === undefined) throw new Error('trusted CLI execution is unavailable');
       return await options.trustedCliTool(
@@ -99,7 +110,7 @@ export function createMcpGatewayToolExecutor(options: {
         sessionId,
         turnId,
         { id: callId, name: 'verity_secret_run', input: request },
-        (input) => runTrustedCli(join(runnerRoot, projectId), input),
+        (input, streamOptions) => runTrustedCli(join(runnerRoot, projectId), input, streamOptions),
       );
     }
     if (toolName === 'verity_http_request') {

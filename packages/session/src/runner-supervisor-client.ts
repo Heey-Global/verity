@@ -208,7 +208,24 @@ export interface TrustedCliExecutionInput {
   entryScript?: TrustedCliEntryScript;
 }
 
+export type TrustedCliOutputSink = (
+  stream: 'stdout' | 'stderr',
+  bytes: Uint8Array,
+) => Promise<void>;
+
 export interface TrustedCliExecutionResult {
+  outputMode?: 'stream-v1';
+  exitCodeKnown?: false;
+  terminationReason?:
+    | 'process_exit'
+    | 'timeout'
+    | 'output_limit'
+    | 'redaction_failure'
+    | 'storage_failure'
+    | 'transport_failure';
+  stdoutBytes?: number;
+  stderrBytes?: number;
+  terminationRequested?: true;
   exitCode: number;
   stdout: string;
   stderr: string;
@@ -298,7 +315,7 @@ class SupervisorTrustedCliRequestError extends Error {
 async function requestSupervisorTrustedCli(
   socketPath: string,
   request: Record<string, unknown>,
-  timeouts: { startAckTimeoutMs: number; resultTimeoutMs: number },
+  timeouts: { startAckTimeoutMs: number; resultTimeoutMs: number; onOutput?: TrustedCliOutputSink },
 ): Promise<Record<string, unknown>> {
   const frame = `${JSON.stringify({ protocolVersion: MIN_SUPPORTED_PROTOCOL_VERSION, ...request })}\n`;
   return await new Promise((resolve, reject) => {
@@ -306,6 +323,8 @@ async function requestSupervisorTrustedCli(
     let buffer = Buffer.alloc(0);
     let settled = false;
     let started = false;
+    let outputPending = false;
+    let outputSequence = 0;
     let timeout = setTimeout(
       () => finish(new Error('trusted CLI start acknowledgement timed out')),
       timeouts.startAckTimeoutMs,
@@ -361,6 +380,55 @@ async function requestSupervisorTrustedCli(
             Object.assign(rejection, { trustedCliFailure: parsed.trustedCliFailure });
           }
           finish(rejection);
+          return;
+        }
+        if (parsed.kind === 'trusted-cli-output') {
+          if (
+            !started ||
+            timeouts.onOutput === undefined ||
+            outputPending ||
+            parsed.sequence !== outputSequence ||
+            (parsed.stream !== 'stdout' && parsed.stream !== 'stderr') ||
+            typeof parsed.data !== 'string' ||
+            parsed.data.length > 21848 ||
+            !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(parsed.data)
+          ) {
+            finish(new Error('invalid trusted CLI output frame'));
+            return;
+          }
+          const bytes = Buffer.from(parsed.data, 'base64');
+          if (bytes.toString('base64') !== parsed.data) {
+            finish(new Error('invalid trusted CLI output encoding'));
+            return;
+          }
+          outputPending = true;
+          socket.pause();
+          const sequence = outputSequence++;
+          void Promise.resolve()
+            .then(() => timeouts.onOutput!(parsed.stream as 'stdout' | 'stderr', bytes))
+            .then(
+              () => {
+                if (!settled) socket.write(`${JSON.stringify({ kind: 'output-ack', sequence })}\n`);
+              },
+              (error: unknown) => {
+                const reason =
+                  isObject(error) &&
+                  ['redaction_failure', 'output_limit'].includes(String(error.outputFailure))
+                    ? error.outputFailure
+                    : 'storage_failure';
+                if (!settled)
+                  socket.write(
+                    `${JSON.stringify({ kind: 'output-ack', sequence, failure: reason })}\n`,
+                  );
+              },
+            )
+            .finally(() => {
+              bytes.fill(0);
+              outputPending = false;
+              if (!settled) socket.resume();
+            });
+          // Stop-and-wait forbids a terminal frame before persistence acknowledgment.
+          if (buffer.length > 0) finish(new Error('pipelined trusted CLI output'));
           return;
         }
         if (parsed.kind === 'trusted-cli-started') {
@@ -486,6 +554,7 @@ export async function runSupervisorTrustedCli(
   timeouts: {
     startAckTimeoutMs?: number;
     resultTimeoutMs?: number;
+    onOutput?: TrustedCliOutputSink;
   } = {},
 ): Promise<TrustedCliExecutionResult> {
   let response: Record<string, unknown>;
@@ -494,6 +563,7 @@ export async function runSupervisorTrustedCli(
       join(runtimeDir, 'supervisor.sock'),
       {
         kind: 'run-trusted-cli',
+        ...(timeouts.onOutput === undefined ? {} : { streamOutput: true }),
         turnId: input.turnId,
         ...(input.correlationId === undefined ? {} : { correlationId: input.correlationId }),
         secrets: input.secrets.map((secret) => ({
@@ -509,6 +579,7 @@ export async function runSupervisorTrustedCli(
       {
         startAckTimeoutMs: timeouts.startAckTimeoutMs ?? TRUSTED_CLI_START_ACK_TIMEOUT_MS,
         resultTimeoutMs: timeouts.resultTimeoutMs ?? TRUSTED_CLI_RESULT_TIMEOUT_MS,
+        ...(timeouts.onOutput === undefined ? {} : { onOutput: timeouts.onOutput }),
       },
     );
   } catch (error) {
@@ -617,7 +688,43 @@ export async function runSupervisorTrustedCli(
   ) {
     throw new Error('runner supervisor returned an invalid trusted CLI result');
   }
+  const reasons = [
+    'process_exit',
+    'timeout',
+    'output_limit',
+    'redaction_failure',
+    'storage_failure',
+    'transport_failure',
+  ] as const;
+  if (
+    response.outputMode !== undefined &&
+    (response.outputMode !== 'stream-v1' ||
+      timeouts.onOutput === undefined ||
+      !reasons.includes(response.terminationReason as (typeof reasons)[number]) ||
+      !Number.isSafeInteger(response.stdoutBytes) ||
+      Number(response.stdoutBytes) < 0 ||
+      !Number.isSafeInteger(response.stderrBytes) ||
+      Number(response.stderrBytes) < 0 ||
+      (response.terminationRequested !== undefined && response.terminationRequested !== true) ||
+      (response.exitCodeKnown !== undefined && response.exitCodeKnown !== false) ||
+      response.stdout !== '' ||
+      response.stderr !== '')
+  ) {
+    throw new Error('invalid trusted CLI streaming result');
+  }
   return {
+    ...(response.outputMode === 'stream-v1'
+      ? {
+          outputMode: 'stream-v1' as const,
+          ...(response.exitCodeKnown === false ? { exitCodeKnown: false as const } : {}),
+          terminationReason: response.terminationReason as (typeof reasons)[number],
+          stdoutBytes: Number(response.stdoutBytes),
+          stderrBytes: Number(response.stderrBytes),
+          ...(response.terminationRequested === true
+            ? { terminationRequested: true as const }
+            : {}),
+        }
+      : {}),
     exitCode: Number(response.exitCode),
     stdout: response.stdout,
     stderr: response.stderr,

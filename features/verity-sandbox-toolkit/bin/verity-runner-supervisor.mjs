@@ -416,12 +416,22 @@ export async function runTrustedCliViaBroker(rawRequest, options = {}) {
     let settled = false;
     let truncated = false;
     let timedOut = false;
+    // Raw blocks cross only the existing privileged Server socket, whose caller already
+    // owns the injected secrets. That caller redacts into bounded buffers before ACK;
+    // raw blocks must never become an agent-facing tool result or an on-disk artifact.
+    const streaming = request.streamOutput === true && typeof options.onOutput === 'function';
+    const counts = { stdout: 0, stderr: 0 };
+    let terminationReason = 'process_exit';
+    let terminationRequested = false;
+    let processing = false;
+    let ended = false;
     let killTimer;
     const finish = (error, result) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       clearTimeout(killTimer);
+      options.signal?.removeEventListener('abort', abort);
       socket.destroy();
       // Take the values off the request before anything can resolve, so the only
       // remaining reference is the local one the redactor needs.
@@ -434,7 +444,21 @@ export async function runTrustedCliViaBroker(rawRequest, options = {}) {
       );
       for (const entry of request.secrets) entry.secret = '';
       if (error !== undefined) rejectResult(error);
-      else if (truncated) {
+      else if (streaming) {
+        resolveResult({
+          exitCode: result.exitCode,
+          stdout: '',
+          stderr: '',
+          outputMode: 'stream-v1',
+          ...(result.exitCodeKnown === false ? { exitCodeKnown: false } : {}),
+          terminationReason,
+          stdoutBytes: counts.stdout,
+          stderrBytes: counts.stderr,
+          ...(terminationRequested ? { terminationRequested: true } : {}),
+          ...(timedOut ? { timedOut: true } : {}),
+          ...(truncated ? { truncated: true } : {}),
+        });
+      } else if (truncated) {
         resolveResult({
           exitCode: result.exitCode,
           stdout: '[output withheld: truncated]',
@@ -464,6 +488,7 @@ export async function runTrustedCliViaBroker(rawRequest, options = {}) {
     };
     const signal = () => {
       if (spawned && !socket.destroyed) {
+        terminationRequested = true;
         socket.write(
           `${JSON.stringify({ protocolVersion: 1, kind: 'signal', signal: 'SIGKILL' })}\n`,
         );
@@ -477,12 +502,22 @@ export async function runTrustedCliViaBroker(rawRequest, options = {}) {
         options.killGraceMs ?? TRUSTED_CLI_KILL_GRACE_MS,
       );
     };
+    const abort = () => {
+      terminationReason = 'transport_failure';
+      terminate();
+    };
+    options.signal?.addEventListener('abort', abort, { once: true });
     const timer = setTimeout(() => {
+      terminationReason = 'timeout';
       timedOut = true;
       terminate();
     }, options.timeoutMs ?? TRUSTED_CLI_TIMEOUT_MS);
     socket.once('error', (error) => finish(error));
     socket.once('connect', async () => {
+      if (options.signal?.aborted) {
+        finish(new Error('trusted CLI output connection closed'));
+        return;
+      }
       // Authorize only after the asynchronous connect, immediately before secrets cross
       // the socket. A worker may settle or cancellation may begin while connect is pending.
       try {
@@ -513,77 +548,133 @@ export async function runTrustedCliViaBroker(rawRequest, options = {}) {
       );
     });
     socket.on('data', (chunk) => {
-      buffered = Buffer.concat([buffered, chunk]);
-      for (;;) {
-        const newline = buffered.indexOf(0x0a);
-        if (newline < 0) break;
-        const line = buffered.subarray(0, newline).toString('utf8');
-        buffered = buffered.subarray(newline + 1);
-        let frame;
-        try {
-          frame = JSON.parse(line);
-        } catch {
-          finish(new Error('trusted CLI broker returned malformed JSON'));
+      socket.pause();
+      processing = true;
+      void (async () => {
+        if (buffered.length + chunk.length > 256 * 1024) {
+          terminationReason = 'transport_failure';
+          terminate();
+          finish(new Error('trusted CLI broker frame too large'));
           return;
         }
-        if (frame.ok !== true) {
-          // The broker answers a refusal with `{ ok: false, error }` (see
-          // verity-agent-spawn-broker.mjs). Dropping that message here is what
-          // turns a precise refusal into an unexplained failed run by the time
-          // it reaches the operator — the reason exists at every hop and was
-          // discarded at this one.
-          const reason =
-            typeof frame.error === 'string' && frame.error !== '' ? frame.error : undefined;
-          const failure = new Error(
-            reason === undefined
-              ? 'trusted CLI broker rejected execution'
-              : `trusted CLI broker rejected execution: ${reason}`,
-          );
-          if (
-            isObject(frame.trustedCliFailure) &&
-            ['validation', 'materialization', 'launch-spec', 'spawn'].includes(
-              frame.trustedCliFailure.phase,
-            ) &&
-            typeof frame.trustedCliFailure.cause === 'string'
-          ) {
-            failure.trustedCliFailure = frame.trustedCliFailure;
+        buffered = Buffer.concat([buffered, chunk]);
+        for (;;) {
+          const newline = buffered.indexOf(0x0a);
+          if (newline < 0) break;
+          const line = buffered.subarray(0, newline).toString('utf8');
+          buffered = buffered.subarray(newline + 1);
+          let frame;
+          try {
+            frame = JSON.parse(line);
+          } catch {
+            finish(new Error('trusted CLI broker returned malformed JSON'));
+            return;
           }
-          finish(failure);
-          return;
-        }
-        if (frame.kind === 'spawned') {
-          if (!spawned) {
-            spawned = true;
-            try {
-              options.onSpawned?.();
-            } catch (error) {
-              finish(error);
-              return;
+          if (frame.ok !== true) {
+            // The broker answers a refusal with `{ ok: false, error }` (see
+            // verity-agent-spawn-broker.mjs). Dropping that message here is what
+            // turns a precise refusal into an unexplained failed run by the time
+            // it reaches the operator — the reason exists at every hop and was
+            // discarded at this one.
+            const reason =
+              typeof frame.error === 'string' && frame.error !== '' ? frame.error : undefined;
+            const failure = new Error(
+              reason === undefined
+                ? 'trusted CLI broker rejected execution'
+                : `trusted CLI broker rejected execution: ${reason}`,
+            );
+            if (
+              isObject(frame.trustedCliFailure) &&
+              ['validation', 'materialization', 'launch-spec', 'spawn'].includes(
+                frame.trustedCliFailure.phase,
+              ) &&
+              typeof frame.trustedCliFailure.cause === 'string'
+            ) {
+              failure.trustedCliFailure = frame.trustedCliFailure;
             }
+            finish(failure);
+            return;
           }
-          if (timedOut || truncated) signal();
-          continue;
-        }
-        if (frame.kind === 'stdout' || frame.kind === 'stderr') {
-          const bytes = Buffer.from(frame.data ?? '', 'base64');
-          if (outputBytes + bytes.length > MAX_TRUSTED_CLI_OUTPUT_BYTES) {
-            truncated = true;
-            terminate();
+          if (frame.kind === 'spawned') {
+            if (!spawned) {
+              spawned = true;
+              try {
+                options.onSpawned?.();
+              } catch (error) {
+                finish(error);
+                return;
+              }
+            }
+            if (timedOut || truncated || terminationReason !== 'process_exit') signal();
             continue;
           }
-          outputBytes += bytes.length;
-          (frame.kind === 'stdout' ? stdout : stderr).push(bytes);
-          continue;
+          if (frame.kind === 'stdout' || frame.kind === 'stderr') {
+            const bytes = Buffer.from(frame.data ?? '', 'base64');
+            if (streaming) {
+              counts[frame.kind] += bytes.length;
+              if (terminationReason !== 'process_exit') {
+                bytes.fill(0);
+                continue;
+              }
+              if (counts.stdout + counts.stderr > 10 * 1024 * 1024) {
+                terminationReason = 'output_limit';
+                truncated = true;
+                bytes.fill(0);
+                terminate();
+                continue;
+              }
+              try {
+                for (let offset = 0; offset < bytes.length; offset += 16384) {
+                  await options.onOutput(frame.kind, bytes.subarray(offset, offset + 16384));
+                  if (settled || terminationReason !== 'process_exit') break;
+                }
+              } catch (error) {
+                if (terminationReason === 'process_exit') {
+                  terminationReason = ['redaction_failure', 'output_limit'].includes(
+                    error?.outputFailure,
+                  )
+                    ? error.outputFailure
+                    : 'storage_failure';
+                }
+                truncated = true;
+                terminate();
+              } finally {
+                bytes.fill(0);
+              }
+              continue;
+            }
+            if (outputBytes + bytes.length > MAX_TRUSTED_CLI_OUTPUT_BYTES) {
+              truncated = true;
+              terminate();
+              continue;
+            }
+            outputBytes += bytes.length;
+            (frame.kind === 'stdout' ? stdout : stderr).push(bytes);
+            continue;
+          }
+          if (frame.kind === 'exit') {
+            const exitCode =
+              Number.isInteger(frame.code) && frame.code >= 0 && frame.code <= 255 ? frame.code : 1;
+            finish(undefined, {
+              exitCode,
+              exitCodeKnown: Number.isInteger(frame.code) && frame.code >= 0 && frame.code <= 255,
+            });
+          }
         }
-        if (frame.kind === 'exit') {
-          const exitCode =
-            Number.isInteger(frame.code) && frame.code >= 0 && frame.code <= 255 ? frame.code : 1;
-          finish(undefined, { exitCode });
-        }
-      }
+      })()
+        .catch(() => {
+          terminate();
+          finish(new Error('trusted CLI output processing failed'));
+        })
+        .finally(() => {
+          processing = false;
+          if (ended && !settled) finish(new Error('trusted CLI broker closed before exit'));
+          if (!settled) socket.resume();
+        });
     });
     socket.once('end', () => {
-      if (!settled) finish(new Error('trusted CLI broker closed before exit'));
+      ended = true;
+      if (!processing && !settled) finish(new Error('trusted CLI broker closed before exit'));
     });
   });
 }
@@ -2269,9 +2360,10 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
   return {
     start,
     cancel,
-    runTrustedCli(request, onSpawned) {
+    runTrustedCli(request, onSpawned, outputOptions = {}) {
       return runTrustedCliViaBroker(request, {
         runtimeDir,
+        ...outputOptions,
         ...(options.brokerSocket === undefined ? {} : { brokerSocket: options.brokerSocket }),
         ...(onSpawned === undefined ? {} : { onSpawned }),
         authorize: async ({ turnId }) =>
@@ -2477,6 +2569,7 @@ export async function handleSupervisorRequest(
   onTrustedCliStarted,
   onStartAccepted,
   capabilities = { scriptIsolation: true },
+  outputOptions = {},
 ) {
   if (!isObject(request) || !supportedRequestVersion(request.protocolVersion)) {
     throw new Error('unsupported supervisor protocol');
@@ -2526,7 +2619,7 @@ export async function handleSupervisorRequest(
       }
       return {
         ok: true,
-        ...(await turnStarter.runTrustedCli(request, onTrustedCliStarted)),
+        ...(await turnStarter.runTrustedCli(request, onTrustedCliStarted, outputOptions)),
       };
     default:
       throw new Error('unknown supervisor request');
@@ -2595,6 +2688,40 @@ export async function runSupervisor(options = {}) {
     let handled = false;
     let processingStarted = false;
     let pipelinedAfterNewline = false;
+    const outputAbort = new globalThis.AbortController();
+    let outputAck;
+    let ackBuffer = '';
+    let outputSequence = 0;
+    socket.once('close', () => {
+      outputAbort.abort();
+      outputAck?.reject(new Error('trusted CLI output connection closed'));
+    });
+    const onOutput = (stream, bytes) =>
+      new Promise((resolve, reject) => {
+        if (socket.destroyed) {
+          reject(new Error('trusted CLI output connection closed'));
+          return;
+        }
+        const sequence = outputSequence++;
+        const timer = setTimeout(() => {
+          outputAck = undefined;
+          reject(new Error('trusted CLI output receipt timed out'));
+        }, 30000);
+        outputAck = {
+          sequence,
+          resolve: () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          reject: (error) => {
+            clearTimeout(timer);
+            reject(error);
+          },
+        };
+        socket.write(
+          `${JSON.stringify({ ok: true, kind: 'trusted-cli-output', sequence, stream, data: bytes.toString('base64') })}\n`,
+        );
+      });
     let timeout = setTimeout(() => socket.destroy(), 5_000);
     const setRequestTimeout = (milliseconds) => {
       clearTimeout(timeout);
@@ -2620,6 +2747,39 @@ export async function runSupervisor(options = {}) {
     };
     socket.on('data', (chunk) => {
       if (handled) {
+        if (outputAck !== undefined) {
+          ackBuffer += chunk.toString('utf8');
+          if (ackBuffer.length > 512) {
+            socket.destroy();
+            return;
+          }
+          if (!ackBuffer.endsWith('\n')) return;
+          try {
+            const ack = JSON.parse(ackBuffer);
+            ackBuffer = '';
+            if (
+              ack.kind !== 'output-ack' ||
+              ack.sequence !== outputAck.sequence ||
+              (ack.failure !== undefined &&
+                !['redaction_failure', 'storage_failure', 'output_limit'].includes(ack.failure))
+            ) {
+              socket.destroy();
+              return;
+            }
+            const pending = outputAck;
+            outputAck = undefined;
+            if (ack.failure === undefined) pending.resolve();
+            else
+              pending.reject(
+                Object.assign(new Error('trusted CLI output rejected'), {
+                  outputFailure: ack.failure,
+                }),
+              );
+          } catch {
+            socket.destroy();
+          }
+          return;
+        }
         // A second request may arrive in a later Unix-socket chunk. Give framing
         // one event-loop turn before applying the first request so TCP/Unix chunk
         // boundaries cannot turn the same pipelined bytes into different behavior.
@@ -2682,6 +2842,9 @@ export async function runSupervisor(options = {}) {
                   )
               : undefined,
             capabilities,
+            request?.kind === 'run-trusted-cli' && request.streamOutput === true
+              ? { onOutput, signal: outputAbort.signal }
+              : {},
           );
         })
         .catch(responseForError)

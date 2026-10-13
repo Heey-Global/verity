@@ -1993,6 +1993,60 @@ async function serveByKind(
 }
 
 describe('runSupervisorTrustedCli result validation', () => {
+  it.each([undefined, 'storage_failure', 'redaction_failure', 'output_limit'] as const)(
+    'acknowledges streamed output only after its sink settles (%s)',
+    async (failure) => {
+      const runtime = join(dir, `stream-${failure ?? 'ok'}`);
+      await mkdir(runtime, { recursive: true });
+      let sinkSettled = false;
+      let receivedAck: unknown;
+      const server = createServer((connection) => {
+        connection.once('data', (request) => {
+          expect(JSON.parse(request.toString()).streamOutput).toBe(true);
+          connection.write(`${JSON.stringify({ ok: true, kind: 'trusted-cli-started' })}\n`);
+          connection.write(
+            `${JSON.stringify({ ok: true, kind: 'trusted-cli-output', sequence: 0, stream: 'stderr', data: Buffer.from('synthetic').toString('base64') })}\n`,
+          );
+          connection.once('data', (ack) => {
+            expect(sinkSettled).toBe(true);
+            receivedAck = JSON.parse(ack.toString());
+            connection.end(
+              `${JSON.stringify({ ok: true, outputMode: 'stream-v1', exitCode: failure ? 1 : 0, stdout: '', stderr: '', stdoutBytes: 0, stderrBytes: 9, terminationReason: failure ?? 'process_exit' })}\n`,
+            );
+          });
+        });
+      });
+      await new Promise<void>((resolve) =>
+        server.listen(join(runtime, 'supervisor.sock'), resolve),
+      );
+      try {
+        const result = await runSupervisorTrustedCli(
+          runtime,
+          { turnId: 'turn-1', secrets: [], command: ['/usr/bin/id'] },
+          {
+            onOutput: async (stream, bytes) => {
+              expect(stream).toBe('stderr');
+              expect(Buffer.from(bytes).toString()).toBe('synthetic');
+              await new Promise((resolve) => setTimeout(resolve, 5));
+              sinkSettled = true;
+              if (failure)
+                throw Object.assign(new Error('private sink error'), { outputFailure: failure });
+            },
+          },
+        );
+        expect(result.terminationReason).toBe(failure ?? 'process_exit');
+        expect(receivedAck).toEqual({
+          kind: 'output-ack',
+          sequence: 0,
+          ...(failure ? { failure } : {}),
+        });
+        expect(JSON.stringify(result)).not.toContain('private sink error');
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
   // The supervisor runs the command under a real identity and reports what it
   // observed. A result this Server cannot validate is a result it must not hand
   // back as an execution outcome: an out-of-range or mistyped exit code read as

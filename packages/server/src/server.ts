@@ -6151,6 +6151,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             'External tools are unavailable in planning mode; use read-only local tools.',
           );
         }
+        if (toolName === 'verity_secret_output') {
+          const session = await deps.eventStore.getSession(sessionId);
+          if (session?.projectId !== projectId)
+            throw new ControlPlaneSessionAuthorityError('session project changed');
+          return;
+        }
         if (toolName === 'verity_knowledge') {
           const session = await deps.eventStore.getSession(sessionId);
           if (session?.projectId !== projectId) {
@@ -6338,6 +6344,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // delete, so it runs without a card like the planning tools do. App help
         // reads a static catalog and touches no data at all.
         if (
+          toolName === 'verity_secret_output' ||
           toolName === 'verity_list_linked_sessions' ||
           toolName === 'verity_tasks' ||
           toolName === 'verity_app_help'
@@ -6458,6 +6465,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         );
       },
       invokeTool: async (input) => {
+        if (input.toolName === 'verity_secret_output') {
+          const session = await deps.eventStore.getSession(input.sessionId);
+          if (session?.projectId !== input.projectId)
+            throw new ControlPlaneSessionAuthorityError('session project changed');
+        }
         if (input.toolName === START_PLANNING_TOOL) {
           if (await sessionPlanning.isPlanning(input.sessionId))
             throw new ControlPlaneSessionAuthorityError('Planning mode is already active.');

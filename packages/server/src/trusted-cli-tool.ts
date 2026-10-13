@@ -1,4 +1,10 @@
 import { createHash } from 'node:crypto';
+import type { TrustedCliOutputStore } from './trusted-cli-output.js';
+import {
+  collectTrustedCliOutput,
+  createTrustedCliOutputRedactors,
+  type TrustedCliOutputOptions,
+} from './trusted-cli-output-stream.js';
 
 import {
   canonicalJson,
@@ -9,15 +15,31 @@ import type { BrokeredHttpProjectBinding, BrokeredToolCall } from './brokered-ht
 
 export type TrustedCliToolResult = {
   exitCode: number;
+  exitCodeKnown?: false;
   stdout: string;
   stderr: string;
   timedOut?: true;
   truncated?: true;
+  outputMode?: 'stream-v1';
+  terminationReason?:
+    | 'process_exit'
+    | 'timeout'
+    | 'output_limit'
+    | 'redaction_failure'
+    | 'storage_failure'
+    | 'transport_failure';
+  stdoutBytes?: number;
+  stderrBytes?: number;
+  terminationRequested?: true;
+  invocationId?: string;
+  outputAvailable?: true;
+  previewTruncated?: true;
 };
 
 const fatalUtf8Decoder = new TextDecoder('utf-8', { fatal: true });
 
 export function createTrustedCliTool(options: {
+  outputStore?: TrustedCliOutputStore;
   getProjectBinding: (projectId: string) => Promise<BrokeredHttpProjectBinding | undefined>;
   resolveSecret: (input: {
     projectId: string;
@@ -38,19 +60,22 @@ export function createTrustedCliTool(options: {
     sessionId: string,
     turnId: string,
     call: BrokeredToolCall,
-    execute: (input: {
-      turnId: string;
-      correlationId: string;
-      secrets: readonly {
-        secretAlias: string;
-        env: string;
-        injection?: 'env' | 'file';
-        secret: string;
-        encoding?: 'base64';
-      }[];
-      command: readonly string[];
-      entryScript?: TrustedCliEntryScript;
-    }) => Promise<TrustedCliToolResult>,
+    execute: (
+      input: {
+        turnId: string;
+        correlationId: string;
+        secrets: readonly {
+          secretAlias: string;
+          env: string;
+          injection?: 'env' | 'file';
+          secret: string;
+          encoding?: 'base64';
+        }[];
+        command: readonly string[];
+        entryScript?: TrustedCliEntryScript;
+      },
+      options?: TrustedCliOutputOptions,
+    ) => Promise<TrustedCliToolResult>,
   ): Promise<TrustedCliToolResult> => {
     if (call.name !== 'verity_secret_run') {
       throw new Error('invalid trusted CLI tool call');
@@ -116,13 +141,24 @@ export function createTrustedCliTool(options: {
           ...(encoding === undefined ? {} : { encoding }),
         });
       }
-      return await execute({
+      const input = {
         turnId,
         correlationId: call.id,
         secrets,
         command: request.command,
         ...(request.entryScript === undefined ? {} : { entryScript: request.entryScript }),
-      });
+      };
+      const redactors =
+        options.outputStore === undefined ? undefined : createTrustedCliOutputRedactors(resolved);
+      if (options.outputStore !== undefined && redactors !== undefined) {
+        return await collectTrustedCliOutput(
+          options.outputStore,
+          { projectId, sessionId },
+          redactors,
+          (streamOptions) => execute(input, streamOptions),
+        );
+      }
+      return await execute(input);
     } finally {
       for (const secret of resolved) secret.fill(0);
     }

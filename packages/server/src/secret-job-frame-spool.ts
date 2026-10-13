@@ -208,7 +208,7 @@ export function createPostgresSecretJobFrameSpool(
       // One transaction with a per-job advisory lock: read the tail sequence + running byte total,
       // verify contiguity and the byte bound, then insert — atomic across concurrent servers. The
       // insert is the durable receipt; a failure rolls back and rejects, publishing nothing.
-      await db.transaction().execute(async (tx) => {
+      const persistFrame = async (tx: Kysely<Database>) => {
         await sql`select pg_advisory_xact_lock(hashtext(${`verity.secret-frame-spool:${frame.jobId}`}))`.execute(
           tx,
         );
@@ -247,7 +247,9 @@ export function createPostgresSecretJobFrameSpool(
             created_at: now().toISOString(),
           })
           .execute();
-      });
+      };
+      if (db.isTransaction) await persistFrame(db);
+      else await db.transaction().execute(persistFrame);
     },
     async readPage(jobId: string, nextSequence?: number): Promise<SecretJobFrameSpoolPage> {
       const cursor = nextSequence ?? 0;
