@@ -3,7 +3,7 @@
 export { Button, IconButton } from './Button';
 export { Card, Group, Row, ToggleRow } from './Card';
 export { SectionHeader } from './SectionHeader';
-export { ConfirmSheet, Sheet } from './Sheet';
+export { ConfirmSheet, Sheet, useConfirm } from './Sheet';
 export { StatusDot, StatusTag } from './Status';
 export { Text } from './Text';
 export { HintBox, TextField } from './TextField';

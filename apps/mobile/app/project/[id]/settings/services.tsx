@@ -31,6 +31,7 @@ import { ProjectGoogleServices } from '../../../../components/settings/ProjectGo
 import { ProjectMatrixRooms } from '../../../../components/settings/ProjectMatrixRooms';
 import { createVerityClient } from '../../../../lib/client';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
+import { useConfirm } from '../../../../components/ui';
 
 export default function ProjectServicesScreen() {
   const { id, section } = useLocalSearchParams<{
@@ -395,6 +396,7 @@ function GoogleDriveFolderSection({
   settings: ProjectSettings | null;
   onSaved: (settings: ProjectSettings) => void;
 }) {
+  const [confirm, confirmSheet] = useConfirm();
   const [disconnecting, setDisconnecting] = useState(false);
   const folderName = settings?.googleDriveFolderName ?? null;
   const choose = useCallback(() => {
@@ -405,28 +407,24 @@ function GoogleDriveFolderSection({
   }, [projectId]);
   const disconnect = useCallback(() => {
     if (disconnecting) return;
-    Alert.alert(
-      'Disconnect Google Drive folder?',
-      'The files stay in Google Drive. Verity will no longer access them from this project.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Disconnect',
-          style: 'destructive',
-          onPress: () => {
-            setDisconnecting(true);
-            void client
-              .disconnectProjectGoogleDriveFolder(projectId)
-              .then(() => {
-                if (settings === null) return;
-                onSaved({ ...settings, googleDriveFolderId: null, googleDriveFolderName: null });
-              })
-              .catch(() => Alert.alert('Could not disconnect folder'))
-              .finally(() => setDisconnecting(false));
-          },
-        },
-      ],
-    );
+    confirm({
+      title: 'Disconnect Google Drive folder?',
+      message:
+        'The files stay in Google Drive. Verity will no longer access them from this project.',
+      confirmLabel: 'Disconnect',
+      destructive: true,
+      onConfirm: () => {
+        setDisconnecting(true);
+        void client
+          .disconnectProjectGoogleDriveFolder(projectId)
+          .then(() => {
+            if (settings === null) return;
+            onSaved({ ...settings, googleDriveFolderId: null, googleDriveFolderName: null });
+          })
+          .catch(() => Alert.alert('Could not disconnect folder'))
+          .finally(() => setDisconnecting(false));
+      },
+    });
   }, [client, disconnecting, onSaved, projectId, settings]);
 
   return (
@@ -490,6 +488,7 @@ function GoogleDriveFolderSection({
           <Text style={styles.reproButtonLabel}>{folderName ? 'Change' : 'Connect folder'}</Text>
         </Pressable>
       </View>
+      {confirmSheet}
     </SettingsDisclosure>
   );
 }

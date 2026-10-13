@@ -48,6 +48,7 @@ import { createPairingUri } from '../lib/pairing';
 import { getBrowserSession, logoutBrowser } from '../lib/browserSession';
 import { getServerProfile } from '../lib/serverProfile';
 import { setVeritySettingsError } from '../lib/settingsStore';
+import { useConfirm } from '../components/ui';
 
 /** Pick the row glyph from the label the device reported when it paired. */
 function iconForDevice(label: string | null): IconName {
@@ -86,6 +87,7 @@ export default function DevicesScreen() {
 }
 
 function DevicesView({ client }: { client: VerityClient }) {
+  const [confirm, confirmSheet] = useConfirm();
   const { theme } = useUnistyles();
   const [devices, setDevices] = useState<PairedDevice[]>([]);
   const [pairingInvitation, setPairingInvitation] = useState<{
@@ -260,30 +262,25 @@ function DevicesView({ client }: { client: VerityClient }) {
   };
 
   const revoke = (device: PairedDevice): void => {
-    Alert.alert(
-      'Remove paired device?',
-      device.label ?? 'This device will lose access to Verity.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: () => {
-            setWorking(true);
-            setVeritySettingsError(undefined);
-            void client
-              .revokePairedDevice(device.id)
-              .then(load)
-              .catch((caught: unknown) =>
-                setVeritySettingsError(
-                  caught instanceof Error ? caught.message : 'Could not remove the device.',
-                ),
-              )
-              .finally(() => setWorking(false));
-          },
-        },
-      ],
-    );
+    confirm({
+      title: 'Remove paired device?',
+      message: device.label ?? 'This device will lose access to Verity.',
+      confirmLabel: 'Remove device',
+      destructive: true,
+      onConfirm: () => {
+        setWorking(true);
+        setVeritySettingsError(undefined);
+        void client
+          .revokePairedDevice(device.id)
+          .then(load)
+          .catch((caught: unknown) =>
+            setVeritySettingsError(
+              caught instanceof Error ? caught.message : 'Could not remove the device.',
+            ),
+          )
+          .finally(() => setWorking(false));
+      },
+    });
   };
 
   // The link is what this screen is opened for, so it is there without a tap.
@@ -459,6 +456,7 @@ function DevicesView({ client }: { client: VerityClient }) {
           new pairing link to come back.
         </Text>
       </SettingsGroup>
+      {confirmSheet}
     </SettingsScaffold>
   );
 }

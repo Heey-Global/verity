@@ -8,8 +8,8 @@
 // the one action that answers it, and that a choice made on a screen lands on
 // the server as exactly the PATCH the server expects.
 import { subscribeProjectStatusMutations, type ProjectDetail } from '@verity/mobile';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { Alert } from 'react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
@@ -253,10 +253,11 @@ describe('project settings — sandbox', () => {
     const [title, message, buttons] = alert.mock.calls[0];
     expect(title).toBe('Update waiting for a turn');
     expect(message).toContain('cancel the turn first');
-    expect(buttons?.map((button) => button.text)).toEqual(['OK']);
-    // Nothing on this path may reach the route that would 409 — or, if SBX-1 ever
-    // stopped holding, kill the turn the message just promised was safe.
-    buttons?.forEach((button) => button.onPress?.());
+    // Only an acknowledgement, no action button: nothing on this path may reach
+    // the route that would 409 — or, if SBX-1 ever stopped holding, kill the turn
+    // the message just promised was safe.
+    expect(buttons).toBeUndefined();
+    expect(screen.queryByText('Update project?')).toBeNull();
     expect(recreateProjectContainer).not.toHaveBeenCalled();
     alert.mockRestore();
   });
@@ -364,20 +365,17 @@ describe('project settings — sandbox', () => {
     const detail: ProjectDetail = { ...base, project: { ...base.project, state: 'active' } };
     const deprovisionProject = jest.fn().mockResolvedValue({ ...detail.project, state: 'absent' });
     mockCreateVerityClient.mockReturnValue(makeClient({ detail, deprovisionProject }));
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
-      buttons?.find((button) => button.text === 'Pause')?.onPress?.();
-    });
     const published = jest.fn();
     const unsubscribe = subscribeProjectStatusMutations(published);
     render(<ProjectSandboxScreen />);
 
     fireEvent.press(await screen.findByLabelText(/^Pause project(,|$)/));
+    fireEvent.press(screen.getByRole('button', { name: 'Pause sandbox' }));
     await waitFor(() => expect(deprovisionProject).toHaveBeenCalledWith('p/1', { purge: false }));
     await waitFor(() => expect(published).toHaveBeenCalledTimes(1));
     expect(published).toHaveBeenCalledWith(expect.objectContaining({ id: 'p/1', state: 'absent' }));
     expect(await screen.findByLabelText(/^Start project(,|$)/)).toBeOnTheScreen();
     unsubscribe();
-    alert.mockRestore();
   });
 
   // Every stacked screen sees the same `pending` status on load; without a
@@ -468,12 +466,11 @@ describe('project settings — sandbox', () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient({ detail, recreateProjectContainer, getHealth: healthWithRebuild() }),
     );
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
-      buttons?.find((button) => button.text === 'Rebuild')?.onPress?.();
-    });
     render(<ProjectSandboxScreen />);
 
     fireEvent.press(await screen.findByLabelText(/^Rebuild project image(,|$)/));
+    expect(screen.getByText('Rebuild image?')).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Rebuild' }));
 
     await waitFor(() =>
       expect(recreateProjectContainer).toHaveBeenCalledWith('p/1', {
@@ -481,8 +478,6 @@ describe('project settings — sandbox', () => {
         forceRebuild: true,
       }),
     );
-    expect(alert.mock.calls[0][0]).toBe('Rebuild image?');
-    alert.mockRestore();
   });
 
   // The canonical reason to want a cacheless rebuild: the project built once and
@@ -994,14 +989,12 @@ describe('project settings — GitHub', () => {
         linkProjectToGitHub,
       }),
     );
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons) => {
-      buttons?.find((button) => button.text === 'Connect')?.onPress?.();
-    });
     render(<ProjectGitHubScreen />);
 
     fireEvent.press(await screen.findByLabelText(/^Connect project to GitHub(,|$)/));
+    expect(linkProjectToGitHub).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByRole('button', { name: 'Connect' }));
     await waitFor(() => expect(linkProjectToGitHub).toHaveBeenCalledWith('p/1', 'acme/site'));
-    alert.mockRestore();
   });
 });
 

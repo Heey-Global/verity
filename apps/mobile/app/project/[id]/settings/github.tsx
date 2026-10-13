@@ -23,6 +23,7 @@ import {
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
 import { createVerityClient } from '../../../../lib/client';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
+import { useConfirm } from '../../../../components/ui';
 
 export default function ProjectGitHubScreen() {
   const { id } = useLocalSearchParams<{ id: string | string[] }>();
@@ -114,6 +115,7 @@ function LinkGitHubSection({
   project: ProjectRecord;
   onUpdated: (project: ProjectRecord) => void;
 }) {
+  const [confirm, confirmSheet] = useConfirm();
   const [repositories, setRepositories] = useState<ProjectRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -155,53 +157,49 @@ function LinkGitHubSection({
   const link = useCallback(() => {
     if (selected === null || linking) return;
     const repo = `${selected.owner}/${selected.repo}`;
-    Alert.alert(
-      'Connect to GitHub',
-      `Verity publishes this project's history to ${repo} and rebuilds its container. ` +
+    confirm({
+      title: 'Connect to GitHub',
+      message:
+        `Verity publishes this project's history to ${repo} and rebuilds its container. ` +
         'An empty repository receives it directly; one that already has history gets a ' +
         'pull request for you to merge. Any running session in this project restarts.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Connect',
-          style: 'destructive',
-          onPress: () => {
-            setLinking(true);
-            setError(undefined);
-            void client
-              .linkProjectToGitHub(project.id, repo)
-              .then((linked) => {
-                onUpdated(linked.project);
-                // The history landed on a branch, not on the default branch — say so,
-                // or the operator reads "connected" and never merges the pull request.
-                if (linked.pullRequest !== undefined) {
-                  Alert.alert(
-                    'Pull request opened',
-                    `${repo} already had history, so this project's files arrived on ` +
-                      `${linked.importBranch ?? 'an import branch'}. Merge pull request #` +
-                      `${String(linked.pullRequest.number)} to publish them.`,
-                  );
-                } else if (linked.importBranch !== undefined) {
-                  Alert.alert(
-                    'History pushed to a branch',
-                    `This project's files are on ${linked.importBranch}, but the pull request ` +
-                      `could not be opened${
-                        linked.pullRequestError === undefined ? '' : `: ${linked.pullRequestError}`
-                      }. Open it on GitHub to publish them.`,
-                  );
-                }
-              })
-              .catch((caught) =>
-                setError(
-                  caught instanceof VerityApiError ? caught.message : 'Could not connect to GitHub',
-                ),
-              )
-              .finally(() => setLinking(false));
-          },
-        },
-      ],
-    );
-  }, [client, linking, onUpdated, project.id, selected]);
+      confirmLabel: 'Connect',
+      destructive: true,
+      onConfirm: () => {
+        setLinking(true);
+        setError(undefined);
+        void client
+          .linkProjectToGitHub(project.id, repo)
+          .then((linked) => {
+            onUpdated(linked.project);
+            // The history landed on a branch, not on the default branch — say so,
+            // or the operator reads "connected" and never merges the pull request.
+            if (linked.pullRequest !== undefined) {
+              Alert.alert(
+                'Pull request opened',
+                `${repo} already had history, so this project's files arrived on ` +
+                  `${linked.importBranch ?? 'an import branch'}. Merge pull request #` +
+                  `${String(linked.pullRequest.number)} to publish them.`,
+              );
+            } else if (linked.importBranch !== undefined) {
+              Alert.alert(
+                'History pushed to a branch',
+                `This project's files are on ${linked.importBranch}, but the pull request ` +
+                  `could not be opened${
+                    linked.pullRequestError === undefined ? '' : `: ${linked.pullRequestError}`
+                  }. Open it on GitHub to publish them.`,
+              );
+            }
+          })
+          .catch((caught) =>
+            setError(
+              caught instanceof VerityApiError ? caught.message : 'Could not connect to GitHub',
+            ),
+          )
+          .finally(() => setLinking(false));
+      },
+    });
+  }, [client, confirm, linking, onUpdated, project.id, selected]);
 
   return (
     <SettingsGroup
@@ -266,6 +264,7 @@ function LinkGitHubSection({
         </Pressable>
         {error ? <Text style={styles.fieldError}>{error}</Text> : null}
       </SettingsPanel>
+      {confirmSheet}
     </SettingsGroup>
   );
 }
