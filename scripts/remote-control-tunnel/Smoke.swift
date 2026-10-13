@@ -398,6 +398,7 @@ func smokeResult() async -> String {
   guard let direct = URL(string: directURL), direct.scheme == "https" else { return "FAIL: missing direct endpoint" }
   guard let url = URL(string: endpoint), url.scheme == "wss" else { return "FAIL: missing WSS endpoint" }
   do {
+    try runNativeProtocolChecks()
     try checkFailureDiagnostics()
     try await runDirectProtocolSmoke(origin: direct, pin: corePin, expectedProtocol: expectedProtocol)
     try await runProductionTunnelSmoke(endpoint: url, outerPin: outerPin, corePin: corePin, expectedProtocol: expectedProtocol)

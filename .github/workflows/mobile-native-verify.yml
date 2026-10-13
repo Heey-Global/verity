@@ -32,6 +32,7 @@ on:
       - 'scripts/pinned-http-pool-smoke.swift'
       - 'scripts/*ios_pinned_tls_relay.py'
       - 'scripts/remote-control-tunnel/**'
+      - 'scripts/remote-control-integration/**'
       - 'scripts/remote-control-staging/**'
       - 'scripts/enrollment-proof/**'
       - 'docs/protocols/uplink-enrollment-v1.md'
@@ -116,7 +117,7 @@ jobs:
           if ! git diff --quiet "$BASE_SHA" HEAD -- 'scripts/ios-pinned-tls-smoke*' scripts/pinned-http-pool-smoke.swift 'scripts/*ios_pinned_tls_relay.py'; then
             tls=true
           fi
-          if ! git diff --quiet "$BASE_SHA" HEAD -- scripts/remote-control-tunnel scripts/remote-control-staging; then
+          if ! git diff --quiet "$BASE_SHA" HEAD -- scripts/remote-control-tunnel scripts/remote-control-staging scripts/remote-control-integration; then
             tunnel=true
           fi
           native_changes="$(node scripts/mobile-native-compatibility.mjs "$BASE_SHA" HEAD)"
@@ -170,9 +171,22 @@ jobs:
             apps/mobile/native/RemoteDataDiagnostics.swift \
             apps/mobile/native/RemoteAppTunnel.swift \
             scripts/remote-control-staging/StagingProbe.swift
+          xcrun swiftc -typecheck -parse-as-library -target "$(uname -m)-apple-macosx14.0" \
+            apps/mobile/native/CertificatePinDelegate.swift \
+            apps/mobile/native/PinnedHTTPSessionPool.swift \
+            apps/mobile/native/RemoteSmokeTunnel.swift \
+            apps/mobile/native/RemoteDataDiagnostics.swift \
+            apps/mobile/native/RemoteAppTunnel.swift \
+            scripts/remote-control-tunnel/NativeProtocol.swift \
+            scripts/remote-control-integration/Integration.swift
           xcrun swiftc -parse-as-library apps/mobile/native/RemoteDataDiagnostics.swift \
             scripts/remote-control-tunnel/Diagnostics.swift -o "$RUNNER_TEMP/data-diagnostics-test"
           "$RUNNER_TEMP/data-diagnostics-test"
+
+      - name: Verify native protocol guard detects Boolean mutation
+        if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.tunnel == 'true'
+        timeout-minutes: 6
+        run: bash scripts/remote-control-tunnel/verify-native-protocol.sh
 
       - name: Verify enrollment reference model and macOS Keychain probe
         if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.enrollment == 'true'
@@ -272,7 +286,7 @@ jobs:
         if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.tunnel == 'true'
         timeout-minutes: 10
         run: |
-          node --test scripts/remote-control-tunnel/mock.test.mjs
+          node --test scripts/remote-control-tunnel/mock.test.mjs scripts/remote-control-integration/result.test.mjs scripts/remote-control-integration/certificate.test.mjs scripts/remote-control-integration/suite.test.mjs
           node --test scripts/remote-control-staging/probe.test.mjs
 
       # Keep each cold simulator boot/build within its own deadline.

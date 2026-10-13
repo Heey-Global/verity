@@ -1,3 +1,4 @@
+import CoreFoundation
 import CryptoKit
 import Darwin
 import Foundation
@@ -437,7 +438,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     }
   }
 
-  // Mirrors the Uplink side of the data heartbeat: one outstanding ping, and the
+  // Checks the immediate WebSocket peer with one outstanding ping; the
   // attachment ends once it has gone unanswered for more than 45 seconds, noticed
   // on the next 15-second tick (so within 60 seconds). Measured from the
   // ping rather than the last pong, so a suspension in the background does not
@@ -486,6 +487,24 @@ final class RemoteAppTunnel: @unchecked Sendable {
     if alreadyStopped { task.cancel() }
   }
 
+  // JSONSerialization bridges booleans to NSNumber; `as? Int` alone accepts true as 1.
+  static func decodeDataFrame(_ frame: [String: Any]) throws -> (sequence: Int, data: Data) {
+    guard Set(frame.keys) == Set(["type", "streamId", "seq", "payload"]),
+      frame["type"] as? String == "stream.data",
+      let id = frame["streamId"] as? String,
+      id.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil,
+      let number = frame["seq"] as? NSNumber,
+      CFGetTypeID(number) != CFBooleanGetTypeID(),
+      number.doubleValue.isFinite, number.doubleValue >= 0,
+      number.doubleValue <= 9_007_199_254_740_991,
+      number.doubleValue.rounded(.towardZero) == number.doubleValue,
+      let payload = frame["payload"] as? String,
+      let data = Data(base64Encoded: payload), data.base64EncodedString() == payload,
+      data.count <= 64 * 1024
+    else { throw RemoteSmokeError.invalidFrame }
+    return (Int(number.doubleValue), data)
+  }
+
   private func handle(_ frame: [String: Any]) async throws {
     guard let type = frame["type"] as? String,
       let id = frame["streamId"] as? String,
@@ -501,21 +520,16 @@ final class RemoteAppTunnel: @unchecked Sendable {
         let code = frame["code"] as? String,
         ["protocol_error", "concurrency_limit", "upstream_error", "timeout"].contains(code)
       { return }
-      if type == "stream.data" && Set(frame.keys) == Set(["type", "streamId", "seq", "payload"]),
-        let sequence = frame["seq"] as? Int, sequence >= 0,
-        let payload = frame["payload"] as? String,
-        let data = Data(base64Encoded: payload), data.base64EncodedString() == payload,
-        data.count <= 64 * 1024
-      { return }
+      if type == "stream.data" {
+        _ = try Self.decodeDataFrame(frame)
+        return
+      }
     }
     guard let stream else { throw RemoteSmokeError.invalidFrame }
     switch type {
     case "stream.data":
-      guard Set(frame.keys) == Set(["type", "streamId", "seq", "payload"]),
-        !stream.incomingEnded, frame["seq"] as? Int == stream.incomingSequence,
-        let payload = frame["payload"] as? String,
-        let data = Data(base64Encoded: payload), data.base64EncodedString() == payload,
-        data.count <= 64 * 1024
+      let (sequence, data) = try Self.decodeDataFrame(frame)
+      guard !stream.incomingEnded, sequence == stream.incomingSequence
       else { throw RemoteSmokeError.invalidFrame }
       lock.withLock {
         let first = stream.receivedBytes == 0 && !data.isEmpty

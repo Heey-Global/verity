@@ -112,6 +112,144 @@ async function reserve(
 }
 
 describe('remote control connector', () => {
+  it.each(['active', 'retired'])('rejects an array reset code on an %s stream', async (state) => {
+    const f = await fixture();
+    const reservation = await reserve(f);
+    const attached = reservation.attach(
+      'ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(1));
+    f.peer().send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await attached;
+    f.peer().send(
+      JSON.stringify({
+        type: 'stream.open',
+        streamId: 'reset_target',
+        channel: 'remote',
+        meta: {},
+      }),
+    );
+    await vi.waitFor(() => expect(f.localConnections()).toBe(1));
+    if (state === 'retired') {
+      f.peer().send(
+        JSON.stringify({ type: 'stream.reset', streamId: 'reset_target', code: 'timeout' }),
+      );
+      await vi.waitFor(() => expect(f.localCloses()).toBe(1));
+    }
+    // String coercion would silently turn this invalid wire value into a valid reset code.
+    f.peer().send(
+      JSON.stringify({ type: 'stream.reset', streamId: 'reset_target', code: ['timeout'] }),
+    );
+    await vi.waitFor(() => expect(f.peer().readyState).toBe(WebSocket.CLOSED));
+    await reservation.closed;
+  });
+
+  it.each([
+    ['unknown JSON field', { seq: 0, payload: 'AQ==', extra: true }],
+    ['noncanonical base64 pad bits', { seq: 0, payload: 'AR==' }],
+    ['missing base64 padding', { seq: 0, payload: 'AQ' }],
+    ['sequence gap', { seq: 1, payload: 'AQ==' }],
+    ['negative sequence', { seq: -1, payload: 'AQ==' }],
+    ['unsafe sequence', { seq: Number.MAX_SAFE_INTEGER + 1, payload: 'AQ==' }],
+    ['decoded limit', { seq: 0, payload: Buffer.alloc(65_537).toString('base64') }],
+  ])('rejects %s before bytes reach the local target', async (_name, fields) => {
+    const f = await fixture();
+    const reservation = await reserve(f);
+    const attached = reservation.attach(
+      'ticket',
+      Date.now() + 30_000,
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(f.received).toHaveLength(1));
+    f.peer().send(
+      JSON.stringify({
+        type: 'attached',
+        sessionId: 'session_one',
+        capability: 'remote-control-v1',
+      }),
+    );
+    await attached;
+    f.peer().send(
+      JSON.stringify({ type: 'stream.open', streamId: 'bounded', channel: 'remote', meta: {} }),
+    );
+    await vi.waitFor(() => expect(f.localConnections()).toBe(1));
+    f.peer().send(JSON.stringify({ type: 'stream.data', streamId: 'bounded', ...fields }));
+    await vi.waitFor(() => expect(f.peer().readyState).toBe(WebSocket.CLOSED));
+    await reservation.closed;
+    expect(f.recentStreams()).toEqual([
+      expect.objectContaining({ receivedFromAppBytes: 0, writtenToLocalBytes: 0 }),
+    ]);
+  });
+
+  it('accepts the decoded boundary and forbids stream ID reuse until a fresh connection', async () => {
+    const f = await fixture();
+    const payload = Buffer.alloc(65_536, 0x5a);
+    for (let generation = 0; generation < 2; generation++) {
+      const reservation = await reserve(f);
+      const baseline = f.received.length;
+      const attached = reservation.attach(
+        'ticket',
+        Date.now() + 30_000,
+        new AbortController().signal,
+      );
+      await vi.waitFor(() => expect(f.received.length).toBe(baseline + 1));
+      f.peer().send(
+        JSON.stringify({
+          type: 'attached',
+          sessionId: 'session_one',
+          capability: 'remote-control-v1',
+        }),
+      );
+      await attached;
+      f.peer().send(
+        JSON.stringify({ type: 'stream.open', streamId: 'bounded', channel: 'remote', meta: {} }),
+      );
+      f.peer().send(
+        JSON.stringify({
+          type: 'stream.data',
+          streamId: 'bounded',
+          seq: 0,
+          payload: payload.toString('base64'),
+        }),
+      );
+      f.peer().send(JSON.stringify({ type: 'stream.end', streamId: 'bounded' }));
+      await vi.waitFor(() =>
+        expect(f.received.slice(baseline)).toContainEqual({
+          type: 'stream.end',
+          streamId: 'bounded',
+        }),
+      );
+      const replies = f.received
+        .slice(baseline)
+        .filter(
+          (frame): frame is { type: string; seq: number; payload: string } =>
+            typeof frame === 'object' &&
+            frame !== null &&
+            'type' in frame &&
+            frame.type === 'stream.data',
+        );
+      expect(replies.map((frame) => frame.seq)).toEqual(replies.map((_, index) => index));
+      expect(Buffer.concat(replies.map((frame) => Buffer.from(frame.payload, 'base64')))).toEqual(
+        payload,
+      );
+      // A retired stream ID must not alias delayed frames into a new local socket.
+      f.peer().send(
+        JSON.stringify({ type: 'stream.open', streamId: 'bounded', channel: 'remote', meta: {} }),
+      );
+      await vi.waitFor(() => expect(f.peer().readyState).toBe(WebSocket.CLOSED));
+      await reservation.closed;
+      expect(f.localConnections()).toBe(generation + 1);
+    }
+  });
+
   it('retains the activation baseline when recording starts on an attached socket', async () => {
     const activation = new ReturnPathActivation(() => ({
       enabled: true,

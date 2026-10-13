@@ -881,9 +881,8 @@ class ConnectorSession implements RemoteConnectorReservation {
     if (frame.type === 'stream.reset') {
       if (
         !isFrame(frame, 'stream.reset', ['streamId', 'code']) ||
-        !['protocol_error', 'concurrency_limit', 'upstream_error', 'timeout'].includes(
-          String(frame.code),
-        )
+        typeof frame.code !== 'string' ||
+        !['protocol_error', 'concurrency_limit', 'upstream_error', 'timeout'].includes(frame.code)
       )
         return this.failProtocol(frame);
       this.options.log?.info(
@@ -906,9 +905,8 @@ function validIgnoredFrame(frame: Frame): boolean {
   if (frame.type === 'stream.reset')
     return (
       isFrame(frame, 'stream.reset', ['streamId', 'code']) &&
-      ['protocol_error', 'concurrency_limit', 'upstream_error', 'timeout'].includes(
-        String(frame.code),
-      )
+      typeof frame.code === 'string' &&
+      ['protocol_error', 'concurrency_limit', 'upstream_error', 'timeout'].includes(frame.code)
     );
   if (
     frame.type !== 'stream.data' ||
