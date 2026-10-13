@@ -196,9 +196,9 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
   {
     id: 'matrix',
     title: 'Matrix',
-    summary: 'Import chat room messages into project knowledge.',
+    summary: 'Import chat room messages and approve individual text sends.',
     details:
-      "A dedicated Matrix account joins rooms you invite it to, for example rooms bridged from WhatsApp or Signal. After you assign a room to a project, new messages and attachments are imported into that project's knowledge. Agents can read them, but chat content is never treated as instructions.",
+      "A dedicated Matrix account joins rooms you invite it to, for example rooms bridged from WhatsApp or Signal. After you assign a room to a project, new messages and attachments are imported into that project's knowledge. Agents can read them, but chat content is never treated as instructions. From a project session you can ask to send a text message to an active connected room. Each message requires approval of the exact account, room and text; sending has no reusable permission. Sent means Matrix accepted the message, not that a WhatsApp or Signal bridge delivered it.",
     appLink: 'verity://settings/services/matrix',
     docsPath: 'docs/matrix-knowledge-connector.md',
     keywords: ['chat', 'whatsapp', 'signal', 'messages', 'room', 'import'],

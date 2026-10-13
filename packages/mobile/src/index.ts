@@ -602,3 +602,5 @@ export { packageInstallSummary, packageInstallDecision } from './ui/packageInsta
 export type { TransportLane, TransportRequestInit } from './api.js';
 
 export { sameSnapshotValue, reuseSnapshotRecords } from './snapshotIdentity.js';
+
+export { matrixSendSummary, type MatrixSendSummary } from './ui/matrixSendSummary.js';

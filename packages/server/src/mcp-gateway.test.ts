@@ -1,3 +1,4 @@
+import { matrixRequestSchema } from './matrix-tool.js';
 import { gatewayToolNameSchema, secretAuditEventInputSchema } from '@verity/secret-contracts';
 import { TrustedCliDispatchError, type ExternalPermissionAnswer } from '@verity/session';
 import { describe, expect, it, vi } from 'vitest';
@@ -971,4 +972,83 @@ it('serves Shared publication with trusted caller identity and no permission car
     'gateway_call_received',
     'gateway_call_served',
   ]);
+});
+
+const MATRIX_SEND = {
+  action: 'send',
+  accountId: '@verity:example.test',
+  endpoint: 'https://matrix.example.test',
+  roomId: '!room:example.test',
+  roomName: 'Project chat',
+  bindingVersion: 2,
+  body: 'Exact message\nsecond line',
+};
+
+it('requires a real card for every Matrix send even when a standing permission provider allows it', async () => {
+  const { gateway, invokeTool, requestApproval } = harness({
+    servedTools: ['verity_matrix'],
+    hasStandingAuthorization: async () => true,
+  });
+  await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(MATRIX_SEND, 'verity_matrix'),
+  });
+  expect(requestApproval).toHaveBeenCalledOnce();
+  expect(requestApproval).toHaveBeenCalledWith(expect.objectContaining({ input: MATRIX_SEND }));
+  expect(invokeTool).toHaveBeenCalledWith(
+    expect.objectContaining({ approvedByCard: true, request: MATRIX_SEND }),
+  );
+});
+
+it('never invokes a Matrix send after deny, edited content, edited room or a non-card grant', async () => {
+  const answers: ExternalPermissionAnswer[] = [
+    { decision: { behavior: 'deny', message: 'No' }, decidedBy: 'card' },
+    {
+      decision: { behavior: 'allow', updatedInput: { ...MATRIX_SEND, body: 'Changed' } },
+      decidedBy: 'card',
+    },
+    {
+      decision: {
+        behavior: 'allow',
+        updatedInput: { ...MATRIX_SEND, roomId: '!other:example.test' },
+      },
+      decidedBy: 'card',
+    },
+    { decision: { behavior: 'allow' }, decidedBy: 'grant' },
+  ];
+  for (const answer of answers) {
+    const { gateway, invokeTool } = harness({
+      servedTools: ['verity_matrix'],
+      requestApproval: async () => answer,
+    });
+    await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(MATRIX_SEND, 'verity_matrix'),
+    });
+    expect(invokeTool).not.toHaveBeenCalled();
+  }
+});
+
+it('rejects caller-supplied Matrix approval fields before showing a card', async () => {
+  const { gateway, invokeTool, requestApproval } = harness({ servedTools: ['verity_matrix'] });
+  await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call({ ...MATRIX_SEND, approvedByCard: true }, 'verity_matrix'),
+  });
+  expect(requestApproval).not.toHaveBeenCalled();
+  expect(invokeTool).not.toHaveBeenCalled();
+});
+
+it('returns a bounded replay identity usable by the Matrix status action', () => {
+  const identity = mcpGatewayInvocationId(7, 'verity_matrix', 'turn', 'a'.repeat(64));
+  expect(matrixRequestSchema.safeParse({ action: 'status', invocationId: identity }).success).toBe(
+    true,
+  );
+  expect(mcpGatewayInvocationId(7, 'verity_matrix', 'turn', 'a'.repeat(64))).toBe(identity);
+  expect(mcpGatewayInvocationId(7, 'verity_matrix', 'another-turn', 'a'.repeat(64))).not.toBe(
+    identity,
+  );
 });

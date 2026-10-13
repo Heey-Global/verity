@@ -1,3 +1,4 @@
+import { createMatrixTool, matrixRequestSchema } from './matrix-tool.js';
 import { attendeeResearchHints } from './attendee-research.js';
 import { AttendeeMeetings } from './attendee-meetings.js';
 import { registerAttendeeRoutes } from './attendee-routes.js';
@@ -6151,6 +6152,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             'External tools are unavailable in planning mode; use read-only local tools.',
           );
         }
+        if (toolName === 'verity_matrix') {
+          await createMatrixTool({ eventStore: deps.eventStore }).authorize({
+            ...input,
+            request: input.request,
+          });
+          return;
+        }
         if (toolName === 'verity_secret_output') {
           const session = await deps.eventStore.getSession(sessionId);
           if (session?.projectId !== projectId)
@@ -6340,6 +6348,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         request,
         invocationId,
       }) => {
+        if (toolName === 'verity_matrix') {
+          return (
+            matrixRequestSchema.parse(request).action !== 'send' &&
+            (await deps.eventStore.getSession(sessionId))?.projectId === projectId
+          );
+        }
         // The tasks tool writes only to the calling session's own list and cannot
         // delete, so it runs without a card like the planning tools do. App help
         // reads a static catalog and touches no data at all.

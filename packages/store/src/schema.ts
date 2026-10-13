@@ -190,6 +190,25 @@ export interface ProjectMcpBindingsTable {
   enabled: ColumnType<boolean, boolean | undefined, boolean>;
 }
 
+interface MatrixOutboundTable {
+  invocation_id: string;
+  session_id: string;
+  project_id: string;
+  account_id: string;
+  source_id: string;
+  binding_version: number;
+  payload_secret: string;
+  transaction_id: string;
+  state: string;
+  lease_id: string | null;
+  lease_until: Date | null;
+  next_attempt_at: Generated<Date>;
+  attempts: Generated<number>;
+  event_id: string | null;
+  error: string | null;
+  created_at: Generated<Date>;
+}
+
 interface IntegrationAccountsTable {
   id: string;
   provider: string;
@@ -208,6 +227,7 @@ interface MatrixConnectorConfigTable {
 }
 
 interface IntegrationSourcesTable {
+  binding_version: Generated<number>;
   import_diagnostics_reported_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
   import_diagnostics_truncated: ColumnType<boolean, boolean | undefined, boolean>;
   import_diagnostics: ColumnType<
@@ -1419,6 +1439,7 @@ export interface Database {
   session_link_deliveries: SessionLinkDeliveriesTable;
   session_link_pending_messages: SessionLinkPendingMessagesTable;
   session_moves: SessionMovesTable;
+  matrix_outbound: MatrixOutboundTable;
   integration_accounts: IntegrationAccountsTable;
   matrix_connector_config: MatrixConnectorConfigTable;
   integration_sources: IntegrationSourcesTable;

@@ -1,5 +1,7 @@
 #![recursion_limit = "512"]
 
+mod outbound;
+
 use std::{
     collections::HashMap,
     env,
@@ -917,7 +919,9 @@ async fn main() -> Result<()> {
                                 .await
                             {
                                 Ok(()) => binding.status = "left".into(),
-                                Err(error) => warn!(room = %room.room_id(), %error, "could not report left room"),
+                                Err(error) => {
+                                    warn!(room = %room.room_id(), %error, "could not report left room")
+                                }
                             }
                         }
                     }
@@ -990,6 +994,11 @@ async fn main() -> Result<()> {
                         }
                     }
                     Err(error) => warn!(%error, "outbox flush failed"),
+                }
+                if sync_healthy.load(Ordering::Relaxed) {
+                    if let Err(error) = api.dispatch_outbound(&client).await {
+                        warn!(%error, "Matrix outbound dispatch failed");
+                    }
                 }
                 info!(rooms = next.len(), "Matrix connector healthy");
             }

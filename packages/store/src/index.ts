@@ -1,4 +1,10 @@
 export {
+  MatrixOutboundStore,
+  type MatrixSendSnapshot,
+  type MatrixDelivery,
+  type MatrixDispatch,
+} from './matrix-outbound.js';
+export {
   createRequestLatencyTrace,
   withRequestLatencyTrace,
   measureLatencyPhase,

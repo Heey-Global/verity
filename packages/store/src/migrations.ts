@@ -4245,6 +4245,50 @@ migrations['0157_trusted_cli_outputs'] = {
   },
 };
 
+migrations['0158_matrix_outbound'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table integration_sources add column binding_version integer not null default 1`.execute(
+      db,
+    );
+    await sql`create function matrix_binding_version() returns trigger language plpgsql as $$
+      begin
+        if (new.project_id, new.status, new.activated_at) is distinct from
+           (old.project_id, old.status, old.activated_at) then
+          new.binding_version := old.binding_version + 1;
+        end if;
+        return new;
+      end $$`.execute(db);
+    await sql`create trigger matrix_binding_version before update on integration_sources
+      for each row execute function matrix_binding_version()`.execute(db);
+    await sql`create table matrix_outbound (
+      invocation_id text primary key,
+      session_id text not null references sessions(session_id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      account_id text not null,
+      source_id text not null,
+      binding_version integer not null,
+      payload_secret text not null,
+      transaction_id text not null unique,
+      state text not null check (state in ('queued', 'pending', 'sent', 'failed', 'cancelled')),
+      lease_id text,
+      lease_until timestamptz,
+      next_attempt_at timestamptz not null default now(),
+      attempts integer not null default 0,
+      event_id text,
+      error text,
+      created_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`create index matrix_outbound_dispatch on matrix_outbound(account_id, next_attempt_at)
+      where state in ('queued', 'pending')`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table matrix_outbound`.execute(db);
+    await sql`drop trigger matrix_binding_version on integration_sources`.execute(db);
+    await sql`drop function matrix_binding_version()`.execute(db);
+    await sql`alter table integration_sources drop column binding_version`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);

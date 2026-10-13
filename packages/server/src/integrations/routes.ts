@@ -204,7 +204,8 @@ export function registerIntegrationRoutes(
     });
 
     // The worker credential can only report its account, discover rooms, read its
-    // bindings, and submit events. It cannot choose a project or access Knowledge.
+    // bindings, submit events, and dispatch already-approved outbound jobs. It cannot
+    // choose a project, approve messages, enqueue sends, or access Knowledge.
     const workerOnly = async (request: FastifyRequest, reply: import('fastify').FastifyReply) => {
       const token =
         typeof deps.connectorToken === 'function'
@@ -216,6 +217,56 @@ export function registerIntegrationRoutes(
           .send({ error: 'Unauthorized connector', code: 'unauthorized_connector' });
       }
     };
+    const dispatchIdentity = z.object({ accountId: identifier.startsWith('@') }).strict();
+    const leaseIdentity = dispatchIdentity
+      .extend({ invocationId: z.uuid(), leaseId: z.uuid() })
+      .strict();
+    instance.post(
+      '/internal/integrations/matrix/outbound/claim',
+      { preHandler: workerOnly },
+      async (request) => {
+        const { accountId } = dispatchIdentity.parse(request.body);
+        return { job: await store.outbound.claim(accountId) };
+      },
+    );
+    instance.post(
+      '/internal/integrations/matrix/outbound/check',
+      { preHandler: workerOnly },
+      async (request) => {
+        const { accountId, invocationId, leaseId } = leaseIdentity.parse(request.body);
+        return { allowed: await store.outbound.checkLease(accountId, invocationId, leaseId) };
+      },
+    );
+    instance.post(
+      '/internal/integrations/matrix/outbound/result',
+      { preHandler: workerOnly },
+      async (request, reply) => {
+        const { accountId, invocationId, leaseId, ...result } = leaseIdentity
+          .extend({
+            eventId: identifier.startsWith('$').optional(),
+            error: z
+              .enum([
+                'send_failed',
+                'room_not_joined',
+                'encryption_unavailable',
+                'send_outcome_unknown',
+              ])
+              .optional(),
+            retryAfterMs: z.number().int().min(10_000).max(86_400_000).optional(),
+          })
+          .strict()
+          .refine(
+            (value) =>
+              Boolean(value.eventId) !== Boolean(value.error) &&
+              !(value.eventId && value.retryAfterMs !== undefined),
+          )
+          .parse(request.body);
+        if (!(await store.outbound.finish(accountId, invocationId, leaseId, result))) {
+          return reply.code(409).send({ error: 'Matrix claim is no longer current' });
+        }
+        return { ok: true };
+      },
+    );
     instance.get('/internal/integrations/matrix/config', { preHandler: workerOnly }, async () => ({
       config: await store.matrixConfigForWorker(),
     }));
