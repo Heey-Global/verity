@@ -127,42 +127,46 @@ for (const protocol of ['h1', 'h2']) {
         sessionId: 'fixture-session',
         capability: 'remote-control-v1',
       });
-      let sequence = 0;
-      let receivedSequence = 0;
-      const pipe = new Duplex({
-        read() {},
-        write(chunk, _encoding, callback) {
-          assert.ok(Buffer.isBuffer(chunk));
-          framed.send(
-            JSON.stringify({
-              type: 'stream.data',
-              streamId: 'test',
-              seq: sequence++,
-              payload: chunk.toString('base64'),
-            }),
-            callback,
-          );
-        },
-        final(callback) {
-          framed.send(JSON.stringify({ type: 'stream.end', streamId: 'test' }), callback);
-        },
-      });
-      framed.on('message', (raw) => {
-        assert.ok(Buffer.isBuffer(raw));
-        /** @type {unknown} */
-        const parsed = JSON.parse(raw.toString());
-        assert.ok(parsed && typeof parsed === 'object' && !Array.isArray(parsed));
-        const frame = /** @type {Record<string, unknown>} */ (parsed);
-        if (frame.type === 'stream.data') {
-          assert.equal(frame.seq, receivedSequence++);
-          assert.equal(typeof frame.payload, 'string');
-          pipe.push(Buffer.from(/** @type {string} */ (frame.payload), 'base64'));
-        } else if (frame.type === 'stream.end') pipe.push(null);
-        else pipe.destroy(new Error('Unexpected frame'));
-      });
-      framed.send(
-        JSON.stringify({ type: 'stream.open', streamId: 'test', channel: 'remote', meta: {} }),
-      );
+      /** @param {string} streamId */
+      function streamPipe(streamId) {
+        let sequence = 0;
+        let receivedSequence = 0;
+        const pipe = new Duplex({
+          read() {},
+          write(chunk, _encoding, callback) {
+            assert.ok(Buffer.isBuffer(chunk));
+            framed.send(
+              JSON.stringify({
+                type: 'stream.data',
+                streamId,
+                seq: sequence++,
+                payload: chunk.toString('base64'),
+              }),
+              callback,
+            );
+          },
+          final(callback) {
+            framed.send(JSON.stringify({ type: 'stream.end', streamId }), callback);
+          },
+        });
+        framed.on('message', (raw) => {
+          assert.ok(Buffer.isBuffer(raw));
+          /** @type {unknown} */
+          const parsed = JSON.parse(raw.toString());
+          assert.ok(parsed && typeof parsed === 'object' && !Array.isArray(parsed));
+          const frame = /** @type {Record<string, unknown>} */ (parsed);
+          if (frame.streamId !== streamId) return;
+          if (frame.type === 'stream.data') {
+            assert.equal(frame.seq, receivedSequence++);
+            assert.equal(typeof frame.payload, 'string');
+            pipe.push(Buffer.from(/** @type {string} */ (frame.payload), 'base64'));
+          } else if (frame.type === 'stream.end') pipe.push(null);
+          else pipe.destroy(new Error('Unexpected frame'));
+        });
+        framed.send(JSON.stringify({ type: 'stream.open', streamId, channel: 'remote', meta: {} }));
+        return pipe;
+      }
+      const pipe = streamPipe('test');
       const framedTLS = tls.connect({
         socket: pipe,
         ca: cert,
@@ -205,7 +209,13 @@ for (const protocol of ['h1', 'h2']) {
         partial.close(http2.constants.NGHTTP2_CANCEL);
         session.destroy();
       } else {
-        const partial = await connect();
+        const partial = tls.connect({
+          socket: streamPipe('partial'),
+          ca: cert,
+          servername: 'core.test',
+          ALPNProtocols: ['http/1.1'],
+        });
+        await once(partial, 'secureConnect');
         let partialEnded = false;
         let partialBody = '';
         partial.on('end', () => {
