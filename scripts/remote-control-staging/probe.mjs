@@ -53,6 +53,10 @@ let child;
 let attached = false;
 let finished = false;
 let timeout;
+/** @type {{startedAt: string, sessionHash: string | null, stage: string,
+ * tlsPhase: string | undefined, nativeErrorCode: number | null, nativeExitCode: number | null,
+ * soak: {worker: number, ownRequests: number, totalRequests: number, requestNumber?: number,
+ * failureKind?: string | undefined} | null, stall?: import('./stall-receipt.mjs').StallDiagnostic}} */
 const receipt = {
   startedAt: new Date().toISOString(),
   sessionHash: null,

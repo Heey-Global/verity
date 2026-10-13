@@ -38,6 +38,12 @@ final class StallHTTPObserver: NSObject, URLSessionDataDelegate, @unchecked Send
       task?.cancel()
     }
   }
+  func urlSession(_ session: URLSession, task: URLSessionTask,
+    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+    completionHandler: @escaping (URLRequest?) -> Void) {
+    pin.urlSession(session, task: task, willPerformHTTPRedirection: response,
+      newRequest: request, completionHandler: completionHandler)
+  }
   func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
     pin.urlSession(session, didReceive: challenge, completionHandler: completionHandler)

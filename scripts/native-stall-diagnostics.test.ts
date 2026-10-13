@@ -24,3 +24,13 @@ it('keeps stall recorder dependencies outside the shipping tunnel compilation', 
     expect(text).toContain('scripts/remote-control-staging/StallDiagnostics.swift');
   }
 });
+
+it('forwards the pin delegate redirect policy through the data observer', () => {
+  const delegate = read('apps/mobile/native/CertificatePinDelegate.swift');
+  const observer = read('scripts/remote-control-staging/StallDiagnostics.swift');
+  const callback = /\b(willPerformHTTPRedirection) response:/u.exec(delegate)?.[1];
+  expect(callback).toBeDefined();
+  expect(observer).toMatch(
+    new RegExp(`pin\\.urlSession\\(session, task: task, ${callback}: response,`, 'u'),
+  );
+});

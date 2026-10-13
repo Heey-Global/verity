@@ -1,17 +1,27 @@
+/**
+ * @typedef {{mapping: string, queued: number, sending: number, completed: number, failed: number,
+ * globalQueued: number, globalSending: number, oldestSendMs: number, overflow: boolean}} StallWriter
+ * @typedef {{headersMs: number, firstByteMs: number, completedMs: number, writer: StallWriter}} StallDiagnostic
+ * @typedef {{worker: number, ownRequests: number, totalRequests: number, kind: string,
+ * code: number, phase: string, diagnostic: StallDiagnostic}} StallReceipt
+ */
 // Native stdout is untrusted. Reject unknown fields rather than forwarding a
 // nested object which could silently start exporting addresses or payloads.
+/** @param {string} line @returns {StallReceipt | null} */
 export function parseStallReceipt(line) {
   if (!line.startsWith('probe-stall-failure:') || line.length > 4096) return null;
   try {
     const value = JSON.parse(line.slice('probe-stall-failure:'.length));
+    /** @param {unknown} object @param {string[]} allowed */
     const keys = (object, allowed) =>
       object !== null &&
       typeof object === 'object' &&
       !Array.isArray(object) &&
       Object.keys(object).length === allowed.length &&
       allowed.every((key) => Object.hasOwn(object, key));
+    /** @param {unknown} number @param {number} min @param {number} max */
     const integer = (number, min, max) =>
-      Number.isSafeInteger(number) && number >= min && number <= max;
+      typeof number === 'number' && Number.isSafeInteger(number) && number >= min && number <= max;
     if (
       !keys(value, [
         'worker',

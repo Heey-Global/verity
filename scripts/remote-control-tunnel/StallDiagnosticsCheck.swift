@@ -35,6 +35,23 @@ func checkStallRecorder() {
 func checkStallObservation(proxy: ProxyConfiguration, origin: URL, pin: String,
   recorder: StallDiagnostics) async throws {
   checkStallRecorder()
+  let redirectPin = try CertificatePinDelegate(pin: pin, origin: origin)
+  let redirectObserver = StallHTTPObserver(pin: redirectPin, recorder: recorder)
+  let redirectSession = URLSession(configuration: .ephemeral)
+  defer { redirectSession.invalidateAndCancel() }
+  let redirectTask = redirectSession.dataTask(with: origin)
+  let response = HTTPURLResponse(url: origin, statusCode: 302, httpVersion: nil, headerFields: nil)!
+  for (target, allowed) in [(origin.appendingPathComponent("healthz"), true),
+    (URL(string: "http://core.test/")!, false), (URL(string: "https://other.test/")!, false),
+    (URL(string: "https://core.test:444/")!, false), (URL(string: "https://user@core.test/")!, false)] {
+    var called = false
+    redirectObserver.urlSession(redirectSession, task: redirectTask,
+      willPerformHTTPRedirection: response, newRequest: URLRequest(url: target)) { request in
+      called = true
+      precondition((request != nil) == allowed)
+    }
+    precondition(called)
+  }
   // Each observer owns a fresh session, matching the soak's request lifecycle.
   func request(_ path: String) async throws -> [String: Any] {
     let config = URLSessionConfiguration.ephemeral

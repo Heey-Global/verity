@@ -26,6 +26,7 @@ const stallFixture = () => ({
     },
   },
 });
+/** @param {unknown} value */
 const parse = (value) => parseStallReceipt(`probe-stall-failure:${JSON.stringify(value)}`);
 test('accepts bounded response milestones and distinct writer queue/send state', () => {
   const value = stallFixture();
@@ -49,36 +50,47 @@ test('missing or ambiguous mapping never masquerades as zero pending sends', () 
 });
 test('rejects secret fields, malformed data, invalid ranges and contradictory timing', () => {
   for (const mutate of [
+    /** @param {any} v */
     (v) => {
       v.ticket = 'secret';
     },
+    /** @param {any} v */
     (v) => {
       v.diagnostic.url = 'https://private.invalid';
     },
+    /** @param {any} v */
     (v) => {
       v.diagnostic.writer.payload = 'secret';
     },
+    /** @param {any} v */
     (v) => {
       v.worker = 8;
     },
+    /** @param {any} v */
     (v) => {
       v.code = true;
     },
+    /** @param {any} v */
     (v) => {
       v.diagnostic.headersMs = -1;
     },
+    /** @param {any} v */
     (v) => {
       v.diagnostic.firstByteMs = 4;
     },
+    /** @param {any} v */
     (v) => {
       v.diagnostic.completedMs = 86400001;
     },
+    /** @param {any} v */
     (v) => {
       v.diagnostic.writer.globalQueued = 129;
     },
+    /** @param {any} v */
     (v) => {
       v.diagnostic.writer.overflow = true;
     },
+    /** @param {any} v */
     (v) => {
       v.diagnostic.writer.queued = 2;
     },
