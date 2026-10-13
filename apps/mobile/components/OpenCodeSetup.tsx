@@ -1,7 +1,8 @@
 import { selectedOpenCodeModels, VerityApiError, type VerityClient } from '@verity/mobile';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { Button, StatusTag, TextField } from './ui';
 
 export function OpenCodeSetup({
   client,
@@ -117,25 +118,22 @@ export function OpenCodeSetup({
             Use models from an OpenAI-compatible API instead of a subscription login.
           </Text>
         </View>
-        <View style={[styles.pill, configured ? styles.pillReady : null]}>
-          <Text style={[styles.pillLabel, configured ? styles.pillLabelReady : null]}>
-            {configured ? 'Configured' : 'Not set'}
-          </Text>
-        </View>
+        <StatusTag
+          intent={configured ? 'ready' : 'optional'}
+          label={configured ? 'Configured' : 'Not set'}
+        />
       </View>
 
-      {loading ? <ActivityIndicator size="small" color={theme.colors.setup.text} /> : null}
+      {loading ? <ActivityIndicator size="small" color={theme.colors.text} /> : null}
       {!loading && !expanded ? (
-        <Pressable
-          style={configured ? styles.secondaryButton : styles.primaryButton}
-          onPress={() => setExpanded(true)}
-          accessibilityRole="button"
-          accessibilityLabel={configured ? 'Edit OpenCode' : 'Configure OpenCode'}
-        >
-          <Text style={configured ? styles.secondaryButtonLabel : styles.primaryButtonLabel}>
-            {configured ? 'Edit OpenCode' : 'Configure OpenCode'}
-          </Text>
-        </Pressable>
+        <View style={styles.inline}>
+          <Button
+            label={configured ? 'Edit OpenCode' : 'Configure OpenCode'}
+            variant={configured ? 'secondary' : 'primary'}
+            size={configured ? 'compact' : 'large'}
+            onPress={() => setExpanded(true)}
+          />
+        </View>
       ) : null}
 
       {!loading && expanded ? (
@@ -149,47 +147,38 @@ export function OpenCodeSetup({
               Enter its API endpoint and a private API key. Verity automatically loads all models
               offered by the provider.
             </Text>
-            <TextInput
-              style={styles.input}
+            <TextField
+              label="API endpoint"
+              accessibilityLabel="OpenCode API base URL"
               value={baseUrl}
               onChangeText={setBaseUrl}
               placeholder="https://api.example.com/v1"
-              placeholderTextColor={theme.colors.textFaint}
-              autoCapitalize="none"
-              autoCorrect={false}
               keyboardType="url"
-              accessibilityLabel="OpenCode API base URL"
             />
-            <TextInput
-              style={styles.input}
+            <TextField
+              label="API key"
+              accessibilityLabel="OpenCode API key"
               value={apiKey}
               onChangeText={setApiKey}
-              placeholder={keyConfigured ? 'API key already saved — leave unchanged' : 'API key'}
-              placeholderTextColor={theme.colors.textFaint}
-              autoCapitalize="none"
-              autoCorrect={false}
-              secureTextEntry
-              accessibilityLabel="OpenCode API key"
+              placeholder={keyConfigured ? 'Already saved — leave unchanged' : 'Paste your API key'}
+              secret
             />
-            <Pressable
-              style={[styles.primaryButton, !ready ? styles.disabled : null]}
+            <Button
+              label="Save OpenCode"
+              loading={saving}
+              disabled={!ready}
               onPress={save}
-              disabled={!ready || saving}
-              accessibilityRole="button"
-              accessibilityLabel="Save OpenCode"
-            >
-              {saving ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
-              <Text style={styles.primaryButtonLabel}>{saving ? 'Saving…' : 'Save OpenCode'}</Text>
-            </Pressable>
-            <Pressable
-              style={styles.secondaryButton}
-              onPress={cancel}
-              disabled={saving}
-              accessibilityRole="button"
-              accessibilityLabel="Cancel OpenCode setup"
-            >
-              <Text style={styles.secondaryButtonLabel}>Cancel</Text>
-            </Pressable>
+              fullWidth
+            />
+            <View style={styles.inline}>
+              <Button
+                label="Cancel"
+                accessibilityLabel="Cancel OpenCode setup"
+                variant="text"
+                disabled={saving}
+                onPress={cancel}
+              />
+            </View>
           </View>
         </View>
       ) : null}
@@ -203,33 +192,25 @@ export function OpenCodeSetup({
 }
 
 const styles = StyleSheet.create((theme) => ({
+  // A button keeps the width of its label instead of spanning the column.
+  inline: { flexDirection: 'row' },
   card: {
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.setup.border,
+    borderTopColor: theme.colors.border,
   },
   header: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm },
   titleGroup: { flex: 1, gap: 6 },
-  title: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
-  description: { color: theme.colors.setup.textMuted, fontSize: theme.text.sm, lineHeight: 20 },
-  pill: {
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 4,
-    borderRadius: theme.radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
-  },
-  pillReady: { borderColor: theme.colors.tone.done },
-  pillLabel: { color: theme.colors.setup.textMuted, fontSize: theme.text.xs, fontWeight: '600' },
-  pillLabelReady: { color: theme.colors.tone.done },
+  title: { ...theme.typography.row, color: theme.colors.text },
+  description: { ...theme.typography.subtitle, color: theme.colors.textMuted },
   setupBlock: {
     flexDirection: 'row',
     gap: theme.spacing.sm,
     padding: theme.spacing.md,
     borderRadius: theme.radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
+    borderColor: theme.colors.border,
   },
   stepBadge: {
     width: 30,
@@ -237,49 +218,23 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 15,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
-  stepBadgeLabel: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '600' },
+  stepBadgeLabel: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.onAction,
+  },
   fields: { flex: 1, gap: theme.spacing.sm },
-  stepTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
-  stepDescription: { color: theme.colors.setup.textMuted, fontSize: theme.text.xs, lineHeight: 18 },
-  input: {
-    minHeight: 44,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
+  stepTitle: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
     color: theme.colors.text,
-    backgroundColor: theme.colors.background,
-    fontSize: theme.text.sm,
   },
-  primaryButton: {
-    minHeight: 44,
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    gap: theme.spacing.sm,
+  stepDescription: { ...theme.typography.footnote, color: theme.colors.textMuted },
+  error: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.attention,
   },
-  primaryButtonLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.md,
-    fontWeight: '600',
-  },
-  secondaryButton: {
-    minHeight: 44,
-    borderRadius: theme.radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  secondaryButtonLabel: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
-  },
-  disabled: { opacity: 0.45 },
-  error: { color: theme.colors.tone.danger, fontSize: theme.text.sm, fontWeight: '700' },
 }));
