@@ -356,8 +356,8 @@ const styles = StyleSheet.create((theme) => ({
   body: { flex: 1, minWidth: 0, gap: theme.spacing.xxs },
   title: { ...theme.typography.row, color: theme.colors.text },
   subtitle: { ...theme.typography.subtitle, color: theme.colors.textMuted },
-  // A long status may shrink and truncate; the title always keeps more than
-  // half the row, so it is never squeezed into a column of fragments.
+  // The trailing side takes at most 45 % of the row; a long value or status
+  // truncates there, so the title is never squeezed into a column of fragments.
   trailing: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -365,5 +365,5 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 1,
     maxWidth: '45%',
   },
-  value: { ...theme.typography.body, color: theme.colors.textMuted },
+  value: { ...theme.typography.body, color: theme.colors.textMuted, flexShrink: 1 },
 }));

@@ -19,12 +19,14 @@ export function StatusTag({ intent, label }: { intent: StatusIntent; label: stri
     <View
       style={[
         styles.tag,
+        styles.shrink,
         intent === 'ready' ? styles.tagReady : intent === 'needsSetup' ? styles.tagAttention : null,
       ]}
       accessible
       accessibilityLabel={`${label}, ${describe(intent)}`}
     >
       <Text
+        numberOfLines={1}
         style={[
           styles.tagLabel,
           {
