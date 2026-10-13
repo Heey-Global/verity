@@ -43,11 +43,11 @@ it('groups diagnostics and keeps transcription and log export actionable', async
 it('switches overview gesture recording on and off for this app run', async () => {
   mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
   render(<DiagnosticsScreen />);
-  const toggle = await screen.findByLabelText(/^Record overview gestures(,|$)/);
+  const toggle = await screen.findByLabelText(/^Record interaction diagnostics(,|$)/);
   expect(gestureDiagnosticsEnabled()).toBe(false);
   fireEvent.press(toggle);
   expect(gestureDiagnosticsEnabled()).toBe(true);
-  fireEvent.press(screen.getByLabelText(/^Record overview gestures(,|$)/));
+  fireEvent.press(screen.getByLabelText(/^Record interaction diagnostics(,|$)/));
   expect(gestureDiagnosticsEnabled()).toBe(false);
 });
 it('reports unavailable integration diagnostics instead of claiming no errors', async () => {

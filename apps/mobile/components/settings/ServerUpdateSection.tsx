@@ -16,7 +16,7 @@ import {
 } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { getVerityBaseUrl } from '../../lib/client';
@@ -29,6 +29,7 @@ import { ServerUpdateChannel } from './ServerUpdateChannel';
 import { ServerReleaseNotes } from './ServerReleaseNotes';
 import { SettingsGroup, SettingsPanel } from './SettingsChrome';
 import { settingsStyles as styles } from './settingsStyles';
+import { Button } from '../ui';
 
 // Cadence for asking whether an unanswered install request started anything.
 // How long an unchanged status may still be the Updater catching up with a
@@ -295,25 +296,13 @@ export function ServerUpdateSection({
                 </View>
               ) : null}
               {view.action !== null && target !== null && attempt !== null ? (
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.primaryButton,
-                    styles.updateButton,
-                    starting || changingChannel ? styles.buttonDisabled : null,
-                    pressed ? styles.pressed : null,
-                  ]}
+                <Button
+                  label={view.action}
+                  loading={starting}
+                  disabled={changingChannel}
                   onPress={() => install(target, attempt)}
-                  disabled={starting || changingChannel}
-                  accessibilityRole="button"
-                  accessibilityLabel={view.action}
-                >
-                  {starting ? (
-                    <ActivityIndicator size="small" color={theme.colors.onAction} />
-                  ) : null}
-                  <Text style={styles.primaryButtonLabel}>
-                    {starting ? 'Starting…' : view.action}
-                  </Text>
-                </Pressable>
+                  fullWidth
+                />
               ) : null}
               {actionError !== undefined ? (
                 <Text style={styles.reproHint}>{actionError}</Text>

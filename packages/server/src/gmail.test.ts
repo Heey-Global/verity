@@ -4,6 +4,9 @@ import {
   appendGmailSignature,
   createGmailDraft,
   createGmailReplyDraft,
+  listGmailSendAs,
+  prepareGmailReplyDraft,
+  selectGmailSender,
   readGmailDraftForSend,
   readGmailSignature,
   readGmailThread,
@@ -556,6 +559,9 @@ describe('Gmail API', () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(
+        response({ sendAs: [{ sendAsEmail: 'me@example.test', isPrimary: true }] }),
+      )
+      .mockResolvedValueOnce(
         response({
           messages: [
             {
@@ -563,6 +569,7 @@ describe('Gmail API', () => {
               payload: {
                 headers: [
                   { name: 'From', value: 'Sender <sender@example.test>' },
+                  { name: 'To', value: 'me@example.test' },
                   { name: 'Reply-To', value: 'replies@example.test' },
                   { name: 'Subject', value: 'Hello' },
                   { name: 'Message-ID', value: '<m1@example.test>' },
@@ -577,7 +584,7 @@ describe('Gmail API', () => {
         response({ id: 'd1', message: { id: 'draft-message', threadId: 't1' } }),
       );
     await createGmailReplyDraft('token', { threadId: 't1', messageId: 'm1', body: 'Reply' }, fetch);
-    const body = fetch.mock.calls[1]?.[1]?.body;
+    const body = fetch.mock.calls[2]?.[1]?.body;
     expect(typeof body).toBe('string');
     const request = JSON.parse(body as string) as {
       message: { raw: string; threadId: string };
@@ -595,6 +602,9 @@ describe('Gmail API', () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(
+        response({ sendAs: [{ sendAsEmail: 'me@example.test', isPrimary: true }] }),
+      )
+      .mockResolvedValueOnce(
         response({
           messages: [
             {
@@ -602,6 +612,7 @@ describe('Gmail API', () => {
               payload: {
                 headers: [
                   { name: 'From', value: 'sender@example.test' },
+                  { name: 'To', value: 'me@example.test' },
                   { name: 'Subject', value: encoded },
                   { name: 'Message-ID', value: '<m1@example.test>' },
                 ],
@@ -614,7 +625,7 @@ describe('Gmail API', () => {
 
     await createGmailReplyDraft('token', { threadId: 't1', body: 'Reply' }, fetch);
 
-    const request = JSON.parse(fetch.mock.calls[1]?.[1]?.body as string) as {
+    const request = JSON.parse(fetch.mock.calls[2]?.[1]?.body as string) as {
       message: { raw: string };
     };
     const raw = Buffer.from(request.message.raw, 'base64url').toString('utf8');
@@ -628,6 +639,9 @@ describe('Gmail API', () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(
+        response({ sendAs: [{ sendAsEmail: 'me@example.test', isPrimary: true }] }),
+      )
+      .mockResolvedValueOnce(
         response({
           messages: [
             {
@@ -635,6 +649,7 @@ describe('Gmail API', () => {
               payload: {
                 headers: [
                   { name: 'From', value: 'sender@example.test' },
+                  { name: 'To', value: 'me@example.test' },
                   { name: 'Subject', value: '=?ISO-8859-1?Q?Gr=FC=DFe?=' },
                   { name: 'Message-ID', value: '<m1@example.test>' },
                 ],
@@ -647,7 +662,7 @@ describe('Gmail API', () => {
 
     await createGmailReplyDraft('token', { threadId: 't1', body: 'Reply' }, fetch);
 
-    const request = JSON.parse(fetch.mock.calls[1]?.[1]?.body as string) as {
+    const request = JSON.parse(fetch.mock.calls[2]?.[1]?.body as string) as {
       message: { raw: string };
     };
     const raw = Buffer.from(request.message.raw, 'base64url').toString('utf8');
@@ -658,6 +673,9 @@ describe('Gmail API', () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(
+        response({ sendAs: [{ sendAsEmail: 'me@example.test', isPrimary: true }] }),
+      )
+      .mockResolvedValueOnce(
         response({
           messages: [
             {
@@ -665,6 +683,7 @@ describe('Gmail API', () => {
               payload: {
                 headers: [
                   { name: 'From', value: 'friend@example.test' },
+                  { name: 'To', value: 'me@example.test' },
                   { name: 'Subject', value: 'Hello' },
                   { name: 'Message-ID', value: '<incoming@example.test>' },
                 ],
@@ -703,7 +722,7 @@ describe('Gmail API', () => {
 
     await createGmailReplyDraft('token', { threadId: 't1', body: 'Another reply' }, fetch);
 
-    const body = fetch.mock.calls[1]?.[1]?.body;
+    const body = fetch.mock.calls[2]?.[1]?.body;
     expect(typeof body).toBe('string');
     const request = JSON.parse(body as string) as { message: { raw: string } };
     const raw = Buffer.from(request.message.raw, 'base64url').toString();
@@ -714,6 +733,9 @@ describe('Gmail API', () => {
   it('uses the sent recipient when a sent-only thread ends with a draft', async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        response({ sendAs: [{ sendAsEmail: 'me@example.test', isPrimary: true }] }),
+      )
       .mockResolvedValueOnce(
         response({
           messages: [
@@ -749,7 +771,7 @@ describe('Gmail API', () => {
 
     await createGmailReplyDraft('token', { threadId: 't1', body: 'Follow-up' }, fetch);
 
-    const body = fetch.mock.calls[1]?.[1]?.body;
+    const body = fetch.mock.calls[2]?.[1]?.body;
     expect(typeof body).toBe('string');
     const request = JSON.parse(body as string) as { message: { raw: string } };
     const raw = Buffer.from(request.message.raw, 'base64url').toString();
@@ -757,4 +779,158 @@ describe('Gmail API', () => {
     expect(raw).toContain('In-Reply-To: <sent@example.test>');
     expect(raw).not.toContain('<draft@example.test>');
   });
+});
+
+describe('Gmail sender identities', () => {
+  const aliases = [
+    { sendAsEmail: 'me@example.test', isPrimary: true },
+    { sendAsEmail: 'support@example.test', isDefault: true, verificationStatus: 'accepted' },
+  ];
+
+  it('lists only verified addresses and chooses the configured default', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      response({
+        sendAs: [
+          ...aliases,
+          { sendAsEmail: 'pending@example.test', verificationStatus: 'pending' },
+        ],
+      }),
+    );
+    const senders = await listGmailSendAs('token', fetch);
+    expect(senders).toEqual(aliases);
+    expect(fetch.mock.calls[0]?.[0]).toBe(
+      'https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs',
+    );
+    expect(selectGmailSender(senders)).toBe('support@example.test');
+    expect(selectGmailSender(senders, 'ME@example.test')).toBe('me@example.test');
+    expect(() => selectGmailSender(senders, 'other@example.test')).toThrow('verified');
+  });
+
+  it.each([
+    { labels: [], headers: [{ name: 'To', value: 'Support <SUPPORT@example.test>' }] },
+    { labels: [], headers: [{ name: 'Cc', value: 'support@example.test' }] },
+    { labels: [], headers: [{ name: 'To', value: 'Support <support@example.test> (help, desk)' }] },
+    { labels: [], headers: [{ name: 'To', value: 'support@example.test (help (desk))' }] },
+    { labels: [], headers: [{ name: 'Delivered-To', value: 'support@example.test' }] },
+    {
+      labels: ['SENT'],
+      headers: [
+        { name: 'From', value: 'Support <support@example.test>' },
+        { name: 'To', value: 'friend@example.test' },
+      ],
+    },
+  ])('preserves the own alias for replies: %j', async ({ labels, headers }) => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      response({
+        messages: [
+          {
+            id: 'm1',
+            labelIds: labels,
+            payload: {
+              headers: [
+                { name: 'From', value: 'friend@example.test' },
+                { name: 'Message-ID', value: '<m1@example.test>' },
+                ...headers,
+              ].reverse(),
+            },
+          },
+        ],
+      }),
+    );
+    const draft = await prepareGmailReplyDraft(
+      'token',
+      { threadId: 't1', body: 'Reply' },
+      aliases,
+      fetch,
+    );
+    expect(draft.from).toBe('support@example.test');
+    expect(draft.inReplyTo).toBe('<m1@example.test>');
+  });
+
+  it.each(['other@example.test', 'me@example.test, support@example.test'])(
+    'refuses an unrecognized or ambiguous own address: %s',
+    async (to) => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        response({
+          messages: [
+            {
+              id: 'm1',
+              payload: {
+                headers: [
+                  { name: 'From', value: 'friend@example.test' },
+                  { name: 'To', value: to },
+                  { name: 'Message-ID', value: '<m1@example.test>' },
+                ],
+              },
+            },
+          ],
+        }),
+      );
+      await expect(
+        prepareGmailReplyDraft('token', { threadId: 't1', body: 'Reply' }, aliases, fetch),
+      ).rejects.toThrow('unique verified reply sender');
+    },
+  );
+});
+
+it('rejects distinct own addresses across reply recipient headers', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    response({
+      messages: [
+        {
+          id: 'm1',
+          payload: {
+            headers: [
+              { name: 'From', value: 'friend@example.test' },
+              { name: 'To', value: 'me@example.test' },
+              { name: 'Cc', value: 'support@example.test' },
+              { name: 'Message-ID', value: '<m1@example.test>' },
+            ],
+          },
+        },
+      ],
+    }),
+  );
+  await expect(
+    prepareGmailReplyDraft(
+      'token',
+      { threadId: 't1', body: 'Reply' },
+      [
+        { sendAsEmail: 'me@example.test', isPrimary: true },
+        { sendAsEmail: 'support@example.test', verificationStatus: 'accepted' },
+      ],
+      fetch,
+    ),
+  ).rejects.toThrow('unique verified reply sender');
+});
+
+it('rejects ambiguous own identities in repeated delivery headers', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    response({
+      messages: [
+        {
+          id: 'm1',
+          payload: {
+            headers: [
+              { name: 'From', value: 'friend@example.test' },
+              { name: 'Delivered-To', value: 'me@example.test' },
+              { name: 'Delivered-To', value: 'support@example.test' },
+              { name: 'Message-ID', value: '<m1@example.test>' },
+            ],
+          },
+        },
+      ],
+    }),
+  );
+  await expect(
+    prepareGmailReplyDraft(
+      'token',
+      { threadId: 't1', body: 'Reply' },
+      [
+        { sendAsEmail: 'me@example.test', isPrimary: true },
+        { sendAsEmail: 'support@example.test', verificationStatus: 'accepted' },
+      ],
+      fetch,
+    ),
+  ).rejects.toThrow('unique verified reply sender');
 });

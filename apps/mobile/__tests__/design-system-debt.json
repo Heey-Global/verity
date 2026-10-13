@@ -42,32 +42,6 @@
     "fontSize": 3,
     "fontWeight": 2
   },
-  "app/onboarding/ai-backends.tsx": {
-    "legacyColor": 4,
-    "fontSize": 2,
-    "fontWeight": 1
-  },
-  "app/onboarding/master-password.tsx": {
-    "legacyColor": 17,
-    "fontSize": 12,
-    "fontWeight": 9
-  },
-  "app/onboarding/server-url.tsx": {
-    "rawColor": 3,
-    "legacyColor": 25,
-    "fontSize": 18,
-    "fontWeight": 13
-  },
-  "app/onboarding/starter.tsx": {
-    "legacyColor": 3,
-    "fontSize": 3,
-    "fontWeight": 1
-  },
-  "app/onboarding/welcome.tsx": {
-    "legacyColor": 9,
-    "fontSize": 8,
-    "fontWeight": 4
-  },
   "app/project/[id]/settings/github.tsx": {
     "legacyColor": 1
   },
@@ -118,18 +92,8 @@
     "fontSize": 4,
     "fontWeight": 1
   },
-  "components/AgentLoginPanel.tsx": {
-    "legacyColor": 43,
-    "fontSize": 18,
-    "fontWeight": 14
-  },
   "components/AttentionMarkers.tsx": {
     "legacyColor": 1
-  },
-  "components/BiometricConsent.tsx": {
-    "legacyColor": 6,
-    "fontSize": 4,
-    "fontWeight": 3
   },
   "components/DemoBanner.tsx": {
     "legacyColor": 3,
@@ -161,16 +125,6 @@
     "legacyColor": 3,
     "fontSize": 1,
     "fontWeight": 1
-  },
-  "components/OnboardingStepScaffold.tsx": {
-    "legacyColor": 7,
-    "fontSize": 5,
-    "fontWeight": 4
-  },
-  "components/OpenCodeSetup.tsx": {
-    "legacyColor": 18,
-    "fontSize": 10,
-    "fontWeight": 7
   },
   "components/PinnedPlan.tsx": {
     "legacyColor": 7,

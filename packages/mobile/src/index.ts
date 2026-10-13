@@ -1,3 +1,4 @@
+export { mobileRuntimeSnapshot, type MobileRuntimeSnapshot } from './runtimeDiagnostics.js';
 export {
   decodeStreamMessage,
   parseStreamFrame,

@@ -12,7 +12,7 @@ import {
 } from '@verity/mobile';
 import { router } from 'expo-router';
 import { useMemo } from 'react';
-import { Pressable, Text, TextInput, View } from 'react-native';
+import { Text, TextInput, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import {
@@ -32,6 +32,7 @@ import {
   useVeritySettings,
 } from '../../lib/settingsStore';
 import { useSettingsFields } from '../../lib/useSettingsFields';
+import { Button } from '../../components/ui';
 
 // Module-level: the hook syncs on this array's identity, and it is also the
 // literal list of keys a save from this screen may contain.
@@ -105,14 +106,14 @@ function GitHubSettingsView({ client }: { client: VerityClient }) {
               Connect GitHub to give Verity access to your repositories.
             </Text>
           ) : null}
-          <Pressable
-            style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
-            onPress={() => router.push('/github-connect')}
-            accessibilityRole="button"
-            accessibilityLabel="Manage GitHub connection"
-          >
-            <Text style={styles.reproButtonLabel}>Manage GitHub connection</Text>
-          </Pressable>
+          <View style={styles.actionRow}>
+            <Button
+              label="Manage GitHub connection"
+              variant="secondary"
+              size="compact"
+              onPress={() => router.push('/github-connect')}
+            />
+          </View>
         </SettingsDisclosure>
       </SettingsGroup>
 

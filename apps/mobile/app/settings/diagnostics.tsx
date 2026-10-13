@@ -137,8 +137,8 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
                 : {})}
             />
             <CardRow
-              title="Record overview gestures"
-              subtitle="Until the app restarts. Logs how session rows react to swipes and holds for the export below."
+              title="Record interaction diagnostics"
+              subtitle="Records gestures and app responsiveness until disabled or restarted. Includes a starting sample and recent activity without chat contents. Export below while the app is slow."
               switchValue={recordingGestures}
               onPress={() => setGestureDiagnosticsEnabled(!recordingGestures)}
             />

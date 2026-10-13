@@ -450,10 +450,6 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     ...theme.typography.body,
     color: theme.colors.text,
   },
-  // Full width: this is the one action the screen exists for.
-  updateButton: {
-    alignSelf: 'stretch',
-  },
   releaseNotes: {
     gap: theme.spacing.sm,
     paddingTop: theme.spacing.sm,
@@ -576,24 +572,8 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     marginTop: theme.spacing.sm,
   },
-  // 44pt, not the 40 this used to be: a two-up row of small buttons is exactly
-  // where an undersized target gets mis-tapped.
-  signingKeyButton: {
-    minHeight: 44,
-    minWidth: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.md,
-    borderRadius: theme.radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-  },
-  signingKeyButtonText: {
-    ...theme.typography.button,
-    color: theme.colors.action,
-  },
   // A destructive inline action sitting at the trailing edge of a list row.
-  // Same 44pt target as the other small buttons; only the tone differs.
+  // A 44pt minimum target, in the attention tone.
   dangerButton: {
     minHeight: 44,
     minWidth: 0,
