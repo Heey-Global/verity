@@ -1,4 +1,4 @@
-import { beginRuntimeApiRequest } from './runtimeDiagnostics.js';
+import { beginRuntimeApiRequest, runtimeRequestGroup } from './runtimeDiagnostics.js';
 import {
   recordingCoreRecordSchema,
   recordingUplinkRecordSchema,
@@ -4889,7 +4889,9 @@ export class VerityClient {
       };
     }
     let res: Response;
-    const finishRuntimeRequest = beginRuntimeApiRequest();
+    const finishRuntimeRequest = beginRuntimeApiRequest(
+      runtimeRequestGroup(path, init.method ?? 'GET'),
+    );
     try {
       res = await fetchImpl(`${this.baseUrl}${path}`, init);
       finishRuntimeRequest(!res.ok);

@@ -929,6 +929,7 @@ function SessionList({ client }: { client: VerityClient }) {
       <View style={styles.rightPane}>
         {selectedId && baseUrl ? (
           <DeferredSessionPane
+            sessionId={selectedId}
             key={`${selectedId}:${moveGeneration}`}
             fallback={
               <View style={styles.rightPanePlaceholder} accessibilityRole="progressbar">

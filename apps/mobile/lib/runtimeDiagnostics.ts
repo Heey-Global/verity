@@ -44,7 +44,7 @@ export function startRuntimeDiagnostics(): () => void {
   const capture = (lag: number) => {
     const time = now();
     const sample: Sample = {
-      ...mobileRuntimeSnapshot(),
+      ...mobileRuntimeSnapshot(true),
       at: new Date().toISOString(),
       runtimeAgeMs: Math.round(time - initializedAt),
       recordingAgeMs: Math.round(time - recordingStartedAt),
@@ -74,6 +74,7 @@ export function startRuntimeDiagnostics(): () => void {
       baseline = null;
       samples = [];
       dropped = 0;
+      mobileRuntimeSnapshot(true);
       recordingStartedAt = now();
     }
     recording = enabled;
@@ -87,6 +88,7 @@ export function startRuntimeDiagnostics(): () => void {
     const next = state === 'active';
     if (next === active) return;
     active = next;
+    if (active) mobileRuntimeSnapshot(true);
     sync();
   });
   sync();
@@ -94,6 +96,18 @@ export function startRuntimeDiagnostics(): () => void {
     cancel();
     detach();
     subscription.remove();
+  };
+}
+
+function cloneSample(sample: Sample): Sample {
+  return {
+    ...sample,
+    apiRequestGroups: sample.apiRequestGroups && {
+      overview: { ...sample.apiRequestGroups.overview },
+      preview: { ...sample.apiRequestGroups.preview },
+      session: { ...sample.apiRequestGroups.session },
+      other: { ...sample.apiRequestGroups.other },
+    },
   };
 }
 
@@ -105,7 +119,7 @@ export function exportRuntimeDiagnostics() {
     dropped,
     // Runtime age begins at module initialization, not native process launch.
     // Lag is timer delivery delay, not touch-to-paint or CPU utilization.
-    baseline: baseline === null ? null : { ...baseline },
-    samples: samples.map((sample) => ({ ...sample })),
+    baseline: baseline === null ? null : cloneSample(baseline),
+    samples: samples.map(cloneSample),
   };
 }

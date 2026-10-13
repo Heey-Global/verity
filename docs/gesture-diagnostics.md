@@ -46,7 +46,7 @@ two apart.
 ## Runtime responsiveness
 
 The same switch also enables `runtimeDiagnostics` in the existing app-update
-export (report schema 4). Enable it while the app is responsive, use the app
+export (report schema 5). Enable it while the app is responsive, use the app
 normally, then export while it feels slow, before restarting. Switching recording
 off discards the samples; restarting starts with recording off.
 
@@ -77,3 +77,28 @@ Counters are scalar process-local values; sampling retains no transcript, URL,
 session ID, or request payload and sends no diagnostic network requests. Existing
 build/update identity fields identify the loaded client. A rising subscription
 count or timer lag is evidence for investigation, not proof of a resource leak.
+
+Schema 5 adds `apiRequestGroups`: fixed `overview`, `preview`, `session`, and
+`other` groups. Overview covers list and provider-limit GETs; preview covers
+public/local share, detected dev-server and managed dev-server GETs; session covers detail, history and
+activity GETs. Mutations and remaining routes belong to other. No request paths,
+query values or identifiers are retained. Each group reports cumulative
+`started`, `settled`, `failures`, current `inFlight`, and interval `peakInFlight`.
+`apiRequestPeakInFlight` is the combined interval peak, not the sum of group
+peaks. Peaks reset after each sample and on recording/foreground entry, beginning
+with already in-flight requests. These counters end at response headers or fetch
+failure; they do not measure body parsing, rendering or native network concurrency.
+
+For embedded session switches, `deferred-pane-effect`, `deferred-pane-first-frame`,
+`deferred-pane-second-frame`, `deferred-pane-ready-dispatch` and
+`deferred-pane-ready-commit` separate the deferred mount's scheduling steps. They
+use the switch's JS clock and do not establish physical paint completion. Compare
+them with selection commit and session render/history request start, rather than
+attributing the entire pre-request gap to network latency or either frame callback.
+
+To compare responsiveness, enable recording soon after launch, use session
+switching and Settings normally, and export while slow before restarting. Confirm
+the delivered app/update identity, then compare request-group deltas and peaks,
+JS timer lateness and deferred-pane phases. Device latency and the cause of a
+slow interval require this comparison; local lifecycle tests establish only that
+unnecessary requests and updates have been removed.
