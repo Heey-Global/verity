@@ -32,6 +32,9 @@ jest.mock('expo-image-picker', () => ({
   requestCameraPermissionsAsync: (...args: unknown[]) => mockRequestCameraPermissionsAsync(...args),
 }));
 
+import { File as FsFile } from 'expo-file-system';
+import { Platform } from 'react-native';
+
 import {
   base64IsHeif,
   captureImage,
@@ -424,5 +427,69 @@ describe('dragged attachments', () => {
 
     await expect(pickImagesFromLibrary(1)).rejects.toThrow('could not be read');
     expect(mockManipulateAsync).not.toHaveBeenCalled();
+  });
+});
+
+// Native-only filesystem mocks otherwise hide browser picker regressions.
+describe('browser file picker', () => {
+  const originalFileReader = Object.getOwnPropertyDescriptor(globalThis, 'FileReader');
+  const readAsDataURL = jest.fn();
+  beforeEach(() => {
+    jest.replaceProperty(Platform, 'OS', 'web');
+    readAsDataURL.mockReset();
+    Object.defineProperty(globalThis, 'FileReader', {
+      configurable: true,
+      value: class {
+        result = 'data:text/plain;base64,aGVsbG8=';
+        onload: (() => void) | null = null;
+        readAsDataURL(blob: Blob) {
+          readAsDataURL(blob);
+          this.onload?.();
+        }
+      },
+    });
+    jest.mocked(FsFile).mockClear();
+    mockGetDocumentAsync.mockReset();
+    jest.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (originalFileReader) Object.defineProperty(globalThis, 'FileReader', originalFileReader);
+    else Reflect.deleteProperty(globalThis, 'FileReader');
+  });
+
+  it('reads selected document bytes without constructing a native filesystem file', async () => {
+    const blob = new Blob(['hello']);
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue({ blob: async () => blob } as Response);
+    mockGetDocumentAsync.mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: 'blob:document-picker/notes', name: 'notes.txt', mimeType: 'text/plain' }],
+    });
+
+    await expect(pickFiles(1)).resolves.toEqual([
+      { kind: 'file', fileName: 'notes.txt', mediaType: 'text/plain', data: 'aGVsbG8=' },
+    ]);
+    expect(readAsDataURL).toHaveBeenCalledWith(blob);
+    expect(FsFile).not.toHaveBeenCalled();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:document-picker/notes');
+  });
+
+  it('releases the browser object URL when reading fails', async () => {
+    jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('read failed'));
+    mockGetDocumentAsync.mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: 'blob:document-picker/broken', name: 'broken.txt' }],
+    });
+
+    await expect(pickFiles(1)).rejects.toThrow('read failed');
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:document-picker/broken');
+    expect(FsFile).not.toHaveBeenCalled();
+  });
+
+  it('returns no attachments when the browser picker is canceled', async () => {
+    mockGetDocumentAsync.mockResolvedValue({ canceled: true, assets: null });
+    await expect(pickFiles(1)).resolves.toEqual([]);
+    expect(FsFile).not.toHaveBeenCalled();
   });
 });
