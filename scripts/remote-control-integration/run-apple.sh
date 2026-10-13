@@ -57,7 +57,7 @@ verify_result() {
   wait "$fixture_pid" || fixture_status=$?
   fixture_pid=''
   python3 - "$1" "$tmp/core-result.json" "$tmp/provenance.json" "$fixture_status" "${2:-0}" <<'VERIFY'
-import json,sys
+import json,re,sys
 from pathlib import Path
 results=[]
 for name,path in zip(['native','core','provenance'],sys.argv[1:4]):
@@ -66,7 +66,10 @@ for name,path in zip(['native','core','provenance'],sys.argv[1:4]):
     except (OSError,ValueError):
         results.append({'success':False,'error':name+'_result_unavailable'})
 native,core,provenance=results
-success=(native.get('success') is True and core.get('success') is True
+provenance_valid=(isinstance(provenance,dict) and all(
+    isinstance(provenance.get(key),str) and re.fullmatch(r'[0-9a-f]{40}',provenance[key])
+    for key in ['coreRevision','uplinkRevision']))
+success=(provenance_valid and native.get('success') is True and core.get('success') is True
          and sys.argv[4]=='0' and sys.argv[5]=='0')
 print(json.dumps({'success':success,'native':native,'core':core,'provenance':provenance,
                   'fixtureExit':int(sys.argv[4]),'nativeExit':int(sys.argv[5])}))
@@ -90,7 +93,7 @@ if [[ -z "$app_plist" ]]; then
 fi
 [[ -f "$app_plist" ]] || { echo 'Missing app Info.plist.' >&2; exit 2; }
 selection="$(xcrun simctl list --json | python3 -c '
-import json,sys
+import json,re,sys
 x=json.load(sys.stdin)
 rs=[r for r in x["runtimes"] if r.get("isAvailable") and "SimRuntime.iOS-" in r["identifier"] and int(r["version"].split(".")[0])>=17]
 if not rs: raise SystemExit("An iOS 17+ simulator is required")

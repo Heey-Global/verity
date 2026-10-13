@@ -6,12 +6,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+const revisions = { coreRevision: 'a'.repeat(40), uplinkRevision: 'b'.repeat(40) };
 const runner = readFileSync(new URL('./run-apple.sh', import.meta.url), 'utf8');
 const verifier = runner.match(/<<'VERIFY'\n([\s\S]*?)\nVERIFY/u)?.[1];
 assert.ok(verifier, 'The runner must expose its result verifier');
 
 function verify(
-  { native = true, core = true, fixtureExit = 0, nativeExit = 0, missingCore = false } = {},
+  {
+    native = true,
+    core = true,
+    fixtureExit = 0,
+    nativeExit = 0,
+    missingCore = false,
+    missingProvenance = false,
+    provenance = revisions,
+  } = {},
   source = verifier,
 ) {
   const directory = mkdtempSync(join(tmpdir(), 'remote-result-'));
@@ -19,7 +28,7 @@ function verify(
     const paths = ['native', 'core', 'provenance'].map((name) => join(directory, `${name}.json`));
     writeFileSync(paths[0], JSON.stringify({ success: native }));
     if (!missingCore) writeFileSync(paths[1], JSON.stringify({ success: core }));
-    writeFileSync(paths[2], JSON.stringify({ coreRevision: 'test', uplinkRevision: 'test' }));
+    if (!missingProvenance) writeFileSync(paths[2], JSON.stringify(provenance));
     return spawnSync('python3', ['-c', source, ...paths, String(fixtureExit), String(nativeExit)], {
       encoding: 'utf8',
     });
@@ -35,7 +44,7 @@ void test('reports both receipts even when the fixture exits unsuccessfully', ()
     success: false,
     native: { success: true },
     core: { success: true },
-    provenance: { coreRevision: 'test', uplinkRevision: 'test' },
+    provenance: revisions,
     fixtureExit: 1,
     nativeExit: 0,
   });
@@ -60,4 +69,13 @@ void test('detects a verifier that ignores abnormal fixture termination', () => 
   // Successful receipt files can survive an abnormal exit; ignoring that exit would silently pass CI.
   assert.equal(verify({ fixtureExit: 1 }, broken).status, 0);
   assert.equal(verify({ fixtureExit: 1 }).status, 1);
+});
+
+void test('rejects absent or malformed source revisions and catches an omitted provenance gate', () => {
+  assert.equal(verify({ missingProvenance: true }).status, 1);
+  assert.equal(verify({ provenance: { ...revisions, coreRevision: 'main' } }).status, 1);
+  assert.equal(verify({ provenance: { ...revisions, uplinkRevision: '' } }).status, 1);
+  const broken = verifier.replace('provenance_valid and ', '');
+  assert.notEqual(broken, verifier);
+  assert.equal(verify({ missingProvenance: true }, broken).status, 0);
 });

@@ -286,7 +286,7 @@ jobs:
         if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.tunnel == 'true'
         timeout-minutes: 10
         run: |
-          node --test scripts/remote-control-tunnel/mock.test.mjs scripts/remote-control-integration/result.test.mjs scripts/remote-control-integration/certificate.test.mjs
+          node --test scripts/remote-control-tunnel/mock.test.mjs scripts/remote-control-integration/result.test.mjs scripts/remote-control-integration/certificate.test.mjs scripts/remote-control-integration/suite.test.mjs
           node --test scripts/remote-control-staging/probe.test.mjs
 
       # Keep each cold simulator boot/build within its own deadline.
