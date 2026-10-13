@@ -55,10 +55,12 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
   const [confirming, setConfirming] = useState<
     'premiumSharingEnabled' | 'premiumRemoteAccessEnabled' | 'remove' | null
   >(null);
-  // The sheet fades out after it closes; keep its wording until it is gone.
-  const lastConfirming = useRef(confirming);
-  if (confirming !== null) lastConfirming.current = confirming;
-  const asking = confirming ?? lastConfirming.current;
+  // The sheet fades out after it closes; its wording stays until it is gone.
+  const [asking, setAsking] = useState<NonNullable<typeof confirming>>('remove');
+  const ask = (kind: NonNullable<typeof confirming>) => {
+    setAsking(kind);
+    setConfirming(kind);
+  };
   const generation = useRef(0);
   const mounted = useRef(true);
   useEffect(() => {
@@ -144,7 +146,7 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
     enabled: boolean,
   ) => {
     // Turning a feature off ends what it is doing, so it is confirmed first.
-    if (!enabled) setConfirming(settingsKey);
+    if (!enabled) ask(settingsKey);
     else void saveVeritySettings(client, { [settingsKey]: enabled }).then(() => refresh());
   };
   const confirmChange = async () => {
@@ -416,7 +418,7 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
               label="Remove subscription key"
               variant="text"
               disabled={busy}
-              onPress={() => setConfirming('remove')}
+              onPress={() => ask('remove')}
             />
           </View>
         </>
