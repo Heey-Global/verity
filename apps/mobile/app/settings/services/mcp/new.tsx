@@ -6,7 +6,7 @@
 import { type VerityClient } from '@verity/mobile';
 import { router } from 'expo-router';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { Platform, Pressable, Text, TextInput, View } from 'react-native';
+import { Platform, Text, TextInput, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import {

@@ -12,7 +12,7 @@ import {
 } from '@verity/mobile';
 import { router } from 'expo-router';
 import { useMemo } from 'react';
-import { Pressable, Text, TextInput, View } from 'react-native';
+import { Text, TextInput, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import {

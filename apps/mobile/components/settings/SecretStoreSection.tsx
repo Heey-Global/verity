@@ -12,7 +12,7 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
+import { Text, TextInput, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { StatusPill } from '../StatusPill';

@@ -1,7 +1,7 @@
 import { VerityApiError, type IntegrationAccount, type VerityClient } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View } from 'react-native';
 import {
   SecretPasteField,
   SettingsField,
