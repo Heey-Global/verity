@@ -1,4 +1,9 @@
 import {
+  beginRuntimeSubscription,
+  recordRuntimeSessionEvent,
+  recordSessionStreamCreated,
+} from './runtimeDiagnostics.js';
+import {
   markSessionSwitch,
   sessionSwitchTiming,
   type SwitchTiming,
@@ -63,6 +68,7 @@ export class SessionStream {
   // prepended (scroll-up) and the transcript rebuilt deterministically.
   private eventFrames: StreamEventFrame[] = [];
   private handle: LiveSessionHandle | null = null;
+  private finishRuntimeSubscription: (() => void) | undefined;
   private view: boolean;
   private lastSeq: number;
   private rateLimitClearedThroughSeq: number | undefined;
@@ -116,6 +122,7 @@ export class SessionStream {
   }
 
   constructor(private readonly opts: SessionStreamOptions) {
+    recordSessionStreamCreated();
     this.timing = sessionSwitchTiming(opts.sessionId);
     this.lastSeq = opts.sinceSeq ?? 0;
     this.view = opts.view ?? false;
@@ -283,6 +290,7 @@ export class SessionStream {
     this.setConnectionState('paused');
     const handle = this.handle;
     this.handle = null;
+    this.finishRuntimeSubscription?.();
     handle?.close();
   }
 
@@ -300,6 +308,7 @@ export class SessionStream {
     this.paused = false;
     const handle = this.handle;
     this.handle = null;
+    this.finishRuntimeSubscription?.();
     handle?.close();
   }
 
@@ -312,43 +321,52 @@ export class SessionStream {
     this.setConnectionState('connecting');
     let handle: LiveSessionHandle | null = null;
     const current = (): boolean => !this.stopped && !this.paused && this.handle === handle;
-    handle = this.opts.transport.subscribeSession(
-      this.opts.sessionId,
-      {
-        cursor: () => this.lastSeq,
-        event: (frame) => {
-          if (current()) this.onEvent(frame);
+    const finishRuntimeSubscription = beginRuntimeSubscription();
+    this.finishRuntimeSubscription = finishRuntimeSubscription;
+    try {
+      handle = this.opts.transport.subscribeSession(
+        this.opts.sessionId,
+        {
+          cursor: () => this.lastSeq,
+          event: (frame) => {
+            if (current()) this.onEvent(frame);
+          },
+          caughtUp: () => {
+            if (!current()) return;
+            markSessionSwitch(this.timing, 'replay-caught-up');
+            this.caughtUp = true;
+            this.setConnectionState('connected');
+            this.opts.onUpdate?.(this.reducer.state);
+          },
+          ended: (reason) => {
+            if (!current()) return;
+            finishRuntimeSubscription();
+            this.handle = null;
+            this.setConnectionState('stopped');
+            this.opts.onError?.(endedMessage(reason));
+          },
+          disconnected: (message) => {
+            if (!current()) return;
+            // The connection resubscribes from the cursor once it is back; the
+            // replay that follows waits for its own `caught_up` again.
+            this.caughtUp = false;
+            this.setConnectionState('reconnecting');
+            if (message !== undefined) this.opts.onError?.(message);
+          },
         },
-        caughtUp: () => {
-          if (!current()) return;
-          markSessionSwitch(this.timing, 'replay-caught-up');
-          this.caughtUp = true;
-          this.setConnectionState('connected');
-          this.opts.onUpdate?.(this.reducer.state);
-        },
-        ended: (reason) => {
-          if (!current()) return;
-          this.handle = null;
-          this.setConnectionState('stopped');
-          this.opts.onError?.(endedMessage(reason));
-        },
-        disconnected: (message) => {
-          if (!current()) return;
-          // The connection resubscribes from the cursor once it is back; the
-          // replay that follows waits for its own `caught_up` again.
-          this.caughtUp = false;
-          this.setConnectionState('reconnecting');
-          if (message !== undefined) this.opts.onError?.(message);
-        },
-      },
-      this.view,
-    );
-    this.handle = handle;
+        this.view,
+      );
+      this.handle = handle;
+    } catch (error) {
+      finishRuntimeSubscription();
+      throw error;
+    }
   }
 
   private onEvent(frame: { seq: number; ts?: number | undefined; event: AgentEvent }): void {
     // Replays can overlap after a reconnect. Never apply an already-seen frame
     // or let an out-of-order frame move the resume cursor backwards.
+    recordRuntimeSessionEvent(frame.seq > this.lastSeq);
     if (frame.seq <= this.lastSeq) return;
     const eventFrame: StreamEventFrame = {
       k: 'event',
