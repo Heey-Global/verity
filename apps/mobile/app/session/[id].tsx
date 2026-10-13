@@ -145,6 +145,7 @@ import {
   type LocalPreviewShare,
 } from '@verity/mobile';
 import { FlashList, type FlashListRef } from '@shopify/flash-list';
+import { TranscriptScrollView } from '../../components/TranscriptScrollView';
 import * as Haptics from 'expo-haptics';
 import { router, Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
@@ -3920,6 +3921,7 @@ export const SessionChat = memo(function SessionChat({
   const transcriptList = useMemo(
     () => (
       <FlashList
+        renderScrollComponent={Platform.OS === 'web' ? TranscriptScrollView : undefined}
         onLoad={() => {
           markInitialListLoad(switchTiming);
           setLoadedListSessionId(sessionId);
