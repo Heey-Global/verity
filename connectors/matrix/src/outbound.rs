@@ -56,6 +56,18 @@ struct Outcome {
     retry_after_ms: Option<u64>,
 }
 
+fn same_homeserver(actual: &reqwest::Url, endpoint: &str) -> bool {
+    let Ok(mut configured) = reqwest::Url::parse(endpoint) else {
+        return false;
+    };
+    let mut actual = actual.clone();
+    for url in [&mut actual, &mut configured] {
+        let path = url.path().trim_end_matches('/').to_owned();
+        url.set_path(&path);
+    }
+    actual == configured
+}
+
 fn retry_delay(error: &matrix_sdk::Error) -> Option<u64> {
     let Some(api) = error.as_client_api_error() else {
         return Some(30_000);
@@ -114,8 +126,7 @@ impl Api {
         };
         if job.account_id != self.account_id
             || client.user_id().map(|id| id.as_str()) != Some(job.account_id.as_str())
-            || client.homeserver().as_str().trim_end_matches('/')
-                != job.endpoint.trim_end_matches('/')
+            || !same_homeserver(&client.homeserver(), &job.endpoint)
             || job.binding_version == 0
             || job.room_name.is_empty()
             || job.body.trim().is_empty()
@@ -229,6 +240,19 @@ impl Api {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equivalent_homeserver_urls_do_not_reject_approved_jobs() {
+        let actual = reqwest::Url::parse("https://matrix.example.test/").unwrap();
+        assert!(same_homeserver(&actual, "https://MATRIX.EXAMPLE.TEST:443"));
+        assert!(!same_homeserver(&actual, "https://other.example.test"));
+        assert!(!same_homeserver(&actual, "http://matrix.example.test"));
+        assert!(!same_homeserver(
+            &actual,
+            "https://matrix.example.test:8448"
+        ));
+        assert!(!same_homeserver(&actual, "invalid"));
+    }
 
     #[test]
     fn approved_job_preserves_exact_text_and_transaction() {
