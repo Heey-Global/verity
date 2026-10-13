@@ -15,6 +15,7 @@ import {
   SettingsScaffold,
 } from '../../../components/settings/SettingsChrome';
 import { type IconName } from '../../../components/Icon';
+import { type StatusIntent } from '../../../components/ui/Status';
 import { settingsStyles as styles } from '../../../components/settings/settingsStyles';
 import { createVerityClient } from '../../../lib/client';
 import { useLoadVeritySettings, useVeritySettings } from '../../../lib/settingsStore';
@@ -30,6 +31,7 @@ type Connection = {
   route: Href;
   connected: boolean;
   status?: string;
+  statusIntent?: StatusIntent;
 };
 
 export default function ConnectionsScreen() {
@@ -110,6 +112,13 @@ function ConnectionsView({ client }: { client: VerityClient }) {
       subtitle: 'Use your Claude subscription',
       route: '/settings/services/claude',
       connected: settings?.claudeCodeOauthCredentialsConfigured === true,
+      ...(settings?.claudeCodeOauthCredentialsConfigured &&
+      settings.claudeCredentialStatus?.state === 'relogin_required'
+        ? { status: 'Re-login needed', statusIntent: 'needsSetup' as const }
+        : settings?.claudeCodeOauthCredentialsConfigured &&
+            settings.claudeCredentialStatus?.state === 'refresh_failed'
+          ? { status: 'Retrying', statusIntent: 'transient' as const }
+          : {}),
     },
     {
       title: 'Codex',
@@ -184,11 +193,13 @@ function ConnectionsView({ client }: { client: VerityClient }) {
               : item.subtitle
           }
           status={{
-            intent: item.connected
-              ? item.status && item.status !== 'online' && item.title === 'Matrix'
-                ? 'transient'
-                : 'ready'
-              : 'optional',
+            intent:
+              item.statusIntent ??
+              (item.connected
+                ? item.status && item.status !== 'online' && item.title === 'Matrix'
+                  ? 'transient'
+                  : 'ready'
+                : 'optional'),
             label: item.status ?? (item.connected ? 'Connected' : 'Connect'),
           }}
           onPress={() => router.push(item.route)}

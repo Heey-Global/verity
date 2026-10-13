@@ -740,6 +740,24 @@ export const veritySettingsSchema = z.object({
   // promising a backend that would reject the upload.
   transcribeExternalConfigured: z.boolean().default(false),
   claudeCodeOauthCredentialsConfigured: z.boolean(),
+  // Older servers do not report token-resolution status.
+  claudeCredentialStatus: z
+    .object({
+      state: z.enum(['unknown', 'missing', 'ready', 'refresh_failed', 'relogin_required']),
+      code: z
+        .enum([
+          'invalid_credentials',
+          'refresh_token_missing',
+          'refresh_unavailable',
+          'refresh_rejected',
+          'refresh_http_error',
+          'refresh_invalid_response',
+          'refresh_transport_error',
+          'credential_unavailable',
+        ])
+        .nullable(),
+    })
+    .optional(),
   codexAuthJsonConfigured: z.boolean(),
   // Absent from servers older than the plan labels.
   claudeSubscriptionPlan: z.string().nullable().optional(),
