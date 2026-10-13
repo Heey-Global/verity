@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   AccessibilityInfo,
   Animated,
@@ -219,6 +219,46 @@ export function ConfirmSheet({
       <Text style={styles.message}>{message}</Text>
     </Sheet>
   );
+}
+
+/** What a confirmation asks; `onConfirm` may be async (see `ConfirmSheet`). */
+export type ConfirmRequest = {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  destructive?: boolean;
+  onConfirm: () => void | Promise<void>;
+};
+
+/**
+ * A confirmation asked from an event handler, like `Alert.alert` but drawn as
+ * the shared `ConfirmSheet`: call `confirm({...})`, render the returned sheet
+ * once. The wording stays in place while the sheet fades out, and the sheet
+ * closes once `onConfirm` settles without throwing.
+ */
+export function useConfirm(): [(request: ConfirmRequest) => void, ReactNode] {
+  const [request, setRequest] = useState<ConfirmRequest | null>(null);
+  const [visible, setVisible] = useState(false);
+  const confirm = useCallback((next: ConfirmRequest) => {
+    setRequest(next);
+    setVisible(true);
+  }, []);
+  const sheet =
+    request === null ? null : (
+      <ConfirmSheet
+        visible={visible}
+        title={request.title}
+        message={request.message}
+        confirmLabel={request.confirmLabel}
+        destructive={request.destructive ?? false}
+        onConfirm={async () => {
+          await request.onConfirm();
+          setVisible(false);
+        }}
+        onCancel={() => setVisible(false)}
+      />
+    );
+  return [confirm, sheet];
 }
 
 const styles = StyleSheet.create((theme) => ({

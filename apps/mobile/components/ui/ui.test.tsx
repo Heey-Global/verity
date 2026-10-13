@@ -3,7 +3,16 @@ import { join } from 'node:path';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { AccessibilityInfo, StyleSheet, View } from 'react-native';
 
-import { Button, ConfirmSheet, Row, StatusDot, StatusTag, TextField, ToggleRow } from './index';
+import {
+  Button,
+  ConfirmSheet,
+  Row,
+  useConfirm,
+  StatusDot,
+  StatusTag,
+  TextField,
+  ToggleRow,
+} from './index';
 import { darkTheme, lightTheme } from '../../theme/tokens';
 import { tint } from './tint';
 
@@ -322,6 +331,62 @@ describe('ConfirmSheet', () => {
       fail(new Error('offline'));
     });
     expect(screen.getByRole('button', { name: 'Turn off' })).toBeEnabled();
+  });
+});
+
+describe('useConfirm', () => {
+  function Screen({ onConfirm }: { onConfirm: () => void | Promise<void> }) {
+    const [confirm, sheet] = useConfirm();
+    return (
+      <>
+        <Button
+          label="Remove device"
+          onPress={() =>
+            confirm({
+              title: 'Remove paired device?',
+              message: 'This device will lose access to Verity.',
+              confirmLabel: 'Remove',
+              destructive: true,
+              onConfirm,
+            })
+          }
+        />
+        {sheet}
+      </>
+    );
+  }
+
+  // Asking is not doing: the action runs only from the sheet's own button.
+  it('runs the action only after it is confirmed, then closes', async () => {
+    const onConfirm = jest.fn();
+    render(<Screen onConfirm={onConfirm} />);
+    fireEvent.press(screen.getByRole('button', { name: 'Remove device' }));
+    expect(screen.getByText('Remove paired device?')).toBeOnTheScreen();
+    expect(onConfirm).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.press(screen.getByRole('button', { name: 'Remove' }));
+    });
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
+  });
+
+  it('never runs the action when cancelled', () => {
+    const onConfirm = jest.fn();
+    render(<Screen onConfirm={onConfirm} />);
+    fireEvent.press(screen.getByRole('button', { name: 'Remove device' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  // A failed action keeps the question open for another try.
+  it('stays open when the action fails', async () => {
+    const onConfirm = jest.fn().mockRejectedValue(new Error('offline'));
+    render(<Screen onConfirm={onConfirm} />);
+    fireEvent.press(screen.getByRole('button', { name: 'Remove device' }));
+    await act(async () => {
+      fireEvent.press(screen.getByRole('button', { name: 'Remove' }));
+    });
+    expect(screen.getByRole('button', { name: 'Remove' })).toBeEnabled();
   });
 });
 

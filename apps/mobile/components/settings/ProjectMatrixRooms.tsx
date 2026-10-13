@@ -6,6 +6,7 @@ import { SettingsGroup, SettingsListPanel, SettingsNavRow, SettingsPanel } from 
 import { projectMatrixRooms } from '../../lib/projectMatrixRooms';
 import { settingsStyles as styles } from './settingsStyles';
 import { MatrixImportErrors } from './MatrixImportErrors';
+import { useConfirm } from '../ui';
 
 export function ProjectMatrixRooms({
   client,
@@ -14,6 +15,7 @@ export function ProjectMatrixRooms({
   client: VerityClient;
   projectId: string;
 }) {
+  const [confirm, confirmSheet] = useConfirm();
   const [sources, setSources] = useState<IntegrationSource[]>([]);
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -123,24 +125,15 @@ export function ProjectMatrixRooms({
             subtitle="Invitation · Connect to this project"
             onPress={() => {
               if (!busy)
-                Alert.alert(
-                  'Connect room?',
-                  `${source.displayName} will send new messages to this project.`,
-                  [
-                    { text: 'Cancel', style: 'cancel' },
-                    {
-                      text: 'Connect',
-                      onPress: () =>
-                        void change(() =>
-                          client.bindIntegrationSource(
-                            source.accountId,
-                            source.sourceId,
-                            projectId,
-                          ),
-                        ),
-                    },
-                  ],
-                );
+                confirm({
+                  title: 'Connect room?',
+                  message: `${source.displayName} will send new messages to this project.`,
+                  confirmLabel: 'Connect',
+                  onConfirm: () =>
+                    void change(() =>
+                      client.bindIntegrationSource(source.accountId, source.sourceId, projectId),
+                    ),
+                });
             }}
           />
         </SettingsListPanel>
@@ -156,6 +149,7 @@ export function ProjectMatrixRooms({
         </SettingsPanel>
       ) : null}
       {busy ? <ActivityIndicator /> : null}
+      {confirmSheet}
     </SettingsGroup>
   );
 }
