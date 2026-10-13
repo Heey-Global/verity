@@ -19,6 +19,15 @@ impl Drop for Fixture {
 
 impl Fixture {
     async fn new(encrypted: bool, allowed: bool, joined: bool, encryption_error: bool) -> Self {
+        Self::with_rate_limit(encrypted, allowed, joined, encryption_error, None).await
+    }
+    async fn with_rate_limit(
+        encrypted: bool,
+        allowed: bool,
+        joined: bool,
+        encryption_error: bool,
+        rate_limited_state: Option<&'static str>,
+    ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -73,6 +82,11 @@ impl Fixture {
                         serde_json::json!({"allowed":allowed})
                     } else if path.ends_with("/outbound/result") {
                         serde_json::json!({"ok":true})
+                    } else if rate_limited_state
+                        .is_some_and(|state| path.contains(&format!("/state/{state}/")))
+                    {
+                        status = 429;
+                        serde_json::json!({"errcode":"M_LIMIT_EXCEEDED", "error":"slow down", "retry_after_ms":180_000})
                     } else if path.contains("/state/m.room.member/") {
                         serde_json::json!({"membership": if joined {"join"} else {"leave"}})
                     } else if path.contains("/state/m.room.encryption") {
@@ -234,4 +248,21 @@ async fn newly_encrypted_room_cannot_use_a_cached_plaintext_state() {
     assert_eq!(sends.len(), 1);
     assert!(sends[0].0.contains("/m.room.encrypted/"));
     assert!(sends[0].1.get("body").is_none());
+}
+
+#[tokio::test]
+async fn preflight_rate_limits_preserve_the_homeserver_delay() {
+    for state in ["m.room.member", "m.room.encryption"] {
+        let fixture = Fixture::with_rate_limit(true, true, true, false, Some(state)).await;
+        fixture.dispatch().await;
+        assert!(fixture.sends().is_empty());
+        let requests = fixture.requests.lock().unwrap();
+        // Preflight throttling must not schedule delivery before the homeserver permits it.
+        let (_, result) = requests
+            .iter()
+            .find(|(path, _)| path.ends_with("/outbound/result"))
+            .unwrap();
+        assert_eq!(result["retryAfterMs"], 180_000);
+        assert_eq!(result["error"], "encryption_unavailable");
+    }
 }

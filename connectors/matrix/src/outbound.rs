@@ -138,7 +138,8 @@ impl Api {
                 let response = client
                     .send(request)
                     .with_request_config(RequestConfig::new().retry_limit(0))
-                    .await?;
+                    .await
+                    .map_err(matrix_sdk::Error::from)?;
                 let member: RoomMemberEventContent =
                     serde_json::from_str(response.event_or_content.get())?;
                 if member.membership != MembershipState::Join {
@@ -166,7 +167,7 @@ impl Api {
                     {
                         None
                     }
-                    Err(error) => return Err(error.into()),
+                    Err(error) => return Err(matrix_sdk::Error::from(error).into()),
                 };
                 room.update_and_save_room_info(|mut info| {
                     info.mark_encryption_state_synced();
@@ -204,6 +205,12 @@ impl Api {
                 }
                 Ok(Ok(None)) => {
                     outcome.error = Some("room_not_joined");
+                }
+                Ok(Err(error)) => {
+                    outcome.error = Some("encryption_unavailable");
+                    outcome.retry_after_ms = error
+                        .downcast_ref::<matrix_sdk::Error>()
+                        .map_or(Some(30_000), retry_delay);
                 }
                 _ => {
                     outcome.error = Some("encryption_unavailable");
