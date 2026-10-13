@@ -280,7 +280,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
 
       {!settingsLoaded ? (
         <View style={styles.centered}>
-          <ActivityIndicator color={theme.colors.primary} />
+          <ActivityIndicator color={theme.colors.action} />
         </View>
       ) : !connected ? (
         <View style={styles.centered}>
@@ -298,7 +298,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
             accessibilityLabel="Connect Google Drive"
           >
             {connecting ? (
-              <ActivityIndicator color={theme.colors.onPrimary} />
+              <ActivityIndicator color={theme.colors.onAction} />
             ) : (
               <Text style={styles.primaryButtonLabel}>Connect Google Drive</Text>
             )}
@@ -422,7 +422,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
                     {isSharedDrive ? <Text style={styles.itemMeta}>Shared drive</Text> : null}
                   </View>
                   {isImporting ? (
-                    <ActivityIndicator size="small" color={theme.colors.primary} />
+                    <ActivityIndicator size="small" color={theme.colors.action} />
                   ) : isDriveFolder(item) ? (
                     <Icon name="chevron-right" size={20} color={theme.colors.textFaint} />
                   ) : (
@@ -442,7 +442,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
             }
             ListFooterComponent={
               <View style={styles.footer}>
-                {loading ? <ActivityIndicator color={theme.colors.primary} /> : null}
+                {loading ? <ActivityIndicator color={theme.colors.action} /> : null}
                 {error !== null ? (
                   <Text style={styles.error} accessibilityRole="alert">
                     {error}
@@ -475,11 +475,10 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.md,
     padding: theme.spacing.xl,
   },
-  emptyTitle: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '800' },
+  emptyTitle: { ...theme.typography.title, color: theme.colors.text },
   emptyBody: {
+    ...theme.typography.subtitle,
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
     textAlign: 'center',
     padding: theme.spacing.lg,
   },
@@ -489,13 +488,12 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
     paddingHorizontal: theme.spacing.lg,
   },
   primaryButtonLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.md,
-    fontWeight: '800',
+    ...theme.typography.button,
+    color: theme.colors.onAction,
   },
   pressed: { opacity: 0.78 },
   searchContainer: {
@@ -510,9 +508,10 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.md,
   },
   searchInput: {
+    fontFamily: theme.typography.body.fontFamily,
+    fontSize: theme.typography.body.fontSize,
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.md,
     paddingVertical: theme.spacing.sm,
   },
   driveViewTabs: {
@@ -532,9 +531,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   driveViewTabSelected: { backgroundColor: theme.colors.surface },
   driveViewTabLabel: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
   },
   driveViewTabLabelSelected: { color: theme.colors.text },
   listContent: { paddingVertical: theme.spacing.xs },
@@ -549,8 +548,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   itemPressed: { backgroundColor: theme.colors.surfaceAlt },
   itemText: { flex: 1, gap: 2 },
-  itemLabel: { color: theme.colors.text, fontSize: theme.text.md },
-  itemMeta: { color: theme.colors.textMuted, fontSize: theme.text.xs },
+  itemLabel: { ...theme.typography.body, color: theme.colors.text },
+  itemMeta: { ...theme.typography.footnote, color: theme.colors.textMuted },
   upRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -560,13 +559,21 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
-  upLabel: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '700' },
+  upLabel: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.textMuted,
+  },
   footer: { padding: theme.spacing.lg, gap: theme.spacing.sm, alignItems: 'center' },
   error: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
+    ...theme.typography.subtitle,
+    color: theme.colors.attention,
     textAlign: 'center',
   },
-  linkText: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '700' },
-  headerAction: { color: theme.colors.tone.danger, fontSize: theme.text.sm, fontWeight: '700' },
+  linkText: { ...theme.typography.button, color: theme.colors.action },
+  headerAction: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.attention,
+  },
 }));

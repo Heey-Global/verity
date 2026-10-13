@@ -415,7 +415,7 @@ function DevicesView({ client }: { client: VerityClient }) {
                 </View>
               </>
             ) : working ? (
-              <ActivityIndicator color={theme.colors.primary} />
+              <ActivityIndicator color={theme.colors.action} />
             ) : (
               <Pressable
                 style={({ pressed }) => [
@@ -440,7 +440,7 @@ function DevicesView({ client }: { client: VerityClient }) {
       <SettingsGroup title="Connected">
         {loading && devices.length === 0 ? (
           <SettingsPanel>
-            <ActivityIndicator color={theme.colors.primary} />
+            <ActivityIndicator color={theme.colors.action} />
           </SettingsPanel>
         ) : (
           <SettingsListPanel>
@@ -493,7 +493,7 @@ function DeviceRow({
   return (
     <View style={styles.navRow}>
       <View style={styles.navRowIcon}>
-        <Icon name={icon} size={18} color={theme.colors.primary} />
+        <Icon name={icon} size={18} color={theme.colors.action} />
       </View>
       <View style={styles.navRowBody}>
         <View style={styles.deviceNameRow}>
@@ -591,7 +591,7 @@ function CopyField({
           accessibilityRole="button"
           accessibilityLabel={accessibilityLabel}
         >
-          <Icon name={icon} size={14} color={theme.colors.primary} />
+          <Icon name={icon} size={14} color={theme.colors.action} />
           <Text style={styles.copyFieldButtonLabel}>{action}</Text>
         </Pressable>
       </View>

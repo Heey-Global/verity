@@ -308,7 +308,7 @@ export function GithubConnectPanel({
 
       {phase.kind === 'starting' ? (
         <View style={styles.waiting} accessibilityLiveRegion="polite">
-          <ActivityIndicator size="small" color={theme.colors.setup.text} />
+          <ActivityIndicator size="small" color={theme.colors.text} />
           <View style={styles.waitingCopy}>
             <Text style={styles.waitingTitle}>Opening GitHub…</Text>
             <Text style={styles.hint}>Preparing a secure authorization request.</Text>
@@ -316,7 +316,7 @@ export function GithubConnectPanel({
         </View>
       ) : waiting ? (
         <View style={styles.waiting} accessibilityLiveRegion="polite">
-          <ActivityIndicator size="small" color={theme.colors.setup.text} />
+          <ActivityIndicator size="small" color={theme.colors.text} />
           <View style={styles.waitingCopy}>
             <Text style={styles.waitingTitle}>Waiting for GitHub…</Text>
             <Text style={styles.hint}>Return to Verity after authorization is complete.</Text>
@@ -344,40 +344,37 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.md,
     paddingVertical: theme.spacing.lg,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.setup.border,
+    borderTopColor: theme.colors.border,
   },
   title: {
+    ...theme.typography.title,
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '600',
   },
   description: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
+    ...theme.typography.subtitle,
+    color: theme.colors.textMuted,
   },
   field: { gap: theme.spacing.xs },
-  label: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '700' },
+  label: { ...theme.typography.body, fontFamily: theme.fonts.semibold, color: theme.colors.text },
   input: {
+    fontFamily: theme.typography.body.fontFamily,
+    fontSize: theme.typography.body.fontSize,
     minHeight: 44,
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
+    borderColor: theme.colors.border,
     color: theme.colors.text,
     backgroundColor: theme.colors.background,
-    fontSize: theme.text.md,
   },
   hint: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.xs,
-    lineHeight: 18 * theme.fontScale,
+    ...theme.typography.footnote,
+    color: theme.colors.textMuted,
   },
-  linkText: { color: theme.colors.setup.text, fontSize: theme.text.sm, fontWeight: '700' },
+  linkText: { ...theme.typography.button, color: theme.colors.text },
   error: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
+    ...theme.typography.subtitle,
+    color: theme.colors.attention,
   },
   waiting: {
     minHeight: 52,
@@ -386,19 +383,22 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
   },
   waitingCopy: { flex: 1, gap: 2 },
-  waitingTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '700' },
+  waitingTitle: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.text,
+  },
   primaryButton: {
     minHeight: 44,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
     paddingHorizontal: theme.spacing.lg,
   },
   primaryButtonLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.md,
-    fontWeight: '600',
+    ...theme.typography.button,
+    color: theme.colors.onAction,
   },
   pressed: { opacity: 0.78 },
 }));
