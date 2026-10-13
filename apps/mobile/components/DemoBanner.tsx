@@ -51,14 +51,14 @@ export function DemoBanner() {
 
 const styles = StyleSheet.create((theme) => ({
   banner: {
-    backgroundColor: theme.colors.setup.surface,
+    backgroundColor: theme.colors.surface,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.setup.border,
+    borderTopColor: theme.colors.border,
     paddingHorizontal: theme.spacing.md,
     paddingTop: theme.spacing.sm,
   },
-  text: { color: theme.colors.setup.textMuted, fontSize: theme.text.xs },
+  text: { color: theme.colors.textMuted, fontSize: theme.typography.footnote.fontSize },
   actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: theme.spacing.md },
   button: { minHeight: 44, justifyContent: 'center', paddingHorizontal: theme.spacing.sm },
-  label: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '600' },
+  label: { color: theme.colors.text, fontSize: theme.text.sm, fontFamily: theme.fonts.semibold },
 }));

@@ -260,7 +260,7 @@ export function QuickCaptureCard({
                 <>
                   <View style={styles.recDot} />
                   <Text style={styles.recLabel}>Recording</Text>
-                  <LevelBars level={voice.level} color={theme.colors.tone.danger} />
+                  <LevelBars level={voice.level} color={theme.colors.attention} />
                 </>
               ) : (
                 <Text style={styles.headLabel}>{saving ? 'Saving…' : 'New task'}</Text>
@@ -467,7 +467,7 @@ export function QuickCaptureCard({
                 ]}
               >
                 {saving ? (
-                  <ActivityIndicator color={theme.colors.onPrimary} />
+                  <ActivityIndicator color={theme.colors.onAction} />
                 ) : (
                   <Text style={styles.saveLabel}>Save</Text>
                 )}
@@ -546,22 +546,30 @@ const styles = StyleSheet.create((theme) => ({
   grabArea: { alignItems: 'center', paddingTop: theme.spacing.sm, paddingBottom: 2 },
   grabber: { width: 38, height: 5, borderRadius: 3, backgroundColor: theme.colors.border },
   head: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm, minHeight: 24 },
-  recDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: theme.colors.tone.danger },
-  recLabel: { color: theme.colors.tone.danger, fontSize: theme.text.sm, fontWeight: '600' },
-  headLabel: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '600' },
+  recDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: theme.colors.attention },
+  recLabel: {
+    color: theme.colors.attention,
+    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.semibold,
+  },
+  headLabel: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.semibold,
+  },
   bars: { flexDirection: 'row', alignItems: 'center', gap: 3, height: 22, marginLeft: 4 },
   bar: { width: 3, borderRadius: 2 },
-  error: { color: theme.colors.tone.danger, fontSize: theme.text.sm },
+  error: { color: theme.colors.attention, fontSize: theme.text.sm },
   input: {
     color: theme.colors.text,
-    fontSize: theme.text.lg - 2,
+    fontSize: theme.typography.title.fontSize,
     lineHeight: 25 * theme.fontScale,
     minHeight: 76,
     maxHeight: 180,
     padding: 0,
     textAlignVertical: 'top',
   },
-  hint: { color: theme.colors.textFaint, fontSize: theme.text.xs },
+  hint: { color: theme.colors.textFaint, fontSize: theme.typography.footnote.fontSize },
   suggest: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -609,9 +617,13 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     borderRadius: theme.radius.pill,
     borderWidth: 1,
-    borderColor: theme.colors.primary,
+    borderColor: theme.colors.action,
   },
-  attachLabel: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '600' },
+  attachLabel: {
+    color: theme.colors.action,
+    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.semibold,
+  },
   thumbs: { gap: theme.spacing.sm },
   thumb: { width: 52, height: 72 },
   thumbImage: {
@@ -668,10 +680,10 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  chipSelected: { borderColor: theme.colors.primary },
-  chipDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.primary },
+  chipSelected: { borderColor: theme.colors.action },
+  chipDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.action },
   chipLabel: { color: theme.colors.text, fontSize: theme.text.sm },
-  chipLabelSelected: { color: theme.colors.primary, fontWeight: '600' },
+  chipLabelSelected: { color: theme.colors.action, fontFamily: theme.fonts.semibold },
   chipLabelMuted: { color: theme.colors.textMuted },
   otherList: { maxHeight: 180 },
   otherRow: {
@@ -687,12 +699,16 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 88,
     paddingHorizontal: theme.spacing.lg,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
     alignItems: 'center',
     justifyContent: 'center',
   },
   saveDisabled: { opacity: 0.4 },
-  saveLabel: { color: theme.colors.onPrimary, fontSize: theme.text.sm, fontWeight: '700' },
+  saveLabel: {
+    color: theme.colors.onAction,
+    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.bold,
+  },
   close: { paddingLeft: theme.spacing.xs },
   pressed: { opacity: 0.7 },
 }));

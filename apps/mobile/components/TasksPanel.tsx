@@ -308,9 +308,9 @@ export function TasksPanel({
               size={20}
               color={
                 isDone
-                  ? theme.colors.tone.done
+                  ? theme.colors.success
                   : task.status === 'in_progress'
-                    ? theme.colors.primary
+                    ? theme.colors.action
                     : theme.colors.textFaint
               }
             />
@@ -452,9 +452,9 @@ export function TasksPanel({
               size={20}
               color={
                 isDone
-                  ? theme.colors.tone.done
+                  ? theme.colors.success
                   : task.status === 'in_progress'
-                    ? theme.colors.primary
+                    ? theme.colors.action
                     : theme.colors.textFaint
               }
             />
@@ -685,7 +685,7 @@ export function TasksPanel({
           ) : null}
           {dispatching ? (
             <View style={styles.dispatchStatus} accessibilityLiveRegion="polite">
-              <ActivityIndicator size="small" color={theme.colors.primary} />
+              <ActivityIndicator size="small" color={theme.colors.action} />
               <Text style={styles.meta}>
                 {dispatching === 'new' ? 'Starting new session…' : 'Sending task to session…'}
               </Text>
@@ -924,8 +924,8 @@ const styles = StyleSheet.create((theme) => ({
   heading: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '700',
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   iconButton: {
     width: 44,
@@ -957,10 +957,14 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.md - 2,
   },
   tabSelected: { backgroundColor: theme.colors.surface },
-  tabLabel: { color: theme.colors.textMuted, fontSize: theme.text.sm, fontWeight: '500' },
-  tabLabelSelected: { color: theme.colors.text, fontWeight: '600' },
-  tabCountSelected: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
-  tabCountLabelSelected: { color: theme.colors.onPrimary },
+  tabLabel: {
+    color: theme.colors.textMuted,
+    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+  },
+  tabLabelSelected: { color: theme.colors.text, fontFamily: theme.fonts.semibold },
+  tabCountSelected: { backgroundColor: theme.colors.action, borderColor: theme.colors.action },
+  tabCountLabelSelected: { color: theme.colors.onAction },
   section: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -970,15 +974,15 @@ const styles = StyleSheet.create((theme) => ({
   },
   sectionLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '700',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.bold,
     letterSpacing: 0.6,
     textTransform: 'uppercase',
   },
   sectionLabelCollapsed: {
     color: theme.colors.text,
     fontSize: theme.text.sm,
-    fontWeight: '500',
+    fontFamily: theme.fonts.regular,
     letterSpacing: 0,
     textTransform: 'none',
   },
@@ -986,7 +990,7 @@ const styles = StyleSheet.create((theme) => ({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   count: {
     paddingHorizontal: theme.spacing.sm,
@@ -999,7 +1003,7 @@ const styles = StyleSheet.create((theme) => ({
   countLabel: {
     color: theme.colors.text,
     fontSize: theme.text.micro,
-    fontWeight: '600',
+    fontFamily: theme.fonts.semibold,
   },
   row: {
     paddingVertical: theme.spacing.sm,
@@ -1021,7 +1025,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   title: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 21 * theme.fontScale,
   },
   titleInput: {
@@ -1035,7 +1039,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   meta: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
   },
   more: {
     width: 32,
@@ -1047,7 +1051,7 @@ const styles = StyleSheet.create((theme) => ({
     marginLeft: 28,
   },
   link: {
-    color: theme.colors.primary,
+    color: theme.colors.action,
     fontSize: theme.text.sm,
   },
   description: {
@@ -1075,16 +1079,16 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surfaceAlt,
   },
   chipAccent: {
-    borderColor: theme.colors.primary,
+    borderColor: theme.colors.action,
   },
   chipLabel: {
     color: theme.colors.text,
     fontSize: theme.text.sm,
-    fontWeight: '500',
+    fontFamily: theme.fonts.regular,
   },
   chipLabelAccent: {
-    color: theme.colors.primary,
-    fontWeight: '600',
+    color: theme.colors.action,
+    fontFamily: theme.fonts.semibold,
   },
   moveTarget: {
     paddingVertical: theme.spacing.md,
@@ -1103,7 +1107,7 @@ const styles = StyleSheet.create((theme) => ({
   barFill: {
     height: '100%',
     borderRadius: 2,
-    backgroundColor: theme.colors.tone.done,
+    backgroundColor: theme.colors.success,
   },
   footer: {
     paddingTop: theme.spacing.md,

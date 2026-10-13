@@ -98,8 +98,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   bannerText: {
     flex: 1,
-    color: theme.colors.tone.attention,
-    fontSize: theme.text.xs,
+    color: theme.colors.attention,
+    fontSize: theme.typography.footnote.fontSize,
   },
   bannerAction: {
     // On the PRESSABLE, which is the row's flex child — the label inside it is not,
@@ -110,8 +110,8 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 0,
   },
   bannerRetry: {
-    color: theme.colors.primary,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    color: theme.colors.action,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
 }));

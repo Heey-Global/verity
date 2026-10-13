@@ -134,7 +134,7 @@ export default function RootLayout() {
           style={[styles.gateOverlay, { backgroundColor: theme.colors.background }]}
           accessibilityLabel="Checking for updates"
         >
-          <ActivityIndicator color={theme.colors.accent} />
+          <ActivityIndicator color={theme.colors.signature} />
         </View>
       </GestureHandlerRootView>
     );
@@ -188,7 +188,7 @@ function HydratedRoot() {
           style={[styles.gateOverlay, { backgroundColor: theme.colors.background }]}
           accessibilityLabel="Checking setup"
         >
-          <ActivityIndicator color={theme.colors.accent} />
+          <ActivityIndicator color={theme.colors.signature} />
         </View>
       </GestureHandlerRootView>
     );
@@ -421,7 +421,7 @@ function AppHeader({
                   ]}
                   accessibilityRole="button"
                 >
-                  <Icon name="folder-plus" size={20} color={theme.colors.accent} />
+                  <Icon name="folder-plus" size={20} color={theme.colors.signature} />
                 </Pressable>
               </Link>
             </>
@@ -533,7 +533,7 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 1,
     color: theme.colors.text,
     fontFamily: theme.fonts.semibold,
-    fontSize: theme.text.md,
+    fontSize: theme.typography.row.fontSize,
   },
   headerPressed: {
     opacity: 0.62,
@@ -548,7 +548,7 @@ const styles = StyleSheet.create((theme) => ({
     flex: 3,
   },
   headerTitleHome: {
-    color: theme.colors.accent,
+    color: theme.colors.signature,
   },
   headerIconButton: {
     width: 44,

@@ -351,7 +351,7 @@ function NewProject({ client }: { client: VerityClient }) {
           accessibilityLabel="Create project"
         >
           {creating ? (
-            <ActivityIndicator color={theme.colors.onPrimary} />
+            <ActivityIndicator color={theme.colors.onAction} />
           ) : (
             <Text style={styles.createLabel}>Create project</Text>
           )}
@@ -370,7 +370,11 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     paddingHorizontal: theme.spacing.lg,
   },
-  title: { color: theme.colors.text, fontSize: theme.text.lg, fontWeight: '600' },
+  title: {
+    color: theme.colors.text,
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
   subtitle: {
     color: theme.colors.textMuted,
     fontSize: theme.text.sm,
@@ -381,8 +385,8 @@ const styles = StyleSheet.create((theme) => ({
   content: { padding: theme.spacing.lg, gap: theme.spacing.sm },
   label: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
     marginTop: theme.spacing.md,
   },
@@ -395,7 +399,11 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
-  selectText: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
+  selectText: {
+    color: theme.colors.text,
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
   modeRow: { flexDirection: 'row', gap: theme.spacing.xs },
   mode: {
     flex: 1,
@@ -408,17 +416,17 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
-  modeActive: { borderColor: theme.colors.primary, backgroundColor: theme.colors.surfaceAlt },
+  modeActive: { borderColor: theme.colors.action, backgroundColor: theme.colors.surfaceAlt },
   modeLabel: {
     color: theme.colors.textMuted,
     fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontFamily: theme.fonts.semibold,
     textAlign: 'center',
   },
   modeLabelActive: {
     color: theme.colors.text,
     fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
     textAlign: 'center',
   },
   input: {
@@ -429,10 +437,10 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '600',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
-  selectPlaceholder: { color: theme.colors.textFaint, fontSize: theme.text.md },
+  selectPlaceholder: { color: theme.colors.textFaint, fontSize: theme.typography.row.fontSize },
   optionList: {
     gap: theme.spacing.xs,
     padding: theme.spacing.xs,
@@ -447,8 +455,8 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: 'transparent',
   },
-  optionActive: { borderColor: theme.colors.primary, backgroundColor: theme.colors.surfaceAlt },
-  optionTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '700' },
+  optionActive: { borderColor: theme.colors.action, backgroundColor: theme.colors.surfaceAlt },
+  optionTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontFamily: theme.fonts.bold },
   reload: {
     minHeight: 44,
     alignItems: 'center',
@@ -457,14 +465,18 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
-  reloadLabel: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '700' },
+  reloadLabel: {
+    color: theme.colors.action,
+    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.bold,
+  },
   hint: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 17 * theme.fontScale,
     marginTop: theme.spacing.xs,
   },
-  error: { color: theme.colors.tone.danger, fontSize: theme.text.sm, marginTop: theme.spacing.sm },
+  error: { color: theme.colors.attention, fontSize: theme.text.sm, marginTop: theme.spacing.sm },
   footer: {
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.sm,
@@ -477,10 +489,14 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   createDisabled: { backgroundColor: theme.colors.border },
-  createLabel: { color: theme.colors.onPrimary, fontSize: theme.text.md, fontWeight: '700' },
+  createLabel: {
+    color: theme.colors.onAction,
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.bold,
+  },
 }));
 
 function repositoryName(project: ProjectRecord): string {

@@ -338,7 +338,7 @@ function SwipeAction({
   secondary?: { label: string; icon: IconName; onPress: () => void };
 }) {
   const { theme } = useUnistyles();
-  const tone = side === 'favorite' ? theme.colors.accent : theme.colors.tone.danger;
+  const tone = side === 'favorite' ? theme.colors.signature : theme.colors.attention;
   const [isArmed, setArmed] = useState(false);
   const arm = useCallback(
     (on: boolean) => {
@@ -364,15 +364,15 @@ function SwipeAction({
   // Tinted like the status pill at rest; solid once a release would fire it.
   // Opaque either way: the lane sits under the row and must not show through.
   const tint = (color: string) => mixColor(color, theme.colors.surface, 0.16);
-  const color = isArmed ? theme.colors.onPrimary : tone;
+  const color = isArmed ? theme.colors.onAction : tone;
   return (
     <Reanimated.View style={[styles.lane, lane]}>
       {secondary && !isArmed ? (
         <SwipeButton
           label={secondary.label}
           icon={secondary.icon}
-          color={theme.colors.primary}
-          background={tint(theme.colors.primary)}
+          color={theme.colors.action}
+          background={tint(theme.colors.action)}
           onPress={secondary.onPress}
         />
       ) : null}
@@ -488,7 +488,7 @@ export function SessionContextMenu({
         <MenuItem
           icon="star"
           label={favorite ? 'Remove from favorites' : 'Add to favorites'}
-          color={favorite ? theme.colors.accent : theme.colors.text}
+          color={favorite ? theme.colors.signature : theme.colors.text}
           onPress={pick(onToggleFavorite)}
         />
         <MenuItem icon="edit-2" label="Edit…" color={theme.colors.text} onPress={pick(onEdit)} />
@@ -496,7 +496,7 @@ export function SessionContextMenu({
         <MenuItem
           icon="trash-2"
           label="Delete…"
-          color={theme.colors.tone.danger}
+          color={theme.colors.attention}
           onPress={pick(onDelete)}
         />
       </View>
@@ -550,8 +550,8 @@ const styles = StyleSheet.create((theme) => ({
     flexGrow: 1,
   },
   actionLabel: {
-    fontSize: theme.text.xs,
-    fontWeight: '700',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   backdrop: {
     position: 'absolute',
@@ -576,7 +576,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   menuTitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     paddingHorizontal: theme.spacing.sm + 2,
     paddingTop: theme.spacing.xs + 2,
     paddingBottom: theme.spacing.xs,

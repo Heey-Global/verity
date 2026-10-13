@@ -174,7 +174,7 @@ export default function MessageSearchScreen() {
         <ScopeButton label="All Chats" active={scope === 'all'} onPress={() => setScope('all')} />
       </View>
 
-      {loading ? <ActivityIndicator style={styles.state} color={theme.colors.accent} /> : null}
+      {loading ? <ActivityIndicator style={styles.state} color={theme.colors.signature} /> : null}
       {!loading && error ? <Text style={styles.stateText}>{error}</Text> : null}
       {!loading && !error && !maySearch ? (
         <Text style={styles.stateText}>Enter a search term to find messages.</Text>
@@ -189,7 +189,9 @@ export default function MessageSearchScreen() {
         contentContainerStyle={styles.results}
         onEndReached={loadMore}
         onEndReachedThreshold={0.35}
-        ListFooterComponent={loadingMore ? <ActivityIndicator color={theme.colors.accent} /> : null}
+        ListFooterComponent={
+          loadingMore ? <ActivityIndicator color={theme.colors.signature} /> : null
+        }
         renderItem={({ item }) => (
           <Pressable style={styles.result} onPress={() => openResult(item)}>
             <View style={styles.resultMeta}>
@@ -270,12 +272,16 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomColor: theme.colors.border,
   },
   input: { flex: 1, color: theme.colors.text, fontSize: 17, paddingVertical: theme.spacing.sm },
-  cancel: { color: theme.colors.accent, fontSize: 16 },
+  cancel: { color: theme.colors.signature, fontSize: theme.typography.row.fontSize },
   scopes: { flexDirection: 'row', gap: 6, padding: theme.spacing.md },
   scope: { flex: 1, paddingVertical: 8, borderRadius: 9, backgroundColor: theme.colors.surface },
-  scopeActive: { backgroundColor: theme.colors.accent },
-  scopeText: { color: theme.colors.textMuted, textAlign: 'center', fontSize: 13 },
-  scopeTextActive: { color: theme.colors.background, fontWeight: '700' },
+  scopeActive: { backgroundColor: theme.colors.signature },
+  scopeText: {
+    color: theme.colors.textMuted,
+    textAlign: 'center',
+    fontSize: theme.typography.subtitle.fontSize,
+  },
+  scopeTextActive: { color: theme.colors.background, fontFamily: theme.fonts.bold },
   disabled: { opacity: 0.35 },
   state: { marginTop: 40 },
   stateText: { color: theme.colors.textMuted, textAlign: 'center', margin: 40 },
@@ -286,9 +292,18 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomColor: theme.colors.border,
   },
   resultMeta: { flexDirection: 'row', gap: 8, alignItems: 'center' },
-  resultTitle: { flex: 1, color: theme.colors.text, fontWeight: '700', fontSize: 15 },
-  resultTime: { color: theme.colors.textMuted, fontSize: 12 },
-  resultContext: { color: theme.colors.accent, fontSize: 12, marginTop: 3 },
+  resultTitle: {
+    flex: 1,
+    color: theme.colors.text,
+    fontFamily: theme.fonts.bold,
+    fontSize: theme.typography.body.fontSize,
+  },
+  resultTime: { color: theme.colors.textMuted, fontSize: theme.typography.footnote.fontSize },
+  resultContext: {
+    color: theme.colors.signature,
+    fontSize: theme.typography.footnote.fontSize,
+    marginTop: 3,
+  },
   snippet: { color: theme.colors.text, fontSize: 14, lineHeight: 20, marginTop: 7 },
-  match: { color: theme.colors.background, backgroundColor: theme.colors.accent },
+  match: { color: theme.colors.background, backgroundColor: theme.colors.signature },
 }));

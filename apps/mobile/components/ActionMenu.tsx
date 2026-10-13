@@ -105,12 +105,12 @@ function ActionMenuRow({
     >
       <View style={styles.icon}>
         {busy ? (
-          <ActivityIndicator size="small" color={theme.colors.accent} />
+          <ActivityIndicator size="small" color={theme.colors.signature} />
         ) : (
           <Icon
             name={icon}
             size={18}
-            color={destructive ? theme.colors.tone.danger : theme.colors.textMuted}
+            color={destructive ? theme.colors.attention : theme.colors.textMuted}
           />
         )}
       </View>
@@ -165,13 +165,13 @@ const styles = StyleSheet.create((theme) => ({
   title: {
     color: theme.colors.text,
     fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontFamily: theme.fonts.semibold,
   },
   titleDestructive: {
-    color: theme.colors.tone.danger,
+    color: theme.colors.attention,
   },
   subtitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
   },
 }));

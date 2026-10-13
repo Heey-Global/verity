@@ -1,18 +1,8 @@
 {
-  "app/_layout.tsx": {
-    "legacyColor": 4,
-    "fontSize": 1
-  },
-  "app/github/app/callback.tsx": {
-    "legacyColor": 3,
-    "fontSize": 2,
-    "fontWeight": 2
-  },
   "app/index.tsx": {
     "rawColor": 10,
-    "legacyColor": 26,
-    "fontSize": 23,
-    "fontWeight": 15
+    "legacyColor": 2,
+    "fontSize": 13
   },
   "app/meeting/[sessionId].tsx": {
     "legacyColor": 34,
@@ -20,32 +10,22 @@
     "fontWeight": 13
   },
   "app/new-project.tsx": {
-    "legacyColor": 7,
-    "fontSize": 13,
-    "fontWeight": 9
+    "fontSize": 6
   },
   "app/new.tsx": {
-    "fontSize": 3,
-    "fontWeight": 2
+    "fontSize": 1
   },
   "app/search.tsx": {
-    "legacyColor": 6,
-    "fontSize": 7,
-    "fontWeight": 2
+    "fontSize": 2
   },
   "app/secure-device.tsx": {
-    "legacyColor": 2,
-    "fontSize": 2,
-    "fontWeight": 2
+    "fontSize": 1
   },
   "app/session/[id].tsx": {
     "rawColor": 11,
     "legacyColor": 93,
     "fontSize": 89,
     "fontWeight": 53
-  },
-  "app/unlock-device.tsx": {
-    "legacyColor": 1
   },
   "app/web-connect.tsx": {
     "rawColor": 38,
@@ -54,9 +34,7 @@
   },
   "components/ActionMenu.tsx": {
     "rawColor": 1,
-    "legacyColor": 3,
-    "fontSize": 2,
-    "fontWeight": 1
+    "fontSize": 1
   },
   "components/ActiveMeetingOverlay.tsx": {
     "rawColor": 12,
@@ -67,65 +45,36 @@
     "legacyColor": 1
   },
   "components/DemoBanner.tsx": {
-    "legacyColor": 3,
-    "fontSize": 2,
-    "fontWeight": 1
+    "fontSize": 1
   },
   "components/FeatureHint.tsx": {
-    "rawColor": 1,
-    "legacyColor": 1,
-    "fontSize": 3,
-    "fontWeight": 1
+    "rawColor": 1
   },
   "components/ImageLightbox.tsx": {
     "rawColor": 5,
     "fontSize": 2,
     "fontWeight": 2
   },
-  "components/OnboardingProgress.tsx": {
-    "legacyColor": 3,
-    "fontSize": 1,
-    "fontWeight": 1
-  },
   "components/PinnedPlan.tsx": {
     "legacyColor": 7,
     "fontSize": 11,
     "fontWeight": 7
   },
-  "components/ProjectPortChip.tsx": {
-    "fontSize": 1,
-    "fontWeight": 1
-  },
-  "components/ProjectStatusDot.tsx": {
-    "legacyColor": 4
-  },
   "components/QuickCaptureBubble.tsx": {
     "rawColor": 3,
-    "legacyColor": 5,
     "fontSize": 1,
     "fontWeight": 1
   },
   "components/QuickCaptureCard.tsx": {
     "rawColor": 3,
-    "legacyColor": 12,
-    "fontSize": 10,
-    "fontWeight": 5
+    "fontSize": 8
   },
   "components/QuickCaptureIntro.tsx": {
     "rawColor": 1,
-    "legacyColor": 5,
-    "fontSize": 6,
-    "fontWeight": 3
-  },
-  "components/ServerAttentionBanner.tsx": {
-    "legacyColor": 2,
-    "fontSize": 2,
-    "fontWeight": 1
+    "fontSize": 3
   },
   "components/ServerUpdateBanner.tsx": {
-    "legacyColor": 3,
-    "fontSize": 2,
-    "fontWeight": 1
+    "fontSize": 1
   },
   "components/SessionAutomation.tsx": {
     "rawColor": 1,
@@ -133,22 +82,17 @@
     "fontSize": 18,
     "fontWeight": 12
   },
-  "components/SessionFolderRow.tsx": {
-    "fontSize": 1
-  },
   "components/SessionIssueRef.tsx": {
     "rawColor": 1,
     "legacyColor": 1,
     "fontSize": 1
   },
   "components/SessionMarkerColumn.tsx": {
-    "legacyColor": 4
+    "legacyColor": 1
   },
   "components/SessionRowActions.tsx": {
     "rawColor": 1,
-    "legacyColor": 7,
-    "fontSize": 3,
-    "fontWeight": 1
+    "fontSize": 1
   },
   "components/SessionSettingsDialog.tsx": {
     "rawColor": 10,
@@ -157,21 +101,11 @@
     "fontWeight": 11
   },
   "components/TaskIssuesList.tsx": {
-    "legacyColor": 5,
-    "fontSize": 6,
-    "fontWeight": 4
+    "fontSize": 3
   },
   "components/TasksPanel.tsx": {
     "rawColor": 1,
-    "legacyColor": 13,
-    "fontSize": 11,
-    "fontWeight": 8
-  },
-  "components/UnreadDot.tsx": {
-    "legacyColor": 1
-  },
-  "components/WorkingDot.tsx": {
-    "legacyColor": 1
+    "fontSize": 7
   },
   "components/files/FileActionMenu.tsx": {
     "rawColor": 1,

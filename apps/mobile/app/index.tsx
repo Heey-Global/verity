@@ -1293,9 +1293,9 @@ const ProjectGroup = memo(function ProjectGroup({
                 disabled={repairing}
               >
                 {repairing ? (
-                  <ActivityIndicator size="small" color={theme.colors.tone.danger} />
+                  <ActivityIndicator size="small" color={theme.colors.attention} />
                 ) : (
-                  <Icon name="tool" size={16} color={theme.colors.tone.danger} />
+                  <Icon name="tool" size={16} color={theme.colors.attention} />
                 )}
               </Pressable>
             ) : null}
@@ -1345,7 +1345,7 @@ const ProjectGroup = memo(function ProjectGroup({
                     accessibilityLabel={`Start new session in ${group.title}`}
                     onPress={() => onNewSession(group.project!)}
                   >
-                    <Icon name="plus" size={20} color={theme.colors.primary} />
+                    <Icon name="plus" size={20} color={theme.colors.action} />
                   </Pressable>
                 ) : (
                   <Link
@@ -1357,7 +1357,7 @@ const ProjectGroup = memo(function ProjectGroup({
                     asChild
                   >
                     <Pressable style={styles.projectIconButton} accessibilityRole="button">
-                      <Icon name="plus" size={20} color={theme.colors.primary} />
+                      <Icon name="plus" size={20} color={theme.colors.action} />
                     </Pressable>
                   </Link>
                 )}
@@ -1381,7 +1381,7 @@ const ProjectGroup = memo(function ProjectGroup({
                   accessibilityLabel={`Start new session in ${defaultNewSessionProject.repo}`}
                   onPress={() => onNewSession(defaultNewSessionProject)}
                 >
-                  <Icon name="plus" size={20} color={theme.colors.primary} />
+                  <Icon name="plus" size={20} color={theme.colors.action} />
                 </Pressable>
               ) : (
                 <Link
@@ -1395,7 +1395,7 @@ const ProjectGroup = memo(function ProjectGroup({
                   asChild
                 >
                   <Pressable style={styles.projectIconButton} accessibilityRole="button">
-                    <Icon name="plus" size={20} color={theme.colors.primary} />
+                    <Icon name="plus" size={20} color={theme.colors.action} />
                   </Pressable>
                 </Link>
               )
@@ -1518,9 +1518,9 @@ function ProviderLimitSegment({
   const clamped = Math.min(100, usage);
   const fillColor =
     meterLevel === 'spent'
-      ? theme.colors.accent
+      ? theme.colors.signature
       : meterLevel === 'low'
-        ? theme.colors.primary
+        ? theme.colors.action
         : theme.colors.textMuted;
   // Even-burn marker: where usage "should" sit now if the quota were spent at a
   // steady rate. Shown for both the five-hour and weekly windows.
@@ -1840,7 +1840,7 @@ const SessionRow = memo(function SessionRow({
             style={[
               styles.rowSub,
               styles.sessionSub,
-              notice ? { color: theme.colors.tone.danger } : null,
+              notice ? { color: theme.colors.attention } : null,
             ]}
             numberOfLines={1}
             {...(notice ? { accessibilityRole: 'alert' as const } : {})}
@@ -2052,8 +2052,8 @@ const styles = StyleSheet.create((theme) => ({
   limitProvider: {
     width: 48,
     color: theme.colors.text,
-    fontSize: theme.text.xs,
-    fontWeight: '800',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.extrabold,
   },
   limitSegment: {
     flex: 1,
@@ -2076,7 +2076,7 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 0,
     color: theme.colors.textMuted,
     fontSize: 10 * theme.fontScale,
-    fontWeight: '800',
+    fontFamily: theme.fonts.extrabold,
     textAlign: 'right',
     textTransform: 'uppercase',
   },
@@ -2165,7 +2165,7 @@ const styles = StyleSheet.create((theme) => ({
   limitPaceInfoTitle: {
     color: theme.colors.text,
     fontSize: 11 * theme.fontScale,
-    fontWeight: '800',
+    fontFamily: theme.fonts.extrabold,
   },
   limitPaceInfoText: {
     color: theme.colors.text,
@@ -2187,16 +2187,16 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
   },
   limitPaceInfoCloseText: {
-    color: theme.colors.primary,
+    color: theme.colors.action,
     fontSize: 10 * theme.fontScale,
-    fontWeight: '800',
+    fontFamily: theme.fonts.extrabold,
   },
   limitValue: {
     flex: 1,
     minWidth: 0,
     color: theme.colors.textMuted,
     fontSize: 10 * theme.fontScale,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
   },
   limitPercent: {
     position: 'absolute',
@@ -2206,12 +2206,12 @@ const styles = StyleSheet.create((theme) => ({
     width: 30,
     color: theme.colors.textMuted,
     fontSize: 8 * theme.fontScale,
-    fontWeight: '800',
+    fontFamily: theme.fonts.extrabold,
     lineHeight: 9 * theme.fontScale,
     textAlign: 'left',
   },
   limitValueBlocked: {
-    color: theme.colors.accent,
+    color: theme.colors.signature,
   },
   centered: {
     flex: 1,
@@ -2223,8 +2223,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   emptyTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '600',
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   emptySubtitle: {
     color: theme.colors.textMuted,
@@ -2239,12 +2239,12 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.sm,
   },
   errorDetailsLabel: {
-    color: theme.colors.primary,
+    color: theme.colors.action,
     fontSize: theme.text.sm,
   },
   errorDetailsText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     textAlign: 'center',
     maxWidth: 320,
   },
@@ -2255,24 +2255,24 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.lg,
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   emptyActionLabel: {
-    color: theme.colors.onPrimary,
+    color: theme.colors.onAction,
     fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
   },
   retry: {
     marginTop: theme.spacing.md,
     paddingHorizontal: theme.spacing.lg,
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   retryLabel: {
-    color: theme.colors.onPrimary,
+    color: theme.colors.onAction,
     fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontFamily: theme.fonts.semibold,
   },
   listContent: {
     flexGrow: 1,
@@ -2316,8 +2316,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   pausedCount: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '700',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   pausedList: {
     gap: theme.spacing.sm,
@@ -2339,7 +2339,7 @@ const styles = StyleSheet.create((theme) => ({
     marginHorizontal: -theme.spacing.lg,
   },
   projectGroupDragging: {
-    borderColor: theme.colors.primary,
+    borderColor: theme.colors.action,
     backgroundColor: theme.colors.surfaceAlt,
   },
   sectionHeaderRow: {
@@ -2350,8 +2350,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   sectionHeader: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '700',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.bold,
     textTransform: 'uppercase',
   },
   projectHeader: {
@@ -2405,8 +2405,8 @@ const styles = StyleSheet.create((theme) => ({
   projectTitle: {
     minWidth: 0,
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '700',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.bold,
     lineHeight: 21 * theme.fontScale,
   },
   projectMetaRow: {
@@ -2419,14 +2419,14 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
     flexShrink: 1,
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 17 * theme.fontScale,
   },
   projectStatusLabel: {
     minWidth: 0,
     flexShrink: 1,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // Work in progress stays muted on purpose. The pulsing magenta dot in the
   // gutter is the signal that something is happening; painting the sentence the
@@ -2443,12 +2443,12 @@ const styles = StyleSheet.create((theme) => ({
   // means it needs re-checking, not that it is broken — `danger` here would put
   // a working project in the same colour as a stopped container.
   projectStatusAttention: {
-    color: theme.colors.tone.attention,
+    color: theme.colors.attention,
   },
   // A failure reason has to be legible as a failure — muted grey made "Sandbox
   // container stopped" look like just another progress step.
   projectStatusDanger: {
-    color: theme.colors.tone.danger,
+    color: theme.colors.attention,
   },
   projectActions: {
     flexDirection: 'row',
@@ -2476,15 +2476,15 @@ const styles = StyleSheet.create((theme) => ({
   },
   projectUpdateButton: {
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: `${theme.colors.accent}99`,
-    backgroundColor: `${theme.colors.accent}1f`,
+    borderColor: `${theme.colors.signature}99`,
+    backgroundColor: `${theme.colors.signature}1f`,
   },
   // Outlined in the same danger tone as the row's status dot, so the broken
   // project and the action that fixes it read as one signal.
   projectRepairButton: {
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: `${theme.colors.tone.danger}99`,
-    backgroundColor: `${theme.colors.tone.danger}1f`,
+    borderColor: `${theme.colors.attention}99`,
+    backgroundColor: `${theme.colors.attention}1f`,
   },
   projectActionDisabled: {
     opacity: 0.6,
@@ -2539,14 +2539,14 @@ const styles = StyleSheet.create((theme) => ({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: `${theme.colors.accent}4d`,
+    backgroundColor: `${theme.colors.signature}4d`,
   },
   rowPressed: {
     opacity: 0.6,
   },
   rowSub: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 17 * theme.fontScale,
   },
   sessionDragHandle: { flex: 1, minWidth: 0 },
@@ -2556,7 +2556,7 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 1,
     color: theme.colors.text,
     fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontFamily: theme.fonts.semibold,
     lineHeight: 19 * theme.fontScale,
   },
   // The session row has no separate trail column: the title line carries its own
@@ -2588,8 +2588,8 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: StyleSheet.hairlineWidth,
   },
   statusPillText: {
-    fontSize: theme.text.xs,
-    fontWeight: '800',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.extrabold,
     lineHeight: 15 * theme.fontScale,
   },
   separator: {

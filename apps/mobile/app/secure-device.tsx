@@ -69,7 +69,7 @@ export default function SecureDevice() {
   if (!asking) {
     return (
       <View style={[styles.root, styles.center]}>
-        <ActivityIndicator color={theme.colors.accent} />
+        <ActivityIndicator color={theme.colors.signature} />
       </View>
     );
   }
@@ -107,14 +107,14 @@ const styles = StyleSheet.create((theme) => ({
     paddingBottom: theme.spacing.xl,
   },
   eyebrow: {
-    color: theme.colors.accent,
-    fontSize: theme.text.xs,
-    fontWeight: '800',
+    color: theme.colors.signature,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.extrabold,
     textTransform: 'uppercase',
   },
   title: {
     color: theme.colors.text,
     fontSize: theme.text.xl,
-    fontWeight: '800',
+    fontFamily: theme.fonts.extrabold,
   },
 }));

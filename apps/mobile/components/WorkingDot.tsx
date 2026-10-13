@@ -29,7 +29,7 @@ export function WorkingDot({
         width: size,
         height: size,
         borderRadius: size / 2,
-        backgroundColor: theme.colors.accent,
+        backgroundColor: theme.colors.signature,
         opacity: pulse,
       }}
     />
