@@ -1,0 +1,386 @@
+{
+  "app/_layout.tsx": {
+    "legacyColor": 4,
+    "fontSize": 1
+  },
+  "app/devices.tsx": {
+    "rawColor": 2,
+    "legacyColor": 4
+  },
+  "app/github-connect.tsx": {
+    "legacyColor": 5,
+    "fontSize": 6,
+    "fontWeight": 4
+  },
+  "app/github/app/callback.tsx": {
+    "legacyColor": 3,
+    "fontSize": 2,
+    "fontWeight": 2
+  },
+  "app/google-drive/[sessionId].tsx": {
+    "legacyColor": 9,
+    "fontSize": 11,
+    "fontWeight": 6
+  },
+  "app/index.tsx": {
+    "rawColor": 10,
+    "legacyColor": 26,
+    "fontSize": 23,
+    "fontWeight": 15
+  },
+  "app/meeting/[sessionId].tsx": {
+    "legacyColor": 34,
+    "fontSize": 25,
+    "fontWeight": 13
+  },
+  "app/new-project.tsx": {
+    "legacyColor": 7,
+    "fontSize": 13,
+    "fontWeight": 9
+  },
+  "app/new.tsx": {
+    "fontSize": 3,
+    "fontWeight": 2
+  },
+  "app/onboarding/ai-backends.tsx": {
+    "legacyColor": 4,
+    "fontSize": 2,
+    "fontWeight": 1
+  },
+  "app/onboarding/master-password.tsx": {
+    "legacyColor": 17,
+    "fontSize": 12,
+    "fontWeight": 9
+  },
+  "app/onboarding/server-url.tsx": {
+    "rawColor": 3,
+    "legacyColor": 25,
+    "fontSize": 18,
+    "fontWeight": 13
+  },
+  "app/onboarding/starter.tsx": {
+    "legacyColor": 3,
+    "fontSize": 3,
+    "fontWeight": 1
+  },
+  "app/onboarding/welcome.tsx": {
+    "legacyColor": 9,
+    "fontSize": 8,
+    "fontWeight": 4
+  },
+  "app/project/[id]/settings/github.tsx": {
+    "legacyColor": 1
+  },
+  "app/project/[id]/settings/index.tsx": {
+    "legacyColor": 1
+  },
+  "app/project/[id]/settings/model.tsx": {
+    "legacyColor": 4
+  },
+  "app/project/[id]/settings/sandbox.tsx": {
+    "legacyColor": 1
+  },
+  "app/project/[id]/settings/services.tsx": {
+    "legacyColor": 1
+  },
+  "app/search.tsx": {
+    "legacyColor": 6,
+    "fontSize": 7,
+    "fontWeight": 2
+  },
+  "app/secure-device.tsx": {
+    "legacyColor": 2,
+    "fontSize": 2,
+    "fontWeight": 2
+  },
+  "app/session/[id].tsx": {
+    "rawColor": 11,
+    "legacyColor": 93,
+    "fontSize": 89,
+    "fontWeight": 53
+  },
+  "app/settings/live-meeting-stt.tsx": {
+    "rawColor": 10,
+    "fontSize": 5,
+    "fontWeight": 4
+  },
+  "app/settings/premium.tsx": {
+    "rawColor": 2,
+    "legacyColor": 8,
+    "fontSize": 7,
+    "fontWeight": 4
+  },
+  "app/settings/services/mcp/index.tsx": {
+    "legacyColor": 1
+  },
+  "app/settings/voice-input.tsx": {
+    "rawColor": 4,
+    "fontSize": 1
+  },
+  "app/unlock-device.tsx": {
+    "legacyColor": 1
+  },
+  "app/web-connect.tsx": {
+    "rawColor": 38,
+    "fontSize": 12,
+    "fontWeight": 7
+  },
+  "components/ActionMenu.tsx": {
+    "rawColor": 1,
+    "legacyColor": 3,
+    "fontSize": 2,
+    "fontWeight": 1
+  },
+  "components/ActiveMeetingOverlay.tsx": {
+    "rawColor": 12,
+    "fontSize": 4,
+    "fontWeight": 1
+  },
+  "components/AgentLoginPanel.tsx": {
+    "legacyColor": 43,
+    "fontSize": 18,
+    "fontWeight": 14
+  },
+  "components/AttentionMarkers.tsx": {
+    "legacyColor": 1
+  },
+  "components/BiometricConsent.tsx": {
+    "legacyColor": 6,
+    "fontSize": 4,
+    "fontWeight": 3
+  },
+  "components/DemoBanner.tsx": {
+    "legacyColor": 3,
+    "fontSize": 2,
+    "fontWeight": 1
+  },
+  "components/FeatureHint.tsx": {
+    "rawColor": 1,
+    "legacyColor": 1,
+    "fontSize": 3,
+    "fontWeight": 1
+  },
+  "components/GithubCommitSetup.tsx": {
+    "legacyColor": 25,
+    "fontSize": 17,
+    "fontWeight": 11
+  },
+  "components/GithubConnectPanel.tsx": {
+    "legacyColor": 10,
+    "fontSize": 9,
+    "fontWeight": 5
+  },
+  "components/ImageLightbox.tsx": {
+    "rawColor": 5,
+    "fontSize": 2,
+    "fontWeight": 2
+  },
+  "components/OnboardingProgress.tsx": {
+    "legacyColor": 3,
+    "fontSize": 1,
+    "fontWeight": 1
+  },
+  "components/OnboardingStepScaffold.tsx": {
+    "legacyColor": 7,
+    "fontSize": 5,
+    "fontWeight": 4
+  },
+  "components/OpenCodeSetup.tsx": {
+    "legacyColor": 18,
+    "fontSize": 10,
+    "fontWeight": 7
+  },
+  "components/PinnedPlan.tsx": {
+    "legacyColor": 7,
+    "fontSize": 11,
+    "fontWeight": 7
+  },
+  "components/ProjectPortChip.tsx": {
+    "fontSize": 1,
+    "fontWeight": 1
+  },
+  "components/ProjectStatusDot.tsx": {
+    "legacyColor": 4
+  },
+  "components/QuickCaptureBubble.tsx": {
+    "rawColor": 3,
+    "legacyColor": 5,
+    "fontSize": 1,
+    "fontWeight": 1
+  },
+  "components/QuickCaptureCard.tsx": {
+    "rawColor": 3,
+    "legacyColor": 12,
+    "fontSize": 10,
+    "fontWeight": 5
+  },
+  "components/QuickCaptureIntro.tsx": {
+    "rawColor": 1,
+    "legacyColor": 5,
+    "fontSize": 6,
+    "fontWeight": 3
+  },
+  "components/ServerAttentionBanner.tsx": {
+    "legacyColor": 2,
+    "fontSize": 2,
+    "fontWeight": 1
+  },
+  "components/ServerUpdateBanner.tsx": {
+    "legacyColor": 3,
+    "fontSize": 2,
+    "fontWeight": 1
+  },
+  "components/SessionAutomation.tsx": {
+    "rawColor": 1,
+    "legacyColor": 9,
+    "fontSize": 18,
+    "fontWeight": 12
+  },
+  "components/SessionFolderRow.tsx": {
+    "fontSize": 1
+  },
+  "components/SessionIssueRef.tsx": {
+    "rawColor": 1,
+    "legacyColor": 1,
+    "fontSize": 1
+  },
+  "components/SessionMarkerColumn.tsx": {
+    "legacyColor": 4
+  },
+  "components/SessionRowActions.tsx": {
+    "rawColor": 1,
+    "legacyColor": 7,
+    "fontSize": 3,
+    "fontWeight": 1
+  },
+  "components/SessionSettingsDialog.tsx": {
+    "rawColor": 10,
+    "legacyColor": 26,
+    "fontSize": 21,
+    "fontWeight": 11
+  },
+  "components/TaskIssuesList.tsx": {
+    "legacyColor": 5,
+    "fontSize": 6,
+    "fontWeight": 4
+  },
+  "components/TasksPanel.tsx": {
+    "rawColor": 1,
+    "legacyColor": 13,
+    "fontSize": 11,
+    "fontWeight": 8
+  },
+  "components/UnreadDot.tsx": {
+    "legacyColor": 1
+  },
+  "components/WorkingDot.tsx": {
+    "legacyColor": 1
+  },
+  "components/files/FileActionMenu.tsx": {
+    "rawColor": 1,
+    "legacyColor": 2,
+    "fontSize": 3,
+    "fontWeight": 2
+  },
+  "components/files/FileBreadcrumb.tsx": {
+    "legacyColor": 2,
+    "fontSize": 1,
+    "fontWeight": 1
+  },
+  "components/files/FileContentPreview.tsx": {
+    "legacyColor": 1,
+    "fontSize": 2,
+    "fontWeight": 1
+  },
+  "components/files/FileNameDialog.tsx": {
+    "rawColor": 1,
+    "legacyColor": 3,
+    "fontSize": 4,
+    "fontWeight": 1
+  },
+  "components/files/FileSheetHeader.tsx": {
+    "legacyColor": 3,
+    "fontSize": 3,
+    "fontWeight": 3
+  },
+  "components/files/FileTextEditor.tsx": {
+    "legacyColor": 1,
+    "fontSize": 1
+  },
+  "components/meeting/MeetingUI.tsx": {
+    "rawColor": 1,
+    "legacyColor": 12,
+    "fontSize": 15,
+    "fontWeight": 7
+  },
+  "components/meeting/MeetingWave.tsx": {
+    "rawColor": 1,
+    "legacyColor": 4
+  },
+  "components/meeting/SavedMeetingCard.tsx": {
+    "legacyColor": 2,
+    "fontSize": 3,
+    "fontWeight": 2
+  },
+  "components/premium/Confetti.tsx": {
+    "legacyColor": 2
+  },
+  "components/premium/PremiumBadge.tsx": {
+    "legacyColor": 2,
+    "fontSize": 1,
+    "fontWeight": 1
+  },
+  "components/project/ManagedServers.tsx": {
+    "legacyColor": 17,
+    "fontSize": 17,
+    "fontWeight": 10
+  },
+  "components/project/RunningServerCard.tsx": {
+    "legacyColor": 5,
+    "fontSize": 3,
+    "fontWeight": 3
+  },
+  "components/project/StaticPreviewSheet.tsx": {
+    "rawColor": 4,
+    "legacyColor": 44,
+    "fontSize": 28,
+    "fontWeight": 20
+  },
+  "components/settings/ApplyPendingBanner.tsx": {
+    "legacyColor": 1
+  },
+  "components/settings/ProviderUsagePanel.tsx": {
+    "legacyColor": 6,
+    "fontSize": 4,
+    "fontWeight": 2
+  },
+  "components/settings/PublicPreviewDiagnostics.tsx": {
+    "fontSize": 1
+  },
+  "components/settings/SecretStoreSection.tsx": {
+    "legacyColor": 2
+  },
+  "components/settings/ServerReleaseNotes.tsx": {
+    "legacyColor": 1
+  },
+  "components/settings/ServerUpdateSection.tsx": {
+    "legacyColor": 4
+  },
+  "components/settings/SettingsChrome.tsx": {
+    "legacyColor": 1
+  },
+  "components/settings/SettingsDisclosure.tsx": {
+    "legacyColor": 2
+  },
+  "components/settings/settingsStyles.ts": {
+    "rawColor": 3,
+    "legacyColor": 57,
+    "fontSize": 44
+  },
+  "components/ui/Button.tsx": {
+    "fontSize": 1
+  },
+  "components/ui/Status.tsx": {
+    "fontSize": 1
+  }
+}

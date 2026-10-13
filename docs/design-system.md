@@ -493,8 +493,13 @@ can never drift because there is only one copy of it.
    `StatusPill.tsx` refer to it.
 3. **Catalog:** add a developer screen that renders every component in every state. It
    becomes the visual reference for future work, also on the web.
-4. **Enforcement:** add a check that rejects raw colors and font sizes outside the theme, and
-   a contributor rule that UI is built from the shared components.
+4. **Enforcement:** `apps/mobile/__tests__/design-system-guard.test.ts` scans `app/` and
+   `components/` for raw colors (hex, `rgb()`, alpha suffixes glued onto a role), the legacy
+   color names (`setup.*`, `primary`, `onPrimary`, `accent`, `tone.*`, `linked`), font sizes
+   not taken from `theme.typography` and `fontWeight`. Code written before the design system
+   is recorded per file in `design-system-debt.json`. A file above its count fails, and so
+   does one below it until its entry is lowered, so the record only shrinks. The
+   contributor rule is in `AGENTS.md`.
 5. **Migration:** move screens area by area, starting with Settings.
 
 The visual workbench used to reach these decisions is

@@ -121,6 +121,20 @@ limitations, and recovery procedures in general terms relevant to users of the
 project. Preserve information needed to assess or use a change without
 including private context or conversational history.
 
+## Mobile UI
+
+Build `apps/mobile` screens from the shared components in
+`apps/mobile/components/ui` and the theme in `apps/mobile/theme/tokens.ts`, as
+specified in `docs/design-system.md`. Take colors from theme roles, derive
+transparencies with `tint()`, take text from `theme.typography` and weights
+from the Inter families. When a screen needs something the components do not
+offer, extend the component rather than styling a local copy.
+
+`apps/mobile/__tests__/design-system-guard.test.ts` enforces this against
+`design-system-debt.json`, which records the code written before the design
+system. Never raise a count there; when a change removes debt, lower or delete
+the entry in the same change.
+
 ## Tests
 
 Derive expectations from the artifact under guard instead of restating it.
