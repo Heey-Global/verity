@@ -1,10 +1,14 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
+import { AppState, type AppStateStatus } from 'react-native';
 import type { VerityClient } from '@verity/mobile';
 import { useProjects } from './useProjects';
 
+let mockFocused = true;
+const mockConnection = { connectionState: 'connected', resourceWatching: true };
 const mockSubscriptions: { refresh: () => Promise<unknown>; filter: (path: string) => boolean }[] =
   [];
 jest.mock('../lib/liveConnection', () => ({
+  liveConnectionFor: () => mockConnection,
   subscribeLiveRefresh: (
     _client: unknown,
     refresh: () => Promise<unknown>,
@@ -19,8 +23,22 @@ jest.mock('../lib/liveConnection', () => ({
 }));
 jest.mock('../lib/sessionSwitchTiming', () => ({ beginClientActivity: () => () => undefined }));
 jest.mock('expo-router', () => ({
-  useFocusEffect: (callback: () => void) => require('react').useEffect(callback, [callback]),
+  useFocusEffect: (callback: () => void) =>
+    require('react').useEffect(
+      () => (mockFocused ? callback() : undefined),
+      [callback, mockFocused],
+    ),
 }));
+
+beforeEach(() => {
+  jest.spyOn(AppState, 'addEventListener').mockReturnValue({ remove: jest.fn() });
+  Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
+  mockFocused = true;
+  mockConnection.connectionState = 'connected';
+  mockConnection.resourceWatching = true;
+});
+
+afterEach(() => jest.restoreAllMocks());
 
 it('keeps empty runtime maps stable across overview renders and refreshes', async () => {
   const client = {
@@ -79,7 +97,7 @@ it('refreshes only the invalidated project share source and keeps list refresh i
   expect(client.listProjectLocalPreviewShares).not.toHaveBeenCalled();
   unmount();
   expect(mockSubscriptions).toHaveLength(0);
-  expect(signal.aborted).toBe(true);
+  expect(signal.aborted).toBe(false);
 });
 
 it('coalesces invalidations while a share read is queued or in flight', async () => {
@@ -137,7 +155,203 @@ it('keeps existing share reads when project membership changes and aborts remove
   });
   expect(client.listPublicPreviewShares).toHaveBeenCalledTimes(2);
   expect(client.listProjectLocalPreviewShares).toHaveBeenCalledTimes(2);
-  expect(secondSignal.aborted).toBe(true);
+  expect(secondSignal.aborted).toBe(false);
   expect(firstSignal.aborted).toBe(false);
+  unmount();
+});
+
+function previewClient() {
+  return {
+    observeReads: jest.fn(),
+    liveBaseUrl: () => 'https://test.invalid',
+    listProjects: jest.fn().mockResolvedValue([{ id: 'p1', state: 'active' }]),
+    listPublicPreviewShares: jest.fn().mockResolvedValue([]),
+    listProjectLocalPreviewShares: jest.fn().mockResolvedValue([]),
+  };
+}
+
+it('keeps preview watchers on blur and refreshes only dirty sources on refocus', async () => {
+  const client = previewClient();
+  const { rerender, unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+  await waitFor(() => expect(client.listProjectLocalPreviewShares).toHaveBeenCalledTimes(1));
+  const subscription = mockSubscriptions.find(({ filter }) =>
+    filter('/projects/p1/public-shares'),
+  )!;
+  await act(async () => {
+    mockFocused = false;
+    rerender({});
+  });
+  await act(async () => {
+    await subscription.refresh();
+    await subscription.refresh();
+  });
+  expect(client.listPublicPreviewShares).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    mockFocused = true;
+    rerender({});
+  });
+  await waitFor(() => expect(client.listPublicPreviewShares).toHaveBeenCalledTimes(2));
+  expect(client.listProjectLocalPreviewShares).toHaveBeenCalledTimes(1);
+  expect(mockSubscriptions).toContain(subscription);
+  await act(async () => {
+    mockFocused = false;
+    rerender({});
+  });
+  await act(async () => {
+    mockFocused = true;
+    rerender({});
+  });
+  expect(client.listPublicPreviewShares).toHaveBeenCalledTimes(2);
+  expect(client.listProjectLocalPreviewShares).toHaveBeenCalledTimes(1);
+  unmount();
+});
+
+it('catches up previews when live observation is unavailable and explicit refresh reloads both sources', async () => {
+  const client = previewClient();
+  const { result, rerender, unmount } = renderHook(() =>
+    useProjects(client as unknown as VerityClient),
+  );
+  await waitFor(() => expect(client.listProjectLocalPreviewShares).toHaveBeenCalledTimes(1));
+  await act(async () => {
+    mockFocused = false;
+    rerender({});
+  });
+  mockConnection.resourceWatching = false;
+  await act(async () => {
+    mockFocused = true;
+    rerender({});
+  });
+  await waitFor(() => expect(client.listProjectLocalPreviewShares).toHaveBeenCalledTimes(2));
+  await act(async () => {
+    await result.current.refresh();
+  });
+  await waitFor(() => expect(client.listProjectLocalPreviewShares).toHaveBeenCalledTimes(3));
+  expect(client.listPublicPreviewShares).toHaveBeenCalledTimes(3);
+  unmount();
+});
+
+it('cancels on background, ignores late results and resumes missing reads', async () => {
+  let appState!: (state: AppStateStatus) => void;
+  const listener = jest
+    .spyOn(AppState, 'addEventListener')
+    .mockImplementation((_event, callback) => {
+      appState = callback;
+      return { remove: jest.fn() };
+    });
+  let finish!: (value: unknown[]) => void;
+  const client = previewClient();
+  client.listPublicPreviewShares.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const { result, unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+  await waitFor(() => expect(client.listPublicPreviewShares).toHaveBeenCalledTimes(1));
+  const signal = client.listPublicPreviewShares.mock.calls[0]![1] as AbortSignal;
+  Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'background' });
+  await act(async () => {
+    appState('background');
+  });
+  expect(signal.aborted).toBe(true);
+  await act(async () => {
+    finish([{ sessionId: 'stale', url: 'https://stale.invalid' }]);
+  });
+  expect(result.current.previewUrls.has('stale')).toBe(false);
+  Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
+  await act(async () => {
+    appState('active');
+  });
+  await waitFor(() => expect(client.listPublicPreviewShares).toHaveBeenCalledTimes(2));
+  unmount();
+  listener.mockRestore();
+});
+
+it('retains cached links on blur, aborts an invalidated read and catches up after reconnect', async () => {
+  const client = previewClient();
+  client.listPublicPreviewShares.mockResolvedValue([
+    {
+      sessionId: 'kept',
+      targetKind: 'static-folder',
+      state: 'active',
+      publicOrigin: 'https://kept.invalid',
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+    },
+  ]);
+  const { result, rerender, unmount } = renderHook(() =>
+    useProjects(client as unknown as VerityClient),
+  );
+  await waitFor(() => expect(result.current.previewUrls.get('kept')).toBe('https://kept.invalid'));
+  let finish!: (value: unknown[]) => void;
+  client.listPublicPreviewShares.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const subscription = mockSubscriptions.find(({ filter }) =>
+    filter('/projects/p1/public-shares'),
+  )!;
+  await act(async () => {
+    await subscription.refresh();
+  });
+  const signal = client.listPublicPreviewShares.mock.calls[1]![1] as AbortSignal;
+  await act(async () => {
+    mockFocused = false;
+    rerender({});
+  });
+  expect(signal.aborted).toBe(true);
+  expect(result.current.previewUrls.get('kept')).toBe('https://kept.invalid');
+  // Reconnect invalidates retained resource watchers even while their screen is hidden.
+  await act(async () => {
+    await Promise.all(
+      mockSubscriptions
+        .filter(
+          ({ filter }) =>
+            filter('/projects/p1/public-shares') || filter('/projects/p1/local-shares'),
+        )
+        .map(({ refresh }) => refresh()),
+    );
+    finish([]);
+  });
+  expect(client.listPublicPreviewShares).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    mockFocused = true;
+    rerender({});
+  });
+  await waitFor(() => expect(client.listProjectLocalPreviewShares).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(result.current.previewUrls.get('kept')).toBe('https://kept.invalid'));
+  unmount();
+});
+
+it('disowns removed-project reads even when cancellation is ignored', async () => {
+  let finish!: (value: unknown[]) => void;
+  const client = previewClient();
+  client.listPublicPreviewShares.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const { result, unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+  await waitFor(() => expect(client.listPublicPreviewShares).toHaveBeenCalledTimes(1));
+  const signal = client.listPublicPreviewShares.mock.calls[0]![1] as AbortSignal;
+  client.listProjects.mockResolvedValue([]);
+  await act(async () => {
+    await result.current.refresh();
+  });
+  expect(signal.aborted).toBe(true);
+  await act(async () => {
+    finish([
+      {
+        sessionId: 'removed',
+        targetKind: 'static-folder',
+        state: 'active',
+        publicOrigin: 'https://removed.invalid',
+        expiresAt: new Date(Date.now() + 60000).toISOString(),
+      },
+    ]);
+  });
+  expect(result.current.previewUrls.has('removed')).toBe(false);
   unmount();
 });

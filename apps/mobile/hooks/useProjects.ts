@@ -1,5 +1,7 @@
+import { AppState } from 'react-native';
+import { PreviewReadScheduler } from '../lib/previewReadScheduler';
 import { readContextProjects } from '../lib/sharedTaskContext';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import {
   VerityApiError,
@@ -9,7 +11,7 @@ import {
   type DevServer,
   type DevServerDetection,
 } from '@verity/mobile';
-import { subscribeLiveRefresh } from '../lib/liveConnection';
+import { liveConnectionFor, subscribeLiveRefresh } from '../lib/liveConnection';
 import { beginClientActivity } from '../lib/sessionSwitchTiming';
 import { mergeProjectStatusMutation } from '../lib/projectStatusMutation';
 import {
@@ -38,7 +40,35 @@ export function useProjects(client: VerityClient) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
   const loadGeneration = useRef(0);
-  const [shareRefresh, setShareRefresh] = useState(0);
+  const focused = useRef(false);
+  const publishPreviews = useCallback(() => {
+    const now = Date.now();
+    setPreviewUrls(
+      mergeSessionPreviewUrls(publicPreviewLinksRef.current, localPreviewLinksRef.current, now),
+    );
+    setPublicPreviews(publicPreviewSessionIds(publicPreviewLinksRef.current, now));
+  }, []);
+  const previewReads = useMemo(
+    () => new PreviewReadScheduler(publishPreviews),
+    [client, publishPreviews],
+  );
+  const activatePreviews = useCallback(() => {
+    const connection =
+      typeof client.observeReads === 'function'
+        ? liveConnectionFor(client.liveBaseUrl())
+        : undefined;
+    previewReads.setActive(
+      focused.current && AppState.currentState === 'active',
+      connection?.connectionState === 'connected' && connection.resourceWatching,
+    );
+  }, [client, previewReads]);
+  useEffect(() => {
+    const listener = AppState.addEventListener('change', activatePreviews);
+    return () => {
+      listener.remove();
+      previewReads.stop();
+    };
+  }, [activatePreviews, previewReads]);
   useEffect(
     () => () => {
       loadGeneration.current += 1;
@@ -67,7 +97,7 @@ export function useProjects(client: VerityClient) {
     [],
   );
 
-  // `silent` skips the loading-spinner flip so the interval poll refreshes in
+  // `silent` skips the loading-spinner flip so live refreshes update in
   // place (no flicker); the initial load + pull-to-refresh flip it as before.
   const load = useCallback(
     async (opts?: { silent?: boolean }) => {
@@ -131,19 +161,20 @@ export function useProjects(client: VerityClient) {
     [client],
   );
 
-  // Load on focus — the first mount AND every return to the overview. The poll
-  // below is too coarse to carry a change the operator just made elsewhere: a
-  // project deleted on its detail screen pops back here, and waiting out the
-  // interval would leave the deleted card on the list, tappable. Every refetch
-  // after the first is silent, so coming back never flashes the list into its
-  // loading state.
+  // Refetch project membership on return, while retained resource watches track
+  // dirty preview sources. Refocusing must not rebuild every share subscription.
   const loadedOnce = useRef(false);
   useFocusEffect(
     useCallback(() => {
       void load(loadedOnce.current ? { silent: true } : undefined);
-      if (loadedOnce.current) setShareRefresh((value) => value + 1);
+      focused.current = true;
+      activatePreviews();
       loadedOnce.current = true;
-    }, [load]),
+      return () => {
+        focused.current = false;
+        previewReads.setActive(false);
+      };
+    }, [load, activatePreviews, previewReads]),
   );
 
   useEffect(
@@ -169,7 +200,7 @@ export function useProjects(client: VerityClient) {
       for (const entry of subscriptions.values()) entry.dispose();
       subscriptions.clear();
     };
-  }, [client, shareRefresh]);
+  }, [client, previewReads]);
   useEffect(() => {
     const projectIds = JSON.parse(activeProjectIds) as string[];
     const wanted = new Set(projectIds);
@@ -179,56 +210,23 @@ export function useProjects(client: VerityClient) {
         shareSubscriptions.current.delete(path);
       }
     }
-    const publish = () => {
-      const now = Date.now();
-      setPreviewUrls(
-        mergeSessionPreviewUrls(publicPreviewLinksRef.current, localPreviewLinksRef.current, now),
-      );
-      setPublicPreviews(publicPreviewSessionIds(publicPreviewLinksRef.current, now));
-    };
     for (const projectId of projectIds) {
       for (const source of ['public', 'local'] as const) {
         const path = `/projects/${encodeURIComponent(projectId)}/${source}-shares`;
         if (shareSubscriptions.current.has(path)) continue;
         let active = true;
-        const controller = new AbortController();
-        let generation = 0;
-        let running = false;
-        let followup = false;
-        const refreshShares = async (): Promise<void> => {
-          if (!active) return;
-          if (running) {
-            followup = true;
-            return;
-          }
-          running = true;
-          const requestGeneration = ++generation;
-          try {
-            const links =
-              source === 'public'
-                ? publicPreviewLinks(
-                    await client.listPublicPreviewShares(projectId, controller.signal),
-                  )
-                : localPreviewLinks(
-                    await client.listProjectLocalPreviewShares(projectId, controller.signal),
-                  );
-            if (!active || requestGeneration !== generation) return;
-            const target = source === 'public' ? publicPreviewLinksRef : localPreviewLinksRef;
-            target.current = new Map(target.current).set(projectId, links);
-            publish();
-          } catch {
-            /* Preserve the last successful links on transient failures. */
-          } finally {
-            running = false;
-            if (followup && active) {
-              followup = false;
-              void refreshShares();
-            }
-          }
-        };
+        previewReads.add(path, async (signal) => {
+          const links =
+            source === 'public'
+              ? publicPreviewLinks(await client.listPublicPreviewShares(projectId, signal))
+              : localPreviewLinks(await client.listProjectLocalPreviewShares(projectId, signal));
+          if (!active || signal.aborted) return;
+          const target = source === 'public' ? publicPreviewLinksRef : localPreviewLinksRef;
+          target.current = new Map(target.current).set(projectId, links);
+        });
         const detach = subscribeLiveRefresh(
           client,
-          refreshShares,
+          () => previewReads.invalidate(path),
           (resourcePath) => resourcePath.split('?')[0] === path,
           [{ path }],
         );
@@ -236,14 +234,13 @@ export function useProjects(client: VerityClient) {
           projectId,
           dispose: () => {
             active = false;
-            controller.abort();
+            previewReads.remove(path);
             detach();
           },
         });
-        void refreshShares();
       }
     }
-  }, [client, activeProjectIds, shareRefresh]);
+  }, [client, activeProjectIds, previewReads]);
 
   return {
     projects,
@@ -254,7 +251,7 @@ export function useProjects(client: VerityClient) {
     loading,
     error,
     refresh: () => {
-      setShareRefresh((value) => value + 1);
+      previewReads.invalidate();
       return load();
     },
   };

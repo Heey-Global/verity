@@ -74,3 +74,45 @@ it('replaces old content and cancels superseded mounts during rapid switches', (
   screen.unmount();
   expect(frames.size).toBe(0);
 });
+
+it('records the deferred frame and commit milestones in order', () => {
+  const core = require('@verity/mobile');
+  const trace = core.beginSessionSwitch('pane-timing');
+  const screen = render(
+    <DeferredSessionPane sessionId="pane-timing" fallback={<Text>Loading</Text>}>
+      <Text>Chat</Text>
+    </DeferredSessionPane>,
+  );
+  expect(trace.phases.map((p: { phase: string }) => p.phase)).toContain('deferred-pane-effect');
+  frame();
+  expect(trace.phases.map((p: { phase: string }) => p.phase)).toContain(
+    'deferred-pane-first-frame',
+  );
+  frame();
+  expect(trace.phases.map((p: { phase: string }) => p.phase)).toEqual(
+    expect.arrayContaining([
+      'deferred-pane-second-frame',
+      'deferred-pane-ready-dispatch',
+      'deferred-pane-ready-commit',
+    ]),
+  );
+  screen.unmount();
+});
+
+it('does not put an old pane commit on a replacement switch', () => {
+  const core = require('@verity/mobile');
+  core.beginSessionSwitch('replacement-timing');
+  const screen = render(
+    <DeferredSessionPane sessionId="replacement-timing" fallback={<Text>Loading</Text>}>
+      <Text>Chat</Text>
+    </DeferredSessionPane>,
+  );
+  frame();
+  const replacement = core.beginSessionSwitch('replacement-timing');
+  frame();
+  expect(screen.getByText('Chat')).toBeTruthy();
+  expect(replacement.phases.map((p: { phase: string }) => p.phase)).not.toContain(
+    'deferred-pane-ready-commit',
+  );
+  screen.unmount();
+});

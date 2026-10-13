@@ -7,11 +7,17 @@ import {
 } from './runtimeDiagnostics';
 
 jest.mock('@verity/mobile', () => ({
-  mobileRuntimeSnapshot: () => ({
+  mobileRuntimeSnapshot: jest.fn(() => ({
     activeSessionSubscriptions: 2,
     sessionEventsReceived: 42,
     inFlightApiRequests: 1,
-  }),
+    apiRequestGroups: {
+      overview: { started: 2, settled: 1, failures: 0, inFlight: 1, peakInFlight: 3 },
+      preview: { started: 0, settled: 0, failures: 0, inFlight: 0, peakInFlight: 0 },
+      session: { started: 0, settled: 0, failures: 0, inFlight: 0, peakInFlight: 0 },
+      other: { started: 0, settled: 0, failures: 0, inFlight: 0, peakInFlight: 0 },
+    },
+  })),
 }));
 
 let stop: () => void;
@@ -87,4 +93,16 @@ it('records delayed timer delivery and only coarse route categories', () => {
   jest.advanceTimersByTime(5_000);
   expect(exportRuntimeDiagnostics().samples.at(-1)?.screen).toBe('session');
   expect(JSON.stringify(exportRuntimeDiagnostics())).not.toContain('private-session-id');
+});
+
+it('resets interval peaks at capture and exports independent group snapshots', () => {
+  const snapshot = require('@verity/mobile').mobileRuntimeSnapshot;
+  snapshot.mockClear();
+  setGestureDiagnosticsEnabled(true);
+  expect(snapshot).toHaveBeenCalledWith(true);
+  const report = exportRuntimeDiagnostics();
+  report.samples[0]!.apiRequestGroups.overview.started = 999;
+  report.baseline!.apiRequestGroups.overview.peakInFlight = 999;
+  expect(exportRuntimeDiagnostics().baseline!.apiRequestGroups.overview.peakInFlight).toBe(3);
+  expect(exportRuntimeDiagnostics().samples[0]!.apiRequestGroups.overview.started).toBe(2);
 });

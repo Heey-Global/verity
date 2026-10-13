@@ -51,9 +51,11 @@ describe('runtime diagnostic counters', () => {
     expect(mobileRuntimeSnapshot().activeSessionSubscriptions).toBe(
       baseline.activeSessionSubscriptions,
     );
-    expect(Object.values(mobileRuntimeSnapshot()).every((value) => typeof value === 'number')).toBe(
-      true,
-    );
+    expect(
+      Object.values(mobileRuntimeSnapshot())
+        .filter((value) => typeof value !== 'object')
+        .every((value) => typeof value === 'number'),
+    ).toBe(true);
     // Previously exported samples must remain historical snapshots.
     expect(baseline.sessionEventsReceived).toBe(mobileRuntimeSnapshot().sessionEventsReceived - 2);
   });
@@ -107,4 +109,59 @@ describe('runtime diagnostic counters', () => {
     expect(result.apiRequestsSettled).toBe(baseline.apiRequestsSettled + 4);
     expect(result.apiRequestFailures).toBe(baseline.apiRequestFailures + 3);
   });
+});
+
+it('classifies requests into fixed content-free groups and snapshots interval peaks', async () => {
+  const { runtimeRequestGroup, beginRuntimeApiRequest } = await import('./runtimeDiagnostics.js');
+  expect(runtimeRequestGroup('/projects?private=query', 'GET')).toBe('overview');
+  expect(runtimeRequestGroup('/sessions/private-id/events?before=123', 'GET')).toBe('session');
+  expect(runtimeRequestGroup('/sessions/private-id/activity', 'GET')).toBe('session');
+  expect(runtimeRequestGroup('/sessions/private-id', 'GET')).toBe('session');
+  expect(runtimeRequestGroup('/projects/private-id/public-shares', 'GET')).toBe('preview');
+  expect(runtimeRequestGroup('/projects/private-id/local-shares', 'GET')).toBe('preview');
+  expect(runtimeRequestGroup('/sessions/private-id/dev-servers', 'GET')).toBe('preview');
+  expect(runtimeRequestGroup('/sessions/private-id/managed-dev-servers', 'GET')).toBe('preview');
+  expect(runtimeRequestGroup('/sessions/private-id/seen', 'PATCH')).toBe('other');
+  expect(runtimeRequestGroup('/projects/private-id/public-shares', 'POST')).toBe('other');
+  expect(runtimeRequestGroup('/projects/private-id/settings', 'GET')).toBe('other');
+  const baseline = mobileRuntimeSnapshot(true);
+  const first = beginRuntimeApiRequest('preview');
+  const second = beginRuntimeApiRequest('preview');
+  first(false);
+  first(true);
+  second(true);
+  const sample = mobileRuntimeSnapshot(true);
+  expect(sample.apiRequestGroups.preview).toEqual({
+    started: baseline.apiRequestGroups.preview.started + 2,
+    settled: baseline.apiRequestGroups.preview.settled + 2,
+    failures: baseline.apiRequestGroups.preview.failures + 1,
+    inFlight: baseline.apiRequestGroups.preview.inFlight,
+    peakInFlight: baseline.apiRequestGroups.preview.inFlight + 2,
+  });
+  expect(mobileRuntimeSnapshot().apiRequestGroups.preview.peakInFlight).toBe(
+    baseline.apiRequestGroups.preview.inFlight,
+  );
+  expect(sample.apiRequestGroups.preview.peakInFlight).toBe(
+    baseline.apiRequestGroups.preview.inFlight + 2,
+  );
+  expect(Object.keys(sample.apiRequestGroups)).toEqual(['overview', 'preview', 'session', 'other']);
+  expect(JSON.stringify(sample)).not.toContain('private');
+});
+
+it('attributes actual API reads and their failures to their group', async () => {
+  const baseline = mobileRuntimeSnapshot();
+  const client = new VerityClient({
+    baseUrl: 'https://private.invalid',
+    fetch: async () => new Response('{}', { status: 500 }),
+  });
+  await expect(client.listPublicPreviewShares('private')).rejects.toThrow();
+  await expect(client.listManagedDevServers('private')).rejects.toThrow();
+  const sample = mobileRuntimeSnapshot();
+  expect(sample.apiRequestGroups.preview.started).toBe(
+    baseline.apiRequestGroups.preview.started + 2,
+  );
+  expect(sample.apiRequestGroups.preview.failures).toBe(
+    baseline.apiRequestGroups.preview.failures + 2,
+  );
+  expect(sample.apiRequestGroups.preview.inFlight).toBe(baseline.apiRequestGroups.preview.inFlight);
 });
