@@ -256,7 +256,7 @@ function RowContent({
           >
             <Icon
               name={leading.icon}
-              size={18}
+              size={16}
               color={
                 leading.signature === true
                   ? theme.colors.signature
@@ -286,7 +286,13 @@ function RowContent({
       </View>
       {trailing !== undefined || chevron ? (
         <View style={styles.trailing}>
-          {typeof trailing === 'string' ? <Text style={styles.value}>{trailing}</Text> : trailing}
+          {typeof trailing === 'string' ? (
+            <Text style={styles.value} numberOfLines={1}>
+              {trailing}
+            </Text>
+          ) : (
+            trailing
+          )}
           {chevron ? <Icon name="chevron-right" size={16} color={theme.colors.textFaint} /> : null}
         </View>
       ) : null}
@@ -331,14 +337,14 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.md,
-    minHeight: 56,
+    minHeight: 52,
     paddingVertical: theme.spacing.sm + theme.spacing.xxs,
     paddingHorizontal: theme.spacing.md + theme.spacing.xxs,
   },
   pressed: { backgroundColor: tint(theme.colors.text, 'neutral') },
   tile: {
-    width: 36,
-    height: 36,
+    width: 32,
+    height: 32,
     borderRadius: theme.radius.tile,
     alignItems: 'center',
     justifyContent: 'center',
@@ -346,10 +352,18 @@ const styles = StyleSheet.create((theme) => ({
   },
   tileAction: { backgroundColor: tint(theme.colors.action, 'fill') },
   tileSignature: { backgroundColor: tint(theme.colors.signature, 'fill') },
-  dotSlot: { width: 36, alignItems: 'center' },
+  dotSlot: { width: 32, alignItems: 'center' },
   body: { flex: 1, minWidth: 0, gap: theme.spacing.xxs },
   title: { ...theme.typography.row, color: theme.colors.text },
   subtitle: { ...theme.typography.subtitle, color: theme.colors.textMuted },
-  trailing: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm, flexShrink: 0 },
-  value: { ...theme.typography.body, color: theme.colors.textMuted },
+  // The trailing side takes at most 45 % of the row; a long value or status
+  // truncates there, so the title is never squeezed into a column of fragments.
+  trailing: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    flexShrink: 1,
+    maxWidth: '45%',
+  },
+  value: { ...theme.typography.body, color: theme.colors.textMuted, flexShrink: 1 },
 }));

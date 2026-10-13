@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
-import { AccessibilityInfo } from 'react-native';
+import { AccessibilityInfo, StyleSheet, View } from 'react-native';
 
 import { Button, ConfirmSheet, Row, StatusDot, StatusTag, TextField, ToggleRow } from './index';
 import { darkTheme, lightTheme } from '../../theme/tokens';
@@ -126,6 +126,21 @@ describe('Row', () => {
     expect(role('action')).toContain(iconColor('activity'));
     expect(role('textMuted')).toContain(iconColor('info'));
     expect(role('signature')).toContain(iconColor('zap'));
+  });
+
+  // A long status ("Starting secure workspace…") once took the whole row and left
+  // the title as a column of single letters.
+  it.each([
+    ['transient', <StatusDot key="t" intent="transient" label="Starting secure workspace…" />],
+    ['ready', <StatusDot key="r" intent="ready" label="Starting secure workspace…" />],
+    ['tag', <StatusTag key="g" intent="needsSetup" label="Starting secure workspace…" />],
+  ])('keeps a long %s status from crowding out the title', (_, status) => {
+    render(<Row title="Sandbox" trailing={status} onPress={jest.fn()} navigates />);
+    expect(screen.getByText('Starting secure workspace…').props.numberOfLines).toBe(1);
+    const trailing = screen
+      .UNSAFE_getAllByType(View)
+      .find((node) => StyleSheet.flatten(node.props.style)?.maxWidth === '45%');
+    expect(trailing).toBeDefined();
   });
 
   it('renders a plain trailing value as muted text', () => {

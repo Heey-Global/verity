@@ -76,7 +76,7 @@ keys use the platform monospace font. All sizes scale with the in-app font-zoom 
 | --------- | ---- | ------ | -------- | ----------- | ----------- | ----------------------------------------------- |
 | Display   | 28   | 750    | −0.035em | 1.15        | `text`      | Large headline at the top of a content screen   |
 | Title     | 20   | 700    | −0.02em  | 1.25        | `text`      | Sheet, dialog and section titles                |
-| Row       | 17   | 600    | 0        | 1.3         | `text`      | Titles in cards and list rows                   |
+| Row       | 16   | 600    | 0        | 1.3         | `text`      | Titles in cards and list rows                   |
 | Body      | 15   | 400    | 0        | 1.5         | `text`      | Running text, explanations, chat                |
 | Button    | 15   | 700    | 0        | 1           | per variant | Button and link labels                          |
 | Subtitle  | 13   | 400    | 0        | 1.4         | `textMuted` | Second line under titles                        |
@@ -149,15 +149,16 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
   (settings navigation, diagnostics).
 - **Card:** a single item with its own state or control stands alone (subscription,
   each feature switch). Cards of one group are 8 apart.
-- **Row anatomy** (minimum height 56):
-  - **Leading (optional):** icon tile 36 (radius 10) or a status dot. In a row that can be
+- **Row anatomy** (minimum height 52):
+  - **Leading (optional):** icon tile 32 (radius 10, icon 16) or a status dot. In a row that can be
     tapped the tile is a 14 % `action` fill with the icon in `action`; otherwise a 6 % neutral
     tint with the icon in `textMuted`. The Premium row uses `signature` instead of `action`.
   - **Center:** title in `Row`, at most one subtitle in `Subtitle`. Never more than two lines.
   - **Trailing:** exactly one of value (muted), status, toggle or compact button. A trailing
     value is short ("On", "2"); a long one such as an address goes in the subtitle, so the
-    title never wraps to make room. The chevron
-    `›` appears only when the row navigates.
+    title never wraps to make room. The trailing side takes at most 45 % of the row; a
+    status longer than that truncates, so the title is never squeezed. The chevron `›`
+    appears only when the row navigates.
 - States: default, pressed (slightly darker surface), disabled (40 %), selected (`action`
   border with glow).
 
