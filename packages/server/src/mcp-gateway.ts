@@ -267,6 +267,9 @@ const TOOL_SCHEMAS = {
   verity_knowledge: knowledgeToolRequestSchema,
   verity_http_request: brokeredHttpRequestSchema,
   verity_secret_run: trustedCliRequestSchema,
+  verity_secret_output: z
+    .object({ invocationId: z.string().uuid(), cursor: z.number().int().nonnegative().optional() })
+    .strict(),
   verity_diagnostics: diagnosticsRequestSchema,
   verity_list_sessions: listSessionsRequestSchema,
   verity_session_handoff: sessionHandoffRequestSchema,
@@ -391,6 +394,8 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_knowledge: KNOWLEDGE_TOOL_DESCRIPTION,
   verity_http_request: BROKERED_HTTP_TOOL_DESCRIPTION,
   verity_secret_run: TRUSTED_CLI_TOOL_DESCRIPTION,
+  verity_secret_output:
+    'Read a bounded page of retained redacted output from an approved secret command in this project and session. Use invocationId from verity_secret_run and nextCursor to continue. This never executes the command again; completed output expires after one hour.',
   verity_diagnostics: DIAGNOSTICS_TOOL_DESCRIPTION,
   verity_list_sessions: LIST_SESSIONS_TOOL_DESCRIPTION,
   verity_session_handoff: SESSION_HANDOFF_TOOL_DESCRIPTION,

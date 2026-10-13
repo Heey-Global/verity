@@ -91,6 +91,7 @@ import { createProjectListCache } from './project-list-cache.js';
 import type { ServerDeps, ServerUpdateController } from './server.js';
 import { createAuthTokenRegistry } from './auth.js';
 import { CONTROL_PLANE_PROJECT_ID, ensureControlPlaneProject } from './control-plane-project.js';
+import { createTrustedCliOutputStore } from './trusted-cli-output.js';
 import { createMcpGatewayToolExecutor, createTrustedCliPreflight } from './mcp-gateway-tools.js';
 import { createCachedGoogleAccessToken } from './google-drive.js';
 import { createGoogleSlidesTool } from './google-slides-tool.js';
@@ -1958,7 +1959,9 @@ export async function buildEmbeddedServer(
     consumeApproval: (input) => brokeredHttpConsumptions.consume(input),
     transport: restrictedHttpTransport,
   });
+  const trustedCliOutput = createTrustedCliOutputStore(db, secretCipher);
   const trustedCliTool = createTrustedCliTool({
+    outputStore: trustedCliOutput,
     getProjectBinding: getBrokeredProjectBinding,
     resolveSecret: resolveBrokerDopplerSecret,
     consumeApproval: (input) => brokeredHttpConsumptions.consume(input),
@@ -1988,6 +1991,7 @@ export async function buildEmbeddedServer(
         ? [
             'verity_http_request',
             'verity_secret_run',
+            'verity_secret_output',
             'verity_publish_session_progress',
             'verity_send_session_message',
             'verity_list_linked_sessions',
@@ -2050,6 +2054,7 @@ export async function buildEmbeddedServer(
     invokeTool: createMcpGatewayToolExecutor({
       brokeredHttpTool: brokeredHttpTool,
       trustedCliTool,
+      trustedCliOutput,
       ...(config.runnerSupervisor === true && config.dataVolumeRoot !== undefined
         ? { runnerRoot: join(config.dataVolumeRoot, 'runners') }
         : {}),
@@ -5248,6 +5253,22 @@ export async function buildEmbeddedServer(
       await localPreviewManager.close();
     });
   }
+  await trustedCliOutput.cleanup();
+  let outputSweepRunning = false;
+  const outputSweep = setInterval(() => {
+    if (outputSweepRunning) return;
+    outputSweepRunning = true;
+    void trustedCliOutput
+      .cleanup()
+      .catch(() => {
+        console.warn('verity: trusted CLI output cleanup failed');
+      })
+      .finally(() => {
+        outputSweepRunning = false;
+      });
+  }, 60_000);
+  outputSweep.unref();
+  app.addHook('onClose', () => clearInterval(outputSweep));
   app.addHook('onClose', () => listenerDiscovery?.close());
   if (!localPreviewManager) previewRecoveryReady = true;
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);

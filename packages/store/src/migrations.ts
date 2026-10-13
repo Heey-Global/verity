@@ -4228,6 +4228,23 @@ migrations['0156_managed_dev_server_secret_bindings'] = {
   },
 };
 
+migrations['0157_trusted_cli_outputs'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table trusted_cli_outputs (id text primary key, project_id text not null, session_id text not null, expires_at timestamptz not null, next_sequence integer not null, result text)`.execute(
+      db,
+    );
+    await sql`create index trusted_cli_outputs_expiry on trusted_cli_outputs(expires_at)`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`delete from secret_job_frames where job_id in (select id from trusted_cli_outputs)`.execute(
+      db,
+    );
+    await sql`drop table trusted_cli_outputs`.execute(db);
+  },
+};
+
 export const migrationProvider: MigrationProvider = {
   getMigrations(): Promise<Record<string, Migration>> {
     return Promise.resolve(migrations);
