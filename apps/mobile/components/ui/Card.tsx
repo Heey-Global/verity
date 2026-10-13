@@ -60,8 +60,10 @@ export function Group({ children }: { children: ReactNode }) {
 }
 
 /** A Feather icon or a status dot; `element` is for a mark that is not a
- *  Feather glyph (an agent's logo), drawn in the same tile. */
-type Leading = { icon: IconName } | { dot: StatusIntent } | { element: ReactNode };
+ *  Feather glyph (an agent's logo), drawn in the same tile. `signature` draws
+ *  the icon in the brand pink — reserved for the Premium mark (§ 2). */
+type Leading =
+  { icon: IconName; signature?: boolean } | { dot: StatusIntent } | { element: ReactNode };
 
 // Rows already warned about a button inside a pressable row, so a list that
 // re-renders often warns once per row instead of on every render.
@@ -121,6 +123,7 @@ export function Row({
       title={title}
       subtitle={subtitle}
       leading={leading}
+      acts={onPress !== undefined}
       trailing={
         choice ? (
           selected ? (
@@ -197,6 +200,7 @@ export function ToggleRow({
         title={title}
         subtitle={subtitle}
         leading={leading}
+        acts
         // The row already dims as a whole when disabled; dimming the track
         // again would leave the switch barely visible.
         trailing={<Toggle value={value} switching={switching} />}
@@ -227,12 +231,15 @@ function RowContent({
   title,
   subtitle,
   leading,
+  acts,
   trailing,
   chevron,
 }: {
   title: string;
   subtitle?: string | undefined;
   leading?: Leading | undefined;
+  /** Whether the row can be tapped: its icon then takes the action color (§ 2). */
+  acts: boolean;
   trailing?: ReactNode;
   chevron: boolean;
 }) {
@@ -241,8 +248,23 @@ function RowContent({
     <>
       {leading !== undefined ? (
         'icon' in leading ? (
-          <View style={styles.tile}>
-            <Icon name={leading.icon} size={18} color={theme.colors.textMuted} />
+          <View
+            style={[
+              styles.tile,
+              leading.signature === true ? styles.tileSignature : acts ? styles.tileAction : null,
+            ]}
+          >
+            <Icon
+              name={leading.icon}
+              size={18}
+              color={
+                leading.signature === true
+                  ? theme.colors.signature
+                  : acts
+                    ? theme.colors.action
+                    : theme.colors.textMuted
+              }
+            />
           </View>
         ) : 'element' in leading ? (
           <View style={styles.tile}>{leading.element}</View>
@@ -322,6 +344,8 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     backgroundColor: tint(theme.colors.text, 'neutral'),
   },
+  tileAction: { backgroundColor: tint(theme.colors.action, 'fill') },
+  tileSignature: { backgroundColor: tint(theme.colors.signature, 'fill') },
   dotSlot: { width: 36, alignItems: 'center' },
   body: { flex: 1, minWidth: 0, gap: theme.spacing.xxs },
   title: { ...theme.typography.row, color: theme.colors.text },

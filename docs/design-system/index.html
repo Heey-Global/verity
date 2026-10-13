@@ -67,7 +67,7 @@
   .row.pressed { background: color-mix(in srgb, var(--text) 5%, var(--surface)); }
   .row.disabled { opacity: .4; }
   .lead { flex: none; display: grid; place-items: center; }
-  .tile { width: 36px; height: 36px; border-radius: 10px; background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--textMuted); }
+  .tile { width: 36px; height: 36px; border-radius: 10px; background: color-mix(in srgb, var(--action) 14%, transparent); color: var(--action); }
   .tile.sig { background: color-mix(in srgb, var(--signature) 14%, transparent); color: var(--signature); }
   .dotlead { width: 36px; }
   .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -223,7 +223,7 @@
   <div class="grid g3">
     <div class="rule"><b>Cyan acts, pink signs</b>Pink never marks something tappable; cyan never decorates.</div>
     <div class="rule"><b>Fixed transparencies</b>6&nbsp;% neutral tints, 14&nbsp;% tonal fills, 35&nbsp;% tonal borders — always derived from a role.</div>
-    <div class="rule"><b>Grey line icons</b>Feather line icons in muted text. The Premium mark in pink is the only colored icon.</div>
+    <div class="rule"><b>Line icons</b>Feather line icons. In a tappable row cyan on a cyan tile, elsewhere muted. The Premium mark is pink.</div>
   </div></section>
   <section id="type"><div class="eyebrow">3</div><h2>Typography</h2>
   <p class="note">Inter, bundled with the app. Ten styles, each with one job. All scale with the in-app font zoom.</p>
