@@ -809,6 +809,8 @@ describe('Gmail sender identities', () => {
   it.each([
     { labels: [], headers: [{ name: 'To', value: 'Support <SUPPORT@example.test>' }] },
     { labels: [], headers: [{ name: 'Cc', value: 'support@example.test' }] },
+    { labels: [], headers: [{ name: 'To', value: 'Support <support@example.test> (help, desk)' }] },
+    { labels: [], headers: [{ name: 'To', value: 'support@example.test (help (desk))' }] },
     { labels: [], headers: [{ name: 'Delivered-To', value: 'support@example.test' }] },
     {
       labels: ['SENT'],

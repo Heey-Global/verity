@@ -218,8 +218,13 @@ function replySender(target: GmailMessage, aliases: GmailSendAs[]): string {
   const fields = sent ? ['from'] : ['to', 'cc', 'delivered-to', 'x-original-to'];
   const addresses = fields.flatMap((field) =>
     addressList(header(target.payload, field)).map((address) => {
-      const angle = /<([^<>]+)>\s*$/u.exec(address);
-      return (angle?.[1] ?? address).trim().toLowerCase();
+      // Comments may follow a mailbox and must not change the reply identity.
+      let mailbox = address;
+      while (/\([^()]*\)/u.test(mailbox)) {
+        mailbox = mailbox.replace(/\([^()]*\)/gu, '');
+      }
+      const angle = /<([^<>]+)>\s*$/u.exec(mailbox);
+      return (angle?.[1] ?? mailbox).trim().toLowerCase();
     }),
   );
   const matches = aliases.filter((alias) => addresses.includes(alias.sendAsEmail.toLowerCase()));
