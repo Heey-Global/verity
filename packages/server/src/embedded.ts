@@ -1,3 +1,4 @@
+import { createMatrixTool } from './matrix-tool.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
 import { CoordinatedRecordingManager } from './coordinated-recording.js';
 import { ReturnPathActivation } from './remote-return-path-activation.js';
@@ -1920,6 +1921,7 @@ export async function buildEmbeddedServer(
   const googleCalendarTool = createGoogleCalendarTool({ eventStore, googleAccessToken });
   const invokeGoogleCalendar: typeof googleCalendarTool.invoke = (input) =>
     googleCalendarTool.invoke(input);
+  const matrixTool = createMatrixTool({ eventStore });
   const gmailTool = createGmailTool({ eventStore, googleAccessToken });
   const invokeGmail: typeof gmailTool.invoke = (input) => gmailTool.invoke(input);
   const googleDriveTool = createGoogleDriveAgentTool({ eventStore, googleAccessToken });
@@ -2005,6 +2007,7 @@ export async function buildEmbeddedServer(
             'verity_knowledge',
             'verity_google_sheets',
             'verity_gmail',
+            'verity_matrix',
             'verity_google_calendar',
             'verity_google_contacts',
             'verity_google_drive',
@@ -2024,6 +2027,7 @@ export async function buildEmbeddedServer(
             'verity_knowledge',
             'verity_google_sheets',
             'verity_gmail',
+            'verity_matrix',
             'verity_google_calendar',
             'verity_google_contacts',
             'verity_google_drive',
@@ -2062,6 +2066,7 @@ export async function buildEmbeddedServer(
       googleDocs: invokeGoogleDocs,
       googleSheets: invokeGoogleSheets,
       gmail: invokeGmail,
+      matrix: (input) => matrixTool.invoke(input),
       googleCalendar: invokeGoogleCalendar,
       googleContacts: invokeGoogleContacts,
       googleDrive: invokeGoogleDrive,

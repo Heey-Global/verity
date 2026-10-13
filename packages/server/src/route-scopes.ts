@@ -143,6 +143,24 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
     'Matrix connector bearer token',
   ),
   declare(
+    'POST',
+    '/internal/integrations/matrix/outbound/claim',
+    'container-capability',
+    'Matrix connector bearer token; approved jobs only',
+  ),
+  declare(
+    'POST',
+    '/internal/integrations/matrix/outbound/check',
+    'container-capability',
+    'Matrix connector bearer token and current dispatch lease',
+  ),
+  declare(
+    'POST',
+    '/internal/integrations/matrix/outbound/result',
+    'container-capability',
+    'Matrix connector bearer token and current dispatch lease',
+  ),
+  declare(
     'GET',
     '/internal/integrations/matrix/config',
     'container-capability',

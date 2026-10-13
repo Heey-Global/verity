@@ -1,3 +1,4 @@
+import { MatrixSendPreview } from '../../components/ui/MatrixSendPreview';
 import { useDeferredSessionWork } from '../../hooks/useDeferredSessionWork';
 import { meetingSavedCard } from '../../lib/meetingSavedCard';
 import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
@@ -78,6 +79,7 @@ import {
   frozenTranscriptRows,
   gmailPreviewHtml,
   gmailSendSummary,
+  matrixSendSummary,
   calendarChangeSummary,
   githubRefUrl,
   isSessionImageFilePath,
@@ -8599,6 +8601,7 @@ function PermissionPrompt({
   const isListSessions = pending.tool === 'verity_list_sessions';
   const isSessionProgress = pending.tool === 'verity_session_progress';
   const isRecentSessionMessages = pending.tool === 'verity_recent_session_messages';
+  const isMatrix = pending.tool === 'verity_matrix';
   const isGmail = pending.tool === 'verity_gmail';
   const isCalendar = pending.tool === 'verity_google_calendar';
   const isKnowledge = pending.tool === 'verity_knowledge';
@@ -8626,6 +8629,7 @@ function PermissionPrompt({
   const recentSummary = isRecentSessionMessages
     ? recentSessionMessagesSummary(pending.input)
     : null;
+  const matrixSummary = isMatrix ? matrixSendSummary(pending.input) : null;
   const gmailSummary = isGmail ? gmailSendSummary(pending.input) : null;
   const cliSecretLabel = cliSummary === null ? null : trustedCliSecretLabel(cliSummary);
   const grantInput =
@@ -8649,6 +8653,7 @@ function PermissionPrompt({
     (isListSessions && listingSummary === null) ||
     (isSessionProgress && progressSummary === null) ||
     (isRecentSessionMessages && recentSummary === null) ||
+    (isMatrix && matrixSummary === null) ||
     (isGmail && gmailSummary === null) ||
     (isCalendar && calendarSummary === null) ||
     (isKnowledge && knowledgeSummary === null)
@@ -8699,6 +8704,9 @@ function PermissionPrompt({
         ? null
         : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
       calendarSummary?.title ?? null,
+      matrixSummary === null
+        ? null
+        : `Send Matrix message to ${spellOutBidiControls(matrixSummary.roomName)}?`,
       gmailSummary === null ? null : `Send email to ${gmailSummary.to.join(', ')}?`,
       isEndPlanning
         ? grantInput?.action === 'discard'
@@ -8917,6 +8925,8 @@ function PermissionPrompt({
             </Text>
           ))}
         </View>
+      ) : matrixSummary !== null ? (
+        <MatrixSendPreview summary={matrixSummary} />
       ) : gmailSummary !== null ? (
         <View style={styles.permissionHttpSummary}>
           {gmailSummary.from === null ? null : (

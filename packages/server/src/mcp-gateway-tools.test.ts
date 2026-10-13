@@ -227,3 +227,35 @@ describe('MCP gateway control-plane session tools', () => {
     }
   });
 });
+
+it('forwards trusted approval provenance to the Matrix executor without exposing it as tool input', async () => {
+  const matrix = vi.fn(async () => ({ state: 'queued' }));
+  const invoke = createMcpGatewayToolExecutor({
+    matrix,
+    brokeredHttpTool: async () => {
+      throw new Error('unexpected HTTP');
+    },
+    trustedCliTool: async () => {
+      throw new Error('unexpected CLI');
+    },
+  });
+  const request = { action: 'send', body: 'Exact message' };
+  await invoke({
+    toolName: 'verity_matrix',
+    projectId: 'project',
+    sessionId: 'session',
+    turnId: 'turn',
+    invocationId: 'invocation',
+    callId: 'call',
+    request,
+    approvedByCard: true,
+  });
+  expect(matrix).toHaveBeenCalledWith({
+    projectId: 'project',
+    sessionId: 'session',
+    turnId: 'turn',
+    invocationId: 'invocation',
+    request,
+    approvedByCard: true,
+  });
+});
