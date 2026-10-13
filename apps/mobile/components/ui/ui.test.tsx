@@ -128,6 +128,27 @@ describe('Row', () => {
     expect(role('signature')).toContain(iconColor('zap'));
   });
 
+  // A long status ("Starting secure workspace…") once took the whole row and left
+  // the title as a column of single letters.
+  it('keeps the trailing side from crowding out the title', () => {
+    render(
+      <Row
+        title="Sandbox"
+        trailing={<StatusDot intent="transient" label="Starting secure workspace…" />}
+        onPress={jest.fn()}
+        navigates
+      />,
+    );
+    const word = screen.getByText('Starting secure workspace…');
+    expect(word.props.numberOfLines).toBe(1);
+    // The trailing container is capped and may shrink.
+    const trailing = screen.UNSAFE_getAllByType(require('react-native').View).find((node) => {
+      const flat = require('react-native').StyleSheet.flatten(node.props.style) ?? {};
+      return flat.maxWidth === '45%';
+    });
+    expect(trailing).toBeDefined();
+  });
+
   it('renders a plain trailing value as muted text', () => {
     render(<Row title="Tasks" trailing="On" />);
     expect(screen.getByText('On')).toBeOnTheScreen();

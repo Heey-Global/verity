@@ -94,7 +94,7 @@ export type TypeStyles = Record<
 const baseTypography: TypeStyles = {
   display: { fontFamily: fonts.extrabold, fontSize: 28, lineHeight: 32, letterSpacing: -0.98 },
   title: { fontFamily: fonts.bold, fontSize: 20, lineHeight: 25, letterSpacing: -0.4 },
-  row: { fontFamily: fonts.semibold, fontSize: 17, lineHeight: 22, letterSpacing: 0 },
+  row: { fontFamily: fonts.semibold, fontSize: 16, lineHeight: 21, letterSpacing: 0 },
   body: { fontFamily: fonts.regular, fontSize: 15, lineHeight: 22, letterSpacing: 0 },
   button: { fontFamily: fonts.bold, fontSize: 15, lineHeight: 18, letterSpacing: 0 },
   subtitle: { fontFamily: fonts.regular, fontSize: 13, lineHeight: 18, letterSpacing: 0 },

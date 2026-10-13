@@ -51,9 +51,15 @@ export function StatusTag({ intent, label }: { intent: StatusIntent; label: stri
 export function StatusDot({ intent, label }: { intent: StatusIntent; label: string }) {
   if (intent === 'transient') return <StatusText intent="transient" label={label} />;
   return (
-    <View style={styles.dotRow} accessible accessibilityLabel={`${label}, ${describe(intent)}`}>
+    <View
+      style={[styles.dotRow, styles.shrink]}
+      accessible
+      accessibilityLabel={`${label}, ${describe(intent)}`}
+    >
       <Dot intent={intent} />
-      <Text style={styles.word}>{label}</Text>
+      <Text style={[styles.word, styles.shrink]} numberOfLines={1}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -78,7 +84,7 @@ function StatusText({ intent, label }: { intent: StatusIntent; label: string }) 
   const { theme } = useUnistyles();
   return (
     <View
-      style={styles.dotRow}
+      style={[styles.dotRow, styles.shrink]}
       accessible
       accessibilityLabel={`${label}, ${describe(intent)}`}
       accessibilityLiveRegion="polite"
@@ -86,7 +92,9 @@ function StatusText({ intent, label }: { intent: StatusIntent; label: string }) 
       {intent === 'transient' ? (
         <ActivityIndicator size="small" color={theme.colors.textMuted} />
       ) : null}
-      <Text style={styles.word}>{label}</Text>
+      <Text style={[styles.word, styles.shrink]} numberOfLines={1}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -112,6 +120,8 @@ const styles = StyleSheet.create((theme) => ({
   tagAttention: { backgroundColor: tint(theme.colors.attention, 'fill') },
   tagLabel: { ...theme.typography.label },
   dotRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  // A status word truncates instead of pushing the row's title aside.
+  shrink: { flexShrink: 1, minWidth: 0 },
   dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.textFaint },
   dotReady: {
     backgroundColor: theme.colors.success,
