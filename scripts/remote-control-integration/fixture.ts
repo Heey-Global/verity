@@ -17,6 +17,7 @@ interface UplinkFixture {
   appTicket: string;
   coreTicket: string;
   sessionId: string;
+  suppressDataFrom(party: 'app' | 'installation', enabled: boolean): void;
   close(): Promise<void>;
 }
 interface UplinkAdapter {
@@ -27,9 +28,10 @@ interface UplinkAdapter {
 }
 
 // The adapter belongs to the Uplink checkout; this runner never substitutes a copied relay.
-const [uplinkRoot, directory, pin] = process.argv.slice(2);
+const [uplinkRoot, directory, pin, scenario = 'baseline'] = process.argv.slice(2);
 if (!uplinkRoot || !directory || !pin)
   throw new Error('Expected Uplink checkout, temporary directory and test pin');
+const artifactDirectory = directory;
 const revision = execFileSync('git', ['-C', uplinkRoot, 'rev-parse', 'HEAD'], {
   encoding: 'utf8',
 }).trim();
@@ -39,13 +41,45 @@ const adapter = (await import(
     .href
 )) as UplinkAdapter;
 const tls = {
-  key: await readFile(resolve(directory, 'key.pem')),
-  cert: await readFile(resolve(directory, 'cert.pem')),
+  key: await readFile(resolve(artifactDirectory, 'key.pem')),
+  cert: await readFile(resolve(artifactDirectory, 'cert.pem')),
 };
+if (!['baseline', 'loss', 'recovery'].includes(scenario)) throw new Error('Unknown scenario');
 let echoes = 0;
+let faultRequests = 0;
+let faultResponseFinished = false;
+let corePongsAfterFault = 0;
+let coreDataCallbackAfterFault = false;
+let refreshDiagnostics: (() => void) | undefined;
+const diagnosticExpiry = Date.now() + 120_000;
+const faultPayload = Buffer.from('withheld-native-response');
 const server = createServer(tls, (request, response) => {
   if (request.url === '/healthz') {
     response.end('core-ok');
+    return;
+  }
+  if (request.url === '/fault' && request.method === 'POST' && scenario === 'loss') {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    request.on('data', (chunk: Buffer) => {
+      bytes += chunk.length;
+      if (bytes > 128) request.destroy();
+      else chunks.push(chunk);
+    });
+    request.on('error', () => response.destroy());
+    request.on('end', () => {
+      if (!Buffer.concat(chunks).equals(Buffer.from('native-reverse-receipt'))) {
+        response.writeHead(400).end();
+        return;
+      }
+      faultRequests++;
+      uplink.suppressDataFrom('installation', true);
+      refreshDiagnostics?.();
+      response.on('finish', () => {
+        faultResponseFinished = true;
+      });
+      response.end(faultPayload);
+    });
     return;
   }
   if (request.url !== '/echo' || request.method !== 'POST') {
@@ -68,6 +102,8 @@ const server = createServer(tls, (request, response) => {
   });
   request.on('error', () => response.destroy());
 });
+// A server idle close must not turn deliberate missing DATA into an unrelated EOF.
+server.keepAliveTimeout = 60_000;
 server.listen(0, '127.0.0.1');
 await once(server, 'listening');
 const address = server.address();
@@ -87,7 +123,40 @@ const pool = createRemoteConnectorPool({
   dataUrl: uplink.dataURL,
   localHost: '127.0.0.1',
   localPort: address.port,
-  webSocketFactory: (url, options) => new WebSocket(url, { ...options, ca: tls.cert }),
+  returnPathExpiry: () => (faultRequests > 0 ? diagnosticExpiry : undefined),
+  returnPathSubscribe: (listener) => {
+    refreshDiagnostics = listener;
+    return () => {
+      refreshDiagnostics = undefined;
+    };
+  },
+  onReturnPathSnapshot: (snapshot) => {
+    if (
+      typeof snapshot !== 'object' ||
+      snapshot === null ||
+      !('events' in snapshot) ||
+      !Array.isArray(snapshot.events)
+    )
+      return;
+    coreDataCallbackAfterFault ||= snapshot.events.some(
+      (event: unknown) =>
+        typeof event === 'object' &&
+        event !== null &&
+        'stage' in event &&
+        event.stage === 'callback' &&
+        'outcome' in event &&
+        event.outcome === 'accepted' &&
+        'type' in event &&
+        event.type === 'stream.data',
+    );
+  },
+  webSocketFactory: (url, options) => {
+    const socket = new WebSocket(url, { ...options, ca: tls.cert });
+    socket.on('pong', () => {
+      if (faultRequests > 0) corePongsAfterFault++;
+    });
+    return socket;
+  },
 });
 const controller = new AbortController();
 const reservation = await pool.reserve(
@@ -107,18 +176,19 @@ const attaching = session
     failure = true;
   });
 await writeFile(
-  resolve(directory, 'manifest.json'),
+  resolve(artifactDirectory, 'manifest.json'),
   JSON.stringify({
     dataURL: uplink.dataURL,
     appTicket: uplink.appTicket,
     sessionId: uplink.sessionId,
     outerPin: pin,
     corePin: pin,
+    scenario,
   }),
   { mode: 0o600 },
 );
 await writeFile(
-  resolve(directory, 'provenance.json'),
+  resolve(artifactDirectory, 'provenance.json'),
   JSON.stringify({ coreRevision, uplinkRevision: revision }),
   { mode: 0o600 },
 );
@@ -134,8 +204,25 @@ async function close() {
   server.close();
   pool.disposeDiagnostics();
   await writeFile(
-    resolve(directory, 'core-result.json'),
-    JSON.stringify({ success: attached && !failure && echoes === 4, attached, echoes }),
+    resolve(artifactDirectory, 'core-result.json'),
+    JSON.stringify({
+      success:
+        attached &&
+        !failure &&
+        echoes === 4 &&
+        (scenario !== 'loss' ||
+          (faultRequests === 1 &&
+            faultResponseFinished &&
+            coreDataCallbackAfterFault &&
+            corePongsAfterFault > 0)),
+      attached,
+      echoes,
+      scenario,
+      faultRequests,
+      faultResponseFinished,
+      corePongsAfterFault,
+      coreDataCallbackAfterFault,
+    }),
     { mode: 0o600 },
   );
 }

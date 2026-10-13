@@ -19,7 +19,7 @@ bash scripts/remote-control-integration/run-apple.sh ios /absolute/path/to/uplin
 The Uplink build must export `createRemoteIntegrationFixture` from
 `packages/uplink/dist/testing/remote-integration-fixture.js`. It accepts
 `{tls: {key, cert}, lifetimeMs}` and returns `dataURL`, `appTicket`, `coreTicket`,
-`sessionId` and asynchronous `close()`. The adapter must use actual admission and
+`sessionId`, `suppressDataFrom(party, enabled)` and asynchronous `close()`. The adapter must use actual admission and
 relay code on loopback with synthetic one-use tickets, not a replacement relay.
 The fixture must return before waiting for both clients to attach.
 
@@ -29,9 +29,28 @@ independently requires successful attachment and four completed echo requests.
 The runner exports only fixed results and repository revisions. Ephemeral keys,
 tickets and fixture logs live in a private temporary directory removed on exit.
 
+By default the runner executes a loss scenario followed by recovery in a new
+native process and fixture with fresh tickets. The loss scenario first completes
+the baseline checks, then submits an exact POST request over pinned TLS. Core
+arms installation-to-app DATA suppression before replying. Core requires a
+successful production connector DATA send callback and a subsequent WebSocket
+pong; the native client requires a request timeout while the tunnel remains
+active and its pong counter increases. The HTTP response's local completion is
+recorded separately from connector completion and endpoint receipt. Recovery
+requires fresh health and exact parallel echo receipts after the old fixture has
+been closed. The withheld response differs from every expected recovery payload.
+Pass `baseline`, `loss`, or `recovery` as the third argument to isolate a scenario.
+
+Suppression happens after WebSocket decoding and before the production Uplink
+DATA listener. This is a synthetic endpoint discrimination test, not a simulation
+of TCP loss or proof of a historical Gateway failure. The native timeout belongs
+to the HTTP test request, not a newly implemented production stall detector.
+Reverse traffic during suppression is covered separately by Uplink's component
+test; this native scenario proves the request reached Core before suppression.
+
 Build, simulator boot and native app readiness precede the admission window. Each invocation uses a
 fresh pair. A successful invocation is not proof of native half-close, slow
-reader, directional blackhole, heartbeat deadline or replacement behavior;
+reader, heartbeat deadline or live connection replacement behavior;
 those require separate fault scenarios. Component regression results must be
 reported independently from this joint test.
 

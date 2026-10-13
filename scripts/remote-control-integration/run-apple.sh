@@ -11,6 +11,17 @@ uplink_root="${2:?Expected an Uplink checkout with its integration adapter built
 [[ "$platform" == macos || "$platform" == ios ]] || { echo 'usage: run-apple.sh [macos|ios] UPLINK_CHECKOUT' >&2; exit 2; }
 [[ -f "$uplink_root/packages/uplink/dist/testing/remote-integration-fixture.js" ]] || { echo 'Build the actual Uplink integration adapter first.' >&2; exit 2; }
 [[ -f packages/server/dist/remote-control-connector.js ]] || { echo 'Build Core first: npx tsc -b packages/server' >&2; exit 2; }
+scenario="${3:-suite}"
+case "$scenario" in
+  suite)
+    # Each child owns a fresh fixture, tickets and native process; cleanup precedes recovery.
+    bash "$0" "$platform" "$uplink_root" loss
+    bash "$0" "$platform" "$uplink_root" recovery
+    exit 0
+    ;;
+  baseline|loss|recovery) ;;
+  *) echo 'Unknown integration scenario.' >&2; exit 2 ;;
+esac
 umask 077
 tmp="$(mktemp -d)"
 fixture_pid=''
@@ -30,7 +41,7 @@ trap 'exit 143' TERM
 bash scripts/remote-control-integration/create-certificate.sh "$tmp"
 pin="sha256-$(openssl pkey -in "$tmp/key.pem" -pubout -outform DER | tail -c 65 | openssl dgst -sha256 -binary | base64 | tr '+/' '-_' | tr -d '=\n')"
 start_fixture() {
-node scripts/remote-control-integration/fixture.ts "$uplink_root" "$tmp" "$pin" >"$tmp/fixture.log" 2>&1 &
+node scripts/remote-control-integration/fixture.ts "$uplink_root" "$tmp" "$pin" "$scenario" >"$tmp/fixture.log" 2>&1 &
 fixture_pid=$!
 for _ in {1..100}; do
   [[ -s "$tmp/manifest.json" ]] && break

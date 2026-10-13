@@ -10,6 +10,7 @@ private struct IntegrationManifest: Decodable {
   let sessionId: String
   let outerPin: String
   let corePin: String
+  let scenario: String
 }
 
 private enum IntegrationFailure: Error { case invalidManifest, receipt, pin, diagnostics }
@@ -104,7 +105,7 @@ private func runIntegration() async -> Bool {
     progress.update("health")
     let (healthClient, _) = try client(pin: manifest.corePin)
     let (health, healthResponse) = try await healthClient.data(from: coreOrigin.appendingPathComponent("healthz"))
-    healthClient.invalidateAndCancel()
+    defer { healthClient.invalidateAndCancel() }
     guard health == Data("core-ok".utf8), (healthResponse as? HTTPURLResponse)?.statusCode == 200
     else { throw IntegrationFailure.receipt }
 
@@ -135,6 +136,31 @@ private func runIntegration() async -> Bool {
     catch { rejected = true }
     guard rejected, wrongPinDelegate.failure == "PIN_MISMATCH" else { throw IntegrationFailure.pin }
 
+    if manifest.scenario == "loss" {
+      progress.update("directional_loss")
+      func pongCount() -> Int {
+        let summary = tunnel.diagnosticSummary
+        guard let field = summary.components(separatedBy: ", ").first(where: { $0.hasPrefix("pings=") }),
+          let count = field.split(separator: "/").last, let value = Int(count)
+        else { return -1 }
+        return value
+      }
+      let before = pongCount()
+      guard before >= 0 else { throw IntegrationFailure.diagnostics }
+      // Reuse the established TLS connection: suppressing its reply must not merely test TLS setup.
+      var request = URLRequest(url: coreOrigin.appendingPathComponent("fault"))
+      request.httpMethod = "POST"
+      request.httpBody = Data("native-reverse-receipt".utf8)
+      request.timeoutInterval = 22
+      var timedOut = false
+      do { _ = try await healthClient.data(for: request) }
+      catch {
+        let failure = error as NSError
+        timedOut = failure.domain == NSURLErrorDomain && failure.code == NSURLErrorTimedOut
+      }
+      guard timedOut, tunnel.isActive, pongCount() > before else { throw IntegrationFailure.receipt }
+    }
+
     progress.update("shutdown")
     tunnel.stop()
     tunnel.stop()
@@ -152,7 +178,13 @@ private func runIntegration() async -> Bool {
       events[cancelled]["cause"] as? String == "app_stop",
       !events.prefix(requested).contains(where: { $0["event"] as? String == "failure" })
     else { throw IntegrationFailure.diagnostics }
-    persistIntegrationResult("{\"success\":true,\"checks\":[\"production_decoder\",\"app_attached\",\"health_receipt\",\"parallel_exact_echo\",\"core_pin_rejection\",\"ordered_idempotent_stop\"]}")
+    var checks = ["production_decoder", "app_attached", "health_receipt", "parallel_exact_echo",
+      "core_pin_rejection", "ordered_idempotent_stop"]
+    if manifest.scenario == "loss" { checks += ["bounded_missing_response", "native_pong_during_loss"] }
+    if manifest.scenario == "recovery" { checks += ["fresh_pair_exact_receipts"] }
+    let result = try JSONSerialization.data(withJSONObject:
+      ["success": true, "scenario": manifest.scenario, "checks": checks], options: [.sortedKeys])
+    persistIntegrationResult(String(decoding: result, as: UTF8.self))
     return true
   } catch {
     // Reuse the production allowlist; never serialize NSError descriptions or userInfo.
