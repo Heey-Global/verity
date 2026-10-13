@@ -425,7 +425,7 @@ function GoogleDriveFolderSection({
           .finally(() => setDisconnecting(false));
       },
     });
-  }, [client, disconnecting, onSaved, projectId, settings]);
+  }, [client, confirm, disconnecting, onSaved, projectId, settings]);
 
   return (
     <SettingsDisclosure

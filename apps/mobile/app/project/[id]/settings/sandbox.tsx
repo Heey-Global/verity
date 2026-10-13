@@ -364,7 +364,7 @@ function SandboxSection({
         ? 'This recreates the project sandbox and applies the pending security update.'
         : 'This recreates the project sandbox and applies the pending update.',
       confirmLabel: 'Update',
-      onConfirm: () => recreate(false, 'Could not update project'),
+      onConfirm: () => void recreate(false, 'Could not update project'),
     });
   }, [confirm, recreate, update, updateSummary, working]);
 
@@ -381,7 +381,7 @@ function SandboxSection({
       message:
         'This rebuilds the project image from the repository devcontainer without the build cache, then recreates the sandbox. It can take several minutes.',
       confirmLabel: 'Rebuild',
-      onConfirm: () => recreate(true, 'Could not rebuild project image'),
+      onConfirm: () => void recreate(true, 'Could not rebuild project image'),
     });
   }, [confirm, recreate, working]);
 
