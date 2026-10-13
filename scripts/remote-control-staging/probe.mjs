@@ -1,3 +1,4 @@
+import { parseStallReceipt } from './stall-receipt.mjs';
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import WebSocket from 'ws';
@@ -77,6 +78,22 @@ let soakFailureReceived = false;
 function consumeLine(line) {
   // Later worker cleanup must not overwrite the first complete failure record.
   if (soakFailureReceived) return;
+  const stall = parseStallReceipt(line);
+  if (stall) {
+    receipt.soak = {
+      worker: stall.worker,
+      ownRequests: stall.ownRequests,
+      totalRequests: stall.totalRequests,
+      requestNumber: stall.ownRequests + 1,
+      failureKind: stall.kind,
+    };
+    receipt.nativeErrorCode = stall.code;
+    receipt.tlsPhase = stall.phase;
+    receipt.stage = 'soak_failed';
+    receipt.stall = stall.diagnostic;
+    soakFailureReceived = true;
+    return;
+  }
   const failure =
     /^probe-soak-failure:([0-7]):(\d{1,9}):(\d{1,9}):(tunnel_stopped|configuration|http_response|transport):(unknown|-?\d{1,9}):(unknown|NO_AUTH_CHALLENGE|AUTH_CHALLENGE_RECEIVED|PIN_AND_CHAIN_TRUST_ACCEPTED)$/u.exec(
       line,
@@ -196,7 +213,7 @@ try {
             discardLine = false;
           } else if (!discardLine) {
             pending += character;
-            if (pending.length > 256) {
+            if (pending.length > 4096) {
               pending = '';
               discardLine = true;
             }

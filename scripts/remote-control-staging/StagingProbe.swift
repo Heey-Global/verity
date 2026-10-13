@@ -46,14 +46,15 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
             throw ProbeFailure.soakFailed(
               "worker \(worker) after \(own) own and \(total) total requests: \(error)")
           }
-          let client = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+          let observer = StallHTTPObserver(pin: delegate, recorder: tunnel.stallDiagnostics)
+          let client = URLSession(configuration: config, delegate: observer, delegateQueue: nil)
           defer { client.invalidateAndCancel() }
           let started = Date()
           do {
-            let (_, response) = try await client.data(for: URLRequest(url: coreURL))
+            let response = try await observer.request(coreURL, session: client)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
               let total = await counters.failure(worker: worker, own: own, kind: "http_response",
-                phase: delegate.phase)
+                phase: delegate.phase, diagnostic: observer.snapshot)
               throw ProbeFailure.soakFailed(
                 "worker \(worker) after \(own) own and \(total) total requests: status "
                   + "\((response as? HTTPURLResponse)?.statusCode ?? 0); \(tunnel.diagnosticSummary)")
@@ -64,7 +65,7 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
             throw failure
           } catch {
             let total = await counters.failure(worker: worker, own: own, kind: "transport",
-              code: (error as NSError).code, phase: delegate.phase)
+              code: (error as NSError).code, phase: delegate.phase, diagnostic: observer.snapshot)
             throw ProbeFailure.soakFailed(
               "worker \(worker) after \(own) own and \(total) total requests: "
                 + CertificatePinDelegate.transportFailure(error: error as NSError, phase: delegate.phase)
@@ -95,11 +96,19 @@ actor SoakCounters {
 
   // Serialize the first observed failure before another worker can replace its fields.
   func failure(worker: Int, own: Int, kind: String, code: Int? = nil,
-    phase: String = "unknown") -> Int
+    phase: String = "unknown", diagnostic: [String: Any]? = nil) -> Int
   {
     if !failureEmitted {
       failureEmitted = true
       let errorCode = code.map { String($0) } ?? "unknown"
+      if let diagnostic {
+        let receipt: [String: Any] = ["worker": worker, "ownRequests": own, "totalRequests": requests,
+          "kind": kind, "code": code ?? 0, "phase": phase, "diagnostic": diagnostic]
+        if let data = try? JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]),
+          data.count <= 4096, let text = String(data: data, encoding: .utf8) {
+          print("probe-stall-failure:\(text)")
+        }
+      }
       print("probe-soak-failure:\(worker):\(own):\(requests):\(kind):\(errorCode):\(phase)")
       fflush(stdout)
     }

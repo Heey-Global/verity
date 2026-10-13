@@ -56,9 +56,9 @@ for _ in {1..100}; do
 done
 relay_port="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["relayPort"])' "$tmp/fixture.json")"
 outer_url="wss://127.0.0.1:${relay_port}/tunnel"
-sources=(apps/mobile/native/RemoteDataDiagnostics.swift apps/mobile/native/RemoteAppTunnel.swift apps/mobile/native/RemoteSmokeTunnel.swift apps/mobile/native/CertificatePinDelegate.swift apps/mobile/native/PinnedHTTPSessionPool.swift scripts/remote-control-tunnel/NativeTunnel.swift scripts/remote-control-tunnel/NativeProtocol.swift scripts/remote-control-tunnel/Smoke.swift)
+sources=(scripts/remote-control-staging/StallWriterDiagnostics.swift scripts/remote-control-staging/StallDiagnostics.swift scripts/remote-control-tunnel/StallDiagnosticsCheck.swift apps/mobile/native/RemoteDataDiagnostics.swift apps/mobile/native/RemoteAppTunnel.swift apps/mobile/native/RemoteSmokeTunnel.swift apps/mobile/native/CertificatePinDelegate.swift apps/mobile/native/PinnedHTTPSessionPool.swift scripts/remote-control-tunnel/NativeTunnel.swift scripts/remote-control-tunnel/NativeProtocol.swift scripts/remote-control-tunnel/Smoke.swift)
 if [[ "$platform" == macos ]]; then
-  xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macosx14.0" "${sources[@]}" -o "$tmp/smoke"
+  xcrun swiftc -parse-as-library -D VERITY_STALL_DIAGNOSTICS -target "$(uname -m)-apple-macosx14.0" "${sources[@]}" -o "$tmp/smoke"
   "$tmp/smoke" "$outer_url" "$pin" "$pin" "$protocol" "https://127.0.0.1:$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["corePort"])' "$tmp/fixture.json")/"
   exit 0
 fi
@@ -86,7 +86,7 @@ xcrun simctl boot "$simulator_udid"
 xcrun simctl bootstatus "$simulator_udid" -b
 app="$tmp/VerityRemoteTunnel.app"
 mkdir -p "$app"
-xcrun swiftc -parse-as-library -module-name VerityRemoteTunnel \
+xcrun swiftc -parse-as-library -D VERITY_STALL_DIAGNOSTICS -module-name VerityRemoteTunnel \
   -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
   -target "$(uname -m)-apple-ios17.0-simulator" "${sources[@]}" -framework UIKit -o "$app/VerityRemoteTunnel"
 python3 - "$app_plist" "$app/Info.plist" <<'PY'

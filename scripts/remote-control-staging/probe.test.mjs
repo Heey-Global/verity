@@ -325,3 +325,64 @@ setTimeout(() => {
     assert.doesNotMatch(result.stdout + result.stderr, /secret_ticket|test_ticket|test_session/u);
   });
 }
+
+test('bounded stall snapshot remains bound to the first failure through chunking and cleanup', async (t) => {
+  const input = await fixture(t, (connect) => ({
+    type: 'connect.ready',
+    requestId: connect.requestId,
+    sessionId: 'test_session',
+    ticket: 'test_ticket',
+    expiresAt: Date.now() + 60_000,
+    capability: 'remote-control-v1',
+  }));
+  const diagnostic = {
+    headersMs: 1,
+    firstByteMs: 2,
+    completedMs: 12000,
+    writer: {
+      mapping: 'matched',
+      queued: 1,
+      sending: 0,
+      completed: 3,
+      failed: 0,
+      globalQueued: 1,
+      globalSending: 1,
+      oldestSendMs: 11000,
+      overflow: false,
+    },
+  };
+  const record =
+    'probe-stall-failure:' +
+    JSON.stringify({
+      worker: 2,
+      ownRequests: 3,
+      totalRequests: 19,
+      kind: 'transport',
+      code: -1001,
+      phase: 'PIN_AND_CHAIN_TRUST_ACCEPTED',
+      diagnostic,
+    });
+  writeFileSync(
+    input.binary,
+    `#!/usr/bin/env node
+console.log('probe-stall-failure:' + JSON.stringify({ticket:'secret_ticket'}));
+process.stdout.write(${JSON.stringify(record.slice(0, 300))});
+setTimeout(() => {
+ process.stdout.write(${JSON.stringify(record.slice(300) + '\n')});
+ console.log('probe-soak-failure:5:8:30:transport:-999:AUTH_CHALLENGE_RECEIVED');
+ console.log('probe-error:-999');
+ process.exitCode = 7;
+}, 5);
+`,
+    { mode: 0o755 },
+  );
+  const result = await runProbe(input);
+  assert.equal(result.code, 7);
+  const line = result.stderr.split('\n').find((line) => line.startsWith('Probe failure receipt: '));
+  assert.ok(line, result.stderr);
+  const receipt = JSON.parse(line.slice('Probe failure receipt: '.length));
+  assert.equal(receipt.soak.worker, 2);
+  assert.equal(receipt.nativeErrorCode, -1001);
+  assert.deepEqual(receipt.stall, diagnostic);
+  assert.doesNotMatch(result.stdout + result.stderr, /secret_ticket|test_ticket|test_session/u);
+});
