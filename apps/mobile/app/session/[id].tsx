@@ -1,4 +1,5 @@
 import { MatrixSendPreview } from '../../components/ui/MatrixSendPreview';
+import { Button } from '../../components/ui/Button';
 import { useDeferredSessionWork } from '../../hooks/useDeferredSessionWork';
 import { meetingSavedCard } from '../../lib/meetingSavedCard';
 import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
@@ -6563,7 +6564,7 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
     case 'tool-call':
       return <ToolCard key={item.message.id} message={item.message} />; // single tool not in a run
     case 'agent-event':
-      return <EventRow message={item.message} />;
+      return <EventRow message={item.message} isLatest={isLatest} />;
     case 'dependency-status':
       return <DependencyStatusRow text={item.message.text} />;
     case 'choices':
@@ -7894,8 +7895,14 @@ function PlanProposalCard({
   );
 }
 
-function EventRow({ message }: { message: ModeSwitchMessage }) {
+// Failures carry stderr tails, request ids and loader logs. The row leads with
+// what happened and what to do; the raw text stays one tap away for diagnosis.
+const RETRY_PROMPT = 'Try again';
+
+function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest: boolean }) {
   const { theme } = useUnistyles();
+  const actions = useContext(SessionActionsContext);
+  const [showTechnical, setShowTechnical] = useState(false);
   const descriptor = agentEventDescriptor(message.event);
   const color = theme.colors.tone[eventToneColor(descriptor.tone)];
   // A task change is bookkeeping, not conversation: one muted line that opens
@@ -7913,10 +7920,59 @@ function EventRow({ message }: { message: ModeSwitchMessage }) {
       </Pressable>
     );
   }
+  const repeats = message.repeatCount ?? 1;
+  // Only the newest failure offers a resend: an older one was already followed
+  // by something, and resending from it would answer a stale state.
+  const canRetry =
+    descriptor.action === 'retry' &&
+    isLatest &&
+    actions !== null &&
+    !actions.sending &&
+    !actions.dead;
+  const expandable = descriptor.technical !== undefined;
   return (
-    <View style={[styles.eventRow, descriptor.action ? styles.eventRowActionable : null]}>
-      <Text style={[styles.eventLabel, { color }]}>{descriptor.label}</Text>
+    <View
+      style={[styles.eventRow, descriptor.action || expandable ? styles.eventRowActionable : null]}
+    >
+      <Text style={[styles.eventLabel, { color }]}>
+        {repeats > 1 ? `${descriptor.label} · ${String(repeats)}×` : descriptor.label}
+      </Text>
       {descriptor.detail ? <Text style={styles.eventDetail}>{descriptor.detail}</Text> : null}
+      {canRetry || expandable ? (
+        <View style={styles.eventFailureActions}>
+          {canRetry ? (
+            <Button
+              label="Try again"
+              icon="rotate-cw"
+              variant="secondary"
+              size="compact"
+              onPress={() => actions.sendTurn(RETRY_PROMPT)}
+              accessibilityHint="Sends a new turn asking the agent to continue"
+            />
+          ) : null}
+          {expandable ? (
+            <Pressable
+              onPress={() => setShowTechnical((open) => !open)}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showTechnical }}
+              accessibilityLabel={showTechnical ? 'Hide details' : 'Show details'}
+              hitSlop={8}
+              style={({ pressed }) => (pressed ? styles.eventActionPressed : null)}
+            >
+              <Text style={styles.eventTasksLink}>
+                {showTechnical ? 'Hide details' : 'Details'}
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+      {expandable && showTechnical ? (
+        <View style={styles.eventTechnical}>
+          <Text selectable style={styles.toolPreview}>
+            {descriptor.technical}
+          </Text>
+        </View>
+      ) : null}
       {descriptor.action === 'claude-login' ? (
         <Pressable
           style={({ pressed }) => [styles.eventAction, pressed ? styles.eventActionPressed : null]}
@@ -11605,6 +11661,21 @@ const styles = StyleSheet.create((theme) => ({
   eventRowActionable: {
     flexDirection: 'column',
     alignItems: 'flex-start',
+  },
+  eventFailureActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    marginTop: theme.spacing.xs,
+  },
+  eventTechnical: {
+    alignSelf: 'stretch',
+    marginTop: theme.spacing.xs,
+    padding: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
   },
   eventLabel: {
     fontSize: theme.text.xs,

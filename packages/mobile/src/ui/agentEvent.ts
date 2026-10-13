@@ -20,7 +20,10 @@ export interface AgentEventDescriptor {
   detail?: string;
   tone: AgentEventTone;
   /** Optional recovery action rendered by the native transcript row. */
-  action?: 'claude-login' | 'tasks';
+  action?: 'claude-login' | 'tasks' | 'retry';
+  /** Raw failure text for a collapsed "Details" section. Never the headline:
+   *  it carries stderr tails, request ids and loader logs. */
+  technical?: string;
 }
 
 const CLAUDE_OAUTH_FAILURE = /failed to authenticate:.*oauth.*(?:expired|refresh)/i;
@@ -84,7 +87,7 @@ export function agentEventDescriptor(event: AgentEvent): AgentEventDescriptor {
       if (LIMIT_REACHED.test(event.message)) {
         return { kind: 'limit-reached', label: 'Usage limit reached', tone: 'neutral' };
       }
-      return { kind: 'error', label: event.message, detail: event.kind, tone: 'danger' };
+      return describeFailure(event.kind, event.message);
     case 'raw': {
       // Name the event kind, not just the backend. Without it every unmapped
       // stream type renders as "Unrecognized event / claude-code", so a type a
@@ -101,6 +104,67 @@ export function agentEventDescriptor(event: AgentEvent): AgentEventDescriptor {
     default:
       return { kind: event.t, label: event.t, tone: 'neutral' };
   }
+}
+
+// Transport and provider outages: the agent never got an answer to act on, so
+// the remedy is to wait and resend — not to inspect the session.
+const PROVIDER_UNREACHABLE =
+  /(?:\b(?:api error|status(?: code)?|http(?:\/[\d.]+)?)\W{0,3}5(?:0[02-4]|2\d)\b|\b(?:bad gateway|service unavailable|gateway time-?out|overloaded(?:_error)?|upstream (?:connect|error|request timeout)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|fetch failed|network error)\b)/iu;
+// Kinds whose message is a process exit or a backend transport failure. Their
+// text is a stderr tail, never a sentence written for the operator.
+const PROCESS_FAILURE_KINDS = new Set(['crashed', 'acp', 'run_failed']);
+const SUMMARY_LIMIT = 160;
+const TECHNICAL_LIMIT = 2_000;
+
+function describeFailure(kind: string, message: string): AgentEventDescriptor {
+  const technical = technicalText(kind, message);
+  if (PROVIDER_UNREACHABLE.test(message)) {
+    return {
+      kind: 'provider-unreachable',
+      label: 'Model provider unreachable',
+      detail: 'The request did not get through. Try again in a moment.',
+      tone: 'warning',
+      action: 'retry',
+      technical,
+    };
+  }
+  if (PROCESS_FAILURE_KINDS.has(kind)) {
+    return {
+      kind: 'agent-stopped',
+      label: 'Agent stopped unexpectedly',
+      detail: 'The turn ended with an error.',
+      tone: 'danger',
+      action: 'retry',
+      technical,
+    };
+  }
+  // A short adapter diagnostic ("bad line") already reads as a sentence; only a
+  // multi-line or oversized message needs its full text tucked away.
+  const summary = firstLine(message);
+  return {
+    kind: 'error',
+    label: 'Agent error',
+    detail: summary === '' ? kind : summary,
+    tone: 'danger',
+    ...(summary === message.trim() ? {} : { technical }),
+  };
+}
+
+function firstLine(message: string): string {
+  const line = stripControl(message).trim().split(/\r?\n/u)[0]?.trim() ?? '';
+  return line.length > SUMMARY_LIMIT ? `${line.slice(0, SUMMARY_LIMIT - 1)}…` : line;
+}
+
+/** Keep the END of the text: a stderr tail puts the fatal line last. */
+function technicalText(kind: string, message: string): string {
+  const text = stripControl(message).trim();
+  const tail = text.length > TECHNICAL_LIMIT ? `…${text.slice(-TECHNICAL_LIMIT)}` : text;
+  return `${kind}\n${tail}`;
+}
+
+function stripControl(text: string): string {
+  // eslint-disable-next-line no-control-regex -- terminal colour codes from CLI stderr
+  return text.replace(/\u001b\[[0-9;]*[A-Za-z]/gu, '').replace(/[^\P{Cc}\n\t]/gu, '');
 }
 
 /** Backend payloads are `unknown`, so read the discriminant defensively and cap
