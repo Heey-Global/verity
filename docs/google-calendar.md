@@ -84,3 +84,18 @@ event. Creation may be pending; the agent must read the event again to obtain
 the actual link and report failures accurately. Availability depends on the
 connected calendar and Google account. Contacts lookup is optional: email
 addresses supplied or confirmed by you also work without an address book.
+
+
+## Gmail sender addresses
+
+Gmail drafts can use an existing verified “Send mail as” address. The Gmail tool's
+`list_senders` action lists available addresses; `create_draft` accepts an optional
+`from` address and otherwise uses Gmail's configured default sender. Each draft
+uses the selected address's signature.
+
+Use `create_reply_draft` for replies. It preserves the own address used in the
+selected message: the sender for sent messages, or a recognized recipient address
+for incoming messages. If the address is missing, unrecognized, or ambiguous,
+draft creation stops instead of silently switching identities. The sender remains
+part of the snapshot presented for approval before sending. Configure and verify
+new aliases in Gmail itself.

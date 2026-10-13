@@ -8,6 +8,7 @@ import {
 
 function setup(overrides: Partial<GmailToolStore> = {}) {
   const completeGoogleWorkspaceInvocation = vi.fn().mockResolvedValue(undefined);
+  const claimGoogleWorkspaceInvocation = vi.fn().mockResolvedValue({ status: 'claimed' });
   const eventStore: GmailToolStore = {
     getSession: vi.fn().mockResolvedValue({ projectId: 'p1' }),
     getSessionGmailConnection: vi
@@ -18,7 +19,7 @@ function setup(overrides: Partial<GmailToolStore> = {}) {
       googleDriveRefreshToken: 'refresh',
       googleDriveAccountEmail: 'me@example.test',
     }),
-    claimGoogleWorkspaceInvocation: vi.fn().mockResolvedValue({ status: 'claimed' }),
+    claimGoogleWorkspaceInvocation,
     completeGoogleWorkspaceInvocation,
     ...overrides,
   };
@@ -26,7 +27,16 @@ function setup(overrides: Partial<GmailToolStore> = {}) {
     search: vi.fn().mockResolvedValue({ messages: [] }),
     readThread: vi.fn().mockResolvedValue({ id: 't1', messages: [] }),
     createDraft: vi.fn().mockResolvedValue({ id: 'd1' }),
-    createReplyDraft: vi.fn().mockResolvedValue({ id: 'd2' }),
+    listSenders: vi
+      .fn()
+      .mockResolvedValue([{ sendAsEmail: 'me@example.test', isPrimary: true, isDefault: true }]),
+    prepareReplyDraft: vi.fn().mockResolvedValue({
+      from: 'me@example.test',
+      to: ['a@example.test'],
+      subject: 'Re: Hello',
+      body: 'Reply',
+      threadId: 't1',
+    }),
     prepareDraftSend: vi.fn().mockResolvedValue({
       draftId: 'd1',
       messageId: 'm1',
@@ -46,6 +56,7 @@ function setup(overrides: Partial<GmailToolStore> = {}) {
   };
   return {
     eventStore,
+    claimGoogleWorkspaceInvocation,
     completeGoogleWorkspaceInvocation,
     gmail,
     tool: createGmailTool({ eventStore, gmail, googleAccessToken: async () => 'token' }),
@@ -193,12 +204,75 @@ describe('Gmail session tool', () => {
     await second.tool.invoke(
       input({ action: 'create_reply_draft', threadId: 't1', body: 'Reply' }),
     );
-    expect(second.gmail.createReplyDraft).toHaveBeenCalledWith(
+    expect(second.gmail.createDraft).toHaveBeenCalledWith(
       'token',
       expect.objectContaining({
         body: 'Reply\n\nBest regards\nJane',
         htmlBody: expect.stringContaining('<div>Best regards<br />Jane</div>'),
       }),
     );
+  });
+});
+
+describe('Gmail sender selection in the session tool', () => {
+  it('exposes senders without creating a draft', async () => {
+    const { tool, gmail } = setup();
+    await expect(tool.invoke(input({ action: 'list_senders' }))).resolves.toEqual(
+      await gmail.listSenders(),
+    );
+    expect(gmail.createDraft).not.toHaveBeenCalled();
+  });
+
+  it.each(['create_draft', 'create_reply_draft'])(
+    'uses the selected identity signature for %s',
+    async (action) => {
+      const { tool, gmail } = setup();
+      gmail.listSenders.mockResolvedValue([
+        { sendAsEmail: 'me@example.test', isPrimary: true, isDefault: false },
+        { sendAsEmail: 'support@example.test', isPrimary: false, isDefault: true },
+      ]);
+      gmail.prepareReplyDraft.mockResolvedValue({
+        from: 'support@example.test',
+        to: ['a@example.test'],
+        subject: 'Re: Hello',
+        body: 'Reply',
+        threadId: 't1',
+      });
+      await tool.invoke(
+        input({
+          action,
+          from: action === 'create_draft' ? 'support@example.test' : undefined,
+          to: ['a@example.test'],
+          subject: 'Hello',
+          threadId: 't1',
+          body: 'Reply',
+        }),
+      );
+      expect(gmail.readSignature).toHaveBeenCalledWith('token', 'support@example.test');
+      expect(gmail.createDraft).toHaveBeenCalledWith(
+        'token',
+        expect.objectContaining({
+          from: 'support@example.test',
+          body: 'Reply\n\nBest regards\nJane',
+        }),
+      );
+    },
+  );
+
+  it('rejects an unknown sender before claiming a mutation', async () => {
+    const { tool, gmail, claimGoogleWorkspaceInvocation } = setup();
+    await expect(
+      tool.invoke(
+        input({
+          action: 'create_draft',
+          from: 'other@example.test',
+          to: ['a@example.test'],
+          subject: 'Hello',
+          body: 'Body',
+        }),
+      ),
+    ).rejects.toThrow('verified');
+    expect(gmail.createDraft).not.toHaveBeenCalled();
+    expect(claimGoogleWorkspaceInvocation).not.toHaveBeenCalled();
   });
 });

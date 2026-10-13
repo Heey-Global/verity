@@ -972,3 +972,26 @@ it('serves Shared publication with trusted caller identity and no permission car
     'gateway_call_served',
   ]);
 });
+
+it.each([
+  { action: 'list_senders' },
+  {
+    action: 'create_draft',
+    from: 'support@example.test',
+    to: ['friend@example.test'],
+    subject: 'Hello',
+    body: 'Body',
+  },
+])('accepts Gmail sender selection through the gateway: %j', async (request) => {
+  const { gateway, invokeTool } = harness({
+    servedTools: ['verity_gmail'],
+    hasStandingAuthorization: async () => true,
+  });
+  await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(request, 'verity_gmail'),
+  });
+  expect(invokeTool).toHaveBeenCalledOnce();
+  expect(invokeTool).toHaveBeenCalledWith(expect.objectContaining({ request }));
+});

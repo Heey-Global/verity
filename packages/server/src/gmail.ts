@@ -181,11 +181,61 @@ export async function readGmailThread(
   };
 }
 
-export async function createGmailReplyDraft(
+export interface GmailSendAs {
+  sendAsEmail: string;
+  displayName?: string;
+  isPrimary?: boolean;
+  isDefault?: boolean;
+  verificationStatus?: string;
+}
+
+export async function listGmailSendAs(
+  accessToken: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<GmailSendAs[]> {
+  const result = await gmailJson<{ sendAs?: GmailSendAs[] }>(
+    '/settings/sendAs',
+    accessToken,
+    {},
+    fetchImpl,
+  );
+  return (result.sendAs ?? []).filter(
+    (alias) => alias.isPrimary === true || alias.verificationStatus === 'accepted',
+  );
+}
+
+export function selectGmailSender(aliases: GmailSendAs[], from?: string): string {
+  const selected =
+    from === undefined
+      ? (aliases.find((alias) => alias.isDefault) ?? aliases.find((alias) => alias.isPrimary))
+      : aliases.find((alias) => alias.sendAsEmail.toLowerCase() === from.toLowerCase());
+  if (selected === undefined) throw new Error('Choose a verified Gmail send-as address');
+  return selected.sendAsEmail;
+}
+
+function replySender(target: GmailMessage, aliases: GmailSendAs[]): string {
+  const sent = target.labelIds?.includes('SENT');
+  const fields = sent ? ['from'] : ['to', 'cc', 'delivered-to', 'x-original-to'];
+  for (const field of fields) {
+    const addresses = addressList(header(target.payload, field)).map((address) => {
+      const angle = /<([^<>]+)>\s*$/u.exec(address);
+      return (angle?.[1] ?? address).trim().toLowerCase();
+    });
+    const matches = aliases.filter((alias) => addresses.includes(alias.sendAsEmail.toLowerCase()));
+    if (matches.length === 1) return matches[0]!.sendAsEmail;
+    if (matches.length > 1) break;
+  }
+  throw new Error(
+    'Cannot determine a unique verified reply sender; ask the user which address to use',
+  );
+}
+
+export async function prepareGmailReplyDraft(
   accessToken: string,
   input: { threadId: string; messageId?: string; body: string; htmlBody?: string },
+  aliases: GmailSendAs[],
   fetchImpl: FetchLike = fetch,
-): Promise<unknown> {
+): Promise<GmailDraftInput> {
   const thread = await gmailJson<{ messages?: GmailMessage[] }>(
     `/threads/${encodeURIComponent(input.threadId)}?format=full`,
     accessToken,
@@ -214,18 +264,27 @@ export async function createGmailReplyDraft(
   }
   const existingReferences = header(target.payload, 'references');
   const subject = decodeMimeHeader(header(target.payload, 'subject') ?? '');
+  return {
+    from: replySender(target, aliases),
+    to: [recipient],
+    subject: /^re:/iu.test(subject) ? subject : `Re: ${subject}`,
+    body: input.body,
+    ...(input.htmlBody === undefined ? {} : { htmlBody: input.htmlBody }),
+    threadId: input.threadId,
+    inReplyTo: messageId,
+    references: existingReferences === undefined ? messageId : `${existingReferences} ${messageId}`,
+  };
+}
+
+export async function createGmailReplyDraft(
+  accessToken: string,
+  input: { threadId: string; messageId?: string; body: string; htmlBody?: string },
+  fetchImpl: FetchLike = fetch,
+): Promise<unknown> {
+  const aliases = await listGmailSendAs(accessToken, fetchImpl);
   return createGmailDraft(
     accessToken,
-    {
-      to: [recipient],
-      subject: /^re:/iu.test(subject) ? subject : `Re: ${subject}`,
-      body: input.body,
-      ...(input.htmlBody === undefined ? {} : { htmlBody: input.htmlBody }),
-      threadId: input.threadId,
-      inReplyTo: messageId,
-      references:
-        existingReferences === undefined ? messageId : `${existingReferences} ${messageId}`,
-    },
+    await prepareGmailReplyDraft(accessToken, input, aliases, fetchImpl),
     fetchImpl,
   );
 }
