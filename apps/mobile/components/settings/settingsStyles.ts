@@ -573,7 +573,7 @@ export const settingsStyles = StyleSheet.create((theme) => ({
     marginTop: theme.spacing.sm,
   },
   // A destructive inline action sitting at the trailing edge of a list row.
-  // Same 44pt target as the other small buttons; only the tone differs.
+  // A 44pt minimum target, in the attention tone.
   dangerButton: {
     minHeight: 44,
     minWidth: 0,
