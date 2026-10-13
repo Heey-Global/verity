@@ -42,17 +42,21 @@ const build = new Function(
   'React',
   'useMemo',
   'FlashList',
+  'Platform',
+  'TranscriptScrollView',
   'View',
   'ActivityIndicator',
   'styles',
   'props',
   `const {${Object.keys(inputs).join(',')}} = props; ${compiled}; return transcriptList;`,
 );
-function useList(props: typeof inputs) {
+function useList(props: typeof inputs, platform: string) {
   return build(
     React,
     React.useMemo,
     'FlashList',
+    { OS: platform },
+    'TranscriptScrollView',
     'View',
     'ActivityIndicator',
     {},
@@ -60,28 +64,34 @@ function useList(props: typeof inputs) {
   ) as React.ReactElement<Record<string, unknown>>;
 }
 
-it('retains list props during composer or auxiliary updates while accepting streaming and scroll changes', () => {
-  const hook = renderHook(
-    ({ draft, ...props }: typeof inputs & { draft: string }) => {
-      void draft;
-      return useList(props);
-    },
-    { initialProps: { ...inputs, draft: '' } },
-  );
-  const first = hook.result.current;
-  hook.rerender({ ...inputs, draft: 'typing' });
-  expect(hook.result.current).toBe(first);
-  const data = [{}] as typeof inputs.data;
-  hook.rerender({ ...inputs, data, draft: 'typing' });
-  expect(hook.result.current).not.toBe(first);
-  expect(hook.result.current.props.data).toBe(data);
-  const scroll = jest.fn();
-  hook.rerender({ ...inputs, data, onListScroll: scroll, loadingOlder: true, draft: 'typing' });
-  expect(hook.result.current.props.onScroll).toBe(scroll);
-  hook.rerender({ ...inputs, sessionId: 'b', draft: '' });
-  (hook.result.current.props.onLoad as () => void)();
-  expect(inputs.setLoadedListSessionId).toHaveBeenLastCalledWith('b');
-});
+it.each(['web', 'ios', 'android'])(
+  'retains list props during composer or auxiliary updates while accepting streaming and scroll changes on %s',
+  (platform) => {
+    const hook = renderHook(
+      ({ draft, ...props }: typeof inputs & { draft: string }) => {
+        void draft;
+        return useList(props, platform);
+      },
+      { initialProps: { ...inputs, draft: '' } },
+    );
+    const first = hook.result.current;
+    expect(first.props.renderScrollComponent).toBe(
+      platform === 'web' ? 'TranscriptScrollView' : undefined,
+    );
+    hook.rerender({ ...inputs, draft: 'typing' });
+    expect(hook.result.current).toBe(first);
+    const data = [{}] as typeof inputs.data;
+    hook.rerender({ ...inputs, data, draft: 'typing' });
+    expect(hook.result.current).not.toBe(first);
+    expect(hook.result.current.props.data).toBe(data);
+    const scroll = jest.fn();
+    hook.rerender({ ...inputs, data, onListScroll: scroll, loadingOlder: true, draft: 'typing' });
+    expect(hook.result.current.props.onScroll).toBe(scroll);
+    hook.rerender({ ...inputs, sessionId: 'b', draft: '' });
+    (hook.result.current.props.onLoad as () => void)();
+    expect(inputs.setLoadedListSessionId).toHaveBeenLastCalledWith('b');
+  },
+);
 
 it('keeps explicit model and automation access independent of deferred admission', () => {
   expect(source).toMatch(/refreshModels\(\);\s*setEnginePickerOpen\(true\)/);
