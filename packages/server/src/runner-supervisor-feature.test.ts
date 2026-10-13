@@ -6431,7 +6431,9 @@ describe('supervisor crash-safety: worker death + restart (S7)', () => {
       unresolvedRetryMs: 10,
     });
     try {
-      await rm(join(runtimeDir, 'turns/turn-gone'), { recursive: true });
+      // Recursive deletion races with recovery writes and can fail with ENOTEMPTY.
+      // Rename atomically so retries observe the missing turn directory.
+      await rename(join(runtimeDir, 'turns/turn-gone'), join(runtimeDir, 'removed-turn-gone'));
       await new Promise((resolveWait) => setTimeout(resolveWait, 200));
       await claimTurn(
         runtimeDir,
