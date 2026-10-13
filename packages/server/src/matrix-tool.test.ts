@@ -378,3 +378,27 @@ it('rejects a dispatch lease revoked while destination validation awaits', async
     validation.mockRestore();
   }
 });
+
+it('rejects a dispatch binding revoked while destination validation awaits', async () => {
+  await enqueue();
+  const outbound = ctx.store.integrations.outbound;
+  const job = (await outbound.claim(accountId))!;
+  const validate = outbound.validate.bind(outbound);
+  const validation = vi.spyOn(outbound, 'validate').mockImplementationOnce(async (...args) => {
+    await validate(...args);
+    await ctx.store.integrations.setSourcePaused(accountId, roomId, true);
+    await ctx.store.integrations.setSourcePaused(accountId, roomId, false);
+  });
+  try {
+    expect(await outbound.checkLease(accountId, job.invocationId, job.leaseId)).toBe(false);
+    expect(
+      await outbound.finish(accountId, job.invocationId, job.leaseId, {
+        error: 'send_failed',
+        retryAfterMs: 30_000,
+      }),
+    ).toBe(true);
+    expect(await outbound.claim(accountId)).toBeNull();
+  } finally {
+    validation.mockRestore();
+  }
+});

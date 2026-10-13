@@ -4278,6 +4278,18 @@ migrations['0158_matrix_outbound'] = {
       error text,
       created_at timestamptz not null default now()
     )`.execute(db);
+    await sql`create function matrix_binding_revoke() returns trigger language plpgsql as $$
+      begin
+        if new.binding_version is distinct from old.binding_version then
+          update matrix_outbound set state = 'cancelled',
+            error = 'Access revoked; an in-flight Matrix send may already have been accepted'
+            where account_id = new.account_id and source_id = new.source_id
+              and state in ('queued', 'pending');
+        end if;
+        return new;
+      end $$`.execute(db);
+    await sql`create trigger matrix_binding_revoke after update on integration_sources
+      for each row execute function matrix_binding_revoke()`.execute(db);
     // Returning to the original project must not revive an approval granted before movement.
     await sql`create function matrix_session_revoke() returns trigger language plpgsql as $$
       begin
@@ -4296,6 +4308,8 @@ migrations['0158_matrix_outbound'] = {
   async down(db: Kysely<unknown>): Promise<void> {
     await sql`drop trigger matrix_session_revoke on sessions`.execute(db);
     await sql`drop function matrix_session_revoke()`.execute(db);
+    await sql`drop trigger matrix_binding_revoke on integration_sources`.execute(db);
+    await sql`drop function matrix_binding_revoke()`.execute(db);
     await sql`drop table matrix_outbound`.execute(db);
     await sql`drop trigger matrix_binding_version on integration_sources`.execute(db);
     await sql`drop function matrix_binding_version()`.execute(db);
