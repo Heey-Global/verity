@@ -25177,6 +25177,21 @@ function preserveCustomPayload(schema, key, knownTags) {
     return output;
   });
 }
+function defaultOnErrorOptionalStringTag(schema, key) {
+  return import_v4.z.preprocess((value) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return value;
+    }
+    const record3 = value;
+    const tag = record3[key];
+    if (tag === void 0 || tag === null || typeof tag === "string") {
+      return value;
+    }
+    const normalized = { ...record3 };
+    delete normalized[key];
+    return normalized;
+  }, schema);
+}
 function vecSkipError(itemSchema) {
   return import_v4.z.array(itemSchema.catch(skippedItem)).transform((items) => items.filter((item) => item !== skippedItem));
 }
@@ -25194,12 +25209,12 @@ var zWriteTextFileRequest = z11.object({
 var zReadTextFileRequest = z11.object({
   sessionId: zSessionId,
   path: z11.string(),
-  line: defaultOnError(z11.int().gte(0).max(4294967295, {
+  line: z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
-  }).nullish(), () => void 0),
-  limit: defaultOnError(z11.int().gte(0).max(4294967295, {
+  }).nullish(),
+  limit: z11.int().gte(0).max(4294967295, {
     error: "Invalid value: Expected uint32 to be <= 4294967295"
-  }).nullish(), () => void 0),
+  }).nullish(),
   _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
 var zToolCallId = z11.string();
@@ -25366,10 +25381,10 @@ var zEnvVariable = z11.object({
 var zCreateTerminalRequest = z11.object({
   sessionId: zSessionId,
   command: z11.string(),
-  args: defaultOnError(vecSkipError(z11.string()).optional(), () => []),
-  env: defaultOnError(vecSkipError(zEnvVariable).optional(), () => []),
-  cwd: defaultOnError(z11.string().nullish(), () => void 0),
-  outputByteLimit: defaultOnError(z11.number().nullish(), () => void 0),
+  args: z11.array(z11.string()).optional(),
+  env: z11.array(zEnvVariable).optional(),
+  cwd: z11.string().nullish(),
+  outputByteLimit: z11.number().nullish(),
   _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
 var zTerminalOutputRequest = z11.object({
@@ -25713,8 +25728,8 @@ var zAuthMethodTerminal = z11.object({
   id: zAuthMethodId,
   name: z11.string(),
   description: defaultOnError(z11.string().nullish(), () => void 0),
-  args: defaultOnError(vecSkipError(z11.string()).optional(), () => []),
-  env: defaultOnError(z11.record(z11.string(), z11.string()).optional(), () => void 0),
+  args: z11.array(z11.string()).optional(),
+  env: z11.record(z11.string(), z11.string()).optional(),
   _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
 var zAuthMethodAgent = z11.object({
@@ -26214,11 +26229,53 @@ var zSubagentSessionCapabilities = z11.object({
 var zRunningStateUpdate = z11.object({
   _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
-var zIdleStateUpdate = z11.object({
-  stopReason: defaultOnError(zStopReason.nullish(), () => void 0),
-  usage: defaultOnError(zUsage.nullish(), () => void 0),
-  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
+var zErrorStopReason = z11.object({
+  error: defaultOnError(zError.nullish(), () => void 0)
 });
+var zIdleStateUpdate = defaultOnErrorOptionalStringTag(preserveCustomPayload(z11.intersection(z11.union([
+  z11.object({
+    stopReason: z11.literal("end_turn")
+  }),
+  z11.object({
+    stopReason: z11.literal("max_tokens")
+  }),
+  z11.object({
+    stopReason: z11.literal("max_turn_requests")
+  }),
+  z11.object({
+    stopReason: z11.literal("refusal")
+  }),
+  z11.object({
+    stopReason: z11.literal("cancelled")
+  }),
+  zErrorStopReason.and(z11.object({
+    stopReason: z11.literal("error")
+  })),
+  excludeKnownTags(z11.object({
+    stopReason: z11.string()
+  }), "stopReason", [
+    "cancelled",
+    "end_turn",
+    "error",
+    "max_tokens",
+    "max_turn_requests",
+    "refusal"
+  ]),
+  z11.object({
+    stopReason: z11.null().optional()
+  })
+]), z11.object({
+  usage: defaultOnError(zUsage.nullish(), () => void 0),
+  _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0),
+  stopReason: defaultOnError(z11.string().nullish(), () => void 0)
+})), "stopReason", [
+  "cancelled",
+  "end_turn",
+  "error",
+  "max_tokens",
+  "max_turn_requests",
+  "refusal"
+]), "stopReason");
 var zRequiresActionStateUpdate = z11.object({
   _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
@@ -26487,14 +26544,14 @@ var zMcpServer = z11.union([
 ]);
 var zNewSessionRequest = z11.object({
   cwd: z11.string(),
-  additionalDirectories: defaultOnError(vecSkipError(z11.string()).optional(), () => []),
-  mcpServers: requiredDefaultOnError(vecSkipError(zMcpServer), () => []),
+  additionalDirectories: z11.array(z11.string()).optional(),
+  mcpServers: z11.array(zMcpServer),
   _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
 var zLoadSessionRequest = z11.object({
-  mcpServers: requiredDefaultOnError(vecSkipError(zMcpServer), () => []),
+  mcpServers: z11.array(zMcpServer),
   cwd: z11.string(),
-  additionalDirectories: defaultOnError(vecSkipError(z11.string()).optional(), () => []),
+  additionalDirectories: z11.array(z11.string()).optional(),
   sessionId: zSessionId,
   _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
@@ -26510,15 +26567,15 @@ var zDeleteSessionRequest = z11.object({
 var zForkSessionRequest = z11.object({
   sessionId: zSessionId,
   cwd: z11.string(),
-  additionalDirectories: defaultOnError(vecSkipError(z11.string()).optional(), () => []),
-  mcpServers: defaultOnError(vecSkipError(zMcpServer).optional(), () => []),
+  additionalDirectories: z11.array(z11.string()).optional(),
+  mcpServers: z11.array(zMcpServer).optional(),
   _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
 var zResumeSessionRequest = z11.object({
   sessionId: zSessionId,
   cwd: z11.string(),
-  additionalDirectories: defaultOnError(vecSkipError(z11.string()).optional(), () => []),
-  mcpServers: defaultOnError(vecSkipError(zMcpServer).optional(), () => []),
+  additionalDirectories: z11.array(z11.string()).optional(),
+  mcpServers: z11.array(zMcpServer).optional(),
   _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
 var zCloseSessionRequest = z11.object({
@@ -26813,7 +26870,7 @@ var zDidChangeDocumentNotification = z11.object({
   sessionId: zSessionId,
   uri: z11.string(),
   version: z11.number(),
-  contentChanges: requiredDefaultOnError(vecSkipError(zTextDocumentContentChangeEvent), () => []),
+  contentChanges: z11.array(zTextDocumentContentChangeEvent),
   _meta: defaultOnError(z11.record(z11.string(), z11.unknown()).nullish(), () => void 0)
 });
 var zDidCloseDocumentNotification = z11.object({
@@ -28037,9 +28094,26 @@ var zGuardElicitationPropertySchemaBoolean = zBooleanPropertySchema.and(z12.obje
 var zGuardElicitationPropertySchemaArray = zMultiSelectPropertySchema.and(z12.object({ type: z12.literal("array") }));
 var zGuardMultiSelectItemsString = zStringMultiSelectItems.and(z12.object({ type: z12.literal("string") }));
 var zGuardStateUpdateRunning = zRunningStateUpdate.and(z12.object({ state: z12.literal("running") }));
-var zGuardStateUpdateIdle = zIdleStateUpdate.and(z12.object({ state: z12.literal("idle") }));
+var zGuardStateUpdateIdle = zIdleStateUpdate.and(z12.object({ usage: zUsage.nullish() })).and(z12.object({ state: z12.literal("idle") }));
 var zGuardStateUpdateRequiresAction = zRequiresActionStateUpdate.and(z12.object({ state: z12.literal("requires_action") }));
 var zGuardStateUpdateUnknown = zUnknownStateUpdate.and(z12.object({ state: z12.literal("unknown") }));
+var zGuardIdleStateUpdateEndTurn = z12.object({
+  stopReason: z12.literal("end_turn")
+});
+var zGuardIdleStateUpdateMaxTokens = z12.object({
+  stopReason: z12.literal("max_tokens")
+});
+var zGuardIdleStateUpdateMaxTurnRequests = z12.object({
+  stopReason: z12.literal("max_turn_requests")
+});
+var zGuardIdleStateUpdateRefusal = z12.object({
+  stopReason: z12.literal("refusal")
+});
+var zGuardIdleStateUpdateCancelled = z12.object({
+  stopReason: z12.literal("cancelled")
+});
+var zGuardIdleStateUpdateError = zErrorStopReason.and(z12.object({ error: zError.nullish() })).and(z12.object({ stopReason: z12.literal("error") }));
+var zGuardIdleStateUpdateNone = z12.object({ stopReason: z12.null().optional() });
 var zGuardCreateElicitationResponseAccept = zElicitationAcceptAction.and(z12.object({ action: z12.literal("accept") }));
 var zGuardCreateElicitationResponseDecline = z12.object({
   action: z12.literal("decline")
