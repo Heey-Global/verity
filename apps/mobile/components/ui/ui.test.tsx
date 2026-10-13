@@ -314,8 +314,31 @@ describe('tint', () => {
     }
   });
 
-  it('rejects colors it cannot derive a transparency from', () => {
-    expect(tint('#18c8f5', 'fill')).toBe('#18c8f524');
-    expect(() => tint('rgba(3,4,8,0.72)', 'fill')).toThrow(/six-digit hex/);
+  it.each([
+    ['neutral', '0f', 6],
+    ['fill', '24', 14],
+    ['ring', '33', 20],
+    ['border', '59', 35],
+  ] as const)(
+    'preserves hex output and supports web variables at %s strength',
+    (strength, alpha, percentage) => {
+      expect(tint('#18c8f5', strength)).toBe(`#18c8f5${alpha}`);
+      expect(tint('#ABCDEF', strength)).toBe(`#ABCDEF${alpha}`);
+      expect(tint('var(--colors-action)', strength)).toBe(
+        `color-mix(in srgb, var(--colors-action) ${percentage}%, transparent)`,
+      );
+    },
+  );
+
+  it.each([
+    'rgba(3,4,8,0.72)',
+    'red',
+    '#abc',
+    '#12345678',
+    'var()',
+    'var(colors-action)',
+    'var(--x) trailing',
+  ])('rejects unsupported color %s', (color) => {
+    expect(() => tint(color, 'fill')).toThrow(/six-digit hex role color or CSS variable reference/);
   });
 });
