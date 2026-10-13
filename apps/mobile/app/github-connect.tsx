@@ -104,7 +104,7 @@ function GithubConnectView({ client }: { client: VerityClient }) {
     return (
       <View style={styles.centered}>
         <Stack.Screen options={{ title: 'GitHub' }} />
-        <ActivityIndicator color={theme.colors.accent} />
+        <ActivityIndicator color={theme.colors.signature} />
       </View>
     );
   }
@@ -149,7 +149,7 @@ function GithubConnectView({ client }: { client: VerityClient }) {
               accessibilityLabel="Disconnect GitHub"
             >
               {disconnecting ? (
-                <ActivityIndicator size="small" color={theme.colors.accent} />
+                <ActivityIndicator size="small" color={theme.colors.signature} />
               ) : null}
               <Text style={styles.disconnectLabel}>
                 {disconnecting ? 'Disconnecting…' : 'Disconnect GitHub'}
@@ -178,14 +178,13 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.background,
   },
   centerTitle: {
+    ...theme.typography.title,
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '700',
     textAlign: 'center',
   },
   centerSubtitle: {
+    ...theme.typography.body,
     color: theme.colors.textMuted,
-    fontSize: theme.text.md,
     textAlign: 'center',
   },
   content: {
@@ -193,9 +192,9 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.md,
   },
   error: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.attention,
   },
   panel: {
     gap: theme.spacing.md,
@@ -206,14 +205,12 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface,
   },
   panelTitle: {
+    ...theme.typography.row,
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '800',
   },
   panelSubtitle: {
+    ...theme.typography.subtitle,
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
   },
   disconnectButton: {
     minHeight: 48,
@@ -224,12 +221,11 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.xl,
     borderRadius: theme.radius.pill,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.accent,
+    borderColor: theme.colors.signature,
   },
   disconnectLabel: {
-    color: theme.colors.accent,
-    fontSize: theme.text.md,
-    fontWeight: '800',
+    ...theme.typography.button,
+    color: theme.colors.signature,
   },
   buttonDisabled: {
     opacity: 0.45,

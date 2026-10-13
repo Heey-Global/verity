@@ -85,7 +85,7 @@ function ProjectServicesView({
   if (loading && detail === undefined) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator color={theme.colors.setup.text} />
+        <ActivityIndicator color={theme.colors.text} />
       </View>
     );
   }

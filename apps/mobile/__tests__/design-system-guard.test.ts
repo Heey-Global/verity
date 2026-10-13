@@ -37,6 +37,8 @@ const EXEMPT: Partial<Record<string, Counts>> = {
   'components/ui/Toggle.tsx': { rawColor: 2 },
   // A QR code needs a white quiet zone to stay scannable in either theme.
   'components/settings/settingsStyles.ts': { rawColor: 1 },
+  // The pairing QR code itself: black modules on white, in either theme.
+  'app/devices.tsx': { rawColor: 2 },
   // The camera scanner sits on the live camera image: black around it, a white
   // frame and white text on a dark veil stay readable over any picture, in
   // either theme.

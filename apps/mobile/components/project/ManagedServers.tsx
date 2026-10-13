@@ -1,6 +1,6 @@
 import { PremiumBadge } from '../premium/PremiumBadge';
 import { premiumFeatures } from '../premium/premiumFeatures';
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { ManagedDevServer } from '@verity/mobile';
 import { Icon } from '../Icon';
@@ -120,7 +120,7 @@ export function ManagedServerBlock({
         {status.note ? <Text style={styles.note}>{status.note}</Text> : null}
         <View style={styles.headerSpacer} />
         <Text style={styles.detailsLink}>{crashed ? 'View output' : 'Details'}</Text>
-        <Icon name="chevron-right" size={16} color={theme.colors.primary} />
+        <Icon name="chevron-right" size={16} color={theme.colors.action} />
       </Pressable>
       {server.elsewhere.map((other) => (
         <View key={other.instanceId} style={styles.elsewhere}>
@@ -143,7 +143,7 @@ export function ManagedServerBlock({
             <Icon
               name="wifi"
               size={18}
-              color={localOn ? theme.colors.tone.done : theme.colors.textMuted}
+              color={localOn ? theme.colors.success : theme.colors.textMuted}
             />
           </View>
           <View style={styles.rowText}>
@@ -181,7 +181,7 @@ export function ManagedServerBlock({
             <Icon
               name="globe"
               size={18}
-              color={onlineOn ? theme.colors.tone.done : theme.colors.textMuted}
+              color={onlineOn ? theme.colors.success : theme.colors.textMuted}
             />
           </View>
           <View style={styles.rowText}>
@@ -225,7 +225,7 @@ export function ManagedServerBlock({
                       <Icon
                         name={pinCopied ? 'check' : 'copy'}
                         size={14}
-                        color={theme.colors.primary}
+                        color={theme.colors.action}
                       />
                     </Pressable>
                   </View>
@@ -246,7 +246,7 @@ export function ManagedServerBlock({
               accessibilityRole="button"
               accessibilityLabel="Send link and PIN"
             >
-              <Icon name="share" size={20} color={theme.colors.primary} />
+              <Icon name="share" size={20} color={theme.colors.action} />
             </Pressable>
           ) : null}
           {(publicSharing === 'premium-required' || publicSharing === 'disabled') && !publicLink ? (
@@ -378,7 +378,7 @@ export function ManagedServerDetail({
               accessibilityRole="button"
               accessibilityLabel="Stop"
             >
-              <Icon name="square" size={16} color={theme.colors.tone.danger} />
+              <Icon name="square" size={16} color={theme.colors.attention} />
               <Text style={styles.dangerText}>Stop</Text>
             </Pressable>
           </>
@@ -391,7 +391,7 @@ export function ManagedServerDetail({
               accessibilityRole="button"
               accessibilityLabel={state === 'crashed' ? 'Start again' : 'Start'}
             >
-              <Icon name="play" size={16} color={theme.colors.onPrimary} />
+              <Icon name="play" size={16} color={theme.colors.onAction} />
               <Text style={styles.primaryText}>
                 {state === 'crashed' ? 'Start again' : 'Start'}
               </Text>
@@ -433,19 +433,21 @@ export function ManagedServerDetail({
         accessibilityRole="button"
         accessibilityLabel="Delete entry"
       >
-        <Icon name="trash-2" size={16} color={theme.colors.tone.danger} />
+        <Icon name="trash-2" size={16} color={theme.colors.attention} />
         <Text style={styles.dangerText}>Delete entry</Text>
       </Pressable>
     </ScrollView>
   );
 }
 
-const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
-
 const styles = StyleSheet.create((theme) => ({
   scroll: { flex: 1, minHeight: 0 },
   list: { gap: theme.spacing.md, paddingBottom: theme.spacing.md },
-  label: { color: theme.colors.textMuted, fontSize: theme.text.xs, fontWeight: '600' },
+  label: {
+    ...theme.typography.footnote,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.textMuted,
+  },
   block: { gap: theme.spacing.sm },
   header: {
     flexDirection: 'row',
@@ -453,13 +455,21 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     minHeight: 44,
   },
-  name: { flexShrink: 1, color: theme.colors.text, fontSize: theme.text.md, fontWeight: '700' },
-  note: { color: theme.colors.textMuted, fontSize: theme.text.xs },
+  name: { ...theme.typography.row, flexShrink: 1, color: theme.colors.text },
+  note: { ...theme.typography.footnote, color: theme.colors.textMuted },
   headerSpacer: { flex: 1 },
-  detailsLink: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '600' },
+  detailsLink: {
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.action,
+  },
   elsewhere: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  elsewhereText: { flexShrink: 1, color: theme.colors.textMuted, fontSize: theme.text.xs },
-  elsewhereStop: { color: theme.colors.tone.danger, fontSize: theme.text.xs, fontWeight: '700' },
+  elsewhereText: { ...theme.typography.footnote, flexShrink: 1, color: theme.colors.textMuted },
+  elsewhereStop: {
+    ...theme.typography.footnote,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.attention,
+  },
   card: {
     borderRadius: theme.radius.lg,
     borderWidth: 1,
@@ -481,23 +491,21 @@ const styles = StyleSheet.create((theme) => ({
   },
   rowIcon: { width: 22, alignItems: 'center' },
   rowText: { flex: 1, minWidth: 0, gap: 2 },
-  rowTitle: { color: theme.colors.text, fontSize: theme.text.md, fontWeight: '600' },
-  rowDetail: { color: theme.colors.textMuted, fontSize: theme.text.xs },
-  warning: { color: theme.colors.tone.danger, fontSize: theme.text.xs },
-  link: { color: theme.colors.primary, fontSize: theme.text.sm, fontFamily: MONO },
+  rowTitle: { ...theme.typography.row, color: theme.colors.text },
+  rowDetail: { ...theme.typography.footnote, color: theme.colors.textMuted },
+  warning: { ...theme.typography.footnote, color: theme.colors.attention },
+  link: { ...theme.typography.code, color: theme.colors.action },
   pinLine: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' },
   pin: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
   pinValue: {
+    ...theme.typography.code,
     color: theme.colors.text,
-    fontSize: theme.text.xs,
-    fontWeight: '700',
-    fontFamily: MONO,
     fontVariant: ['tabular-nums'],
   },
   iconAction: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   switch: { minWidth: 52, height: 44, alignItems: 'flex-end', justifyContent: 'center' },
   premium: { minHeight: 44, justifyContent: 'center', paddingHorizontal: theme.spacing.xs },
-  premiumText: { color: theme.colors.primary, fontSize: theme.text.sm, fontWeight: '600' },
+  premiumText: { ...theme.typography.button, color: theme.colors.action },
   statusLine: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -514,9 +522,9 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 44,
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
-  primaryText: { color: theme.colors.onPrimary, fontWeight: '600', fontSize: theme.text.sm },
+  primaryText: { ...theme.typography.button, color: theme.colors.onAction },
   secondaryButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -529,7 +537,7 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
   },
-  secondaryText: { color: theme.colors.text, fontWeight: '600', fontSize: theme.text.sm },
+  secondaryText: { ...theme.typography.button, color: theme.colors.text },
   dangerButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -539,10 +547,10 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: theme.colors.tone.danger,
+    borderColor: theme.colors.attention,
     backgroundColor: theme.colors.surface,
   },
-  dangerText: { color: theme.colors.tone.danger, fontWeight: '700', fontSize: theme.text.sm },
+  dangerText: { ...theme.typography.button, color: theme.colors.attention },
   output: {
     padding: theme.spacing.md,
     borderRadius: theme.radius.md,
@@ -550,7 +558,7 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.background,
   },
-  outputText: { color: theme.colors.textMuted, fontSize: theme.text.xs, fontFamily: MONO },
+  outputText: { ...theme.typography.code, color: theme.colors.textMuted },
   commandBox: {
     gap: 2,
     padding: theme.spacing.md,
@@ -559,5 +567,5 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  command: { color: theme.colors.text, fontSize: theme.text.sm, fontFamily: MONO },
+  command: { ...theme.typography.code, color: theme.colors.text },
 }));
