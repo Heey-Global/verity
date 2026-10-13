@@ -271,6 +271,7 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String, 
       try await verifyProtocol(timing, expected: expectedProtocol)
       if !checkedPartialStall {
         try await checkPartialResponseStall(proxy: proxy, origin: origin, pin: pin)
+        try await checkStallObservation(proxy: proxy, origin: origin, pin: pin, recorder: tunnel.stallDiagnostics)
         checkedPartialStall = true
       }
       try await checkSiblingCancellation(client: client, origin: origin)

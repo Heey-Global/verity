@@ -12,6 +12,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private actor Writer {
     private let socket: URLSessionWebSocketTask
     private var previous: Task<Void, Error>?
+#if VERITY_STALL_DIAGNOSTICS
+    var stallDiagnostics: StallDiagnostics?
+    func setStallDiagnostics(_ value: StallDiagnostics) { stallDiagnostics = value }
+#endif
 
     init(_ socket: URLSessionWebSocketTask) { self.socket = socket }
 
@@ -19,10 +23,24 @@ final class RemoteAppTunnel: @unchecked Sendable {
       let data = try JSONSerialization.data(withJSONObject: frame)
       guard data.count <= 96 * 1024, let text = String(data: data, encoding: .utf8)
       else { throw RemoteSmokeError.limitReached }
+#if VERITY_STALL_DIAGNOSTICS
+      let diagnostics = stallDiagnostics
+      let token = diagnostics?.enqueue(frame["streamId"] as? String ?? "")
+#endif
       let predecessor = previous
       let task = Task {
+#if VERITY_STALL_DIAGNOSTICS
+        var failed = true
+        defer { diagnostics?.finished(token, failed: failed) }
+#endif
         if let predecessor { try await predecessor.value }
+#if VERITY_STALL_DIAGNOSTICS
+        diagnostics?.started(token)
+#endif
         try await socket.send(.string(text))
+#if VERITY_STALL_DIAGNOSTICS
+        failed = false
+#endif
       }
       previous = task
       try await task.value
@@ -157,6 +175,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private let expectedPort: Int
   private let outer: URLSession
   private let socket: URLSessionWebSocketTask
+#if VERITY_STALL_DIAGNOSTICS
+  let stallDiagnostics = StallDiagnostics()
+#endif
   private let writer: Writer
   private let queue = DispatchQueue(label: "verity.remote-app")
   private let lock = NSLock()
@@ -269,6 +290,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
     }
     defer { timeout.cancel() }
     do {
+#if VERITY_STALL_DIAGNOSTICS
+      await writer.setStallDiagnostics(stallDiagnostics)
+#endif
       try await writer.send(["type": "attach", "ticket": ticket])
       let frame = try await receiveFrame()
       guard Set(frame.keys) == Set(["type", "sessionId", "capability"]),
@@ -770,6 +794,11 @@ final class RemoteAppTunnel: @unchecked Sendable {
       reserved = true
       let id = UUID().uuidString.replacingOccurrences(of: "-", with: "")
       let stream = Stream(connection, proxy: proxy, id: id)
+#if VERITY_STALL_DIAGNOSTICS
+      if case .hostPort(_, let port) = connection.endpoint {
+        stallDiagnostics.opened(id, port: port.rawValue)
+      }
+#endif
       let available = lock.withLock {
         reservedSlots -= 1
         reserved = false

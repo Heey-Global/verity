@@ -306,3 +306,36 @@ Endpoint tuples are host/network metadata and belong in private diagnostic logs.
 Kernel ACK/retransmit evidence requires the host sampler and matching
 cluster-side collection; instrumentation must be deployed on both sides before
 requesting the next synchronized device reproduction.
+
+### Stall evidence in probe builds
+
+The staging runner enables `VERITY_STALL_DIAGNOSTICS` only for its probe binary.
+The application build does not include these hooks. The probe observes response
+headers, the first nonempty body callback and completion using monotonic elapsed
+milliseconds; it keeps the existing certificate pin delegate for authentication.
+It discards body data instead of retaining it for diagnostics.
+
+A bounded recorder distinguishes Writer entries waiting for their predecessor
+from an active WebSocket send. It includes later frames, not just the first send.
+The first failure freezes its HTTP and Writer snapshot before the request's
+application cleanup. The parser accepts a strict, size-limited schema and rejects
+unknown fields. Later worker failures cannot overwrite that receipt.
+
+Request attribution uses URLSession's loopback proxy local-port metrics and the
+accepted stream's peer port within the request lifetime. Ports and wire stream
+IDs stay internal. Missing metrics, multiple candidate connections and lost
+coverage are reported as `unknown`, `ambiguous` or `overflow`, with `-1` for
+unattributed per-stream counters. Never interpret those values as zero activity.
+A completed send records local API completion, not delivery to the remote Core.
+
+The recorder retains at most 64 stream mappings and 128 pending send entries.
+Evicting a mapping invalidates requests whose time window overlaps that mapping;
+a pending-send overflow invalidates coverage for the remainder of that tunnel.
+The observer retains at most eight distinct candidate ports and no response
+payloads. Diagnostic lines are capped at 4096 characters and contain no URLs,
+headers, tickets, addresses or raw stream identifiers.
+
+The existing Apple fixture checks request attribution and callback delivery for
+healthy, absent and partial responses on HTTP/1.1 and HTTP/2. The Writer harness
+also requires disabling its send-start observation to break the diagnostic
+assertions. These are synthetic checks; no live failure cause follows from them.

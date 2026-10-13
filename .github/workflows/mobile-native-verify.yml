@@ -164,12 +164,14 @@ jobs:
       - name: Typecheck native Remote Control tunnel
         if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.tunnel == 'true'
         run: |
-          xcrun swiftc -typecheck -parse-as-library -target "$(uname -m)-apple-macosx14.0" \
+          xcrun swiftc -typecheck -parse-as-library -D VERITY_STALL_DIAGNOSTICS -target "$(uname -m)-apple-macosx14.0" \
             apps/mobile/native/CertificatePinDelegate.swift \
             apps/mobile/native/PinnedHTTPSessionPool.swift \
             apps/mobile/native/RemoteSmokeTunnel.swift \
             apps/mobile/native/RemoteDataDiagnostics.swift \
             apps/mobile/native/RemoteAppTunnel.swift \
+            scripts/remote-control-staging/StallWriterDiagnostics.swift \
+            scripts/remote-control-staging/StallDiagnostics.swift \
             scripts/remote-control-staging/StagingProbe.swift
           xcrun swiftc -typecheck -parse-as-library -target "$(uname -m)-apple-macosx14.0" \
             apps/mobile/native/CertificatePinDelegate.swift \
@@ -287,7 +289,7 @@ jobs:
         timeout-minutes: 10
         run: |
           node --test scripts/remote-control-tunnel/mock.test.mjs scripts/remote-control-integration/result.test.mjs scripts/remote-control-integration/certificate.test.mjs scripts/remote-control-integration/suite.test.mjs
-          node --test scripts/remote-control-staging/probe.test.mjs
+          node --test scripts/remote-control-staging/probe.test.mjs scripts/remote-control-staging/stall-receipt.test.mjs
 
       # Keep each cold simulator boot/build within its own deadline.
       - name: Verify native Remote Control tunnel on macOS (HTTP/1.1)

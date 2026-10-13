@@ -24,6 +24,9 @@ Path(sys.argv[2], 'Writer.swift').write_text(prefix + writer)
 mutation = '        if let predecessor { try await predecessor.value }\n'
 assert writer.count(mutation) == 1
 Path(sys.argv[2], 'MutatedWriter.swift').write_text(prefix + writer.replace(mutation, '', 1))
+needle = '        diagnostics?.started(token)'
+assert writer.count(needle) == 1
+Path(sys.argv[2], 'UnobservedWriter.swift').write_text(prefix + writer.replace(needle, '', 1))
 PY
 run_bounded() {
   python3 - "$@" <<'PY'
@@ -35,9 +38,9 @@ except subprocess.TimeoutExpired:
 raise SystemExit(result.returncode)
 PY
 }
-for variant in Writer MutatedWriter; do
-  run_bounded xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macosx14.0" \
-    "$tmp/$variant.swift" scripts/remote-control-tunnel/WriterStall.swift -o "$tmp/$variant"
+for variant in Writer MutatedWriter UnobservedWriter; do
+  run_bounded xcrun swiftc -parse-as-library -D VERITY_STALL_DIAGNOSTICS -target "$(uname -m)-apple-macosx14.0" \
+    "$tmp/$variant.swift" scripts/remote-control-staging/StallWriterDiagnostics.swift scripts/remote-control-tunnel/WriterStall.swift -o "$tmp/$variant"
 done
 run_bounded "$tmp/Writer"
 # Compilation failure or a watchdog timeout is not evidence of mutation detection.
@@ -46,3 +49,9 @@ run_bounded "$tmp/MutatedWriter" > "$tmp/mutation.log" 2>&1
 status=$?
 set -e
 [[ "$status" == 1 ]] && grep -q '^writer-stall-not-reproduced$' "$tmp/mutation.log"
+
+set +e
+run_bounded "$tmp/UnobservedWriter" > "$tmp/unobserved.log" 2>&1
+status=$?
+set -e
+[[ "$status" == 1 ]] && grep -q '^writer-diagnostics-not-reproduced$' "$tmp/unobserved.log"
