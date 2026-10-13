@@ -849,6 +849,13 @@ describe('mobile native patch CI', () => {
     expect(build, 'this job builds the mobile data layer').toBeGreaterThan(patch);
   });
 
+  it('requires installed Unistyles reload guards in the mobile job', () => {
+    const guard = steps.find((step) =>
+      step.run?.includes('vitest run scripts/unistyles-reload.test.ts'),
+    );
+    expect(guard?.env?.VERITY_REQUIRE_MOBILE_NATIVE).toBe('1');
+  });
+
   it('checks release and OTA contracts without pulling mobile config into backend shards', () => {
     const contract = workflow.jobs['contract-test'].steps.find((step) =>
       step.run?.includes('vitest run scripts'),

@@ -417,7 +417,7 @@ jobs:
                 # `mobile-app` job — which has the only full mobile install in CI —
                 # is where that is checked. A change to the anchors themselves is
                 # the likeliest way to break it, so it must reach that job.
-                scripts/patch-mobile-native-deps.mjs|scripts/patch-mobile-native-deps.test.ts)
+                scripts/patch-mobile-native-deps.mjs|scripts/patch-mobile-native-deps.test.ts|scripts/unistyles-reload.test.ts)
                   lint=true
                   typecheck=true
                   test=true
@@ -1211,6 +1211,9 @@ jobs:
       # `npm ci` tree, which nothing caches or shares (no `cache: npm`, and the
       # only cache above is apps/mobile/.cache/jest).
       - run: npm run -w @verity/mobile-app patch:native
+      - run: npx vitest run scripts/unistyles-reload.test.ts --maxWorkers=1
+        env:
+          VERITY_REQUIRE_MOBILE_NATIVE: '1'
       - run: npm run -w @verity/mobile build
       - run: npm run -w @verity/mobile-app typecheck
       - run: npm run -w @verity/mobile-app test
