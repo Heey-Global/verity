@@ -307,7 +307,17 @@ export class MatrixOutboundStore {
       await this.cancel(invocationId);
       return false;
     }
-    return true;
+    // Validation awaits I/O; movement or lease recovery can revoke this attempt meanwhile.
+    const current = await this.db
+      .selectFrom('matrix_outbound')
+      .select('invocation_id')
+      .where('account_id', '=', accountId)
+      .where('invocation_id', '=', invocationId)
+      .where('lease_id', '=', leaseId)
+      .where('state', '=', 'pending')
+      .where('lease_until', '>', new Date())
+      .executeTakeFirst();
+    return current !== undefined;
   }
 
   async finish(

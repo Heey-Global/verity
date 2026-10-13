@@ -353,3 +353,28 @@ it('preserves revocation committed while a retryable result is validating', asyn
     validation.mockRestore();
   }
 });
+
+it('rejects a dispatch lease revoked while destination validation awaits', async () => {
+  await enqueue();
+  const outbound = ctx.store.integrations.outbound;
+  const job = (await outbound.claim(accountId))!;
+  const validate = outbound.validate.bind(outbound);
+  const validation = vi.spyOn(outbound, 'validate').mockImplementationOnce(async (...args) => {
+    await validate(...args);
+    await ctx.db
+      .updateTable('sessions')
+      .set({ project_id: null })
+      .where('session_id', '=', sessionId)
+      .execute();
+    await ctx.db
+      .updateTable('sessions')
+      .set({ project_id: projectId })
+      .where('session_id', '=', sessionId)
+      .execute();
+  });
+  try {
+    expect(await outbound.checkLease(accountId, job.invocationId, job.leaseId)).toBe(false);
+  } finally {
+    validation.mockRestore();
+  }
+});
