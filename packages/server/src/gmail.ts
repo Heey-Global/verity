@@ -216,15 +216,14 @@ export function selectGmailSender(aliases: GmailSendAs[], from?: string): string
 function replySender(target: GmailMessage, aliases: GmailSendAs[]): string {
   const sent = target.labelIds?.includes('SENT');
   const fields = sent ? ['from'] : ['to', 'cc', 'delivered-to', 'x-original-to'];
-  for (const field of fields) {
-    const addresses = addressList(header(target.payload, field)).map((address) => {
+  const addresses = fields.flatMap((field) =>
+    addressList(header(target.payload, field)).map((address) => {
       const angle = /<([^<>]+)>\s*$/u.exec(address);
       return (angle?.[1] ?? address).trim().toLowerCase();
-    });
-    const matches = aliases.filter((alias) => addresses.includes(alias.sendAsEmail.toLowerCase()));
-    if (matches.length === 1) return matches[0]!.sendAsEmail;
-    if (matches.length > 1) break;
-  }
+    }),
+  );
+  const matches = aliases.filter((alias) => addresses.includes(alias.sendAsEmail.toLowerCase()));
+  if (matches.length === 1) return matches[0]!.sendAsEmail;
   throw new Error(
     'Cannot determine a unique verified reply sender; ask the user which address to use',
   );
