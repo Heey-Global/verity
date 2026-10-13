@@ -103,7 +103,7 @@ actor SoakCounters {
       let errorCode = code.map { String($0) } ?? "unknown"
       if let diagnostic {
         let receipt: [String: Any] = ["worker": worker, "ownRequests": own, "totalRequests": requests,
-          "kind": kind, "code": code ?? 0, "phase": phase, "diagnostic": diagnostic]
+          "kind": kind, "code": code as Any? ?? NSNull(), "phase": phase, "diagnostic": diagnostic]
         if let data = try? JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]),
           data.count <= 4096, let text = String(data: data, encoding: .utf8) {
           print("probe-stall-failure:\(text)")

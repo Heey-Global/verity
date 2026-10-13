@@ -102,3 +102,9 @@ test('rejects secret fields, malformed data, invalid ranges and contradictory ti
   for (const line of ['probe-stall-failure:{', 'probe-stall-failure:null', 'x'.repeat(5000)])
     assert.equal(parseStallReceipt(line), null);
 });
+
+test('HTTP failure retains an absent native error code instead of inventing zero', () => {
+  const value = { ...stallFixture(), kind: 'http_response', code: null };
+  assert.deepEqual(parse(value), value);
+  assert.equal(parse({ ...value, kind: 'transport' }), null);
+});

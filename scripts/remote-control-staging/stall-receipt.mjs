@@ -3,7 +3,7 @@
  * globalQueued: number, globalSending: number, oldestSendMs: number, overflow: boolean}} StallWriter
  * @typedef {{headersMs: number, firstByteMs: number, completedMs: number, writer: StallWriter}} StallDiagnostic
  * @typedef {{worker: number, ownRequests: number, totalRequests: number, kind: string,
- * code: number, phase: string, diagnostic: StallDiagnostic}} StallReceipt
+ * code: number | null, phase: string, diagnostic: StallDiagnostic}} StallReceipt
  */
 // Native stdout is untrusted. Reject unknown fields rather than forwarding a
 // nested object which could silently start exporting addresses or payloads.
@@ -38,7 +38,8 @@ export function parseStallReceipt(line) {
       !integer(value.worker, 0, 7) ||
       !integer(value.ownRequests, 0, 999999999) ||
       !integer(value.totalRequests, value.ownRequests, 999999999) ||
-      !integer(value.code, -999999999, 999999999) ||
+      (!(value.kind === 'http_response' && value.code === null) &&
+        !integer(value.code, -999999999, 999999999)) ||
       !['transport', 'http_response'].includes(value.kind) ||
       !['NO_AUTH_CHALLENGE', 'AUTH_CHALLENGE_RECEIVED', 'PIN_AND_CHAIN_TRUST_ACCEPTED'].includes(
         value.phase,
