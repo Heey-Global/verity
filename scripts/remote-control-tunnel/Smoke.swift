@@ -37,6 +37,58 @@ func checkSiblingCancellation(client: URLSession, origin: URL) async throws {
   guard (next as? HTTPURLResponse)?.statusCode == 200 else { throw TunnelError.protocolViolation }
 }
 
+// AsyncBytes may buffer a tiny unfinished body before yielding its first byte.
+// Observe delivery and completion directly so the fixture's intentional timeout
+// cannot occur before the test starts checking sibling progress.
+final class PartialResponseObserver: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+  let pinDelegate: CertificatePinDelegate
+  private let lock = NSLock()
+  private var status = 0
+  private var bytes = Data()
+  private var firstAt: TimeInterval?
+  private var completedAt: TimeInterval?
+  private var failure: NSError?
+
+  init(pinDelegate: CertificatePinDelegate) { self.pinDelegate = pinDelegate }
+
+  var snapshot: (Int, Data, TimeInterval?, TimeInterval?, NSError?) {
+    lock.withLock { (status, bytes, firstAt, completedAt, failure) }
+  }
+
+  func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+    pinDelegate.urlSession(session, didReceive: challenge, completionHandler: completionHandler)
+  }
+
+  func urlSession(_ session: URLSession, task: URLSessionTask,
+    didReceive challenge: URLAuthenticationChallenge,
+    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+    pinDelegate.urlSession(session, task: task, didReceive: challenge, completionHandler: completionHandler)
+  }
+
+  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+    didReceive response: URLResponse,
+    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+    lock.withLock { status = (response as? HTTPURLResponse)?.statusCode ?? 0 }
+    completionHandler(.allow)
+  }
+
+  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+    lock.withLock {
+      if firstAt == nil && !data.isEmpty { firstAt = ProcessInfo.processInfo.systemUptime }
+      bytes.append(contentsOf: data.prefix(max(0, 3 - bytes.count)))
+    }
+  }
+
+  func urlSession(_ session: URLSession, task: URLSessionTask,
+    didCompleteWithError error: Error?) {
+    lock.withLock {
+      failure = error.map { $0 as NSError }
+      completedAt = ProcessInfo.processInfo.systemUptime
+    }
+  }
+}
+
 // Characterize a post-first-byte stall through the shipping tunnel while a
 // separate URLSession opens a sibling stream on the same DATA connection.
 @available(macOS 14.0, iOS 17.0, *)
@@ -46,13 +98,20 @@ func checkPartialResponseStall(proxy: ProxyConfiguration, origin: URL, pin: Stri
   config.timeoutIntervalForRequest = 14
   config.timeoutIntervalForResource = 18
   let delegate = try CertificatePinDelegate(pin: pin, origin: origin)
-  let held = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+  let observer = PartialResponseObserver(pinDelegate: delegate)
+  let held = URLSession(configuration: config, delegate: observer, delegateQueue: nil)
   defer { held.invalidateAndCancel() }
-  let (bytes, response) = try await held.bytes(from: origin.appendingPathComponent("partial"))
-  guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw TunnelError.protocolViolation }
-  var iterator = bytes.makeAsyncIterator()
-  guard try await iterator.next() == 0x78 else { throw TunnelError.protocolViolation }
-  let receivedAt = ProcessInfo.processInfo.systemUptime
+  held.dataTask(with: origin.appendingPathComponent("partial")).resume()
+  let deadline = ProcessInfo.processInfo.systemUptime + 20
+  while observer.snapshot.2 == nil && observer.snapshot.3 == nil
+    && ProcessInfo.processInfo.systemUptime < deadline {
+    try await Task.sleep(for: .milliseconds(10))
+  }
+  let initial = observer.snapshot
+  guard initial.0 == 200, initial.1 == Data([0x78]), let receivedAt = initial.2,
+    initial.3 == nil else {
+    throw ProductionProbeFailure.transport("partial response did not deliver its initial byte")
+  }
   // The first-byte watchdog is ten seconds. A later stalled body must not be
   // mistaken for failure to receive any bytes, or kill unrelated streams.
   try await Task.sleep(for: .milliseconds(10_500))
@@ -66,14 +125,14 @@ func checkPartialResponseStall(proxy: ProxyConfiguration, origin: URL, pin: Stri
   let (body, siblingResponse) = try await sibling.data(from: origin.appendingPathComponent("healthz"))
   guard (siblingResponse as? HTTPURLResponse)?.statusCode == 200,
     String(data: body, encoding: .utf8) == "core-ok" else { throw TunnelError.protocolViolation }
-  do {
-    while try await iterator.next() != nil {}
-    throw ProductionProbeFailure.transport("partial response unexpectedly completed")
-  } catch {
-    let failure = error as NSError
-    guard failure.domain == NSURLErrorDomain, failure.code == NSURLErrorTimedOut,
-      ProcessInfo.processInfo.systemUptime - receivedAt > 10
-    else { throw ProductionProbeFailure.transport("partial response did not reach request timeout") }
+  while observer.snapshot.3 == nil && ProcessInfo.processInfo.systemUptime < deadline {
+    try await Task.sleep(for: .milliseconds(10))
+  }
+  let completed = observer.snapshot
+  guard completed.1 == Data([0x78]), let endedAt = completed.3,
+    let failure = completed.4, failure.domain == NSURLErrorDomain,
+    failure.code == NSURLErrorTimedOut, endedAt - receivedAt > 10 else {
+    throw ProductionProbeFailure.transport("partial response did not reach request timeout")
   }
 }
 
