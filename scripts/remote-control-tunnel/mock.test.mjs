@@ -174,6 +174,16 @@ for (const protocol of ['h1', 'h2']) {
       if (protocol === 'h2') {
         const session = http2.connect('https://core.test', { createConnection: () => framedTLS });
         session.on('error', () => {});
+        const partial = session.request({ ':path': '/partial' });
+        partial.on('error', () => {});
+        let partialEnded = false;
+        partial.on('end', () => {
+          partialEnded = true;
+        });
+        const firstPartialByte = once(partial, 'data');
+        partial.end();
+        const partialEvent = /** @type {unknown[]} */ (await firstPartialByte);
+        assert.deepEqual(partialEvent[0], Buffer.from('x'));
         const held = session.request({ ':path': '/slow' });
         held.on('error', () => {});
         held.end();
@@ -191,13 +201,33 @@ for (const protocol of ['h1', 'h2']) {
         next.end();
         await once(next, 'end');
         assert.equal(Buffer.concat(nextChunks).toString(), 'core-ok');
+        assert.equal(partialEnded, false, 'partial body must remain held while siblings finish');
+        partial.close(http2.constants.NGHTTP2_CANCEL);
         session.destroy();
       } else {
+        const partial = await connect();
+        let partialEnded = false;
+        let partialBody = '';
+        partial.on('end', () => {
+          partialEnded = true;
+        });
+        const firstPartialByte = new Promise((resolve) => {
+          partial.on('data', (chunk) => {
+            partialBody += chunk.toString();
+            if (partialBody.includes('\r\n\r\nx')) resolve(undefined);
+          });
+        });
+        partial.write('GET /partial HTTP/1.1\r\nHost: core.test\r\n\r\n');
+        await firstPartialByte;
+        assert.match(partialBody, /content-length: 2/i);
         const framedChunks = [];
         framedTLS.on('data', (chunk) => framedChunks.push(chunk));
         framedTLS.write('GET /healthz HTTP/1.1\r\nHost: core.test\r\nConnection: close\r\n\r\n');
         await once(framedTLS, 'end');
         assert.match(Buffer.concat(framedChunks).toString(), /core-ok/);
+        assert.equal(partialEnded, false, 'partial body must remain held while siblings finish');
+        assert.equal(partialBody.split('\r\n\r\n')[1], 'x');
+        partial.destroy();
       }
       framedTLS.destroy();
       framed.terminate();

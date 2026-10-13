@@ -23,6 +23,12 @@ export async function startFixture({ key, cert, protocol = 'h1' }) {
    * @param {import('node:http').ServerResponse | http2.Http2ServerResponse} res */
   const handleCore = (req, res) => {
     if (req.url === '/slow') return;
+    // Leave the response incomplete after real application bytes have arrived.
+    if (req.url === '/partial') {
+      res.writeHead(200, { 'content-length': '2' });
+      res.write('x');
+      return;
+    }
     if (req.method === 'POST' && req.url === '/echo') {
       /** @type {Buffer[]} */
       const chunks = [];

@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+if [[ "$(uname -s)" != Darwin ]]; then
+  echo 'Writer reproduction requires macOS and Xcode.' >&2
+  exit 2
+fi
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+python3 - apps/mobile/native/RemoteAppTunnel.swift "$tmp" <<'PY'
+from pathlib import Path
+import sys
+source = Path(sys.argv[1]).read_text()
+start = source.index('  private actor Writer {')
+end = source.index('\n  private final class Stream', start)
+writer = source[start:end].replace('private actor Writer', 'actor Writer', 1)
+# A test-only queue counter proves the sibling reached the actual send method.
+needle = '      let predecessor = previous\n'
+assert writer.count(needle) == 1
+writer = writer.replace('actor Writer {', 'actor Writer {\n    var queuedForTest = 0', 1)
+writer = writer.replace(needle, '      queuedForTest += 1\n' + needle, 1)
+prefix = 'import Foundation\nenum RemoteSmokeError: Error { case limitReached }\n'
+Path(sys.argv[2], 'Writer.swift').write_text(prefix + writer)
+mutation = '        if let predecessor { try await predecessor.value }\n'
+assert writer.count(mutation) == 1
+Path(sys.argv[2], 'MutatedWriter.swift').write_text(prefix + writer.replace(mutation, '', 1))
+PY
+run_bounded() {
+  python3 - "$@" <<'PY'
+import subprocess, sys
+try:
+    result = subprocess.run(sys.argv[1:], timeout=120, check=False)
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+raise SystemExit(result.returncode)
+PY
+}
+for variant in Writer MutatedWriter; do
+  run_bounded xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macosx14.0" \
+    "$tmp/$variant.swift" scripts/remote-control-tunnel/WriterStall.swift -o "$tmp/$variant"
+done
+run_bounded "$tmp/Writer"
+# Compilation failure or a watchdog timeout is not evidence of mutation detection.
+set +e
+run_bounded "$tmp/MutatedWriter" > "$tmp/mutation.log" 2>&1
+status=$?
+set -e
+[[ "$status" == 1 ]] && grep -q '^writer-stall-not-reproduced$' "$tmp/mutation.log"

@@ -16,6 +16,9 @@ if [[ -z "$protocol" ]]; then
   exit 0
 fi
 [[ "$protocol" == h1 || "$protocol" == h2 ]] || { echo 'Expected h1 or h2 fixture protocol.' >&2; exit 2; }
+if [[ "$platform" == macos && "$protocol" == h1 ]]; then
+  bash scripts/remote-control-tunnel/verify-writer-stall.sh
+fi
 tmp="$(mktemp -d)"
 fixture_pid=''
 simulator_udid=''

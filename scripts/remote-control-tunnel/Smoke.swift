@@ -37,6 +37,46 @@ func checkSiblingCancellation(client: URLSession, origin: URL) async throws {
   guard (next as? HTTPURLResponse)?.statusCode == 200 else { throw TunnelError.protocolViolation }
 }
 
+// Characterize a post-first-byte stall through the shipping tunnel while a
+// separate URLSession opens a sibling stream on the same DATA connection.
+@available(macOS 14.0, iOS 17.0, *)
+func checkPartialResponseStall(proxy: ProxyConfiguration, origin: URL, pin: String) async throws {
+  let config = URLSessionConfiguration.ephemeral
+  config.proxyConfigurations = [proxy]
+  config.timeoutIntervalForRequest = 14
+  config.timeoutIntervalForResource = 18
+  let delegate = try CertificatePinDelegate(pin: pin, origin: origin)
+  let held = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+  defer { held.invalidateAndCancel() }
+  let (bytes, response) = try await held.bytes(from: origin.appendingPathComponent("partial"))
+  guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw TunnelError.protocolViolation }
+  var iterator = bytes.makeAsyncIterator()
+  guard try await iterator.next() == 0x78 else { throw TunnelError.protocolViolation }
+  let receivedAt = ProcessInfo.processInfo.systemUptime
+  // The first-byte watchdog is ten seconds. A later stalled body must not be
+  // mistaken for failure to receive any bytes, or kill unrelated streams.
+  try await Task.sleep(for: .milliseconds(10_500))
+  let siblingConfig = URLSessionConfiguration.ephemeral
+  siblingConfig.proxyConfigurations = [proxy]
+  siblingConfig.timeoutIntervalForRequest = 3
+  siblingConfig.timeoutIntervalForResource = 3
+  let siblingDelegate = try CertificatePinDelegate(pin: pin, origin: origin)
+  let sibling = URLSession(configuration: siblingConfig, delegate: siblingDelegate, delegateQueue: nil)
+  defer { sibling.invalidateAndCancel() }
+  let (body, siblingResponse) = try await sibling.data(from: origin.appendingPathComponent("healthz"))
+  guard (siblingResponse as? HTTPURLResponse)?.statusCode == 200,
+    String(data: body, encoding: .utf8) == "core-ok" else { throw TunnelError.protocolViolation }
+  do {
+    while try await iterator.next() != nil {}
+    throw ProductionProbeFailure.transport("partial response unexpectedly completed")
+  } catch {
+    let failure = error as NSError
+    guard failure.domain == NSURLErrorDomain, failure.code == NSURLErrorTimedOut,
+      ProcessInfo.processInfo.systemUptime - receivedAt > 10
+    else { throw ProductionProbeFailure.transport("partial response did not reach request timeout") }
+  }
+}
+
 func pooledRead(session: URLSession, origin: URL, delegate: CertificatePinDelegate) async throws
   -> (Data, URLResponse)
 {
@@ -85,6 +125,7 @@ func runDirectProtocolSmoke(origin: URL, pin: String, expectedProtocol: String) 
 @available(macOS 14.0, iOS 17.0, *)
 func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String, expectedProtocol: String) async throws {
   let dataURL = endpoint.deletingLastPathComponent().appendingPathComponent("data")
+  var checkedPartialStall = false
   for (host, pin, expectedFailure, connect) in [
     // A second attachment must work after the preceding tunnel is torn down.
     ("core.test", corePin, "", false),
@@ -169,6 +210,10 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String, 
         delegate.phase == "PIN_AND_CHAIN_TRUST_ACCEPTED"
       else { throw TunnelError.protocolViolation }
       try await verifyProtocol(timing, expected: expectedProtocol)
+      if !checkedPartialStall {
+        try await checkPartialResponseStall(proxy: proxy, origin: origin, pin: pin)
+        checkedPartialStall = true
+      }
       try await checkSiblingCancellation(client: client, origin: origin)
       var request = URLRequest(url: origin.appendingPathComponent("echo"))
       request.httpMethod = "POST"
