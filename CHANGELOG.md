@@ -6,6 +6,18 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.45.0](https://github.com/Heey-Global/verity/compare/v4.44.3...v4.45.0) (2026-10-13)
+
+
+### Features
+
+* **gmail:** support sender selection and preserve reply identity ([#1599](https://github.com/Heey-Global/verity/issues/1599)) ([8d6e6f6](https://github.com/Heey-Global/verity/commit/8d6e6f6752dd1df6a57f641cc567aa8e929fbf4f))
+
+
+### Bug Fixes
+
+* **mobile:** preserve safe staging probe failure receipts ([#1603](https://github.com/Heey-Global/verity/issues/1603)) ([ad6454f](https://github.com/Heey-Global/verity/commit/ad6454f469539f93d8205a27febc3f108a8dab08))
+
 ## [4.44.3](https://github.com/Heey-Global/verity/compare/v4.44.2...v4.44.3) (2026-10-13)
 
 
