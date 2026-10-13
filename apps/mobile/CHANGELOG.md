@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.70.0](https://github.com/Heey-Global/verity/compare/mobile-v1.69.0...mobile-v1.70.0) (2026-10-13)
+
+
+### Features
+
+* **mobile:** color the icons of tappable rows ([#1594](https://github.com/Heey-Global/verity/issues/1594)) ([df08d16](https://github.com/Heey-Global/verity/commit/df08d1670c61e2a4300dfc0102b6a9eaa1cae721))
+* **mobile:** include runtime responsiveness in diagnostic exports ([#1601](https://github.com/Heey-Global/verity/issues/1601)) ([3c3eb4a](https://github.com/Heey-Global/verity/commit/3c3eb4a4286601549d7af3707003c15662de8db8))
+
+
+### Bug Fixes
+
+* **mobile:** adopt upstream Unistyles OTA reload protection ([#1587](https://github.com/Heey-Global/verity/issues/1587)) ([9b31f85](https://github.com/Heey-Global/verity/commit/9b31f85ec4b992ca0bca31b06dc0a95ef74eb61d))
+* **mobile:** preserve safe staging probe failure receipts ([#1603](https://github.com/Heey-Global/verity/issues/1603)) ([ad6454f](https://github.com/Heey-Global/verity/commit/ad6454f469539f93d8205a27febc3f108a8dab08))
+* **mobile:** reconcile chat keyboard visibility and spacing ([#1602](https://github.com/Heey-Global/verity/issues/1602)) ([88d8994](https://github.com/Heey-Global/verity/commit/88d899423c7a14ee9fe4e2edaaedd471618ea689))
+* **web:** align transcript wheel scrolling with project sidebar ([#1588](https://github.com/Heey-Global/verity/issues/1588)) ([70b161d](https://github.com/Heey-Global/verity/commit/70b161d28d2b23f87e99cae37f5fdcf1f146d206))
+* **web:** read chat file attachments with browser APIs ([#1591](https://github.com/Heey-Global/verity/issues/1591)) ([5b098e7](https://github.com/Heey-Global/verity/commit/5b098e74b974b1f1ea819c33b718983eb968bad2))
+* **web:** support CSS-variable theme colors in tint() ([#1582](https://github.com/Heey-Global/verity/issues/1582)) ([f4a67a5](https://github.com/Heey-Global/verity/commit/f4a67a5a0381175b1771c6a79f907976cabd3202))
+
 ## [1.69.0](https://github.com/Heey-Global/verity/compare/mobile-v1.68.0...mobile-v1.69.0) (2026-10-13)
 
 
