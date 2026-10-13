@@ -185,7 +185,14 @@ for (const protocol of ['h1', 'h2']) {
           partialEnded = true;
         });
         const firstPartialByte = once(partial, 'data');
+        const partialHeaders = once(partial, 'response');
         partial.end();
+        const headerEvent = /** @type {unknown[]} */ (await partialHeaders);
+        const headers = /** @type {import('node:http2').IncomingHttpHeaders} */ (headerEvent[0]);
+        assert.equal(headers[':status'], 200);
+        assert.equal(headers['content-length'], '2');
+        assert.equal(headers['content-type'], 'application/octet-stream');
+        assert.equal(headers['x-content-type-options'], 'nosniff');
         const partialEvent = /** @type {unknown[]} */ (await firstPartialByte);
         assert.deepEqual(partialEvent[0], Buffer.from('x'));
         const held = session.request({ ':path': '/slow' });
@@ -230,6 +237,8 @@ for (const protocol of ['h1', 'h2']) {
         partial.write('GET /partial HTTP/1.1\r\nHost: core.test\r\n\r\n');
         await firstPartialByte;
         assert.match(partialBody, /content-length: 2/i);
+        assert.match(partialBody, /content-type: application\/octet-stream\r\n/i);
+        assert.match(partialBody, /x-content-type-options: nosniff\r\n/i);
         const framedChunks = [];
         framedTLS.on('data', (chunk) => framedChunks.push(chunk));
         framedTLS.write('GET /healthz HTTP/1.1\r\nHost: core.test\r\nConnection: close\r\n\r\n');

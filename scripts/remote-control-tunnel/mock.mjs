@@ -25,7 +25,13 @@ export async function startFixture({ key, cert, protocol = 'h1' }) {
     if (req.url === '/slow') return;
     // Leave the response incomplete after real application bytes have arrived.
     if (req.url === '/partial') {
-      res.writeHead(200, { 'content-length': '2' });
+      // An unspecified media type lets native clients buffer the unfinished
+      // body for content sniffing instead of delivering the first data callback.
+      res.writeHead(200, {
+        'content-length': '2',
+        'content-type': 'application/octet-stream',
+        'x-content-type-options': 'nosniff',
+      });
       res.write('x');
       return;
     }
