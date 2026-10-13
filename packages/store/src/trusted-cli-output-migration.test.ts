@@ -8,14 +8,17 @@ it('upgrades an existing schema and removes retained frames on rollback', async 
   const ctx = createRawDb();
   try {
     const migrations = await migrationProvider.getMigrations();
-    const entry = Object.entries(migrations).find(([key]) => key.endsWith('_trusted_cli_outputs'))!;
-    const [key, migration] = entry;
+    const entries = Object.entries(migrations);
+    const index = entries.findIndex(([key]) => key.endsWith('_trusted_cli_outputs'));
+    expect(index).toBeGreaterThan(0);
+    const [key, migration] = entries[index]!;
     // Fresh databases conceal an out-of-order migration that existing installations reject.
-    const prior = Object.fromEntries(Object.entries(migrations).filter(([name]) => name !== key));
+    // Later migrations cannot exist in the installation being upgraded to this generation.
+    const prior = Object.fromEntries(entries.slice(0, index));
     const previous = new Migrator({ db: ctx.db, provider: { getMigrations: async () => prior } });
     expect((await previous.migrateToLatest()).error).toBeUndefined();
     const current = new Migrator({ db: ctx.db, provider: migrationProvider });
-    expect((await current.migrateToLatest()).error).toBeUndefined();
+    expect((await current.migrateTo(key)).error).toBeUndefined();
     await sql`insert into trusted_cli_outputs (id, project_id, session_id, expires_at, next_sequence) values ('retained', 'project', 'session', now(), 1)`.execute(
       ctx.db,
     );
