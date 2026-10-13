@@ -67,7 +67,7 @@ final class StallHTTPObserver: NSObject, URLSessionDataDelegate, @unchecked Send
       for transaction in metrics.transactionMetrics {
         guard transaction.isProxyConnection,
           let address = transaction.localAddress, ["127.0.0.1", "::1"].contains(address),
-          let value = transaction.localPort?.intValue, value > 0, value <= 65535 else { continue }
+          let value = transaction.localPort, value > 0, value <= 65535 else { continue }
         if ports.contains(UInt16(value)) { continue }
         if ports.count < 8 { ports.insert(UInt16(value)) }
         else { portOverflow = true }
