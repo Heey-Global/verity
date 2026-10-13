@@ -7,7 +7,7 @@
 // review and in every test, and the app drifts away from the design system one
 // screen at a time — which is how it got here.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 import debt from './design-system-debt.json';
 
@@ -22,7 +22,7 @@ const RULES = {
   // last screen stops reading them.
   legacyColor: /\bcolors\.(?:setup|primary|onPrimary|accent|tone|linked)\b/g,
   // A size not taken from a named type style (`...theme.typography.body`).
-  fontSize: /\bfontSize:\s*(?!theme\.typography\.)/g,
+  fontSize: /\bfontSize:(?!\s*theme\.typography\.)/g,
   // Inter ships one family per weight; a fontWeight on top of it is
   // emboldened again by iOS and the browser.
   fontWeight: /\bfontWeight:/g,
@@ -61,7 +61,9 @@ function scan(): Record<string, Counts> {
       const count = source.match(pattern)?.length ?? 0;
       if (count > 0) counts[rule] = count;
     }
-    if (Object.keys(counts).length > 0) found[relative(MOBILE_ROOT, file)] = counts;
+    // Keyed with `/` on every platform, as in design-system-debt.json.
+    if (Object.keys(counts).length > 0)
+      found[relative(MOBILE_ROOT, file).split(sep).join('/')] = counts;
   }
   return found;
 }

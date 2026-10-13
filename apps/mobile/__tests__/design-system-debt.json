@@ -382,8 +382,5 @@
   },
   "components/ui/Status.tsx": {
     "fontSize": 1
-  },
-  "components/ui/TextField.tsx": {
-    "fontSize": 1
   }
 }
