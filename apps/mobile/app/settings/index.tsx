@@ -207,6 +207,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           />
           <SettingsNavRow
             icon="zap"
+            signature
             title="Verity Premium"
             subtitle="Online sharing, remote access"
             status={
@@ -227,8 +228,12 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           <SettingsNavRow
             icon="check-square"
             title="Tasks"
-            subtitle="Capture bubble, screenshot suggestions"
-            value={taskPreferences.enabled ? 'On' : 'Off'}
+            subtitle="Capture bubble, screenshot tips"
+            status={
+              taskPreferences.enabled
+                ? { intent: 'ready', label: 'On' }
+                : { intent: 'optional', label: 'Off' }
+            }
             onPress={() => router.push('/settings/tasks')}
           />
           <SettingsNavRow
@@ -248,7 +253,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             <SettingsNavRow
               icon="help-circle"
               title="Show welcome tour again"
-              subtitle="Open the welcome session and reset feature hints on this device"
+              subtitle="Replays the welcome session and hints"
               onPress={() => {
                 void resetFeatureHints()
                   .then(() =>
@@ -272,7 +277,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             <SettingsNavRow
               icon="play"
               title="Try demo"
-              subtitle="Local sample data and simulated AI; your server connection is preserved"
+              subtitle="Sample data and simulated AI"
               onPress={() => {
                 void enterDemoMode()
                   .then(() => router.replace('/'))
@@ -288,7 +293,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           <SettingsNavRow
             icon="server"
             title="Server address"
-            value={isDemoMode() ? 'Local demo' : (getVerityBaseUrl() ?? 'Not set')}
+            subtitle={isDemoMode() ? 'Local demo' : (getVerityBaseUrl() ?? 'Not set')}
             onPress={() => {
               if (isDemoMode()) {
                 Alert.alert('Demo mode', 'Exit the demo to connect to your own Verity server.');

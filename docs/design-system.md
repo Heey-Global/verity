@@ -43,9 +43,9 @@ and restate nothing; if one disagrees with it, this document wins.
 | Raised surface  | `surfaceAlt`  | `#111422`           | `#eef0f5`              | Inputs, secondary buttons, toggle track (off)                                          |
 | Border          | `border`      | `#22263a`           | `#dde1ea`              | 1 px outline of cards and fields, dividers                                             |
 | Text            | `text`        | `#f5f5f8`           | `#0d0f17`              | Titles and body                                                                        |
-| Muted text      | `textMuted`   | `#a5a8b8`           | `#4a4f62`              | Subtitles, values, labels, section headers in lists, icons                             |
+| Muted text      | `textMuted`   | `#a5a8b8`           | `#4a4f62`              | Subtitles, values, labels, section headers in lists, icons outside tappable rows       |
 | Faint text      | `textFaint`   | `#80849a`           | `#62677c`              | Placeholders, footnotes, chevrons, inactive                                            |
-| Action          | `action`      | `#18c8f5`           | `#056485`              | Everything that can be tapped: buttons, links, focus, toggle (on)                      |
+| Action          | `action`      | `#18c8f5`           | `#056485`              | Everything that can be tapped: buttons, links, focus, toggle (on), tappable row icons  |
 | Action label    | `actionLabel` | `#6fdcf8`           | `#055a78`              | Label of the tonal primary button                                                      |
 | Signature       | `signature`   | `#ff18b7`           | `#b0107d`              | Brand only: content-screen eyebrows, Premium icon, success moment. **Never an action** |
 | Success         | `success`     | `#2ee6a6`           | `#0e6845`              | Connected, active, done                                                                |
@@ -62,8 +62,10 @@ and restate nothing; if one disagrees with it, this document wins.
   - 6 % for neutral tints (icon tiles, pressed rows)
   - 14 % for tonal fills (primary button, tags)
   - 35 % for tonal borders
-- **Icons are thin line icons** (Feather, the app's existing set) in `textMuted`. No emoji, no
-  multicolored icons. The only colored icon is the Premium mark in `signature`.
+- **Icons are thin line icons** (Feather, the app's existing set). No emoji, no multicolored
+  icons. The icon of a row that can be tapped is `action` on a 14 % `action` tile, so settings
+  and navigation lists carry color without decorating; icons that do not act stay `textMuted`.
+  The Premium mark is `signature` wherever it appears.
 
 ## 3. Typography
 
@@ -148,10 +150,13 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 - **Card:** a single item with its own state or control stands alone (subscription,
   each feature switch). Cards of one group are 8 apart.
 - **Row anatomy** (minimum height 56):
-  - **Leading (optional):** icon tile 36 (radius 10, 6 % tint, icon in `textMuted`) or a
-    status dot.
+  - **Leading (optional):** icon tile 36 (radius 10) or a status dot. In a row that can be
+    tapped the tile is a 14 % `action` fill with the icon in `action`; otherwise a 6 % neutral
+    tint with the icon in `textMuted`. The Premium row uses `signature` instead of `action`.
   - **Center:** title in `Row`, at most one subtitle in `Subtitle`. Never more than two lines.
-  - **Trailing:** exactly one of value (muted), tag, toggle or compact button. The chevron
+  - **Trailing:** exactly one of value (muted), status, toggle or compact button. A trailing
+    value is short ("On", "2"); a long one such as an address goes in the subtitle, so the
+    title never wraps to make room. The chevron
     `›` appears only when the row navigates.
 - States: default, pressed (slightly darker surface), disabled (40 %), selected (`action`
   border with glow).

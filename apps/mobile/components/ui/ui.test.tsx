@@ -100,6 +100,34 @@ describe('Row', () => {
     expect(glyphs('chevron-right')).toHaveLength(0);
   });
 
+  // Cyan marks what can be tapped (docs/design-system.md § 2): a row icon in
+  // the action color on a row that does nothing would promise an action.
+  it('colors the icon of a tappable row and leaves an inert row grey', () => {
+    const iconColor = (icon: string) =>
+      screen
+        .UNSAFE_queryAllByProps({ name: icon })
+        .find((node) => (node.type as unknown) === 'Feather')?.props.color as string;
+    render(
+      <>
+        <Row title="Diagnostics" leading={{ icon: 'activity' }} onPress={jest.fn()} />
+        <Row title="Version" leading={{ icon: 'info' }} />
+        <Row
+          title="Verity Premium"
+          leading={{ icon: 'zap', signature: true }}
+          onPress={jest.fn()}
+        />
+      </>,
+    );
+    // Whichever theme the test renderer runs, the icon takes that theme's role.
+    const role = (key: 'action' | 'textMuted' | 'signature') => [
+      lightTheme.colors[key],
+      darkTheme.colors[key],
+    ];
+    expect(role('action')).toContain(iconColor('activity'));
+    expect(role('textMuted')).toContain(iconColor('info'));
+    expect(role('signature')).toContain(iconColor('zap'));
+  });
+
   it('renders a plain trailing value as muted text', () => {
     render(<Row title="Tasks" trailing="On" />);
     expect(screen.getByText('On')).toBeOnTheScreen();

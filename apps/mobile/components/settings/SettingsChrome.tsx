@@ -162,6 +162,7 @@ export function SettingsNavRow({
   onPress,
   accessibilityLabel,
   disabled = false,
+  signature = false,
 }: {
   icon: IconName;
   title: string;
@@ -171,6 +172,8 @@ export function SettingsNavRow({
   onPress: () => void;
   accessibilityLabel?: string;
   disabled?: boolean;
+  /** Draws the icon in the brand pink; only for the Verity Premium row. */
+  signature?: boolean;
 }) {
   const trailing =
     status !== undefined ? (
@@ -189,7 +192,7 @@ export function SettingsNavRow({
     );
   return (
     <Row
-      leading={{ icon }}
+      leading={{ icon, signature }}
       title={title}
       subtitle={subtitle}
       trailing={trailing}
