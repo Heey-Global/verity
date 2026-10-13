@@ -246,7 +246,11 @@ import { createBrokeredHttpGrantStore } from './brokered-http-grants.js';
 import { createBrokeredHttpTool } from './brokered-http-tool.js';
 import { createTrustedCliTool } from './trusted-cli-tool.js';
 import { reconcileProjectContainerStates } from './project-state.js';
-import { createClaudeOAuthTokenProvider } from './claudeUsage.js';
+import {
+  ClaudeOAuthResolutionError,
+  createClaudeOAuthTokenProvider,
+  type ClaudeOAuthTokenProvider,
+} from './claudeUsage.js';
 import type { CodexUsageCredentialProvider } from './codexUsage.js';
 import {
   createClaudeEgressIdentityService,
@@ -412,7 +416,7 @@ export function startClaudeCredentialSync(
 ): {
   close: () => Promise<void>;
   persistCredentials: (patch: VeritySettingsPatch, persist: () => Promise<void>) => Promise<void>;
-  getAccessToken: () => Promise<string | undefined>;
+  getAccessToken: ClaudeOAuthTokenProvider;
   persistCodexCredentialUpdate: (update: CodexCredentialUpdate) => Promise<boolean>;
   onCredentialsChanged: (listener: () => void) => () => void;
 } {
@@ -481,7 +485,7 @@ export function startClaudeCredentialSync(
       notifyCredentialListeners();
     },
   });
-  const getAccessToken = (): Promise<string | undefined> =>
+  const getAccessToken: ClaudeOAuthTokenProvider = (): Promise<string | undefined> =>
     exclusive(async () => {
       if (closed) return undefined;
       // Only this queue is allowed to consume the rotating refresh token. Claude
@@ -489,6 +493,9 @@ export function startClaudeCredentialSync(
       // therefore never race each other at the provider refresh endpoint.
       return tokenProvider();
     });
+  if (tokenProvider.statusForCredentials !== undefined) {
+    getAccessToken.statusForCredentials = tokenProvider.statusForCredentials;
+  }
   const persistCodexCredentialUpdate = (update: CodexCredentialUpdate): Promise<boolean> =>
     exclusive(async () => {
       if (closed) return false;
@@ -2942,12 +2949,16 @@ export async function buildEmbeddedServer(
       claude: {
         tls: { ca, cert, key },
         peerBindings: routedBindings,
-        ...(config.agentGatewayUnsealKey === undefined || agentGatewayAccessToken === undefined
+        ...(config.agentGatewayUnsealKey === undefined
           ? {}
           : {
               credential: {
                 unsealKey: config.agentGatewayUnsealKey,
-                accessToken: agentGatewayAccessToken,
+                // An unresolved token must recover spill rather than revoke it
+                // when another provider's credential update is projected.
+                ...(agentGatewayAccessToken === undefined
+                  ? {}
+                  : { accessToken: agentGatewayAccessToken }),
               },
             }),
       },
@@ -3889,10 +3900,20 @@ export async function buildEmbeddedServer(
     config.agentGatewayUnsealKey !== undefined
   ) {
     const projectCredential = async (): Promise<void> => {
-      // A confirmed missing credential is an explicit revocation. Errors retain
-      // the last valid projection and are retried by the periodic reconciler.
-      const token = await claudeCredentialSync.getAccessToken();
-      const projected = token ?? null;
+      // Only a missing or unusable login revokes the credential. A transient
+      // refresh failure must retain the last projection for the next retry.
+      let projected = agentGatewayAccessToken;
+      let credentialError: Error | undefined;
+      try {
+        projected = (await claudeCredentialSync.getAccessToken()) ?? null;
+      } catch (error) {
+        if (error instanceof ClaudeOAuthResolutionError && error.state === 'relogin_required') {
+          projected = null;
+        } else {
+          credentialError =
+            error instanceof Error ? error : new Error('Claude credential resolution failed');
+        }
+      }
       const settings = await eventStore.getVeritySettings();
       const codexAuth = settings?.codexAuthJson;
       const projectedCodex =
@@ -3907,15 +3928,18 @@ export async function buildEmbeddedServer(
           ? undefined
           : { baseUrl: openCodeBaseUrl, apiKey: openCodeApiKey };
       if (
-        projected === agentGatewayAccessToken &&
-        projectedCodex === agentGatewayCodexAuthJson &&
-        JSON.stringify(projectedOpenCode) === JSON.stringify(agentGatewayOpenCode)
-      )
-        return;
-      agentGatewayAccessToken = projected;
-      agentGatewayCodexAuthJson = projectedCodex;
-      agentGatewayOpenCode = projectedOpenCode;
-      syncAgentGateway();
+        projected !== agentGatewayAccessToken ||
+        projectedCodex !== agentGatewayCodexAuthJson ||
+        JSON.stringify(projectedOpenCode) !== JSON.stringify(agentGatewayOpenCode)
+      ) {
+        agentGatewayAccessToken = projected;
+        agentGatewayCodexAuthJson = projectedCodex;
+        agentGatewayOpenCode = projectedOpenCode;
+        syncAgentGateway();
+      }
+      // Claude refresh must not hold another provider's logout hostage. Report
+      // the failure only after projecting the independently readable settings.
+      if (credentialError !== undefined) throw credentialError;
     };
     let projection: Promise<void> | undefined;
     let projectionRequested = false;
@@ -3981,10 +4005,14 @@ export async function buildEmbeddedServer(
       if (bindingGeneration !== agentGatewayBindingGeneration) continue;
       agentGatewayTls = material.tls;
       agentGatewayBindings = routedBindings;
-      // An omitted credential means revocation to the gateway. Preserve its
-      // encrypted recovery spill until credential synchronization has resolved to
-      // either a current token or an explicit null.
-      if (agentGatewayAccessToken !== undefined) {
+      // A sealed store must not revoke recovery spill. Once another provider's
+      // settings are readable, its updates may proceed with Claude in recovery
+      // mode even while Claude's token resolution remains unavailable.
+      if (
+        agentGatewayAccessToken !== undefined ||
+        agentGatewayCodexAuthJson !== undefined ||
+        agentGatewayOpenCode !== undefined
+      ) {
         const configuration = agentGatewayConfiguration();
         if (configuration !== undefined && agentGatewaySynchronizer !== undefined && confirm) {
           await agentGatewaySynchronizer.updateAndWait(configuration);

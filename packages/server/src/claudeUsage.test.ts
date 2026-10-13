@@ -610,7 +610,7 @@ describe('createClaudeOAuthTokenProvider', () => {
     });
   });
 
-  it('returns undefined when expired credentials cannot refresh', async () => {
+  it('reports a rejected login when expired credentials cannot refresh', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'verity-claude-usage-'));
     const credentials = join(dir, '.credentials.json');
     writeFileSync(
@@ -632,7 +632,164 @@ describe('createClaudeOAuthTokenProvider', () => {
       now: () => 10_000,
     });
 
+    await expect(provider()).rejects.toMatchObject({
+      state: 'relogin_required',
+      code: 'refresh_rejected',
+    });
+  });
+
+  it('distinguishes transient refresh failure from logout and recovers on retry', async () => {
+    let stored = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: 'expired-secret',
+        refreshToken: 'refresh-secret',
+        expiresAt: 1,
+      },
+    });
+    let fail = true;
+    const provider = createClaudeOAuthTokenProvider({
+      credentialsPath: '/does/not/exist',
+      now: () => 10_000,
+      credentialsJsonProvider: () => stored,
+      credentialsJsonUpdater: (json) => {
+        stored = json;
+      },
+      fetch: async () => {
+        if (fail) throw new Error('transport failure containing refresh-secret');
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            access_token: 'recovered-secret',
+            refresh_token: 'rotated-secret',
+            expires_in: 3600,
+          }),
+        };
+      },
+    });
+    await expect(provider()).rejects.toMatchObject({
+      state: 'refresh_failed',
+      code: 'refresh_transport_error',
+    });
+    expect(provider.statusForCredentials?.(stored)).toEqual({
+      state: 'refresh_failed',
+      code: 'refresh_transport_error',
+    });
+    expect(JSON.stringify(provider.statusForCredentials?.(stored))).not.toContain('secret');
+    fail = false;
+    await expect(provider()).resolves.toBe('recovered-secret');
+    expect(provider.statusForCredentials?.(stored)).toEqual({ state: 'ready', code: null });
+    stored = '';
     await expect(provider()).resolves.toBeUndefined();
+    expect(provider.statusForCredentials?.(stored)).toEqual({ state: 'missing', code: null });
+  });
+
+  it.each([
+    [429, {}, 'refresh_failed', 'refresh_http_error'],
+    [503, { error: 'upstream failure with token data' }, 'refresh_failed', 'refresh_http_error'],
+    [400, { error: 'invalid_grant' }, 'relogin_required', 'refresh_rejected'],
+    [400, { error: 'invalid_request' }, 'refresh_failed', 'refresh_http_error'],
+  ])(
+    'classifies refresh HTTP %s without exporting the response',
+    async (status, body, state, code) => {
+      const stored = JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'expired-secret',
+          refreshToken: 'refresh-secret',
+          expiresAt: 1,
+        },
+      });
+      const provider = createClaudeOAuthTokenProvider({
+        credentialsPath: '/does/not/exist',
+        now: () => 10_000,
+        credentialsJsonProvider: () => stored,
+        fetch: async () => ({ ok: false, status, json: async () => body }),
+      });
+      await expect(provider()).rejects.toMatchObject({ state, code });
+      expect(provider.statusForCredentials?.(stored)).toEqual({ state, code });
+      expect(provider.statusForCredentials?.('{"new":"login"}')).toEqual({
+        state: 'unknown',
+        code: null,
+      });
+    },
+  );
+
+  it.each(['logout', 'reconnect'])(
+    'does not apply a failed old refresh after %s',
+    async (action) => {
+      let stored: string | undefined = JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'expired',
+          refreshToken: 'old-refresh',
+          expiresAt: 1,
+        },
+      });
+      const provider = createClaudeOAuthTokenProvider({
+        credentialsPath: '/does/not/exist',
+        now: () => 10_000,
+        credentialsJsonProvider: () => stored,
+        fetch: async () => {
+          stored =
+            action === 'logout'
+              ? undefined
+              : JSON.stringify({
+                  claudeAiOauth: {
+                    accessToken: 'new-login-token',
+                    refreshToken: 'new-refresh',
+                    expiresAt: 10_000_000,
+                  },
+                });
+          return { ok: false, status: 400, json: async () => ({ error: 'invalid_grant' }) };
+        },
+      });
+      await expect(provider()).resolves.toBe(action === 'logout' ? undefined : 'new-login-token');
+      expect(provider.statusForCredentials?.(stored)?.state).toBe(
+        action === 'logout' ? 'missing' : 'ready',
+      );
+    },
+  );
+
+  it('reports a rejected refresh before the remaining access token expires', async () => {
+    let now = 10_000;
+    const stored = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: 'still-valid',
+        refreshToken: 'rejected-refresh',
+        expiresAt: 100_000,
+      },
+    });
+    const provider = createClaudeOAuthTokenProvider({
+      credentialsPath: '/does/not/exist',
+      now: () => now,
+      expirySkewMs: 120_000,
+      credentialsJsonProvider: () => stored,
+      fetch: async () => ({
+        ok: false,
+        status: 400,
+        json: async () => ({ error: 'invalid_grant' }),
+      }),
+    });
+    await expect(provider()).resolves.toBe('still-valid');
+    expect(provider.statusForCredentials?.(stored)).toEqual({
+      state: 'relogin_required',
+      code: 'refresh_rejected',
+    });
+    now = 100_000;
+    await expect(provider()).rejects.toMatchObject({
+      state: 'relogin_required',
+      code: 'refresh_rejected',
+    });
+  });
+
+  it('does not call malformed stored credentials a missing login', async () => {
+    const provider = createClaudeOAuthTokenProvider({
+      credentialsPath: '/does/not/exist',
+      credentialsJsonProvider: () => '{broken',
+    });
+    await expect(provider()).rejects.toMatchObject({
+      state: 'relogin_required',
+      code: 'invalid_credentials',
+    });
   });
 });
 

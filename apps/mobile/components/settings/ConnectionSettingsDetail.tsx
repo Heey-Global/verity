@@ -135,6 +135,10 @@ export function ConnectionSettingsDetail({
                     ...(provider === 'claude'
                       ? {
                           claudeCodeOauthCredentialsConfigured: configured,
+                          claudeCredentialStatus: {
+                            state: configured ? 'unknown' : 'missing',
+                            code: null,
+                          },
                           ...(configured ? {} : { claudeSubscriptionPlan: null }),
                         }
                       : {
@@ -153,6 +157,7 @@ export function ConnectionSettingsDetail({
                   claude: settings?.claudeSubscriptionPlan,
                   codex: settings?.codexSubscriptionPlan,
                 }}
+                claudeCredentialStatus={settings?.claudeCredentialStatus}
                 selectedProvider={section}
                 compact
                 showGuidance={false}

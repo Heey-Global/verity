@@ -1409,6 +1409,19 @@ describe('VerityClient.settings', () => {
     expect(calls[0]?.init?.method).toBe('GET');
   });
 
+  it('parses safe Claude resolution status while accepting servers without it', async () => {
+    const claudeCredentialStatus = { state: 'relogin_required', code: 'refresh_rejected' };
+    const { fetch } = fakeFetchSequence(
+      json({ settings: { ...settings, claudeCredentialStatus } }),
+      json({ settings }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect((await client.getVeritySettings())?.claudeCredentialStatus).toEqual(
+      claudeCredentialStatus,
+    );
+    expect((await client.getVeritySettings())?.claudeCredentialStatus).toBeUndefined();
+  });
+
   it('treats a server that predates the external-configured flag as not configured', async () => {
     // Version skew must not break the settings screen, and the safe end of the
     // guess is "not configured": under-claiming asks the operator to fill in a

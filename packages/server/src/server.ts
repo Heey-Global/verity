@@ -126,6 +126,7 @@ import {
   createClaudeOAuthTokenProvider,
   createClaudeUsageService,
   type ClaudeOAuthTokenProvider,
+  type ClaudeCredentialStatus,
   type ClaudeUsageService,
 } from './claudeUsage.js';
 import {
@@ -670,6 +671,7 @@ type PublicVeritySettingsRecord = Omit<
   sandboxAutoUpdateSecurity: boolean;
   sandboxAutoUpdateNormal: boolean;
   claudeCodeOauthCredentialsConfigured: boolean;
+  claudeCredentialStatus?: ClaudeCredentialStatus;
   codexAuthJsonConfigured: boolean;
   /** Plan labels derived from the stored logins (`agent-subscription.ts`). */
   claudeSubscriptionPlan: string | null;
@@ -4028,7 +4030,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const spawnWorktreeRoot = deps.spawnWorktreeRoot ?? join(tmpdir(), 'verity-sessions');
   // Real git worktree when injected (deployment); else an empty scratch dir.
   const worktrees = deps.worktrees ?? createScratchProvisioner({ worktreeRoot: spawnWorktreeRoot });
-  const dbClaudeOAuthTokenProvider = hasVeritySettingsStore(deps.eventStore)
+  const dbClaudeOAuthTokenProvider: ClaudeOAuthTokenProvider = hasVeritySettingsStore(
+    deps.eventStore,
+  )
     ? createClaudeOAuthTokenProvider({
         env: {},
         credentialsPath: '/dev/null',
@@ -5412,12 +5416,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     agentLogin,
     parseSettingsPatch: (body) => veritySettingsBody.parse(body),
     storeAgentCredentials,
-    publicSettings: (settings, request) =>
-      publicVeritySettings(
+    publicSettings: (settings, request) => ({
+      ...publicVeritySettings(
         settings,
         googleAppClient(request, deps.googleDriveClientId, deps.stagingGoogleClientId) ??
           (request.headers['x-verity-app-variant'] === undefined ? undefined : null),
       ),
+      claudeCredentialStatus: (
+        deps.claudeOAuthTokenProvider ?? dbClaudeOAuthTokenProvider
+      ).statusForCredentials?.(settings.claudeCodeOauthCredentialsJson) ?? {
+        state: 'unknown',
+        code: null,
+      },
+    }),
     effectiveTranscription: effectiveExternalTranscription,
     transcriptionConfigured: externalMeetingTranscriptionConfigured,
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),

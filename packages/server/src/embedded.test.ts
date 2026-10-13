@@ -2954,111 +2954,323 @@ describe('buildEmbeddedServer', () => {
     }
   });
 
-  it('configures the agent gateway on unlock rather than on the 60s credential timer', async () => {
-    // Reproduces the self-update stall. A sealed boot cannot read the Claude
-    // credential, so `agentGatewayAccessToken` stayed `undefined` — and the
-    // identity projection that runs on unlock skips sending a configuration
-    // entirely in that state. The synchronizer then has no snapshot, which makes
-    // its 5s reconciler a no-op (`latest === undefined`), so the gateway stayed
-    // unconfigured until the 60s credential timer happened to fire.
-    //
-    // That hole is what a self-update falls into: it replaces the gateway with a
-    // fresh container, whose `/healthz` answers 200 only once the Server has
-    // projected into it, and gives up after ~30s. Measured on the dev-server:
-    // unlock at 08:15:22, updater gave up at 08:16:16, credential timer due at
-    // 08:16:22 — six seconds short, so every update rolled back. The signature
-    // was zero reconciliation attempts during the entire replacement window.
-    const root = await mkdtemp(join(tmpdir(), 'verity-agent-gateway-unlock-'));
-    const dataDir = join(root, 'data');
+  it('retains Claude projection on transient refresh failure and retries the registered timer', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-claude-projection-'));
     const socketPath = join(root, 'control.sock');
-    const password = 'correct horse battery staple';
     const configured: AgentGatewayConfiguration[] = [];
+    const intervals = vi.spyOn(globalThis, 'setInterval');
+    let refreshMode: 'unavailable' | 'ready' | 'rejected' = 'unavailable';
+    const refresh = vi.fn(async (url: string | URL | Request) => {
+      const target = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+      if (target.startsWith('https://opencode.test/')) {
+        return new Response(JSON.stringify({ data: [{ id: 'provider/model' }] }));
+      }
+      if (refreshMode === 'unavailable') throw new Error('network unavailable');
+      return new Response(
+        JSON.stringify(
+          refreshMode === 'rejected'
+            ? { error: 'invalid_grant' }
+            : { access_token: 'recovered-token', refresh_token: 'rotated-token', expires_in: 3600 },
+        ),
+        { status: refreshMode === 'rejected' ? 400 : 200 },
+      );
+    });
+    vi.stubGlobal('fetch', refresh);
     const control = await startAgentGatewayControlServer({
       socketPath,
       configure(value): void {
         configured.push(value);
       },
-      status: () => ({ ready: true, configured: configured.length > 0, claudePeerCount: 0 }),
+      status: () => ({
+        ready: true,
+        configured: configured.length > 0,
+        claudePeerCount: 0,
+        codexCredentialReady: true,
+        codexListenerReady: true,
+      }),
     });
-    // The egress identity — the thing `projectAgentGatewayIdentity` returns early
-    // without — is only built for a Docker-backed server with a clone root, so
-    // this needs the full relay config rather than the gateway keys alone.
-    const gatewayConfig = {
-      ...testProjectRelayConfig,
-      dockerBaseUrl: 'http://127.0.0.1:1',
-      hostCloneRoot: '/tmp/verity-projects',
-      agentGatewayControlSocket: socketPath,
-      // The gateway's control protocol rejects anything that is not 64 hex
-      // characters, so the shared placeholder key would fail validation rather
-      // than the assertion — a green test that proves nothing.
-      agentGatewayUnsealKey: 'a'.repeat(64),
-    } as const;
     try {
-      // Phase 1 — create the store and persist a Claude credential into it. The
-      // credential is the whole point: without one stored, reading it while
-      // sealed resolves harmlessly to "revoked" instead of throwing, the token
-      // is settled at construction, and the bug cannot appear at all.
-      const first = await buildTestEmbeddedServer({ dataDir, ...gatewayConfig });
-      try {
-        const init = await first.app.inject({
-          method: 'POST',
-          url: '/secret/init',
-          payload: { password, deviceLabel: 'test device' },
-        });
-        expect(init.statusCode).toBe(200);
-        const token = init.json().token as string;
-        const login = await first.app.inject({
+      server = await buildTestEmbeddedServer({
+        dataDir: join(root, 'data'),
+        ...testProjectRelayConfig,
+        dockerBaseUrl: 'http://127.0.0.1:1',
+        hostCloneRoot: '/tmp/verity-projects',
+        agentGatewayControlSocket: socketPath,
+        agentGatewayUnsealKey: 'a'.repeat(64),
+      });
+      const init = await server.app.inject({
+        method: 'POST',
+        url: '/secret/init',
+        payload: { password: 'correct horse battery staple', deviceLabel: 'test device' },
+      });
+      const headers = { authorization: `Bearer ${String(init.json().token)}` };
+      const unauthenticated = await server.app.inject({ method: 'GET', url: '/settings' });
+      expect(unauthenticated.statusCode).toBe(401);
+      const login = async (expiresAt: number): Promise<void> => {
+        const response = await server!.app.inject({
           method: 'PATCH',
           url: '/settings',
-          headers: { authorization: `Bearer ${token}` },
+          headers,
           payload: {
-            claudeCodeOauthCredentialsJson: '{"claudeAiOauth":{"accessToken":"claude-db-token"}}',
-            codexAuthJson:
-              '{"tokens":{"access_token":"codex-access","refresh_token":"codex-refresh","account_id":"account-1"}}',
+            claudeCodeOauthCredentialsJson: JSON.stringify({
+              claudeAiOauth: {
+                accessToken: 'initial-token',
+                refreshToken: 'initial-refresh',
+                expiresAt,
+              },
+            }),
           },
         });
-        expect(login.statusCode).toBe(200);
-      } finally {
-        // An assertion above must not leak this server's timers into the rest of
-        // the suite; the phase-2 server is the suite-managed one.
-        await first.close();
-      }
-
-      // Phase 2 — boot SEALED against that store, the state a host reboot or a
-      // self-update handover leaves behind.
-      configured.length = 0;
-      server = await buildTestEmbeddedServer({ dataDir, ...gatewayConfig });
-      expect(configured).toEqual([]);
-
-      const unlock = await server.app.inject({
-        method: 'POST',
-        url: '/secret/unlock',
-        payload: { password, deviceLabel: 'test device' },
-      });
-      expect(unlock.statusCode).toBe(200);
-
-      // Two things are asserted, and both matter. The DEADLINE: a configuration
-      // has to reach the gateway now, well inside a replacement's health window
-      // — waiting longer here would pass on the unfixed code too. And the
-      // CONTENT: it must carry the credential that was locked away, not a
-      // revocation. A refresh that resolved to `null` would leave the gateway
-      // refusing to start its listener, so `/healthz` stays 503 and the update
-      // still fails — a configuration arriving is not the same as the right one.
-      await vi.waitFor(
-        () => expect(configured.at(-1)?.claude.credential?.accessToken).toBe('claude-db-token'),
-        { timeout: 5_000 },
+        expect(response.statusCode).toBe(200);
+      };
+      const status = async (): Promise<unknown> => {
+        const response = await server!.app.inject({ method: 'GET', url: '/settings', headers });
+        expect(response.statusCode).toBe(200);
+        expect(response.body).not.toContain('initial-refresh');
+        expect(response.body).not.toContain('initial-token');
+        expect(response.body).not.toContain('rotated-token');
+        expect(response.body).not.toContain('recovered-token');
+        return response.json().settings.claudeCredentialStatus;
+      };
+      await login(Date.now() + 3_600_000);
+      await vi.waitFor(() =>
+        expect(configured.at(-1)?.claude.credential?.accessToken).toBe('initial-token'),
       );
-      expect(configured.at(-1)?.codex?.credential).toMatchObject({
-        unsealKey: 'a'.repeat(64),
-        authJson:
-          '{"tokens":{"access_token":"codex-access","refresh_token":"codex-refresh","account_id":"account-1"}}',
+      const otherLogins = await server.app.inject({
+        method: 'PATCH',
+        url: '/settings',
+        headers,
+        payload: {
+          codexAuthJson: '{"tokens":{"access_token":"codex-token"}}',
+          opencodeBaseUrl: 'https://opencode.test/v1',
+          opencodeApiKey: 'opencode-token',
+        },
       });
-      expect(configured.at(-1)?.codex?.credential.sourceRevision).toMatch(/^[a-f0-9]{64}$/u);
+      expect(otherLogins.statusCode).toBe(200);
+      await vi.waitFor(() =>
+        expect(configured.at(-1)).toMatchObject({
+          codex: { credential: { authJson: '{"tokens":{"access_token":"codex-token"}}' } },
+          opencode: { apiKey: 'opencode-token' },
+        }),
+      );
+      const firstApplied = configured.length;
+      await login(1);
+      await vi.waitFor(async () =>
+        expect(await status()).toMatchObject({ state: 'refresh_failed' }),
+      );
+      const afterFailureApplied = configured.length;
+      await vi.waitFor(() => expect(configured.length).toBeGreaterThan(afterFailureApplied), {
+        timeout: 7_500,
+      });
+      // A resolved refresh failure must never become a revocation snapshot.
+      expect(
+        configured
+          .slice(firstApplied)
+          .every((value) => value.claude.credential?.accessToken === 'initial-token'),
+      ).toBe(true);
+      expect(configured.at(-1)?.claude.credential?.accessToken).toBe('initial-token');
+
+      // Another provider's logout must reach the gateway even while Claude's
+      // own refresh remains unavailable.
+      const otherLogout = await server.app.inject({
+        method: 'PATCH',
+        url: '/settings',
+        headers,
+        payload: { codexAuthJson: null, opencodeApiKey: null },
+      });
+      expect(otherLogout.statusCode).toBe(200);
+      await vi.waitFor(() => {
+        expect(configured.at(-1)?.codex?.credential.authJson).toBeNull();
+        expect(configured.at(-1)?.opencode).toBeUndefined();
+        expect(configured.at(-1)?.claude.credential?.accessToken).toBe('initial-token');
+      });
+
+      refreshMode = 'ready';
+      const retry = intervals.mock.calls.find(
+        ([callback, delay]) =>
+          delay === 60_000 &&
+          typeof callback === 'function' &&
+          callback.name === 'projectCredentialSafely',
+      )?.[0];
+      expect(retry).toBeTypeOf('function');
+      if (typeof retry === 'function') retry();
+      await vi.waitFor(() =>
+        expect(configured.at(-1)?.claude.credential?.accessToken).toBe('recovered-token'),
+      );
+      expect(await status()).toEqual({ state: 'ready', code: null });
+
+      refreshMode = 'rejected';
+      await login(1);
+      await vi.waitFor(async () =>
+        expect(await status()).toEqual({ state: 'relogin_required', code: 'refresh_rejected' }),
+      );
+      await vi.waitFor(() => expect(configured.at(-1)?.claude.credential?.accessToken).toBeNull());
+
+      await login(Date.now() + 3_600_000);
+      await vi.waitFor(() =>
+        expect(configured.at(-1)?.claude.credential?.accessToken).toBe('initial-token'),
+      );
+      const logout = await server.app.inject({
+        method: 'PATCH',
+        url: '/settings',
+        headers,
+        payload: { claudeCodeOauthCredentialsJson: null },
+      });
+      expect(logout.statusCode).toBe(200);
+      await vi.waitFor(() => expect(configured.at(-1)?.claude.credential?.accessToken).toBeNull());
+      expect(await status()).toEqual({ state: 'missing', code: null });
     } finally {
+      await server?.close();
+      server = undefined;
       await control.close();
+      intervals.mockRestore();
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each([false, true])(
+    'configures the agent gateway on unlock rather than on the 60s credential timer (Claude refresh unavailable: %s)',
+    async (refreshUnavailable) => {
+      // Reproduces the self-update stall. A sealed boot cannot read the Claude
+      // credential, so `agentGatewayAccessToken` stayed `undefined` — and the
+      // identity projection that runs on unlock skips sending a configuration
+      // entirely in that state. The synchronizer then has no snapshot, which makes
+      // its 5s reconciler a no-op (`latest === undefined`), so the gateway stayed
+      // unconfigured until the 60s credential timer happened to fire.
+      //
+      // That hole is what a self-update falls into: it replaces the gateway with a
+      // fresh container, whose `/healthz` answers 200 only once the Server has
+      // projected into it, and gives up after ~30s. Measured on the dev-server:
+      // unlock at 08:15:22, updater gave up at 08:16:16, credential timer due at
+      // 08:16:22 — six seconds short, so every update rolled back. The signature
+      // was zero reconciliation attempts during the entire replacement window.
+      const root = await mkdtemp(join(tmpdir(), 'verity-agent-gateway-unlock-'));
+      const dataDir = join(root, 'data');
+      const socketPath = join(root, 'control.sock');
+      const password = 'correct horse battery staple';
+      const configured: AgentGatewayConfiguration[] = [];
+      if (refreshUnavailable) {
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async () => {
+            throw new Error('network unavailable');
+          }),
+        );
+      }
+      const control = await startAgentGatewayControlServer({
+        socketPath,
+        configure(value): void {
+          configured.push(value);
+        },
+        status: () => ({
+          ready: true,
+          configured: configured.length > 0,
+          claudePeerCount: 0,
+          codexCredentialReady: true,
+          codexListenerReady: true,
+        }),
+      });
+      // The egress identity — the thing `projectAgentGatewayIdentity` returns early
+      // without — is only built for a Docker-backed server with a clone root, so
+      // this needs the full relay config rather than the gateway keys alone.
+      const gatewayConfig = {
+        ...testProjectRelayConfig,
+        dockerBaseUrl: 'http://127.0.0.1:1',
+        hostCloneRoot: '/tmp/verity-projects',
+        agentGatewayControlSocket: socketPath,
+        // The gateway's control protocol rejects anything that is not 64 hex
+        // characters, so the shared placeholder key would fail validation rather
+        // than the assertion — a green test that proves nothing.
+        agentGatewayUnsealKey: 'a'.repeat(64),
+      } as const;
+      try {
+        // Phase 1 — create the store and persist a Claude credential into it. The
+        // credential is the whole point: without one stored, reading it while
+        // sealed resolves harmlessly to "revoked" instead of throwing, the token
+        // is settled at construction, and the bug cannot appear at all.
+        const first = await buildTestEmbeddedServer({ dataDir, ...gatewayConfig });
+        try {
+          const init = await first.app.inject({
+            method: 'POST',
+            url: '/secret/init',
+            payload: { password, deviceLabel: 'test device' },
+          });
+          expect(init.statusCode).toBe(200);
+          const token = init.json().token as string;
+          const login = await first.app.inject({
+            method: 'PATCH',
+            url: '/settings',
+            headers: { authorization: `Bearer ${token}` },
+            payload: {
+              claudeCodeOauthCredentialsJson: '{"claudeAiOauth":{"accessToken":"claude-db-token"}}',
+              codexAuthJson:
+                '{"tokens":{"access_token":"codex-access","refresh_token":"codex-refresh","account_id":"account-1"}}',
+            },
+          });
+          expect(login.statusCode).toBe(200);
+          if (refreshUnavailable) {
+            const expires = await first.app.inject({
+              method: 'PATCH',
+              url: '/settings',
+              headers: { authorization: `Bearer ${token}` },
+              payload: {
+                claudeCodeOauthCredentialsJson: JSON.stringify({
+                  claudeAiOauth: {
+                    accessToken: 'claude-db-token',
+                    refreshToken: 'refresh-token',
+                    expiresAt: 1,
+                  },
+                }),
+              },
+            });
+            expect(expires.statusCode).toBe(200);
+          }
+        } finally {
+          // An assertion above must not leak this server's timers into the rest of
+          // the suite; the phase-2 server is the suite-managed one.
+          await first.close();
+        }
+
+        // Phase 2 — boot SEALED against that store, the state a host reboot or a
+        // self-update handover leaves behind.
+        configured.length = 0;
+        server = await buildTestEmbeddedServer({ dataDir, ...gatewayConfig });
+        expect(configured).toEqual([]);
+
+        const unlock = await server.app.inject({
+          method: 'POST',
+          url: '/secret/unlock',
+          payload: { password, deviceLabel: 'test device' },
+        });
+        expect(unlock.statusCode).toBe(200);
+
+        // Two things are asserted, and both matter. The DEADLINE: a configuration
+        // has to reach the gateway now, well inside a replacement's health window
+        // — waiting longer here would pass on the unfixed code too. And the
+        // CONTENT: it must carry the credential that was locked away, not a
+        // revocation. A refresh that resolved to `null` would leave the gateway
+        // refusing to start its listener, so `/healthz` stays 503 and the update
+        // still fails — a configuration arriving is not the same as the right one.
+        await vi.waitFor(
+          () =>
+            expect(configured.at(-1)?.claude.credential).toEqual({
+              unsealKey: 'a'.repeat(64),
+              ...(refreshUnavailable ? {} : { accessToken: 'claude-db-token' }),
+            }),
+          { timeout: 5_000 },
+        );
+        expect(configured.at(-1)?.codex?.credential).toMatchObject({
+          unsealKey: 'a'.repeat(64),
+          authJson:
+            '{"tokens":{"access_token":"codex-access","refresh_token":"codex-refresh","account_id":"account-1"}}',
+        });
+        expect(configured.at(-1)?.codex?.credential.sourceRevision).toMatch(/^[a-f0-9]{64}$/u);
+      } finally {
+        await control.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('does not expose OpenCode models until all settings are configured', async () => {
     server = await buildTestEmbeddedServer();
