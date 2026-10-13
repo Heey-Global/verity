@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.71.0](https://github.com/Heey-Global/verity/compare/mobile-v1.70.0...mobile-v1.71.0) (2026-10-13)
+
+
+### Features
+
+* **matrix:** add approval-gated session messaging ([#1604](https://github.com/Heey-Global/verity/issues/1604)) ([ab7f59e](https://github.com/Heey-Global/verity/commit/ab7f59edfd3d401a2f9176913df5b40826338fdf))
+
+
+### Bug Fixes
+
+* **mobile:** bound overview preview work across navigation ([#1610](https://github.com/Heey-Global/verity/issues/1610)) ([477a777](https://github.com/Heey-Global/verity/commit/477a777bb8e68fe66f414d0dc138eab906c0ff3b))
+* **mobile:** compact settings rows and keep long statuses from crowding titles ([#1613](https://github.com/Heey-Global/verity/issues/1613)) ([29b3460](https://github.com/Heey-Global/verity/commit/29b34602c6135e653126d9f011a4124eab2311a0))
+* **mobile:** summarize agent failures instead of rendering raw stderr ([#1612](https://github.com/Heey-Global/verity/issues/1612)) ([d98b690](https://github.com/Heey-Global/verity/commit/d98b6900d85e6a19ca4831af7afb742b4b14b9a6))
+
 ## [1.70.0](https://github.com/Heey-Global/verity/compare/mobile-v1.69.0...mobile-v1.70.0) (2026-10-13)
 
 
