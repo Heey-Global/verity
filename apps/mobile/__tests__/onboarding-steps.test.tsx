@@ -766,9 +766,7 @@ describe('onboarding agent logins step', () => {
 
     await screen.findByLabelText('Open Verity');
     expect(screen.queryByLabelText('Skip — set up later')).toBeNull();
-    expect(screen.getByLabelText('Open Verity')).toHaveProp('accessibilityState', {
-      disabled: true,
-    });
+    expect(screen.getByLabelText('Open Verity')).toBeDisabled();
   });
 
   it('accepts a configured OpenCode provider as the first agent connection', async () => {
@@ -851,7 +849,7 @@ describe('onboarding agent logins step', () => {
       render(<OnboardingAiBackends />);
       await screen.findByLabelText(ready ? 'Edit OpenCode' : 'Configure OpenCode');
       await waitFor(() =>
-        expect(screen.getByLabelText('Open Verity')).toHaveProp('accessibilityState', {
+        expect(screen.getByLabelText('Open Verity').props.accessibilityState).toMatchObject({
           disabled: !ready,
         }),
       );
