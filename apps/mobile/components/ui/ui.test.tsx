@@ -103,9 +103,9 @@ describe('Row', () => {
   // Cyan marks what can be tapped (docs/design-system.md § 2): a row icon in
   // the action color on a row that does nothing would promise an action.
   it('colors the icon of a tappable row and leaves an inert row grey', () => {
-    const iconColor = (title: string) =>
+    const iconColor = (icon: string) =>
       screen
-        .UNSAFE_queryAllByProps({ name: title })
+        .UNSAFE_queryAllByProps({ name: icon })
         .find((node) => (node.type as unknown) === 'Feather')?.props.color as string;
     render(
       <>
