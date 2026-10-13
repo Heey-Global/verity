@@ -1,6 +1,6 @@
 import { PremiumBadge } from '../premium/PremiumBadge';
 import { premiumFeatures } from '../premium/premiumFeatures';
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { ManagedDevServer } from '@verity/mobile';
 import { Icon } from '../Icon';
@@ -439,8 +439,6 @@ export function ManagedServerDetail({
     </ScrollView>
   );
 }
-
-const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
 
 const styles = StyleSheet.create((theme) => ({
   scroll: { flex: 1, minHeight: 0 },
