@@ -4,7 +4,7 @@
 import { type HttpMcpConnection, type VerityClient } from '@verity/mobile';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import {
@@ -19,6 +19,7 @@ import { settingsStyles as styles } from '../../../../components/settings/settin
 import { StatusPill } from '../../../../components/StatusPill';
 import { createVerityClient } from '../../../../lib/client';
 import { runMcpOAuth } from '../../../../lib/mcpOAuth';
+import { Button, ConfirmSheet } from '../../../../components/ui';
 
 export default function McpConnectionsScreen() {
   const client = useMemo(() => createVerityClient(), []);
@@ -39,6 +40,13 @@ function McpConnectionsView({ client }: { client: VerityClient }) {
   const [connections, setConnections] = useState<HttpMcpConnection[] | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
+  const [removing, setRemoving] = useState<HttpMcpConnection | null>(null);
+  // The sheet fades out after it closes; its wording stays until it is gone.
+  const [asked, setAsked] = useState<HttpMcpConnection | null>(null);
+  const ask = (connection: HttpMcpConnection) => {
+    setAsked(connection);
+    setRemoving(connection);
+  };
   const supported = typeof (client as Partial<VerityClient>).listHttpMcpConnections === 'function';
   // Only the newest list response may land: a remove and a refocus can race.
   const revision = useRef(0);
@@ -99,34 +107,21 @@ function McpConnectionsView({ client }: { client: VerityClient }) {
     [client, load],
   );
 
-  const remove = useCallback(
-    (connection: HttpMcpConnection) => {
-      Alert.alert(
-        'Remove MCP connection?',
-        `This also removes ${connection.name} from every project.`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Remove',
-            style: 'destructive',
-            onPress: () => {
-              if (mutationInFlight.current) return;
-              mutationInFlight.current = true;
-              revision.current += 1;
-              setBusy(true);
-              setError(undefined);
-              void client
-                .deleteHttpMcpConnection(connection.id)
-                .then(() => load())
-                .catch(() => setError('Could not remove the MCP connection.'))
-                .finally(() => {
-                  mutationInFlight.current = false;
-                  setBusy(false);
-                });
-            },
-          },
-        ],
-      );
+  const confirmRemove = useCallback(
+    async (connection: HttpMcpConnection) => {
+      if (mutationInFlight.current) return;
+      mutationInFlight.current = true;
+      revision.current += 1;
+      setBusy(true);
+      setError(undefined);
+      await client
+        .deleteHttpMcpConnection(connection.id)
+        .then(() => load())
+        .catch(() => setError('Could not remove the MCP connection.'))
+        .finally(() => {
+          mutationInFlight.current = false;
+          setBusy(false);
+        });
     },
     [client, load],
   );
@@ -162,35 +157,23 @@ function McpConnectionsView({ client }: { client: VerityClient }) {
               {connection.url}
             </Text>
             {connection.authType === 'oauth' ? (
-              <Pressable
-                style={({ pressed }) => [
-                  styles.reproButton,
-                  busy ? styles.buttonDisabled : null,
-                  pressed ? styles.pressed : null,
-                ]}
-                onPress={() => connectOAuth(connection)}
-                disabled={busy}
-                accessibilityRole="button"
+              <Button
+                label={connection.oauthConnected ? 'Reconnect OAuth' : 'Connect OAuth'}
                 accessibilityLabel={`${connection.oauthConnected ? 'Reconnect' : 'Connect'} OAuth for ${connection.name}`}
-              >
-                <Text style={styles.reproButtonLabel}>
-                  {connection.oauthConnected ? 'Reconnect OAuth' : 'Connect OAuth'}
-                </Text>
-              </Pressable>
+                variant="secondary"
+                size="compact"
+                disabled={busy}
+                onPress={() => connectOAuth(connection)}
+              />
             ) : null}
-            <Pressable
-              style={({ pressed }) => [
-                styles.reproButton,
-                busy ? styles.buttonDisabled : null,
-                pressed ? styles.pressed : null,
-              ]}
-              onPress={() => remove(connection)}
-              disabled={busy}
-              accessibilityRole="button"
+            <Button
+              label="Remove"
               accessibilityLabel={`Remove ${connection.name} MCP connection`}
-            >
-              <Text style={styles.reproButtonLabel}>Remove</Text>
-            </Pressable>
+              variant="text"
+              size="compact"
+              disabled={busy}
+              onPress={() => ask(connection)}
+            />
           </SettingsPanel>
         ))}
         {error !== undefined ? <Text style={styles.fieldError}>{error}</Text> : null}
@@ -204,6 +187,18 @@ function McpConnectionsView({ client }: { client: VerityClient }) {
           </SettingsListPanel>
         ) : null}
       </SettingsGroup>
+      <ConfirmSheet
+        visible={removing !== null}
+        title="Remove MCP connection?"
+        message={`This also removes ${asked?.name ?? 'it'} from every project.`}
+        confirmLabel="Remove connection"
+        destructive
+        onConfirm={async () => {
+          if (removing !== null) await confirmRemove(removing);
+          setRemoving(null);
+        }}
+        onCancel={() => setRemoving(null)}
+      />
     </SettingsScaffold>
   );
 }

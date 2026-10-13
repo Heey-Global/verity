@@ -1,6 +1,5 @@
 import { VerityApiError } from '@verity/mobile';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 jest.mock('../lib/googleDrive', () => ({
@@ -60,15 +59,12 @@ it('does not change credentials when authorization is cancelled', async () => {
 });
 it('requires confirmation before disconnecting the account', async () => {
   const client = setup([]);
-  const alert = jest.spyOn(Alert, 'alert');
   render(<GoogleSettings />);
   await screen.findByText('me@example.test');
   fireEvent.press(screen.getByText('Disconnect account'));
   expect(client.disconnectGoogleDrive).not.toHaveBeenCalled();
-  const buttons = alert.mock.calls.at(-1)?.[2];
-  await act(async () => {
-    buttons?.find((button) => button.text === 'Disconnect')?.onPress?.();
-  });
+  expect(screen.getByText('Disconnect Google?')).toBeOnTheScreen();
+  fireEvent.press(screen.getByRole('button', { name: 'Disconnect' }));
   await waitFor(() => expect(client.disconnectGoogleDrive).toHaveBeenCalled());
 });
 
@@ -90,13 +86,12 @@ it('blocks disconnection until pending consent finishes', async () => {
       finish = resolve;
     }),
   );
-  const alert = jest.spyOn(Alert, 'alert');
   render(<GoogleSettings />);
   await screen.findByText('me@example.test');
   fireEvent.press(screen.getByText('Gmail'));
   expect(screen.getByRole('button', { name: 'Disconnect account' })).toBeDisabled();
   fireEvent.press(screen.getByText('Disconnect account'));
-  expect(alert).not.toHaveBeenCalled();
+  expect(screen.queryByText('Disconnect Google?')).toBeNull();
   expect(client.disconnectGoogleDrive).not.toHaveBeenCalled();
   await act(async () => finish({ kind: 'cancelled' }));
   expect(screen.getByRole('button', { name: 'Disconnect account' })).toBeEnabled();
@@ -110,16 +105,14 @@ it('blocks consent and duplicate removal until disconnect finishes', async () =>
       finish = resolve;
     }),
   );
-  const alert = jest.spyOn(Alert, 'alert');
   render(<GoogleSettings />);
   await screen.findByText('me@example.test');
   fireEvent.press(screen.getByText('Disconnect account'));
-  const confirm = alert.mock.calls
-    .at(-1)?.[2]
-    ?.find((button) => button.text === 'Disconnect')?.onPress;
+  // The confirm button's own handler, twice before the next render.
+  const confirm = screen.UNSAFE_getByProps({ label: 'Disconnect' }).props.onPress as () => void;
   act(() => {
-    confirm?.();
-    confirm?.();
+    confirm();
+    confirm();
   });
   expect(client.disconnectGoogleDrive).toHaveBeenCalledTimes(1);
   expect(screen.getByRole('button', { name: 'Gmail' })).toBeDisabled();

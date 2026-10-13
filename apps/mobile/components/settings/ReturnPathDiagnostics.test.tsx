@@ -1,5 +1,4 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
 jest.mock('expo-router', () => require('../../__tests__/support/settingsHarness').expoRouterMock());
 import { makeClient, resetSettingsHarness } from '../../__tests__/support/settingsHarness';
 import { ReturnPathDiagnostics } from './ReturnPathDiagnostics';
@@ -29,7 +28,6 @@ it('requires confirmation and sends only the agreed expiry, then shows status an
   };
   const start = jest.fn().mockResolvedValue(active),
     stop = jest.fn().mockResolvedValue(inactive);
-  const alert = jest.spyOn(Alert, 'alert');
   const client = makeClient('unlocked', {
     getReturnPathStatus: jest.fn().mockResolvedValue(inactive),
     startReturnPathDiagnostics: start,
@@ -41,10 +39,8 @@ it('requires confirmation and sends only the agreed expiry, then shows status an
   expect(stop).not.toHaveBeenCalled();
   fireEvent.press(screen.getByLabelText('Start connection diagnosis'));
   expect(start).not.toHaveBeenCalled();
-  const buttons = alert.mock.calls[0]?.[2];
-  await act(async () => {
-    buttons?.find((button) => button.text === 'Start')?.onPress?.();
-  });
+  expect(screen.getByText('Start connection diagnosis?')).toBeOnTheScreen();
+  fireEvent.press(screen.getByRole('button', { name: 'Start' }));
   await waitFor(() => expect(start).toHaveBeenCalledWith(active.expiresAt));
   expect(
     await screen.findByText(/Active · 540 seconds remaining · 2 connections/),

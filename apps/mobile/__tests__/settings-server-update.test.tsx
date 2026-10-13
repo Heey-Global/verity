@@ -16,7 +16,6 @@ afterEach(() => mockLiveRefresh.clear());
 // that reports a stale result forever.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { VerityApiError } from '@verity/mobile';
-import { Alert } from 'react-native';
 
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
 jest.mock('react-native/Libraries/Linking/Linking', () =>
@@ -597,7 +596,12 @@ describe('settings/server-update', () => {
     render(<ServerUpdateScreen />);
 
     fireEvent.press(await screen.findByLabelText(/^Install 1\.4\.0(,|$)/));
-    expect(await screen.findByText('Starting…')).toBeOnTheScreen();
+    // The install button spins and locks while the request is in flight.
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: /^Install 1\.4\.0/ }).props.accessibilityState,
+      ).toMatchObject({ busy: true }),
+    );
     await waitFor(() => expect(mockLiveRefresh.size).toBeGreaterThan(0));
     await act(async () => {});
     expect(screen.queryByText('Could not start the update.')).toBeNull();
@@ -652,7 +656,11 @@ describe('settings/server-update', () => {
     render(<ServerUpdateScreen />);
 
     fireEvent.press(await screen.findByLabelText(/^Install 1\.4\.0(,|$)/));
-    await screen.findByText('Starting…');
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: /^Install 1\.4\.0/ }).props.accessibilityState,
+      ).toMatchObject({ busy: true }),
+    );
     await waitFor(() => expect(mockLiveRefresh.size).toBeGreaterThan(0));
     await act(async () => {});
     await act(async () => {
@@ -712,7 +720,6 @@ describe('settings/server-update', () => {
 
 describe('server update channel selection', () => {
   it('blocks stale installs after leaving a submenu with an unanswered channel write', async () => {
-    const alert = jest.spyOn(Alert, 'alert');
     let finishWrite!: (value: 'staging') => void;
     const client = makeClient('unlocked', {
       getServerUpdates: jest
@@ -729,7 +736,7 @@ describe('server update channel selection', () => {
     const submenu = render(<ServerUpdateChannelScreen />);
     fireEvent.press(await screen.findByText('Prereleases'));
     await act(async () => {
-      alert.mock.calls[0]![2]!.find((action) => action.text === 'Change channel')!.onPress!();
+      fireEvent.press(screen.getByRole('button', { name: 'Change channel' }));
     });
     submenu.unmount();
     jest.mocked(client.getServerUpdates).mockClear();
@@ -797,7 +804,6 @@ describe('server update channel selection', () => {
   it('keeps channel choices disabled until a lost write and failed recovery read are reconciled', async () => {
     jest.useFakeTimers();
     try {
-      const alert = jest.spyOn(Alert, 'alert');
       const getServerUpdates = jest
         .fn()
         .mockResolvedValueOnce({ state: 'available', release: RELEASE, operation: null })
@@ -816,7 +822,7 @@ describe('server update channel selection', () => {
       render(<ServerUpdateChannelScreen />);
       fireEvent.press(await screen.findByText('Prereleases'));
       await act(async () => {
-        alert.mock.calls[0]![2]!.find((action) => action.text === 'Change channel')!.onPress!();
+        fireEvent.press(screen.getByRole('button', { name: 'Change channel' }));
       });
       expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
       expect(
@@ -835,7 +841,6 @@ describe('server update channel selection', () => {
   });
 
   it('discards the previous release if the channel refresh fails and retries on focus', async () => {
-    const alert = jest.spyOn(Alert, 'alert');
     const getServerUpdates = jest
       .fn()
       .mockResolvedValueOnce({ state: 'available', release: RELEASE, operation: null })
@@ -855,7 +860,7 @@ describe('server update channel selection', () => {
     expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
     fireEvent.press(await screen.findByText('Prereleases'));
     await act(async () => {
-      alert.mock.calls[0]![2]!.find((action) => action.text === 'Change channel')!.onPress!();
+      fireEvent.press(screen.getByRole('button', { name: 'Change channel' }));
     });
     expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
     expect(
@@ -875,7 +880,6 @@ describe('server update channel selection', () => {
   });
 
   it('disables channel choices while the selection is being saved', async () => {
-    const alert = jest.spyOn(Alert, 'alert');
     let finish!: (value: 'staging') => void;
     const saved = new Promise<'staging'>((resolve) => {
       finish = resolve;
@@ -894,7 +898,7 @@ describe('server update channel selection', () => {
     render(<ServerUpdateChannelScreen />);
     fireEvent.press(await screen.findByText('Prereleases'));
     await act(async () => {
-      alert.mock.calls[0]![2]!.find((action) => action.text === 'Change channel')!.onPress!();
+      fireEvent.press(screen.getByRole('button', { name: 'Change channel' }));
     });
     expect(screen.queryByLabelText(/^Install 1\.4\.0(,|$)/)).toBeNull();
     expect(requestServerUpdate).not.toHaveBeenCalled();
@@ -909,7 +913,6 @@ describe('server update channel selection', () => {
   it.each([false, true])(
     'requires confirmation and refreshes availability (lost response: %s)',
     async (lostResponse) => {
-      const alert = jest.spyOn(Alert, 'alert');
       const getServerUpdates = jest
         .fn()
         .mockResolvedValue({ state: 'current', release: RELEASE, operation: null });
@@ -930,14 +933,10 @@ describe('server update channel selection', () => {
       const prereleases = await screen.findByText('Prereleases');
       fireEvent.press(prereleases);
       expect(setServerUpdateChannel).not.toHaveBeenCalled();
-      expect(alert).toHaveBeenCalledWith(
-        'Use prereleases?',
-        expect.stringContaining('does not install an older version'),
-        expect.any(Array),
-      );
-      const actions = alert.mock.calls[0]![2]!;
+      expect(screen.getByText('Use prereleases?')).toBeOnTheScreen();
+      expect(screen.getByText(/does not install an older version/)).toBeOnTheScreen();
       await act(async () => {
-        actions.find((action) => action.text === 'Change channel')!.onPress!();
+        fireEvent.press(screen.getByRole('button', { name: 'Change channel' }));
       });
       expect(setServerUpdateChannel).toHaveBeenCalledWith('staging');
       await waitFor(() => expect(screen.getByRole('radio', { name: 'Prereleases' })).toBeChecked());

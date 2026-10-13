@@ -16,6 +16,7 @@ import {
   runContactsAuth,
   runGoogleWorkspaceAuth,
 } from '../../lib/googleDrive';
+import { ConfirmSheet } from '../../components/ui';
 
 type Service = 'Drive' | 'Gmail' | 'Calendar' | 'Contacts' | 'Docs, Sheets & Slides';
 export default function GoogleSettings() {
@@ -32,6 +33,7 @@ function GoogleSettingsContent({ client }: { client: VerityClient }) {
   const [connection, setConnection] = useState<Awaited<
     ReturnType<typeof client.getGoogleDriveConnection>
   > | null>(null);
+  const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
   const [busy, setBusy] = useState(false);
   const operationPending = useRef(false);
   const [usageAvailable, setUsageAvailable] = useState(true);
@@ -183,23 +185,22 @@ function GoogleSettingsContent({ client }: { client: VerityClient }) {
             title="Disconnect account"
             disabled={busy}
             icon="link"
-            onPress={() =>
-              Alert.alert(
-                'Disconnect Google?',
-                'This removes Google access for all projects and sessions.',
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  {
-                    text: 'Disconnect',
-                    style: 'destructive',
-                    onPress: () => void disconnect(),
-                  },
-                ],
-              )
-            }
+            onPress={() => setConfirmingDisconnect(true)}
           />
         </SettingsGroup>
       ) : null}
+      <ConfirmSheet
+        visible={confirmingDisconnect}
+        title="Disconnect Google?"
+        message="This removes Google access for all projects and sessions."
+        confirmLabel="Disconnect"
+        destructive
+        onConfirm={async () => {
+          await disconnect();
+          setConfirmingDisconnect(false);
+        }}
+        onCancel={() => setConfirmingDisconnect(false)}
+      />
     </SettingsScaffold>
   );
 }
