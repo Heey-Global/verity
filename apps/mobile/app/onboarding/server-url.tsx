@@ -508,7 +508,7 @@ const styles = StyleSheet.create((theme) => ({
     width: 260,
     height: 260,
     borderWidth: 3,
-    borderColor: theme.colors.text,
+    borderColor: '#ffffff',
     borderRadius: theme.radius.lg,
   },
   field: {
