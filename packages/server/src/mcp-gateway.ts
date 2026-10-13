@@ -334,6 +334,7 @@ const TOOL_SCHEMAS = {
   verity_google_calendar: googleCalendarRequestSchema,
   verity_google_contacts: googleContactsRequestSchema,
   verity_gmail: z.discriminatedUnion('action', [
+    z.object({ action: z.literal('list_senders') }).strict(),
     z
       .object({
         action: z.literal('search'),
@@ -354,6 +355,7 @@ const TOOL_SCHEMAS = {
     z
       .object({
         action: z.literal('create_draft'),
+        from: z.string().email().optional(),
         to: z.array(z.string().email()).min(1).max(50),
         cc: z.array(z.string().email()).max(50).optional(),
         bcc: z.array(z.string().email()).max(50).optional(),
@@ -425,7 +427,7 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_google_calendar:
     'Read Google Calendar calendars and events when access is enabled for this session. Creating, updating, and deleting events always require user approval. Before EVERY create_event, ask the user whether to add Google Meet and set required addGoogleMeet to their explicit answer; never assume a default. Use only attendee email addresses supplied or confirmed by the user; use verity_google_contacts only when Contacts access is separately enabled for this session. Google Meet creation may be pending: inspect conferenceData.createRequest.status and read_event later to retrieve the link; do not create another event or report a link before Google returns it. Read an event before updating or deleting it and use its etag as expectedEtag to avoid overwriting concurrent changes. Use sendUpdates: all only when invitations or updates should be emailed to attendees.',
   verity_gmail:
-    'Search and read Gmail, create drafts, or send the approved snapshot of a draft after mandatory user approval. Before send_draft, call prepare_draft_send and copy its complete snapshot unchanged. After sending, the original draft is deleted if a final read matches the approved snapshot; a concurrent edit during cleanup can still be lost. Report draftRetained and draftCleanup accurately. Use Gmail search syntax; read the thread before drafting a reply.',
+    'Search and read Gmail, create drafts, or send the approved snapshot of a draft after mandatory user approval. Before send_draft, call prepare_draft_send and copy its complete snapshot unchanged. After sending, the original draft is deleted if a final read matches the approved snapshot; a concurrent edit during cleanup can still be lost. Report draftRetained and draftCleanup accurately. Use list_senders to discover verified sender addresses and from to choose one for a new draft. Reply drafts automatically preserve the own address used in the target message and its signature; use create_reply_draft for replies. Use Gmail search syntax; read the thread before drafting a reply.',
   verity_google_drive:
     'Use read_document_url with a Google Docs link supplied by the user to read it through the connected Google account, including shared documents, without a linked project folder. Do not fetch private Google Docs links through unauthenticated web or shell requests. This action only reads the document; it does not select it for editing or import it into project knowledge. Other actions work with files inside the Google Drive folder connected to this project. List or search before reading with the read action. Use select_workspace_file before editing a native Google Docs, Sheets, or Slides file with its dedicated tool. Upload creates a new regular file; create_folder creates a folder. Read a file or folder to obtain expectedVersion before overwrite, rename, move, or trash. Those actions require explicit approval. Trash is recoverable through Google Drive and includes folder contents; the linked root cannot be changed. Overwrite only replaces regular file bytes, never native Workspace contents. Read-only projects cannot mutate files.',
 };
