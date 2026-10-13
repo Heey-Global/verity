@@ -1,15 +1,14 @@
 {
   "schema": 1,
-  "version": "1.66.2",
-  "runtime": "1.66.0",
+  "version": "1.69.1",
+  "runtime": "1.69.0",
   "channel": "production",
-  "commit": "b01e0797b813f68cef80b12068295b3762e0ac59",
-  "tag": "mobile-v1.66.2",
-  "branch": "staging-mobile-v1.66.2-b01e0797b813f68cef80b12068295b3762e0ac59",
-  "baseline": "mobile-v1.66.1",
-  "group": "557de2fc-be9c-4f5f-a9e5-f741f9648540",
+  "commit": "2888685b68015e9e71ddcce63b102d619ce2d147",
+  "tag": "mobile-v1.69.1",
+  "branch": "staging-mobile-v1.69.1-2888685b68015e9e71ddcce63b102d619ce2d147",
+  "baseline": "mobile-v1.69.0",
+  "group": "d284d0d8-7e24-444e-9ee8-2e3df0296b95",
   "notes": [
-    "correlate touch diagnostics and expose route waits (#1496)",
-    "correct session keyboard visibility and overlap (#1495)"
+    "support CSS-variable theme colors in tint() (#1582)"
   ]
 }
