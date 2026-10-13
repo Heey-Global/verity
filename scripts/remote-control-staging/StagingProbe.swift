@@ -26,6 +26,8 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
         while Date().addingTimeInterval(12) < deadline {
           guard tunnel.isActive else {
             let total = await counters.requests
+            print("probe-soak:\(worker):\(own):\(total)")
+            fflush(stdout)
             throw ProbeFailure.soakFailed(
               "worker \(worker) after \(own) own and \(total) total requests: tunnel stopped: "
                 + "\(tunnel.stopReason ?? "unknown"); \(tunnel.diagnosticSummary)")
@@ -42,6 +44,8 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
           do { delegate = try CertificatePinDelegate(pin: corePin, origin: coreURL) }
           catch {
             let total = await counters.requests
+            print("probe-soak:\(worker):\(own):\(total)")
+            fflush(stdout)
             throw ProbeFailure.soakFailed(
               "worker \(worker) after \(own) own and \(total) total requests: \(error)")
           }
@@ -52,6 +56,8 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
             let (_, response) = try await client.data(for: URLRequest(url: coreURL))
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
               let total = await counters.requests
+              print("probe-soak:\(worker):\(own):\(total)")
+              fflush(stdout)
               throw ProbeFailure.soakFailed(
                 "worker \(worker) after \(own) own and \(total) total requests: status "
                   + "\((response as? HTTPURLResponse)?.statusCode ?? 0); \(tunnel.diagnosticSummary)")
@@ -61,7 +67,11 @@ func soak(tunnel: RemoteAppTunnel, coreURL: URL, corePin: String, localPort: NWE
           } catch let failure as ProbeFailure {
             throw failure
           } catch {
+            print("probe-error:\((error as NSError).code)")
+            print("probe-tls:\(delegate.phase)")
             let total = await counters.requests
+            print("probe-soak:\(worker):\(own):\(total)")
+            fflush(stdout)
             throw ProbeFailure.soakFailed(
               "worker \(worker) after \(own) own and \(total) total requests: "
                 + CertificatePinDelegate.transportFailure(error: error as NSError, phase: delegate.phase)
@@ -142,9 +152,17 @@ enum StagingProbe {
           }
           let response: URLResponse
           do {
+            print("probe-stage:https_request")
+            fflush(stdout)
             let result = try await client.data(for: URLRequest(url: coreURL))
             response = result.1
+            print("probe-stage:http_response")
+            print("probe-tls:\(delegate.phase)")
+            fflush(stdout)
           } catch {
+            print("probe-error:\((error as NSError).code)")
+            print("probe-tls:\(delegate.phase)")
+            fflush(stdout)
             throw ProbeFailure.tunnelStopped(
               CertificatePinDelegate.transportFailure(error: error as NSError, phase: delegate.phase))
           }
@@ -180,16 +198,23 @@ enum StagingProbe {
           onAttached: {
             print("attached")
             fflush(stdout)
+          }, onDiagnostic: { line in
+            print(line)
+            fflush(stdout)
           })
         status = response.0
       }
       guard status == 200 else { throw RemoteSmokeError.invalidFrame }
       print("Core HTTPS status: \(status)")
     } catch ProbeFailure.soakFailed(let detail) {
+      print("probe-stage:soak_failed")
+      fflush(stdout)
       // The worker, request count, native cause and tunnel summary, as promised.
       fputs("Remote Control staging soak failed: \(detail)\n", stderr)
       exit(1)
     } catch {
+      if !(error is ProbeFailure) { print("probe-error:\((error as NSError).code)") }
+      fflush(stdout)
       fputs("Remote Control staging probe failed: \(error)\n", stderr)
       exit(1)
     }

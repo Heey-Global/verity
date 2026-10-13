@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import WebSocket from 'ws';
 
 const idPattern = /^[A-Za-z0-9_-]{1,128}$/u;
@@ -52,6 +52,44 @@ let child;
 let attached = false;
 let finished = false;
 let timeout;
+const receipt = {
+  startedAt: new Date().toISOString(),
+  sessionHash: null,
+  stage: 'admission',
+  tlsPhase: 'unknown',
+  nativeErrorCode: null,
+  soak: null,
+  nativeExitCode: null,
+};
+const stages = new Set([
+  'attached',
+  'listener_ready',
+  'https_request',
+  'http_response',
+  'soak_failed',
+]);
+const phases = new Set([
+  'NO_AUTH_CHALLENGE',
+  'AUTH_CHALLENGE_RECEIVED',
+  'PIN_AND_CHAIN_TRUST_ACCEPTED',
+]);
+function consumeLine(line) {
+  const soak = /^probe-soak:(\d{1,2}):(\d{1,9}):(\d{1,9})$/u.exec(line);
+  if (soak)
+    receipt.soak = {
+      worker: Number(soak[1]),
+      ownRequests: Number(soak[2]),
+      totalRequests: Number(soak[3]),
+    };
+  if (/^probe-error:-?\d{1,9}$/u.test(line)) receipt.nativeErrorCode = Number(line.slice(12));
+  if (line === 'attached') {
+    attached = true;
+    receipt.stage = 'attached';
+  }
+  if (line.startsWith('probe-stage:') && stages.has(line.slice(12))) receipt.stage = line.slice(12);
+  if (line.startsWith('probe-tls:') && phases.has(line.slice(10)))
+    receipt.tlsPhase = line.slice(10);
+}
 
 try {
   const result = new Promise((resolve, reject) => {
@@ -96,7 +134,9 @@ try {
         !readyFields.every((key) => Object.hasOwn(frame, key)) ||
         frame.requestId !== requestId ||
         frame.capability !== 'remote-control-v1' ||
+        typeof frame.sessionId !== 'string' ||
         !idPattern.test(frame.sessionId) ||
+        typeof frame.ticket !== 'string' ||
         !idPattern.test(frame.ticket) ||
         !Number.isSafeInteger(frame.expiresAt) ||
         frame.expiresAt <= Date.now()
@@ -104,6 +144,8 @@ try {
         fail(new Error('Invalid admission response.'));
         return;
       }
+      receipt.sessionHash = createHash('sha256').update(frame.sessionId).digest('hex').slice(0, 16);
+      receipt.stage = 'native_start';
       child = spawn(binary, [], {
         env: {
           ...process.env,
@@ -117,17 +159,31 @@ try {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stdout = '';
+      let pending = '';
+      let discardLine = false;
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (chunk) => {
-        stdout += chunk;
-        if (stdout.includes('attached\n') && !attached) {
-          attached = true;
+        // Bound both retained success output and partial diagnostic lines.
+        stdout = (stdout + chunk).slice(-65536);
+        for (const character of chunk) {
+          if (character === '\n') {
+            if (!discardLine) consumeLine(pending.replace(/\r$/u, ''));
+            pending = '';
+            discardLine = false;
+          } else if (!discardLine) {
+            pending += character;
+            if (pending.length > 256) {
+              pending = '';
+              discardLine = true;
+            }
+          }
         }
       });
-      child.stderr.setEncoding('utf8');
-      child.stderr.on('data', (chunk) => process.stderr.write(chunk));
+      // Native NSError text may contain URLs or peer-controlled data.
+      child.stderr.resume();
       child.on('error', fail);
-      child.on('exit', (code) => {
+      child.on('close', (code) => {
+        receipt.nativeExitCode = code;
         if (finished) return;
         finished = true;
         socket.close();
@@ -154,6 +210,20 @@ try {
     );
   });
   await Promise.race([result, watchdog]);
+} catch (error) {
+  process.stderr.write(
+    `Probe failure receipt: ${JSON.stringify({ ...receipt, endedAt: new Date().toISOString() })}\n`,
+  );
+  const reasons = new Set([
+    'Invalid admission response.',
+    'Admission closed before successful completion.',
+    'Remote Control staging probe timed out.',
+    'Native staging probe did not complete an attached Core HTTPS GET.',
+  ]);
+  process.stderr.write(
+    `${reasons.has(error?.message) ? error.message : 'Probe transport failed.'}\n`,
+  );
+  process.exitCode = receipt.nativeExitCode > 0 ? receipt.nativeExitCode : 1;
 } finally {
   clearTimeout(timeout);
   finished = true;

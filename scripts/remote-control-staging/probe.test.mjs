@@ -196,3 +196,75 @@ for (const [label, closeCode, ready, success] of [
     if (!success) assert.match(result.stderr, /Admission closed before successful completion/u);
   });
 }
+
+for (const [stage, phase] of [
+  ['native_start', 'unknown'],
+  ['https_request', 'NO_AUTH_CHALLENGE'],
+  ['https_request', 'AUTH_CHALLENGE_RECEIVED'],
+  ['http_response', 'PIN_AND_CHAIN_TRUST_ACCEPTED'],
+  ['soak_failed', 'NO_AUTH_CHALLENGE'],
+]) {
+  test(`failure receipt survives child exit at ${stage}/${phase} without raw output`, async (t) => {
+    const input = await fixture(t, (connect) => ({
+      type: 'connect.ready',
+      requestId: connect.requestId,
+      sessionId: 'test_session',
+      ticket: 'test_ticket',
+      expiresAt: Date.now() + 60_000,
+      capability: 'remote-control-v1',
+    }));
+    writeFileSync(
+      input.binary,
+      `#!/usr/bin/env node
+console.error('test_ticket secret-header https://private.invalid');
+console.log('test_session secret-payload');
+console.log('x'.repeat(10000));
+console.log('probe-stage:secret-header');
+console.log('probe-tls:secret-header');
+console.log('probe-error:-1001');
+console.log('probe-soak:2:3:9');
+${stage === 'native_start' ? '' : `console.log('attached'); console.log('probe-stage:${stage}');`}
+${phase === 'unknown' ? '' : `console.log('probe-tls:${phase}');`}
+process.exitCode = 7;
+`,
+      { mode: 0o755 },
+    );
+    const result = await runProbe(input);
+    assert.equal(result.code, 7);
+    const line = result.stderr
+      .split('\n')
+      .find((line) => line.startsWith('Probe failure receipt: '));
+    assert.ok(line, result.stderr);
+    const receipt = JSON.parse(line.slice('Probe failure receipt: '.length));
+    assert.equal(receipt.stage, stage);
+    assert.equal(receipt.tlsPhase, phase);
+    assert.match(receipt.sessionHash, /^[a-f0-9]{16}$/u);
+    assert.equal(receipt.nativeExitCode, 7);
+    assert.equal(receipt.nativeErrorCode, -1001);
+    assert.deepEqual(receipt.soak, { worker: 2, ownRequests: 3, totalRequests: 9 });
+    assert.ok(Date.parse(receipt.endedAt) >= Date.parse(receipt.startedAt));
+    assert.doesNotMatch(
+      result.stdout + result.stderr,
+      /test_ticket|test_session|secret-header|secret-payload|private\.invalid/u,
+    );
+    assert.ok(result.stderr.length < 1024);
+  });
+}
+
+for (const sessionId of [123, ['test_session']]) {
+  test(`non-string admission session ${typeof sessionId} fails safely`, async (t) => {
+    const input = await fixture(t, (connect) => ({
+      type: 'connect.ready',
+      requestId: connect.requestId,
+      sessionId,
+      ticket: 'test_ticket',
+      expiresAt: Date.now() + 60_000,
+      capability: 'remote-control-v1',
+    }));
+    const result = await runProbe(input);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Probe failure receipt:/u);
+    assert.match(result.stderr, /Invalid admission response/u);
+    assert.doesNotMatch(result.stderr, /TypeError|test_ticket|test_session/u);
+  });
+}
