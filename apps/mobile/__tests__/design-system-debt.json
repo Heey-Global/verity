@@ -67,7 +67,7 @@
   },
   "components/QuickCaptureCard.tsx": {
     "rawColor": 3,
-    "fontSize": 8
+    "fontSize": 9
   },
   "components/QuickCaptureIntro.tsx": {
     "rawColor": 1,

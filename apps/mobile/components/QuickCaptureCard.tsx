@@ -562,7 +562,7 @@ const styles = StyleSheet.create((theme) => ({
   error: { color: theme.colors.attention, fontSize: theme.text.sm },
   input: {
     color: theme.colors.text,
-    fontSize: theme.typography.title.fontSize,
+    fontSize: theme.text.lg - 2,
     lineHeight: 25 * theme.fontScale,
     minHeight: 76,
     maxHeight: 180,

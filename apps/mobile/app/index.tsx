@@ -2439,9 +2439,8 @@ const styles = StyleSheet.create((theme) => ({
   projectStatusIdle: {
     color: theme.colors.textMuted,
   },
-  // Attention, not danger: the project is running. A stale attestation verdict
-  // means it needs re-checking, not that it is broken — `danger` here would put
-  // a working project in the same colour as a stopped container.
+  // The design system has one problem colour, so a stale attestation verdict on a
+  // running project and a stopped container share it; the status text says which.
   projectStatusAttention: {
     color: theme.colors.attention,
   },
