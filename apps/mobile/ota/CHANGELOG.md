@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.68.5](https://github.com/Heey-Global/verity/compare/mobile-v1.68.4...mobile-v1.68.5) (2026-10-13)
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1575](https://github.com/Heey-Global/verity/issues/1575)) ([c2eb3fd](https://github.com/Heey-Global/verity/commit/c2eb3fd7ba5a0e75345311e656cd9eae19921bee))
+* **deps:** update dependency @agentclientprotocol/sdk to v1.8.0 ([#1576](https://github.com/Heey-Global/verity/issues/1576)) ([2f4ce2a](https://github.com/Heey-Global/verity/commit/2f4ce2ab7db266efc857f0b8355d946ec7a777d5))
+* **deps:** update dependency @fastify/websocket to v11.3.4 ([#1572](https://github.com/Heey-Global/verity/issues/1572)) ([20cbb84](https://github.com/Heey-Global/verity/commit/20cbb84afd0fe69005a78fe9428acc92741b2959))
+
 ## [1.68.4](https://github.com/Heey-Global/verity/compare/mobile-v1.68.3...mobile-v1.68.4) (2026-10-12)
 
 
