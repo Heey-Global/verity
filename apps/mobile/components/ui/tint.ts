@@ -15,12 +15,18 @@ export type TintStrength = keyof typeof ALPHA;
 
 /**
  * A role color at one of the fixed transparency steps. Role colors are six-digit
- * hex in both themes; anything else would silently produce an invalid color, so
- * it fails loudly instead.
+ * hex on native and CSS variable references in web stylesheets. Unexpected
+ * formats fail loudly instead of silently producing an invalid color.
  */
 export function tint(color: string, strength: TintStrength): string {
-  if (!/^#[0-9a-f]{6}$/i.test(color)) {
-    throw new Error(`tint() needs a six-digit hex role color, got ${color}`);
+  if (/^#[0-9a-f]{6}$/i.test(color)) {
+    return `${color}${ALPHA[strength]}`;
   }
-  return `${color}${ALPHA[strength]}`;
+  if (/^var\(--[a-zA-Z_][a-zA-Z0-9_-]*\)$/.test(color)) {
+    const percentage = Math.round((parseInt(ALPHA[strength], 16) / 255) * 100);
+    return `color-mix(in srgb, ${color} ${percentage}%, transparent)`;
+  }
+  throw new Error(
+    `tint() needs a six-digit hex role color or CSS variable reference, got ${color}`,
+  );
 }
