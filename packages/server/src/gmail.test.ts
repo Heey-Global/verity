@@ -903,3 +903,34 @@ it('rejects distinct own addresses across reply recipient headers', async () => 
     ),
   ).rejects.toThrow('unique verified reply sender');
 });
+
+it('rejects ambiguous own identities in repeated delivery headers', async () => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+    response({
+      messages: [
+        {
+          id: 'm1',
+          payload: {
+            headers: [
+              { name: 'From', value: 'friend@example.test' },
+              { name: 'Delivered-To', value: 'me@example.test' },
+              { name: 'Delivered-To', value: 'support@example.test' },
+              { name: 'Message-ID', value: '<m1@example.test>' },
+            ],
+          },
+        },
+      ],
+    }),
+  );
+  await expect(
+    prepareGmailReplyDraft(
+      'token',
+      { threadId: 't1', body: 'Reply' },
+      [
+        { sendAsEmail: 'me@example.test', isPrimary: true },
+        { sendAsEmail: 'support@example.test', verificationStatus: 'accepted' },
+      ],
+      fetch,
+    ),
+  ).rejects.toThrow('unique verified reply sender');
+});

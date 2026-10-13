@@ -216,8 +216,10 @@ export function selectGmailSender(aliases: GmailSendAs[], from?: string): string
 function replySender(target: GmailMessage, aliases: GmailSendAs[]): string {
   const sent = target.labelIds?.includes('SENT');
   const fields = sent ? ['from'] : ['to', 'cc', 'delivered-to', 'x-original-to'];
-  const addresses = fields.flatMap((field) =>
-    addressList(header(target.payload, field)).map((address) => {
+  const addresses = (target.payload?.headers ?? [])
+    .filter((candidate) => fields.includes(candidate.name?.toLowerCase() ?? ''))
+    .flatMap((candidate) => addressList(candidate.value))
+    .map((address) => {
       // Comments may follow a mailbox and must not change the reply identity.
       let mailbox = address;
       while (/\([^()]*\)/u.test(mailbox)) {
@@ -225,8 +227,7 @@ function replySender(target: GmailMessage, aliases: GmailSendAs[]): string {
       }
       const angle = /<([^<>]+)>\s*$/u.exec(mailbox);
       return (angle?.[1] ?? mailbox).trim().toLowerCase();
-    }),
-  );
+    });
   const matches = aliases.filter((alias) => addresses.includes(alias.sendAsEmail.toLowerCase()));
   if (matches.length === 1) return matches[0]!.sendAsEmail;
   throw new Error(
