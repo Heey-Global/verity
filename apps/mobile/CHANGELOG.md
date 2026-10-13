@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.69.0](https://github.com/Heey-Global/verity/compare/mobile-v1.68.0...mobile-v1.69.0) (2026-10-13)
+
+
+### Features
+
+* **diagnostics:** coordinate App, Core and Uplink recording ([#1546](https://github.com/Heey-Global/verity/issues/1546)) ([fb53784](https://github.com/Heey-Global/verity/commit/fb53784db2be914f711058205f32bdd36c5311d0))
+* **preview:** inject alias-bound secrets into managed servers ([#1565](https://github.com/Heey-Global/verity/issues/1565)) ([ca26935](https://github.com/Heey-Global/verity/commit/ca269359a1adbdc341fc3a7e5518861d0f636ddb))
+
+
+### Bug Fixes
+
+* **mobile:** restore red attention colors ([#1554](https://github.com/Heey-Global/verity/issues/1554)) ([ecd42c3](https://github.com/Heey-Global/verity/commit/ecd42c36a75b37ef7b67bd25a212675788f984c7))
+* **remote:** align frame validation and add native integration harness ([#1566](https://github.com/Heey-Global/verity/issues/1566)) ([594c288](https://github.com/Heey-Global/verity/commit/594c28892fa54a80c17f502a743ce5bbbaffacbf))
+
+
+### Performance Improvements
+
+* **mobile:** reduce session startup and sidebar render work ([#1559](https://github.com/Heey-Global/verity/issues/1559)) ([83f83e5](https://github.com/Heey-Global/verity/commit/83f83e564fdd2558ad7f1c2e2c01a8e0031a4c32))
+
 ## [1.68.0](https://github.com/Heey-Global/verity/compare/mobile-v1.67.0...mobile-v1.68.0) (2026-10-12)
 
 
