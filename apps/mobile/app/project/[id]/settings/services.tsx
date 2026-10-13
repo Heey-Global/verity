@@ -31,7 +31,7 @@ import { ProjectGoogleServices } from '../../../../components/settings/ProjectGo
 import { ProjectMatrixRooms } from '../../../../components/settings/ProjectMatrixRooms';
 import { createVerityClient } from '../../../../lib/client';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
-import { useConfirm } from '../../../../components/ui';
+import { Button, useConfirm } from '../../../../components/ui';
 
 export default function ProjectServicesScreen() {
   const { id, section } = useLocalSearchParams<{
@@ -271,14 +271,15 @@ function DopplerBindingSection({
       </Text>
 
       {phase === 'idle' ? (
-        <Pressable
-          style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
-          onPress={start}
-          accessibilityRole="button"
-          accessibilityLabel={bound ? 'Change Doppler binding' : 'Choose Doppler binding'}
-        >
-          <Text style={styles.reproButtonLabel}>{bound ? 'Change' : 'Choose'}</Text>
-        </Pressable>
+        <View style={styles.selfStart}>
+          <Button
+            label={bound ? 'Change' : 'Choose'}
+            accessibilityLabel={bound ? 'Change Doppler binding' : 'Choose Doppler binding'}
+            variant="secondary"
+            size="compact"
+            onPress={start}
+          />
+        </View>
       ) : null}
 
       {loading ? <ActivityIndicator size="small" /> : null}
@@ -366,14 +367,15 @@ function PickRow({
 // the idle (current-binding) view without changing anything.
 function BindingCancel({ onPress }: { onPress: () => void }) {
   return (
-    <Pressable
-      style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel="Cancel Doppler binding"
-    >
-      <Text style={styles.reproButtonLabel}>Cancel</Text>
-    </Pressable>
+    <View style={styles.selfStart}>
+      <Button
+        label="Cancel"
+        accessibilityLabel="Cancel Doppler binding"
+        variant="text"
+        size="compact"
+        onPress={onPress}
+      />
+    </View>
   );
 }
 
@@ -461,32 +463,24 @@ function GoogleDriveFolderSection({
       ) : null}
       <View style={styles.actionRow}>
         {folderName ? (
-          <Pressable
-            style={({ pressed }) => [
-              styles.reproButton,
-              disconnecting ? styles.buttonDisabled : null,
-              pressed ? styles.pressed : null,
-            ]}
-            onPress={disconnect}
-            disabled={disconnecting}
-            accessibilityRole="button"
+          <Button
+            label="Disconnect"
             accessibilityLabel="Disconnect Google Drive folder"
-          >
-            <Text style={styles.reproButtonLabel}>
-              {disconnecting ? 'Disconnecting…' : 'Disconnect'}
-            </Text>
-          </Pressable>
+            variant="destructive"
+            size="compact"
+            loading={disconnecting}
+            onPress={disconnect}
+          />
         ) : null}
-        <Pressable
-          style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
-          onPress={choose}
-          accessibilityRole="button"
+        <Button
+          label={folderName ? 'Change' : 'Connect folder'}
           accessibilityLabel={
             folderName ? 'Change Google Drive folder' : 'Connect Google Drive folder'
           }
-        >
-          <Text style={styles.reproButtonLabel}>{folderName ? 'Change' : 'Connect folder'}</Text>
-        </Pressable>
+          variant="secondary"
+          size="compact"
+          onPress={choose}
+        />
       </View>
       {confirmSheet}
     </SettingsDisclosure>

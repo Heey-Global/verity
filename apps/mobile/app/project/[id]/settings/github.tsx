@@ -23,7 +23,7 @@ import {
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
 import { createVerityClient } from '../../../../lib/client';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
-import { useConfirm } from '../../../../components/ui';
+import { Button, useConfirm } from '../../../../components/ui';
 
 export default function ProjectGitHubScreen() {
   const { id } = useLocalSearchParams<{ id: string | string[] }>();
@@ -207,25 +207,23 @@ function LinkGitHubSection({
       description="This project has no GitHub repository. Connect it to an existing repository to combine its history with this project and get pull requests, issues and CI status."
     >
       <SettingsPanel>
-        <Pressable
-          style={({ pressed }) => [
-            styles.reproButton,
-            loading || linking || sorted.length === 0 ? styles.buttonDisabled : null,
-            pressed ? styles.pressed : null,
-          ]}
-          onPress={() => setPickerOpen((open) => !open)}
-          disabled={loading || linking || sorted.length === 0}
-          accessibilityRole="button"
-          accessibilityLabel="Repository to connect"
-        >
-          <Text style={styles.reproButtonLabel}>
-            {loading
-              ? 'Loading repositories…'
-              : selected
-                ? `${selected.owner}/${selected.repo}`
-                : 'No repositories available'}
-          </Text>
-        </Pressable>
+        <View style={styles.selfStart}>
+          <Button
+            label={
+              loading
+                ? 'Loading repositories…'
+                : selected
+                  ? `${selected.owner}/${selected.repo}`
+                  : 'No repositories available'
+            }
+            accessibilityLabel="Repository to connect"
+            icon={pickerOpen ? 'chevron-up' : 'chevron-down'}
+            variant="secondary"
+            size="compact"
+            disabled={loading || linking || sorted.length === 0}
+            onPress={() => setPickerOpen((open) => !open)}
+          />
+        </View>
         {pickerOpen ? (
           <SettingsListPanel>
             {sorted.map((repository) => (
@@ -246,22 +244,15 @@ function LinkGitHubSection({
             ))}
           </SettingsListPanel>
         ) : null}
-        <Pressable
-          style={({ pressed }) => [
-            styles.primaryButton,
-            styles.selfStart,
-            selected === null || linking ? styles.buttonDisabled : null,
-            pressed ? styles.pressed : null,
-          ]}
-          onPress={link}
-          disabled={selected === null || linking}
-          accessibilityRole="button"
-          accessibilityLabel="Connect project to GitHub"
-        >
-          <Text style={styles.primaryButtonLabel}>
-            {linking ? 'Connecting…' : 'Connect to GitHub'}
-          </Text>
-        </Pressable>
+        <View style={styles.selfStart}>
+          <Button
+            label="Connect to GitHub"
+            accessibilityLabel="Connect project to GitHub"
+            loading={linking}
+            disabled={selected === null}
+            onPress={link}
+          />
+        </View>
         {error ? <Text style={styles.fieldError}>{error}</Text> : null}
       </SettingsPanel>
       {confirmSheet}

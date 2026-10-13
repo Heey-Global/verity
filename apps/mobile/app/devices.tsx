@@ -21,7 +21,6 @@ import {
 } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Linking,
   Platform,
   Pressable,
@@ -48,7 +47,7 @@ import { createPairingUri } from '../lib/pairing';
 import { getBrowserSession, logoutBrowser } from '../lib/browserSession';
 import { getServerProfile } from '../lib/serverProfile';
 import { setVeritySettingsError } from '../lib/settingsStore';
-import { useConfirm } from '../components/ui';
+import { Button, useConfirm } from '../components/ui';
 
 /** Pick the row glyph from the label the device reported when it paired. */
 function iconForDevice(label: string | null): IconName {
@@ -301,22 +300,21 @@ function DevicesView({ client }: { client: VerityClient }) {
       {Platform.OS === 'web' && (
         <SettingsGroup title="This browser">
           <SettingsPanel>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Sign out"
-              onPress={() => {
-                void logoutBrowser()
-                  .then(() => router.replace('/web-connect'))
-                  .catch((caught: unknown) =>
-                    setVeritySettingsError(
-                      caught instanceof Error ? caught.message : 'Could not sign out.',
-                    ),
-                  );
-              }}
-              style={styles.primaryButton}
-            >
-              <Text style={styles.primaryButtonLabel}>Sign out</Text>
-            </Pressable>
+            <View style={styles.selfStart}>
+              <Button
+                label="Sign out"
+                variant="secondary"
+                onPress={() => {
+                  void logoutBrowser()
+                    .then(() => router.replace('/web-connect'))
+                    .catch((caught: unknown) =>
+                      setVeritySettingsError(
+                        caught instanceof Error ? caught.message : 'Could not sign out.',
+                      ),
+                    );
+                }}
+              />
+            </View>
           </SettingsPanel>
         </SettingsGroup>
       )}
@@ -399,36 +397,26 @@ function DevicesView({ client }: { client: VerityClient }) {
                     Valid for {pairingInvitation.minutes} minute
                     {pairingInvitation.minutes === 1 ? '' : 's'} · works once ·
                   </Text>
-                  <Pressable
-                    onPress={() => createInvitation()}
-                    disabled={working}
-                    style={working ? styles.buttonDisabled : undefined}
-                    accessibilityRole="button"
-                    accessibilityState={{ disabled: working }}
+                  <Button
+                    label="New link"
                     accessibilityLabel="Create a new pairing link"
-                  >
-                    <Text style={styles.linkText}>{working ? 'Creating…' : 'New link'}</Text>
-                  </Pressable>
+                    variant="text"
+                    size="compact"
+                    loading={working}
+                    onPress={() => createInvitation()}
+                  />
                 </View>
               </>
             ) : working ? (
               <ActivityIndicator color={theme.colors.action} />
             ) : (
-              <Pressable
-                style={({ pressed }) => [
-                  styles.primaryButton,
-                  styles.selfStart,
-                  working ? styles.buttonDisabled : null,
-                  pressed ? styles.pressed : null,
-                ]}
-                onPress={() => createInvitation()}
-                disabled={working}
-                accessibilityRole="button"
-                accessibilityState={{ disabled: working }}
-                accessibilityLabel="Create pairing link"
-              >
-                <Text style={styles.primaryButtonLabel}>Create pairing link</Text>
-              </Pressable>
+              <View style={styles.selfStart}>
+                <Button
+                  label="Create pairing link"
+                  icon="link"
+                  onPress={() => createInvitation()}
+                />
+              </View>
             )}
           </InvitationBoundary>
         </View>
@@ -538,14 +526,13 @@ function DeviceRow({
       </View>
       {device.isCurrent ? null : (
         <View style={styles.navRowTrailing}>
-          <Pressable
-            style={({ pressed }) => [styles.quietDangerButton, pressed ? styles.pressed : null]}
-            onPress={onRemove}
-            accessibilityRole="button"
+          <Button
+            label="Remove"
             accessibilityLabel={`Remove ${device.label ?? 'paired device'}`}
-          >
-            <Text style={styles.dangerButtonLabel}>Remove</Text>
-          </Pressable>
+            variant="destructive"
+            size="compact"
+            onPress={onRemove}
+          />
         </View>
       )}
     </View>
@@ -617,16 +604,17 @@ class InvitationBoundary extends Component<
     return (
       <View style={styles.invitationHint}>
         <Text style={styles.footnote}>Could not show the pairing link: {this.state.error}</Text>
-        <Pressable
-          onPress={() => {
-            this.setState({ error: null });
-            this.props.onReset();
-          }}
-          accessibilityRole="button"
-          accessibilityLabel="Try again"
-        >
-          <Text style={styles.linkText}>Try again</Text>
-        </Pressable>
+        <View style={styles.selfStart}>
+          <Button
+            label="Try again"
+            variant="text"
+            size="compact"
+            onPress={() => {
+              this.setState({ error: null });
+              this.props.onReset();
+            }}
+          />
+        </View>
       </View>
     );
   }

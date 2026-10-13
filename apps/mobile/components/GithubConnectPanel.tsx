@@ -6,18 +6,11 @@ import { subscribeLiveRefresh } from '../lib/liveConnection';
 import { type VerityClient, type OnboardingStatus } from '@verity/mobile';
 import * as WebBrowser from 'expo-web-browser';
 import { useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Linking,
-  Platform,
-  Pressable,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Linking, Platform, Text, TextInput, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { getVerityBaseUrl } from '../lib/client';
+import { Button } from './ui';
 
 const PREPARE_TIMEOUT_MS = 15000;
 const GITHUB_CALLBACK_URL = 'https://verity.build/github/app/callback';
@@ -291,13 +284,15 @@ export function GithubConnectPanel({
           <Text style={styles.hint}>Leave empty to connect your personal account.</Text>
         </View>
       ) : (
-        <Pressable
-          onPress={() => setShowOrganization(true)}
-          accessibilityRole="button"
-          accessibilityLabel="Connect a GitHub organization"
-        >
-          <Text style={styles.linkText}>Connecting an organization?</Text>
-        </Pressable>
+        <View style={styles.inline}>
+          <Button
+            label="Connecting an organization?"
+            accessibilityLabel="Connect a GitHub organization"
+            variant="text"
+            size="compact"
+            onPress={() => setShowOrganization(true)}
+          />
+        </View>
       )}
 
       {phase.kind === 'error' ? (
@@ -321,25 +316,18 @@ export function GithubConnectPanel({
             <Text style={styles.waitingTitle}>Waiting for GitHub…</Text>
             <Text style={styles.hint}>Return to Verity after authorization is complete.</Text>
           </View>
-          <Pressable onPress={check} accessibilityRole="button" accessibilityLabel="Check now">
-            <Text style={styles.linkText}>Check now</Text>
-          </Pressable>
+          <Button label="Check now" variant="text" size="compact" onPress={check} />
         </View>
       ) : (
-        <Pressable
-          style={({ pressed }) => [styles.primaryButton, pressed ? styles.pressed : null]}
-          onPress={connect}
-          accessibilityRole="button"
-          accessibilityLabel="Connect to GitHub"
-        >
-          <Text style={styles.primaryButtonLabel}>Connect to GitHub</Text>
-        </Pressable>
+        <Button label="Connect to GitHub" icon="github" onPress={connect} fullWidth />
       )}
     </View>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
+  // A button keeps the width of its label instead of spanning the column.
+  inline: { flexDirection: 'row' },
   card: {
     gap: theme.spacing.md,
     paddingVertical: theme.spacing.lg,
@@ -371,7 +359,6 @@ const styles = StyleSheet.create((theme) => ({
     ...theme.typography.footnote,
     color: theme.colors.textMuted,
   },
-  linkText: { ...theme.typography.button, color: theme.colors.text },
   error: {
     ...theme.typography.subtitle,
     color: theme.colors.attention,
@@ -388,17 +375,4 @@ const styles = StyleSheet.create((theme) => ({
     fontFamily: theme.fonts.semibold,
     color: theme.colors.text,
   },
-  primaryButton: {
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.action,
-    paddingHorizontal: theme.spacing.lg,
-  },
-  primaryButtonLabel: {
-    ...theme.typography.button,
-    color: theme.colors.onAction,
-  },
-  pressed: { opacity: 0.78 },
 }));

@@ -16,6 +16,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon, type IconName } from '../../components/Icon';
 import { createVerityClient } from '../../lib/client';
 import { runGoogleDriveAuth } from '../../lib/googleDrive';
+import { Button } from '../../components/ui';
 
 type Crumb = { id: string; name: string };
 type DriveView = 'my-drive' | 'shared';
@@ -265,14 +266,13 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
           title,
           headerRight: connected
             ? () => (
-                <Pressable
-                  onPress={disconnect}
-                  accessibilityRole="button"
+                <Button
+                  label="Disconnect"
                   accessibilityLabel="Disconnect Google Drive"
-                  hitSlop={8}
-                >
-                  <Text style={styles.headerAction}>Disconnect</Text>
-                </Pressable>
+                  variant="text"
+                  size="compact"
+                  onPress={disconnect}
+                />
               )
             : undefined,
         }}
@@ -290,33 +290,23 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
             Google grants Verity access to files in this account. Projects can use only the folder
             you connect in their settings. You can disconnect at any time.
           </Text>
-          <Pressable
-            style={({ pressed }) => [styles.primaryButton, pressed ? styles.pressed : null]}
+          <Button
+            label="Connect Google Drive"
+            loading={connecting}
             onPress={() => void connect()}
-            disabled={connecting}
-            accessibilityRole="button"
-            accessibilityLabel="Connect Google Drive"
-          >
-            {connecting ? (
-              <ActivityIndicator color={theme.colors.onAction} />
-            ) : (
-              <Text style={styles.primaryButtonLabel}>Connect Google Drive</Text>
-            )}
-          </Pressable>
+          />
         </View>
       ) : (
         <>
           {path.length > 0 ? (
-            <Pressable
-              style={({ pressed }) => [styles.primaryButton, pressed ? styles.pressed : null]}
-              onPress={connectCurrentFolder}
-              accessibilityHint="Connects read-only. Allow changes later in project settings."
-              disabled={importingId !== null}
-              accessibilityRole="button"
+            <Button
+              label="Connect this folder"
               accessibilityLabel={`Connect ${path.at(-1)?.name ?? 'this folder'}`}
-            >
-              <Text style={styles.primaryButtonLabel}>Connect this folder</Text>
-            </Pressable>
+              accessibilityHint="Connects read-only. Allow changes later in project settings."
+              loading={importingId !== null}
+              onPress={connectCurrentFolder}
+              fullWidth
+            />
           ) : null}
           <View style={styles.searchContainer}>
             <Icon name="search" size={18} color={theme.colors.textMuted} />
@@ -449,13 +439,12 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
                   </Text>
                 ) : null}
                 {!loading && nextPageToken !== undefined ? (
-                  <Pressable
+                  <Button
+                    label="Load more"
+                    variant="text"
+                    size="compact"
                     onPress={() => void loadFiles(parentId, debouncedQuery, true, nextPageToken)}
-                    accessibilityRole="button"
-                    accessibilityLabel="Load more"
-                  >
-                    <Text style={styles.linkText}>Load more</Text>
-                  </Pressable>
+                  />
                 ) : null}
               </View>
             }
@@ -482,20 +471,6 @@ const styles = StyleSheet.create((theme) => ({
     textAlign: 'center',
     padding: theme.spacing.lg,
   },
-  primaryButton: {
-    minHeight: 48,
-    minWidth: 220,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.action,
-    paddingHorizontal: theme.spacing.lg,
-  },
-  primaryButtonLabel: {
-    ...theme.typography.button,
-    color: theme.colors.onAction,
-  },
-  pressed: { opacity: 0.78 },
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -569,11 +544,5 @@ const styles = StyleSheet.create((theme) => ({
     ...theme.typography.subtitle,
     color: theme.colors.attention,
     textAlign: 'center',
-  },
-  linkText: { ...theme.typography.button, color: theme.colors.action },
-  headerAction: {
-    ...theme.typography.body,
-    fontFamily: theme.fonts.semibold,
-    color: theme.colors.attention,
   },
 }));
