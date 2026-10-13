@@ -25,6 +25,9 @@ final class StallHTTPObserver: NSObject, URLSessionDataDelegate, @unchecked Send
     try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { continuation in
         let task = session.dataTask(with: url)
+        // Per-task ownership preserves the warmup session's connection reuse
+        // while keeping response milestones isolated for each request.
+        task.delegate = self
         let cancel = lock.withLock {
           self.continuation = continuation
           self.task = task

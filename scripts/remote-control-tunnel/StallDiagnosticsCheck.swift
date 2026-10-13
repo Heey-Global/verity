@@ -89,6 +89,33 @@ func checkStallObservation(proxy: ProxyConfiguration, origin: URL, pin: String,
   async let healthy = request("healthz")
   _ = try await (held, healthy)
   _ = try await request("slow")
+  // The warmup reuses a session but gives every request its own observer.
+  // A task delegate missing from request() otherwise hangs or loses milestones.
+  let warmupConfig = URLSessionConfiguration.ephemeral
+  warmupConfig.proxyConfigurations = [proxy]
+  warmupConfig.timeoutIntervalForRequest = 2
+  warmupConfig.timeoutIntervalForResource = 2
+  let warmupPin = try CertificatePinDelegate(pin: pin, origin: origin)
+  let warmupSession = URLSession(configuration: warmupConfig, delegate: warmupPin, delegateQueue: nil)
+  defer { warmupSession.invalidateAndCancel() }
+  var retained: [StallHTTPObserver] = []
+  var snapshots: [Data] = []
+  for path in ["healthz", "healthz", "slow"] {
+    let observer = StallHTTPObserver(pin: warmupPin, recorder: recorder)
+    do {
+      let response = try await observer.request(origin.appendingPathComponent(path), session: warmupSession)
+      precondition(path == "healthz" && (response as? HTTPURLResponse)?.statusCode == 200)
+    } catch {
+      precondition(path == "slow" && (error as NSError).code == NSURLErrorTimedOut)
+    }
+    precondition((observer.snapshot["headersMs"] as? Int == -1) == (path == "slow"))
+    precondition((observer.snapshot["firstByteMs"] as? Int == -1) == (path == "slow"))
+    retained.append(observer)
+    snapshots.append(try JSONSerialization.data(withJSONObject: observer.snapshot, options: [.sortedKeys]))
+  }
+  for (observer, before) in zip(retained, snapshots) {
+    precondition(before == (try! JSONSerialization.data(withJSONObject: observer.snapshot, options: [.sortedKeys])))
+  }
   let cancelConfig = URLSessionConfiguration.ephemeral
   cancelConfig.proxyConfigurations = [proxy]
   let cancelPin = try CertificatePinDelegate(pin: pin, origin: origin)

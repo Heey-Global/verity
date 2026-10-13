@@ -34,3 +34,20 @@ it('forwards the pin delegate redirect policy through the data observer', () => 
     new RegExp(`pin\\.urlSession\\(session, task: task, ${callback}: response,`, 'u'),
   );
 });
+
+it('observes each warmup request and emits its snapshot before legacy cleanup output', () => {
+  const source = read('scripts/remote-control-staging/StagingProbe.swift');
+  const warmup = source.slice(
+    source.indexOf('for attempt in 0..<3'),
+    source.indexOf('// Unparsable'),
+  );
+  expect(warmup).toContain('let observer = StallHTTPObserver(');
+  expect(warmup).toContain('response = try await observer.request(coreURL, session: client)');
+  expect(warmup).not.toContain('client.data(');
+  expect(warmup.match(/diagnostic: observer.snapshot, warmup: true/gu)).toHaveLength(2);
+  expect(warmup.match(/own: attempt, total: attempt/gu)).toHaveLength(2);
+  expect(warmup.indexOf('emitStallFailure(')).toBeLessThan(warmup.indexOf('print("probe-error:'));
+  const observer = read('scripts/remote-control-staging/StallDiagnostics.swift');
+  expect(observer.indexOf('task.delegate = self')).toBeGreaterThan(-1);
+  expect(observer.indexOf('task.delegate = self')).toBeLessThan(observer.indexOf('task.resume()'));
+});

@@ -55,6 +55,7 @@ let finished = false;
 let timeout;
 /** @type {{startedAt: string, sessionHash: string | null, stage: string,
  * tlsPhase: string | undefined, nativeErrorCode: number | null, nativeExitCode: number | null,
+ * warmup?: {requestNumber: number, failureKind: string},
  * soak: {worker: number, ownRequests: number, totalRequests: number, requestNumber?: number,
  * failureKind?: string | undefined} | null, stall?: import('./stall-receipt.mjs').StallDiagnostic}} */
 const receipt = {
@@ -84,16 +85,19 @@ function consumeLine(line) {
   if (soakFailureReceived) return;
   const stall = parseStallReceipt(line);
   if (stall) {
-    receipt.soak = {
-      worker: stall.worker,
-      ownRequests: stall.ownRequests,
-      totalRequests: stall.totalRequests,
-      requestNumber: stall.ownRequests + 1,
-      failureKind: stall.kind,
-    };
+    const warmup = line.startsWith('probe-warmup-failure:');
+    if (warmup) receipt.warmup = { requestNumber: stall.ownRequests + 1, failureKind: stall.kind };
+    else
+      receipt.soak = {
+        worker: stall.worker,
+        ownRequests: stall.ownRequests,
+        totalRequests: stall.totalRequests,
+        requestNumber: stall.ownRequests + 1,
+        failureKind: stall.kind,
+      };
     receipt.nativeErrorCode = stall.code;
     receipt.tlsPhase = stall.phase;
-    receipt.stage = 'soak_failed';
+    receipt.stage = warmup ? 'warmup_failed' : 'soak_failed';
     receipt.stall = stall.diagnostic;
     soakFailureReceived = true;
     return;
