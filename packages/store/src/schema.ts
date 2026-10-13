@@ -940,6 +940,16 @@ interface SecretJobFramesTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+interface TrustedCliOutputsTable {
+  id: string;
+  project_id: string;
+  session_id: string;
+  expires_at: ColumnType<Date, string, string>;
+  next_sequence: number;
+  /** Encrypted completion metadata; null while the invocation is running. */
+  result: string | null;
+}
+
 /**
  * A recurring prompt bound to one session (ADR 0008). The operator confirms an
  * agent's proposal in the session; from then on the scheduler sends `prompt` to
@@ -1464,6 +1474,7 @@ export interface Database {
   secret_audit_events: SecretAuditEventsTable;
   audit_mac_keys: AuditMacKeysTable;
   secret_job_frames: SecretJobFramesTable;
+  trusted_cli_outputs: TrustedCliOutputsTable;
   secret_jobs: SecretJobsTable;
   secret_provider_credentials: SecretProviderCredentialsTable;
   secret_provider_bindings: SecretProviderBindingsTable;
