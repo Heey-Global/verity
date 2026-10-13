@@ -92,11 +92,6 @@
     "fontSize": 4,
     "fontWeight": 1
   },
-  "components/AgentLoginPanel.tsx": {
-    "legacyColor": 43,
-    "fontSize": 18,
-    "fontWeight": 14
-  },
   "components/AttentionMarkers.tsx": {
     "legacyColor": 1
   },
@@ -130,11 +125,6 @@
     "legacyColor": 3,
     "fontSize": 1,
     "fontWeight": 1
-  },
-  "components/OpenCodeSetup.tsx": {
-    "legacyColor": 18,
-    "fontSize": 10,
-    "fontWeight": 7
   },
   "components/PinnedPlan.tsx": {
     "legacyColor": 7,
