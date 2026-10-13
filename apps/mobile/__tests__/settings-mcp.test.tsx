@@ -6,7 +6,6 @@
 // The list reloads on focus for exactly that reason, and the first test below
 // is what keeps it honest.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
 
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
 jest.mock('react-native/Libraries/Linking/Linking', () =>
@@ -211,19 +210,17 @@ describe('settings/services/mcp — the list', () => {
     mockCreateVerityClient.mockReturnValue(
       makeClient('unlocked', { listHttpMcpConnections, deleteHttpMcpConnection }),
     );
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
     render(<McpConnectionsScreen />);
 
     fireEvent.press(await screen.findByLabelText(`Remove ${connection.name} MCP connection`));
     expect(deleteHttpMcpConnection).not.toHaveBeenCalled();
 
-    const buttons = alert.mock.calls[0]?.[2] ?? [];
-    const confirm = buttons.find((button) => button.style === 'destructive');
     // The confirmation says what else it takes with it — removing a connection
     // also removes it from every project.
-    expect(String(alert.mock.calls[0]?.[1])).toContain(connection.name);
-    // The alert button is outside the tree, so its state updates need wrapping.
-    act(() => confirm?.onPress?.());
+    expect(
+      screen.getByText(`This also removes ${connection.name} from every project.`),
+    ).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Remove connection' }));
 
     await waitFor(() => expect(deleteHttpMcpConnection).toHaveBeenCalledWith(connection.id));
     expect(await screen.findByText('No MCP connections yet.')).toBeOnTheScreen();

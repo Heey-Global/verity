@@ -25,6 +25,7 @@ import {
   useVeritySettings,
 } from '../../lib/settingsStore';
 import { settingsStyles as styles } from './settingsStyles';
+import { Button } from '../ui';
 
 export function SecretStoreSection({ client }: { client: VerityClient }) {
   const { theme } = useUnistyles();
@@ -170,22 +171,13 @@ export function SecretStoreSection({ client }: { client: VerityClient }) {
           ) : null}
           {fieldError !== undefined ? <Text style={styles.fieldError}>{fieldError}</Text> : null}
           <View style={styles.actionRow}>
-            <Pressable
-              style={({ pressed }) => [
-                styles.primaryButton,
-                busy || password.length === 0 ? styles.buttonDisabled : null,
-                pressed ? styles.pressed : null,
-              ]}
-              onPress={mode === 'set' ? submitInit : submitUnlock}
-              disabled={busy || password.length === 0}
-              accessibilityRole="button"
+            <Button
+              label={mode === 'set' ? 'Set master password' : 'Unlock'}
               accessibilityLabel={mode === 'set' ? 'Set master password' : 'Unlock secret store'}
-            >
-              {busy ? <ActivityIndicator size="small" color={theme.colors.onAction} /> : null}
-              <Text style={styles.primaryButtonLabel}>
-                {mode === 'set' ? 'Set master password' : 'Unlock'}
-              </Text>
-            </Pressable>
+              loading={busy}
+              disabled={password.length === 0}
+              onPress={mode === 'set' ? submitInit : submitUnlock}
+            />
           </View>
         </View>
       ) : null}

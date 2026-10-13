@@ -18,6 +18,7 @@ import {
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
 import { createVerityClient } from '../../../../lib/client';
 import { isOfficialGmailMcpUrl } from '../../../../lib/mcpOAuth';
+import { Button, Card, ToggleRow } from '../../../../components/ui';
 
 export default function NewMcpConnectionScreen() {
   const client = useMemo(() => createVerityClient(), []);
@@ -177,34 +178,26 @@ function NewMcpConnectionView({ client }: { client: VerityClient }) {
 
       <SettingsGroup title="Authentication">
         <SettingsPanel>
-          <Pressable
-            style={({ pressed }) => [styles.reproButton, pressed ? styles.pressed : null]}
-            onPress={() => {
-              if (Platform.OS !== 'ios') return;
-              const next = !useOAuth;
-              setUseOAuth(next);
-              // Google's endpoints are not discoverable from the MCP URL, and
-              // typing them by hand is where this flow usually fails.
-              if (next && isOfficialGmailMcpUrl(url.trim())) {
-                setOauthAuthorizationEndpoint('https://accounts.google.com/o/oauth2/v2/auth');
-                setOauthTokenEndpoint('https://oauth2.googleapis.com/token');
-                setOauthScopes(
-                  'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose',
-                );
-              }
-            }}
-            accessibilityRole="switch"
-            accessibilityState={{ checked: useOAuth }}
-            disabled={Platform.OS !== 'ios'}
-          >
-            <Text style={styles.reproButtonLabel}>
-              {Platform.OS !== 'ios'
-                ? 'OAuth 2.0 requires Verity for iOS'
-                : useOAuth
-                  ? 'OAuth 2.0 enabled'
-                  : 'Use OAuth 2.0'}
-            </Text>
-          </Pressable>
+          <Card flush>
+            <ToggleRow
+              title="Use OAuth 2.0"
+              subtitle={Platform.OS !== 'ios' ? 'Requires Verity for iOS' : undefined}
+              value={useOAuth}
+              disabled={Platform.OS !== 'ios'}
+              onValueChange={(next) => {
+                setUseOAuth(next);
+                // Google's endpoints are not discoverable from the MCP URL, and
+                // typing them by hand is where this flow usually fails.
+                if (next && isOfficialGmailMcpUrl(url.trim())) {
+                  setOauthAuthorizationEndpoint('https://accounts.google.com/o/oauth2/v2/auth');
+                  setOauthTokenEndpoint('https://oauth2.googleapis.com/token');
+                  setOauthScopes(
+                    'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose',
+                  );
+                }
+              }}
+            />
+          </Card>
 
           {useOAuth ? (
             oauthFields.map((field) => (
@@ -244,19 +237,14 @@ function NewMcpConnectionView({ client }: { client: VerityClient }) {
 
       {error !== undefined ? <Text style={styles.fieldError}>{error}</Text> : null}
 
-      <Pressable
-        style={({ pressed }) => [
-          styles.primaryButton,
-          busy || incomplete ? styles.buttonDisabled : null,
-          pressed ? styles.pressed : null,
-        ]}
-        onPress={add}
-        disabled={busy || incomplete}
-        accessibilityRole="button"
+      <Button
+        label="Add connection"
         accessibilityLabel="Add MCP connection"
-      >
-        <Text style={styles.primaryButtonLabel}>{busy ? 'Saving…' : 'Add connection'}</Text>
-      </Pressable>
+        loading={busy}
+        disabled={incomplete}
+        onPress={add}
+        fullWidth
+      />
     </SettingsScaffold>
   );
 }

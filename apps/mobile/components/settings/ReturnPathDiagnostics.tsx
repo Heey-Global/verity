@@ -4,10 +4,12 @@ import { useCallback, useRef, useState } from 'react';
 import { Alert, Text, TextInput } from 'react-native';
 import { SettingsNavRow, SettingsPanel } from './SettingsChrome';
 import { settingsStyles as styles } from './settingsStyles';
+import { ConfirmSheet } from '../ui';
 
 export function ReturnPathDiagnostics({ client }: { client: VerityClient }) {
   const [status, setStatus] = useState<ReturnPathStatus | null>(null);
   const [expiry, setExpiry] = useState('');
+  const [confirmingStart, setConfirmingStart] = useState(false);
   const [error, setError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [observedAt, setObservedAt] = useState(0);
@@ -111,16 +113,7 @@ export function ReturnPathDiagnostics({ client }: { client: VerityClient }) {
         icon="play"
         title="Start connection diagnosis"
         disabled={busy || !status || status.enabled}
-        onPress={() =>
-          Alert.alert(
-            'Start connection diagnosis?',
-            `Collect server connection metadata until ${expiry}. Use the same expiry for Uplink.`,
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Start', onPress: () => void change(true) },
-            ],
-          )
-        }
+        onPress={() => setConfirmingStart(true)}
       />
       <SettingsNavRow
         icon="square"
@@ -133,6 +126,17 @@ export function ReturnPathDiagnostics({ client }: { client: VerityClient }) {
         title="Refresh diagnostic status"
         disabled={busy}
         onPress={() => void refresh()}
+      />
+      <ConfirmSheet
+        visible={confirmingStart}
+        title="Start connection diagnosis?"
+        message={`Collect server connection metadata until ${expiry}. Use the same expiry for Uplink.`}
+        confirmLabel="Start"
+        onConfirm={async () => {
+          await change(true);
+          setConfirmingStart(false);
+        }}
+        onCancel={() => setConfirmingStart(false)}
       />
     </SettingsPanel>
   );
