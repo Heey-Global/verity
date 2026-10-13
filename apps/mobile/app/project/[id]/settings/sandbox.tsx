@@ -401,7 +401,6 @@ function SandboxSection({
   const primary = running
     ? {
         label: 'Pause',
-        busyLabel: 'Pausing…',
         run: pause,
         busy: working === 'pause',
         enabled: true,
@@ -409,14 +408,12 @@ function SandboxSection({
     : failed || starting
       ? {
           label: 'Repair',
-          busyLabel: 'Repairing…',
           run: start,
           busy: working === 'start',
           enabled: true,
         }
       : {
           label: 'Start',
-          busyLabel: 'Starting…',
           run: start,
           busy: working === 'start',
           enabled: stopped,

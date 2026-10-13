@@ -296,6 +296,7 @@ export function GithubCommitSetup({
                 <Button
                   label={githubOpened ? 'Open GitHub again' : 'Open GitHub'}
                   accessibilityLabel="Open GitHub signing key settings"
+                  role="link"
                   icon="external-link"
                   variant={copied && !githubOpened ? 'primary' : 'secondary'}
                   size="compact"

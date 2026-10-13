@@ -303,7 +303,8 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
               label="Connect this folder"
               accessibilityLabel={`Connect ${path.at(-1)?.name ?? 'this folder'}`}
               accessibilityHint="Connects read-only. Allow changes later in project settings."
-              loading={importingId !== null}
+              loading={importingId !== null && importingId === path.at(-1)?.id}
+              disabled={importingId !== null}
               onPress={connectCurrentFolder}
               fullWidth
             />
