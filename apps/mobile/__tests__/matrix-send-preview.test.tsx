@@ -15,6 +15,10 @@ it('shows exact account, stable room destination and the complete multiline text
       }}
     />,
   );
+  // A row-oriented Card must contain one bounded column, or approval details overflow.
+  const content = screen.getByTestId('matrix-send-content');
+  expect(content).toHaveStyle({ flex: 1, minWidth: 0, flexDirection: 'column' });
+  expect(content.parent?.children).toHaveLength(1);
   expect(screen.getByText('From: @verity:example.test')).toBeOnTheScreen();
   expect(screen.getByText('!room:example.test')).toBeOnTheScreen();
   expect(screen.getByText(body).props.numberOfLines).toBeUndefined();
