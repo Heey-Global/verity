@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
-import { beforeAll, afterAll, beforeEach, expect, it } from 'vitest';
+import { beforeAll, afterAll, beforeEach, expect, it, vi } from 'vitest';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { createMatrixTool, matrixRequestSchema } from './matrix-tool.js';
 import { registerIntegrationRoutes } from './integrations/routes.js';
@@ -318,4 +318,38 @@ it('never revives queued or leased approval after a session moves away and back 
       eventId: '$accepted-before-revocation',
     }),
   ).toBe(true);
+});
+
+it('preserves revocation committed while a retryable result is validating', async () => {
+  const { call } = await enqueue();
+  const outbound = ctx.store.integrations.outbound;
+  const job = (await outbound.claim(accountId))!;
+  const validate = outbound.validate.bind(outbound);
+  const validation = vi.spyOn(outbound, 'validate').mockImplementationOnce(async (...args) => {
+    await validate(...args);
+    await ctx.db
+      .updateTable('sessions')
+      .set({ project_id: null })
+      .where('session_id', '=', sessionId)
+      .execute();
+    await ctx.db
+      .updateTable('sessions')
+      .set({ project_id: projectId })
+      .where('session_id', '=', sessionId)
+      .execute();
+  });
+  try {
+    expect(
+      await outbound.finish(accountId, job.invocationId, job.leaseId, {
+        error: 'send_failed',
+        retryAfterMs: 30_000,
+      }),
+    ).toBe(true);
+    expect(await outbound.status(projectId, sessionId, call.invocationId)).toMatchObject({
+      state: 'cancelled',
+    });
+    expect(await outbound.claim(accountId)).toBeNull();
+  } finally {
+    validation.mockRestore();
+  }
 });

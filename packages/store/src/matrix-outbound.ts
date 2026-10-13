@@ -338,13 +338,21 @@ export class MatrixOutboundStore {
           : 'failed';
     const update = await this.db
       .updateTable('matrix_outbound')
-      .set({
-        state,
+      .set((eb) => ({
+        // A revocation committed while validation awaited must survive a late failure result.
+        state: result.eventId
+          ? state
+          : eb
+              .case()
+              .when('state', '=', 'cancelled')
+              .then('cancelled' as const)
+              .else(state)
+              .end(),
         event_id: result.eventId ?? null,
         error: result.eventId ? null : (result.error ?? 'Matrix send failed'),
         lease_until: null,
         next_attempt_at: new Date(Date.now() + Math.max(10_000, result.retryAfterMs ?? 0)),
-      })
+      }))
       .where('invocation_id', '=', invocationId)
       .where('lease_id', '=', leaseId)
       .where('state', 'in', ['pending', 'cancelled'])
