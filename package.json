@@ -45,12 +45,12 @@
     "enrollment:schemas": "node scripts/enrollment-proof/export-schemas.ts"
   },
   "devDependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.88.0",
-    "@agentclientprotocol/codex-acp": "2.1.1",
+    "@agentclientprotocol/claude-agent-acp": "0.89.0",
+    "@agentclientprotocol/codex-acp": "2.2.2",
     "@devcontainers/cli": "0.89.0",
     "@eslint/js": "10.0.1",
     "@modelcontextprotocol/sdk": "1.32.1",
-    "@openai/codex": "0.162.0",
+    "@openai/codex": "0.162.1",
     "@types/node": "26.6.5",
     "@types/semver": "7.8.0",
     "@vitest/coverage-v8": "5.0.3",
