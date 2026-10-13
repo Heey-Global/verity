@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Platform, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { SettingsScaffold } from '../../components/settings/SettingsChrome';
+import { Button, Card, Text, TextField, ToggleRow } from '../../components/ui';
 import {
   defaultVoiceVocabulary,
   loadVoiceVocabulary,
@@ -54,73 +56,58 @@ export default function VoiceInputSettings() {
   if (Platform.OS !== 'ios') {
     return (
       <SettingsScaffold title="Voice input" detail state={{ error: undefined, saving: false }}>
-        <Text style={styles.text}>
-          Local vocabulary correction is available for iOS voice input.
-        </Text>
+        <Text tone="muted">Local vocabulary correction is available for iOS voice input.</Text>
       </SettingsScaffold>
     );
   }
   return (
     <SettingsScaffold title="Voice input" detail state={{ error: undefined, saving }}>
-      <View style={styles.content}>
-        <Text style={styles.text}>
-          Words and variants stay on this device and are not synced or sent to telemetry.
-        </Text>
-        <View style={styles.row}>
-          <Text style={styles.text}>Correct finalized dictation</Text>
-          <Switch
-            accessibilityLabel="Correct finalized dictation"
-            value={vocabulary.enabled}
-            disabled={!loaded || saving}
-            onValueChange={(enabled) => setVocabulary({ ...vocabulary, enabled })}
-          />
-        </View>
-        <Text style={styles.text}>
+      <Text tone="muted">
+        Words and variants stay on this device and are not synced or sent to telemetry.
+      </Text>
+      <Card flush>
+        <ToggleRow
+          title="Correct finalized dictation"
+          value={vocabulary.enabled}
+          disabled={!loaded || saving}
+          onValueChange={(enabled) => setVocabulary({ ...vocabulary, enabled })}
+        />
+      </Card>
+      <View style={styles.section}>
+        <TextField
+          label="Vocabulary"
+          accessibilityLabel="Voice vocabulary"
+          value={draft}
+          onChangeText={setDraft}
+          multiline
+          literal
+          disabled={!loaded || saving}
+        />
+        <Text variant="footnote">
           One term per line, up to 100 terms of one or two words. Add explicit variants after a
           vertical bar: GitHub | git hub
         </Text>
-        <TextInput
-          accessibilityLabel="Voice vocabulary"
-          multiline
-          autoCorrect={false}
-          autoCapitalize="none"
-          style={styles.input}
-          value={draft}
-          onChangeText={setDraft}
-          editable={loaded && !saving}
-        />
-        <Text style={styles.text}>
+        <Text variant="footnote">
           Apple SpeechTranscriber currently ignores vocabulary hints. These terms only guide local
           corrections; recognition improvements are not guaranteed.
         </Text>
-        <Pressable
-          accessibilityRole="button"
-          disabled={!loaded || saving}
-          onPress={() => void save()}
-          style={styles.button}
-        >
-          <Text style={styles.text}>{saving ? 'Saving…' : 'Save'}</Text>
-        </Pressable>
-        {message ? (
-          <Text accessibilityRole="alert" style={styles.text}>
-            {message}
-          </Text>
-        ) : null}
       </View>
+      <Button
+        label="Save"
+        loading={saving}
+        disabled={!loaded}
+        onPress={() => void save()}
+        fullWidth
+      />
+      {message ? (
+        <Text variant="subtitle" accessibilityRole="alert">
+          {message}
+        </Text>
+      ) : null}
     </SettingsScaffold>
   );
 }
-const styles = StyleSheet.create({
-  content: { gap: 16 },
-  text: { color: '#eee9f7', fontSize: 15 },
-  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  input: {
-    backgroundColor: '#1b1524',
-    color: '#eee9f7',
-    padding: 12,
-    minHeight: 300,
-    borderRadius: 8,
-    textAlignVertical: 'top',
-  },
-  button: { padding: 14, backgroundColor: '#563477', borderRadius: 8, alignItems: 'center' },
-});
+
+const styles = StyleSheet.create((theme) => ({
+  section: { gap: theme.spacing.sm },
+}));

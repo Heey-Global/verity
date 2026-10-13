@@ -109,7 +109,7 @@ export function ApplyPendingBanner() {
         style={running || saving > 0 ? styles.buttonDisabled : undefined}
       >
         {running ? (
-          <ActivityIndicator size="small" color={theme.colors.primary} />
+          <ActivityIndicator size="small" color={theme.colors.action} />
         ) : (
           <Text style={styles.bannerAction}>{repro.phase === 'done' ? 'Retry' : 'Apply'}</Text>
         )}

@@ -107,7 +107,7 @@ export function SecretStoreSection({ client }: { client: VerityClient }) {
       <View style={styles.sectionHeaderRow}>
         <View style={styles.sectionHeaderLabel}>
           <View style={styles.navRowIcon}>
-            <Icon name="lock" size={18} color={theme.colors.primary} />
+            <Icon name="lock" size={18} color={theme.colors.action} />
           </View>
           <Text style={styles.disclosureTitle}>Secret store</Text>
         </View>
@@ -181,7 +181,7 @@ export function SecretStoreSection({ client }: { client: VerityClient }) {
               accessibilityRole="button"
               accessibilityLabel={mode === 'set' ? 'Set master password' : 'Unlock secret store'}
             >
-              {busy ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
+              {busy ? <ActivityIndicator size="small" color={theme.colors.onAction} /> : null}
               <Text style={styles.primaryButtonLabel}>
                 {mode === 'set' ? 'Set master password' : 'Unlock'}
               </Text>

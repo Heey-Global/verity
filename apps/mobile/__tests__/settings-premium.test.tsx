@@ -1,5 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 jest.mock('../components/premium/Confetti', () => ({ Confetti: () => null }));
@@ -73,19 +72,32 @@ it('does not celebrate a rejected key and keeps replacement available', async ()
 });
 it('confirms revocation before switching Online sharing off', async () => {
   const { update } = clientWithKey(true);
-  const alert = jest.spyOn(Alert, 'alert');
   render(<PremiumScreen />);
   fireEvent.press(await screen.findByLabelText(/^Online sharing(,|$)/));
   expect(update).not.toHaveBeenCalled();
-  expect(alert).toHaveBeenCalledWith(
-    'Turn off Online sharing?',
-    'Active public links will be revoked.',
-    expect.any(Array),
-  );
-  await act(async () => {
-    alert.mock.calls[0]?.[2]?.find((button) => button.text === 'Turn off')?.onPress?.();
-  });
+  expect(screen.getByText('Turn off Online sharing?')).toBeOnTheScreen();
+  expect(screen.getByText('Active public links will be revoked.')).toBeOnTheScreen();
+  fireEvent.press(screen.getByRole('button', { name: 'Turn off' }));
   await waitFor(() => expect(update).toHaveBeenCalledWith({ premiumSharingEnabled: false }));
+});
+
+// Dismissing the question must never be read as consent to revoke links.
+it('keeps Online sharing on when the confirmation is cancelled', async () => {
+  const { update } = clientWithKey(true);
+  render(<PremiumScreen />);
+  fireEvent.press(await screen.findByLabelText(/^Online sharing(,|$)/));
+  fireEvent.press(screen.getByRole('button', { name: 'Cancel' }));
+  await waitFor(() => expect(screen.queryByText('Turn off Online sharing?')).toBeNull());
+  expect(update).not.toHaveBeenCalled();
+});
+
+it('removes the subscription key only after it is confirmed', async () => {
+  const { update } = clientWithKey(true);
+  render(<PremiumScreen />);
+  fireEvent.press(await screen.findByRole('button', { name: 'Remove subscription key' }));
+  expect(update).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByRole('button', { name: 'Remove key' }));
+  await waitFor(() => expect(update).toHaveBeenCalledWith({ uplinkSubscriptionKey: null }));
 });
 it('hides switches for servers that predate feature preferences', async () => {
   const { client } = clientWithKey(true);
@@ -115,12 +127,9 @@ it('allows activation after successfully loading an empty settings record', asyn
 it('retries failed switch writes from the error banner', async () => {
   const { client, update } = clientWithKey(true);
   update.mockRejectedValueOnce(new Error('offline'));
-  const alert = jest.spyOn(Alert, 'alert');
   render(<PremiumScreen />);
   fireEvent.press(await screen.findByLabelText(/^Online sharing(,|$)/));
-  await act(async () => {
-    alert.mock.calls[0]?.[2]?.find((button) => button.text === 'Turn off')?.onPress?.();
-  });
+  fireEvent.press(screen.getByRole('button', { name: 'Turn off' }));
   fireEvent.press(await screen.findByText('Retry'));
   await waitFor(() => expect(update).toHaveBeenCalledTimes(2));
   expect(update).toHaveBeenLastCalledWith({ premiumSharingEnabled: false });

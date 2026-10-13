@@ -414,9 +414,8 @@ export function PublicPreviewDiagnostics({
 const styles = StyleSheet.create((theme) => ({
   section: { gap: theme.spacing.sm },
   footnote: {
+    ...theme.typography.footnote,
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    lineHeight: 17 * theme.fontScale,
     marginHorizontal: 2,
   },
 }));

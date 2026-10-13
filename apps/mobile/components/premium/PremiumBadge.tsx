@@ -6,12 +6,11 @@ export function PremiumBadge() {
 }
 const styles = StyleSheet.create((theme) => ({
   badge: {
-    color: theme.colors.accent,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    ...theme.typography.label,
+    color: theme.colors.signature,
     borderRadius: theme.radius.sm,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.accent,
+    borderColor: theme.colors.signature,
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: theme.spacing.xs,
   },

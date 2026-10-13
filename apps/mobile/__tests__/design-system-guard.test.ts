@@ -35,6 +35,8 @@ type Counts = Partial<Record<Rule, number>>;
 const EXEMPT: Partial<Record<string, Counts>> = {
   // The switch knob is white with dark ink in both themes, not a theme role.
   'components/ui/Toggle.tsx': { rawColor: 2 },
+  // A QR code needs a white quiet zone to stay scannable in either theme.
+  'components/settings/settingsStyles.ts': { rawColor: 1 },
 };
 
 /** Every non-test `.ts`/`.tsx` below `dir`. Throws rather than returning

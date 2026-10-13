@@ -139,7 +139,7 @@ function McpConnectionsView({ client }: { client: VerityClient }) {
       >
         {connections === undefined ? (
           <View style={styles.signingKeyLoadingRow}>
-            <ActivityIndicator size="small" color={theme.colors.setup.text} />
+            <ActivityIndicator size="small" color={theme.colors.text} />
             <Text style={styles.disclosureSummary}>Loading connections…</Text>
           </View>
         ) : null}

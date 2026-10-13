@@ -225,7 +225,7 @@ export function ServerUpdateSection({
   if (status === undefined) {
     return (
       <View style={styles.centered}>
-        <ActivityIndicator color={theme.colors.setup.text} />
+        <ActivityIndicator color={theme.colors.text} />
       </View>
     );
   }
@@ -270,7 +270,7 @@ export function ServerUpdateSection({
         <SettingsPanel>
           {channelNeedsRefresh ? (
             <View style={styles.updateProgressRow}>
-              <ActivityIndicator size="small" color={theme.colors.setup.text} />
+              <ActivityIndicator size="small" color={theme.colors.text} />
               <Text style={styles.updateDetail}>
                 Checking the selected channel… Retrying if the server is unavailable.
               </Text>
@@ -288,7 +288,7 @@ export function ServerUpdateSection({
               <Text style={styles.updateDetail}>{view.detail}</Text>
               {view.progress !== null ? (
                 <View style={styles.updateProgressRow}>
-                  <ActivityIndicator size="small" color={theme.colors.setup.text} />
+                  <ActivityIndicator size="small" color={theme.colors.text} />
                   <Text style={styles.reproStatus} accessibilityLiveRegion="polite">
                     {`Step ${String(view.progress.step)} of ${String(view.progress.total)}`}
                   </Text>
@@ -308,7 +308,7 @@ export function ServerUpdateSection({
                   accessibilityLabel={view.action}
                 >
                   {starting ? (
-                    <ActivityIndicator size="small" color={theme.colors.onPrimary} />
+                    <ActivityIndicator size="small" color={theme.colors.onAction} />
                   ) : null}
                   <Text style={styles.primaryButtonLabel}>
                     {starting ? 'Starting…' : view.action}

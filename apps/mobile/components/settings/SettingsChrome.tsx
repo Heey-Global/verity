@@ -75,7 +75,7 @@ export function SettingsScaffold({
       {state === undefined ? <ApplyPendingBanner /> : null}
       {saving > 0 ? (
         <View style={styles.autoSaveBanner} accessibilityLiveRegion="polite">
-          <ActivityIndicator size="small" color={theme.colors.setup.text} />
+          <ActivityIndicator size="small" color={theme.colors.text} />
           <Text style={styles.autoSaveBannerText}>Saving changes…</Text>
         </View>
       ) : null}
