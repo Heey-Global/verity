@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.69.1](https://github.com/Heey-Global/verity/compare/mobile-v1.69.0...mobile-v1.69.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **web:** support CSS-variable theme colors in tint() ([#1582](https://github.com/Heey-Global/verity/issues/1582)) ([f4a67a5](https://github.com/Heey-Global/verity/commit/f4a67a5a0381175b1771c6a79f907976cabd3202))
+
 ## [1.68.4](https://github.com/Heey-Global/verity/compare/mobile-v1.68.3...mobile-v1.68.4) (2026-10-12)
 
 
