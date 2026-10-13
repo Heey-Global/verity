@@ -1,3 +1,4 @@
+import { exportRuntimeDiagnostics } from './runtimeDiagnostics';
 import { exportSessionSwitchTimings } from '@verity/mobile';
 import { exportGestureDiagnostics } from './gestureDiagnostics';
 import { exportPinnedTransportTimings } from './pinnedTransport';
@@ -80,7 +81,8 @@ export async function shareUpdateDiagnostics(): Promise<void> {
     : [];
   const logs: ReturnType<typeof compactLog>[] = [];
   const report = {
-    schema: 3,
+    schema: 4,
+    runtimeDiagnostics: exportRuntimeDiagnostics(),
     commit: BUILD_COMMIT,
     sessionSwitchTimings: exportSessionSwitchTimings(),
     nativeTransportTimings: exportPinnedTransportTimings(),
@@ -122,6 +124,9 @@ export async function shareUpdateDiagnostics(): Promise<void> {
     } else if (report.gestureDiagnostics.events.length > 0) {
       report.gestureDiagnostics.events.shift();
       report.gestureDiagnostics.dropped++;
+    } else if (report.runtimeDiagnostics.samples.length > 1) {
+      report.runtimeDiagnostics.samples.shift();
+      report.runtimeDiagnostics.dropped++;
     } else if (report.nativeTransportTimings.records.length > 0) {
       report.nativeTransportTimings.records.shift();
       report.nativeTransportTimings.omitted++;

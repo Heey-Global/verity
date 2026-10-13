@@ -1,3 +1,4 @@
+import { startRuntimeDiagnostics, setRuntimeDiagnosticsScreen } from '../lib/runtimeDiagnostics';
 // Root layout mounts the provider stack (gesture handler + safe area) and the themed router
 // Stack. The header colors come from the live theme via useUnistyles; the app is
 // locked to the dark theme (unistyles `initialTheme: 'dark'`, not OS-adaptive).
@@ -63,6 +64,7 @@ installBrowserAlerts();
 const FOREGROUND_UPDATE_POLL_MS = 30_000;
 
 export default function RootLayout() {
+  useEffect(() => startRuntimeDiagnostics(), []);
   const { theme } = useUnistyles();
   const demoRevision = useDemoRevision();
   // Learn the iPad keyboard type app-wide (see hardwareKeyboard.ts) so opening a
@@ -146,6 +148,9 @@ function HydratedRoot() {
   const { theme } = useUnistyles();
   const gate = useOnboardingGate();
   const pathname = usePathname();
+  useEffect(() => {
+    setRuntimeDiagnosticsScreen(pathname);
+  }, [pathname]);
   const params = useGlobalSearchParams<{ id?: string; selected?: string }>();
   const handleSearchShortcut = useCallback(
     (action: 'context' | 'global' | 'close') => {

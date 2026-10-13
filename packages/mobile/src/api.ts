@@ -1,3 +1,4 @@
+import { beginRuntimeApiRequest } from './runtimeDiagnostics.js';
 import {
   recordingCoreRecordSchema,
   recordingUplinkRecordSchema,
@@ -4888,10 +4889,13 @@ export class VerityClient {
       };
     }
     let res: Response;
+    const finishRuntimeRequest = beginRuntimeApiRequest();
     try {
       res = await fetchImpl(`${this.baseUrl}${path}`, init);
+      finishRuntimeRequest(!res.ok);
       markSwitchTransportRequest(diagnosticRequestId, 'fetch-return', res.status);
     } catch (error) {
+      finishRuntimeRequest(true);
       markSwitchTransportRequest(diagnosticRequestId, 'fetch-error');
       throw error;
     }
