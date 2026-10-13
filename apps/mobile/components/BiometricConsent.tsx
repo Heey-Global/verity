@@ -2,7 +2,7 @@
 // freshly minted device token: the master-password step, and the pairing flow
 // that enrolls a second device without ever asking for that password.
 import { Text, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { StyleSheet } from 'react-native-unistyles';
 import { Button } from './ui';
 
 export function BiometricConsent({
