@@ -12,6 +12,7 @@ import {
 import { useFocusEffect } from 'expo-router';
 import {
   KeyboardControllerNative,
+  KeyboardEvents,
   useReanimatedKeyboardAnimation,
 } from 'react-native-keyboard-controller';
 import { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
@@ -71,10 +72,14 @@ export function useSessionKeyboardAvoidance() {
         }),
       );
       // Keep following the controller throughout the closing animation.
-      const hide = Keyboard.addListener('keyboardDidHide', () => {
+      const onHide = () => {
         opening = false;
         setEnabled(false);
-      });
+      };
+      const hide = Keyboard.addListener('keyboardDidHide', onHide);
+      // Clearing/remounting the composer can lose RN's did-hide event. The
+      // controller completes its own dismissal and must release the padding too.
+      const controllerHide = KeyboardEvents.addListener('keyboardDidHide', onHide);
       const appState = AppState.addEventListener('change', (state) => {
         if (state === 'active') {
           opening = false;
@@ -87,6 +92,7 @@ export function useSessionKeyboardAvoidance() {
         transition.cancel();
         show.forEach((listener) => listener.remove());
         hide.remove();
+        controllerHide.remove();
         appState.remove();
         setEnabled(false);
       };
