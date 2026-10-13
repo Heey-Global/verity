@@ -288,3 +288,34 @@ it('rejects account and room tampering without enqueuing', async () => {
   }
   expect(await ctx.store.integrations.outbound.claim(accountId)).toBeNull();
 });
+
+it('never revives queued or leased approval after a session moves away and back offline', async () => {
+  const queued = await enqueue();
+  const leased = await enqueue();
+  const job = (await ctx.store.integrations.outbound.claim(accountId))!;
+  await ctx.db
+    .updateTable('sessions')
+    .set({ project_id: null })
+    .where('session_id', '=', sessionId)
+    .execute();
+  await ctx.db
+    .updateTable('sessions')
+    .set({ project_id: projectId })
+    .where('session_id', '=', sessionId)
+    .execute();
+  expect(await ctx.store.integrations.outbound.claim(accountId)).toBeNull();
+  expect(
+    await ctx.store.integrations.outbound.checkLease(accountId, job.invocationId, job.leaseId),
+  ).toBe(false);
+  for (const call of [queued.call, leased.call]) {
+    expect(
+      await ctx.store.integrations.outbound.status(projectId, sessionId, call.invocationId),
+    ).toMatchObject({ state: 'cancelled' });
+  }
+  // Revocation prevents retries but cannot erase an event accepted by an in-flight send.
+  expect(
+    await ctx.store.integrations.outbound.finish(accountId, job.invocationId, job.leaseId, {
+      eventId: '$accepted-before-revocation',
+    }),
+  ).toBe(true);
+});
