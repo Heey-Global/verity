@@ -99,24 +99,6 @@
     "fontSize": 89,
     "fontWeight": 53
   },
-  "app/settings/live-meeting-stt.tsx": {
-    "rawColor": 10,
-    "fontSize": 5,
-    "fontWeight": 4
-  },
-  "app/settings/premium.tsx": {
-    "rawColor": 2,
-    "legacyColor": 8,
-    "fontSize": 7,
-    "fontWeight": 4
-  },
-  "app/settings/services/mcp/index.tsx": {
-    "legacyColor": 1
-  },
-  "app/settings/voice-input.tsx": {
-    "rawColor": 4,
-    "fontSize": 1
-  },
   "app/unlock-device.tsx": {
     "legacyColor": 1
   },
@@ -322,14 +304,6 @@
     "fontSize": 3,
     "fontWeight": 2
   },
-  "components/premium/Confetti.tsx": {
-    "legacyColor": 2
-  },
-  "components/premium/PremiumBadge.tsx": {
-    "legacyColor": 2,
-    "fontSize": 1,
-    "fontWeight": 1
-  },
   "components/project/ManagedServers.tsx": {
     "legacyColor": 17,
     "fontSize": 17,
@@ -345,37 +319,6 @@
     "legacyColor": 44,
     "fontSize": 28,
     "fontWeight": 20
-  },
-  "components/settings/ApplyPendingBanner.tsx": {
-    "legacyColor": 1
-  },
-  "components/settings/ProviderUsagePanel.tsx": {
-    "legacyColor": 6,
-    "fontSize": 4,
-    "fontWeight": 2
-  },
-  "components/settings/PublicPreviewDiagnostics.tsx": {
-    "fontSize": 1
-  },
-  "components/settings/SecretStoreSection.tsx": {
-    "legacyColor": 2
-  },
-  "components/settings/ServerReleaseNotes.tsx": {
-    "legacyColor": 1
-  },
-  "components/settings/ServerUpdateSection.tsx": {
-    "legacyColor": 4
-  },
-  "components/settings/SettingsChrome.tsx": {
-    "legacyColor": 1
-  },
-  "components/settings/SettingsDisclosure.tsx": {
-    "legacyColor": 2
-  },
-  "components/settings/settingsStyles.ts": {
-    "rawColor": 3,
-    "legacyColor": 57,
-    "fontSize": 44
   },
   "components/ui/Button.tsx": {
     "fontSize": 1

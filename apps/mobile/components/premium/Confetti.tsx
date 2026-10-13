@@ -58,7 +58,7 @@ export function Confetti() {
           key={index}
           index={index}
           width={width}
-          color={index % 2 ? theme.colors.primary : theme.colors.accent}
+          color={index % 2 ? theme.colors.action : theme.colors.signature}
         />
       ))}
     </View>

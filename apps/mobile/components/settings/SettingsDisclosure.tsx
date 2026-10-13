@@ -43,7 +43,7 @@ export function SettingsDisclosure({
         {icon || leadingIcon ? (
           <View style={styles.navRowIcon}>
             {leadingIcon ??
-              (icon ? <Icon name={icon} size={18} color={theme.colors.primary} /> : null)}
+              (icon ? <Icon name={icon} size={18} color={theme.colors.action} /> : null)}
           </View>
         ) : null}
         <View style={styles.navRowBody}>
@@ -53,7 +53,7 @@ export function SettingsDisclosure({
         <Icon
           name={open ? 'chevron-down' : 'chevron-right'}
           size={18}
-          color={theme.colors.primary}
+          color={theme.colors.action}
         />
       </Pressable>
       <View

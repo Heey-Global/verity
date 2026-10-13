@@ -2,7 +2,7 @@ import { secretWritable, type UplinkDiagnostics, type VerityClient } from '@veri
 import * as Haptics from 'expo-haptics';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Platform, Pressable, Text, View } from 'react-native';
+import { Platform, Pressable, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon } from '../../components/Icon';
 import { Toggle } from '../../components/Toggle';
@@ -21,6 +21,8 @@ import {
   premiumChromeStyles as chrome,
 } from '../../components/premium/PremiumChrome';
 import { premiumFeatures } from '../../components/premium/premiumFeatures';
+import { Button, ConfirmSheet } from '../../components/ui';
+import { tint } from '../../components/ui/tint';
 import {
   SettingsListPanel,
   SettingsMessage,
@@ -50,6 +52,15 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
   const [status, setStatus] = useState<UplinkDiagnostics | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [rejection, setRejection] = useState<{ tag: string; sentence: string } | null>(null);
+  const [confirming, setConfirming] = useState<
+    'premiumSharingEnabled' | 'premiumRemoteAccessEnabled' | 'remove' | null
+  >(null);
+  // The sheet fades out after it closes; its wording stays until it is gone.
+  const [asking, setAsking] = useState<NonNullable<typeof confirming>>('remove');
+  const ask = (kind: NonNullable<typeof confirming>) => {
+    setAsking(kind);
+    setConfirming(kind);
+  };
   const generation = useRef(0);
   const mounted = useRef(true);
   useEffect(() => {
@@ -134,46 +145,26 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
     settingsKey: 'premiumSharingEnabled' | 'premiumRemoteAccessEnabled',
     enabled: boolean,
   ) => {
-    const save = () => {
-      void saveVeritySettings(client, { [settingsKey]: enabled }).then(() => refresh());
-    };
-    if (!enabled) {
-      Alert.alert(
-        settingsKey === 'premiumSharingEnabled'
-          ? 'Turn off Online sharing?'
-          : 'Turn off Remote access?',
-        settingsKey === 'premiumSharingEnabled'
-          ? 'Active public links will be revoked.'
-          : 'Open remote connections will end. Reconnect through your local network or VPN to manage this server.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Turn off', style: 'destructive', onPress: save },
-        ],
-      );
-    } else save();
+    // Turning a feature off ends what it is doing, so it is confirmed first.
+    if (!enabled) ask(settingsKey);
+    else void saveVeritySettings(client, { [settingsKey]: enabled }).then(() => refresh());
   };
-  const remove = () =>
-    Alert.alert(
-      'Remove subscription key?',
-      'Online sharing and Remote access will stop. Active public links will be revoked.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: () => {
-            void saveVeritySettings(client, { uplinkSubscriptionKey: null }).then((result) => {
-              if (result === 'saved' && mounted.current) {
-                setMode('default');
-                setStatus(null);
-                setMessage(null);
-                setKey('');
-              }
-            });
-          },
-        },
-      ],
-    );
+  const confirmChange = async () => {
+    if (confirming === 'remove') {
+      const result = await saveVeritySettings(client, { uplinkSubscriptionKey: null });
+      if (result === 'saved' && mounted.current) {
+        setMode('default');
+        setStatus(null);
+        setMessage(null);
+        setKey('');
+      }
+    } else if (confirming !== null) {
+      await saveVeritySettings(client, { [confirming]: false });
+      void refresh();
+    }
+    // A failed write is reported by the screen's error banner, which offers Retry.
+    if (mounted.current) setConfirming(null);
+  };
   const manage = configured && mode === 'default';
   if (settings === null && (loading || failed))
     return (
@@ -270,7 +261,7 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
           <Confetti />
           <View style={styles.hero}>
             <View style={styles.check}>
-              <Icon name="check" size={40} color={theme.colors.accent} />
+              <Icon name="check" size={40} color={theme.colors.signature} />
             </View>
             <Text style={styles.heroTitle}>Premium is active</Text>
             <Text style={styles.heroLead}>
@@ -316,18 +307,19 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
                 'From your Verity account. Stored encrypted on your server, never shown again.'}
             </Text>
           ) : null}
-          <Pressable
-            accessibilityRole="button"
-            disabled={checking}
-            onPress={() => {
-              setMode('default');
-              setKey('');
-              setMessage(null);
-              setRejection(null);
-            }}
-          >
-            <Text style={styles.link}>Cancel</Text>
-          </Pressable>
+          <View style={styles.inline}>
+            <Button
+              label="Cancel"
+              variant="text"
+              disabled={checking}
+              onPress={() => {
+                setMode('default');
+                setKey('');
+                setMessage(null);
+                setRejection(null);
+              }}
+            />
+          </View>
         </View>
       ) : !configured ? (
         <>
@@ -421,9 +413,14 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
               <Icon name="chevron-right" size={16} color={theme.colors.textMuted} />
             </PremiumCard>
           </View>
-          <Pressable accessibilityRole="button" disabled={busy} onPress={remove}>
-            <Text style={styles.danger}>Remove subscription key</Text>
-          </Pressable>
+          <View style={styles.inline}>
+            <Button
+              label="Remove subscription key"
+              variant="text"
+              disabled={busy}
+              onPress={() => ask('remove')}
+            />
+          </View>
         </>
       )}
       {!writable && secretStatus !== undefined ? (
@@ -435,6 +432,27 @@ export function PremiumSettings({ client }: { client: VerityClient }) {
           />
         </SettingsListPanel>
       ) : null}
+      <ConfirmSheet
+        visible={confirming !== null}
+        title={
+          asking === 'remove'
+            ? 'Remove subscription key?'
+            : asking === 'premiumSharingEnabled'
+              ? 'Turn off Online sharing?'
+              : 'Turn off Remote access?'
+        }
+        message={
+          asking === 'remove'
+            ? 'Online sharing and Remote access will stop. Active public links will be revoked.'
+            : asking === 'premiumSharingEnabled'
+              ? 'Active public links will be revoked.'
+              : 'Open remote connections will end. Reconnect through your local network or VPN to manage this server.'
+        }
+        confirmLabel={asking === 'remove' ? 'Remove key' : 'Turn off'}
+        destructive
+        onConfirm={confirmChange}
+        onCancel={() => setConfirming(null)}
+      />
     </SettingsScaffold>
   );
 }
@@ -494,30 +512,13 @@ function featureSummary(status: UplinkDiagnostics | null): string {
 const styles = StyleSheet.create((theme) => ({
   stack: { gap: theme.spacing.sm },
   intro: { gap: theme.spacing.sm, paddingTop: theme.spacing.md },
-  headline: {
-    color: theme.colors.text,
-    fontSize: theme.text.xl,
-    fontWeight: '700',
-    lineHeight: 32 * theme.fontScale,
-  },
-  accent: { color: theme.colors.accent },
-  lead: {
-    color: theme.colors.textMuted,
-    fontSize: 15 * theme.fontScale,
-    lineHeight: 22 * theme.fontScale,
-  },
-  error: { color: theme.colors.tone.danger },
-  help: {
-    color: theme.colors.textMuted,
-    fontSize: 13.5 * theme.fontScale,
-    lineHeight: 19 * theme.fontScale,
-  },
-  link: {
-    color: theme.colors.primary,
-    fontSize: 15 * theme.fontScale,
-    fontWeight: '600',
-    paddingVertical: 6,
-  },
+  headline: { ...theme.typography.display, color: theme.colors.text },
+  accent: { color: theme.colors.signature },
+  lead: { ...theme.typography.body, color: theme.colors.textMuted },
+  error: { color: theme.colors.attention },
+  help: { ...theme.typography.subtitle, color: theme.colors.textMuted },
+  // A text button keeps the width of its label instead of spanning the column.
+  inline: { flexDirection: 'row' },
   hero: {
     alignItems: 'center',
     gap: 10,
@@ -531,24 +532,13 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: `${theme.colors.accent}80`,
-    backgroundColor: `${theme.colors.accent}24`,
-    shadowColor: theme.colors.accent,
+    borderColor: tint(theme.colors.signature, 'border'),
+    backgroundColor: tint(theme.colors.signature, 'fill'),
+    shadowColor: theme.colors.signature,
     shadowOpacity: 0.35,
     shadowRadius: 25,
     shadowOffset: { width: 0, height: 0 },
   },
-  heroTitle: { color: theme.colors.text, fontSize: 26 * theme.fontScale, fontWeight: '700' },
-  heroLead: {
-    color: theme.colors.textMuted,
-    fontSize: 15 * theme.fontScale,
-    lineHeight: 22 * theme.fontScale,
-    textAlign: 'center',
-  },
-  danger: {
-    color: theme.colors.tone.danger,
-    fontSize: 15 * theme.fontScale,
-    fontWeight: '600',
-    paddingVertical: theme.spacing.md,
-  },
+  heroTitle: { ...theme.typography.display, color: theme.colors.text },
+  heroLead: { ...theme.typography.body, color: theme.colors.textMuted, textAlign: 'center' },
 }));
