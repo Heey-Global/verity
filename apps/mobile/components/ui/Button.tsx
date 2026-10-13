@@ -25,6 +25,7 @@ export function Button({
   disabled = false,
   fullWidth = false,
   accessibilityLabel,
+  accessibilityHint,
 }: {
   /** A verb: "Activate", "Copy", "Remove key". */
   label: string;
@@ -36,6 +37,8 @@ export function Button({
   disabled?: boolean;
   fullWidth?: boolean;
   accessibilityLabel?: string;
+  /** What happens when the label alone does not say it ("the starter keeps preparing"). */
+  accessibilityHint?: string;
 }) {
   const { theme } = useUnistyles();
   const locked = disabled || loading;
@@ -53,6 +56,7 @@ export function Button({
       disabled={locked}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? label}
+      accessibilityHint={accessibilityHint}
       accessibilityState={{ disabled: locked, busy: loading }}
       style={({ pressed }) => [
         styles.base,

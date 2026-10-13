@@ -13,7 +13,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Updates from 'expo-updates';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native';
+import { Modal, Platform, Text, TextInput, View } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -24,6 +24,7 @@ import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
 import { parsePairingUri, type VerityPairingPayload } from '../../lib/pairing';
 import { establishPairing, verifyAndSaveDirectEndpoint } from '../../lib/pairingSession';
 import { describeBuild, runningReleaseVersion } from '../../lib/buildInfo';
+import { Button } from '../../components/ui';
 
 function onboardingRoute(status: OnboardingStatus): string {
   return isCoreOnboardingComplete(status) ? '/' : `/onboarding/${resumeStep(status)}`;
@@ -285,18 +286,18 @@ export default function OnboardingServerUrl() {
                 <Text style={styles.command} selectable>
                   curl -fsSL https://verity.build/install.sh | bash
                 </Text>
-                <Pressable
-                  style={({ pressed }) => [styles.copyButton, pressed ? styles.pressed : null]}
+                <Button
+                  label={copied ? 'Copied' : 'Copy'}
+                  accessibilityLabel="Copy install command"
+                  icon={copied ? 'check' : 'copy'}
+                  variant="secondary"
+                  size="compact"
                   onPress={() =>
                     void Clipboard.setStringAsync(
                       'curl -fsSL https://verity.build/install.sh | bash',
                     ).then(() => setCopied(true))
                   }
-                  accessibilityRole="button"
-                  accessibilityLabel="Copy install command"
-                >
-                  <Text style={styles.copyButtonLabel}>{copied ? 'Copied' : 'Copy'}</Text>
-                </Pressable>
+                />
               </View>
               <Text style={styles.hint}>
                 The installer finishes by showing a QR code and a copyable pairing code.
@@ -317,15 +318,17 @@ export default function OnboardingServerUrl() {
                   </Text>
                   {test.technicalDetails ? (
                     <>
-                      <Pressable
-                        onPress={() => setDetailsVisible((visible) => !visible)}
-                        accessibilityRole="button"
-                        accessibilityLabel="Toggle technical pairing details"
-                      >
-                        <Text style={styles.diagnosticToggle}>
-                          {detailsVisible ? 'Hide technical details' : 'Show technical details'}
-                        </Text>
-                      </Pressable>
+                      <View style={styles.inline}>
+                        <Button
+                          label={
+                            detailsVisible ? 'Hide technical details' : 'Show technical details'
+                          }
+                          accessibilityLabel="Toggle technical pairing details"
+                          variant="text"
+                          size="compact"
+                          onPress={() => setDetailsVisible((visible) => !visible)}
+                        />
+                      </View>
                       {detailsVisible ? (
                         <Text selectable style={styles.diagnosticDetails}>
                           {test.technicalDetails}
@@ -336,31 +339,20 @@ export default function OnboardingServerUrl() {
                 </>
               ) : null}
 
-              <Pressable
-                style={({ pressed }) => [
-                  styles.primaryButton,
-                  testing ? styles.buttonDisabled : null,
-                  pressed ? styles.pressed : null,
-                ]}
+              <Button
+                label="Scan QR code"
+                icon="maximize"
+                loading={testing}
                 onPress={openScanner}
-                disabled={testing}
-                accessibilityRole="button"
-                accessibilityLabel="Scan QR code"
-              >
-                {testing ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
-                <Text style={styles.primaryButtonLabel}>
-                  {testing ? 'Connecting…' : 'Scan QR code'}
-                </Text>
-              </Pressable>
+                fullWidth
+              />
 
-              <Pressable
-                style={({ pressed }) => [styles.cancel, pressed ? styles.pressed : null]}
-                onPress={pastePairingCode}
-                accessibilityRole="button"
+              <Button
+                label="Paste pairing code instead"
                 accessibilityLabel="Paste pairing code"
-              >
-                <Text style={styles.cancelLabel}>Paste pairing code instead</Text>
-              </Pressable>
+                variant="text"
+                onPress={pastePairingCode}
+              />
             </View>
           </>
         ) : (
@@ -401,31 +393,15 @@ export default function OnboardingServerUrl() {
                 </Text>
               ) : null}
 
-              <Pressable
-                style={({ pressed }) => [
-                  styles.primaryButton,
-                  !canSubmit ? styles.buttonDisabled : null,
-                  pressed ? styles.pressed : null,
-                ]}
-                onPress={runTest}
+              <Button
+                label="Test connection"
+                loading={testing}
                 disabled={!canSubmit}
-                accessibilityRole="button"
-                accessibilityLabel="Test connection"
-              >
-                {testing ? <ActivityIndicator size="small" color={theme.colors.onPrimary} /> : null}
-                <Text style={styles.primaryButtonLabel}>
-                  {testing ? 'Connecting…' : 'Test connection'}
-                </Text>
-              </Pressable>
+                onPress={runTest}
+                fullWidth
+              />
 
-              <Pressable
-                style={({ pressed }) => [styles.cancel, pressed ? styles.pressed : null]}
-                onPress={() => router.back()}
-                accessibilityRole="button"
-                accessibilityLabel="Cancel"
-              >
-                <Text style={styles.cancelLabel}>Cancel</Text>
-              </Pressable>
+              <Button label="Cancel" variant="text" onPress={() => router.back()} />
             </>
           </View>
         )}
@@ -454,13 +430,7 @@ export default function OnboardingServerUrl() {
           <View style={styles.scannerOverlay} pointerEvents="box-none">
             <Text style={styles.scannerTitle}>Scan the code shown by verity-install</Text>
             <View style={styles.scannerFrame} />
-            <Pressable
-              style={({ pressed }) => [styles.cancelScanner, pressed ? styles.pressed : null]}
-              onPress={() => setScannerOpen(false)}
-              accessibilityRole="button"
-            >
-              <Text style={styles.primaryButtonLabel}>Cancel</Text>
-            </Pressable>
+            <Button label="Cancel" variant="secondary" onPress={() => setScannerOpen(false)} />
           </View>
         </View>
       </Modal>
@@ -484,58 +454,39 @@ const styles = StyleSheet.create((theme) => ({
     paddingBottom: 160,
   },
   eyebrow: {
-    color: theme.colors.setup.text,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
-    textTransform: 'uppercase',
+    ...theme.typography.label,
+    color: theme.colors.text,
   },
   title: {
+    ...theme.typography.display,
     color: theme.colors.text,
-    fontSize: theme.text.xl,
-    fontWeight: '600',
   },
   lead: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.md,
-    lineHeight: 22 * theme.fontScale,
+    ...theme.typography.body,
+    color: theme.colors.textMuted,
   },
   card: {
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.setup.border,
+    borderTopColor: theme.colors.border,
   },
   infoCard: {
-    backgroundColor: theme.colors.setup.surfaceAlt,
+    backgroundColor: theme.colors.surfaceAlt,
   },
   actionCard: {
-    borderColor: theme.colors.setup.border,
+    borderColor: theme.colors.border,
   },
   stepLabel: {
-    color: theme.colors.setup.text,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
-    textTransform: 'uppercase',
+    ...theme.typography.label,
+    color: theme.colors.text,
   },
   cardTitle: {
+    ...theme.typography.title,
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '600',
   },
-  scanButton: {
-    minHeight: 44,
-    borderRadius: theme.radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.text,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.md,
-  },
-  scanButtonLabel: {
-    color: theme.colors.setup.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
-  },
+  // A text button keeps the width of its label instead of spanning the column.
+  inline: { flexDirection: 'row' },
   scannerRoot: { flex: 1, backgroundColor: '#000' },
   scannerCamera: { flex: 1 },
   scannerOverlay: {
@@ -546,9 +497,8 @@ const styles = StyleSheet.create((theme) => ({
     paddingBottom: 56,
   },
   scannerTitle: {
+    ...theme.typography.row,
     color: '#fff',
-    fontSize: theme.text.md,
-    fontWeight: '600',
     backgroundColor: 'rgba(0,0,0,0.65)',
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
@@ -558,16 +508,8 @@ const styles = StyleSheet.create((theme) => ({
     width: 260,
     height: 260,
     borderWidth: 3,
-    borderColor: theme.colors.setup.text,
+    borderColor: theme.colors.text,
     borderRadius: theme.radius.lg,
-  },
-  cancelScanner: {
-    minWidth: 160,
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
   },
   field: {
     gap: theme.spacing.xs,
@@ -580,96 +522,45 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.md,
     backgroundColor: theme.colors.background,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
+    borderColor: theme.colors.border,
   },
   command: {
+    ...theme.typography.code,
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    lineHeight: 20 * theme.fontScale,
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace' }),
-  },
-  copyButton: {
-    minHeight: 44,
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.md,
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.setup.surfaceAlt,
-  },
-  copyButtonLabel: {
-    color: theme.colors.setup.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
   },
   hint: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
+    ...theme.typography.subtitle,
+    color: theme.colors.textMuted,
   },
   label: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.textMuted,
   },
   input: {
+    fontFamily: theme.typography.body.fontFamily,
+    fontSize: theme.typography.body.fontSize,
     minHeight: 44,
     color: theme.colors.text,
-    fontSize: theme.text.md,
     paddingHorizontal: theme.spacing.md,
     borderRadius: theme.radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.setup.border,
+    borderColor: theme.colors.border,
     backgroundColor: theme.colors.background,
   },
   error: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
-  },
-  diagnosticToggle: {
-    color: theme.colors.setup.text,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
-    textDecorationLine: 'underline',
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.attention,
   },
   diagnosticDetails: {
-    color: theme.colors.setup.textMuted,
-    fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
-    fontSize: 11,
-    lineHeight: 16,
+    ...theme.typography.code,
+    color: theme.colors.textMuted,
   },
   connected: {
-    color: theme.colors.tone.done,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
-  },
-  primaryButton: {
-    minHeight: 44,
-    flexDirection: 'row',
-    gap: theme.spacing.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.xl,
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.primary,
-  },
-  buttonDisabled: {
-    opacity: 0.5,
-  },
-  primaryButtonLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.md,
-    fontWeight: '600',
-  },
-  cancel: {
-    alignItems: 'center',
-    paddingVertical: theme.spacing.sm,
-  },
-  cancelLabel: {
-    color: theme.colors.setup.textMuted,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
-  },
-  pressed: {
-    opacity: 0.62,
+    ...theme.typography.body,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.success,
   },
 }));
