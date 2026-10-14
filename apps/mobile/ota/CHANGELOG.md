@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.72.1](https://github.com/Heey-Global/verity/compare/mobile-v1.72.0...mobile-v1.72.1) (2026-10-14)
+
+
+### Features
+
+* **diagnostics:** verify versioned socket evidence exports ([#1634](https://github.com/Heey-Global/verity/issues/1634)) ([77d5f7a](https://github.com/Heey-Global/verity/commit/77d5f7a04aaede29450da93b9a9ed4b14c3ef109))
+
 ## [1.69.1](https://github.com/Heey-Global/verity/compare/mobile-v1.69.0...mobile-v1.69.1) (2026-10-13)
 
 
