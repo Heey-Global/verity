@@ -9,9 +9,10 @@
 // nested object which could silently start exporting addresses or payloads.
 /** @param {string} line @returns {StallReceipt | null} */
 export function parseStallReceipt(line) {
-  if (!line.startsWith('probe-stall-failure:') || line.length > 4096) return null;
+  const prefix = /^probe-(stall|warmup)-failure:/u.exec(line);
+  if (!prefix || line.length > 4096) return null;
   try {
-    const value = JSON.parse(line.slice('probe-stall-failure:'.length));
+    const value = JSON.parse(line.slice(prefix[0].length));
     /** @param {unknown} object @param {string[]} allowed */
     const keys = (object, allowed) =>
       object !== null &&
@@ -44,6 +45,11 @@ export function parseStallReceipt(line) {
       !['NO_AUTH_CHALLENGE', 'AUTH_CHALLENGE_RECEIVED', 'PIN_AND_CHAIN_TRUST_ACCEPTED'].includes(
         value.phase,
       )
+    )
+      return null;
+    if (
+      prefix[1] === 'warmup' &&
+      (value.worker !== 0 || value.ownRequests > 2 || value.totalRequests !== value.ownRequests)
     )
       return null;
     const d = value.diagnostic;

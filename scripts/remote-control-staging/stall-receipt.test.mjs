@@ -108,3 +108,21 @@ test('HTTP failure retains an absent native error code instead of inventing zero
   assert.deepEqual(parse(value), value);
   assert.equal(parse({ ...value, kind: 'transport' }), null);
 });
+
+test('warmup uses the same privacy bounds with exactly three sequential attempts', () => {
+  /** @param {unknown} value */
+  const warmup = (value) => parseStallReceipt(`probe-warmup-failure:${JSON.stringify(value)}`);
+  for (const ownRequests of [0, 1, 2]) {
+    const value = { ...stallFixture(), worker: 0, ownRequests, totalRequests: ownRequests };
+    assert.deepEqual(warmup(value), value);
+    for (const changed of [
+      { ...value, worker: 1 },
+      { ...value, ownRequests: 3, totalRequests: 3 },
+      { ...value, totalRequests: ownRequests + 1 },
+      { ...value, ticket: 'secret' },
+      { ...value, diagnostic: { ...value.diagnostic, url: 'https://private.invalid' } },
+    ])
+      assert.equal(warmup(changed), null);
+  }
+  assert.equal(parseStallReceipt('probe-warmup-failure:' + 'x'.repeat(4096)), null);
+});

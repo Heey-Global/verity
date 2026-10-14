@@ -339,3 +339,10 @@ The existing Apple fixture checks request attribution and callback delivery for
 healthy, absent and partial responses on HTTP/1.1 and HTTP/2. The Writer harness
 also requires disabling its send-start observation to break the diagnostic
 assertions. These are synthetic checks; no live failure cause follows from them.
+
+The three pre-soak HTTPS warmup requests use the same bounded snapshot. A
+`warmup_failed` receipt reports `warmup.requestNumber` (1–3) and `failureKind`,
+with `soak: null`; subsequent cleanup cannot replace it. Each warmup request has
+its own task delegate while the URLSession and connection reuse remain intact.
+This includes transport failures before the first authentication challenge and
+non-200 HTTP responses. A missing request/stream mapping remains unknown.
