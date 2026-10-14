@@ -19,7 +19,7 @@ needle = '      let predecessor = previous\n'
 assert writer.count(needle) == 1
 writer = writer.replace('actor Writer {', 'actor Writer {\n    var queuedForTest = 0', 1)
 writer = writer.replace(needle, '      queuedForTest += 1\n' + needle, 1)
-prefix = 'import Foundation\nenum RemoteSmokeError: Error { case limitReached }\n'
+prefix = 'import Foundation\nenum RemoteSmokeError: Error { case limitReached, sendStalled }\n'
 Path(sys.argv[2], 'Writer.swift').write_text(prefix + writer)
 mutation = '        if let predecessor { try await predecessor.value }\n'
 assert writer.count(mutation) == 1

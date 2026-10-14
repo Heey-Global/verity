@@ -9,9 +9,22 @@ import Network
 // the Core certificate after the tunnel has forwarded the encrypted bytes.
 @available(iOS 17.0, macOS 14.0, *)
 final class RemoteAppTunnel: @unchecked Sendable {
+  // Every frame of the attachment goes out through here, one after another. A
+  // send that never completes would otherwise hold every later frame of every
+  // stream for good while the heartbeat, which bypasses this queue, keeps the
+  // socket looking alive: the attachment then goes silent in one direction
+  // with its pongs still arriving. Each send is bounded instead, and a send
+  // that misses its deadline or fails ends the attachment, which the app
+  // replaces.
   private actor Writer {
+    static let sendDeadlineSeconds: UInt64 = 15
     private let socket: URLSessionWebSocketTask
     private var previous: Task<Void, Error>?
+    private var onFailure: (@Sendable (_ stalled: Bool) -> Void)?
+
+    func setOnFailure(_ handler: @escaping @Sendable (_ stalled: Bool) -> Void) {
+      onFailure = handler
+    }
 #if VERITY_STALL_DIAGNOSTICS
     var stallDiagnostics: StallDiagnostics?
     func setStallDiagnostics(_ value: StallDiagnostics) { stallDiagnostics = value }
@@ -37,13 +50,37 @@ final class RemoteAppTunnel: @unchecked Sendable {
 #if VERITY_STALL_DIAGNOSTICS
         diagnostics?.started(token)
 #endif
-        try await socket.send(.string(text))
+        try await Self.bounded(seconds: Self.sendDeadlineSeconds) { try await socket.send(.string(text)) }
 #if VERITY_STALL_DIAGNOSTICS
         failed = false
 #endif
       }
       previous = task
-      try await task.value
+      do {
+        try await task.value
+      } catch {
+        // A predecessor's failure surfaces here too; the first one ends the
+        // attachment and the rest find it stopped.
+        onFailure?(Self.isStall(error))
+        throw error
+      }
+    }
+
+    static func isStall(_ error: Error) -> Bool {
+      if case RemoteSmokeError.sendStalled = error { return true }
+      return false
+    }
+
+    private static func bounded(seconds: UInt64, _ body: @escaping @Sendable () async throws -> Void) async throws {
+      try await withThrowingTaskGroup(of: Void.self) { group in
+        group.addTask { try await body() }
+        group.addTask {
+          try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+          throw RemoteSmokeError.sendStalled
+        }
+        defer { group.cancelAll() }
+        try await group.next()
+      }
     }
   }
 
@@ -273,6 +310,17 @@ final class RemoteAppTunnel: @unchecked Sendable {
     socket = outer.webSocketTask(with: dataURL)
     socket.maximumMessageSize = 96 * 1024
     writer = Writer(socket)
+    let writer = self.writer
+    Task { [weak self] in
+      await writer.setOnFailure { [weak self] stalled in
+        guard let self else { return }
+        if stalled {
+          self.stop(reason: "stall: send unanswered within \(Writer.sendDeadlineSeconds) s", cause: .sendStall)
+        } else {
+          self.stop(reason: "send failed", cause: .sendFailure)
+        }
+      }
+    }
   }
 
   func start(ticket: String, sessionId: String) async throws -> Int {
@@ -731,9 +779,12 @@ final class RemoteAppTunnel: @unchecked Sendable {
     if alreadyDone { task.cancel() }
   }
 
+  // Drops at once; the frame goes out behind the queue without the caller
+  // waiting on it, so the reader never blocks on a send.
   private func reset(_ id: String, code: String) async {
     guard drop(id, reason: "local_reset_\(code)") else { return }
-    try? await writer.send(["type": "stream.reset", "streamId": id, "code": code])
+    let writer = self.writer
+    Task { try? await writer.send(["type": "stream.reset", "streamId": id, "code": code]) }
   }
 
   private func accept(_ connection: NWConnection) async {
@@ -910,22 +961,24 @@ final class RemoteAppTunnel: @unchecked Sendable {
         finish(id, stream)
         return
       }
-      lock.withLock {
+      let first = lock.withLock { () -> Bool in
         if stream.sentBytes == 0 {
           dataDiagnostics.record(.streamSendRequested, streamId: id)
+          return true
         }
+        return false
       }
+      // Armed before the send, not after: a first send that never completes
+      // is exactly the case the watch exists for.
+      if first { armStallWatch(stream, id: id) }
       try await writer.send(["type": "stream.data", "streamId": id,
         "seq": stream.outgoingSequence, "payload": bytes.base64EncodedString()])
-      let first = lock.withLock { () -> Bool in
-        let first = stream.sentBytes == 0
+      lock.withLock {
         stream.noteRecord(bytes, incoming: false)
         stream.sentBytes += bytes.count
         sentBytes += bytes.count
         if first { logStream(id, stream, event: "first_local_data_sent") }
-        return first
       }
-      if first { armStallWatch(stream, id: id) }
       lock.withLock {
         stream.outgoingSequence += 1
         retainDiagnosticStream(stream)
