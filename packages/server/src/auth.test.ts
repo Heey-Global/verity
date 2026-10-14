@@ -253,7 +253,7 @@ describe('paired device management', () => {
     try {
       for (const op of operations) expect((await app.inject(op)).statusCode).toBe(401);
       expect((await app.inject({ ...operations[0], headers })).json().phase).toBe('recording');
-      expect(startRecording).toHaveBeenLastCalledWith(runId, 120000, undefined);
+      expect(startRecording).toHaveBeenLastCalledWith(runId, 120000, undefined, undefined);
       expect(
         (await app.inject({ ...operations[0], headers, payload: { runId, durationMs: 120001 } }))
           .statusCode,
@@ -275,7 +275,7 @@ describe('paired device management', () => {
           })
         ).json().phase,
       ).toBe('recording');
-      expect(startRecording).toHaveBeenLastCalledWith(v2Id, 120000, 2);
+      expect(startRecording).toHaveBeenLastCalledWith(v2Id, 120000, 2, undefined);
       await registry.revoke(device.id);
       expect((await app.inject({ ...operations[3], headers })).statusCode).toBe(401);
     } finally {

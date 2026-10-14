@@ -1,15 +1,30 @@
+import { createHash } from 'node:crypto';
+import { selectedEvidenceMetadataSchema, type SelectedEvidenceMetadata } from '@verity/events';
 import { performance } from 'node:perf_hooks';
 import { coreRecordingSummary } from './coordinated-recording-schema.js';
 import type { ReturnPathActivation } from './remote-return-path-activation.js';
 
 export interface RecordingUplinkAdapter {
-  start(runId: string, durationMs: number, diagnosticsVersion?: 1 | 2): Promise<void>;
+  start(
+    runId: string,
+    durationMs: number,
+    diagnosticsVersion?: 1 | 2 | 3,
+    targetSessionId?: string,
+  ): Promise<void>;
+  status?(runId: string): Promise<
+    | {
+        state: 'preparing' | 'recording' | 'stopped' | 'expired';
+        stopReason?: string | null;
+      }
+    | SelectedEvidenceMetadata
+  >;
   stop(runId: string): Promise<void>;
   /** The adapter must validate and allowlist metadata before returning it. */
   export(runId: string): Promise<unknown>;
 }
 export interface CoordinatedRecordingStatus {
   version: 1;
+  evidence?: SelectedEvidenceMetadata;
   runId: string;
   phase: 'starting' | 'recording' | 'stopped' | 'expired' | 'failed';
   startedAt: string;
@@ -27,7 +42,9 @@ export interface CoordinatedRecordingStatus {
 type Run = {
   status: CoordinatedRecordingStatus;
   durationMs: number;
-  diagnosticsVersion: 1 | 2;
+  diagnosticsVersion: 1 | 2 | 3;
+  targetSessionId: string | undefined;
+  targetSession: string | undefined;
   deadline: number;
   retainUntil: number;
   records: unknown[];
@@ -76,6 +93,8 @@ export class CoordinatedRecordingManager {
         this.finishing = false;
       }
     }
+    if (run.status.evidence && ['preparing', 'recording'].includes(run.status.evidence.state))
+      delete run.status.evidence;
     run.status.phase = phase;
     run.status.core.state = 'stopped';
   }
@@ -97,18 +116,74 @@ export class CoordinatedRecordingManager {
   status(runId: string): CoordinatedRecordingStatus {
     return structuredClone(this.get(runId).status);
   }
+  async refreshStatus(runId: string): Promise<CoordinatedRecordingStatus> {
+    const run = this.get(runId);
+    if (!live(run)) return structuredClone(run.status);
+    try {
+      if (!this.uplink.status) throw new Error('status_unavailable');
+      const remote = await this.uplink.status(runId);
+      this.sweep();
+      // A delayed response cannot revive a locally stopped or replaced run.
+      if (live(run)) {
+        if (run.diagnosticsVersion === 3) {
+          const evidence = selectedEvidenceMetadataSchema.parse(remote);
+          if (
+            evidence.runId !== runId ||
+            evidence.targetSession !== run.targetSession ||
+            evidence.captureDurationMs !== run.durationMs
+          )
+            throw new Error('selection_mismatch');
+          // Replayed live metadata cannot establish current socket readiness.
+          if (
+            run.status.evidence &&
+            (evidence.readiness.revision < run.status.evidence.readiness.revision ||
+              evidence.readiness.monotonicMs < run.status.evidence.readiness.monotonicMs ||
+              (['preparing', 'recording'].includes(evidence.state) &&
+                evidence.readiness.monotonicMs === run.status.evidence.readiness.monotonicMs &&
+                evidence.readiness.revision === run.status.evidence.readiness.revision))
+          )
+            throw new Error('stale_status');
+          run.status.evidence = evidence;
+        }
+        if (remote.state === 'preparing') {
+          run.status.phase = 'starting';
+          run.status.uplink.state = 'pending';
+        } else if (remote.state !== 'recording') {
+          this.finish(run, remote.state === 'expired' ? 'expired' : 'stopped');
+          run.status.uplink.state = 'stopped';
+        } else {
+          run.status.uplink.state = 'recording';
+          run.status.phase = 'recording';
+        }
+      }
+    } catch {
+      if (live(run)) run.status.uplink.state = 'unavailable';
+    }
+    return structuredClone(run.status);
+  }
   async start(
     runId: string,
     durationMs: number,
-    diagnosticsVersion: 1 | 2 = 1,
+    diagnosticsVersion: 1 | 2 | 3 = 1,
+    targetSessionId?: string,
   ): Promise<CoordinatedRecordingStatus> {
-    if (![1, 2].includes(diagnosticsVersion)) throw new Error('invalid_recording');
+    if (
+      diagnosticsVersion === 3
+        ? !targetSessionId || !/^[A-Za-z0-9_-]{1,128}$/u.test(targetSessionId) || durationMs > 30000
+        : targetSessionId !== undefined
+    )
+      throw new Error('invalid_recording');
+    if (![1, 2, 3].includes(diagnosticsVersion)) throw new Error('invalid_recording');
     if (!UUID.test(runId) || !Number.isInteger(durationMs) || durationMs < 1 || durationMs > 120000)
       throw new Error('invalid_recording');
     this.sweep();
     const existing = this.runs.get(runId);
     if (existing) {
-      if (existing.durationMs !== durationMs || existing.diagnosticsVersion !== diagnosticsVersion)
+      if (
+        existing.durationMs !== durationMs ||
+        existing.diagnosticsVersion !== diagnosticsVersion ||
+        existing.targetSessionId !== targetSessionId
+      )
         throw new Error('recording_conflict');
       return structuredClone(existing.status);
     }
@@ -116,12 +191,17 @@ export class CoordinatedRecordingManager {
       throw new Error('recording_conflict');
     if (this.runs.size >= 8) throw new Error('recording_capacity');
     const started = this.wall();
-    const expiresAt = new Date(started + durationMs).toISOString();
+    const overallDurationMs = durationMs + (diagnosticsVersion === 3 ? 15000 : 0);
+    const expiresAt = new Date(started + overallDurationMs).toISOString();
     const core = this.activation.start(expiresAt);
     const run: Run = {
       durationMs,
       diagnosticsVersion,
-      deadline: this.monotonic() + durationMs,
+      targetSessionId,
+      targetSession: targetSessionId
+        ? createHash('sha256').update(targetSessionId).digest('hex').slice(0, 16)
+        : undefined,
+      deadline: this.monotonic() + overallDurationMs,
       retainUntil: this.monotonic() + 3600000,
       records: [],
       bytes: 0,
@@ -140,11 +220,14 @@ export class CoordinatedRecordingManager {
     this.current = run;
     this.runs.set(runId, run);
     try {
-      await this.uplink.start(runId, durationMs, diagnosticsVersion);
+      if (diagnosticsVersion === 3)
+        await this.uplink.start(runId, durationMs, diagnosticsVersion, targetSessionId);
+      else await this.uplink.start(runId, durationMs, diagnosticsVersion);
       this.sweep();
       if (live(run)) {
         run.status.uplink.state = 'recording';
-        run.status.phase = 'recording';
+        run.status.phase = diagnosticsVersion === 3 ? 'starting' : 'recording';
+        if (diagnosticsVersion === 3) await this.refreshStatus(runId);
       } else await this.remoteStop(run);
     } catch (error) {
       if (live(run)) this.finish(run, 'failed');
@@ -171,6 +254,7 @@ export class CoordinatedRecordingManager {
       run.status.core.dropped++;
       return;
     }
+    if (run.targetSession && parsed.data.session !== run.targetSession) return;
     const bytes = Buffer.byteLength(JSON.stringify(parsed.data));
     if (run.records.length >= 256 || run.bytes + bytes > 1024 * 1024) {
       run.status.core.dropped++;

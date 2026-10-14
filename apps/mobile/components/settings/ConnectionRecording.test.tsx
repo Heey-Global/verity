@@ -7,12 +7,18 @@ const mockRemaining = jest.fn();
 const mockExport = jest.fn();
 const mockCopy = jest.fn();
 let mockServerId = 'paired-core';
-jest.mock('expo-crypto', () => ({ randomUUID: () => '11111111-1111-4111-8111-111111111111' }));
+jest.mock('expo-crypto', () => ({
+  randomUUID: () => '11111111-1111-4111-8111-111111111111',
+  CryptoDigestAlgorithm: { SHA256: 'SHA256' },
+  digestStringAsync: async () => 'abcdef0123456789',
+}));
 jest.mock('expo-clipboard', () => ({ setStringAsync: (...args: unknown[]) => mockCopy(...args) }));
 jest.mock('../../lib/serverProfile', () => ({
   getServerProfile: () => ({ serverId: mockServerId }),
 }));
 jest.mock('../../lib/remoteControlTransport', () => ({
+  prepareSelectedDataRecording: async (hook: (session: string) => Promise<void>) =>
+    hook('selected-session'),
   startRemoteDataRecording: () => mockStart(),
   stopRemoteDataRecording: () => mockStop(),
   remoteDataRecordingRemainingMs: () => mockRemaining(),
@@ -26,6 +32,14 @@ import { ConnectionRecording } from './ConnectionRecording';
 function status() {
   return {
     version: 1,
+    evidence: {
+      targetSession: 'abcdef0123456789',
+      readiness: {
+        ready: true,
+        installation: { bound: true, active: true },
+        app: { bound: true, active: true },
+      },
+    },
     runId,
     phase: 'recording',
     core: { state: 'recording' },
@@ -36,6 +50,7 @@ function status() {
 }
 function client() {
   return {
+    getConnectionRecording: jest.fn().mockResolvedValue(status()),
     startConnectionRecording: jest.fn().mockResolvedValue(status()),
     stopConnectionRecording: jest
       .fn()
@@ -52,7 +67,10 @@ beforeEach(async () => {
   mockServerId = 'paired-core';
   await AsyncStorage.clear();
   jest.clearAllMocks();
-  mockStart.mockResolvedValue(120_000);
+  mockStart.mockImplementation(async () => {
+    mockRemaining.mockResolvedValue(110_000);
+    return 120_000;
+  });
   mockStop.mockResolvedValue(true);
   mockRemaining.mockResolvedValue(0);
   mockExport.mockResolvedValue({ status: 'ready', recording: '[]' });
@@ -80,12 +98,17 @@ it('does not start on opening, then arms local before Core and declares ready on
   expect(mockStart.mock.invocationCallOrder[0]).toBeLessThan(
     api.startConnectionRecording.mock.invocationCallOrder[0]!,
   );
-  expect(api.startConnectionRecording).toHaveBeenCalledWith(runId, expect.any(Number), 2);
+  expect(api.startConnectionRecording).toHaveBeenCalledWith(runId, 30000, 3, 'selected-session');
 });
 it.each(['local', 'core', 'uplink', 'expired'])(
   'does not declare ready after %s failure',
   async (source) => {
     const api = client();
+    if (source === 'expired')
+      mockStart.mockImplementation(async () => {
+        mockRemaining.mockResolvedValue(0);
+        return 120000;
+      });
     if (source === 'local') mockStart.mockRejectedValue(new Error('unsupported'));
     if (source === 'core') api.startConnectionRecording.mockRejectedValue(new Error('offline'));
     if (source === 'uplink')
@@ -124,7 +147,7 @@ it('stops locally offline, retains run across reopening and retries collection w
   fireEvent.press(screen.getByText('Stop and collect'));
   await screen.findByText('App, Core and Uplink recording copied.');
   expect(next.stopConnectionRecording).toHaveBeenCalledWith(runId);
-  expect(next.exportConnectionRecording).toHaveBeenCalledWith(runId, 2);
+  expect(next.exportConnectionRecording).toHaveBeenCalledWith(runId, 3);
   expect(mockStart).toHaveBeenCalledTimes(1);
 });
 it('a late Core start cannot restore ready after Stop', async () => {
@@ -207,14 +230,96 @@ it('explains missing version support before another recording attempt', async ()
   expect(mockStop).toHaveBeenCalled();
 });
 
-it('collects legacy saved runs using version 1', async () => {
+it.each([1, 2])('collects saved runs using version %s', async (version) => {
   await AsyncStorage.setItem(
     'verity.connectionRecording.v1.paired-core',
-    JSON.stringify({ runId, startedAt: Date.now(), expiresAt: Date.now() + 120000, local: null }),
+    JSON.stringify({
+      runId,
+      startedAt: Date.now(),
+      expiresAt: Date.now() + 120000,
+      local: null,
+      ...(version === 2 ? { diagnosticsVersion: 2 } : {}),
+    }),
   );
   const api = client();
   render(<ConnectionRecording client={api as never} />);
   await screen.findByText(/Saved run available/);
   fireEvent.press(screen.getByText('Stop and collect'));
-  await waitFor(() => expect(api.exportConnectionRecording).toHaveBeenCalledWith(runId, 1));
+  await waitFor(() => expect(api.exportConnectionRecording).toHaveBeenCalledWith(runId, version));
+});
+
+it.each(['capacity', 'missing binding', 'wrong session', 'offline'])(
+  'rejects stale start readiness when fresh status reports %s',
+  async (reason) => {
+    const api = client();
+    const fresh = status();
+    if (reason === 'capacity') fresh.phase = 'stopped';
+    if (reason === 'missing binding') fresh.evidence.readiness.app.bound = false;
+    if (reason === 'wrong session') fresh.evidence.targetSession = '0000000000000000';
+    api.getConnectionRecording.mockResolvedValue(fresh);
+    if (reason === 'offline') api.getConnectionRecording.mockRejectedValue(new Error('offline'));
+    render(<ConnectionRecording client={api as never} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    mockRemaining.mockResolvedValue(110000);
+    await pressStart();
+    await screen.findByText(/Preparation failed/);
+    expect(screen.queryByText(/Ready — turn off VPN/)).toBeNull();
+  },
+);
+it('withdraws readiness on unreachable polling while preserving local recording', async () => {
+  jest.useFakeTimers();
+  try {
+    const api = client();
+    render(<ConnectionRecording client={api as never} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    mockRemaining.mockResolvedValue(110000);
+    await pressStart();
+    await screen.findByText(/Ready — turn off VPN/);
+    api.getConnectionRecording.mockRejectedValue(new Error('offline'));
+    await act(async () => {
+      jest.advanceTimersByTime(1000);
+    });
+    expect(screen.getByText(/Recording readiness is unconfirmed/)).toBeTruthy();
+    expect(mockStop).not.toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it('bounds unreachable readiness requests without overlapping polls', async () => {
+  jest.useFakeTimers();
+  try {
+    const api = client();
+    render(<ConnectionRecording client={api as never} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await pressStart();
+    await screen.findByText(/Ready — turn off VPN/);
+    api.getConnectionRecording.mockImplementation(
+      (_id: string, signal: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        }),
+    );
+    const before = api.getConnectionRecording.mock.calls.length;
+    await act(async () => {
+      jest.advanceTimersByTime(1000);
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(2000);
+    });
+    expect(api.getConnectionRecording.mock.calls.length).toBe(before + 1);
+    await act(async () => {
+      jest.advanceTimersByTime(1000);
+    });
+    expect(screen.getByText(/Recording readiness is unconfirmed/)).toBeTruthy();
+    expect(mockStop).not.toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+  }
 });

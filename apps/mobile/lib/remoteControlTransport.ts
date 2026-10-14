@@ -590,6 +590,48 @@ export async function startRemoteDataRecording(): Promise<number> {
   return selected;
 }
 
+/** Prepare exactly one admitted session before activating its App DATA socket. */
+export async function prepareSelectedDataRecording(
+  beforeAttach: (sessionId: string) => Promise<void>,
+): Promise<void> {
+  const revision = diagnosticCaptureRevision;
+  const scope = recordingScope();
+  const selected = operation.then(async () => {
+    const profile = getServerProfile();
+    const url = profile?.activeUrl;
+    const key = url ? keyFor(url) : null;
+    const check = () => {
+      if (!scope || scope !== recordingScope() || revision !== diagnosticCaptureRevision)
+        throw new Error('Recording stopped');
+    };
+    check();
+    const remaining = await remoteDataRecordingRemainingMs();
+    if (!url || !key || active !== null || remaining === null || remaining <= 0)
+      throw new Error('Recording preparation unavailable');
+    let preparationError: unknown;
+    const port = await open(url, key, {
+      retryStall: false,
+      beforeAttach: async (sessionId) => {
+        try {
+          check();
+          await beforeAttach(sessionId);
+          check();
+        } catch (error) {
+          preparationError = error;
+          throw error;
+        }
+      },
+    });
+    check();
+    if (port === 0) throw preparationError ?? new Error('Selected recording probe failed');
+  });
+  operation = selected.then(
+    () => undefined,
+    () => undefined,
+  );
+  return selected;
+}
+
 /** Local-only status; reading it never starts a recording or contacts Core. */
 export async function remoteDataRecordingRemainingMs(): Promise<number | null> {
   try {
@@ -910,7 +952,9 @@ async function probeDirect(
 async function open(
   coreUrl: string,
   key: string,
-  options: { retryStall: boolean } = { retryStall: true },
+  options: { retryStall: boolean; beforeAttach?: (sessionId: string) => Promise<void> } = {
+    retryStall: true,
+  },
 ): Promise<number> {
   const profile = getServerProfile();
   const descriptor = profile?.remoteControl;
@@ -928,6 +972,7 @@ async function open(
       uplinkOrigin: descriptor.uplinkOrigin,
       installationHandle: descriptor.installationHandle,
     });
+    await options.beforeAttach?.(admission.sessionId);
     stage = 'attachment';
     const dataUrl = new URL(descriptor.uplinkOrigin);
     dataUrl.protocol = 'wss:';
