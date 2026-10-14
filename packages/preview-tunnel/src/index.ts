@@ -13,6 +13,7 @@ import type { Duplex } from 'node:stream';
 import { isIP } from 'node:net';
 import { URL } from 'node:url';
 import WebSocket, { WebSocketServer } from 'ws';
+import { connectorBackpressure } from './connector-backpressure.js';
 
 import {
   encodedPayloadLimit,
@@ -1906,27 +1907,6 @@ function sendStreamFrame(socket: WebSocket, frame: StreamFrame, onFlush?: () => 
   } catch {
     // The socket can close between the ready-state check and send.
   }
-}
-
-/**
- * Holds one `ws` source to the pace of the tunnel it feeds.
- *
- * The connector socket carries every stream at once, so a peer that produces
- * faster than the tunnel drains cannot be answered by pausing the connector —
- * that would stall every other stream with it, and letting the queue grow
- * instead is how one loud socket exhausts the process. The source is paused
- * instead, which stops reading exactly the connection running ahead and lets
- * TCP carry the pressure back to it, and resumes once the backlog has drained.
- */
-function connectorBackpressure(source: WebSocket, connector: WebSocket, limit: number): () => void {
-  let paused = false;
-  return () => {
-    const congested = connector.bufferedAmount > limit;
-    if (congested === paused) return;
-    paused = congested;
-    if (congested) source.pause();
-    else source.resume();
-  };
 }
 
 /**
