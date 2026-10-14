@@ -27,7 +27,11 @@ it('bounds every WebSocket send in the writer queue and ends the attachment on a
   expect(writer).toMatch(
     /bounded\(seconds: Self\.sendDeadlineSeconds\) \{ try await socket\.send\(/u,
   );
-  expect(writer).toMatch(/throw RemoteSmokeError\.sendStalled/u);
+  expect(writer).toMatch(/once\.resume\(RemoteSmokeError\.sendStalled\)/u);
+  // The transport's send ignores cancellation: a task group that waited for
+  // it would never return, and the deadline would never fire.
+  expect(writer).not.toMatch(/withThrowingTaskGroup/u);
+  expect(writer).toMatch(/withCheckedThrowingContinuation/u);
   // A missed deadline must reach the tunnel, which stops with a stall reason
   // the JavaScript recovery recognises and replaces.
   expect(writer).toMatch(/onFailure\?\(Self\.isStall\(error\)\)/u);

@@ -59,8 +59,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
       do {
         try await task.value
       } catch {
-        // A predecessor's failure surfaces here too; the first one ends the
-        // attachment and the rest find it stopped.
+        // Only the queued task throws here: a transport failure, a missed
+        // deadline, or a predecessor's. The size check above throws before
+        // anything is queued. The first failure ends the attachment; the
+        // rest find it stopped.
         onFailure?(Self.isStall(error))
         throw error
       }
@@ -71,15 +73,32 @@ final class RemoteAppTunnel: @unchecked Sendable {
       return false
     }
 
+    // Resumes a continuation once, whichever of the send and the deadline
+    // finishes first. A task group would wait for the send as well, and the
+    // transport's send ignores cancellation and may never return.
+    private final class Once {
+      private let lock = NSLock()
+      private var continuation: CheckedContinuation<Void, Error>?
+      init(_ continuation: CheckedContinuation<Void, Error>) { self.continuation = continuation }
+      func resume(_ error: Error?) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        if let error { pending?.resume(throwing: error) } else { pending?.resume() }
+      }
+    }
+
     private static func bounded(seconds: UInt64, _ body: @escaping @Sendable () async throws -> Void) async throws {
-      try await withThrowingTaskGroup(of: Void.self) { group in
-        group.addTask { try await body() }
-        group.addTask {
-          try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-          throw RemoteSmokeError.sendStalled
+      try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        let once = Once(continuation)
+        Task {
+          do { try await body(); once.resume(nil) } catch { once.resume(error) }
         }
-        defer { group.cancelAll() }
-        try await group.next()
+        Task {
+          try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+          once.resume(RemoteSmokeError.sendStalled)
+        }
       }
     }
   }
@@ -310,17 +329,6 @@ final class RemoteAppTunnel: @unchecked Sendable {
     socket = outer.webSocketTask(with: dataURL)
     socket.maximumMessageSize = 96 * 1024
     writer = Writer(socket)
-    let writer = self.writer
-    Task { [weak self] in
-      await writer.setOnFailure { [weak self] stalled in
-        guard let self else { return }
-        if stalled {
-          self.stop(reason: "stall: send unanswered within \(Writer.sendDeadlineSeconds) s", cause: .sendStall)
-        } else {
-          self.stop(reason: "send failed", cause: .sendFailure)
-        }
-      }
-    }
   }
 
   func start(ticket: String, sessionId: String) async throws -> Int {
@@ -338,6 +346,15 @@ final class RemoteAppTunnel: @unchecked Sendable {
     }
     defer { timeout.cancel() }
     do {
+      // Installed before the first send: nothing may be queued without it.
+      await writer.setOnFailure { [weak self] stalled in
+        guard let self else { return }
+        if stalled {
+          self.stop(reason: "stall: send unanswered within \(Writer.sendDeadlineSeconds) s", cause: .sendStall)
+        } else {
+          self.stop(reason: "send failed", cause: .sendFailure)
+        }
+      }
 #if VERITY_STALL_DIAGNOSTICS
       await writer.setStallDiagnostics(stallDiagnostics)
 #endif
@@ -780,7 +797,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
   }
 
   // Drops at once; the frame goes out behind the queue without the caller
-  // waiting on it, so the reader never blocks on a send.
+  // waiting on it, so the reader never blocks on a send. Its place in the
+  // queue is therefore not the caller's order, which is harmless: the ID is
+  // retired and never reused, and the peer discards late frames for it.
   private func reset(_ id: String, code: String) async {
     guard drop(id, reason: "local_reset_\(code)") else { return }
     let writer = self.writer
