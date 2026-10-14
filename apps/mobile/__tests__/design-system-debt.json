@@ -122,12 +122,6 @@
     "fontSize": 3,
     "fontWeight": 2
   },
-  "components/project/StaticPreviewSheet.tsx": {
-    "rawColor": 4,
-    "legacyColor": 44,
-    "fontSize": 28,
-    "fontWeight": 20
-  },
   "components/ui/Button.tsx": {
     "fontSize": 1
   },
