@@ -2166,7 +2166,9 @@ export function sandboxSleepCompatibilityFingerprint(inspect: ContainerInspect):
     id: inspect.id,
     image: inspect.image ?? null,
     labels: sortedRecord(inspect.labels),
-    networks: sortedRecord(inspect.networks),
+    // Docker releases endpoint addresses on stop; only network membership is
+    // part of the retained contract. Hashing an address forces every wake cold.
+    networks: inspect.networks === undefined ? null : Object.keys(inspect.networks).sort(),
     user: inspect.user ?? null,
     groupAdd: [...(inspect.groupAdd ?? [])].sort(),
     runtime: inspect.runtime ?? null,
@@ -3091,7 +3093,33 @@ export class ProvisionerImpl implements Provisioner {
             // Reuse the established replacement path rather than starting unknown
             // Docker state or trying to repair its mounts in place.
             this.observeSandboxWakeFallback(project.id, fallbackReason);
-            return this.recreateContainerOnce(project.id, { confirmWarnings: true });
+            try {
+              return await this.recreateContainer(project.id, { confirmWarnings: true });
+            } catch (cause) {
+              // Image preparation can fail before replacement advances the row.
+              // Leaving it waking makes later admissions require reconciliation
+              // even though this process no longer owns a wake to finish.
+              const latest = await this.opts.store.getProject(project.id);
+              if (latest?.state === 'waking') {
+                try {
+                  await this.quiesceProjectAfterRestart(latest);
+                  await this.confirmSandboxStopped(latest.containerName);
+                  await this.opts.store.updateProjectSleepState(project.id, 'sleeping', {
+                    sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
+                    sleepingSince: project.sleepingSince ?? new Date(),
+                    wakeStartedAt: null,
+                  });
+                } catch (cleanupError) {
+                  const message = `project cold wake rollback failed: ${failureMessage(cleanupError)}`;
+                  await this.opts.store.updateProjectState(project.id, 'failed', message);
+                  throw new ProvisioningError(
+                    message,
+                    new AggregateError([cause, cleanupError], message, { cause }),
+                  );
+                }
+              }
+              throw cause;
+            }
           }
           if (inspect === null || generation === undefined) {
             throw new Error('compatible retained Sandbox lost its identity');
