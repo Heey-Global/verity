@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.71.1](https://github.com/Heey-Global/verity/compare/mobile-v1.71.0...mobile-v1.71.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @agentclientprotocol/claude-agent-acp to v0.89.1 ([#1622](https://github.com/Heey-Global/verity/issues/1622)) ([3d20762](https://github.com/Heey-Global/verity/commit/3d2076228f49d0fd5c8146e46dad9085b347fff3))
+* **deps:** update dependency @napi-rs/canvas to v1.0.11 ([#1623](https://github.com/Heey-Global/verity/issues/1623)) ([a263150](https://github.com/Heey-Global/verity/commit/a263150fd540b940ffe8f3b672b580ef32bd2847))
+
 ## [1.69.1](https://github.com/Heey-Global/verity/compare/mobile-v1.69.0...mobile-v1.69.1) (2026-10-13)
 
 
