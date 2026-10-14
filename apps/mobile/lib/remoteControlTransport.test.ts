@@ -1780,3 +1780,28 @@ it('cancels admission when consent is stopped while selected capture is being ar
   await expect(selected).rejects.toThrow('Recording stopped');
   expect(mockStart).not.toHaveBeenCalled();
 });
+
+it('reserves native arming and selected admission ahead of competing ordinary requests', async () => {
+  const transport = await armScopedRecording();
+  await transport.stopRemoteDataRecording();
+  mockRecordingRemaining.mockReset().mockResolvedValueOnce(0).mockResolvedValue(119_000);
+  mockIsActive.mockResolvedValue(true);
+  transport.reportDirectRouteFailure(coreUrl);
+  let release!: () => void;
+  const select = jest.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  const recording = transport.startRemoteDataRecording(select);
+  const ordinary = transport.remoteControlPortForUrl(`${coreUrl}/projects`, false);
+  for (let i = 0; i < 80 && !release; i++) await Promise.resolve();
+  expect(select).toHaveBeenCalledWith('session');
+  expect(mockStart).not.toHaveBeenCalled();
+  release();
+  await expect(recording).resolves.toBe(119_000);
+  await expect(ordinary).resolves.toBe(4999);
+  expect(mockAdmission).toHaveBeenCalledTimes(1);
+  expect(mockStart).toHaveBeenCalledTimes(1);
+});

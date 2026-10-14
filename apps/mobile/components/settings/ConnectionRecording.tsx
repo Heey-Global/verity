@@ -12,7 +12,6 @@ import {
   selectRemoteRecording,
 } from '../../lib/remoteDataDiagnostics';
 import {
-  prepareSelectedDataRecording,
   remoteDataRecordingRemainingMs,
   startRemoteDataRecording,
   stopRemoteDataRecording,
@@ -148,6 +147,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         const left = await remoteDataRecordingRemainingMs();
         if (!valid()) return;
         const saved = runRef.current;
+        if (preparingRef.current !== null && captureDeadline.current === null) return;
         const remainingBudget = (budget: number | null) =>
           Math.min(
             budget ?? 0,
@@ -232,6 +232,8 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     const token = ++revision.current;
     const current = () => mounted.current && token === revision.current;
     preparingRef.current = token;
+    captureDeadline.current = null;
+    setRemaining(0);
     setPreparing(true);
     setReady(false);
     setMessage('Preparing local recording, Core and Uplink…');
@@ -247,13 +249,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     try {
       await save(saved);
       if (!current()) return;
-      const duration = await startRemoteDataRecording();
-      if (!current()) return;
-      captureDeadline.current = performance.now() + duration;
-      saved.expiresAt = Date.now() + duration;
-      await save(saved);
-      if (!current()) return;
-      await prepareSelectedDataRecording(async (sessionId) => {
+      await startRemoteDataRecording(async (sessionId) => {
         if (!current()) throw new Error('Recording cancelled');
         const localBudget = await remoteDataRecordingRemainingMs();
         if (localBudget === null || localBudget < 45_000)
@@ -278,7 +274,8 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         )
           throw new Error('Not armed');
       });
-      captureDeadline.current = Math.min(captureDeadline.current, performance.now() + 30_000);
+      if (!current()) return;
+      captureDeadline.current = Math.min(captureDeadline.current ?? 0, performance.now() + 30_000);
       saved.expiresAt = Math.min(saved.expiresAt, Date.now() + 30_000);
       await save(saved);
       if (!current()) return;

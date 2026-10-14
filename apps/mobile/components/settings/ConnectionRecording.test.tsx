@@ -17,11 +17,12 @@ jest.mock('../../lib/serverProfile', () => ({
   getServerProfile: () => ({ serverId: mockServerId }),
 }));
 jest.mock('../../lib/remoteControlTransport', () => ({
-  prepareSelectedDataRecording: async (hook: (session: string) => Promise<void>) => {
-    await hook('selected-session');
+  startRemoteDataRecording: async (hook?: (session: string) => Promise<void>) => {
+    const duration = await mockStart();
+    if (hook) await hook('selected-session');
     if (mockStop.mock.calls.length) throw new Error('Recording stopped');
+    return duration;
   },
-  startRemoteDataRecording: () => mockStart(),
   stopRemoteDataRecording: () => mockStop(),
   remoteDataRecordingRemainingMs: () => mockRemaining(),
 }));
@@ -185,7 +186,7 @@ it.each(['stop', 'switch', 'expiry'] as const)(
     let writes = 0;
     const write = jest.mocked(AsyncStorage.setItem).getMockImplementation()!;
     const spy = jest.spyOn(AsyncStorage, 'setItem').mockImplementation(async (key, value) => {
-      if (++writes === 4) {
+      if (++writes === 3) {
         pending = true;
         await new Promise<void>((done) => {
           release = done;
@@ -403,6 +404,44 @@ it('does not restore Ready when a polling response crosses the local deadline', 
     });
     expect(screen.queryByText(/Ready — turn off VPN/)).toBeNull();
     expect(mockStop).toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it('does not apply the expired previous deadline while a new native arm is pending', async () => {
+  jest.useFakeTimers();
+  try {
+    const api = client();
+    render(<ConnectionRecording client={api as never} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await pressStart();
+    await screen.findByText(/Ready — turn off VPN/);
+    await act(async () => {
+      jest.advanceTimersByTime(31_000);
+    });
+    expect(mockStop).toHaveBeenCalled();
+    mockStop.mockClear();
+    let release!: () => void;
+    mockStart.mockImplementationOnce(async () => {
+      mockRemaining.mockResolvedValue(110_000);
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return 120_000;
+    });
+    await pressStart();
+    await waitFor(() => expect(release).toBeDefined());
+    await act(async () => {
+      jest.advanceTimersByTime(1_000);
+    });
+    expect(mockStop).not.toHaveBeenCalled();
+    await act(async () => {
+      release();
+    });
+    await screen.findByText(/Ready — turn off VPN/);
   } finally {
     jest.useRealTimers();
   }

@@ -538,8 +538,10 @@ export async function remoteControlPortForUrl(
   }
 }
 
-/** Arms recording only; the normal app flow supplies requests during the window. */
-export async function startRemoteDataRecording(): Promise<number> {
+/** Arm capture and optionally reserve selected admission in the same lifecycle operation. */
+export async function startRemoteDataRecording(
+  beforeAttach?: (sessionId: string) => Promise<void>,
+): Promise<number> {
   const revision = diagnosticCaptureRevision;
   const scope = recordingScope();
   const selected = operation.then(async () => {
@@ -581,6 +583,7 @@ export async function startRemoteDataRecording(): Promise<number> {
       throw new Error('Recording stopped');
     }
     diagnosticCaptureUntil = Date.now() + remaining;
+    if (beforeAttach) await prepareSelectedDataRecordingNow(beforeAttach, revision, scope);
     return remaining;
   });
   operation = selected.then(
@@ -591,40 +594,49 @@ export async function startRemoteDataRecording(): Promise<number> {
 }
 
 /** Prepare exactly one admitted session before activating its App DATA socket. */
+async function prepareSelectedDataRecordingNow(
+  beforeAttach: (sessionId: string) => Promise<void>,
+  revision: number,
+  scope: string | null,
+): Promise<void> {
+  const profile = getServerProfile();
+  const url = profile?.activeUrl;
+  const key = url ? keyFor(url) : null;
+  const check = () => {
+    if (!scope || scope !== recordingScope() || revision !== diagnosticCaptureRevision)
+      throw new Error('Recording stopped');
+  };
+  check();
+  const remaining = await remoteDataRecordingRemainingMs();
+  if (!url || !key || active !== null || remaining === null || remaining <= 0)
+    throw new Error('Recording preparation unavailable');
+  let preparationError: unknown;
+  const port = await open(url, key, {
+    retryStall: false,
+    beforeAttach: async (sessionId) => {
+      try {
+        check();
+        await beforeAttach(sessionId);
+        check();
+      } catch (error) {
+        preparationError = error;
+        throw error;
+      }
+    },
+  });
+  check();
+  if (port === 0) throw preparationError ?? new Error('Selected recording probe failed');
+}
+
+/** Prepare a previously armed recording; new selected starts use the atomic start hook. */
 export async function prepareSelectedDataRecording(
   beforeAttach: (sessionId: string) => Promise<void>,
 ): Promise<void> {
   const revision = diagnosticCaptureRevision;
   const scope = recordingScope();
-  const selected = operation.then(async () => {
-    const profile = getServerProfile();
-    const url = profile?.activeUrl;
-    const key = url ? keyFor(url) : null;
-    const check = () => {
-      if (!scope || scope !== recordingScope() || revision !== diagnosticCaptureRevision)
-        throw new Error('Recording stopped');
-    };
-    check();
-    const remaining = await remoteDataRecordingRemainingMs();
-    if (!url || !key || active !== null || remaining === null || remaining <= 0)
-      throw new Error('Recording preparation unavailable');
-    let preparationError: unknown;
-    const port = await open(url, key, {
-      retryStall: false,
-      beforeAttach: async (sessionId) => {
-        try {
-          check();
-          await beforeAttach(sessionId);
-          check();
-        } catch (error) {
-          preparationError = error;
-          throw error;
-        }
-      },
-    });
-    check();
-    if (port === 0) throw preparationError ?? new Error('Selected recording probe failed');
-  });
+  const selected = operation.then(() =>
+    prepareSelectedDataRecordingNow(beforeAttach, revision, scope),
+  );
   operation = selected.then(
     () => undefined,
     () => undefined,
