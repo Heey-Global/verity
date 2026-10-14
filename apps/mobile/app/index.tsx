@@ -2490,8 +2490,8 @@ const styles = StyleSheet.create((theme) => ({
   // project and the action that fixes it read as one signal.
   projectRepairButton: {
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: `${theme.colors.attention}99`,
-    backgroundColor: `${theme.colors.attention}1f`,
+    borderColor: tint(theme.colors.attention, 'border'),
+    backgroundColor: tint(theme.colors.attention, 'fill'),
   },
   projectActionDisabled: {
     opacity: 0.6,
