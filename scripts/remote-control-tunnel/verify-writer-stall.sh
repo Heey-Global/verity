@@ -16,6 +16,28 @@ end = source.index('\n  private final class Stream', start)
 writer = source[start:end].replace('private actor Writer', 'actor Writer', 1)
 prefix = 'import Foundation\nenum RemoteSmokeError: Error { case limitReached, sendStalled }\n'
 Path(sys.argv[2], 'Writer.swift').write_text(prefix + writer)
+reset_start = source.index('  private func reset(_ id: String, code: String) async {')
+reset_end = source.index('\n  private func accept(', reset_start)
+reset = source[reset_start:reset_end].replace('private func ', 'func ')
+reset_prefix = """import Foundation
+final class ResetTunnel: @unchecked Sendable {
+  final class Stream { var opened = false; var pendingReset: String? }
+  let lock = NSLock()
+  let writer = ResetWriter()
+  var streams: [String: Stream] = [:]
+  func insert(_ id: String) -> Stream {
+    lock.withLock { let stream = Stream(); streams[id] = stream; return stream }
+  }
+  func drop(_ id: String, reason: String) -> Bool {
+    lock.withLock { streams.removeValue(forKey: id) != nil }
+  }
+"""
+Path(sys.argv[2], 'ResetTunnel.swift').write_text(reset_prefix + reset + '\n}\n')
+needle_reset = 'stream.pendingReset = code'
+assert reset.count(needle_reset) == 1
+Path(sys.argv[2], 'LostResetTunnel.swift').write_text(
+    reset_prefix + reset.replace(needle_reset, 'stream.pendingReset = nil', 1) + '\n}\n')
+
 # A send must not be observed as started before it reaches the socket.
 needle = '          diagnostics?.started(token)'
 assert writer.count(needle) == 1
@@ -72,3 +94,15 @@ run_bounded "$tmp/DeadlessWriter-deadline" > "$tmp/deadless.log" 2>&1
 status=$?
 set -e
 [[ "$status" == 1 ]] && grep -q '^writer-deadline-not-enforced$' "$tmp/deadless.log"
+
+# An open accepted by the peer can complete locally after stream retirement.
+for variant in ResetTunnel LostResetTunnel; do
+  run_bounded xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macosx14.0" \
+    "$tmp/$variant.swift" scripts/remote-control-tunnel/OpenReset.swift -o "$tmp/$variant"
+done
+run_bounded "$tmp/ResetTunnel"
+set +e
+run_bounded "$tmp/LostResetTunnel" > "$tmp/lost-reset.log" 2>&1
+status=$?
+set -e
+[[ "$status" == 1 ]] && grep -q '^deferred-reset-missing$' "$tmp/lost-reset.log"

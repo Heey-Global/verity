@@ -39,6 +39,7 @@ it('sends every frame of a stream from one awaited sequence', () => {
     'stream.end',
     'stream.open',
     'stream.reset',
+    'stream.reset',
   ]);
 });
 

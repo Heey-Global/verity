@@ -157,6 +157,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var closed = false
     /// Set once the open has left, so a reset is never sent for an ID Core has not seen.
     var opened = false
+    var pendingReset: String?
     var worker: Task<Void, Never>?
     // Armed when the first local bytes have gone out; Core's TLS reply to a
     // ClientHello arrives within milliseconds, so a stream still without any
@@ -835,22 +836,31 @@ final class RemoteAppTunnel: @unchecked Sendable {
     if alreadyDone { task.cancel() }
   }
 
-  // Drops at once; the frame goes out behind the queue without the caller
-  // waiting on it, so the reader never blocks on a send. Its place in the
-  // queue is therefore not the caller's order, which is harmless: the ID is
-  // retired and never reused, and the peer discards late frames for it. No
-  // caller depends on the frame having left: `drop` has already cancelled the
-  // local connection, the pump's worker and the write queue end with it, and
-  // a reset that reaches the queue after `stop` is dropped along with the
-  // attachment the peer is told has ended.
+  // Retirement is immediate, but reset must follow successful open completion.
+  // The reader must not wait for either send while handling incoming frames.
   private func reset(_ id: String, code: String) async {
-    // A frame for an ID the peer has never seen is a protocol fault there;
-    // a stream dropped before its open left is simply forgotten.
-    let opened = lock.withLock { streams[id]?.opened ?? false }
+    let opened = lock.withLock { () -> Bool in
+      guard let stream = streams[id] else { return false }
+      if !stream.opened { stream.pendingReset = code }
+      return stream.opened
+    }
     guard drop(id, reason: "local_reset_\(code)") else { return }
     guard opened else { return }
     let writer = self.writer
     Task { try? await writer.send(["type": "stream.reset", "streamId": id, "code": code]) }
+  }
+
+  private func didSendOpen(_ stream: Stream, id: String) {
+    let pendingReset = lock.withLock { () -> String? in
+      stream.opened = true
+      let pending = stream.pendingReset
+      stream.pendingReset = nil
+      return pending
+    }
+    if let pendingReset {
+      let writer = self.writer
+      Task { try? await writer.send(["type": "stream.reset", "streamId": id, "code": pendingReset]) }
+    }
   }
 
   private func accept(_ connection: NWConnection) async {
@@ -940,8 +950,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
         dataDiagnostics.record(.streamOpenRequested, streamId: id)
       }
       try await writer.send(["type": "stream.open", "streamId": id, "channel": "remote", "meta": [:]])
+      didSendOpen(stream, id: id)
       lock.withLock {
-        stream.opened = true
         openedStreams += 1
         lastStreamEvent = "stream_opened"
         logStream(id, stream, event: "opened")
