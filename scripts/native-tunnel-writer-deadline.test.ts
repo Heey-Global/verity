@@ -23,7 +23,7 @@ it('bounds every WebSocket send in the writer queue and ends the attachment on a
   const writer = section('  private actor Writer {', '\n  private final class Stream');
   // The one call that reaches the socket is inside the deadline; a bare call
   // would wait on the transport for good.
-  expect(writer).not.toMatch(/^\s*try await socket\.send\(/mu);
+  expect(writer.match(/socket\.send\(/gu)).toHaveLength(1);
   expect(writer).toMatch(
     /bounded\(seconds: Self\.sendDeadlineSeconds\) \{ try await socket\.send\(/u,
   );
@@ -47,7 +47,7 @@ it('bounds every WebSocket send in the writer queue and ends the attachment on a
   expect(transport).toContain("startsWith('stall')");
 });
 
-it('never lets the frame reader wait on the writer queue', () => {
+it('never lets the frame reader wait on the writer queue when it resets a stream', () => {
   // The reader loop handles frames inline; a reset that awaited the writer
   // would stop receiving while the queue is stuck, silencing the inbound
   // direction too.

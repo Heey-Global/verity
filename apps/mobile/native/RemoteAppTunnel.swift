@@ -17,13 +17,17 @@ final class RemoteAppTunnel: @unchecked Sendable {
   // that misses its deadline ends the attachment, which the app replaces. A
   // tunnel attaches once and owns one Writer, so nothing here outlives it.
   private actor Writer {
-    // A frame carries at most one 16 KiB local read, about 22 KB encoded, so
-    // the deadline asks for a little over 1 KB/s of uplink.
+    // A send completes once its frame is handed to the connection, which can
+    // mean waiting for earlier frames to drain. The deadline is therefore
+    // measured against progress, not one frame: it ends the attachment only
+    // when no send at all has completed for this long. A slow link completes
+    // sends steadily and is left alone; a queue that has stopped is not.
     static let sendDeadlineSeconds: UInt64 = 15
     private let socket: URLSessionWebSocketTask
     private var previous: Task<Void, Error>?
     private var onStall: (@Sendable () -> Void)?
     private var stallRaised = false
+    private let progress = Progress()
 
     func setOnStall(_ handler: @escaping @Sendable () -> Void) { onStall = handler }
 #if VERITY_STALL_DIAGNOSTICS
@@ -51,7 +55,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
 #if VERITY_STALL_DIAGNOSTICS
         diagnostics?.started(token)
 #endif
-        try await Self.bounded(seconds: Self.sendDeadlineSeconds) { try await socket.send(.string(text)) }
+        try await Self.bounded(seconds: Self.sendDeadlineSeconds, progress: progress) {
+          try await socket.send(.string(text))
+        }
 #if VERITY_STALL_DIAGNOSTICS
         failed = false
 #endif
@@ -77,6 +83,15 @@ final class RemoteAppTunnel: @unchecked Sendable {
       return false
     }
 
+    // Counts completed sends; the deadline reads it to tell a slow queue from
+    // a stopped one.
+    private final class Progress: @unchecked Sendable {
+      private let lock = NSLock()
+      private var count = 0
+      func advance() { lock.lock(); count += 1; lock.unlock() }
+      var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+    }
+
     // Resumes a continuation once, whichever of the send and the deadline
     // finishes first. A task group would wait for the send as well, and the
     // transport's send ignores cancellation and may never return; it is left
@@ -95,17 +110,33 @@ final class RemoteAppTunnel: @unchecked Sendable {
       }
     }
 
-    private static func bounded(seconds: UInt64, _ body: @escaping @Sendable () async throws -> Void) async throws {
+    private static func bounded(seconds: UInt64, progress: Progress,
+      _ body: @escaping @Sendable () async throws -> Void) async throws
+    {
       try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
         let once = Once(continuation)
         // The sleeper is cancelled once the send is over, so a long transfer
-        // does not keep one timer per frame alive.
+        // does not keep one timer per frame alive. While sends keep completing
+        // it keeps waiting; a period with none is the stall. The extra second
+        // lets a send that was in flight across a suspension land first,
+        // since the clock ran on while nothing here could.
         let sleeper = Task {
-          try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+          var seen = progress.value
+          while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+            if progress.value != seen { seen = progress.value; continue }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            if progress.value != seen { seen = progress.value; continue }
+            break
+          }
           if !Task.isCancelled { once.resume(RemoteSmokeError.sendStalled) }
         }
         Task {
-          do { try await body(); once.resume(nil) } catch { once.resume(error) }
+          do {
+            try await body()
+            progress.advance()
+            once.resume(nil)
+          } catch { once.resume(error) }
           sleeper.cancel()
         }
       }
