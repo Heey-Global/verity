@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.72.0](https://github.com/Heey-Global/verity/compare/mobile-v1.71.0...mobile-v1.72.0) (2026-10-14)
+
+
+### Bug Fixes
+
+* **mobile:** isolate tunnel sends and recover stalled attachments ([#1628](https://github.com/Heey-Global/verity/issues/1628)) ([b842ca6](https://github.com/Heey-Global/verity/commit/b842ca6552ce5d9060452a53eaf75fae23df7549))
+
 ## [1.71.0](https://github.com/Heey-Global/verity/compare/mobile-v1.70.0...mobile-v1.71.0) (2026-10-13)
 
 
