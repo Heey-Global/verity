@@ -14,17 +14,10 @@ source = Path(sys.argv[1]).read_text()
 start = source.index('  private actor Writer {')
 end = source.index('\n  private final class Stream', start)
 writer = source[start:end].replace('private actor Writer', 'actor Writer', 1)
-# A test-only queue counter proves the sibling reached the actual send method.
-needle = '      let predecessor = previous\n'
-assert writer.count(needle) == 1
-writer = writer.replace('actor Writer {', 'actor Writer {\n    var queuedForTest = 0', 1)
-writer = writer.replace(needle, '      queuedForTest += 1\n' + needle, 1)
 prefix = 'import Foundation\nenum RemoteSmokeError: Error { case limitReached, sendStalled }\n'
 Path(sys.argv[2], 'Writer.swift').write_text(prefix + writer)
-mutation = '        if let predecessor { try await predecessor.value }\n'
-assert writer.count(mutation) == 1
-Path(sys.argv[2], 'MutatedWriter.swift').write_text(prefix + writer.replace(mutation, '', 1))
-needle = '        diagnostics?.started(token)'
+# A send must not be observed as started before it reaches the socket.
+needle = '      diagnostics?.started(token)'
 assert writer.count(needle) == 1
 Path(sys.argv[2], 'UnobservedWriter.swift').write_text(prefix + writer.replace(needle, '', 1))
 # A deadline whose sleeper never resumes the continuation leaves a stuck send
@@ -43,18 +36,12 @@ except subprocess.TimeoutExpired:
 raise SystemExit(result.returncode)
 PY
 }
-for variant in Writer MutatedWriter UnobservedWriter; do
+for variant in Writer UnobservedWriter; do
   run_bounded xcrun swiftc -parse-as-library -D VERITY_STALL_DIAGNOSTICS -target "$(uname -m)-apple-macosx14.0" \
     "$tmp/$variant.swift" scripts/remote-control-staging/StallWriterDiagnostics.swift scripts/remote-control-tunnel/WriterStall.swift -o "$tmp/$variant"
 done
 run_bounded "$tmp/Writer"
 # Compilation failure or a watchdog timeout is not evidence of mutation detection.
-set +e
-run_bounded "$tmp/MutatedWriter" > "$tmp/mutation.log" 2>&1
-status=$?
-set -e
-[[ "$status" == 1 ]] && grep -q '^writer-stall-not-reproduced$' "$tmp/mutation.log"
-
 set +e
 run_bounded "$tmp/UnobservedWriter" > "$tmp/unobserved.log" 2>&1
 status=$?

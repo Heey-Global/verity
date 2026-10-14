@@ -20,6 +20,8 @@ actor URLSessionWebSocketTask {
   }
 }
 
+// A send that is held must not hold its sibling: streams are independent on
+// the way out, and a chain across them is the shape of a one-way silence.
 @main
 struct WriterStallCheck {
   static func main() async throws {
@@ -33,25 +35,25 @@ struct WriterStallCheck {
     let first = Task { try await writer.send(["type": "stream.data", "streamId": "first"]) }
     while await socket.calls == 0 { await Task.yield() }
     let second = Task { try await writer.send(["type": "stream.data", "streamId": "sibling"]) }
-    // Observe the production queue, not merely whether the second Task was scheduled.
-    while await writer.queuedForTest < 2 { await Task.yield() }
-    try await Task.sleep(for: .milliseconds(100))
-    let callsWhileBlocked = await socket.calls
+    // The sibling reaches the socket while the first send is still held.
+    while await socket.calls < 2 {
+      try await Task.sleep(for: .milliseconds(10))
+      if StallDiagnostics.now() - started > 5 { break }
+    }
+    let callsWhileHeld = await socket.calls
     let blocked = recorder.snapshot(ports: [1001], since: started)
-    let queued = recorder.snapshot(ports: [1002], since: started)
+    try await second.value
+    let siblingDone = recorder.snapshot(ports: [1002], since: started)
     await socket.release()
     try await first.value
-    try await second.value
-    guard callsWhileBlocked == 1, await socket.calls == 2 else {
-      print("writer-stall-not-reproduced")
+    guard callsWhileHeld == 2 else {
+      print("writer-chain-reintroduced")
       exit(1)
     }
-    guard blocked["sending"] as? Int == 1, blocked["queued"] as? Int == 0,
-      queued["sending"] as? Int == 0, queued["queued"] as? Int == 1,
-      recorder.snapshot(ports: [1002], since: started)["completed"] as? Int == 1 else {
+    guard blocked["sending"] as? Int == 1, siblingDone["completed"] as? Int == 1 else {
       print("writer-diagnostics-not-reproduced")
       exit(1)
     }
-    print("writer-stall-reproduced: sibling waits until blocked send is released")
+    print("writer-independent: sibling sent while the first send was held")
   }
 }

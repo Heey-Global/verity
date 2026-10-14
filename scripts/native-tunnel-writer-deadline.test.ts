@@ -14,12 +14,19 @@ function section(start: string, end: string): string {
   return source.slice(from, to);
 }
 
-// The app's send queue is serial: every frame of every stream waits for the
-// one before it. The heartbeat bypasses that queue, so a send that never
-// completes leaves the attachment silent in one direction with its pongs still
-// arriving, and nothing ends it. Swift only compiles on the Apple workflow, so
-// these guards read the shape of the fix out of the source.
-it('bounds every WebSocket send in the writer queue and ends the attachment on a miss', () => {
+// The app once chained every frame of every stream behind the one before it.
+// The heartbeat bypasses that path, so a send that never completed left the
+// attachment silent in one direction with its pongs still arriving, and
+// nothing ended it. Swift only compiles on the Apple workflow, so these guards
+// read the shape of the fix out of the source.
+it('does not chain sends across streams', () => {
+  const writer = section('  private actor Writer {', '\n  private final class Stream');
+  // Order matters only within a stream, which each stream's own pump keeps;
+  // a chain across streams ties every stream to the slowest send.
+  expect(writer).not.toMatch(/previous|predecessor/u);
+});
+
+it('bounds every WebSocket send and ends the attachment on a miss', () => {
   const writer = section('  private actor Writer {', '\n  private final class Stream');
   // The one call that reaches the socket is inside the deadline; a bare call
   // would wait on the transport for good.

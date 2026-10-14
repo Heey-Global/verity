@@ -9,22 +9,20 @@ import Network
 // the Core certificate after the tunnel has forwarded the encrypted bytes.
 @available(iOS 17.0, macOS 14.0, *)
 final class RemoteAppTunnel: @unchecked Sendable {
-  // Every frame of the attachment goes out through here, one after another. A
-  // send that never completes would otherwise hold every later frame of every
-  // stream for good while the heartbeat, which bypasses this queue, keeps the
-  // socket looking alive: the attachment then goes silent in one direction
-  // with its pongs still arriving. Each send is bounded instead, and a send
-  // that misses its deadline ends the attachment, which the app replaces. A
-  // tunnel attaches once and owns one Writer, so nothing here outlives it.
+  // Every frame of the attachment goes out through here. Sends are not
+  // chained: order matters only within a stream, and each stream's pump sends
+  // one frame after another itself, while the socket carries the streams'
+  // frames in whatever order they arrive. A chain across streams once tied
+  // every stream to the slowest send; a send that never completed then held
+  // every later frame for good while the heartbeat, which bypasses this
+  // path, kept the socket looking alive. What remains is a watchdog on the
+  // attachment as a whole: a send is bounded, and the bound is measured
+  // against progress, so the attachment ends only when no send at all has
+  // completed for the period, which the app answers by replacing it. A tunnel
+  // attaches once and owns one Writer, so nothing here outlives it.
   private actor Writer {
-    // A send completes once its frame is handed to the connection, which can
-    // mean waiting for earlier frames to drain. The deadline is therefore
-    // measured against progress, not one frame: it ends the attachment only
-    // when no send at all has completed for this long. A slow link completes
-    // sends steadily and is left alone; a queue that has stopped is not.
     static let sendDeadlineSeconds: UInt64 = 15
     private let socket: URLSessionWebSocketTask
-    private var previous: Task<Void, Error>?
     private var onStall: (@Sendable () -> Void)?
     private var stallRaised = false
     private let progress = Progress()
@@ -44,38 +42,28 @@ final class RemoteAppTunnel: @unchecked Sendable {
 #if VERITY_STALL_DIAGNOSTICS
       let diagnostics = stallDiagnostics
       let token = diagnostics?.enqueue(frame["streamId"] as? String ?? "")
+      var failed = true
+      defer { diagnostics?.finished(token, failed: failed) }
+      diagnostics?.started(token)
 #endif
-      let predecessor = previous
-      let task = Task {
-#if VERITY_STALL_DIAGNOSTICS
-        var failed = true
-        defer { diagnostics?.finished(token, failed: failed) }
-#endif
-        if let predecessor { try await predecessor.value }
-#if VERITY_STALL_DIAGNOSTICS
-        diagnostics?.started(token)
-#endif
+      do {
         try await Self.bounded(seconds: Self.sendDeadlineSeconds, progress: progress) {
           try await socket.send(.string(text))
         }
-#if VERITY_STALL_DIAGNOSTICS
-        failed = false
-#endif
-      }
-      previous = task
-      do {
-        try await task.value
       } catch {
-        // Only a missed deadline ends the attachment here, once: every frame
-        // queued behind the stalled one fails with the same error. A transport
-        // error means the socket is already going down for a reason the reader
-        // or heartbeat records; stopping on it would hide that reason.
+        // Only a missed deadline ends the attachment here, once: every send
+        // in flight on a stopped socket misses it together. A transport error
+        // means the socket is already going down for a reason the reader or
+        // heartbeat records; stopping on it would hide that reason.
         if Self.isStall(error), !stallRaised, let onStall {
           stallRaised = true
           onStall()
         }
         throw error
       }
+#if VERITY_STALL_DIAGNOSTICS
+      failed = false
+#endif
     }
 
     static func isStall(_ error: Error) -> Bool {
