@@ -87,9 +87,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
     // a stopped one.
     private final class SendProgress: @unchecked Sendable {
       private let lock = NSLock()
-      private var count = 0
-      func advance() { lock.lock(); count += 1; lock.unlock() }
-      var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+      private var last = ProcessInfo.processInfo.systemUptime
+      func advance() { lock.lock(); last = ProcessInfo.processInfo.systemUptime; lock.unlock() }
+      /// Uptime of the last completed send, or of the writer's creation.
+      var mark: TimeInterval { lock.lock(); defer { lock.unlock() }; return last }
     }
 
     // Resumes a continuation once, whichever of the send and the deadline
@@ -121,12 +122,13 @@ final class RemoteAppTunnel: @unchecked Sendable {
         // lets a send that was in flight across a suspension land first,
         // since the clock ran on while nothing here could.
         let sleeper = Task {
-          var seen = progress.value
+          var mark = max(progress.mark, ProcessInfo.processInfo.systemUptime)
           while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-            if progress.value != seen { seen = progress.value; continue }
+            let wait = mark + TimeInterval(seconds) - ProcessInfo.processInfo.systemUptime
+            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+            if progress.mark != mark { mark = progress.mark; continue }
             try? await Task.sleep(nanoseconds: 1_000_000_000)
-            if progress.value != seen { seen = progress.value; continue }
+            if progress.mark != mark { mark = progress.mark; continue }
             break
           }
           if !Task.isCancelled { once.resume(RemoteSmokeError.sendStalled) }
