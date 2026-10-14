@@ -174,16 +174,18 @@ it('a late Core start cannot restore ready after Stop', async () => {
   expect(api.stopConnectionRecording).toHaveBeenLastCalledWith(runId);
 });
 
-it.each(['stop', 'switch'] as const)(
+it.each(['stop', 'switch', 'expiry'] as const)(
   'does not restore Ready after %s during final persistence',
   async (action) => {
+    if (action === 'expiry') jest.useFakeTimers();
     const api = client();
     const view = render(<ConnectionRecording client={api as never} />);
     let release!: () => void;
     let pending = false;
+    let writes = 0;
     const write = jest.mocked(AsyncStorage.setItem).getMockImplementation()!;
     const spy = jest.spyOn(AsyncStorage, 'setItem').mockImplementation(async (key, value) => {
-      if (api.getConnectionRecording.mock.calls.length && !pending) {
+      if (++writes === 4) {
         pending = true;
         await new Promise<void>((done) => {
           release = done;
@@ -197,11 +199,16 @@ it.each(['stop', 'switch'] as const)(
       if (action === 'stop') {
         fireEvent.press(screen.getByText('Stop and collect'));
         await waitFor(() => expect(mockStop).toHaveBeenCalled());
-      } else {
+      } else if (action === 'switch') {
         mockServerId = 'other-core';
         view.rerender(<ConnectionRecording client={client() as never} />);
         await act(async () => {
           await Promise.resolve();
+        });
+      }
+      if (action === 'expiry') {
+        await act(async () => {
+          jest.advanceTimersByTime(31_000);
         });
       }
       await act(async () => {
@@ -210,6 +217,7 @@ it.each(['stop', 'switch'] as const)(
       expect(screen.queryByText(/Ready — turn off VPN/)).toBeNull();
     } finally {
       spy.mockImplementation(write);
+      if (action === 'expiry') jest.useRealTimers();
     }
   },
 );

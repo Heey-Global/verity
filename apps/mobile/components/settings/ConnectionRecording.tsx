@@ -278,6 +278,10 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         )
           throw new Error('Not armed');
       });
+      captureDeadline.current = Math.min(captureDeadline.current, performance.now() + 30_000);
+      saved.expiresAt = Math.min(saved.expiresAt, Date.now() + 30_000);
+      await save(saved);
+      if (!current()) return;
       const status = await freshStatus(client, saved.runId);
       if (!current()) return;
       if (status.error === 'uplink_version_unavailable')
@@ -297,13 +301,10 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         !status.evidence.readiness.app.bound ||
         !status.evidence.readiness.app.active ||
         !left ||
+        captureDeadline.current <= performance.now() ||
         saved.expiresAt <= Date.now()
       )
         throw new Error('Not ready');
-      captureDeadline.current = Math.min(captureDeadline.current, performance.now() + 30_000);
-      saved.expiresAt = Math.min(saved.expiresAt, Date.now() + 30_000);
-      await save(saved);
-      if (!current()) return;
       setRemaining(Math.min(left, saved.expiresAt - Date.now()));
       setReady(true);
       setMessage('Ready — turn off VPN and use the app normally. Stop and collect when finished.');
