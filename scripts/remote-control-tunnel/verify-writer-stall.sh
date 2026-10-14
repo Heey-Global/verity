@@ -27,6 +27,11 @@ Path(sys.argv[2], 'MutatedWriter.swift').write_text(prefix + writer.replace(muta
 needle = '        diagnostics?.started(token)'
 assert writer.count(needle) == 1
 Path(sys.argv[2], 'UnobservedWriter.swift').write_text(prefix + writer.replace(needle, '', 1))
+# A deadline whose sleeper never resumes the continuation leaves a stuck send
+# stuck; the deadline check must see that, not the host watchdog.
+needle = '          if !Task.isCancelled { once.resume(RemoteSmokeError.sendStalled) }'
+assert writer.count(needle) == 1
+Path(sys.argv[2], 'DeadlessWriter.swift').write_text(prefix + writer.replace(needle, '          if Task.isCancelled { once.resume(RemoteSmokeError.sendStalled) }', 1))
 PY
 run_bounded() {
   python3 - "$@" <<'PY'
@@ -55,3 +60,17 @@ run_bounded "$tmp/UnobservedWriter" > "$tmp/unobserved.log" 2>&1
 status=$?
 set -e
 [[ "$status" == 1 ]] && grep -q '^writer-diagnostics-not-reproduced$' "$tmp/unobserved.log"
+
+# The send deadline against a socket whose send never completes: the actual
+# Writer must give up with a stall and raise its hook; a Writer whose sleeper
+# cannot resume the wait must be caught by the check's own bound.
+for variant in Writer DeadlessWriter; do
+  run_bounded xcrun swiftc -parse-as-library -D VERITY_STALL_DIAGNOSTICS -target "$(uname -m)-apple-macosx14.0" \
+    "$tmp/$variant.swift" scripts/remote-control-staging/StallWriterDiagnostics.swift scripts/remote-control-tunnel/WriterDeadline.swift -o "$tmp/$variant-deadline"
+done
+run_bounded "$tmp/Writer-deadline"
+set +e
+run_bounded "$tmp/DeadlessWriter-deadline" > "$tmp/deadless.log" 2>&1
+status=$?
+set -e
+[[ "$status" == 1 ]] && grep -q '^writer-deadline-not-enforced$' "$tmp/deadless.log"
