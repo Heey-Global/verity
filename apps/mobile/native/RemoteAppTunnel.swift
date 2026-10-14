@@ -17,6 +17,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
   // that misses its deadline or fails ends the attachment, which the app
   // replaces.
   private actor Writer {
+    // A frame carries at most one 16 KiB local read, about 22 KB encoded, so
+    // the deadline asks for a little over 1 KB/s of uplink.
     static let sendDeadlineSeconds: UInt64 = 15
     private let socket: URLSessionWebSocketTask
     private var previous: Task<Void, Error>?
@@ -76,7 +78,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     // Resumes a continuation once, whichever of the send and the deadline
     // finishes first. A task group would wait for the send as well, and the
     // transport's send ignores cancellation and may never return.
-    private final class Once {
+    private final class Once: @unchecked Sendable {
       private let lock = NSLock()
       private var continuation: CheckedContinuation<Void, Error>?
       init(_ continuation: CheckedContinuation<Void, Error>) { self.continuation = continuation }
@@ -92,12 +94,15 @@ final class RemoteAppTunnel: @unchecked Sendable {
     private static func bounded(seconds: UInt64, _ body: @escaping @Sendable () async throws -> Void) async throws {
       try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
         let once = Once(continuation)
-        Task {
-          do { try await body(); once.resume(nil) } catch { once.resume(error) }
+        // The sleeper is cancelled once the send is over, so a long transfer
+        // does not keep one timer per frame alive.
+        let sleeper = Task {
+          try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+          if !Task.isCancelled { once.resume(RemoteSmokeError.sendStalled) }
         }
         Task {
-          try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-          once.resume(RemoteSmokeError.sendStalled)
+          do { try await body(); once.resume(nil) } catch { once.resume(error) }
+          sleeper.cancel()
         }
       }
     }
@@ -980,24 +985,24 @@ final class RemoteAppTunnel: @unchecked Sendable {
         finish(id, stream)
         return
       }
-      let first = lock.withLock { () -> Bool in
+      lock.withLock {
         if stream.sentBytes == 0 {
           dataDiagnostics.record(.streamSendRequested, streamId: id)
-          return true
         }
-        return false
       }
-      // Armed before the send, not after: a first send that never completes
-      // is exactly the case the watch exists for.
-      if first { armStallWatch(stream, id: id) }
+      // A first send that never completes is the writer deadline's case, not
+      // this watch's: armed after the send, the watch measures Core's reply.
       try await writer.send(["type": "stream.data", "streamId": id,
         "seq": stream.outgoingSequence, "payload": bytes.base64EncodedString()])
-      lock.withLock {
+      let first = lock.withLock { () -> Bool in
+        let first = stream.sentBytes == 0
         stream.noteRecord(bytes, incoming: false)
         stream.sentBytes += bytes.count
         sentBytes += bytes.count
         if first { logStream(id, stream, event: "first_local_data_sent") }
+        return first
       }
+      if first { armStallWatch(stream, id: id) }
       lock.withLock {
         stream.outgoingSequence += 1
         retainDiagnosticStream(stream)

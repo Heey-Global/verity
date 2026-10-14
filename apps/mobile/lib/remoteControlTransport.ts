@@ -61,6 +61,13 @@ const STALL_STOP_GRACE_MS = 3_000;
 const STALL_REPLACEMENT_WINDOW_MS = 60_000;
 let lastStallReplacement: { key: string; at: number } | null = null;
 
+// The native tunnel ends itself with these when the attachment can no longer
+// carry frames: a stream or send that stalled, or a send the transport
+// refused. Each is replaced; any other end is left to route selection.
+function isReplaceableStop(reason: string | null | undefined): boolean {
+  return reason?.startsWith('stall') === true || reason === 'send failed';
+}
+
 function stallReplacementAllowed(key: string): boolean {
   return (
     lastStallReplacement?.key !== key ||
@@ -735,7 +742,7 @@ export async function recoverRemoteControlRead(url: string, port: number): Promi
         // window. Any other end is left to the next request's route
         // selection, which clears `active` the same way when it finds the
         // tunnel stopped.
-        if (reason?.startsWith('stall') !== true || keyFor(target) !== key) return 0;
+        if (!isReplaceableStop(reason) || keyFor(target) !== key) return 0;
         if (!stallReplacementAllowed(key)) {
           lastFailure = { key, stage: 'probe', detail: 'stall: replaced once already this minute' };
           retryAfter = Date.now() + 15_000;
@@ -982,7 +989,7 @@ async function open(
         (error instanceof Error &&
           error.message.startsWith('Remote Core probe timed out') &&
           (await tunnelStoppedWithin(STALL_STOP_GRACE_MS)))) &&
-      (await tunnelStopReason())?.startsWith('stall') === true;
+      isReplaceableStop(await tunnelStopReason());
     if (tunnelStarted) {
       try {
         await stopNativeTunnel('probe_failure');

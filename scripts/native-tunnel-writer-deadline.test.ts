@@ -42,7 +42,10 @@ it('bounds every WebSocket send in the writer queue and ends the attachment on a
     new URL('../apps/mobile/lib/remoteControlTransport.ts', import.meta.url),
     'utf8',
   );
-  expect(transport).toContain("startsWith('stall')");
+  expect(transport).toMatch(
+    /reason\?\.startsWith\('stall'\) === true \|\| reason === 'send failed'/u,
+  );
+  expect(source).toMatch(/stop\(reason: "send failed", cause: \.sendFailure\)/u);
 });
 
 it('never lets the frame reader wait on the writer queue', () => {
@@ -52,14 +55,4 @@ it('never lets the frame reader wait on the writer queue', () => {
   const reset = section('  private func reset(_ id: String, code: String) async {', '\n  }\n');
   expect(reset).not.toMatch(/^\s*try\? await writer\.send/mu);
   expect(reset).toMatch(/Task \{ try\? await writer\.send\(\["type": "stream\.reset"/u);
-});
-
-it('arms the first-response watch before the first send, not after it', () => {
-  const pump = section('  private func pumpLocal(', '\n  private func read(');
-  const arm = pump.indexOf('armStallWatch(stream, id: id)');
-  const send = pump.indexOf('writer.send(["type": "stream.data"');
-  expect(arm).toBeGreaterThan(-1);
-  expect(send).toBeGreaterThan(-1);
-  // Armed after the send, a first send that never completes has no watch at all.
-  expect(arm).toBeLessThan(send);
 });
