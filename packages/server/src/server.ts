@@ -4427,21 +4427,28 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         !body ||
         typeof body !== 'object' ||
         Object.keys(body).some(
-          (key) => !['runId', 'durationMs', 'diagnosticsVersion'].includes(key),
+          (key) => !['runId', 'durationMs', 'diagnosticsVersion', 'targetSessionId'].includes(key),
         ) ||
         (body.diagnosticsVersion !== undefined &&
           body.diagnosticsVersion !== 1 &&
-          body.diagnosticsVersion !== 2) ||
+          body.diagnosticsVersion !== 2 &&
+          body.diagnosticsVersion !== 3) ||
         typeof body.runId !== 'string' ||
-        typeof body.durationMs !== 'number'
+        typeof body.durationMs !== 'number' ||
+        (body.targetSessionId !== undefined && typeof body.targetSessionId !== 'string')
       )
         throw new Error('invalid_recording');
-      return manager.start(body.runId, body.durationMs, body.diagnosticsVersion);
+      return manager.start(
+        body.runId,
+        body.durationMs,
+        body.diagnosticsVersion,
+        body.targetSessionId,
+      );
     }),
   );
   app.get('/api/remote-control/recordings/:runId', async (request, reply) =>
     recordingRequest(request, reply, (manager) =>
-      manager.status((request.params as { runId: string }).runId),
+      manager.refreshStatus((request.params as { runId: string }).runId),
     ),
   );
   app.delete('/api/remote-control/recordings/:runId', async (request, reply) =>

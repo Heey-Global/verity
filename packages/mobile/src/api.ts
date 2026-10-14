@@ -1,6 +1,12 @@
 import { beginRuntimeApiRequest, runtimeRequestGroup } from './runtimeDiagnostics.js';
 import { recordingDigest, type RecordingDigest } from './recording-digest.js';
-import { socketEvidenceExportSchema, socketEvidenceHashInput } from '@verity/events';
+import {
+  selectedEvidenceMetadataSchema,
+  selectedEvidenceExportSchema,
+  selectedEvidenceHashInput,
+  socketEvidenceExportSchema,
+  socketEvidenceHashInput,
+} from '@verity/events';
 import {
   recordingCoreRecordSchema,
   recordingUplinkRecordSchema,
@@ -1032,6 +1038,7 @@ export type ReturnPathStatus = z.infer<typeof returnPathStatusSchema>;
 
 export const connectionRecordingStatusSchema = z
   .object({
+    evidence: selectedEvidenceMetadataSchema.optional(),
     version: z.literal(1),
     runId: z.string().uuid(),
     phase: z.enum(['starting', 'recording', 'stopped', 'expired', 'failed']),
@@ -1075,6 +1082,7 @@ export const connectionRecordingExportSchema = z
         data: z
           .union([
             socketEvidenceExportSchema,
+            selectedEvidenceExportSchema,
             z
               .object({
                 version: z.literal(1),
@@ -1798,6 +1806,8 @@ export interface VerityClientOptions {
    *  inject `expo/fetch`, which streams `expo-file-system` File instances without
    *  coercing them through React Native's legacy fetch bridge. */
   uploadFetch?: typeof fetch;
+  /** Direct authenticated transport for recording preparation; must not queue behind DATA admission. */
+  recordingFetch?: typeof fetch;
   /** Allow platform background-upload objects to bypass `uploadFetch`. Disable
    * this when `uploadFetch` enforces transport security such as certificate pinning. */
   allowBackgroundUpload?: boolean;
@@ -2419,6 +2429,7 @@ export class VerityClient {
   private readonly localPreviewBaseUrl: string | null;
   private readonly fetchImpl: typeof fetch;
   private readonly uploadFetchImpl: typeof fetch;
+  private readonly recordingFetchImpl: typeof fetch;
   private readonly allowBackgroundUpload: boolean;
   private readonly getToken: () => string | null | undefined;
   private readonly onUnauthorized: (() => void) | undefined;
@@ -2431,6 +2442,7 @@ export class VerityClient {
       opts.localPreviewBaseUrl === undefined ? this.baseUrl : opts.localPreviewBaseUrl;
     this.fetchImpl = opts.fetch ?? fetch;
     this.uploadFetchImpl = opts.uploadFetch ?? this.fetchImpl;
+    this.recordingFetchImpl = opts.recordingFetch ?? this.fetchImpl;
     this.allowBackgroundUpload = opts.allowBackgroundUpload ?? true;
     this.getToken = opts.getToken ?? ((): undefined => undefined);
     this.onUnauthorized = opts.onUnauthorized;
@@ -3349,30 +3361,49 @@ export class VerityClient {
   async startConnectionRecording(
     runId: string,
     durationMs: number,
-    diagnosticsVersion: 1 | 2 = 1,
+    diagnosticsVersion: 1 | 2 | 3 = 1,
+    targetSessionId?: string,
   ): Promise<ConnectionRecordingStatus> {
     z.string().uuid().parse(runId);
     z.number().int().min(1).max(120_000).parse(durationMs);
-    z.union([z.literal(1), z.literal(2)]).parse(diagnosticsVersion);
+    z.union([z.literal(1), z.literal(2), z.literal(3)]).parse(diagnosticsVersion);
+    if (diagnosticsVersion === 3) {
+      z.string()
+        .regex(/^[A-Za-z0-9_-]{1,128}$/u)
+        .parse(targetSessionId);
+      z.number().int().min(1).max(30_000).parse(durationMs);
+    } else if (targetSessionId !== undefined) throw new Error('Unexpected recording target');
     return connectionRecordingStatusSchema.parse(
       await (
-        await this.request('/api/remote-control/recordings', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            runId,
-            durationMs,
-            ...(diagnosticsVersion === 2 ? { diagnosticsVersion } : {}),
-          }),
-        })
+        await this.request(
+          '/api/remote-control/recordings',
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              ...(diagnosticsVersion === 3 ? { targetSessionId } : {}),
+              runId,
+              durationMs,
+              ...(diagnosticsVersion !== 1 ? { diagnosticsVersion } : {}),
+            }),
+          },
+          this.recordingFetchImpl,
+        )
       ).json(),
     );
   }
-  async getConnectionRecording(runId: string): Promise<ConnectionRecordingStatus> {
+  async getConnectionRecording(
+    runId: string,
+    signal?: AbortSignal,
+  ): Promise<ConnectionRecordingStatus> {
     z.string().uuid().parse(runId);
     return connectionRecordingStatusSchema.parse(
       await (
-        await this.request(`/api/remote-control/recordings/${runId}`, { method: 'GET' })
+        await this.request(
+          `/api/remote-control/recordings/${runId}`,
+          { method: 'GET', ...(signal ? { signal } : {}) },
+          this.recordingFetchImpl,
+        )
       ).json(),
     );
   }
@@ -3380,18 +3411,26 @@ export class VerityClient {
     z.string().uuid().parse(runId);
     return connectionRecordingStatusSchema.parse(
       await (
-        await this.request(`/api/remote-control/recordings/${runId}`, { method: 'DELETE' })
+        await this.request(
+          `/api/remote-control/recordings/${runId}`,
+          { method: 'DELETE' },
+          this.recordingFetchImpl,
+        )
       ).json(),
     );
   }
   async exportConnectionRecording(
     runId: string,
-    expectedVersion?: 1 | 2,
+    expectedVersion?: 1 | 2 | 3,
   ): Promise<ConnectionRecordingExport> {
     z.string().uuid().parse(runId);
-    const response = await this.request(`/api/remote-control/recordings/${runId}/export`, {
-      method: 'GET',
-    });
+    const response = await this.request(
+      `/api/remote-control/recordings/${runId}/export`,
+      {
+        method: 'GET',
+      },
+      this.recordingFetchImpl,
+    );
     const text = await response.text();
     if (new TextEncoder().encode(text).byteLength > 2 * 1024 * 1024)
       throw new Error('Recording export too large');
@@ -3400,10 +3439,14 @@ export class VerityClient {
     const evidence = result.uplink.data;
     if (evidence && expectedVersion !== undefined && evidence.version !== expectedVersion)
       throw new Error('Recording diagnostic version mismatch');
-    if (evidence?.version === 2) {
+    if (evidence?.version === 2 || evidence?.version === 3) {
       if (
         new TextEncoder().encode(JSON.stringify(evidence)).byteLength > 262144 ||
-        (await this.recordingDigest(socketEvidenceHashInput(evidence))) !== evidence.exportHash
+        (await this.recordingDigest(
+          evidence.version === 3
+            ? selectedEvidenceHashInput(evidence)
+            : socketEvidenceHashInput(evidence),
+        )) !== evidence.exportHash
       )
         throw new Error('Recording export hash mismatch');
     }

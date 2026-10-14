@@ -8,9 +8,10 @@ The control connection advertises `remote-diagnostics-v2` alongside version 1.
 `diagnostics.start` opts in with `diagnosticsVersion: 2`; omission selects version 1.
 The version remains fixed for the run. Status, stop and export requests keep their
 existing fields. A missing capability or a mismatched response fails explicitly.
-The paired Core HTTP start endpoint follows the same default. The updated app
-requests version 2 and retains its expected version when saving the run locally.
-Old apps can continue to request version 1.
+The paired Core HTTP start endpoint follows the same default. Saved version 2
+runs retain their expected version for collection. New App captures use the
+[selected-session version 3 contract](socket-evidence-v3.md). Old apps can continue
+to request version 1.
 
 Uplink samples selected sockets at a target interval of 100 milliseconds. Actual
 interval and lag are observations; scheduling does not promise a precise cadence.

@@ -1,11 +1,18 @@
 import {
   DIAGNOSTICS_CAPABILITY,
   DIAGNOSTICS_V2_CAPABILITY,
+  DIAGNOSTICS_V3_CAPABILITY,
   DIAGNOSTICS_TIMEOUT_MS,
   parseRecordingResponse,
 } from './uplink-recording.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { socketEvidenceExportSchema, socketEvidenceHashInput } from '@verity/events';
+import {
+  selectedEvidenceExportSchema,
+  selectedEvidenceHashInput,
+  selectedEvidenceMetadataSchema,
+  socketEvidenceExportSchema,
+  socketEvidenceHashInput,
+} from '@verity/events';
 import type { VeritySettingsPatch, VeritySettingsRecord, EventStore } from '@verity/store';
 import WebSocket from 'ws';
 import type {
@@ -197,7 +204,11 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private remoteNegotiated = false;
   private diagnosticsNegotiated = false;
   private diagnosticsV2Negotiated = false;
-  private readonly recordingVersions = new Map<string, { version: 1 | 2; until: number }>();
+  private diagnosticsV3Negotiated = false;
+  private readonly recordingVersions = new Map<
+    string,
+    { version: 1 | 2 | 3; until: number; targetSessionId?: string }
+  >();
   private lastRemoteDescriptorState: string | undefined;
   private remoteInstallation:
     { readonly installationId: string; readonly installationHandle: string } | undefined;
@@ -600,9 +611,11 @@ export class UplinkControlClient implements PreviewEdgeControl {
             ? 'exported'
             : 'status';
     const version = this.recordingVersions.get(runId)?.version ?? 1;
+    if (version === 3 && !this.diagnosticsV3Negotiated)
+      throw new Error('diagnostics_version_unavailable');
     if (version === 2 && !this.diagnosticsV2Negotiated)
       throw new Error('diagnostics_version_unavailable');
-    return parseRecordingResponse(
+    const result = parseRecordingResponse(
       await this.request(`diagnostics.${action}`, { runId, ...fields }, [
         `diagnostics.${reply}`,
         'diagnostics.error',
@@ -610,38 +623,84 @@ export class UplinkControlClient implements PreviewEdgeControl {
       runId,
       version,
     );
+    if ('version' in result && result.version === 3) {
+      const target = this.recordingVersions.get(runId)?.targetSessionId;
+      if (
+        !target ||
+        result.targetSession !== createHash('sha256').update(target).digest('hex').slice(0, 16)
+      )
+        throw new Error('diagnostics_selection_mismatch');
+    }
+    return result;
   }
 
   async startRecording(
     runId: string,
     durationMs: number,
-    diagnosticsVersion: 1 | 2 = 1,
+    diagnosticsVersion: 1 | 2 | 3 = 1,
+    targetSessionId?: string,
   ): Promise<void> {
     if (!Number.isInteger(durationMs) || durationMs < 1 || durationMs > 120000)
       throw new Error('invalid_recording');
+    if (
+      diagnosticsVersion === 3 &&
+      (durationMs > 30000 || !targetSessionId || !/^[A-Za-z0-9_-]{1,128}$/u.test(targetSessionId))
+    )
+      throw new Error('invalid_recording');
+    if (diagnosticsVersion !== 3 && targetSessionId !== undefined)
+      throw new Error('invalid_recording');
+    if (diagnosticsVersion === 3 && !this.diagnosticsV3Negotiated)
+      throw new Error('diagnostics_version_unavailable');
     for (const [id, entry] of this.recordingVersions)
       if (entry.until <= Date.now()) this.recordingVersions.delete(id);
     const existing = this.recordingVersions.get(runId);
-    if (existing && existing.version !== diagnosticsVersion)
+    if (
+      existing &&
+      (existing.version !== diagnosticsVersion || existing.targetSessionId !== targetSessionId)
+    )
       throw new Error('diagnostics_version_conflict');
     if (!existing && this.recordingVersions.size >= 8) throw new Error('diagnostics_capacity');
     if (diagnosticsVersion === 2 && !this.diagnosticsV2Negotiated)
       throw new Error('diagnostics_version_unavailable');
     this.recordingVersions.set(
       runId,
-      existing ?? { version: diagnosticsVersion, until: Date.now() + 3600000 },
+      existing ?? {
+        version: diagnosticsVersion,
+        until: Date.now() + 3600000,
+        ...(targetSessionId !== undefined ? { targetSessionId } : {}),
+      },
     );
     const result = await this.recordingRequest('start', runId, {
       durationMs,
-      ...(diagnosticsVersion === 2 ? { diagnosticsVersion } : {}),
+      ...(diagnosticsVersion !== 1 ? { diagnosticsVersion } : {}),
+      ...(diagnosticsVersion === 3 ? { targetSessionId } : {}),
     });
-    if (result.state !== 'recording' || Date.parse(result.expiresAt) <= Date.now())
+    if (
+      !['recording', ...(diagnosticsVersion === 3 ? ['preparing'] : [])].includes(result.state) ||
+      (diagnosticsVersion !== 3 && Date.parse(result.expiresAt) <= Date.now())
+    )
       throw new Error('diagnostics_not_recording');
+  }
+
+  async recordingStatus(runId: string) {
+    const result = await this.recordingRequest('status', runId);
+    if (result.type !== 'diagnostics.status') throw new Error('invalid_diagnostics_response');
+    if ('version' in result && result.version === 3) {
+      return selectedEvidenceMetadataSchema.parse(
+        Object.fromEntries(
+          Object.entries(result).filter(
+            ([key]) => !['type', 'requestId', 'exportHash'].includes(key),
+          ),
+        ),
+      );
+    }
+    return result;
   }
 
   async stopRecording(runId: string): Promise<void> {
     const result = await this.recordingRequest('stop', runId);
-    if (result.state === 'recording') throw new Error('diagnostics_not_stopped');
+    if (result.state === 'recording' || result.state === 'preparing')
+      throw new Error('diagnostics_not_stopped');
   }
 
   async exportRecording(runId: string): Promise<unknown> {
@@ -654,11 +713,29 @@ export class UplinkControlClient implements PreviewEdgeControl {
       if (
         result.type !== 'diagnostics.exported' ||
         result.state === 'recording' ||
+        result.state === 'preparing' ||
         result.cursor !== cursor
       )
         throw new Error('invalid_diagnostics_export');
       const { records: batch, nextCursor } = result;
       const metadata = {
+        ...('version' in result && result.version === 3
+          ? selectedEvidenceMetadataSchema.parse(
+              Object.fromEntries(
+                Object.entries(result).filter(
+                  ([key]) =>
+                    ![
+                      'type',
+                      'requestId',
+                      'exportHash',
+                      'cursor',
+                      'nextCursor',
+                      'records',
+                    ].includes(key),
+                ),
+              ),
+            )
+          : {}),
         ...('version' in result
           ? {
               version: result.version,
@@ -689,8 +766,14 @@ export class UplinkControlClient implements PreviewEdgeControl {
       if (nextCursor === null) {
         if (records.length !== result.recordCount) throw new Error('incomplete_diagnostics_export');
         if ('version' in result) {
-          const evidence = socketEvidenceExportSchema.parse({ ...metadata, records });
-          const input = socketEvidenceHashInput(evidence);
+          const evidence =
+            result.version === 3
+              ? selectedEvidenceExportSchema.parse({ ...metadata, records })
+              : socketEvidenceExportSchema.parse({ ...metadata, records });
+          const input =
+            evidence.version === 3
+              ? selectedEvidenceHashInput(evidence)
+              : socketEvidenceHashInput(evidence);
           if (
             Buffer.byteLength(JSON.stringify(evidence)) > 262144 ||
             createHash('sha256').update(input, 'utf8').digest('hex') !== evidence.exportHash
@@ -917,6 +1000,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
                   REMOTE_CAPABILITY,
                   DIAGNOSTICS_CAPABILITY,
                   DIAGNOSTICS_V2_CAPABILITY,
+                  DIAGNOSTICS_V3_CAPABILITY,
                   'webhook-v1',
                 ],
                 channels: ['http', 'ws', REMOTE_CHANNEL],
@@ -1137,9 +1221,12 @@ export class UplinkControlClient implements PreviewEdgeControl {
         this.diagnosticsNegotiated =
           this.remoteNegotiated &&
           (negotiation.capabilities.has(DIAGNOSTICS_CAPABILITY) ||
-            negotiation.capabilities.has(DIAGNOSTICS_V2_CAPABILITY));
+            negotiation.capabilities.has(DIAGNOSTICS_V2_CAPABILITY) ||
+            negotiation.capabilities.has(DIAGNOSTICS_V3_CAPABILITY));
         this.diagnosticsV2Negotiated =
           this.remoteNegotiated && negotiation.capabilities.has(DIAGNOSTICS_V2_CAPABILITY);
+        this.diagnosticsV3Negotiated =
+          this.remoteNegotiated && negotiation.capabilities.has(DIAGNOSTICS_V3_CAPABILITY);
         this.remoteSupported = this.remoteNegotiated;
         this.remoteInstallation =
           installationHandle === undefined ? undefined : { installationId, installationHandle };
@@ -1452,6 +1539,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
     this.remoteNegotiated = false;
     this.diagnosticsNegotiated = false;
     this.diagnosticsV2Negotiated = false;
+    this.diagnosticsV3Negotiated = false;
     this.webhookNegotiated = false;
     this.remoteInstallation = undefined;
     this.clearRemoteSessions(reason);

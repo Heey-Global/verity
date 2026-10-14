@@ -210,3 +210,13 @@ export {
   socketEvidenceHashInput,
 } from './socket-evidence.js';
 export type { SocketEvidenceExport } from './socket-evidence.js';
+export {
+  selectedEvidenceMetadataSchema,
+  selectedEvidenceRecordSchema,
+  selectedEvidenceExportSchema,
+  selectedEvidenceHashInput,
+} from './selected-socket-evidence.js';
+export type {
+  SelectedEvidenceMetadata,
+  SelectedEvidenceExport,
+} from './selected-socket-evidence.js';
