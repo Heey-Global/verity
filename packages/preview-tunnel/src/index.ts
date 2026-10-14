@@ -597,6 +597,10 @@ export class PreviewEdge {
     // a close frame the peer would not understand yet.
     let client: WebSocket | undefined;
     const refuse = (status: string): void => {
+      // A refused dial has already released its slot; its deadline must not keep
+      // the pending request and socket alive or send a second reset later.
+      clearTimeout(dial);
+      pending.socket.off('close', onClientGone);
       release();
       this.streams.reset(streamId);
       if (!pending.socket.destroyed) {
@@ -1261,6 +1265,7 @@ export class PreviewConnector {
   private activeRequests = 0;
   private activeStreams = 0;
   private heartbeat: NodeJS.Timeout | undefined;
+  private heartbeatDeadline: NodeJS.Timeout | undefined;
 
   constructor(options: PreviewConnectorOptions) {
     validatePositiveIntegerOption(options.connectTimeoutMs, 'connectTimeoutMs');
@@ -1373,19 +1378,49 @@ export class PreviewConnector {
   }
 
   private startHeartbeat(socket: WebSocket): void {
-    let responsive = true;
-    socket.on('pong', () => {
-      responsive = true;
-    });
-    this.heartbeat = setInterval(() => {
-      if (socket.readyState !== WebSocket.OPEN) return;
-      if (!responsive) {
+    let pending: Buffer | undefined;
+    const active = (): boolean =>
+      this.socket === socket &&
+      this.heartbeat !== undefined &&
+      socket.readyState === WebSocket.OPEN;
+    const clearDeadline = (): void => {
+      if (this.heartbeatDeadline) clearTimeout(this.heartbeatDeadline);
+      this.heartbeatDeadline = undefined;
+    };
+    const deadline = (): void => {
+      this.heartbeatDeadline = setTimeout(() => {
+        if (!active() || !pending) return;
         this.options.onDiagnostic({ event: 'heartbeat.timeout' });
         socket.terminate();
-        return;
+      }, CONNECTOR_HEARTBEAT_MS);
+      this.heartbeatDeadline.unref();
+    };
+    socket.on('pong', (payload: Buffer) => {
+      if (!active() || !pending || !payload.equals(pending)) return;
+      pending = undefined;
+      clearDeadline();
+    });
+    this.heartbeat = setInterval(() => {
+      if (socket.readyState !== WebSocket.OPEN || pending) return;
+      const probe = randomBytes(8);
+      pending = probe;
+      // Socket writes can queue behind application frames. Bound that wait,
+      // then give the peer a separate reply window once the write completes.
+      deadline();
+      try {
+        socket.ping(probe, undefined, (error?: Error) => {
+          if (!active() || pending !== probe) return;
+          clearDeadline();
+          if (error) {
+            socket.terminate();
+            return;
+          }
+          deadline();
+        });
+      } catch {
+        clearDeadline();
+        socket.terminate();
       }
-      responsive = false;
-      socket.ping();
     }, CONNECTOR_HEARTBEAT_MS);
     this.heartbeat.unref();
   }
@@ -1393,6 +1428,8 @@ export class PreviewConnector {
   private stopHeartbeat(): void {
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = undefined;
+    if (this.heartbeatDeadline) clearTimeout(this.heartbeatDeadline);
+    this.heartbeatDeadline = undefined;
   }
 
   private handleMessage(socket: WebSocket, data: WebSocket.RawData, binary: boolean): void {
