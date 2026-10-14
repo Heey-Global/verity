@@ -13,11 +13,11 @@ actor URLSessionWebSocketTask {
   }
 }
 
-final class Flag: @unchecked Sendable {
+final class Counter: @unchecked Sendable {
   private let lock = NSLock()
-  private var raised = false
-  func raise() { lock.lock(); raised = true; lock.unlock() }
-  var value: Bool { lock.lock(); defer { lock.unlock() }; return raised }
+  private var count = 0
+  func raise() { lock.lock(); count += 1; lock.unlock() }
+  var value: Int { lock.lock(); defer { lock.unlock() }; return count }
 }
 
 // First answer wins; the loser is left running. A task group would wait for
@@ -40,11 +40,12 @@ struct WriterDeadlineCheck {
   static func main() async throws {
     let socket = URLSessionWebSocketTask()
     let writer = Writer(socket)
-    let stalled = Flag()
+    let stalled = Counter()
     await writer.setOnStall { stalled.raise() }
     let started = Date()
-    // Bounded by the harness, not by the deadline under test: a deadline that
-    // never fires must report itself rather than wait for the host watchdog.
+    // Bounded by the harness at twice the deadline under test, well inside
+    // the host's 120 s watchdog: a deadline that never fires must report
+    // itself rather than be killed.
     let result = await withCheckedContinuation { (continuation: CheckedContinuation<String, Never>) in
       let first = FirstAnswer(continuation)
       Task {
@@ -56,7 +57,7 @@ struct WriterDeadlineCheck {
         }
       }
       Task {
-        try? await Task.sleep(for: .seconds(45))
+        try? await Task.sleep(for: .seconds(30))
         first.answer("writer-deadline-not-enforced")
       }
     }
@@ -65,16 +66,22 @@ struct WriterDeadlineCheck {
       exit(1)
     }
     let elapsed = Date().timeIntervalSince(started)
-    guard stalled.value else {
+    guard stalled.value == 1 else {
       print("writer-deadline-hook-missing")
       exit(1)
     }
-    // A sibling queued behind the stalled send fails with it rather than waiting.
+    // A sibling queued behind the stalled send fails with the same stall
+    // rather than waiting, and does not raise the hook a second time.
     do {
       try await writer.send(["type": "stream.data", "streamId": "sibling"])
       print("writer-deadline-sibling-not-released")
       exit(1)
-    } catch {}
+    } catch {
+      guard Writer.isStall(error), stalled.value == 1 else {
+        print("writer-deadline-sibling-wrong-failure")
+        exit(1)
+      }
+    }
     print("writer-deadline-enforced: send stalled after \(Int(elapsed)) s, hook raised, sibling released")
   }
 }
