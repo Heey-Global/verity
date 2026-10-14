@@ -28,6 +28,11 @@ on:
         default: '180'
         required: true
         type: string
+      soak_streams:
+        description: Concurrent streams during the soak (1 to 8)
+        default: '6'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -45,11 +50,14 @@ jobs:
       - name: Validate soak duration
         env:
           SOAK_SECONDS: ${{ inputs.soak_seconds }}
+          SOAK_STREAMS: ${{ inputs.soak_streams }}
         run: |
           set -euo pipefail
           [[ "$SOAK_SECONDS" =~ ^[1-9][0-9]{1,2}$ ]] &&
             (( SOAK_SECONDS >= 30 && SOAK_SECONDS <= 600 )) ||
             { echo 'soak_seconds must be an integer from 30 to 600' >&2; exit 1; }
+          [[ "$SOAK_STREAMS" =~ ^[1-8]$ ]] ||
+            { echo 'soak_streams must be an integer from 1 to 8' >&2; exit 1; }
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,5 +82,7 @@ jobs:
           VERITY_REMOTE_CORE_PIN: ${{ inputs.core_pin }}
           VERITY_REMOTE_PROBE_MODE: app
           VERITY_REMOTE_PROBE_SOAK_SECONDS: ${{ inputs.soak_seconds }}
-          VERITY_REMOTE_PROBE_SOAK_STREAMS: '6'
+          # The device opens several streams at once; how many is the variable
+          # under test, so it is an input rather than a constant.
+          VERITY_REMOTE_PROBE_SOAK_STREAMS: ${{ inputs.soak_streams }}
         run: bash scripts/remote-control-staging/run.sh
