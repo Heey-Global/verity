@@ -18,6 +18,10 @@ const connector = new PreviewConnector({
     offlineServer?.origin ?? staticServer?.origin ?? required('VERITY_PREVIEW_TARGET_ORIGIN'),
   ...(maxBodyBytes === undefined ? {} : { maxBodyBytes }),
   ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
+  onDiagnostic: (diagnostic) =>
+    process.stderr.write(
+      `${JSON.stringify({ timestamp: new Date().toISOString(), ...diagnostic })}\n`,
+    ),
 });
 
 let stopping = false;

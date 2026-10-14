@@ -84,6 +84,13 @@ export interface PreviewEdgeOptions {
   expiresAt?: string;
 }
 
+export type PreviewConnectorDiagnostic =
+  | { event: 'connect.started' }
+  | { event: 'connect.established'; elapsedMs: number }
+  | { event: 'connect.failed'; cause: string; elapsedMs: number; statusCode?: number }
+  | { event: 'heartbeat.timeout' }
+  | { event: 'connection.closed'; code: number; opened: boolean; elapsedMs: number };
+
 export interface PreviewConnectorOptions {
   accessMode?: 'pin' | 'local-open';
   edgeUrl: string;
@@ -91,6 +98,10 @@ export interface PreviewConnectorOptions {
   targetOrigin: string;
   maxBodyBytes?: number;
   requestTimeoutMs?: number;
+  /** Bounded transport metadata only; excludes URLs, credentials and peer reason text. */
+  onDiagnostic?: (diagnostic: PreviewConnectorDiagnostic) => void;
+  /** Deadline for the edge upgrade, independent of target request deadlines. */
+  connectTimeoutMs?: number;
   maxConcurrentRequests?: number;
   /**
    * Ceiling for streams, which leave the request pool so a stalled EventSource
@@ -1227,6 +1238,21 @@ export class PreviewEdge {
   }
 }
 
+function connectorFailure(error: Error): { cause: string; statusCode?: number } {
+  // Raw transport errors can contain peer-controlled text or connection URLs.
+  if (error.message === 'Opening handshake has timed out') return { cause: 'handshake_timeout' };
+  const status = /^Unexpected server response: (\d{3})$/.exec(error.message);
+  if (status) return { cause: 'upgrade_rejected', statusCode: Number(status[1]) };
+  const code = (error as NodeJS.ErrnoException).code;
+  if (
+    code &&
+    ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN'].includes(code)
+  ) {
+    return { cause: code };
+  }
+  return { cause: 'transport_error' };
+}
+
 export class PreviewConnector {
   private readonly options: Required<PreviewConnectorOptions>;
   private readonly streams: StreamRegistry<ConnectorStream>;
@@ -1237,6 +1263,7 @@ export class PreviewConnector {
   private heartbeat: NodeJS.Timeout | undefined;
 
   constructor(options: PreviewConnectorOptions) {
+    validatePositiveIntegerOption(options.connectTimeoutMs, 'connectTimeoutMs');
     validatePositiveIntegerOption(options.maxBodyBytes, 'maxBodyBytes');
     validatePositiveIntegerOption(options.requestTimeoutMs, 'requestTimeoutMs');
     validatePositiveIntegerOption(options.maxConcurrentRequests, 'maxConcurrentRequests');
@@ -1268,6 +1295,8 @@ export class PreviewConnector {
       ...options,
       edgeUrl: edge.toString(),
       targetOrigin: target.origin,
+      connectTimeoutMs: options.connectTimeoutMs ?? 30_000,
+      onDiagnostic: options.onDiagnostic ?? (() => undefined),
       maxBodyBytes: options.maxBodyBytes ?? 10 * 1024 * 1024,
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
       maxConcurrentRequests: options.maxConcurrentRequests ?? 4,
@@ -1282,8 +1311,12 @@ export class PreviewConnector {
     if (this.socket) return Promise.reject(new Error('preview connector is already connected'));
     return new Promise((resolve, reject) => {
       this.stopHeartbeat();
+      const startedAt = Date.now();
+      this.options.onDiagnostic({ event: 'connect.started' });
       const socket = new WebSocket(this.options.edgeUrl, {
         headers: { authorization: `Bearer ${this.options.connectorToken}` },
+        // A stalled upgrade happens before the heartbeat can supervise the socket.
+        handshakeTimeout: this.options.connectTimeoutMs,
         maxPayload: encodedPayloadLimit(this.options.maxBodyBytes),
       });
       this.socket = socket;
@@ -1292,16 +1325,31 @@ export class PreviewConnector {
       socket.once('open', () => {
         opened = true;
         this.startHeartbeat(socket);
+        this.options.onDiagnostic({
+          event: 'connect.established',
+          elapsedMs: Date.now() - startedAt,
+        });
         resolve();
       });
       socket.once('error', (error) => {
         if (!opened) {
+          this.options.onDiagnostic({
+            event: 'connect.failed',
+            ...connectorFailure(error),
+            elapsedMs: Date.now() - startedAt,
+          });
           if (this.socket === socket) this.socket = undefined;
           socket.terminate();
           reject(error);
         }
       });
-      socket.once('close', () => {
+      socket.once('close', (code) => {
+        this.options.onDiagnostic({
+          event: 'connection.closed',
+          code,
+          opened,
+          elapsedMs: Date.now() - startedAt,
+        });
         if (this.socket === socket) {
           this.stopHeartbeat();
           this.socket = undefined;
@@ -1332,6 +1380,7 @@ export class PreviewConnector {
     this.heartbeat = setInterval(() => {
       if (socket.readyState !== WebSocket.OPEN) return;
       if (!responsive) {
+        this.options.onDiagnostic({ event: 'heartbeat.timeout' });
         socket.terminate();
         return;
       }

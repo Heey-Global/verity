@@ -9,6 +9,7 @@ import {
   PreviewConnector,
   PreviewEdge,
   type PreviewEdgeOptions,
+  type PreviewConnectorDiagnostic,
   generatePreviewSecret,
   hashPreviewPin,
   hashPreviewSecret,
@@ -919,6 +920,7 @@ describe('preview tunnel', () => {
   });
 
   it('rejects an incorrect connector capability', async () => {
+    const diagnostics = vi.fn<(diagnostic: PreviewConnectorDiagnostic) => void>();
     const token = generatePreviewSecret();
     const edge = new PreviewEdge({
       shareId: 'share-two',
@@ -933,11 +935,72 @@ describe('preview tunnel', () => {
       edgeUrl: `ws://127.0.0.1:${edgePort}/__verity/connector`,
       connectorToken: 'wrong-token',
       targetOrigin: 'http://127.0.0.1:3000',
+      onDiagnostic: diagnostics,
     });
     await expect(connector.connect()).rejects.toThrow();
+    expect(diagnostics).toHaveBeenCalledWith({
+      event: 'connect.failed',
+      cause: 'upgrade_rejected',
+      statusCode: 401,
+      elapsedMs: expect.any(Number),
+    });
+    expect(JSON.stringify(diagnostics.mock.calls)).not.toContain('wrong-token');
+  });
+
+  it('recovers when an edge accepts TCP but never completes the connector upgrade', async () => {
+    const diagnostics = vi.fn<(diagnostic: PreviewConnectorDiagnostic) => void>();
+    const server = createServer();
+    const sockets = new Set<Duplex>();
+    server.on('connection', (socket) => {
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
+    });
+    const websocketServer = new WebSocketServer({ noServer: true });
+    let stalled = true;
+    server.on('upgrade', (request, socket, head) => {
+      // An accepted TCP connection without an upgrade must not stall retries forever.
+      if (stalled) return;
+      websocketServer.handleUpgrade(request, socket, head, () => undefined);
+    });
+    const port = await listen(server);
+    const connector = new PreviewConnector({
+      edgeUrl: `ws://127.0.0.1:${port}/__verity/connector`,
+      connectorToken: 'test-token',
+      targetOrigin: 'http://127.0.0.1:3000',
+      connectTimeoutMs: 100,
+      requestTimeoutMs: 1,
+      onDiagnostic: diagnostics,
+    });
+    cleanups.push(async () => {
+      connector.close();
+      for (const socket of sockets) socket.destroy();
+      websocketServer.close();
+      await closeServer(server);
+    });
+    await expect(connector.connect()).rejects.toThrow('Opening handshake has timed out');
+    await connector.waitForDisconnect();
+    expect(diagnostics).toHaveBeenCalledWith({
+      event: 'connect.failed',
+      cause: 'handshake_timeout',
+      elapsedMs: expect.any(Number),
+    });
+    stalled = false;
+    await expect(connector.connect()).resolves.toBeUndefined();
+    expect(diagnostics.mock.calls.map(([diagnostic]) => diagnostic.event)).toEqual([
+      'connect.started',
+      'connect.failed',
+      'connection.closed',
+      'connect.started',
+      'connect.established',
+    ]);
+    expect(diagnostics).toHaveBeenLastCalledWith({
+      event: 'connect.established',
+      elapsedMs: expect.any(Number),
+    });
   });
 
   it('reports disconnects so the connector process can reconnect', async () => {
+    const diagnostics = vi.fn<(diagnostic: PreviewConnectorDiagnostic) => void>();
     const token = generatePreviewSecret();
     const edge = new PreviewEdge({
       shareId: 'share-reconnect',
@@ -952,6 +1015,7 @@ describe('preview tunnel', () => {
       edgeUrl: `ws://127.0.0.1:${edgePort}/__verity/connector`,
       connectorToken: token,
       targetOrigin: 'http://127.0.0.1:3000',
+      onDiagnostic: diagnostics,
     });
     await first.connect();
     await expect(first.connect()).rejects.toThrow('already connected');
@@ -963,7 +1027,52 @@ describe('preview tunnel', () => {
     });
     await replacement.connect();
     await expect(disconnected).resolves.toBeUndefined();
+    expect(diagnostics).toHaveBeenCalledWith({
+      event: 'connection.closed',
+      code: 4001,
+      opened: true,
+      elapsedMs: expect.any(Number),
+    });
+    expect(JSON.stringify(diagnostics.mock.calls)).not.toContain(token);
     cleanups.push(() => replacement.close());
+  });
+
+  it('distinguishes a missed heartbeat from a remote disconnect without logging peer text', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const diagnostics = vi.fn<(diagnostic: PreviewConnectorDiagnostic) => void>();
+    const server = createServer();
+    const websocketServer = new WebSocketServer({ server, autoPong: false });
+    const peerConnected = new Promise<WebSocket>((resolve) =>
+      websocketServer.once('connection', resolve),
+    );
+    const port = await listen(server);
+    const connector = new PreviewConnector({
+      edgeUrl: `ws://127.0.0.1:${port}/__verity/connector`,
+      connectorToken: 'secret-token',
+      targetOrigin: 'http://127.0.0.1:3000',
+      onDiagnostic: diagnostics,
+    });
+    cleanups.push(async () => {
+      connector.close();
+      for (const peer of websocketServer.clients) peer.terminate();
+      websocketServer.close();
+      await closeServer(server);
+      vi.useRealTimers();
+    });
+    await connector.connect();
+    const peer = await peerConnected;
+    diagnostics.mockClear();
+    const ping = new Promise<void>((resolve) => peer.once('ping', () => resolve()));
+    await vi.advanceTimersByTimeAsync(15_000);
+    await ping;
+    expect(diagnostics).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(15_000);
+    await connector.waitForDisconnect();
+    expect(diagnostics.mock.calls).toEqual([
+      [{ event: 'heartbeat.timeout' }],
+      [{ event: 'connection.closed', code: 1006, opened: true, elapsedMs: expect.any(Number) }],
+    ]);
+    expect(JSON.stringify(diagnostics.mock.calls)).not.toContain('secret-token');
   });
 
   it('forwards a request body at the configured decoded size limit', async () => {
