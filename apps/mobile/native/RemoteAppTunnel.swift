@@ -23,6 +23,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     private let socket: URLSessionWebSocketTask
     private var previous: Task<Void, Error>?
     private var onStall: (@Sendable () -> Void)?
+    private var stallRaised = false
 
     func setOnStall(_ handler: @escaping @Sendable () -> Void) { onStall = handler }
 #if VERITY_STALL_DIAGNOSTICS
@@ -59,10 +60,14 @@ final class RemoteAppTunnel: @unchecked Sendable {
       do {
         try await task.value
       } catch {
-        // Only a missed deadline ends the attachment here. A transport error
-        // means the socket is already going down for a reason the reader or
-        // heartbeat records; stopping on it would hide that reason.
-        if Self.isStall(error) { onStall?() }
+        // Only a missed deadline ends the attachment here, once: every frame
+        // queued behind the stalled one fails with the same error. A transport
+        // error means the socket is already going down for a reason the reader
+        // or heartbeat records; stopping on it would hide that reason.
+        if Self.isStall(error), !stallRaised {
+          stallRaised = true
+          onStall?()
+        }
         throw error
       }
     }

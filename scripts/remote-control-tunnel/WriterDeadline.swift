@@ -20,6 +20,21 @@ final class Flag: @unchecked Sendable {
   var value: Bool { lock.lock(); defer { lock.unlock() }; return raised }
 }
 
+// First answer wins; the loser is left running. A task group would wait for
+// both, and the stuck send under test never finishes.
+final class FirstAnswer: @unchecked Sendable {
+  private let lock = NSLock()
+  private var continuation: CheckedContinuation<String, Never>?
+  init(_ continuation: CheckedContinuation<String, Never>) { self.continuation = continuation }
+  func answer(_ value: String) {
+    lock.lock()
+    let pending = continuation
+    continuation = nil
+    lock.unlock()
+    pending?.resume(returning: value)
+  }
+}
+
 @main
 struct WriterDeadlineCheck {
   static func main() async throws {
@@ -30,24 +45,20 @@ struct WriterDeadlineCheck {
     let started = Date()
     // Bounded by the harness, not by the deadline under test: a deadline that
     // never fires must report itself rather than wait for the host watchdog.
-    let outcome = Task { () -> String in
-      do {
-        try await writer.send(["type": "stream.data", "streamId": "first"])
-        return "writer-deadline-not-enforced"
-      } catch {
-        return Writer.isStall(error) ? "stalled" : "writer-deadline-wrong-error"
+    let result = await withCheckedContinuation { (continuation: CheckedContinuation<String, Never>) in
+      let first = FirstAnswer(continuation)
+      Task {
+        do {
+          try await writer.send(["type": "stream.data", "streamId": "first"])
+          first.answer("writer-deadline-not-enforced")
+        } catch {
+          first.answer(Writer.isStall(error) ? "stalled" : "writer-deadline-wrong-error")
+        }
       }
-    }
-    let watchdog = Task { () -> String in
-      try? await Task.sleep(for: .seconds(45))
-      return "writer-deadline-not-enforced"
-    }
-    let result = await withTaskGroup(of: String.self) { group in
-      group.addTask { await outcome.value }
-      group.addTask { await watchdog.value }
-      let first = await group.next() ?? "writer-deadline-not-enforced"
-      group.cancelAll()
-      return first
+      Task {
+        try? await Task.sleep(for: .seconds(45))
+        first.answer("writer-deadline-not-enforced")
+      }
     }
     guard result == "stalled" else {
       print(result)
