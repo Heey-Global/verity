@@ -80,7 +80,7 @@ it('does not start on opening, then arms local before Core and declares ready on
   expect(mockStart.mock.invocationCallOrder[0]).toBeLessThan(
     api.startConnectionRecording.mock.invocationCallOrder[0]!,
   );
-  expect(api.startConnectionRecording).toHaveBeenCalledWith(runId, expect.any(Number));
+  expect(api.startConnectionRecording).toHaveBeenCalledWith(runId, expect.any(Number), 2);
 });
 it.each(['local', 'core', 'uplink', 'expired'])(
   'does not declare ready after %s failure',
@@ -124,6 +124,7 @@ it('stops locally offline, retains run across reopening and retries collection w
   fireEvent.press(screen.getByText('Stop and collect'));
   await screen.findByText('App, Core and Uplink recording copied.');
   expect(next.stopConnectionRecording).toHaveBeenCalledWith(runId);
+  expect(next.exportConnectionRecording).toHaveBeenCalledWith(runId, 2);
   expect(mockStart).toHaveBeenCalledTimes(1);
 });
 it('a late Core start cannot restore ready after Stop', async () => {
@@ -193,4 +194,27 @@ it('removes Ready when the local capture expires', async () => {
   } finally {
     jest.useRealTimers();
   }
+});
+
+it('explains missing version support before another recording attempt', async () => {
+  const api = client();
+  api.startConnectionRecording.mockRejectedValue(new Error('diagnostics_version_unavailable'));
+  render(<ConnectionRecording client={api as never} />);
+  await pressStart();
+  await waitFor(() =>
+    expect(screen.getByText(/Uplink does not support this recording version/)).toBeTruthy(),
+  );
+  expect(mockStop).toHaveBeenCalled();
+});
+
+it('collects legacy saved runs using version 1', async () => {
+  await AsyncStorage.setItem(
+    'verity.connectionRecording.v1.paired-core',
+    JSON.stringify({ runId, startedAt: Date.now(), expiresAt: Date.now() + 120000, local: null }),
+  );
+  const api = client();
+  render(<ConnectionRecording client={api as never} />);
+  await screen.findByText(/Saved run available/);
+  fireEvent.press(screen.getByText('Stop and collect'));
+  await waitFor(() => expect(api.exportConnectionRecording).toHaveBeenCalledWith(runId, 1));
 });

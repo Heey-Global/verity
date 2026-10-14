@@ -1,4 +1,5 @@
 import Constants from 'expo-constants';
+import { CryptoDigestAlgorithm, digestStringAsync } from 'expo-crypto';
 import { Platform } from 'react-native';
 import { browserFetch, getBrowserSession } from './browserSession';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -166,6 +167,7 @@ export function createVerityClient(): VerityClient | null {
       getServerProfile()?.endpoints.find((item) => item.transport === 'direct')?.url ??
       (endpoint?.transport === 'uplink' ? null : serverUrl),
     appVariant: Constants.expoConfig?.extra?.appVariant === 'staging' ? 'staging' : 'production',
+    recordingDigest: (text) => digestStringAsync(CryptoDigestAlgorithm.SHA256, text),
     // expo-file-system File implements Blob through Expo's native networking
     // stack. Keep ordinary API calls on the global fetch and route only uploads
     // through expo/fetch so large picked files stream without a JS copy.

@@ -142,3 +142,50 @@ it('accepts the Uplink retention boundary and rejects oversized batches', async 
   envelope.uplink.data.recordCount++;
   expect(() => connectionRecordingExportSchema.parse(envelope)).toThrow();
 });
+
+it('verifies the Uplink golden export with platform crypto and rejects corruption and downgrade', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { createHash } = await import('node:crypto');
+  const fixture = JSON.parse(
+    readFileSync(
+      new URL('../../events/src/fixtures/socket-evidence-v2.json', import.meta.url),
+      'utf8',
+    ),
+  ) as { document: Record<string, unknown> & { runId: string }; exportHash: string };
+  let data: unknown = { ...fixture.document, exportHash: fixture.exportHash };
+  const digest = vi.fn(async (text: string) => createHash('sha256').update(text).digest('hex'));
+  const client = new VerityClient({
+    baseUrl: 'https://core.example',
+    recordingDigest: digest,
+    fetch: async () =>
+      new Response(
+        JSON.stringify({
+          version: 1,
+          status: { ...status, runId: fixture.document.runId },
+          core: { records: [], dropped: 0 },
+          uplink: { available: true, data, error: null },
+        }),
+      ),
+  });
+  const result = await client.exportConnectionRecording(fixture.document.runId, 2);
+  expect(result.uplink.data).toEqual(data);
+  expect(digest).toHaveBeenCalledTimes(1);
+  data = { ...fixture.document, exportHash: '0'.repeat(64) };
+  await expect(client.exportConnectionRecording(fixture.document.runId, 2)).rejects.toThrow(
+    'hash mismatch',
+  );
+  data = {
+    version: 1,
+    runId: fixture.document.runId,
+    state: 'stopped',
+    expiresAt: status.expiresAt,
+    retainedUntil: status.expiresAt,
+    collectorReady: true,
+    recordCount: 0,
+    droppedRecords: 0,
+    records: [],
+  };
+  await expect(client.exportConnectionRecording(fixture.document.runId, 2)).rejects.toThrow(
+    'version mismatch',
+  );
+});

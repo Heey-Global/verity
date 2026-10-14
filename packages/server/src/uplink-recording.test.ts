@@ -89,3 +89,26 @@ it('rejects a declared export beyond the negotiated per-run record budget', () =
     'invalid_diagnostics_response',
   );
 });
+
+it('preserves strict v2 pages and rejects wrong negotiated versions', () => {
+  const fixture = JSON.parse(
+    readFileSync(
+      new URL('../../events/src/fixtures/socket-evidence-v2.json', import.meta.url),
+      'utf8',
+    ),
+  ) as { document: Record<string, unknown> & { runId: string }; exportHash: string };
+  const page = {
+    ...fixture.document,
+    exportHash: fixture.exportHash,
+    type: 'diagnostics.exported',
+    requestId: runId,
+    cursor: 0,
+    nextCursor: null,
+  };
+  expect(parseRecordingResponse(page, fixture.document.runId, 2)).toEqual(page);
+  expect(() => parseRecordingResponse(page, fixture.document.runId, 1)).toThrow();
+  expect(() => parseRecordingResponse(response, runId, 2)).toThrow();
+  expect(() =>
+    parseRecordingResponse({ ...page, secret: 'private' }, fixture.document.runId, 2),
+  ).toThrow();
+});

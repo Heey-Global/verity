@@ -1,4 +1,6 @@
 import { beginRuntimeApiRequest, runtimeRequestGroup } from './runtimeDiagnostics.js';
+import { recordingDigest, type RecordingDigest } from './recording-digest.js';
+import { socketEvidenceExportSchema, socketEvidenceHashInput } from '@verity/events';
 import {
   recordingCoreRecordSchema,
   recordingUplinkRecordSchema,
@@ -1046,7 +1048,14 @@ export const connectionRecordingStatusSchema = z
     uplink: z
       .object({ state: z.enum(['pending', 'recording', 'stopped', 'unavailable']) })
       .strict(),
-    error: z.enum(['uplink_start_failed', 'uplink_stop_failed', 'capture_interrupted']).nullable(),
+    error: z
+      .enum([
+        'uplink_start_failed',
+        'uplink_version_unavailable',
+        'uplink_stop_failed',
+        'capture_interrupted',
+      ])
+      .nullable(),
   })
   .strict();
 export type ConnectionRecordingStatus = z.infer<typeof connectionRecordingStatusSchema>;
@@ -1064,18 +1073,22 @@ export const connectionRecordingExportSchema = z
       .object({
         available: z.boolean(),
         data: z
-          .object({
-            version: z.literal(1),
-            runId: z.string().uuid(),
-            state: z.enum(['recording', 'stopped', 'expired']),
-            expiresAt: z.string().datetime(),
-            retainedUntil: z.string().datetime(),
-            collectorReady: z.literal(true),
-            recordCount: z.number().int().nonnegative().max(2048),
-            droppedRecords: z.number().int().nonnegative(),
-            records: z.array(recordingUplinkRecordSchema).max(2048),
-          })
-          .strict()
+          .union([
+            socketEvidenceExportSchema,
+            z
+              .object({
+                version: z.literal(1),
+                runId: z.string().uuid(),
+                state: z.enum(['recording', 'stopped', 'expired']),
+                expiresAt: z.string().datetime(),
+                retainedUntil: z.string().datetime(),
+                collectorReady: z.literal(true),
+                recordCount: z.number().int().nonnegative().max(2048),
+                droppedRecords: z.number().int().nonnegative(),
+                records: z.array(recordingUplinkRecordSchema).max(2048),
+              })
+              .strict(),
+          ])
           .nullable(),
         error: z.literal('uplink_export_failed').nullable(),
       })
@@ -1772,6 +1785,8 @@ export function isDevicePairingRequiredError(error: unknown): error is VerityApi
 }
 
 export interface VerityClientOptions {
+  /** Native runtimes may supply SHA-256 when Web Crypto is unavailable. */
+  recordingDigest?: RecordingDigest;
   appVariant?: 'production' | 'staging';
   /** Base URL of the control-plane server, no trailing slash (e.g. via Tailscale). */
   baseUrl: string;
@@ -2399,6 +2414,7 @@ export class VerityClient {
     });
   }
   private readonly appVariant: 'production' | 'staging' | undefined;
+  private readonly recordingDigest: RecordingDigest;
   private readonly baseUrl: string;
   private readonly localPreviewBaseUrl: string | null;
   private readonly fetchImpl: typeof fetch;
@@ -2408,6 +2424,7 @@ export class VerityClient {
   private readonly onUnauthorized: (() => void) | undefined;
 
   constructor(opts: VerityClientOptions) {
+    this.recordingDigest = opts.recordingDigest ?? recordingDigest;
     this.appVariant = opts.appVariant;
     this.baseUrl = opts.baseUrl.replace(/\/$/, '');
     this.localPreviewBaseUrl =
@@ -3332,15 +3349,21 @@ export class VerityClient {
   async startConnectionRecording(
     runId: string,
     durationMs: number,
+    diagnosticsVersion: 1 | 2 = 1,
   ): Promise<ConnectionRecordingStatus> {
     z.string().uuid().parse(runId);
     z.number().int().min(1).max(120_000).parse(durationMs);
+    z.union([z.literal(1), z.literal(2)]).parse(diagnosticsVersion);
     return connectionRecordingStatusSchema.parse(
       await (
         await this.request('/api/remote-control/recordings', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ runId, durationMs }),
+          body: JSON.stringify({
+            runId,
+            durationMs,
+            ...(diagnosticsVersion === 2 ? { diagnosticsVersion } : {}),
+          }),
         })
       ).json(),
     );
@@ -3361,7 +3384,10 @@ export class VerityClient {
       ).json(),
     );
   }
-  async exportConnectionRecording(runId: string): Promise<ConnectionRecordingExport> {
+  async exportConnectionRecording(
+    runId: string,
+    expectedVersion?: 1 | 2,
+  ): Promise<ConnectionRecordingExport> {
     z.string().uuid().parse(runId);
     const response = await this.request(`/api/remote-control/recordings/${runId}/export`, {
       method: 'GET',
@@ -3369,7 +3395,19 @@ export class VerityClient {
     const text = await response.text();
     if (new TextEncoder().encode(text).byteLength > 2 * 1024 * 1024)
       throw new Error('Recording export too large');
-    return connectionRecordingExportSchema.parse(JSON.parse(text));
+    const result = connectionRecordingExportSchema.parse(JSON.parse(text));
+    if (result.status.runId !== runId) throw new Error('Recording export does not match run');
+    const evidence = result.uplink.data;
+    if (evidence && expectedVersion !== undefined && evidence.version !== expectedVersion)
+      throw new Error('Recording diagnostic version mismatch');
+    if (evidence?.version === 2) {
+      if (
+        new TextEncoder().encode(JSON.stringify(evidence)).byteLength > 262144 ||
+        (await this.recordingDigest(socketEvidenceHashInput(evidence))) !== evidence.exportHash
+      )
+        throw new Error('Recording export hash mismatch');
+    }
+    return result;
   }
 
   async getRemoteControlDescriptor(): Promise<RemoteControlDescriptor> {

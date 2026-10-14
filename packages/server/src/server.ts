@@ -4426,12 +4426,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if (
         !body ||
         typeof body !== 'object' ||
-        Object.keys(body).length !== 2 ||
+        Object.keys(body).some(
+          (key) => !['runId', 'durationMs', 'diagnosticsVersion'].includes(key),
+        ) ||
+        (body.diagnosticsVersion !== undefined &&
+          body.diagnosticsVersion !== 1 &&
+          body.diagnosticsVersion !== 2) ||
         typeof body.runId !== 'string' ||
         typeof body.durationMs !== 'number'
       )
         throw new Error('invalid_recording');
-      return manager.start(body.runId, body.durationMs);
+      return manager.start(body.runId, body.durationMs, body.diagnosticsVersion);
     }),
   );
   app.get('/api/remote-control/recordings/:runId', async (request, reply) =>

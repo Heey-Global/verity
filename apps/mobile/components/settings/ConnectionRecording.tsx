@@ -17,7 +17,13 @@ import {
   stopRemoteDataRecording,
 } from '../../lib/remoteControlTransport';
 
-type SavedRun = { runId: string; expiresAt: number; startedAt: number; local: string | null };
+type SavedRun = {
+  runId: string;
+  expiresAt: number;
+  startedAt: number;
+  local: string | null;
+  diagnosticsVersion?: 1 | 2;
+};
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 function parseSaved(raw: string | null): SavedRun | null {
   if (!raw || raw.length > 600_000) return null;
@@ -25,6 +31,9 @@ function parseSaved(raw: string | null): SavedRun | null {
     const value = JSON.parse(raw) as SavedRun;
     if (
       !UUID.test(value.runId) ||
+      (value.diagnosticsVersion !== undefined &&
+        value.diagnosticsVersion !== 1 &&
+        value.diagnosticsVersion !== 2) ||
       !Number.isFinite(value.expiresAt) ||
       !Number.isFinite(value.startedAt) ||
       value.startedAt < 0 ||
@@ -38,6 +47,7 @@ function parseSaved(raw: string | null): SavedRun | null {
       runId: value.runId,
       expiresAt: value.expiresAt,
       startedAt: value.startedAt,
+      diagnosticsVersion: value.diagnosticsVersion ?? 1,
       local: value.local === null ? null : validateStoredRemoteRecording(value.local),
     };
   } catch {
@@ -142,6 +152,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       startedAt: Date.now(),
       expiresAt: Date.now() + 120_000,
       local: null,
+      diagnosticsVersion: 2,
     };
     runRef.current = saved;
     let requested = false;
@@ -159,11 +170,14 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       const status = await client.startConnectionRecording(
         saved.runId,
         Math.min(120_000, remainingDuration),
+        2,
       );
       if (token !== revision.current) {
         await client.stopConnectionRecording(saved.runId).catch(() => undefined);
         return;
       }
+      if (status.error === 'uplink_version_unavailable')
+        throw new Error('diagnostics_version_unavailable');
       const left = await remoteDataRecordingRemainingMs();
       if (token !== revision.current) return;
       if (
@@ -179,7 +193,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       setRemaining(left);
       setReady(true);
       setMessage('Ready — turn off VPN and use the app normally. Stop and collect when finished.');
-    } catch {
+    } catch (error) {
       if (token !== revision.current) return;
       const localStopped = await stopRemoteDataRecording();
       const remoteStopped =
@@ -193,7 +207,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         ));
       if (mounted.current && token === revision.current)
         setMessage(
-          `Preparation failed. ${localStopped ? 'Local recording stopped.' : 'Local stop could not be confirmed.'} ${remoteStopped ? 'Keep VPN on and retry.' : 'Core/Uplink stop unconfirmed; they expire automatically. Retry collection with VPN.'}`,
+          `${error instanceof Error && error.message === 'diagnostics_version_unavailable' ? 'Uplink does not support this recording version. Update Uplink before retrying.' : 'Preparation failed.'} ${localStopped ? 'Local recording stopped.' : 'Local stop could not be confirmed.'} ${remoteStopped ? 'Keep VPN on and retry.' : 'Core/Uplink stop unconfirmed; they expire automatically. Retry collection with VPN.'}`,
         );
     } finally {
       if (mounted.current && preparingRef.current === token) {
@@ -260,7 +274,10 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
           status.runId === saved.runId &&
           status.core.state === 'stopped' &&
           status.uplink.state === 'stopped';
-        const result = await client.exportConnectionRecording(saved.runId);
+        const result = await client.exportConnectionRecording(
+          saved.runId,
+          saved.diagnosticsVersion ?? 1,
+        );
         if (!current()) return;
         if (result.status.runId === saved.runId) remote = result;
       } catch {
