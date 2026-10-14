@@ -17,8 +17,10 @@ jest.mock('../../lib/serverProfile', () => ({
   getServerProfile: () => ({ serverId: mockServerId }),
 }));
 jest.mock('../../lib/remoteControlTransport', () => ({
-  prepareSelectedDataRecording: async (hook: (session: string) => Promise<void>) =>
-    hook('selected-session'),
+  prepareSelectedDataRecording: async (hook: (session: string) => Promise<void>) => {
+    await hook('selected-session');
+    if (mockStop.mock.calls.length) throw new Error('Recording stopped');
+  },
   startRemoteDataRecording: () => mockStart(),
   stopRemoteDataRecording: () => mockStop(),
   remoteDataRecordingRemainingMs: () => mockRemaining(),
@@ -162,13 +164,55 @@ it('a late Core start cannot restore ready after Stop', async () => {
   await pressStart();
   await waitFor(() => expect(api.startConnectionRecording).toHaveBeenCalled());
   fireEvent.press(screen.getByText('Stop and collect'));
-  await waitFor(() => expect(mockStop).toHaveBeenCalled());
+  await screen.findByText('App, Core and Uplink recording copied.');
+  expect(api.stopConnectionRecording).toHaveBeenCalledTimes(1);
   await act(async () => {
     resolve(status());
   });
   expect(screen.queryByText(/Ready — turn off VPN/)).toBeNull();
-  expect(api.stopConnectionRecording).toHaveBeenCalledWith(runId);
+  expect(api.stopConnectionRecording).toHaveBeenCalledTimes(2);
+  expect(api.stopConnectionRecording).toHaveBeenLastCalledWith(runId);
 });
+
+it.each(['stop', 'switch'] as const)(
+  'does not restore Ready after %s during final persistence',
+  async (action) => {
+    const api = client();
+    const view = render(<ConnectionRecording client={api as never} />);
+    let release!: () => void;
+    let pending = false;
+    const write = jest.mocked(AsyncStorage.setItem).getMockImplementation()!;
+    const spy = jest.spyOn(AsyncStorage, 'setItem').mockImplementation(async (key, value) => {
+      if (api.getConnectionRecording.mock.calls.length && !pending) {
+        pending = true;
+        await new Promise<void>((done) => {
+          release = done;
+        });
+      }
+      return write(key, value);
+    });
+    try {
+      await pressStart();
+      await waitFor(() => expect(pending).toBe(true));
+      if (action === 'stop') {
+        fireEvent.press(screen.getByText('Stop and collect'));
+        await waitFor(() => expect(mockStop).toHaveBeenCalled());
+      } else {
+        mockServerId = 'other-core';
+        view.rerender(<ConnectionRecording client={client() as never} />);
+        await act(async () => {
+          await Promise.resolve();
+        });
+      }
+      await act(async () => {
+        release();
+      });
+      expect(screen.queryByText(/Ready — turn off VPN/)).toBeNull();
+    } finally {
+      spy.mockImplementation(write);
+    }
+  },
+);
 
 it('discards a collection result after switching paired servers', async () => {
   const api = client();

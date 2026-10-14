@@ -218,6 +218,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
   const start = async () => {
     if (!loaded || preparing || collectingRef.current || !key || !client) return;
     const token = ++revision.current;
+    const current = () => mounted.current && token === revision.current;
     preparingRef.current = token;
     setPreparing(true);
     setReady(false);
@@ -233,15 +234,15 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
     let requested = false;
     try {
       await save(saved);
-      if (token !== revision.current) return;
+      if (!current()) return;
       const duration = await startRemoteDataRecording();
-      if (token !== revision.current) return;
+      if (!current()) return;
       captureDeadline.current = performance.now() + duration;
       saved.expiresAt = Date.now() + duration;
       await save(saved);
-      if (token !== revision.current) return;
+      if (!current()) return;
       await prepareSelectedDataRecording(async (sessionId) => {
-        if (token !== revision.current) throw new Error('Recording cancelled');
+        if (!current()) throw new Error('Recording cancelled');
         const localBudget = await remoteDataRecordingRemainingMs();
         if (localBudget === null || localBudget < 45_000)
           throw new Error('Insufficient local capture window');
@@ -251,6 +252,7 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
           await digestStringAsync(CryptoDigestAlgorithm.SHA256, sessionId)
         ).slice(0, 16);
         await save(saved);
+        if (!current()) throw new Error('Recording cancelled');
         requested = true;
         const armed = await client.startConnectionRecording(saved.runId, 30_000, 3, sessionId);
         if (armed.error === 'uplink_version_unavailable')
@@ -265,14 +267,11 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
           throw new Error('Not armed');
       });
       const status = await freshStatus(client, saved.runId);
-      if (token !== revision.current) {
-        await client.stopConnectionRecording(saved.runId).catch(() => undefined);
-        return;
-      }
+      if (!current()) return;
       if (status.error === 'uplink_version_unavailable')
         throw new Error('diagnostics_version_unavailable');
       const left = await remoteDataRecordingRemainingMs();
-      if (token !== revision.current) return;
+      if (!current()) return;
       if (
         status.runId !== saved.runId ||
         status.phase !== 'recording' ||
@@ -292,11 +291,12 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       captureDeadline.current = Math.min(captureDeadline.current, performance.now() + 30_000);
       saved.expiresAt = Math.min(saved.expiresAt, Date.now() + 30_000);
       await save(saved);
+      if (!current()) return;
       setRemaining(Math.min(left, saved.expiresAt - Date.now()));
       setReady(true);
       setMessage('Ready — turn off VPN and use the app normally. Stop and collect when finished.');
     } catch (error) {
-      if (token !== revision.current) return;
+      if (!current()) return;
       const localStopped = await stopRemoteDataRecording();
       const remoteStopped =
         !requested ||
@@ -312,6 +312,9 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
           `${error instanceof Error && error.message === 'diagnostics_version_unavailable' ? 'Uplink does not support this recording version. Update Uplink before retrying.' : 'Preparation failed.'} ${localStopped ? 'Local recording stopped.' : 'Local stop could not be confirmed.'} ${remoteStopped ? 'Keep VPN on and retry.' : 'Core/Uplink stop unconfirmed; they expire automatically. Retry collection with VPN.'}`,
         );
     } finally {
+      // A prior DELETE may have completed before the pending start created the run.
+      if (requested && !current())
+        await client.stopConnectionRecording(saved.runId).catch(() => undefined);
       if (mounted.current && preparingRef.current === token) {
         preparingRef.current = null;
         setPreparing(false);
