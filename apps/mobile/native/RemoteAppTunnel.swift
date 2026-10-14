@@ -27,8 +27,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private actor Writer {
     // Measured against completions, so an idle attachment's only send in
     // flight is judged alone. A frame carries at most one 16 KiB local read,
-    // about 22 KB encoded, so a frame that cannot leave within this long
-    // means a link below about 1.4 KB/s: a dead socket, not a slow one.
+    // about 22 KB encoded. This is a recovery policy, not proof of a dead
+    // socket: backpressure or a sufficiently slow link can also reach it.
     static let sendDeadlineSeconds: UInt64 = 15
     private let socket: URLSessionWebSocketTask
     private var onStall: (@Sendable () -> Void)?
@@ -56,7 +56,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       defer { diagnostics?.finished(token, failed: failed) }
 #endif
       do {
-        try await Self.bounded(seconds: Self.sendDeadlineSeconds, progress: progress) {
+        try await Self.bounded(seconds: Self.sendDeadlineSeconds, progress: progress) { [socket] in
 #if VERITY_STALL_DIAGNOSTICS
           diagnostics?.started(token)
 #endif
@@ -126,9 +126,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
           while !Task.isCancelled {
             let wait = mark + TimeInterval(seconds) - ProcessInfo.processInfo.systemUptime
             if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
-            if progress.mark != mark { mark = progress.mark; continue }
+            if progress.mark > mark { mark = progress.mark; continue }
             try? await Task.sleep(nanoseconds: 1_000_000_000)
-            if progress.mark != mark { mark = progress.mark; continue }
+            if progress.mark > mark { mark = progress.mark; continue }
             break
           }
           if !Task.isCancelled { once.resume(RemoteSmokeError.sendStalled) }

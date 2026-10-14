@@ -52,7 +52,7 @@ it('bounds every WebSocket send and ends the attachment on a miss', () => {
   );
   // Measured against progress: a slow link that keeps completing sends is
   // not a stopped socket.
-  expect(writer).toMatch(/if progress\.mark != mark \{ mark = progress\.mark; continue \}/u);
+  expect(writer).toMatch(/if progress\.mark > mark \{ mark = progress\.mark; continue \}/u);
   expect(writer).toMatch(/once\.resume\(RemoteSmokeError\.sendStalled\)/u);
   // The transport's send ignores cancellation: a task group that waited for
   // it would never return, and the deadline would never fire.
