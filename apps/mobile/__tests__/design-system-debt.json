@@ -5,9 +5,7 @@
     "fontSize": 7
   },
   "app/meeting/[sessionId].tsx": {
-    "legacyColor": 34,
-    "fontSize": 25,
-    "fontWeight": 13
+    "fontSize": 1
   },
   "app/search.tsx": {
     "fontSize": 1
@@ -28,11 +26,6 @@
   },
   "components/ActionMenu.tsx": {
     "rawColor": 1
-  },
-  "components/ActiveMeetingOverlay.tsx": {
-    "rawColor": 12,
-    "fontSize": 4,
-    "fontWeight": 1
   },
   "components/AttentionMarkers.tsx": {
     "legacyColor": 1
@@ -124,17 +117,9 @@
     "fontSize": 1
   },
   "components/meeting/MeetingUI.tsx": {
-    "rawColor": 1,
-    "legacyColor": 12,
-    "fontSize": 15,
-    "fontWeight": 7
-  },
-  "components/meeting/MeetingWave.tsx": {
-    "rawColor": 1,
-    "legacyColor": 4
+    "fontSize": 1
   },
   "components/meeting/SavedMeetingCard.tsx": {
-    "legacyColor": 2,
     "fontSize": 3,
     "fontWeight": 2
   },

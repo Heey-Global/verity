@@ -45,7 +45,7 @@ export function SavedMeetingCard({
         <Text style={styles.title}>{card.title}</Text>
         {metrics ? <Text style={styles.metrics}>{metrics}</Text> : null}
       </View>
-      <Icon name="chevron-right" size={18} color={colors.primary} />
+      <Icon name="chevron-right" size={18} color={colors.action} />
     </Pressable>
   );
 }
@@ -63,7 +63,7 @@ const styles = StyleSheet.create((theme) => {
       backgroundColor: colors.surface,
     },
     body: { flex: 1, gap: 4 },
-    label: { color: colors.tone.done, fontSize: theme.text.xs, fontWeight: '700' },
+    label: { color: colors.success, fontSize: theme.text.xs, fontWeight: '700' },
     title: { color: colors.text, fontSize: theme.text.md, fontWeight: '700' },
     metrics: { color: colors.textMuted, fontSize: theme.text.xs },
   };

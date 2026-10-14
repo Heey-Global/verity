@@ -15,10 +15,10 @@ type Colors = {
 // Speakers keep one color for the whole meeting; accents appear only as rings and dots.
 export function speakerTone(colors: Colors, speaker: number): string {
   const palette = [
-    colors.primary,
-    colors.accent,
-    colors.tone.done,
-    colors.tone.danger,
+    colors.action,
+    colors.signature,
+    colors.success,
+    colors.attention,
     colors.textMuted,
   ];
   return palette[speaker % palette.length]!;
@@ -57,9 +57,9 @@ export function MeetingMetrics({ values }: { values: { label: string; value: num
           <Svg width="100%" height={30} viewBox="0 0 80 30" accessibilityElementsHidden>
             <Defs>
               <LinearGradient id={`${gradient}-${index}`} x1="0" y1="0" x2="1" y2="0">
-                <Stop offset="0" stopColor={colors.accent} />
+                <Stop offset="0" stopColor={colors.signature} />
                 <Stop offset="0.5" stopColor="#a968f3" />
-                <Stop offset="1" stopColor={colors.primary} />
+                <Stop offset="1" stopColor={colors.action} />
               </LinearGradient>
             </Defs>
             <SvgText
@@ -73,7 +73,7 @@ export function MeetingMetrics({ values }: { values: { label: string; value: num
               {value}
             </SvgText>
           </Svg>
-          <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: '600' }}>{label}</Text>
+          <Text style={{ color: colors.textMuted, ...theme.typography.label }}>{label}</Text>
         </View>
       ))}
     </View>
@@ -223,7 +223,7 @@ export function NoticedCard({
           <Defs>
             <LinearGradient id={gradient} x1="0" y1="0" x2="0" y2="1">
               <Stop offset="0" stopColor={tone} />
-              <Stop offset="1" stopColor={colors.primary} />
+              <Stop offset="1" stopColor={colors.action} />
             </LinearGradient>
           </Defs>
           <Rect width="3" height="100%" rx="1.5" fill={`url(#${gradient})`} />
@@ -292,7 +292,7 @@ export function MeetingAnswerText({ text }: { text: string }) {
                   <Text
                     key={spanIndex}
                     accessibilityRole={span.external ? 'link' : undefined}
-                    style={{ color: colors.accent }}
+                    style={{ color: colors.signature }}
                     onPress={span.external ? () => void Linking.openURL(span.url) : undefined}
                   >
                     {span.text}
@@ -321,11 +321,15 @@ const styles = StyleSheet.create((theme) => {
     },
     sectionLabel: {
       color: colors.textMuted,
-      fontSize: theme.text.xs,
-      fontWeight: '700',
+      fontSize: theme.typography.footnote.fontSize,
+      fontFamily: theme.fonts.bold,
       letterSpacing: 1.2,
     },
-    sectionHint: { color: colors.textFaint, fontSize: theme.text.xs },
+    sectionHint: {
+      color: colors.textFaint,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
+    },
     avatarColumn: { alignItems: 'center', gap: 2, minWidth: 48 },
     avatarHalo: {
       borderWidth: 1.5,
@@ -339,10 +343,18 @@ const styles = StyleSheet.create((theme) => {
       justifyContent: 'center',
       backgroundColor: colors.surface,
     },
-    avatarText: { color: colors.text, fontWeight: '700' },
-    avatarCaption: { color: colors.textMuted, fontSize: theme.text.xs },
+    avatarText: { color: colors.text, fontFamily: theme.fonts.bold },
+    avatarCaption: {
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
+    },
     avatarCaptionActive: { color: colors.text },
-    avatarDetail: { color: colors.textFaint, fontSize: theme.text.xs },
+    avatarDetail: {
+      color: colors.textFaint,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
+    },
     card: {
       backgroundColor: colors.surface,
       borderColor: colors.border,
@@ -353,23 +365,61 @@ const styles = StyleSheet.create((theme) => {
     },
     cardHeader: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
     dot: { width: 7, height: 7, borderRadius: 4 },
-    cardLabel: { flex: 1, fontSize: theme.text.xs, fontWeight: '700', letterSpacing: 1.2 },
-    cardTime: { color: colors.textFaint, fontSize: theme.text.xs },
-    cardQuote: { color: colors.textMuted, fontSize: theme.text.sm },
-    cardTitle: { color: colors.text, fontSize: theme.text.md, lineHeight: 22 },
+    cardLabel: {
+      flex: 1,
+      fontSize: theme.typography.footnote.fontSize,
+      fontFamily: theme.fonts.bold,
+      letterSpacing: 1.2,
+    },
+    cardTime: {
+      color: colors.textFaint,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
+    },
+    cardQuote: {
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+    },
+    cardTitle: {
+      color: colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+      lineHeight: 22,
+    },
     cardQuestion: {
       color: colors.text,
-      fontSize: theme.text.lg,
-      fontWeight: '700',
+      fontSize: theme.typography.title.fontSize,
+      fontFamily: theme.fonts.bold,
       lineHeight: 24,
     },
     answer: { gap: theme.spacing.xs },
     answerLine: { flexDirection: 'row', gap: theme.spacing.sm },
-    answerBullet: { color: colors.textMuted, fontSize: theme.text.md, lineHeight: 22 },
-    answerText: { flex: 1, color: colors.text, fontSize: theme.text.md, lineHeight: 22 },
-    answerStrong: { fontWeight: '700' },
-    cardBody: { color: colors.text, fontSize: theme.text.sm, lineHeight: 20 },
-    cardSource: { color: colors.accent, fontSize: theme.text.xs },
+    answerBullet: {
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+      lineHeight: 22,
+    },
+    answerText: {
+      flex: 1,
+      color: colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+      lineHeight: 22,
+    },
+    answerStrong: { fontFamily: theme.fonts.bold },
+    cardBody: {
+      color: colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+      lineHeight: 20,
+    },
+    cardSource: {
+      color: colors.signature,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
+    },
     actions: {
       flexDirection: 'row',
       flexWrap: 'wrap',
@@ -378,14 +428,14 @@ const styles = StyleSheet.create((theme) => {
       marginTop: theme.spacing.xs,
     },
     primaryAction: {
-      borderColor: colors.accent,
-      backgroundColor: colors.accent,
+      borderColor: colors.signature,
+      backgroundColor: colors.signature,
       borderWidth: 1,
       borderRadius: theme.radius.pill,
       paddingHorizontal: theme.spacing.lg,
       paddingVertical: theme.spacing.sm,
     },
-    primaryActionText: { color: colors.onPrimary, fontWeight: '700' },
+    primaryActionText: { color: colors.onAction, fontFamily: theme.fonts.bold },
     quietAction: { paddingHorizontal: theme.spacing.xs, paddingVertical: theme.spacing.sm },
     quietActionText: { color: colors.textMuted },
   };
