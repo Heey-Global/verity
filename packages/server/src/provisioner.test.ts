@@ -811,6 +811,7 @@ describe('ProvisionerImpl (#174)', () => {
       id: 'container-1',
       running: false,
       image: 'verity-devc-test:latest',
+      networks: { 'project-network': {} },
       labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
       mounts: [
         { source: '/opt/agent-seed', destination: '/opt/agent-seed', readWrite: false },
@@ -821,7 +822,11 @@ describe('ProvisionerImpl (#174)', () => {
       securityOpt: ['no-new-privileges:true'],
     };
     await ctx.store.updateProjectSleepState(id, 'sleeping', {
-      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint({
+        ...retained,
+        running: true,
+        networks: { 'project-network': { ipAddress: '172.20.0.2' } },
+      }),
       sleepingSince: new Date(),
       wakeStartedAt: null,
     });
@@ -982,6 +987,78 @@ describe('ProvisionerImpl (#174)', () => {
     ]);
     expect(reactivate).toHaveBeenCalledOnce();
   });
+
+  it.each([false, true])(
+    'settles failed cold wake preparation (Sandbox still running: %s)',
+    async (stillRunning) => {
+      const id = await seedProject('active');
+      const retained = {
+        id: 'container-1',
+        running: false,
+        image: 'sandbox:old',
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+      };
+      await ctx.store.updateProjectSleepState(id, 'sleeping', {
+        sleepCompatibilityFingerprint: 'old-contract',
+        sleepingSince: new Date(),
+        wakeStartedAt: null,
+      });
+      let rejectPull!: (error: Error) => void;
+      const pull = new Promise<void>((_resolve, reject) => {
+        rejectPull = reject;
+      });
+      const pullImage = vi
+        .fn()
+        .mockReturnValueOnce(pull)
+        .mockRejectedValue(new Error('registry down'));
+      const { client: docker, calls } = fakeDocker({
+        inspectContainer: vi.fn(async () => retained),
+        pullImage,
+      });
+      const relay = defaultProjectRelay();
+      relay.reactivate = vi.fn();
+      const sleepRelay = vi.fn(async () => {});
+      relay.sleep = sleepRelay;
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        projectRelay: relay,
+      });
+
+      const first = provisioner.ensureProjectSandboxAwake(id);
+      const failure = expect(first).rejects.toThrow(
+        stillRunning ? 'project cold wake rollback failed' : 'replacement image preparation failed',
+      );
+      await vi.waitFor(() => expect(pullImage).toHaveBeenCalledOnce());
+      expect(provisioner.isProjectProvisioning(id)).toBe(true);
+      await expect(provisioner.recoverInterruptedWake(id)).resolves.toMatchObject({
+        state: 'waking',
+      });
+      retained.running = stillRunning;
+      rejectPull(new Error('registry down'));
+      await failure;
+
+      expect(provisioner.isProjectProvisioning(id)).toBe(false);
+      await expect(ctx.store.getProject(id)).resolves.toMatchObject({
+        state: stillRunning ? 'failed' : 'sleeping',
+        ...(stillRunning
+          ? { provisionError: expect.stringContaining('Docker still reports') }
+          : { wakeStartedAt: null }),
+      });
+      if (!stillRunning) {
+        await expect(provisioner.ensureProjectSandboxAwake(id)).rejects.toThrow(
+          'replacement image preparation failed',
+        );
+        expect(pullImage).toHaveBeenCalledTimes(2);
+      }
+      expect(calls.some((call) => call.method === 'removeContainer')).toBe(false);
+      expect(sleepRelay).toHaveBeenCalledTimes(stillRunning ? 1 : 2);
+    },
+  );
 
   it('marks a wake failed when rollback cannot confirm the Sandbox stopped', async () => {
     const id = await seedProject('active');
