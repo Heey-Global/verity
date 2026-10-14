@@ -1038,7 +1038,7 @@ describe('preview tunnel', () => {
   });
 
   it('distinguishes a missed heartbeat from a remote disconnect without logging peer text', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
     const diagnostics = vi.fn<(diagnostic: PreviewConnectorDiagnostic) => void>();
     const server = createServer();
     const websocketServer = new WebSocketServer({ server, autoPong: false });
@@ -1074,6 +1074,70 @@ describe('preview tunnel', () => {
     ]);
     expect(JSON.stringify(diagnostics.mock.calls)).not.toContain('secret-token');
   });
+
+  it.each(['delayed-send', 'stalled-send', 'early-pong', 'wrong-pong', 'close-pending'] as const)(
+    'bounds heartbeat phases independently (%s)',
+    async (scenario) => {
+      const server = createServer();
+      const websocketServer = new WebSocketServer({ server, autoPong: false });
+      const port = await listen(server);
+      const connector = new PreviewConnector({
+        edgeUrl: `ws://127.0.0.1:${port}/__verity/connector`,
+        connectorToken: 'heartbeat-test',
+        targetOrigin: 'http://127.0.0.1:3000',
+      });
+      cleanups.push(async () => {
+        vi.useRealTimers();
+        connector.close();
+        for (const peer of websocketServer.clients) peer.terminate();
+        websocketServer.close();
+        await closeServer(server);
+      });
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
+      await connector.connect();
+      const socket = (connector as unknown as { socket: WebSocket }).socket;
+      let payload: unknown;
+      let flushed: ((error?: Error) => void) | undefined;
+      const ping = vi.spyOn(socket, 'ping').mockImplementation((data, _mask, callback) => {
+        payload = data;
+        flushed = callback as (error?: Error) => void;
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(ping).toHaveBeenCalledTimes(1);
+      if (scenario === 'stalled-send') {
+        await vi.advanceTimersByTimeAsync(15_000);
+        await connector.waitForDisconnect();
+        return;
+      }
+      if (scenario === 'close-pending') {
+        connector.close();
+        await connector.waitForDisconnect();
+        const state = connector as unknown as { heartbeat: unknown; heartbeatDeadline: unknown };
+        expect(state.heartbeat).toBeUndefined();
+        expect(state.heartbeatDeadline).toBeUndefined();
+        const timers = vi.getTimerCount();
+        flushed?.();
+        expect(vi.getTimerCount()).toBe(timers);
+        expect(state.heartbeatDeadline).toBeUndefined();
+        return;
+      }
+      if (scenario === 'early-pong') socket.emit('pong', payload);
+      await vi.advanceTimersByTimeAsync(10_000);
+      flushed?.();
+      await vi.advanceTimersByTimeAsync(5_001);
+      // A queued ping must get a full reply window after the write callback.
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+      if (scenario === 'early-pong') {
+        expect(ping).toHaveBeenCalledTimes(2);
+        return;
+      }
+      expect(ping).toHaveBeenCalledTimes(1);
+      socket.emit('pong', scenario === 'wrong-pong' ? Buffer.from('stale') : payload);
+      await vi.advanceTimersByTimeAsync(9_999);
+      if (scenario === 'wrong-pong') await connector.waitForDisconnect();
+      else expect(socket.readyState).toBe(WebSocket.OPEN);
+    },
+  );
 
   it('forwards a request body at the configured decoded size limit', async () => {
     const target = createServer((request, response) => {
