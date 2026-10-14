@@ -631,6 +631,14 @@ describe('EventStore — attachments', () => {
     expect(await ctx.store.getAttachment('deadbeef')).toBeUndefined();
   });
 
+  it('bounds attachment reads by actual stored bytes rather than caller metadata', async () => {
+    const hash = await ctx.store.putTextBlob(JSON.stringify('é'.repeat(100)));
+    expect(await ctx.store.getAttachment(hash, 100)).toBeUndefined();
+    const blob = await ctx.store.getAttachment(hash, 202);
+    expect(blob?.bytes.length).toBe(202);
+    expect(await ctx.store.getAttachment(hash)).toEqual(blob);
+  });
+
   it('checks attachment ownership without loading the session event history', async () => {
     await ctx.store.createSession(session);
     const hash = await ctx.store.putAttachment('image/png', helloB64);

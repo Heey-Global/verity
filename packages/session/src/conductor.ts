@@ -28,7 +28,7 @@ import { AcpClaudeBackend } from './acp-claude-backend.js';
 import { brokeredGrantChannel, type Backend, type BrokeredGrantChannel } from './backend.js';
 import { isCodexModel } from './codex-model.js';
 import { cleanupTurnImageAttachments, materializeFileAttachments } from './file-attachments.js';
-import { buildHandoffPrompt } from './handoff.js';
+import { buildHandoffPromptWithStoredResults } from './handoff.js';
 import { isNoSessionInitFailure } from './ingest.js';
 import { withMeetingContext } from './meeting-context.js';
 import {
@@ -1165,7 +1165,7 @@ export class Conductor {
   /**
    * Prepend a serialized transcript of the history the target backend HASN'T SEEN to
    * `prompt`, so it continues with context across a backend boundary (see
-   * {@link buildHandoffPrompt}). `sinceSeq` is the active backend's recorded context
+   * {@link buildHandoffPromptWithStoredResults}). `sinceSeq` is the active backend's recorded context
    * cursor (`session_backend_state.context_seq`): the events it already carries in
    * its native thread are excluded. `sinceSeq = 0` (a cold backend, no thread)
    * serializes the full history. The current turn's prompt was just persisted as the
@@ -1190,9 +1190,14 @@ export class Conductor {
       }
     }
     const priorEvents = lastPrompt >= 0 ? events.slice(0, lastPrompt) : events;
-    return buildHandoffPrompt(priorEvents, prompt, {
-      workspaceChanged: (await this.deps.store.getSessionMoveNotice(sessionId)) !== undefined,
-    });
+    return buildHandoffPromptWithStoredResults(
+      priorEvents,
+      prompt,
+      (id, maxBytes) => this.deps.store.getAttachment(id, maxBytes),
+      {
+        workspaceChanged: (await this.deps.store.getSessionMoveNotice(sessionId)) !== undefined,
+      },
+    );
   }
 
   /**
@@ -1504,6 +1509,9 @@ export class Conductor {
       backendKey === 'claude' &&
       moveNotice === undefined &&
       backendState === undefined &&
+      // Another backend's binding means Claude's canonical thread is no longer
+      // current. Resuming it without a cursor silently loses the work done away.
+      (await this.deps.store.getSessionBackendStates(sessionId)).length === 0 &&
       (await this.isClaudeOriginSession(session));
     const resumeSessionId =
       backendState?.backendSessionId ?? (canResumeCanonicalClaudeSession ? sessionId : undefined);
