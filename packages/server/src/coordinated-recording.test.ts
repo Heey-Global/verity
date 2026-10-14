@@ -148,3 +148,19 @@ describe('coordinated recording', () => {
     expect(manager.status(id).core.records).toBe(256);
   });
 });
+
+it('passes explicit v2 to Uplink and pins the run version', async () => {
+  const { manager, uplink } = fixture();
+  await manager.start(id, 120000, 2);
+  expect(uplink.start).toHaveBeenCalledWith(id, 120000, 2);
+  await expect(manager.start(id, 120000, 1)).rejects.toThrow('recording_conflict');
+});
+
+it('reports unsupported diagnostic versions without exposing arbitrary errors', async () => {
+  const { manager, uplink } = fixture();
+  uplink.start.mockRejectedValueOnce(new Error('diagnostics_version_unavailable'));
+  expect(await manager.start(id, 120000, 2)).toMatchObject({
+    phase: 'failed',
+    error: 'uplink_version_unavailable',
+  });
+});

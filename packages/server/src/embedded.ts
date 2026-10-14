@@ -2681,7 +2681,8 @@ export async function buildEmbeddedServer(
       : undefined;
   if (uplinkControl && remoteConnector) {
     coordinatedRecording = new CoordinatedRecordingManager(returnPath, {
-      start: (runId, durationMs) => uplinkControl.startRecording(runId, durationMs),
+      start: (runId, durationMs, version) =>
+        uplinkControl.startRecording(runId, durationMs, version),
       stop: (runId) => uplinkControl.stopRecording(runId),
       export: (runId) => uplinkControl.exportRecording(runId),
     });

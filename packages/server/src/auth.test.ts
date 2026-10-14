@@ -240,6 +240,7 @@ describe('paired device management', () => {
       returnPathActivation: activation,
       coordinatedRecording: manager,
     });
+    const startRecording = vi.spyOn(manager, 'start');
     const base = '/api/remote-control/recordings';
     const runId = '01234567-0123-4123-8123-0123456789ab';
     const headers = { authorization: `Bearer ${device.token}` };
@@ -252,6 +253,7 @@ describe('paired device management', () => {
     try {
       for (const op of operations) expect((await app.inject(op)).statusCode).toBe(401);
       expect((await app.inject({ ...operations[0], headers })).json().phase).toBe('recording');
+      expect(startRecording).toHaveBeenLastCalledWith(runId, 120000, undefined);
       expect(
         (await app.inject({ ...operations[0], headers, payload: { runId, durationMs: 120001 } }))
           .statusCode,
@@ -262,6 +264,18 @@ describe('paired device management', () => {
       admin.mockRestore();
       expect((await app.inject({ ...operations[2], headers })).json().phase).toBe('stopped');
       expect((await app.inject({ ...operations[3], headers })).json().status.runId).toBe(runId);
+      const v2Id = '11234567-0123-4123-8123-0123456789ab';
+      expect(
+        (
+          await app.inject({
+            method: 'POST',
+            url: base,
+            headers,
+            payload: { runId: v2Id, durationMs: 120000, diagnosticsVersion: 2 },
+          })
+        ).json().phase,
+      ).toBe('recording');
+      expect(startRecording).toHaveBeenLastCalledWith(v2Id, 120000, 2);
       await registry.revoke(device.id);
       expect((await app.inject({ ...operations[3], headers })).statusCode).toBe(401);
     } finally {

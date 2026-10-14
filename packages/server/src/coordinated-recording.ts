@@ -3,7 +3,7 @@ import { coreRecordingSummary } from './coordinated-recording-schema.js';
 import type { ReturnPathActivation } from './remote-return-path-activation.js';
 
 export interface RecordingUplinkAdapter {
-  start(runId: string, durationMs: number): Promise<void>;
+  start(runId: string, durationMs: number, diagnosticsVersion?: 1 | 2): Promise<void>;
   stop(runId: string): Promise<void>;
   /** The adapter must validate and allowlist metadata before returning it. */
   export(runId: string): Promise<unknown>;
@@ -17,11 +17,17 @@ export interface CoordinatedRecordingStatus {
   installationFingerprint: string;
   core: { state: 'recording' | 'stopped'; records: number; dropped: number };
   uplink: { state: 'pending' | 'recording' | 'stopped' | 'unavailable' };
-  error: null | 'uplink_start_failed' | 'uplink_stop_failed' | 'capture_interrupted';
+  error:
+    | null
+    | 'uplink_start_failed'
+    | 'uplink_version_unavailable'
+    | 'uplink_stop_failed'
+    | 'capture_interrupted';
 }
 type Run = {
   status: CoordinatedRecordingStatus;
   durationMs: number;
+  diagnosticsVersion: 1 | 2;
   deadline: number;
   retainUntil: number;
   records: unknown[];
@@ -91,13 +97,19 @@ export class CoordinatedRecordingManager {
   status(runId: string): CoordinatedRecordingStatus {
     return structuredClone(this.get(runId).status);
   }
-  async start(runId: string, durationMs: number): Promise<CoordinatedRecordingStatus> {
+  async start(
+    runId: string,
+    durationMs: number,
+    diagnosticsVersion: 1 | 2 = 1,
+  ): Promise<CoordinatedRecordingStatus> {
+    if (![1, 2].includes(diagnosticsVersion)) throw new Error('invalid_recording');
     if (!UUID.test(runId) || !Number.isInteger(durationMs) || durationMs < 1 || durationMs > 120000)
       throw new Error('invalid_recording');
     this.sweep();
     const existing = this.runs.get(runId);
     if (existing) {
-      if (existing.durationMs !== durationMs) throw new Error('recording_conflict');
+      if (existing.durationMs !== durationMs || existing.diagnosticsVersion !== diagnosticsVersion)
+        throw new Error('recording_conflict');
       return structuredClone(existing.status);
     }
     if ((this.current && live(this.current)) || this.activation.status().enabled)
@@ -108,6 +120,7 @@ export class CoordinatedRecordingManager {
     const core = this.activation.start(expiresAt);
     const run: Run = {
       durationMs,
+      diagnosticsVersion,
       deadline: this.monotonic() + durationMs,
       retainUntil: this.monotonic() + 3600000,
       records: [],
@@ -127,15 +140,18 @@ export class CoordinatedRecordingManager {
     this.current = run;
     this.runs.set(runId, run);
     try {
-      await this.uplink.start(runId, durationMs);
+      await this.uplink.start(runId, durationMs, diagnosticsVersion);
       this.sweep();
       if (live(run)) {
         run.status.uplink.state = 'recording';
         run.status.phase = 'recording';
       } else await this.remoteStop(run);
-    } catch {
+    } catch (error) {
       if (live(run)) this.finish(run, 'failed');
-      run.status.error = 'uplink_start_failed';
+      run.status.error =
+        error instanceof Error && error.message === 'diagnostics_version_unavailable'
+          ? 'uplink_version_unavailable'
+          : 'uplink_start_failed';
       await this.remoteStop(run);
     }
     return structuredClone(run.status);

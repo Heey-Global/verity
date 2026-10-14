@@ -1,8 +1,14 @@
 import { z } from 'zod';
+import {
+  socketEvidenceMetadataSchema,
+  socketEvidenceHashSchema,
+  socketEvidenceRecordSchema,
+} from '@verity/events';
 
 import { recordingTransportSchema } from './recording-transport-schema.js';
 
 export const DIAGNOSTICS_CAPABILITY = 'remote-diagnostics-v1';
+export const DIAGNOSTICS_V2_CAPABILITY = 'remote-diagnostics-v2';
 export const DIAGNOSTICS_TIMEOUT_MS = 10_000;
 const DIAGNOSTICS_FRAME_BYTES = 32_768;
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -142,12 +148,53 @@ const response = z.discriminatedUnion('type', [
     ]),
   }),
 ]);
-export function parseRecordingResponse(value: unknown, runId: string) {
+const v2Response = z.discriminatedUnion('type', [
+  socketEvidenceMetadataSchema.extend({
+    type: z.enum(['diagnostics.started', 'diagnostics.status', 'diagnostics.stopped']),
+    requestId: z.string().uuid(),
+    exportHash: socketEvidenceHashSchema.nullable(),
+  }),
+  socketEvidenceMetadataSchema.extend({
+    type: z.literal('diagnostics.exported'),
+    requestId: z.string().uuid(),
+    exportHash: socketEvidenceHashSchema,
+    cursor: count,
+    nextCursor: count.nullable(),
+    records: z.array(socketEvidenceRecordSchema).max(2000),
+  }),
+]);
+type LegacyResponse = Exclude<z.infer<typeof response>, { type: 'diagnostics.error' }>;
+export function parseRecordingResponse(value: unknown, runId: string, version?: 1): LegacyResponse;
+export function parseRecordingResponse(
+  value: unknown,
+  runId: string,
+  version: 2,
+): z.infer<typeof v2Response>;
+export function parseRecordingResponse(
+  value: unknown,
+  runId: string,
+  version: 1 | 2,
+): LegacyResponse | z.infer<typeof v2Response>;
+export function parseRecordingResponse(value: unknown, runId: string, version: 1 | 2 = 1) {
   if (Buffer.byteLength(JSON.stringify(value)) > DIAGNOSTICS_FRAME_BYTES)
     throw new Error('invalid_diagnostics_response');
-  const parsed = response.safeParse(value);
+  if (version === 1 && typeof value === 'object' && value !== null && 'version' in value)
+    throw new Error('invalid_diagnostics_response');
+  const error = response.safeParse(value);
+  if (error.success && error.data.type === 'diagnostics.error')
+    throw new Error(`diagnostics_${error.data.code}`);
+  const parsed = version === 2 ? v2Response.safeParse(value) : response.safeParse(value);
   if (!parsed.success || parsed.data.runId !== runId)
     throw new Error('invalid_diagnostics_response');
   if (parsed.data.type === 'diagnostics.error') throw new Error(`diagnostics_${parsed.data.code}`);
+  if (version === 2 && 'exportHash' in parsed.data) {
+    const recording = parsed.data.state === 'recording';
+    if (
+      recording !== (parsed.data.exportHash === null) ||
+      recording !== (parsed.data.endedAt === null) ||
+      recording !== (parsed.data.stopReason === null)
+    )
+      throw new Error('invalid_diagnostics_response');
+  }
   return parsed.data;
 }

@@ -80,7 +80,7 @@ it('does not start on opening, then arms local before Core and declares ready on
   expect(mockStart.mock.invocationCallOrder[0]).toBeLessThan(
     api.startConnectionRecording.mock.invocationCallOrder[0]!,
   );
-  expect(api.startConnectionRecording).toHaveBeenCalledWith(runId, expect.any(Number));
+  expect(api.startConnectionRecording).toHaveBeenCalledWith(runId, expect.any(Number), 2);
 });
 it.each(['local', 'core', 'uplink', 'expired'])(
   'does not declare ready after %s failure',
@@ -193,4 +193,15 @@ it('removes Ready when the local capture expires', async () => {
   } finally {
     jest.useRealTimers();
   }
+});
+
+it('explains missing version support before another recording attempt', async () => {
+  const api = client();
+  api.startConnectionRecording.mockRejectedValue(new Error('diagnostics_version_unavailable'));
+  render(<ConnectionRecording client={api as never} />);
+  await pressStart();
+  await waitFor(() =>
+    expect(screen.getByText(/Uplink does not support this recording version/)).toBeTruthy(),
+  );
+  expect(mockStop).toHaveBeenCalled();
 });

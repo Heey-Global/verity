@@ -201,3 +201,12 @@ export {
 } from './live.js';
 
 export { liveResourceInterval } from './live-resources.js';
+export {
+  socketEvidenceRecordSchema,
+  socketEvidenceMetadataSchema,
+  socketEvidenceHashSchema,
+  socketEvidenceExportSchema,
+  canonicalEvidenceJson,
+  socketEvidenceHashInput,
+} from './socket-evidence.js';
+export type { SocketEvidenceExport } from './socket-evidence.js';
