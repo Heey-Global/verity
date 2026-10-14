@@ -115,6 +115,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   message: {
     color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.row.fontSize,
     textAlign: 'center',
   },

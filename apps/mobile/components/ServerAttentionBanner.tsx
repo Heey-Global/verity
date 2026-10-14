@@ -99,6 +99,7 @@ const styles = StyleSheet.create((theme) => ({
   bannerText: {
     flex: 1,
     color: theme.colors.attention,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.footnote.fontSize,
   },
   bannerAction: {

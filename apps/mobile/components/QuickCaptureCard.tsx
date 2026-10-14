@@ -559,9 +559,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   bars: { flexDirection: 'row', alignItems: 'center', gap: 3, height: 22, marginLeft: 4 },
   bar: { width: 3, borderRadius: 2 },
-  error: { color: theme.colors.attention, fontSize: theme.typography.bodySmall.fontSize },
+  error: {
+    color: theme.colors.attention,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   input: {
     color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.title.fontSize,
     lineHeight: 25 * theme.fontScale,
     minHeight: 76,
@@ -569,7 +574,11 @@ const styles = StyleSheet.create((theme) => ({
     padding: 0,
     textAlignVertical: 'top',
   },
-  hint: { color: theme.colors.textFaint, fontSize: theme.typography.footnote.fontSize },
+  hint: {
+    color: theme.colors.textFaint,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+  },
   suggest: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -610,7 +619,11 @@ const styles = StyleSheet.create((theme) => ({
   },
   permActions: { alignItems: 'center', gap: 6 },
   suggestBody: { flex: 1, gap: 2 },
-  suggestTitle: { color: theme.colors.text, fontSize: theme.typography.bodySmall.fontSize },
+  suggestTitle: {
+    color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   attach: {
     paddingHorizontal: theme.spacing.md,
     minHeight: 32,
@@ -645,7 +658,12 @@ const styles = StyleSheet.create((theme) => ({
     padding: 4,
     gap: 4,
   },
-  thumbName: { color: theme.colors.textMuted, fontSize: theme.text.micro, textAlign: 'center' },
+  thumbName: {
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.text.micro,
+    textAlign: 'center',
+  },
   thumbRemove: {
     position: 'absolute',
     top: 3,
@@ -682,7 +700,11 @@ const styles = StyleSheet.create((theme) => ({
   },
   chipSelected: { borderColor: theme.colors.action },
   chipDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: theme.colors.action },
-  chipLabel: { color: theme.colors.text, fontSize: theme.typography.bodySmall.fontSize },
+  chipLabel: {
+    color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
   chipLabelSelected: { color: theme.colors.action, fontFamily: theme.fonts.semibold },
   chipLabelMuted: { color: theme.colors.textMuted },
   otherList: { maxHeight: 180 },

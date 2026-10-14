@@ -272,6 +272,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   subtitle: {
     color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
     textAlign: 'center',

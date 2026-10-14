@@ -104,6 +104,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   lead: {
     color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
     textAlign: 'center',
@@ -133,6 +134,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   pointText: {
     color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.footnote.fontSize,
     lineHeight: 17 * theme.fontScale,
   },
@@ -156,6 +158,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   laterLabel: {
     color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.bodySmall.fontSize,
   },
   pressed: {

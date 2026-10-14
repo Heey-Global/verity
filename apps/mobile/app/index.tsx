@@ -2169,12 +2169,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   limitPaceInfoText: {
     color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
     fontSize: 10 * theme.fontScale,
     lineHeight: 14 * theme.fontScale,
   },
   limitPaceInfoHint: {
     marginTop: 2,
     color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
     fontSize: 9 * theme.fontScale,
     lineHeight: 12 * theme.fontScale,
   },
@@ -2228,6 +2230,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   emptySubtitle: {
     color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.bodySmall.fontSize,
     textAlign: 'center',
     maxWidth: 300,
@@ -2240,10 +2243,12 @@ const styles = StyleSheet.create((theme) => ({
   },
   errorDetailsLabel: {
     color: theme.colors.action,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.bodySmall.fontSize,
   },
   errorDetailsText: {
     color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.footnote.fontSize,
     textAlign: 'center',
     maxWidth: 320,
@@ -2302,6 +2307,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   rightPanePlaceholderText: {
     color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.bodySmall.fontSize,
   },
   emptyOverview: {
@@ -2419,6 +2425,7 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
     flexShrink: 1,
     color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.footnote.fontSize,
     lineHeight: 17 * theme.fontScale,
   },
@@ -2478,7 +2485,7 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: `${theme.colors.signature}99`,
     backgroundColor: `${theme.colors.signature}1f`,
   },
-  // Outlined in the same danger tone as the row's status dot, so the broken
+  // Outlined in the same attention tone as the row's status dot, so the broken
   // project and the action that fixes it read as one signal.
   projectRepairButton: {
     borderWidth: StyleSheet.hairlineWidth,
@@ -2545,6 +2552,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   rowSub: {
     color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.footnote.fontSize,
     lineHeight: 17 * theme.fontScale,
   },

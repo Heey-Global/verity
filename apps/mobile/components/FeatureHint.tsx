@@ -114,9 +114,14 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.typography.title.fontSize,
     fontFamily: theme.fonts.semibold,
   },
-  text: { color: theme.colors.text, fontSize: theme.typography.row.fontSize },
+  text: {
+    color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
+  },
   link: {
     color: theme.colors.action,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.row.fontSize,
     minHeight: 44,
     paddingVertical: theme.spacing.sm,

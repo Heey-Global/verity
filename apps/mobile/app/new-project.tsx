@@ -377,6 +377,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   subtitle: {
     color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.bodySmall.fontSize,
     textAlign: 'center',
     maxWidth: 320,
@@ -440,7 +441,11 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.typography.row.fontSize,
     fontFamily: theme.fonts.semibold,
   },
-  selectPlaceholder: { color: theme.colors.textFaint, fontSize: theme.typography.row.fontSize },
+  selectPlaceholder: {
+    color: theme.colors.textFaint,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
+  },
   optionList: {
     gap: theme.spacing.xs,
     padding: theme.spacing.xs,
@@ -476,12 +481,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   hint: {
     color: theme.colors.textFaint,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.footnote.fontSize,
     lineHeight: 17 * theme.fontScale,
     marginTop: theme.spacing.xs,
   },
   error: {
     color: theme.colors.attention,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.bodySmall.fontSize,
     marginTop: theme.spacing.sm,
   },

@@ -576,6 +576,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   menuTitle: {
     color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.footnote.fontSize,
     paddingHorizontal: theme.spacing.sm + 2,
     paddingTop: theme.spacing.xs + 2,
@@ -593,6 +594,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface,
   },
   menuLabel: {
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.bodySmall.fontSize,
   },
   menuDivider: {

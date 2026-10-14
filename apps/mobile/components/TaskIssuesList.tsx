@@ -256,10 +256,15 @@ const styles = StyleSheet.create((theme) => ({
   body: { flex: 1, gap: 2 },
   title: {
     color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.row.fontSize,
     lineHeight: 21 * theme.fontScale,
   },
-  meta: { color: theme.colors.textFaint, fontSize: theme.typography.footnote.fontSize },
+  meta: {
+    color: theme.colors.textFaint,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+  },
   chips: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -284,5 +289,9 @@ const styles = StyleSheet.create((theme) => ({
   selectedText: { color: theme.colors.action, fontFamily: theme.fonts.semibold },
   disabled: { opacity: 0.5 },
   show: { padding: theme.spacing.sm },
-  link: { color: theme.colors.action, fontSize: theme.typography.bodySmall.fontSize },
+  link: {
+    color: theme.colors.action,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
 }));

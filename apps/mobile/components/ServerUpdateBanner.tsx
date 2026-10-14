@@ -75,6 +75,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   subtitle: {
     color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.footnote.fontSize,
   },
 }));

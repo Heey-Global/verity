@@ -1025,6 +1025,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   title: {
     color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.row.fontSize,
     lineHeight: 21 * theme.fontScale,
   },
@@ -1039,6 +1040,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   meta: {
     color: theme.colors.textFaint,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.footnote.fontSize,
   },
   more: {
@@ -1052,15 +1054,18 @@ const styles = StyleSheet.create((theme) => ({
   },
   link: {
     color: theme.colors.action,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.bodySmall.fontSize,
   },
   description: {
     color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 21 * theme.fontScale,
   },
   conflict: {
     color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
     fontSize: theme.typography.bodySmall.fontSize,
     marginBottom: theme.spacing.xs,
   },
