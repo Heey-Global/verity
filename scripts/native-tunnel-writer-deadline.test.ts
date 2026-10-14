@@ -32,8 +32,11 @@ it('bounds every WebSocket send and ends the attachment on a miss', () => {
   // would wait on the transport for good.
   expect(writer.match(/socket\.send\(/gu)).toHaveLength(1);
   expect(writer).toMatch(
-    /bounded\(seconds: Self\.sendDeadlineSeconds\) \{ try await socket\.send\(/u,
+    /bounded\(seconds: Self\.sendDeadlineSeconds, progress: progress\) \{\s*try await socket\.send\(/u,
   );
+  // Measured against progress: a slow link that keeps completing sends is
+  // not a stopped socket.
+  expect(writer).toMatch(/if progress\.value != seen \{ seen = progress\.value; continue \}/u);
   expect(writer).toMatch(/once\.resume\(RemoteSmokeError\.sendStalled\)/u);
   // The transport's send ignores cancellation: a task group that waited for
   // it would never return, and the deadline would never fire.

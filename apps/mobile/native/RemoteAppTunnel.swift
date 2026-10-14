@@ -25,7 +25,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     private let socket: URLSessionWebSocketTask
     private var onStall: (@Sendable () -> Void)?
     private var stallRaised = false
-    private let progress = Progress()
+    private let progress = SendProgress()
 
     func setOnStall(_ handler: @escaping @Sendable () -> Void) { onStall = handler }
 #if VERITY_STALL_DIAGNOSTICS
@@ -73,7 +73,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
 
     // Counts completed sends; the deadline reads it to tell a slow queue from
     // a stopped one.
-    private final class Progress: @unchecked Sendable {
+    private final class SendProgress: @unchecked Sendable {
       private let lock = NSLock()
       private var count = 0
       func advance() { lock.lock(); count += 1; lock.unlock() }
@@ -98,7 +98,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       }
     }
 
-    private static func bounded(seconds: UInt64, progress: Progress,
+    private static func bounded(seconds: UInt64, progress: SendProgress,
       _ body: @escaping @Sendable () async throws -> Void) async throws
     {
       try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

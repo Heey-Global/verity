@@ -20,6 +20,12 @@ Path(sys.argv[2], 'Writer.swift').write_text(prefix + writer)
 needle = '      diagnostics?.started(token)'
 assert writer.count(needle) == 1
 Path(sys.argv[2], 'UnobservedWriter.swift').write_text(prefix + writer.replace(needle, '', 1))
+# A chain across streams brought back: each send waits for the one before it.
+needle = '      else { throw RemoteSmokeError.limitReached }\n'
+assert writer.count(needle) == 1
+chained = writer.replace('actor Writer {', 'actor Writer {\n    var sendingForTest = false', 1)
+chained = chained.replace(needle, needle + '      while sendingForTest { await Task.yield() }\n      sendingForTest = true\n      defer { sendingForTest = false }\n', 1)
+Path(sys.argv[2], 'ChainedWriter.swift').write_text(prefix + chained)
 # A deadline whose sleeper never resumes the continuation leaves a stuck send
 # stuck; the deadline check must see that, not the host watchdog.
 needle = '          if !Task.isCancelled { once.resume(RemoteSmokeError.sendStalled) }'
@@ -36,7 +42,7 @@ except subprocess.TimeoutExpired:
 raise SystemExit(result.returncode)
 PY
 }
-for variant in Writer UnobservedWriter; do
+for variant in Writer UnobservedWriter ChainedWriter; do
   run_bounded xcrun swiftc -parse-as-library -D VERITY_STALL_DIAGNOSTICS -target "$(uname -m)-apple-macosx14.0" \
     "$tmp/$variant.swift" scripts/remote-control-staging/StallWriterDiagnostics.swift scripts/remote-control-tunnel/WriterStall.swift -o "$tmp/$variant"
 done
@@ -47,6 +53,11 @@ run_bounded "$tmp/UnobservedWriter" > "$tmp/unobserved.log" 2>&1
 status=$?
 set -e
 [[ "$status" == 1 ]] && grep -q '^writer-diagnostics-not-reproduced$' "$tmp/unobserved.log"
+set +e
+run_bounded "$tmp/ChainedWriter" > "$tmp/chained.log" 2>&1
+status=$?
+set -e
+[[ "$status" == 1 ]] && grep -q '^writer-chain-reintroduced$' "$tmp/chained.log"
 
 # The send deadline against a socket whose send never completes: the actual
 # Writer must give up with a stall and raise its hook; a Writer whose sleeper

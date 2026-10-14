@@ -70,17 +70,26 @@ struct WriterDeadlineCheck {
       print("writer-deadline-hook-missing")
       exit(1)
     }
-    // A sibling queued behind the stalled send fails with the same stall
-    // rather than waiting, and does not raise the hook a second time.
-    do {
-      try await writer.send(["type": "stream.data", "streamId": "sibling"])
-      print("writer-deadline-sibling-not-released")
-      exit(1)
-    } catch {
-      guard Writer.isStall(error), stalled.value == 1 else {
-        print("writer-deadline-sibling-wrong-failure")
-        exit(1)
+    // A sibling sent on the same dead socket meets its own deadline as a
+    // stall and does not raise the hook a second time.
+    let sibling = await withCheckedContinuation { (continuation: CheckedContinuation<String, Never>) in
+      let first = FirstAnswer(continuation)
+      Task {
+        do {
+          try await writer.send(["type": "stream.data", "streamId": "sibling"])
+          first.answer("writer-deadline-sibling-not-released")
+        } catch {
+          first.answer(Writer.isStall(error) && stalled.value == 1 ? "stalled" : "writer-deadline-sibling-wrong-failure")
+        }
       }
+      Task {
+        try? await Task.sleep(for: .seconds(Int(Writer.sendDeadlineSeconds) * 2))
+        first.answer("writer-deadline-sibling-not-released")
+      }
+    }
+    guard sibling == "stalled" else {
+      print(sibling)
+      exit(1)
     }
     print("writer-deadline-enforced: send stalled after \(Int(elapsed)) s, hook raised, sibling released")
   }

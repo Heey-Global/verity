@@ -42,14 +42,16 @@ struct WriterStallCheck {
     }
     let callsWhileHeld = await socket.calls
     let blocked = recorder.snapshot(ports: [1001], since: started)
-    try await second.value
-    let siblingDone = recorder.snapshot(ports: [1002], since: started)
-    await socket.release()
-    try await first.value
+    // Judged before anything is awaited: a sibling held behind the first send
+    // would only come back after the deadline, as a stall, or not at all.
     guard callsWhileHeld == 2 else {
       print("writer-chain-reintroduced")
       exit(1)
     }
+    try await second.value
+    let siblingDone = recorder.snapshot(ports: [1002], since: started)
+    await socket.release()
+    try await first.value
     guard blocked["sending"] as? Int == 1, siblingDone["completed"] as? Int == 1 else {
       print("writer-diagnostics-not-reproduced")
       exit(1)
