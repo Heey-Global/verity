@@ -3859,7 +3859,7 @@ export const SessionChat = memo(function SessionChat({
                 hasRunningDevServer ? 'Share preview. A dev server is running.' : 'Share preview'
               }
               active={hasActiveStaticPreview}
-              activeColor={theme.colors.tone.done}
+              activeColor={theme.colors.success}
               dot={hasRunningDevServer}
               dotTestID="preview-server-dot"
               onHint={showHeaderHint}
@@ -3900,7 +3900,7 @@ export const SessionChat = memo(function SessionChat({
         >
           {linkedSessions.map((link) => (
             <View key={link.sessionId} style={styles.headerLinkChip}>
-              <Icon name="link" size={13} color={theme.colors.primary} />
+              <Icon name="link" size={13} color={theme.colors.action} />
               <Text style={styles.headerLinkText} numberOfLines={1}>
                 {link.projectName} · {link.name ?? link.sessionId}
               </Text>
@@ -4045,7 +4045,7 @@ export const SessionChat = memo(function SessionChat({
                     : 'file-text'
               }
               size={16}
-              color={theme.colors.primary}
+              color={theme.colors.action}
             />
             <Text style={styles.slideDeckName} numberOfLines={1}>
               {workspaceFile.name} ↗
@@ -4071,7 +4071,7 @@ export const SessionChat = memo(function SessionChat({
       {gmailConnection?.enabled ? (
         <View style={styles.workspaceFileBar}>
           <View style={styles.slideDeckLink}>
-            <Icon name="mail" size={16} color={theme.colors.primary} />
+            <Icon name="mail" size={16} color={theme.colors.action} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
               Gmail{projectGoogleAccess.gmail ? ' · Project access' : ''}
               {gmailConnection.accountEmail ? ` · ${gmailConnection.accountEmail}` : ''}
@@ -4094,7 +4094,7 @@ export const SessionChat = memo(function SessionChat({
       {calendarConnection?.enabled ? (
         <View style={styles.workspaceFileBar}>
           <View style={styles.slideDeckLink}>
-            <Icon name="calendar" size={16} color={theme.colors.primary} />
+            <Icon name="calendar" size={16} color={theme.colors.action} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
               Google Calendar{projectGoogleAccess.calendar ? ' · Project access' : ''}
               {calendarConnection.accountEmail ? ` · ${calendarConnection.accountEmail}` : ''}
@@ -4117,7 +4117,7 @@ export const SessionChat = memo(function SessionChat({
       {contactsConnection?.enabled ? (
         <View style={styles.workspaceFileBar}>
           <View style={styles.slideDeckLink}>
-            <Icon name="users" size={16} color={theme.colors.primary} />
+            <Icon name="users" size={16} color={theme.colors.action} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
               Google Contacts{projectGoogleAccess.contacts ? ' · Project access' : ''}
               {contactsConnection.accountEmail ? ` · ${contactsConnection.accountEmail}` : ''}
@@ -4853,7 +4853,7 @@ function HeaderActionButton({
       <Icon
         name={icon}
         size={20}
-        color={active ? (activeColor ?? theme.colors.primary) : theme.colors.textMuted}
+        color={active ? (activeColor ?? theme.colors.action) : theme.colors.textMuted}
       />
       {dot ? <View testID={dotTestID} style={styles.headerActionDot} /> : null}
       {badge !== undefined ? (
@@ -6350,7 +6350,7 @@ function SessionFilesSheet({
                                   <Icon
                                     name={picked ? 'check-circle' : 'circle'}
                                     size={18}
-                                    color={picked ? theme.colors.primary : theme.colors.textFaint}
+                                    color={picked ? theme.colors.action : theme.colors.textFaint}
                                   />
                                 </View>
                               ) : entry.kind === 'file' ? (
@@ -6384,7 +6384,7 @@ function SessionFilesSheet({
                 </ScrollView>
                 {dropActive ? (
                   <View pointerEvents="none" style={styles.filesDropHint}>
-                    <Icon name="download" size={18} color={theme.colors.primary} />
+                    <Icon name="download" size={18} color={theme.colors.action} />
                     <Text style={styles.filesDropHintText}>Drop to upload to /{path}</Text>
                   </View>
                 ) : null}
@@ -6769,7 +6769,7 @@ function CopyButton({
       setTimeout(() => setCopied(false), 1500);
     });
   }, [value]);
-  const tint = copied ? theme.colors.primary : theme.colors.textMuted;
+  const tint = copied ? theme.colors.action : theme.colors.textMuted;
   return (
     <Pressable
       onPress={onCopy}
@@ -6946,7 +6946,7 @@ function AgentMarkdown({
             gestures; toggling off happens via the "…" sheet or the header sheet. */}
           {bookmarked && !showCopy && !actionsOpen ? (
             <View style={styles.msgBookmarkFlag} pointerEvents="none">
-              <Icon name="bookmark" size={13} color={theme.colors.primary} />
+              <Icon name="bookmark" size={13} color={theme.colors.action} />
             </View>
           ) : null}
           {showCopy || actionsOpen ? (
@@ -7406,7 +7406,7 @@ function Inline({
         }
         if (span.t === 'code') {
           return (
-            <Text key={i} style={[styles.mdCode, { color: theme.colors.accent }]}>
+            <Text key={i} style={[styles.mdCode, { color: theme.colors.signature }]}>
               <HighlightedSearchText text={span.text} />
             </Text>
           );
@@ -7424,7 +7424,7 @@ function Inline({
               key={i}
               style={[
                 asLink ? styles.mdLink : styles.mdReference,
-                { color: asLink ? theme.colors.primary : theme.colors.accent },
+                { color: asLink ? theme.colors.action : theme.colors.signature },
               ]}
               // openURL rejects only if no handler can open it (no browser); swallow
               // so it never surfaces as an unhandled rejection (only http(s) reach here).
@@ -7717,7 +7717,7 @@ function TodoGroup({ tools }: { tools: ToolCallMessage[] }) {
   const view = toolCallView(last.tool);
   // Always the "active" tone: a todo list reads as one live, in-progress widget
   // rather than per-op success/error states.
-  const color = theme.colors.tone.active;
+  const color = theme.colors.action;
   return (
     <View>
       <Pressable
@@ -7762,7 +7762,7 @@ function PlanCard({ plan, latest }: { plan: PlanView; latest: boolean }) {
   const { theme } = useUnistyles();
   const [expanded, setExpanded] = useState(latest);
   const done = plan.completed === plan.entries.length;
-  const color = done ? theme.colors.tone.done : theme.colors.tone.active;
+  const color = done ? theme.colors.success : theme.colors.action;
   return (
     <Pressable
       style={styles.toolCard}
@@ -7790,7 +7790,7 @@ function PlanCard({ plan, latest }: { plan: PlanView; latest: boolean }) {
               <Text
                 style={[
                   styles.planMark,
-                  entry.status === 'in_progress' ? { color: theme.colors.tone.active } : null,
+                  entry.status === 'in_progress' ? { color: theme.colors.action } : null,
                 ]}
               >
                 {PLAN_MARK[entry.status]}
@@ -7862,10 +7862,10 @@ function PlanProposalCard({
             styles.toolDot,
             {
               backgroundColor: decidable
-                ? theme.colors.tone.attention
+                ? theme.colors.attention
                 : planning === 'implemented' && latest
-                  ? theme.colors.tone.done
-                  : theme.colors.tone.idle,
+                  ? theme.colors.success
+                  : theme.colors.textFaint,
             },
           ]}
         />
@@ -8203,7 +8203,7 @@ function BookmarksSheet({
                   accessibilityRole="button"
                   accessibilityLabel={`Jump to bookmark: ${preview}`}
                 >
-                  <Icon name="bookmark" size={15} color={theme.colors.primary} />
+                  <Icon name="bookmark" size={15} color={theme.colors.action} />
                   <Text style={styles.bookmarkPreview} numberOfLines={2}>
                     {preview}
                   </Text>
@@ -8314,12 +8314,12 @@ function BranchSwitcherSheet({
             {switchError ? <Text style={styles.sheetError}>{switchError}</Text> : null}
             {loading && current === undefined ? (
               <View style={styles.sheetLoading}>
-                <ActivityIndicator color={theme.colors.accent} />
+                <ActivityIndicator color={theme.colors.signature} />
               </View>
             ) : null}
             {current !== undefined ? (
               <View style={styles.sheetRow}>
-                <View style={[styles.sheetDot, { backgroundColor: theme.colors.tone.active }]} />
+                <View style={[styles.sheetDot, { backgroundColor: theme.colors.action }]} />
                 <Text style={styles.sheetRowLabel} numberOfLines={1}>
                   {current}
                 </Text>
@@ -8342,7 +8342,7 @@ function BranchSwitcherSheet({
                 <Text style={styles.sheetRowLabel} numberOfLines={1}>
                   {branch}
                 </Text>
-                {pending === branch ? <ActivityIndicator color={theme.colors.accent} /> : null}
+                {pending === branch ? <ActivityIndicator color={theme.colors.signature} /> : null}
               </Pressable>
             ))}
             {/* Preview a PR / pushed branch (#122): check out origin/<branch> DETACHED
@@ -8364,12 +8364,14 @@ function BranchSwitcherSheet({
                     accessibilityLabel={`Preview pushed branch ${branch}`}
                   >
                     {/* Accent dot marks a preview (detached) row vs a local switch. */}
-                    <View style={[styles.sheetDot, { backgroundColor: theme.colors.accent }]} />
+                    <View style={[styles.sheetDot, { backgroundColor: theme.colors.signature }]} />
                     <Text style={styles.sheetRowLabel} numberOfLines={1}>
                       {branch}
                     </Text>
                     <Text style={styles.sheetCurrent}>preview</Text>
-                    {pending === branch ? <ActivityIndicator color={theme.colors.accent} /> : null}
+                    {pending === branch ? (
+                      <ActivityIndicator color={theme.colors.signature} />
+                    ) : null}
                   </Pressable>
                 ))}
               </>
@@ -8393,7 +8395,7 @@ function BranchSwitcherSheet({
                   accessibilityRole="button"
                   accessibilityLabel="Commit changes and switch"
                 >
-                  <Text style={[styles.dirtyButtonText, { color: theme.colors.accent }]}>
+                  <Text style={[styles.dirtyButtonText, { color: theme.colors.signature }]}>
                     Commit &amp; switch
                   </Text>
                 </Pressable>
@@ -8407,7 +8409,7 @@ function BranchSwitcherSheet({
                   accessibilityRole="button"
                   accessibilityLabel="Stash changes and switch"
                 >
-                  <Text style={[styles.dirtyButtonText, { color: theme.colors.accent }]}>
+                  <Text style={[styles.dirtyButtonText, { color: theme.colors.signature }]}>
                     Stash &amp; switch
                   </Text>
                 </Pressable>
@@ -8452,9 +8454,9 @@ function BranchSwitcherSheet({
                 accessibilityLabel="Create and switch to new branch"
               >
                 {pending === newBranch.trim() && newBranch.trim().length > 0 ? (
-                  <ActivityIndicator color={theme.colors.accent} />
+                  <ActivityIndicator color={theme.colors.signature} />
                 ) : (
-                  <Text style={[styles.newBranchButtonText, { color: theme.colors.accent }]}>
+                  <Text style={[styles.newBranchButtonText, { color: theme.colors.signature }]}>
                     Create
                   </Text>
                 )}
@@ -8531,7 +8533,7 @@ function EngineSwitcherSheet({
         <View
           style={[
             styles.sheetDot,
-            { backgroundColor: isSelected ? theme.colors.tone.active : theme.colors.border },
+            { backgroundColor: isSelected ? theme.colors.action : theme.colors.border },
           ]}
         />
         <Text style={styles.sheetRowLabel} numberOfLines={1}>
@@ -8808,7 +8810,7 @@ function PermissionPrompt({
       }
     >
       <View style={styles.permissionHeader}>
-        <View style={[styles.permissionDot, { backgroundColor: theme.colors.tone.attention }]} />
+        <View style={[styles.permissionDot, { backgroundColor: theme.colors.attention }]} />
         <Text
           style={styles.permissionTitle}
           numberOfLines={packageInstall === null ? 1 : undefined}
@@ -9100,13 +9102,13 @@ function PermissionPrompt({
         >
           {deciding ? (
             <ActivityIndicator
-              color={packageInstall?.supported ? theme.colors.text : theme.colors.tone.danger}
+              color={packageInstall?.supported ? theme.colors.text : theme.colors.attention}
             />
           ) : (
             <Text
               style={[
                 styles.permissionButtonLabel,
-                { color: packageInstall?.supported ? theme.colors.text : theme.colors.tone.danger },
+                { color: packageInstall?.supported ? theme.colors.text : theme.colors.attention },
               ]}
             >
               {packageInstall?.denyLabel ?? (approvedForDelivery ? 'Cancel' : 'Deny')}
@@ -9141,7 +9143,7 @@ function PermissionPrompt({
           ]}
         >
           {deciding ? (
-            <ActivityIndicator color={theme.colors.onPrimary} />
+            <ActivityIndicator color={theme.colors.onAction} />
           ) : (
             <Text style={[styles.permissionButtonLabel, styles.permissionAllowLabel]}>
               {packageInstall !== null
@@ -9351,12 +9353,12 @@ function PullRequestBar({
   // second animation beside it only competed with it.
   const statusColor =
     button.kind === 'blocked' || (button.kind === 'closed' && pullRequest.pipeline === 'failure')
-      ? theme.colors.tone.danger
+      ? theme.colors.attention
       : button.kind === 'waiting'
-        ? theme.colors.tone.idle
+        ? theme.colors.textFaint
         : button.kind === 'refresh'
-          ? theme.colors.tone.attention
-          : theme.colors.tone.done;
+          ? theme.colors.attention
+          : theme.colors.success;
   const conflictTarget = pullRequest.baseRef ?? 'the base branch';
   const prNumber = String(pullRequest.number);
   const blockedLabels: Record<PullRequestBlockReason, string> = {
@@ -9464,9 +9466,9 @@ function PullRequestBar({
             style={({ pressed }) => [
               styles.prMergeButton,
               button.kind === 'merge' || button.kind === 'merging'
-                ? { backgroundColor: theme.colors.tone.done }
+                ? { backgroundColor: theme.colors.success }
                 : button.kind === 'blocked'
-                  ? { backgroundColor: theme.colors.tone.danger }
+                  ? { backgroundColor: theme.colors.attention }
                   : button.kind === 'waiting'
                     ? styles.prMergeButtonWaiting
                     : styles.prMergeButtonOutline,
@@ -9491,7 +9493,7 @@ function PullRequestBar({
             accessibilityLabel={buttonLabel}
           >
             {button.kind === 'merging' ? (
-              <ActivityIndicator color={theme.colors.onPrimary} />
+              <ActivityIndicator color={theme.colors.onAction} />
             ) : button.kind === 'waiting' ? (
               <View style={styles.prMergeWaiting}>
                 <SlowSpinner color={theme.colors.textMuted} />
@@ -9572,7 +9574,7 @@ function LocalMergeBar({
           style={({ pressed }) => [
             styles.prMergeButton,
             styles.prLocalMergeButton,
-            { backgroundColor: theme.colors.tone.done },
+            { backgroundColor: theme.colors.success },
             saving || busy ? styles.prMergeButtonDisabled : null,
             pressed && !saving && !busy ? styles.prMergeButtonPressed : null,
           ]}
@@ -9587,7 +9589,7 @@ function LocalMergeBar({
           accessibilityLabel="Save this session's changes as a version in your project"
         >
           {saving ? (
-            <ActivityIndicator color={theme.colors.onPrimary} />
+            <ActivityIndicator color={theme.colors.onAction} />
           ) : (
             <Text style={styles.prMergeText}>Save to project</Text>
           )}
@@ -9735,7 +9737,7 @@ function InputBar({
         <InputActivityLine running={activityAnimating && !dead} />
         {dropActive ? (
           <View pointerEvents="none" style={styles.inputDropHint}>
-            <Icon name="paperclip" size={18} color={theme.colors.primary} />
+            <Icon name="paperclip" size={18} color={theme.colors.action} />
             <Text style={styles.inputDropHintText}>Drop files to attach</Text>
           </View>
         ) : null}
@@ -9752,7 +9754,7 @@ function InputBar({
                 <Icon
                   name={saveAttachmentsToKnowledge ? 'check-square' : 'square'}
                   size={16}
-                  color={saveAttachmentsToKnowledge ? theme.colors.primary : theme.colors.textMuted}
+                  color={saveAttachmentsToKnowledge ? theme.colors.action : theme.colors.textMuted}
                 />
                 <Text style={styles.knowledgeAttachmentToggleText}>Save to Project Knowledge</Text>
               </Pressable>
@@ -9865,7 +9867,7 @@ the Claude app — it sits with the composer instead of the nav bar). */}
                   <Icon
                     name="arrow-up"
                     size={22}
-                    color={canSend ? theme.colors.onPrimary : theme.colors.textMuted}
+                    color={canSend ? theme.colors.onAction : theme.colors.textMuted}
                   />
                 </Pressable>
               )}
@@ -10209,7 +10211,7 @@ function InputActivityLine({ running }: { running: boolean }) {
               ? {
                   height: 2,
                   borderRadius: theme.radius.pill,
-                  backgroundColor: theme.colors.accent,
+                  backgroundColor: theme.colors.signature,
                   opacity: 0.8,
                 }
               : styles.inputActivitySegment,
@@ -10312,7 +10314,9 @@ function MicButton({
           ]}
         >
           {countdown !== null ? (
-            <Text style={{ color: theme.colors.background, fontWeight: '700' }}>{countdown}</Text>
+            <Text style={{ color: theme.colors.background, fontFamily: theme.fonts.bold }}>
+              {countdown}
+            </Text>
           ) : autoMode ? (
             <Icon name="mic" size={20} color={theme.colors.background} />
           ) : (
@@ -10411,8 +10415,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   emptyTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '600',
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   starterScreen: {
     flexGrow: 1,
@@ -10432,7 +10436,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   emptySubtitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     textAlign: 'center',
     maxWidth: 320,
     lineHeight: 20 * theme.fontScale,
@@ -10499,7 +10504,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.text,
   },
   voiceAutoActionFill: {
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   voiceAutoDot: {
     position: 'absolute',
@@ -10508,7 +10513,7 @@ const styles = StyleSheet.create((theme) => ({
     width: 9,
     height: 9,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
     borderWidth: 1,
     borderColor: theme.colors.background,
   },
@@ -10528,8 +10533,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   headerTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '600',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.semibold,
     textAlign: 'center',
   },
   headerSubtitle: {
@@ -10539,8 +10544,8 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
   },
   headerHintText: {
-    color: theme.colors.primary,
-    fontWeight: '600',
+    color: theme.colors.action,
+    fontFamily: theme.fonts.semibold,
     textAlign: 'center',
   },
   // Fits the 28px back chevron + its padding.
@@ -10561,14 +10566,14 @@ const styles = StyleSheet.create((theme) => ({
   headerBranch: {
     flexShrink: 1,
     color: theme.colors.textFaint,
-    fontSize: 12 * theme.fontScale,
-    fontWeight: '400',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.regular,
   },
-  headerIssueLink: { color: theme.colors.primary },
+  headerIssueLink: { color: theme.colors.action },
   headerBookmarkCount: {
     color: theme.colors.textMuted,
     fontSize: 11 * theme.fontScale,
-    fontWeight: '600',
+    fontFamily: theme.fonts.semibold,
   },
   headerActions: {
     flexDirection: 'row',
@@ -10594,7 +10599,7 @@ const styles = StyleSheet.create((theme) => ({
     width: 9,
     height: 9,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.tone.done,
+    backgroundColor: theme.colors.success,
     borderWidth: 1.5,
     borderColor: theme.colors.surfaceAlt,
   },
@@ -10608,12 +10613,12 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.signature,
   },
   headerActionBadgeText: {
     color: '#ffffff',
     fontSize: 11 * theme.fontScale,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
   },
   // The tappable engine chip (#switch-engine): the engine pill + a quiet caret/spinner
   // in a row, so the whole affordance reads as one button on the meta row.
@@ -10636,11 +10641,16 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  headerLinkText: { flexShrink: 1, color: theme.colors.textMuted, fontSize: theme.text.xs },
+  headerLinkText: {
+    flexShrink: 1,
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+  },
   headerMetaChip: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     backgroundColor: theme.colors.surfaceAlt,
     borderWidth: 1,
     borderColor: theme.colors.border,
@@ -10679,16 +10689,16 @@ const styles = StyleSheet.create((theme) => ({
   },
   sheetTitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
     marginBottom: theme.spacing.sm,
   },
   // Section header within the switcher list (e.g. the #122 preview section).
   sheetSectionLabel: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
     marginTop: theme.spacing.md,
     marginBottom: theme.spacing.xs,
@@ -10697,13 +10707,15 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
   },
   sheetError: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.sm,
+    color: theme.colors.attention,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     paddingVertical: theme.spacing.sm,
   },
   sheetEmpty: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     paddingVertical: theme.spacing.md,
   },
   driveSetupNotice: {
@@ -10718,15 +10730,15 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   driveSetupButtonPressed: {
     opacity: 0.78,
   },
   driveSetupButtonLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    color: theme.colors.onAction,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   sheetLoading: {
     paddingVertical: theme.spacing.lg,
@@ -10734,7 +10746,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   filesPath: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   // Pinned under the list while selecting: the one action that applies to the
   // whole selection, labelled and away from the header's Done.
@@ -10767,16 +10780,17 @@ const styles = StyleSheet.create((theme) => ({
     marginBottom: -StyleSheet.hairlineWidth,
   },
   filesRootButtonActive: {
-    borderBottomColor: theme.colors.primary,
+    borderBottomColor: theme.colors.action,
   },
   filesRootLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   filesRootLabelActive: {
     color: theme.colors.text,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // The drop target wraps the list rather than the whole sheet: a drop onto the
   // preview or the header would have no directory to land in.
@@ -10797,13 +10811,13 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.md,
     borderTopWidth: 1,
-    borderTopColor: theme.colors.primary,
-    backgroundColor: `${theme.colors.primary}14`,
+    borderTopColor: theme.colors.action,
+    backgroundColor: `${theme.colors.action}14`,
   },
   filesDropHintText: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   fileRow: {
     minHeight: 46,
@@ -10823,7 +10837,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   fileMeta: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     marginTop: 1,
   },
   fileDownload: {
@@ -10845,7 +10860,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   filesPreviewText: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
   },
@@ -10881,11 +10896,13 @@ const styles = StyleSheet.create((theme) => ({
   sheetRowLabel: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
   },
   sheetExcludedNote: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     marginTop: theme.spacing.md,
     paddingTop: theme.spacing.sm,
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -10893,12 +10910,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   sheetCurrent: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     textTransform: 'uppercase',
   },
   sheetLimited: {
-    color: theme.colors.tone.attention,
-    fontSize: theme.text.xs,
+    color: theme.colors.attention,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     textTransform: 'uppercase',
   },
   // A bookmark jump-row: the tappable preview (dog-ear + up-to-2 lines of the passage)
@@ -10919,7 +10938,8 @@ const styles = StyleSheet.create((theme) => ({
   bookmarkPreview: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 20 * theme.fontScale,
   },
   bookmarkRemove: {
@@ -10939,7 +10959,8 @@ const styles = StyleSheet.create((theme) => ({
   newBranchInput: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.md,
@@ -10957,8 +10978,8 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0.4,
   },
   newBranchButtonText: {
-    fontSize: theme.text.md,
-    fontWeight: '700',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   // The inline dirty-worktree prompt: a message + commit/stash/cancel buttons,
   // shown in place of the new-branch row after a 409 "uncommitted changes".
@@ -10971,7 +10992,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   dirtyText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
   },
   dirtyButtons: {
@@ -10987,8 +11009,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   dirtyButtonText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   queuedWrap: {
     paddingHorizontal: theme.spacing.lg,
@@ -11048,18 +11070,18 @@ const styles = StyleSheet.create((theme) => ({
   },
   prTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   prSub: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   prError: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    color: theme.colors.attention,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   prMergeButton: {
     minWidth: 78,
@@ -11069,7 +11091,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   prLocalMergeButton: {
     width: 124,
@@ -11093,9 +11115,9 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.textMuted,
   },
   prMergeText: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.sm,
-    fontWeight: '700',
+    color: theme.colors.onAction,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   prMergeWaiting: {
     flexDirection: 'row',
@@ -11104,13 +11126,13 @@ const styles = StyleSheet.create((theme) => ({
   },
   prMergeWaitingText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   prRefreshText: {
     color: theme.colors.text,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   prDismissButton: {
     width: 36,
@@ -11126,7 +11148,7 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.textFaint,
     fontSize: 22 * theme.fontScale,
     lineHeight: 24 * theme.fontScale,
-    fontWeight: '400',
+    fontFamily: theme.fonts.regular,
   },
   queuedBubbleRow: {
     alignItems: 'flex-end',
@@ -11149,13 +11171,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   queuedText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 22 * theme.fontScale,
   },
   queuedTag: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textAlign: 'right',
   },
   banner: {
@@ -11165,7 +11188,8 @@ const styles = StyleSheet.create((theme) => ({
     borderLeftWidth: 3,
   },
   bannerText: {
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     // Takes the row's slack so long copy wraps to its two lines instead of pushing
     // the action off the edge.
     flex: 1,
@@ -11176,8 +11200,8 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.md,
   },
   bannerAction: {
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textDecorationLine: 'underline',
   },
   // The transcript is stored newest-first and flipped: history then APPENDS at the
@@ -11189,7 +11213,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   searchTermHighlight: {
     color: theme.colors.text,
-    backgroundColor: `${theme.colors.accent}66`,
+    backgroundColor: `${theme.colors.signature}66`,
     borderRadius: 3,
   },
   // Spinner at the top of the transcript while older history is loading (scroll-up).
@@ -11205,7 +11229,8 @@ const styles = StyleSheet.create((theme) => ({
     // right-aligned to sit with the user turn it dates. Reads as orientation, not
     // content, so it uses the faintest text token at the xs scale.
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     textAlign: 'right',
     marginBottom: theme.spacing.xs,
     marginHorizontal: theme.spacing.sm,
@@ -11228,11 +11253,11 @@ const styles = StyleSheet.create((theme) => ({
     marginVertical: theme.spacing.sm,
   },
   peerRow: { justifyContent: 'flex-start' },
-  peerBubble: { borderColor: theme.colors.primary, backgroundColor: theme.colors.surface },
+  peerBubble: { borderColor: theme.colors.action, backgroundColor: theme.colors.surface },
   peerSource: {
-    color: theme.colors.primary,
-    fontSize: theme.text.xs,
-    fontWeight: '700',
+    color: theme.colors.action,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.bold,
     marginBottom: 6,
   },
   userBubble: {
@@ -11274,16 +11299,16 @@ const styles = StyleSheet.create((theme) => ({
   },
   userPendingTag: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     alignSelf: 'flex-end',
     marginTop: 2,
   },
   userText: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 22 * theme.fontScale,
-    fontWeight: '400',
+    fontFamily: theme.fonts.regular,
   },
   // Attached images in a sent user turn: a wrapping row of rounded thumbnails,
   // sized to sit comfortably in the bubble. A trailing margin separates them from
@@ -11351,9 +11376,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   agentText: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 22 * theme.fontScale,
-    fontWeight: '400',
+    fontFamily: theme.fonts.regular,
   },
   localMeetingUploadStatus: {
     flexDirection: 'row',
@@ -11373,22 +11398,23 @@ const styles = StyleSheet.create((theme) => ({
   },
   localMeetingUploadTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 20 * theme.fontScale,
-    fontWeight: '500',
+    fontFamily: theme.fonts.regular,
   },
   localMeetingUploadFileName: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
   mdHeading: {
-    fontSize: theme.text.lg,
-    fontWeight: '700',
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.bold,
     marginTop: theme.spacing.xs,
   },
   mdSectionHeading: {
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
     marginTop: theme.spacing.sm,
   },
   mdListRow: {
@@ -11398,7 +11424,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   mdBullet: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 22 * theme.fontScale,
   },
   // Native selectable Text wraps reliably in normal column flow. Inside list
@@ -11416,18 +11443,18 @@ const styles = StyleSheet.create((theme) => ({
     height: theme.spacing.sm,
   },
   mdBold: {
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
   },
   mdCode: {
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   mdLink: {
     textDecorationLine: 'underline',
   },
   mdReference: {
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   table: {
     marginVertical: theme.spacing.xs,
@@ -11455,7 +11482,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRightColor: theme.colors.border,
   },
   tableHeaderText: {
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
     color: theme.colors.text,
   },
   thinkingRow: {
@@ -11466,8 +11493,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   thinkingLabel: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
   },
   thinkingText: {
@@ -11484,13 +11511,13 @@ const styles = StyleSheet.create((theme) => ({
   },
   codeLang: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   codeText: {
     color: theme.colors.text,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
   },
   // Copy affordance (shared by code cards and the tap-revealed message action).
@@ -11506,8 +11533,8 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0.6,
   },
   copyLabel: {
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // Pinned to the code card's top-right corner, on a solid chip so it reads over
   // the monospace text it overlaps.
@@ -11540,13 +11567,15 @@ const styles = StyleSheet.create((theme) => ({
   toolHeadline: {
     flex: 1,
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   // Collapsed multi-tool group count: quiet caption text, spelled out ("+9 more")
   // so it explains itself instead of reading as a stray "·N".
   toolGroupCountText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   // The expanded run: individual tool lines, indented under the group line.
   toolGroupList: {
@@ -11556,7 +11585,8 @@ const styles = StyleSheet.create((theme) => ({
   // The "⎿ Done · N tools" summary line under a delegated-agent card.
   delegatedSummary: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     marginTop: 2,
     marginLeft: theme.spacing.md,
   },
@@ -11609,35 +11639,38 @@ const styles = StyleSheet.create((theme) => ({
   planMark: {
     width: 14 * theme.fontScale,
     color: theme.colors.textFaint,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   planEntryText: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   planEntryDone: {
     color: theme.colors.textFaint,
     textDecorationLine: 'line-through',
   },
   planEntryCurrent: {
-    fontWeight: '600',
+    fontFamily: theme.fonts.semibold,
   },
   toolCommand: {
     color: theme.colors.text,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
   toolPreview: {
     color: theme.colors.textFaint,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
   toolSkillBody: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
   eventRow: {
@@ -11655,7 +11688,8 @@ const styles = StyleSheet.create((theme) => ({
   dependencyStatusText: {
     flex: 1,
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
   },
   eventRowActionable: {
@@ -11678,17 +11712,18 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface,
   },
   eventLabel: {
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   eventDetail: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   eventTasksLink: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   eventAction: {
     alignSelf: 'flex-start',
@@ -11696,11 +11731,11 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.signature,
   },
   eventActionLabel: {
     color: theme.colors.background,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
   },
   eventActionPressed: {
     opacity: 0.72,
@@ -11736,8 +11771,8 @@ const styles = StyleSheet.create((theme) => ({
   slideDeckName: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   inputDropHint: {
     // Just a centered "Drop files to attach" label — no tinted bar or blue
@@ -11751,8 +11786,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   inputDropHintText: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   inputActivityTrack: {
     position: 'absolute',
@@ -11765,7 +11800,7 @@ const styles = StyleSheet.create((theme) => ({
   inputActivitySegment: {
     height: 2,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.accent,
+    backgroundColor: theme.colors.signature,
     opacity: 0.8,
   },
   // Quick-Action chips (issue #97).
@@ -11775,8 +11810,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   choicesQuestion: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   choicesChips: {
     flexDirection: 'row',
@@ -11796,12 +11831,12 @@ const styles = StyleSheet.create((theme) => ({
   },
   // The agent's default pick: outlined in the primary accent so it stands out.
   chipRecommended: {
-    borderColor: theme.colors.primary,
+    borderColor: theme.colors.action,
   },
   // A toggled multi-select option: filled to read as "on".
   chipSelected: {
-    borderColor: theme.colors.primary,
-    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.action,
+    backgroundColor: theme.colors.action,
   },
   chipDisabled: {
     opacity: 0.5,
@@ -11811,19 +11846,20 @@ const styles = StyleSheet.create((theme) => ({
   },
   chipLabel: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '500',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.regular,
   },
   chipLabelRecommended: {
-    color: theme.colors.primary,
-    fontWeight: '600',
+    color: theme.colors.action,
+    fontFamily: theme.fonts.semibold,
   },
   chipLabelSelected: {
-    color: theme.colors.onPrimary,
+    color: theme.colors.onAction,
   },
   chipStar: {
-    color: theme.colors.primary,
-    fontSize: theme.text.xs,
+    color: theme.colors.action,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   // "Custom answer": a dashed-outline chip that opens the keyboard, visually set
   // apart from the agent's concrete options.
@@ -11833,22 +11869,23 @@ const styles = StyleSheet.create((theme) => ({
   },
   chipCustomLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   choicesSend: {
     alignSelf: 'flex-start',
     paddingHorizontal: theme.spacing.lg,
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   choicesSendDisabled: {
     opacity: 0.5,
   },
   choicesSendLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    color: theme.colors.onAction,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // The live per-tool permission prompt (#149): a bordered card just above the input,
   // attention-toned so it reads as "the agent is paused, waiting on your decision".
@@ -11861,12 +11898,16 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm,
     gap: theme.spacing.sm,
   },
-  planHistoryDone: { borderColor: theme.colors.tone.done },
-  planCount: { color: theme.colors.textMuted, fontSize: theme.text.xs },
+  planHistoryDone: { borderColor: theme.colors.success },
+  planCount: {
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+  },
   planHistoryStatus: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
   },
   permissionPrompt: {
@@ -11876,7 +11917,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm,
     borderRadius: theme.radius.md,
     borderWidth: 1,
-    borderColor: theme.colors.tone.attention,
+    borderColor: theme.colors.attention,
     backgroundColor: theme.colors.surfaceAlt,
     gap: theme.spacing.sm,
   },
@@ -11893,19 +11934,19 @@ const styles = StyleSheet.create((theme) => ({
   permissionTitle: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // The risk-class tag (#149): a quiet attention-toned chip next to the title.
   permissionRisk: {
-    color: theme.colors.tone.attention,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    color: theme.colors.attention,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
   },
   permissionSubtitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
   },
   permissionDetails: {
@@ -11942,16 +11983,17 @@ const styles = StyleSheet.create((theme) => ({
   },
   permissionInstallExplanation: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   permissionDeny: {
-    borderColor: theme.colors.tone.danger,
+    borderColor: theme.colors.attention,
     backgroundColor: 'transparent',
   },
   // Allow: the filled primary action.
   permissionAllow: {
-    borderColor: theme.colors.primary,
-    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.action,
+    backgroundColor: theme.colors.action,
   },
   permissionButtonDisabled: {
     opacity: 0.5,
@@ -11960,11 +12002,11 @@ const styles = StyleSheet.create((theme) => ({
     opacity: 0.7,
   },
   permissionButtonLabel: {
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   permissionAllowLabel: {
-    color: theme.colors.onPrimary,
+    color: theme.colors.onAction,
   },
   // Brokered-HTTP card (ADR 0011): readable request summary + plain-language
   // explanation instead of a raw JSON dump.
@@ -11973,7 +12015,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   permissionHttpMeta: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   // Scoped allows (ADR 0011 D2): a quiet outlined secondary row under Deny/Allow.
   permissionScopeRow: {
@@ -11992,8 +12035,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   permissionScopeLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   // The rounded input card holding the full-width text field stacked above the
   // action row (two-tier, like the Claude app). Padding lives here, not on the
@@ -12022,8 +12065,8 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
   },
   inputCardDropActive: {
-    borderColor: theme.colors.primary,
-    backgroundColor: `${theme.colors.primary}14`,
+    borderColor: theme.colors.action,
+    backgroundColor: `${theme.colors.action}14`,
   },
   // The button row under the text field: attach + engine chip on the left,
   // mic + Send/Stop right.
@@ -12085,7 +12128,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   knowledgeAttachmentToggleText: {
     color: theme.colors.textMuted,
-    fontSize: 13,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.subtitle.fontSize,
   },
   previewItem: {
     width: 64,
@@ -12114,7 +12158,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   previewFileName: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     textAlign: 'center',
   },
   // Compact add popover docked to the plus button, not a bottom sheet.
@@ -12141,12 +12186,21 @@ const styles = StyleSheet.create((theme) => ({
   },
   menuRowPressed: { backgroundColor: theme.colors.surfaceAlt },
   menuRowText: { flex: 1 },
-  menuRowLabel: { color: theme.colors.text, fontSize: theme.text.md },
-  menuRowDetail: { color: theme.colors.textMuted, fontSize: theme.text.xs, marginTop: 1 },
+  menuRowLabel: {
+    color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
+  },
+  menuRowDetail: {
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+    marginTop: 1,
+  },
   menuSectionLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
     letterSpacing: 0.6,
     textTransform: 'uppercase',
     paddingTop: theme.spacing.xs,
@@ -12175,9 +12229,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   previewRemoveGlyph: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 16 * theme.fontScale,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
   },
   // Right-edge message-nav stack (prev/next my message + to-bottom). `top: '50%'` +
   // an inline translateY (NAV_STACK_HALF + inputBarHeight/2) centre it in the VISIBLE
@@ -12210,7 +12264,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   input: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
     lineHeight: 21 * theme.fontScale,
     // One comfortable line tall when empty; native multiline grows up to maxHeight
     // (~8 lines) then scrolls. No explicit height (RN#35234) and full width (stretches
@@ -12246,7 +12301,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   sendButtonDisabled: {
     backgroundColor: theme.colors.surface,
