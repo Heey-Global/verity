@@ -148,14 +148,16 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         const left = await remoteDataRecordingRemainingMs();
         if (!valid()) return;
         const saved = runRef.current;
-        const remainingMs = Math.min(
-          left ?? 0,
-          captureDeadline.current !== null
-            ? Math.max(0, captureDeadline.current - performance.now())
-            : saved
-              ? Math.max(0, saved.expiresAt - Date.now())
-              : 0,
-        );
+        const remainingBudget = (budget: number | null) =>
+          Math.min(
+            budget ?? 0,
+            captureDeadline.current !== null
+              ? Math.max(0, captureDeadline.current - performance.now())
+              : saved
+                ? Math.max(0, saved.expiresAt - Date.now())
+                : 0,
+          );
+        const remainingMs = remainingBudget(left);
         setRemaining(remainingMs);
         if (remainingMs <= 0) {
           setReady(false);
@@ -177,6 +179,16 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
         if (!client) throw new Error('Core unavailable');
         const status = await freshStatus(client, saved.runId);
         if (!valid()) return;
+        const freshLeft = await remoteDataRecordingRemainingMs();
+        if (!valid()) return;
+        const freshRemaining = remainingBudget(freshLeft);
+        setRemaining(freshRemaining);
+        if (freshRemaining <= 0) {
+          setReady(false);
+          setMessage('Local recording ended. Stop and collect the saved evidence.');
+          if (freshLeft) await stopRemoteDataRecording();
+          return;
+        }
         const evidence = status.evidence;
         const confirmed =
           status.runId === saved.runId &&

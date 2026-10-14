@@ -367,3 +367,35 @@ it('bounds unreachable readiness requests without overlapping polls', async () =
     jest.useRealTimers();
   }
 });
+
+it('does not restore Ready when a polling response crosses the local deadline', async () => {
+  jest.useFakeTimers();
+  try {
+    const api = client();
+    render(<ConnectionRecording client={api as never} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await pressStart();
+    await screen.findByText(/Ready — turn off VPN/);
+    let resolve!: (value: ReturnType<typeof status>) => void;
+    api.getConnectionRecording.mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    await act(async () => {
+      jest.advanceTimersByTime(29_000);
+    });
+    expect(resolve).toBeDefined();
+    await act(async () => {
+      jest.advanceTimersByTime(2_000);
+      resolve(status());
+    });
+    expect(screen.queryByText(/Ready — turn off VPN/)).toBeNull();
+    expect(mockStop).toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+  }
+});
