@@ -15,9 +15,8 @@
   },
   "app/session/[id].tsx": {
     "rawColor": 11,
-    "legacyColor": 93,
-    "fontSize": 89,
-    "fontWeight": 53
+    "legacyColor": 5,
+    "fontSize": 3
   },
   "app/web-connect.tsx": {
     "rawColor": 38,
