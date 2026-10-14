@@ -73,7 +73,7 @@ export default function GithubManifestCallback() {
       <Stack.Screen options={{ title: 'GitHub' }} />
       {error === null ? (
         <>
-          <ActivityIndicator color={theme.colors.primary} />
+          <ActivityIndicator color={theme.colors.action} />
           <Text style={styles.title}>Finishing GitHub authorization…</Text>
         </>
       ) : (
@@ -109,17 +109,22 @@ const styles = StyleSheet.create((theme) => ({
   },
   title: {
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '700',
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.bold,
     textAlign: 'center',
   },
-  message: { color: theme.colors.textMuted, fontSize: theme.text.md, textAlign: 'center' },
+  message: {
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
+    textAlign: 'center',
+  },
   button: {
     minHeight: 48,
     justifyContent: 'center',
     borderRadius: theme.radius.lg,
     paddingHorizontal: theme.spacing.lg,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
-  buttonLabel: { color: theme.colors.onPrimary, fontWeight: '700' },
+  buttonLabel: { color: theme.colors.onAction, fontFamily: theme.fonts.bold },
 }));

@@ -26,7 +26,7 @@ export function ServerUpdateBanner({ version }: { version: string }) {
       accessibilityLabel={`Verity ${version} available. Open server update`}
     >
       <View style={styles.icon}>
-        <Icon name="download" size={16} color={theme.colors.onPrimary} />
+        <Icon name="download" size={16} color={theme.colors.onAction} />
       </View>
       <View style={styles.body}>
         <Text style={styles.title} numberOfLines={1}>
@@ -36,7 +36,7 @@ export function ServerUpdateBanner({ version }: { version: string }) {
           See what&apos;s new and install
         </Text>
       </View>
-      <Icon name="chevron-right" size={18} color={theme.colors.primary} />
+      <Icon name="chevron-right" size={18} color={theme.colors.action} />
     </Pressable>
   );
 }
@@ -62,7 +62,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   body: {
     flex: 1,
@@ -70,11 +70,12 @@ const styles = StyleSheet.create((theme) => ({
   },
   title: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   subtitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
 }));

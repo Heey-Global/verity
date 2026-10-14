@@ -321,7 +321,7 @@ export function QuickCaptureBubble() {
                 // filled button; full strength only while it is in the hand.
                 backgroundColor: dragging ? 'rgba(42,176,255,0.26)' : 'rgba(42,176,255,0.16)',
                 borderWidth: 1,
-                borderColor: dragging ? theme.colors.primary : 'rgba(42,176,255,0.55)',
+                borderColor: dragging ? theme.colors.action : 'rgba(42,176,255,0.55)',
                 justifyContent: 'center',
                 alignItems: 'center',
               }}
@@ -341,7 +341,7 @@ export function QuickCaptureBubble() {
                   ],
                 }}
               >
-                <Icon name="mic" size={20} color={theme.colors.primary} />
+                <Icon name="mic" size={20} color={theme.colors.action} />
               </Animated.View>
             </View>
           </Pressable>
@@ -359,13 +359,13 @@ export function QuickCaptureBubble() {
                 height: 18,
                 paddingHorizontal: 5,
                 borderRadius: 9,
-                backgroundColor: theme.colors.primary,
+                backgroundColor: theme.colors.action,
                 justifyContent: 'center',
               }}
             >
               <Text
                 style={{
-                  color: theme.colors.onPrimary,
+                  color: theme.colors.onAction,
                   textAlign: 'center',
                   fontSize: 11,
                   fontWeight: '700',
@@ -438,7 +438,7 @@ export function QuickCaptureBubble() {
                 );
             }}
           >
-            <Text style={{ color: theme.colors.accent }}>Undo</Text>
+            <Text style={{ color: theme.colors.signature }}>Undo</Text>
           </Pressable>
         </View>
       ) : null}

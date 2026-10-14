@@ -58,6 +58,7 @@ export default function DesignSystemCatalog() {
         <Text variant="title">Title · Premium is active</Text>
         <Text variant="row">Row · Online sharing</Text>
         <Text variant="body">Body · Premium connects your server to Verity Uplink.</Text>
+        <Text variant="bodySmall">BodySmall · Codex gpt-6.1 · 3 open tasks</Text>
         <Text variant="subtitle">Subtitle · Preview links over the internet</Text>
         <Text variant="footnote">Footnote · App 1.65.1 · Server 4.35.0</Text>
         <Text variant="eyebrow">Eyebrow</Text>

@@ -11,7 +11,7 @@ export function QuickCaptureIntro({ onStart, onClose }: { onStart(): void; onClo
   const point = (icon: IconName, title: string, text: string) => (
     <View style={styles.point} key={title}>
       <View style={styles.pointIcon}>
-        <Icon name={icon} size={16} color={theme.colors.primary} />
+        <Icon name={icon} size={16} color={theme.colors.action} />
       </View>
       <View style={styles.pointBody}>
         <Text style={styles.pointTitle}>{title}</Text>
@@ -26,7 +26,7 @@ export function QuickCaptureIntro({ onStart, onClose }: { onStart(): void; onClo
         <View style={styles.card} accessibilityViewIsModal>
           <View style={styles.hero}>
             <View style={styles.heroRing}>
-              <Icon name="mic" size={26} color={theme.colors.accent} />
+              <Icon name="mic" size={26} color={theme.colors.signature} />
             </View>
           </View>
           <Text style={styles.title} accessibilityRole="header">
@@ -94,17 +94,18 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     backgroundColor: theme.colors.surfaceAlt,
     borderWidth: 1,
-    borderColor: theme.colors.accent,
+    borderColor: theme.colors.signature,
   },
   title: {
     color: theme.colors.text,
-    fontSize: theme.text.lg,
-    fontWeight: '700',
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.bold,
     textAlign: 'center',
   },
   lead: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
     textAlign: 'center',
     marginBottom: theme.spacing.sm,
@@ -128,26 +129,27 @@ const styles = StyleSheet.create((theme) => ({
   },
   pointTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
   },
   pointText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 17 * theme.fontScale,
   },
   start: {
     marginTop: theme.spacing.sm,
     minHeight: 48,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
     alignItems: 'center',
     justifyContent: 'center',
   },
   startLabel: {
-    color: theme.colors.onPrimary,
-    fontSize: theme.text.md,
-    fontWeight: '700',
+    color: theme.colors.onAction,
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   later: {
     minHeight: 44,
@@ -156,7 +158,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   laterLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   pressed: {
     opacity: 0.7,

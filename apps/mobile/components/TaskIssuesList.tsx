@@ -168,7 +168,7 @@ export function TaskIssuesList({
           <View key={issue.number} style={styles.row}>
             <View style={styles.rowMain}>
               <View style={styles.icon}>
-                <Icon name="circle" size={20} color={theme.colors.tone.done} />
+                <Icon name="circle" size={20} color={theme.colors.success} />
               </View>
               <View style={styles.body}>
                 <Pressable
@@ -226,12 +226,12 @@ const styles = StyleSheet.create((theme) => ({
   },
   sectionLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
-    fontWeight: '700',
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.bold,
     letterSpacing: 0.6,
     textTransform: 'uppercase',
   },
-  currentDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.primary },
+  currentDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.action },
   count: {
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: 1,
@@ -240,7 +240,11 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  countLabel: { color: theme.colors.text, fontSize: theme.text.micro, fontWeight: '600' },
+  countLabel: {
+    color: theme.colors.text,
+    fontSize: theme.text.micro,
+    fontFamily: theme.fonts.semibold,
+  },
   row: {
     paddingVertical: theme.spacing.sm,
     gap: theme.spacing.sm,
@@ -250,8 +254,17 @@ const styles = StyleSheet.create((theme) => ({
   rowMain: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm },
   icon: { paddingTop: 2 },
   body: { flex: 1, gap: 2 },
-  title: { color: theme.colors.text, fontSize: theme.text.md, lineHeight: 21 * theme.fontScale },
-  meta: { color: theme.colors.textFaint, fontSize: theme.text.xs },
+  title: {
+    color: theme.colors.text,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.row.fontSize,
+    lineHeight: 21 * theme.fontScale,
+  },
+  meta: {
+    color: theme.colors.textFaint,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+  },
   chips: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -267,10 +280,18 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
-  chipText: { color: theme.colors.text, fontSize: theme.text.sm, fontWeight: '500' },
-  selected: { borderColor: theme.colors.primary },
-  selectedText: { color: theme.colors.primary, fontWeight: '600' },
+  chipText: {
+    color: theme.colors.text,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.regular,
+  },
+  selected: { borderColor: theme.colors.action },
+  selectedText: { color: theme.colors.action, fontFamily: theme.fonts.semibold },
   disabled: { opacity: 0.5 },
   show: { padding: theme.spacing.sm },
-  link: { color: theme.colors.primary, fontSize: theme.text.sm },
+  link: {
+    color: theme.colors.action,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
+  },
 }));

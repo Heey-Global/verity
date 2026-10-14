@@ -76,12 +76,12 @@ export function SessionMarkerColumn({
       {markers.map((marker) => {
         const color =
           marker.kind === 'favorite'
-            ? theme.colors.accent
+            ? theme.colors.signature
             : marker.kind === 'automation'
-              ? theme.colors.primary
+              ? theme.colors.action
               : marker.kind === 'linked'
                 ? theme.colors.linked
-                : theme.colors.tone.done;
+                : theme.colors.success;
         const entry = (
           <View
             testID={`session-marker-${marker.kind}`}
