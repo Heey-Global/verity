@@ -14,8 +14,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
   // stream for good while the heartbeat, which bypasses this queue, keeps the
   // socket looking alive: the attachment then goes silent in one direction
   // with its pongs still arriving. Each send is bounded instead, and a send
-  // that misses its deadline or fails ends the attachment, which the app
-  // replaces.
+  // that misses its deadline ends the attachment, which the app replaces. A
+  // tunnel attaches once and owns one Writer, so nothing here outlives it.
   private actor Writer {
     // A frame carries at most one 16 KiB local read, about 22 KB encoded, so
     // the deadline asks for a little over 1 KB/s of uplink.
@@ -79,7 +79,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
 
     // Resumes a continuation once, whichever of the send and the deadline
     // finishes first. A task group would wait for the send as well, and the
-    // transport's send ignores cancellation and may never return.
+    // transport's send ignores cancellation and may never return; it is left
+    // pending and released when the stall hook cancels the socket in stop().
+    // Whichever of the two answers second finds the continuation gone.
     private final class Once: @unchecked Sendable {
       private let lock = NSLock()
       private var continuation: CheckedContinuation<Void, Error>?
