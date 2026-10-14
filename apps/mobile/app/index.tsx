@@ -119,6 +119,7 @@ import type { ProjectOverviewStatus } from '../lib/projectSetup';
 import { projectGroups, type SessionProjectGroup } from '../lib/projectGroups';
 import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
+import { tint } from '../components/ui/tint';
 
 export default function SessionsScreen() {
   const client = useMemo(() => createVerityClient(), []);
@@ -2482,8 +2483,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   projectUpdateButton: {
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: `${theme.colors.signature}99`,
-    backgroundColor: `${theme.colors.signature}1f`,
+    borderColor: tint(theme.colors.action, 'border'),
+    backgroundColor: tint(theme.colors.action, 'fill'),
   },
   // Outlined in the same attention tone as the row's status dot, so the broken
   // project and the action that fixes it read as one signal.

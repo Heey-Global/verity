@@ -69,7 +69,7 @@ export default function SecureDevice() {
   if (!asking) {
     return (
       <View style={[styles.root, styles.center]}>
-        <ActivityIndicator color={theme.colors.signature} />
+        <ActivityIndicator color={theme.colors.textMuted} />
       </View>
     );
   }

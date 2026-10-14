@@ -174,7 +174,7 @@ export default function MessageSearchScreen() {
         <ScopeButton label="All Chats" active={scope === 'all'} onPress={() => setScope('all')} />
       </View>
 
-      {loading ? <ActivityIndicator style={styles.state} color={theme.colors.signature} /> : null}
+      {loading ? <ActivityIndicator style={styles.state} color={theme.colors.textMuted} /> : null}
       {!loading && error ? <Text style={styles.stateText}>{error}</Text> : null}
       {!loading && !error && !maySearch ? (
         <Text style={styles.stateText}>Enter a search term to find messages.</Text>
@@ -190,7 +190,7 @@ export default function MessageSearchScreen() {
         onEndReached={loadMore}
         onEndReachedThreshold={0.35}
         ListFooterComponent={
-          loadingMore ? <ActivityIndicator color={theme.colors.signature} /> : null
+          loadingMore ? <ActivityIndicator color={theme.colors.textMuted} /> : null
         }
         renderItem={({ item }) => (
           <Pressable style={styles.result} onPress={() => openResult(item)}>
@@ -279,20 +279,20 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm,
   },
   cancel: {
-    color: theme.colors.signature,
+    color: theme.colors.action,
     fontFamily: theme.fonts.regular,
     fontSize: theme.typography.row.fontSize,
   },
   scopes: { flexDirection: 'row', gap: 6, padding: theme.spacing.md },
   scope: { flex: 1, paddingVertical: 8, borderRadius: 9, backgroundColor: theme.colors.surface },
-  scopeActive: { backgroundColor: theme.colors.signature },
+  scopeActive: { backgroundColor: theme.colors.action },
   scopeText: {
     color: theme.colors.textMuted,
     textAlign: 'center',
     fontFamily: theme.fonts.regular,
     fontSize: theme.typography.subtitle.fontSize,
   },
-  scopeTextActive: { color: theme.colors.background, fontFamily: theme.fonts.bold },
+  scopeTextActive: { color: theme.colors.onAction, fontFamily: theme.fonts.bold },
   disabled: { opacity: 0.35 },
   state: { marginTop: 40 },
   stateText: { color: theme.colors.textMuted, textAlign: 'center', margin: 40 },
