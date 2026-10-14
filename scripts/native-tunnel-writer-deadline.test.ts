@@ -48,7 +48,7 @@ it('bounds every WebSocket send and ends the attachment on a miss', () => {
   // would wait on the transport for good.
   expect(writer.match(/socket\.send\(/gu)).toHaveLength(1);
   expect(writer).toMatch(
-    /bounded\(seconds: Self\.sendDeadlineSeconds, progress: progress\) \{\s*try await socket\.send\(/u,
+    /bounded\(seconds: Self\.sendDeadlineSeconds, progress: progress\) \{[\s\S]{0,120}?try await socket\.send\(/u,
   );
   // Measured against progress: a slow link that keeps completing sends is
   // not a stopped socket.

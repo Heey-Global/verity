@@ -11,10 +11,12 @@ import Network
 final class RemoteAppTunnel: @unchecked Sendable {
   // Every frame of the attachment goes out through here. Sends are not
   // chained: order matters only within a stream, and every frame of a stream
-  // comes from one awaited sequence (`accept` sends the open and only then
-  // starts the pump, which sends data and end one after another; a reset
-  // follows the stream's retirement and may land anywhere), while the socket
-  // carries the streams' frames in whatever order they arrive. A chain across streams once tied
+  // comes from one awaited sequence: `accept` sends the open and only then
+  // starts the pump, which sends data and end one after another. A reset
+  // follows the stream's retirement and may land anywhere, even ahead of a
+  // data frame still in flight for the same stream; the peer discards late
+  // frames for a retired ID. The socket carries the streams' frames in
+  // whatever order they arrive. A chain across streams once tied
   // every stream to the slowest send; a send that never completed then held
   // every later frame for good while the heartbeat, which bypasses this
   // path, kept the socket looking alive. What remains is a watchdog on the
@@ -24,8 +26,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
   // attaches once and owns one Writer, so nothing here outlives it.
   private actor Writer {
     // Measured against completions, so an idle attachment's only send in
-    // flight is judged alone: a single frame that cannot leave within this
-    // long is a dead socket, not a slow one, at about 1 KB/s and below.
+    // flight is judged alone. A frame carries at most one 16 KiB local read,
+    // about 22 KB encoded, so a frame that cannot leave within this long
+    // means a link below about 1.4 KB/s: a dead socket, not a slow one.
     static let sendDeadlineSeconds: UInt64 = 15
     private let socket: URLSessionWebSocketTask
     private var onStall: (@Sendable () -> Void)?
@@ -47,6 +50,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
 #if VERITY_STALL_DIAGNOSTICS
       let diagnostics = stallDiagnostics
       let token = diagnostics?.enqueue(frame["streamId"] as? String ?? "")
+      // Finished from the writer's side: completed, failed, or given up on at
+      // the deadline while the transport call itself may still be pending.
       var failed = true
       defer { diagnostics?.finished(token, failed: failed) }
 #endif
