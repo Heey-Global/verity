@@ -20,7 +20,7 @@
     "@fastify/compress": "9.2.1",
     "@fastify/rate-limit": "11.2.1",
     "@fastify/websocket": "11.3.4",
-    "@napi-rs/canvas": "1.0.10",
+    "@napi-rs/canvas": "1.0.11",
     "@verity/events": "*",
     "@verity/preview-tunnel": "*",
     "@verity/secret-contracts": "*",
