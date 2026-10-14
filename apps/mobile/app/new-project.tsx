@@ -377,7 +377,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   subtitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     textAlign: 'center',
     maxWidth: 320,
     lineHeight: 20 * theme.fontScale,
@@ -419,13 +419,13 @@ const styles = StyleSheet.create((theme) => ({
   modeActive: { borderColor: theme.colors.action, backgroundColor: theme.colors.surfaceAlt },
   modeLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.semibold,
     textAlign: 'center',
   },
   modeLabelActive: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.bold,
     textAlign: 'center',
   },
@@ -456,7 +456,11 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: 'transparent',
   },
   optionActive: { borderColor: theme.colors.action, backgroundColor: theme.colors.surfaceAlt },
-  optionTitle: { color: theme.colors.text, fontSize: theme.text.sm, fontFamily: theme.fonts.bold },
+  optionTitle: {
+    color: theme.colors.text,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.bold,
+  },
   reload: {
     minHeight: 44,
     alignItems: 'center',
@@ -467,7 +471,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   reloadLabel: {
     color: theme.colors.action,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.bold,
   },
   hint: {
@@ -476,7 +480,11 @@ const styles = StyleSheet.create((theme) => ({
     lineHeight: 17 * theme.fontScale,
     marginTop: theme.spacing.xs,
   },
-  error: { color: theme.colors.attention, fontSize: theme.text.sm, marginTop: theme.spacing.sm },
+  error: {
+    color: theme.colors.attention,
+    fontSize: theme.typography.bodySmall.fontSize,
+    marginTop: theme.spacing.sm,
+  },
   footer: {
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.sm,

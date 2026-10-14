@@ -104,7 +104,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   lead: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
     textAlign: 'center',
     marginBottom: theme.spacing.sm,
@@ -128,7 +128,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   pointTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.semibold,
   },
   pointText: {
@@ -156,7 +156,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   laterLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   pressed: {
     opacity: 0.7,

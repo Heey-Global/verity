@@ -2228,7 +2228,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   emptySubtitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     textAlign: 'center',
     maxWidth: 300,
     lineHeight: 20 * theme.fontScale,
@@ -2240,7 +2240,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   errorDetailsLabel: {
     color: theme.colors.action,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   errorDetailsText: {
     color: theme.colors.textMuted,
@@ -2259,7 +2259,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   emptyActionLabel: {
     color: theme.colors.onAction,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.bold,
   },
   retry: {
@@ -2271,7 +2271,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   retryLabel: {
     color: theme.colors.onAction,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.semibold,
   },
   listContent: {
@@ -2302,7 +2302,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   rightPanePlaceholderText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   emptyOverview: {
     alignItems: 'center',
@@ -2554,7 +2554,7 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
     flexShrink: 1,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.semibold,
     lineHeight: 19 * theme.fontScale,
   },

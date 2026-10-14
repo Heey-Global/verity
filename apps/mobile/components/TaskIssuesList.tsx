@@ -275,10 +275,14 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
-  chipText: { color: theme.colors.text, fontSize: theme.text.sm, fontFamily: theme.fonts.regular },
+  chipText: {
+    color: theme.colors.text,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.regular,
+  },
   selected: { borderColor: theme.colors.action },
   selectedText: { color: theme.colors.action, fontFamily: theme.fonts.semibold },
   disabled: { opacity: 0.5 },
   show: { padding: theme.spacing.sm },
-  link: { color: theme.colors.action, fontSize: theme.text.sm },
+  link: { color: theme.colors.action, fontSize: theme.typography.bodySmall.fontSize },
 }));

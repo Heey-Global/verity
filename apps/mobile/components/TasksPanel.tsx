@@ -959,7 +959,7 @@ const styles = StyleSheet.create((theme) => ({
   tabSelected: { backgroundColor: theme.colors.surface },
   tabLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.regular,
   },
   tabLabelSelected: { color: theme.colors.text, fontFamily: theme.fonts.semibold },
@@ -981,7 +981,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   sectionLabelCollapsed: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.regular,
     letterSpacing: 0,
     textTransform: 'none',
@@ -1052,16 +1052,16 @@ const styles = StyleSheet.create((theme) => ({
   },
   link: {
     color: theme.colors.action,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   description: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 21 * theme.fontScale,
   },
   conflict: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     marginBottom: theme.spacing.xs,
   },
   chips: {
@@ -1083,7 +1083,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   chipLabel: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.regular,
   },
   chipLabelAccent: {

@@ -304,6 +304,11 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.typography.footnote.fontSize,
     marginTop: 3,
   },
-  snippet: { color: theme.colors.text, fontSize: 14, lineHeight: 20, marginTop: 7 },
+  snippet: {
+    color: theme.colors.text,
+    fontSize: theme.typography.bodySmall.fontSize,
+    lineHeight: 20,
+    marginTop: 7,
+  },
   match: { color: theme.colors.background, backgroundColor: theme.colors.signature },
 }));

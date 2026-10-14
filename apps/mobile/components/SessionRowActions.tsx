@@ -593,7 +593,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface,
   },
   menuLabel: {
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
   },
   menuDivider: {
     height: StyleSheet.hairlineWidth,

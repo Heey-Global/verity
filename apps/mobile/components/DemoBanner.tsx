@@ -60,5 +60,9 @@ const styles = StyleSheet.create((theme) => ({
   text: { color: theme.colors.textMuted, fontSize: theme.typography.footnote.fontSize },
   actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: theme.spacing.md },
   button: { minHeight: 44, justifyContent: 'center', paddingHorizontal: theme.spacing.sm },
-  label: { color: theme.colors.text, fontSize: theme.text.sm, fontFamily: theme.fonts.semibold },
+  label: {
+    color: theme.colors.text,
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
 }));
