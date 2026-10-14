@@ -155,6 +155,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var pendingBytes = 0
     var incomingWrite: Task<Void, Never>?
     var closed = false
+    /// Set once the open has left, so a reset is never sent for an ID Core has not seen.
+    var opened = false
     var worker: Task<Void, Never>?
     // Armed when the first local bytes have gone out; Core's TLS reply to a
     // ClientHello arrives within milliseconds, so a stream still without any
@@ -842,7 +844,11 @@ final class RemoteAppTunnel: @unchecked Sendable {
   // a reset that reaches the queue after `stop` is dropped along with the
   // attachment the peer is told has ended.
   private func reset(_ id: String, code: String) async {
+    // A frame for an ID the peer has never seen is a protocol fault there;
+    // a stream dropped before its open left is simply forgotten.
+    let opened = lock.withLock { streams[id]?.opened ?? false }
     guard drop(id, reason: "local_reset_\(code)") else { return }
+    guard opened else { return }
     let writer = self.writer
     Task { try? await writer.send(["type": "stream.reset", "streamId": id, "code": code]) }
   }
@@ -935,6 +941,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       }
       try await writer.send(["type": "stream.open", "streamId": id, "channel": "remote", "meta": [:]])
       lock.withLock {
+        stream.opened = true
         openedStreams += 1
         lastStreamEvent = "stream_opened"
         logStream(id, stream, event: "opened")
