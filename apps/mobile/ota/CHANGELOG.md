@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.72.2](https://github.com/Heey-Global/verity/compare/mobile-v1.72.1...mobile-v1.72.2) (2026-10-14)
+
+
+### Bug Fixes
+
+* **diagnostics:** capture selected sessions with fresh readiness ([#1639](https://github.com/Heey-Global/verity/issues/1639)) ([40e9194](https://github.com/Heey-Global/verity/commit/40e9194ff92ceecc7ff94e030fe60387eb1aa777))
+
 ## [1.72.1](https://github.com/Heey-Global/verity/compare/mobile-v1.72.0...mobile-v1.72.1) (2026-10-14)
 
 
