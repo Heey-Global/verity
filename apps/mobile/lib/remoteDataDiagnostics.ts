@@ -35,7 +35,6 @@ const causes = new Set([
   'stream_exhausted',
   'stream_stall',
   'send_stall',
-  'send_failure',
   'probe_failure',
   'profile_changed',
 ]);

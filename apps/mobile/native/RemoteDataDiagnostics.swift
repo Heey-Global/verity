@@ -47,7 +47,7 @@ final class RemoteDataDiagnostics: @unchecked Sendable {
     case attachmentFailure = "attachment_failure", readFailure = "read_failure"
     case heartbeatDeadline = "heartbeat_deadline", heartbeatFailure = "heartbeat_failure"
     case streamExhausted = "stream_exhausted", streamStall = "stream_stall"
-    case sendStall = "send_stall", sendFailure = "send_failure"
+    case sendStall = "send_stall"
     case probeFailure = "probe_failure", profileChanged = "profile_changed"
   }
   enum Path: String, Codable { case satisfied, unsatisfied, requiresConnection, unknown }

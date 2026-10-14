@@ -22,11 +22,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
     static let sendDeadlineSeconds: UInt64 = 15
     private let socket: URLSessionWebSocketTask
     private var previous: Task<Void, Error>?
-    private var onFailure: (@Sendable (_ stalled: Bool) -> Void)?
+    private var onStall: (@Sendable () -> Void)?
 
-    func setOnFailure(_ handler: @escaping @Sendable (_ stalled: Bool) -> Void) {
-      onFailure = handler
-    }
+    func setOnStall(_ handler: @escaping @Sendable () -> Void) { onStall = handler }
 #if VERITY_STALL_DIAGNOSTICS
     var stallDiagnostics: StallDiagnostics?
     func setStallDiagnostics(_ value: StallDiagnostics) { stallDiagnostics = value }
@@ -61,11 +59,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
       do {
         try await task.value
       } catch {
-        // Only the queued task throws here: a transport failure, a missed
-        // deadline, or a predecessor's. The size check above throws before
-        // anything is queued. The first failure ends the attachment; the
-        // rest find it stopped.
-        onFailure?(Self.isStall(error))
+        // Only a missed deadline ends the attachment here. A transport error
+        // means the socket is already going down for a reason the reader or
+        // heartbeat records; stopping on it would hide that reason.
+        if Self.isStall(error) { onStall?() }
         throw error
       }
     }
@@ -352,13 +349,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
     defer { timeout.cancel() }
     do {
       // Installed before the first send: nothing may be queued without it.
-      await writer.setOnFailure { [weak self] stalled in
-        guard let self else { return }
-        if stalled {
-          self.stop(reason: "stall: send unanswered within \(Writer.sendDeadlineSeconds) s", cause: .sendStall)
-        } else {
-          self.stop(reason: "send failed", cause: .sendFailure)
-        }
+      await writer.setOnStall { [weak self] in
+        self?.stop(reason: "stall: send unanswered within \(Writer.sendDeadlineSeconds) s", cause: .sendStall)
       }
 #if VERITY_STALL_DIAGNOSTICS
       await writer.setStallDiagnostics(stallDiagnostics)

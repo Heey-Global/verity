@@ -34,7 +34,7 @@ it('bounds every WebSocket send in the writer queue and ends the attachment on a
   expect(writer).toMatch(/withCheckedThrowingContinuation/u);
   // A missed deadline must reach the tunnel, which stops with a stall reason
   // the JavaScript recovery recognises and replaces.
-  expect(writer).toMatch(/onFailure\?\(Self\.isStall\(error\)\)/u);
+  expect(writer).toMatch(/if Self\.isStall\(error\) \{ onStall\?\(\) \}/u);
   expect(source).toMatch(
     /stop\(reason: "stall: send unanswered within \\\(Writer\.sendDeadlineSeconds\) s", cause: \.sendStall\)/u,
   );
@@ -42,10 +42,7 @@ it('bounds every WebSocket send in the writer queue and ends the attachment on a
     new URL('../apps/mobile/lib/remoteControlTransport.ts', import.meta.url),
     'utf8',
   );
-  expect(transport).toMatch(
-    /reason\?\.startsWith\('stall'\) === true \|\| reason === 'send failed'/u,
-  );
-  expect(source).toMatch(/stop\(reason: "send failed", cause: \.sendFailure\)/u);
+  expect(transport).toContain("startsWith('stall')");
 });
 
 it('never lets the frame reader wait on the writer queue', () => {

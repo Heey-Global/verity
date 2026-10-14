@@ -688,27 +688,6 @@ describe('remote diagnostics', () => {
     expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(0);
   });
 
-  it('replaces an attachment whose send the transport refused', async () => {
-    const transport =
-      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
-    mockRequest.mockReset().mockResolvedValue({ status: 200 });
-    mockAdmission.mockReset().mockResolvedValue({
-      ticket: 'ticket',
-      sessionId: 'session',
-      finish: jest.fn(),
-      cancel: jest.fn(),
-    });
-    mockStart.mockReset().mockResolvedValueOnce(4_321).mockResolvedValueOnce(4_999);
-    mockIsActive.mockReset().mockResolvedValue(true);
-    expect((await transport.testRemoteControlForUrl(coreUrl)).ready).toBe(true);
-    // The native tunnel ends itself when a send fails; without a replacement
-    // the read would simply surface the failure.
-    mockIsActive.mockResolvedValue(false);
-    mockLastStopReason.mockResolvedValue('send failed');
-    expect(await transport.recoverRemoteControlRead(`${coreUrl}/sessions`, 4_321)).toBe(4_999);
-    expect(mockStart).toHaveBeenCalledTimes(2);
-  });
-
   it('does not replace an attachment that ended for another reason', async () => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');
