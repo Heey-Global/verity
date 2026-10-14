@@ -13,19 +13,19 @@ import type { AgentEvent } from '@verity/events';
  * is universal.
  *
  * Within a backend (e.g. Claude Opus → Sonnet) no handoff is needed: the native
- * `--resume` already carries the full context. This only fires across a backend
- * boundary, where `resumeSessionId` is undefined for the target.
+ * `--resume` already carries the full context. A returning backend also receives
+ * the history gap since its last recorded context cursor.
  *
- * Budgeting (see defaults): keep the MOST RECENT turns that fit a token budget
- * (recent context is the most relevant); cap each tool result so one giant output
- * can't eat the budget (the new model can re-read files from the live worktree).
+ * Budgeting (see defaults): prioritize the latest instruction and assistant outcome,
+ * then recent exchanges and relevant older context. Keep tool calls with their
+ * results, and cap each exchange so a giant output cannot consume the history.
  * Images are noted as placeholders — re-inlining them cross-backend is a later
  * enhancement.
  */
 
 export interface HandoffOptions {
   workspaceChanged?: boolean;
-  /** Approximate token ceiling for the serialized history (chars/4 heuristic). */
+  /** Approximate history ceiling (chars/4); framing and the current prompt are separate. */
   tokenBudget?: number;
   /** Per-tool-result char cap in the serialized history. */
   toolResultCharCap?: number;
@@ -35,11 +35,31 @@ export interface HandoffOptions {
 
 const DEFAULT_TOKEN_BUDGET = 25_000;
 const CHARS_PER_TOKEN = 4;
-const DEFAULT_TOOL_RESULT_CHAR_CAP = 2_000;
-const TOOL_INPUT_SUMMARY_CAP = 200;
+const DEFAULT_TOOL_RESULT_CHAR_CAP = 12_000;
+const TOOL_INPUT_SUMMARY_CAP = 4_000;
 const DEFAULT_RETRIEVAL_BUDGET_RATIO = 0.25;
 const MAX_RETRIEVAL_CHARS = 8_000;
-const MIN_RECENT_CHARS = 4_000;
+const MAX_STORED_RESULT_BYTES = 256 * 1024;
+const MAX_STORED_RESULT_TOTAL_BYTES = 1024 * 1024;
+const MAX_STORED_RESULT_READS = 16;
+const RETRIEVAL_HEADER = '**Relevant earlier context:**';
+const RECENT_HEADER = '**Most recent context:**';
+
+interface HandoffBlock {
+  text: string;
+  kind: 'prompt' | 'assistant' | 'tool';
+  resultIndex?: number;
+}
+interface HandoffSelection {
+  blocks: Map<number, string>;
+  retrieved: Set<number>;
+  omitted: boolean;
+}
+
+type StoredResultReader = (
+  id: string,
+  maxBytes: number,
+) => Promise<{ mediaType: string; bytes: Uint8Array } | undefined>;
 const STOP_WORDS = new Set([
   'about',
   'after',
@@ -103,55 +123,106 @@ export function buildHandoffPrompt(
   currentPrompt: string,
   opts: HandoffOptions = {},
 ): string {
-  const render = (blocks: string[], omitted: boolean, prompt: string) =>
-    renderHandoffPrompt(blocks, omitted, prompt, opts.workspaceChanged ? MOVED_HEADER : HEADER);
-  const budgetChars = (opts.tokenBudget ?? DEFAULT_TOKEN_BUDGET) * CHARS_PER_TOKEN;
-  const cap = opts.toolResultCharCap ?? DEFAULT_TOOL_RESULT_CHAR_CAP;
-  const blocks = serializeEvents(priorEvents, cap);
-  if (blocks.length === 0) return currentPrompt;
-
-  const { kept, omitted } = takeSuffixWithinBudget(blocks, budgetChars);
-  if (kept.length === 0) return currentPrompt;
-  if (!omitted) return render(kept, false, currentPrompt);
-
-  const retrievalBudget = Math.min(
-    MAX_RETRIEVAL_CHARS,
-    Math.floor(budgetChars * (opts.retrievalBudgetRatio ?? DEFAULT_RETRIEVAL_BUDGET_RATIO)),
+  const blocks = serializeEvents(
+    priorEvents,
+    opts.toolResultCharCap ?? DEFAULT_TOOL_RESULT_CHAR_CAP,
   );
-  const recentFloor = Math.min(MIN_RECENT_CHARS, Math.floor(budgetChars * 0.75));
-  const recentBudget = Math.max(recentFloor, budgetChars - retrievalBudget);
-  const recent = takeSuffixWithinBudget(blocks, recentBudget);
-  const retrieved = selectRelevantEarlierBlocks(
-    blocks.slice(0, recent.firstKept),
+  const selection = selectBlocks(blocks, currentPrompt, opts);
+  if (selection.blocks.size === 0) return currentPrompt;
+  const ordered = [...selection.blocks].sort(([a], [b]) => a - b);
+  const selected =
+    selection.retrieved.size === 0
+      ? ordered.map(([, text]) => text)
+      : [
+          RETRIEVAL_HEADER,
+          ...ordered.filter(([index]) => selection.retrieved.has(index)).map(([, text]) => text),
+          RECENT_HEADER,
+          ...ordered.filter(([index]) => !selection.retrieved.has(index)).map(([, text]) => text),
+        ];
+  return renderHandoffPrompt(
+    selected,
+    selection.omitted,
     currentPrompt,
-    budgetChars - totalChars(recent.kept),
-  );
-  if (retrieved.length === 0) return render(kept, true, currentPrompt);
-
-  return render(
-    ['**Relevant earlier context:**', ...retrieved, '**Most recent context:**', ...recent.kept],
-    true,
-    currentPrompt,
+    opts.workspaceChanged ? MOVED_HEADER : HEADER,
   );
 }
 
-/** Serialize events into chronological transcript blocks, coalescing streamed
- * text deltas into one assistant message and skipping sub-agent internals
- * (`parentToolId` set) and non-conversational events (status/result/task/…). */
-function serializeEvents(events: readonly AgentEvent[], toolResultCap: number): string[] {
-  const blocks: string[] = [];
+/** Only selected history may load stored outputs. Limits apply to actual blob bytes,
+ * not just the reference metadata, and reads stay sequential to bound peak memory. */
+export async function buildHandoffPromptWithStoredResults(
+  priorEvents: readonly AgentEvent[],
+  currentPrompt: string,
+  read: StoredResultReader,
+  opts: HandoffOptions = {},
+): Promise<string> {
+  const blocks = serializeEvents(
+    priorEvents,
+    opts.toolResultCharCap ?? DEFAULT_TOOL_RESULT_CHAR_CAP,
+  );
+  const selected = selectBlocks(blocks, currentPrompt, opts);
+  const events = [...priorEvents];
+  let remainingBytes = MAX_STORED_RESULT_TOTAL_BYTES;
+  let reads = 0;
+  for (const index of [...selected.blocks.keys()].sort((a, b) => b - a)) {
+    const eventIndex = blocks[index]?.resultIndex;
+    if (eventIndex === undefined) continue;
+    const event = events[eventIndex];
+    if (event?.t !== 'tool_result' || event.outputRef === undefined) continue;
+    const maxBytes = Math.min(MAX_STORED_RESULT_BYTES, remainingBytes);
+    let reason = 'handoff read limit';
+    if (event.outputRef.bytes <= maxBytes && reads < MAX_STORED_RESULT_READS) {
+      reads++;
+      try {
+        const blob = await read(event.outputRef.id, maxBytes);
+        if (blob === undefined) {
+          reason = 'stored body missing or exceeds read limit';
+        } else if (blob.bytes.byteLength > maxBytes) {
+          reason = 'stored body exceeds read limit';
+        } else {
+          remainingBytes -= blob.bytes.byteLength;
+          if (blob.mediaType !== 'application/json') throw new Error('invalid stored body type');
+          const output: unknown = JSON.parse(Buffer.from(blob.bytes).toString('utf8'));
+          if (typeof output !== 'string' && !Array.isArray(output)) {
+            throw new Error('invalid stored output shape');
+          }
+          const inline = { ...event };
+          delete inline.outputRef;
+          events[eventIndex] = { ...inline, output };
+          continue;
+        }
+      } catch {
+        reason = 'stored body unavailable or invalid';
+      }
+    }
+    const inline = { ...event };
+    delete inline.outputRef;
+    events[eventIndex] = {
+      ...inline,
+      output: `${previewOutput(event.output, opts.toolResultCharCap ?? DEFAULT_TOOL_RESULT_CHAR_CAP)}\n[stored tool result: preview only; ${reason}]`,
+    };
+  }
+  // Full results can occupy more space than their persisted previews. Re-budget
+  // after loading so hydration cannot crowd out the latest instruction or outcome.
+  return buildHandoffPrompt(events, currentPrompt, opts);
+}
+
+/** Keep exchanges together even when parallel calls interleave. A completed
+ * exchange is placed at its result; unmatched calls remain at their call position. */
+function serializeEvents(events: readonly AgentEvent[], toolResultCap: number): HandoffBlock[] {
+  const blocks: HandoffBlock[] = [];
+  const calls = new Map<string, HandoffBlock>();
   let textBuf = '';
   const flushText = (): void => {
     const trimmed = textBuf.trim();
-    if (trimmed.length > 0) blocks.push(`**Assistant:**\n${trimmed}`);
+    if (trimmed.length > 0) blocks.push({ text: `**Assistant:**\n${trimmed}`, kind: 'assistant' });
     textBuf = '';
   };
-  for (const event of events) {
+  for (const [eventIndex, event] of events.entries()) {
     switch (event.t) {
       case 'prompt': {
         flushText();
         const text = event.text.trim();
-        if (text.length > 0) blocks.push(`**Operator:**\n${text}`);
+        if (text.length > 0) blocks.push({ text: `**Operator:**\n${text}`, kind: 'prompt' });
         break;
       }
       case 'text':
@@ -160,46 +231,141 @@ function serializeEvents(events: readonly AgentEvent[], toolResultCap: number): 
       case 'tool_call':
         if (event.parentToolId === undefined) {
           flushText();
-          blocks.push(`**Tool call — ${event.name}:** ${summarizeInput(event.input)}`);
+          const block: HandoffBlock = {
+            text: `**Tool call — ${event.name}:** [id: ${event.id}] ${summarizeInput(event.input)}`,
+            kind: 'tool',
+          };
+          blocks.push(block);
+          calls.set(event.id, block);
         }
         break;
       case 'tool_result':
         if (event.parentToolId === undefined) {
           flushText();
+          const call = calls.get(event.id);
+          const callText = call?.text;
+          if (call !== undefined) call.text = '';
+          calls.delete(event.id);
           const label = event.isError ? 'Tool result (error)' : 'Tool result';
-          blocks.push(`**${label}:**\n${previewOutput(event.output, toolResultCap)}`);
+          const storedNote =
+            event.outputRef === undefined ? '' : '\n[stored tool result: preview only]';
+          blocks.push({
+            text: `${callText ? `${callText}\n\n` : ''}**${label}:**\n${previewOutput(event.output, toolResultCap)}${storedNote}\n[tool call id: ${event.id}]`,
+            kind: 'tool',
+            resultIndex: eventIndex,
+          });
         }
         break;
       default:
-        break; // status/result/task/permission/etc. carry no conversational context
+        break;
     }
   }
   flushText();
-  return blocks;
+  return blocks.filter((block) => block.text.length > 0);
 }
 
-/** Keep the most recent blocks that fit `budgetChars`, always keeping at least the
- * last one (truncated if it alone exceeds the budget). Returns them in chronological
- * order plus whether any earlier blocks were dropped. */
-function takeSuffixWithinBudget(
-  blocks: string[],
-  budgetChars: number,
-): { kept: string[]; omitted: boolean; firstKept: number } {
-  const kept: string[] = [];
-  let used = 0;
-  for (let i = blocks.length - 1; i >= 0; i--) {
-    const block = blocks[i] ?? '';
-    if (kept.length === 0 && block.length > budgetChars) {
-      kept.push(`${block.slice(0, budgetChars)}\n…[truncated]`);
-      used = budgetChars;
-      continue;
-    }
-    if (used + block.length > budgetChars)
-      return { kept: kept.reverse(), omitted: true, firstKept: i + 1 };
-    kept.push(block);
-    used += block.length;
+function blockCost(text: string): number {
+  return text.length + 2; // Include separators in the history budget.
+}
+
+function selectBlocks(
+  blocks: HandoffBlock[],
+  currentPrompt: string,
+  opts: HandoffOptions,
+): HandoffSelection {
+  const budget = Math.max(
+    0,
+    Math.floor((opts.tokenBudget ?? DEFAULT_TOKEN_BUDGET) * CHARS_PER_TOKEN),
+  );
+  const selected = new Map<number, string>();
+  const retrieved = new Set<number>();
+  if (budget === 0 || blocks.length === 0)
+    return { blocks: selected, retrieved, omitted: blocks.length > 0 };
+  if (blocks.reduce((sum, block) => sum + blockCost(block.text), 0) <= budget) {
+    return {
+      blocks: new Map(blocks.map((block, index) => [index, block.text])),
+      retrieved,
+      omitted: false,
+    };
   }
-  return { kept: kept.reverse(), omitted: false, firstKept: 0 };
+
+  const latest = (kind: HandoffBlock['kind']) =>
+    blocks.findLastIndex((block) => block.kind === kind);
+  const primary = [latest('prompt'), latest('assistant')]
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b);
+  // Reserve room for recent evidence even when a single instruction is enormous.
+  let primaryRoom =
+    primary.length > 0 && Math.max(...primary) < blocks.length - 1
+      ? Math.floor(budget * 0.75)
+      : budget;
+  const pending = [...primary].sort(
+    (a, b) => (blocks[a]?.text.length ?? 0) - (blocks[b]?.text.length ?? 0),
+  );
+  for (const [position, index] of pending.entries()) {
+    const block = blocks[index];
+    if (block === undefined) continue;
+    const cap = Math.max(0, Math.floor(primaryRoom / (pending.length - position)) - 2);
+    const text = truncateMiddle(block.text, cap);
+    if (text.length > 0) selected.set(index, text);
+    primaryRoom -= blockCost(text);
+  }
+  let room = budget - [...selected.values()].reduce((sum, text) => sum + blockCost(text), 0);
+  const retrievalRoom = Math.min(
+    MAX_RETRIEVAL_CHARS,
+    Math.floor(budget * (opts.retrievalBudgetRatio ?? DEFAULT_RETRIEVAL_BUDGET_RATIO)),
+  );
+  const recentRoom = Math.max(0, room - retrievalRoom);
+  let firstRecent = primary.length > 0 ? Math.max(...primary) : blocks.length;
+  const addRecent = (available: number): number => {
+    for (let index = blocks.length - 1; index >= 0; index--) {
+      if (selected.has(index)) continue;
+      const block = blocks[index];
+      if (block === undefined) continue;
+      const cost = blockCost(block.text);
+      if (cost > available) break;
+      selected.set(index, block.text);
+      firstRecent = Math.min(firstRecent, index);
+      available -= cost;
+      room -= cost;
+    }
+    return available;
+  };
+  addRecent(recentRoom);
+  if (selected.size === 0) {
+    const index = blocks.length - 1;
+    const text = truncateMiddle(blocks[index]?.text ?? '', Math.max(0, budget - 2));
+    if (text.length > 0) selected.set(index, text);
+    room -= blockCost(text);
+    firstRecent = index;
+  }
+  const headingCost = blockCost(RETRIEVAL_HEADER) + blockCost(RECENT_HEADER);
+  const earlier = selectRelevantEarlierBlocks(
+    blocks.slice(0, firstRecent),
+    currentPrompt,
+    room - headingCost,
+    selected,
+  );
+  for (const index of earlier) {
+    const text = blocks[index]?.text;
+    if (text === undefined) continue;
+    selected.set(index, text);
+    retrieved.add(index);
+    room -= blockCost(text);
+  }
+  if (retrieved.size > 0) room -= headingCost;
+  addRecent(room);
+  return { blocks: selected, retrieved, omitted: true };
+}
+
+/** Preserve the start (identity/context) and end (outcome) within the cap. */
+function truncateMiddle(text: string, cap: number, marker = '\n…[truncated]…\n'): string {
+  if (text.length <= cap) return text;
+  if (cap < marker.length) return '[omitted]'.slice(0, cap);
+  const contentRoom = cap - marker.length;
+  const head = Math.ceil(contentRoom / 2);
+  const tail = Math.floor(contentRoom / 2);
+  return text.slice(0, head) + marker + (tail > 0 ? text.slice(-tail) : '');
 }
 
 function renderHandoffPrompt(
@@ -213,48 +379,39 @@ function renderHandoffPrompt(
 }
 
 function selectRelevantEarlierBlocks(
-  blocks: string[],
+  blocks: HandoffBlock[],
   currentPrompt: string,
   budgetChars: number,
-): string[] {
+  excluded: Map<number, string>,
+): number[] {
   const query = tokenize(currentPrompt);
   if (query.size === 0 || budgetChars <= 0) return [];
-
   const scored = blocks
-    .map((block, index) => ({ index, score: scoreBlock(block, query) }))
+    .map((block, index) => ({
+      index,
+      score: excluded.has(index) ? 0 : scoreBlock(block.text, query),
+    }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score || b.index - a.index);
-
   const selected = new Set<number>();
   let used = 0;
   for (const { index } of scored) {
-    const start = Math.max(0, index - 1);
-    const end = Math.min(blocks.length - 1, index + 1);
-    const window: number[] = [];
-    let windowChars = 0;
-    for (let i = start; i <= end; i++) {
-      if (selected.has(i)) continue;
-      const block = blocks[i] ?? '';
-      window.push(i);
-      windowChars += block.length;
-    }
-    if (window.length === 0) continue;
-    if (used + windowChars > budgetChars) {
-      const block = blocks[index] ?? '';
-      if (!selected.has(index) && used + block.length <= budgetChars) {
+    const window = [index - 1, index, index + 1].filter(
+      (i) => blocks[i] !== undefined && !excluded.has(i) && !selected.has(i),
+    );
+    const cost = window.reduce((sum, i) => sum + blockCost(blocks[i]?.text ?? ''), 0);
+    if (used + cost <= budgetChars) {
+      for (const i of window) selected.add(i);
+      used += cost;
+    } else if (!selected.has(index)) {
+      const singleCost = blockCost(blocks[index]?.text ?? '');
+      if (used + singleCost <= budgetChars) {
         selected.add(index);
-        used += block.length;
+        used += singleCost;
       }
-      continue;
     }
-    for (const i of window) selected.add(i);
-    used += windowChars;
   }
-
-  return [...selected]
-    .sort((a, b) => a - b)
-    .map((index) => blocks[index])
-    .filter((block): block is string => block !== undefined);
+  return [...selected].sort((a, b) => a - b);
 }
 
 function scoreBlock(block: string, query: Set<string>): number {
@@ -275,10 +432,6 @@ function tokenize(text: string): Set<string> {
     if (!STOP_WORDS.has(token)) tokens.add(token);
   }
   return tokens;
-}
-
-function totalChars(blocks: readonly string[]): number {
-  return blocks.reduce((sum, block) => sum + block.length, 0);
 }
 
 function summarizeInput(input: unknown): string {
@@ -306,13 +459,12 @@ function previewOutput(output: unknown, cap: number): string {
     text = safeStringify(output) ?? '';
   }
   const trimmed = text.trim();
-  if (trimmed.length <= cap) return trimmed;
-  return `${trimmed.slice(0, cap)}\n…[truncated, ${String(trimmed.length)} chars total]`;
+  return truncateMiddle(trimmed, cap, `\n…[truncated, ${String(trimmed.length)} chars total]…\n`);
 }
 
 function oneLine(value: string, max: number): string {
   const collapsed = value.replace(/\s+/g, ' ').trim();
-  return collapsed.length > max ? `${collapsed.slice(0, max - 1)}…` : collapsed;
+  return truncateMiddle(collapsed, max, ' …[truncated]… ');
 }
 
 function safeStringify(value: unknown): string | undefined {

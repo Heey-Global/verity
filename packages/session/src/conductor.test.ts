@@ -7873,6 +7873,175 @@ describe('Conductor — backend session state', () => {
 });
 
 describe('Conductor — cross-backend context handoff via context_seq', () => {
+  const models = {
+    claude: 'claude-opus-4-8',
+    codex: 'codex/default',
+    opencode: 'deepinfra/zai-org/GLM-5',
+  };
+  const directions = [
+    ['claude', 'codex'],
+    ['claude', 'opencode'],
+    ['codex', 'claude'],
+    ['codex', 'opencode'],
+    ['opencode', 'claude'],
+    ['opencode', 'codex'],
+  ] as const;
+
+  it.each(directions)('preserves stored results from %s to %s and on return', async (from, to) => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: models[from] });
+    await ctx.store.appendEvent('s1', {
+      t: 'session',
+      id: `${from}-thread`,
+      model: models[from],
+      worktree: '/wt/s1',
+    });
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'ORIGINAL_INSTRUCTION' });
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'ORIGINAL_OUTCOME' });
+    await ctx.store.upsertSessionBackendState({
+      sessionId: 's1',
+      backend: from,
+      backendSessionId: `${from}-thread`,
+      contextSeq: await ctx.store.latestEventSeq('s1'),
+    });
+    await ctx.store.appendEvent('s1', {
+      t: 'tool_call',
+      id: 'check',
+      name: 'Check',
+      input: { command: 'VERIFY_COMMAND' },
+    });
+    await ctx.store.appendEvent('s1', {
+      t: 'tool_result',
+      id: 'check',
+      output: 'x'.repeat(5000) + ' STORED_FAILURE',
+      isError: true,
+    });
+    const saved = (await ctx.store.getEvents('s1')).at(-1);
+    expect(saved?.t === 'tool_result' && saved.outputRef).toBeTruthy();
+    const captured: { backend: string; prompt: string; resumeId: string | undefined }[] = [];
+    const backend = (key: string): Backend => ({
+      run: async (opts) => {
+        captured.push({ backend: key, prompt: opts.prompt ?? '', resumeId: opts.resumeSessionId });
+        return { sessionId: `${key}-thread`, exitCode: 0, stderr: '', aborted: false };
+      },
+    });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: backend('claude'),
+      codexBackend: backend('codex'),
+      openCodeBackend: backend('opencode'),
+      worktreeExists: async () => true,
+    });
+    await ctx.store.setSessionModel('s1', models[to]);
+    await conductor.sendTurn('s1', 'continue');
+    expect(captured[0]?.backend).toBe(to);
+    expect(captured[0]?.resumeId).toBeUndefined();
+    expect(captured[0]?.prompt).toContain('ORIGINAL_INSTRUCTION');
+    expect(captured[0]?.prompt).toContain('STORED_FAILURE');
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'RETURN_INSTRUCTION' });
+    await ctx.store.appendEvent('s1', {
+      t: 'tool_call',
+      id: 'return-check',
+      name: 'Check',
+      input: 'RETURN_COMMAND',
+    });
+    await ctx.store.appendEvent('s1', {
+      t: 'tool_result',
+      id: 'return-check',
+      output: 'y'.repeat(5000) + ' RETURN_FAILURE',
+      isError: true,
+    });
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'RETURN_OUTCOME' });
+    await ctx.store.setSessionModel('s1', models[from]);
+    await conductor.sendTurn('s1', 'continue again');
+    expect(captured[1]?.backend).toBe(from);
+    expect(captured[1]?.resumeId).toBeUndefined();
+    expect(captured[1]?.prompt).toContain('RETURN_INSTRUCTION');
+    expect(captured[1]?.prompt).toContain('RETURN_COMMAND');
+    expect(captured[1]?.prompt).toContain('RETURN_FAILURE');
+    expect(captured[1]?.prompt).toContain('RETURN_OUTCOME');
+    expect(captured[1]?.prompt).toContain('ORIGINAL_INSTRUCTION');
+  });
+
+  it.each(directions)('supplies only the unseen %s history when resuming %s', async (from, to) => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: models[from] });
+    const seen = await ctx.store.appendEvent('s1', { t: 'text', delta: 'TARGET_ALREADY_SEEN' });
+    await ctx.store.upsertSessionBackendState({
+      sessionId: 's1',
+      backend: to,
+      backendSessionId: `${to}-thread`,
+      contextSeq: seen.seq,
+    });
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: `UNSEEN_${from}_INSTRUCTION` });
+    await ctx.store.appendEvent('s1', {
+      t: 'tool_call',
+      id: 'check',
+      name: 'Check',
+      input: 'UNSEEN_COMMAND',
+    });
+    await ctx.store.appendEvent('s1', {
+      t: 'tool_result',
+      id: 'check',
+      output: 'x'.repeat(5000) + ' UNSEEN_STORED_RESULT',
+      isError: false,
+    });
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'UNSEEN_OUTCOME' });
+    await ctx.store.setSessionModel('s1', models[to]);
+    let captured = '';
+    let resumeId: string | undefined;
+    const run: Backend['run'] = async (opts) => {
+      captured = opts.prompt ?? '';
+      resumeId = opts.resumeSessionId;
+      return { sessionId: `${to}-thread`, exitCode: 0, stderr: '', aborted: false };
+    };
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: { run },
+      codexBackend: { run },
+      openCodeBackend: { run },
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('s1', 'continue');
+    expect(resumeId).toBe(`${to}-thread`);
+    expect(captured).not.toContain('TARGET_ALREADY_SEEN');
+    expect(captured).toContain(`UNSEEN_${from}_INSTRUCTION`);
+    expect(captured).toContain('UNSEEN_COMMAND');
+    expect(captured).toContain('UNSEEN_STORED_RESULT');
+    expect(captured).toContain('UNSEEN_OUTCOME');
+  });
+
+  it.each(['missing', 'invalid'] as const)(
+    'continues with a marked preview when a stored result is %s',
+    async (kind) => {
+      await ctx.store.createSession({
+        sessionId: 's1',
+        worktree: '/wt/s1',
+        model: 'codex/default',
+      });
+      const id = kind === 'missing' ? 'a'.repeat(64) : await ctx.store.putTextBlob('not JSON');
+      await ctx.store.appendEvent('s1', {
+        t: 'tool_result',
+        id: 'check',
+        output: 'AVAILABLE_PREVIEW',
+        isError: false,
+        outputRef: { id, bytes: 8 },
+      });
+      let captured = '';
+      const conductor = new Conductor({
+        store: ctx.store,
+        worktreeExists: async () => true,
+        codexBackend: {
+          run: async (opts) => {
+            captured = opts.prompt ?? '';
+            return { sessionId: 'codex-thread', exitCode: 0, stderr: '', aborted: false };
+          },
+        },
+      });
+      await conductor.sendTurn('s1', 'continue');
+      expect(captured).toContain('AVAILABLE_PREVIEW');
+      expect(captured).toContain('preview only');
+    },
+  );
+
   it('cold-starts a switched-to backend with the full prior history as a handoff preamble', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'codex/default' });
     // Prior Claude-era history lives in the backend-neutral event log.

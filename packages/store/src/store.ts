@@ -4158,13 +4158,16 @@ export class EventStore implements EventSink {
     return hash;
   }
 
-  /** Read a stored blob by its hash (for serving over HTTP); `undefined` if unknown. */
-  async getAttachment(hash: string): Promise<AttachmentBlob | undefined> {
-    const row = await this.db
+  /** Read a stored blob; an optional byte ceiling filters it before transfer. */
+  async getAttachment(hash: string, maxBytes?: number): Promise<AttachmentBlob | undefined> {
+    let query = this.db
       .selectFrom('attachments')
       .select(['media_type', 'bytes'])
-      .where('hash', '=', hash)
-      .executeTakeFirst();
+      .where('hash', '=', hash);
+    if (maxBytes !== undefined) {
+      query = query.where(sql<number>`octet_length(bytes)`, '<=', maxBytes);
+    }
+    const row = await query.executeTakeFirst();
     if (!row) return undefined;
     return { mediaType: row.media_type, bytes: Buffer.from(row.bytes) };
   }
