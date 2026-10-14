@@ -57,6 +57,7 @@ import {
   fchmodSync,
   fchownSync,
   fstatSync,
+  ftruncateSync,
   chmodSync,
   lstatSync,
   mkdirSync,
@@ -1712,16 +1713,27 @@ function rewriteMountedSecretFile(path: string, contents: string, mode: number):
   if (!before.isFile() || before.isSymbolicLink()) {
     throw new ProvisioningError(`retained secret path is not a regular file: ${path}`);
   }
-  const fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW);
+  // The server owns this file in its private secret directory, but the Runner
+  // key has mode 0040. Restore owner access before opening its retained inode.
+  chmodSync(path, (before.mode & 0o777) | 0o600);
+  let fd: number | undefined;
   try {
+    fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW);
     const opened = fstatSync(fd);
     if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) {
       throw new ProvisioningError(`retained secret path changed while opening: ${path}`);
     }
+    ftruncateSync(fd, 0);
     writeFileSync(fd, contents.endsWith('\n') ? contents : `${contents}\n`);
     fchmodSync(fd, mode);
+  } catch (error) {
+    const current = lstatSync(path);
+    if (current.isFile() && current.dev === before.dev && current.ino === before.ino) {
+      chmodSync(path, before.mode & 0o777);
+    }
+    throw error;
   } finally {
-    closeSync(fd);
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
