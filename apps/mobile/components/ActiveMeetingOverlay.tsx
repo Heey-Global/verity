@@ -242,7 +242,8 @@ export function ActiveMeetingOverlay() {
           accessibilityLabel="Return to live meeting"
         >
           <View style={styles.titleRow}>
-            <Dot intent={meeting.captureStatus === 'paused' ? 'optional' : 'ready'} />
+            {/* Recording is shown in the problem colour, as on the meeting screen. */}
+            <Dot intent={meeting.captureStatus === 'paused' ? 'optional' : 'needsSetup'} />
             <Text variant="row" style={styles.title}>
               {meeting.captureStatus === 'paused' ? 'Paused' : 'Live meeting'} ·{' '}
               {Math.floor((now - meeting.startedAt) / 60000)} min

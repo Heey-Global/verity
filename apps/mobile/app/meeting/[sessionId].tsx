@@ -1953,10 +1953,7 @@ export default function MeetingScreen() {
           <Text style={[styles.pillText, { color: colors.signature }]}>✦ Sending request…</Text>
         ) : (
           <>
-            <BreathingDot
-              color={paused ? colors.attention : colors.attention}
-              breathing={!paused && !preparing}
-            />
+            <BreathingDot color={colors.attention} breathing={!paused && !preparing} />
             <Text style={[styles.pillText, paused && { color: colors.attention }]}>
               {paused ? 'Paused' : preparing ? 'Preparing…' : elapsed(meeting.startedAt, now)}
             </Text>
