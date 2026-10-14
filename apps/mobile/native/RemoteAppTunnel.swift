@@ -9,9 +9,33 @@ import Network
 // the Core certificate after the tunnel has forwarded the encrypted bytes.
 @available(iOS 17.0, macOS 14.0, *)
 final class RemoteAppTunnel: @unchecked Sendable {
+  // Every frame of the attachment goes out through here. Sends are not
+  // chained: order matters only within a stream, and every frame of a stream
+  // comes from one awaited sequence: `accept` sends the open and only then
+  // starts the pump, which sends data and end one after another. A reset
+  // follows the stream's retirement and may land anywhere, even ahead of a
+  // data frame still in flight for the same stream; the peer discards late
+  // frames for a retired ID. The socket carries the streams' frames in
+  // whatever order they arrive. A chain across streams once tied
+  // every stream to the slowest send; a send that never completed then held
+  // every later frame for good while the heartbeat, which bypasses this
+  // path, kept the socket looking alive. What remains is a watchdog on the
+  // attachment as a whole: a send is bounded, and the bound is measured
+  // against progress, so the attachment ends only when no send at all has
+  // completed for the period, which the app answers by replacing it. A tunnel
+  // attaches once and owns one Writer, so nothing here outlives it.
   private actor Writer {
+    // Measured against completions, so an idle attachment's only send in
+    // flight is judged alone. A frame carries at most one 16 KiB local read,
+    // about 22 KB encoded. This is a recovery policy, not proof of a dead
+    // socket: backpressure or a sufficiently slow link can also reach it.
+    static let sendDeadlineSeconds: UInt64 = 15
     private let socket: URLSessionWebSocketTask
-    private var previous: Task<Void, Error>?
+    private var onStall: (@Sendable () -> Void)?
+    private var stallRaised = false
+    private let progress = SendProgress()
+
+    func setOnStall(_ handler: @escaping @Sendable () -> Void) { onStall = handler }
 #if VERITY_STALL_DIAGNOSTICS
     var stallDiagnostics: StallDiagnostics?
     func setStallDiagnostics(_ value: StallDiagnostics) { stallDiagnostics = value }
@@ -26,24 +50,98 @@ final class RemoteAppTunnel: @unchecked Sendable {
 #if VERITY_STALL_DIAGNOSTICS
       let diagnostics = stallDiagnostics
       let token = diagnostics?.enqueue(frame["streamId"] as? String ?? "")
+      // Finished from the writer's side: completed, failed, or given up on at
+      // the deadline while the transport call itself may still be pending.
+      var failed = true
+      defer { diagnostics?.finished(token, failed: failed) }
 #endif
-      let predecessor = previous
-      let task = Task {
+      do {
+        try await Self.bounded(seconds: Self.sendDeadlineSeconds, progress: progress) { [socket] in
 #if VERITY_STALL_DIAGNOSTICS
-        var failed = true
-        defer { diagnostics?.finished(token, failed: failed) }
+          diagnostics?.started(token)
 #endif
-        if let predecessor { try await predecessor.value }
-#if VERITY_STALL_DIAGNOSTICS
-        diagnostics?.started(token)
-#endif
-        try await socket.send(.string(text))
-#if VERITY_STALL_DIAGNOSTICS
-        failed = false
-#endif
+          try await socket.send(.string(text))
+        }
+      } catch {
+        // Only a missed deadline ends the attachment here, once: every send
+        // in flight on a stopped socket misses it together. A transport error
+        // means the socket is already going down for a reason the reader or
+        // heartbeat records; stopping on it would hide that reason.
+        if Self.isStall(error), !stallRaised, let onStall {
+          stallRaised = true
+          onStall()
+        }
+        throw error
       }
-      previous = task
-      try await task.value
+#if VERITY_STALL_DIAGNOSTICS
+      failed = false
+#endif
+    }
+
+    static func isStall(_ error: Error) -> Bool {
+      if case RemoteSmokeError.sendStalled = error { return true }
+      return false
+    }
+
+    // Counts completed sends; the deadline reads it to tell a slow queue from
+    // a stopped one.
+    private final class SendProgress: @unchecked Sendable {
+      private let lock = NSLock()
+      private var last = ProcessInfo.processInfo.systemUptime
+      func advance() { lock.lock(); last = ProcessInfo.processInfo.systemUptime; lock.unlock() }
+      /// Uptime of the last completed send, or of the writer's creation.
+      var mark: TimeInterval { lock.lock(); defer { lock.unlock() }; return last }
+    }
+
+    // Resumes a continuation once, whichever of the send and the deadline
+    // finishes first. A task group would wait for the send as well, and the
+    // transport's send ignores cancellation and may never return; it is left
+    // pending and released when the stall hook cancels the socket in stop().
+    // Whichever of the two answers second finds the continuation gone.
+    private final class Once: @unchecked Sendable {
+      private let lock = NSLock()
+      private var continuation: CheckedContinuation<Void, Error>?
+      init(_ continuation: CheckedContinuation<Void, Error>) { self.continuation = continuation }
+      func resume(_ error: Error?) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        if let error { pending?.resume(throwing: error) } else { pending?.resume() }
+      }
+    }
+
+    private static func bounded(seconds: UInt64, progress: SendProgress,
+      _ body: @escaping @Sendable () async throws -> Void) async throws
+    {
+      try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        let once = Once(continuation)
+        // The sleeper is cancelled once the send is over, so a long transfer
+        // does not keep one timer per frame alive. While sends keep completing
+        // it keeps waiting; a period with none is the stall. The extra second
+        // lets a send that was in flight across a suspension land first,
+        // since the clock ran on while nothing here could.
+        let sleeper = Task {
+          var mark = max(progress.mark, ProcessInfo.processInfo.systemUptime)
+          while !Task.isCancelled {
+            let wait = mark + TimeInterval(seconds) - ProcessInfo.processInfo.systemUptime
+            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+            if progress.mark > mark { mark = progress.mark; continue }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            if progress.mark > mark { mark = progress.mark; continue }
+            break
+          }
+          if !Task.isCancelled { once.resume(RemoteSmokeError.sendStalled) }
+        }
+        Task {
+          do {
+            try await body()
+            progress.advance()
+            once.resume(nil)
+          } catch { once.resume(error) }
+          sleeper.cancel()
+        }
+      }
     }
   }
 
@@ -57,6 +155,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var pendingBytes = 0
     var incomingWrite: Task<Void, Never>?
     var closed = false
+    /// Set once the open has left, so a reset is never sent for an ID Core has not seen.
+    var opened = false
+    var pendingReset: String?
     var worker: Task<Void, Never>?
     // Armed when the first local bytes have gone out; Core's TLS reply to a
     // ClientHello arrives within milliseconds, so a stream still without any
@@ -290,6 +391,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
     }
     defer { timeout.cancel() }
     do {
+      // Installed before the first send: nothing may be queued without it.
+      await writer.setOnStall { [weak self] in
+        self?.stop(reason: "stall: send unanswered within \(Writer.sendDeadlineSeconds) s", cause: .sendStall)
+      }
 #if VERITY_STALL_DIAGNOSTICS
       await writer.setStallDiagnostics(stallDiagnostics)
 #endif
@@ -731,9 +836,31 @@ final class RemoteAppTunnel: @unchecked Sendable {
     if alreadyDone { task.cancel() }
   }
 
+  // Retirement is immediate, but reset must follow successful open completion.
+  // The reader must not wait for either send while handling incoming frames.
   private func reset(_ id: String, code: String) async {
+    let opened = lock.withLock { () -> Bool in
+      guard let stream = streams[id] else { return false }
+      if !stream.opened { stream.pendingReset = code }
+      return stream.opened
+    }
     guard drop(id, reason: "local_reset_\(code)") else { return }
-    try? await writer.send(["type": "stream.reset", "streamId": id, "code": code])
+    guard opened else { return }
+    let writer = self.writer
+    Task { try? await writer.send(["type": "stream.reset", "streamId": id, "code": code]) }
+  }
+
+  private func didSendOpen(_ stream: Stream, id: String) {
+    let pendingReset = lock.withLock { () -> String? in
+      stream.opened = true
+      let pending = stream.pendingReset
+      stream.pendingReset = nil
+      return pending
+    }
+    if let pendingReset {
+      let writer = self.writer
+      Task { try? await writer.send(["type": "stream.reset", "streamId": id, "code": pendingReset]) }
+    }
   }
 
   private func accept(_ connection: NWConnection) async {
@@ -823,6 +950,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
         dataDiagnostics.record(.streamOpenRequested, streamId: id)
       }
       try await writer.send(["type": "stream.open", "streamId": id, "channel": "remote", "meta": [:]])
+      didSendOpen(stream, id: id)
       lock.withLock {
         openedStreams += 1
         lastStreamEvent = "stream_opened"
@@ -915,6 +1043,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
           dataDiagnostics.record(.streamSendRequested, streamId: id)
         }
       }
+      // A first send that never completes is the writer deadline's case, not
+      // this watch's: armed after the send, the watch measures Core's reply.
       try await writer.send(["type": "stream.data", "streamId": id,
         "seq": stream.outgoingSequence, "payload": bytes.base64EncodedString()])
       let first = lock.withLock { () -> Bool in

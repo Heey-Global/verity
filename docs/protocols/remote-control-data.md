@@ -72,7 +72,11 @@ a pending ping older than 45 seconds terminates the attachment at the next tick.
 Uplink responds to pings. Pong receipt does not establish stream forwarding or
 inner TLS progress. Native suspension can delay timer execution. The app also
 has a ten-second first-response stall check that fires only if the entire
-attachment received no additional payload during that stream's wait.
+attachment received no additional payload during that stream's wait. The app
+sends frames of different streams independently and bounds them by progress:
+about 16 seconds after the last completed send, with none since, the attachment
+ends so that the app replaces it, since the heartbeat bypasses the send path and
+cannot notice sends that have stopped completing.
 
 Local send callbacks, socket counters, frame acceptance and endpoint receipt are
 distinct observations. Tests assert exact bytes at their destination, not merely
