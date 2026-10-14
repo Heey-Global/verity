@@ -17,7 +17,7 @@ writer = source[start:end].replace('private actor Writer', 'actor Writer', 1)
 prefix = 'import Foundation\nenum RemoteSmokeError: Error { case limitReached, sendStalled }\n'
 Path(sys.argv[2], 'Writer.swift').write_text(prefix + writer)
 # A send must not be observed as started before it reaches the socket.
-needle = '      diagnostics?.started(token)'
+needle = '          diagnostics?.started(token)'
 assert writer.count(needle) == 1
 Path(sys.argv[2], 'UnobservedWriter.swift').write_text(prefix + writer.replace(needle, '', 1))
 # A chain across streams brought back: each send waits for the one before it.

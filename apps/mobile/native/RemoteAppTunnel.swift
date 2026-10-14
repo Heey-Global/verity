@@ -10,9 +10,11 @@ import Network
 @available(iOS 17.0, macOS 14.0, *)
 final class RemoteAppTunnel: @unchecked Sendable {
   // Every frame of the attachment goes out through here. Sends are not
-  // chained: order matters only within a stream, and each stream's pump sends
-  // one frame after another itself, while the socket carries the streams'
-  // frames in whatever order they arrive. A chain across streams once tied
+  // chained: order matters only within a stream, and every frame of a stream
+  // comes from one awaited sequence (`accept` sends the open and only then
+  // starts the pump, which sends data and end one after another; a reset
+  // follows the stream's retirement and may land anywhere), while the socket
+  // carries the streams' frames in whatever order they arrive. A chain across streams once tied
   // every stream to the slowest send; a send that never completed then held
   // every later frame for good while the heartbeat, which bypasses this
   // path, kept the socket looking alive. What remains is a watchdog on the
@@ -21,6 +23,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
   // completed for the period, which the app answers by replacing it. A tunnel
   // attaches once and owns one Writer, so nothing here outlives it.
   private actor Writer {
+    // Measured against completions, so an idle attachment's only send in
+    // flight is judged alone: a single frame that cannot leave within this
+    // long is a dead socket, not a slow one, at about 1 KB/s and below.
     static let sendDeadlineSeconds: UInt64 = 15
     private let socket: URLSessionWebSocketTask
     private var onStall: (@Sendable () -> Void)?
@@ -44,10 +49,12 @@ final class RemoteAppTunnel: @unchecked Sendable {
       let token = diagnostics?.enqueue(frame["streamId"] as? String ?? "")
       var failed = true
       defer { diagnostics?.finished(token, failed: failed) }
-      diagnostics?.started(token)
 #endif
       do {
         try await Self.bounded(seconds: Self.sendDeadlineSeconds, progress: progress) {
+#if VERITY_STALL_DIAGNOSTICS
+          diagnostics?.started(token)
+#endif
           try await socket.send(.string(text))
         }
       } catch {

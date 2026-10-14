@@ -26,6 +26,22 @@ it('does not chain sends across streams', () => {
   expect(writer).not.toMatch(/previous|predecessor/u);
 });
 
+it('sends every frame of a stream from one awaited sequence', () => {
+  // With no chain, per-stream order rests on each stream's frames coming from
+  // one place that awaits each send: the open from accept, data and end from
+  // the pump, and the reset after the stream is retired.
+  const calls = [
+    ...source.matchAll(/^\s*(?:try\??|Task \{ try\?) await writer\.send\(\["type": "([a-z.]+)"/gmu),
+  ].map((match) => match[1]);
+  expect(calls.sort()).toEqual([
+    'attach',
+    'stream.data',
+    'stream.end',
+    'stream.open',
+    'stream.reset',
+  ]);
+});
+
 it('bounds every WebSocket send and ends the attachment on a miss', () => {
   const writer = section('  private actor Writer {', '\n  private final class Stream');
   // The one call that reaches the socket is inside the deadline; a bare call
