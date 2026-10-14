@@ -72,6 +72,35 @@ describe('buildHandoffPrompt', () => {
     expect(out).toContain('check-1');
   });
 
+  it('reserves evidence space even when a long assistant outcome follows the exchange', () => {
+    const out = buildHandoffPrompt(
+      [
+        prompt('INSTRUCTION_START ' + 'p'.repeat(2000) + ' INSTRUCTION_END'),
+        { t: 'tool_call', id: 'check', name: 'Check', input: 'VERIFY_COMMAND' },
+        {
+          t: 'tool_result',
+          id: 'check',
+          output: 'EVIDENCE_START ' + 'x'.repeat(5000) + ' EVIDENCE_END',
+          isError: false,
+        },
+        text('OUTCOME_START ' + 'a'.repeat(2000) + ' OUTCOME_END'),
+      ],
+      'go',
+      { tokenBudget: 200 },
+    );
+    for (const marker of [
+      'INSTRUCTION_START',
+      'INSTRUCTION_END',
+      'OUTCOME_START',
+      'OUTCOME_END',
+      'VERIFY_COMMAND',
+      'EVIDENCE_START',
+      'EVIDENCE_END',
+    ]) {
+      expect(out).toContain(marker);
+    }
+  });
+
   it('marks middle omissions while retaining both ends of large tool inputs and outputs', () => {
     const out = buildHandoffPrompt(
       [
@@ -299,13 +328,22 @@ describe('stored handoff results', () => {
 
   it('re-budgets expanded results without losing the latest working state', async () => {
     const out = await buildHandoffPromptWithStoredResults(
-      [prompt('LATEST_INSTRUCTION'), text('LATEST_OUTCOME'), stored('expanded')],
+      [
+        prompt('LATEST_INSTRUCTION'),
+        text('LATEST_OUTCOME'),
+        { t: 'tool_call', id: 'expanded', name: 'Check', input: 'VERIFY_COMMAND' },
+        stored('expanded'),
+      ],
       'continue',
-      async () => blob('x'.repeat(20000)),
+      async () => blob('EVIDENCE_START ' + 'x'.repeat(20000) + ' EVIDENCE_END'),
       { tokenBudget: 100 },
     );
     expect(out).toContain('LATEST_INSTRUCTION');
     expect(out).toContain('LATEST_OUTCOME');
+    expect(out).toContain('VERIFY_COMMAND');
+    expect(out).toContain('**Tool result:**');
+    expect(out).toContain('EVIDENCE_START');
+    expect(out).toContain('EVIDENCE_END');
     const history =
       out
         .split('\n\nNow respond')[0]

@@ -49,6 +49,8 @@ interface HandoffBlock {
   text: string;
   kind: 'prompt' | 'assistant' | 'tool';
   resultIndex?: number;
+  callText?: string;
+  resultText?: string;
 }
 interface HandoffSelection {
   blocks: Map<number, string>;
@@ -249,10 +251,13 @@ function serializeEvents(events: readonly AgentEvent[], toolResultCap: number): 
           const label = event.isError ? 'Tool result (error)' : 'Tool result';
           const storedNote =
             event.outputRef === undefined ? '' : '\n[stored tool result: preview only]';
+          const resultText = `**${label}:**\n${previewOutput(event.output, toolResultCap)}${storedNote}\n[tool call id: ${event.id}]`;
           blocks.push({
-            text: `${callText ? `${callText}\n\n` : ''}**${label}:**\n${previewOutput(event.output, toolResultCap)}${storedNote}\n[tool call id: ${event.id}]`,
+            text: callText ? `${callText}\n\n${resultText}` : resultText,
             kind: 'tool',
             resultIndex: eventIndex,
+            ...(callText !== undefined ? { callText } : {}),
+            resultText,
           });
         }
         break;
@@ -295,10 +300,7 @@ function selectBlocks(
     .filter((index) => index >= 0)
     .sort((a, b) => a - b);
   // Reserve room for recent evidence even when a single instruction is enormous.
-  let primaryRoom =
-    primary.length > 0 && Math.max(...primary) < blocks.length - 1
-      ? Math.floor(budget * 0.75)
-      : budget;
+  let primaryRoom = primary.length > 0 && latest('tool') >= 0 ? Math.floor(budget * 0.75) : budget;
   const pending = [...primary].sort(
     (a, b) => (blocks[a]?.text.length ?? 0) - (blocks[b]?.text.length ?? 0),
   );
@@ -315,16 +317,26 @@ function selectBlocks(
     MAX_RETRIEVAL_CHARS,
     Math.floor(budget * (opts.retrievalBudgetRatio ?? DEFAULT_RETRIEVAL_BUDGET_RATIO)),
   );
-  const recentRoom = Math.max(0, room - retrievalRoom);
+  const latestTool = latest('tool');
+  const recentRoom = Math.max(
+    0,
+    room - retrievalRoom,
+    latestTool >= 0 ? Math.floor(room * 0.75) : 0,
+  );
   let firstRecent = primary.length > 0 ? Math.max(...primary) : blocks.length;
   const addRecent = (available: number): number => {
     for (let index = blocks.length - 1; index >= 0; index--) {
       if (selected.has(index)) continue;
       const block = blocks[index];
       if (block === undefined) continue;
-      const cost = blockCost(block.text);
+      // Expanded results must not disappear merely because their preview fit
+      // before hydration. Retain the newest exchange's evidence within the room left.
+      const text =
+        index === latestTool ? truncateBlock(block, Math.max(0, available - 2)) : block.text;
+      const cost = blockCost(text);
+      if (text.length === 0) break;
       if (cost > available) break;
-      selected.set(index, block.text);
+      selected.set(index, text);
       firstRecent = Math.min(firstRecent, index);
       available -= cost;
       room -= cost;
@@ -334,7 +346,8 @@ function selectBlocks(
   addRecent(recentRoom);
   if (selected.size === 0) {
     const index = blocks.length - 1;
-    const text = truncateMiddle(blocks[index]?.text ?? '', Math.max(0, budget - 2));
+    const block = blocks[index];
+    const text = block === undefined ? '' : truncateBlock(block, Math.max(0, budget - 2));
     if (text.length > 0) selected.set(index, text);
     room -= blockCost(text);
     firstRecent = index;
@@ -356,6 +369,19 @@ function selectBlocks(
   if (retrieved.size > 0) room -= headingCost;
   addRecent(room);
   return { blocks: selected, retrieved, omitted: true };
+}
+
+/** A shortened exchange still needs both the call identity and result evidence. */
+function truncateBlock(block: HandoffBlock, cap: number): string {
+  if (block.text.length <= cap) return block.text;
+  if (block.callText === undefined || block.resultText === undefined || cap < 2) {
+    return truncateMiddle(block.text, cap);
+  }
+  const room = cap - 2;
+  let callCap = Math.min(block.callText.length, Math.floor(room / 3));
+  const resultCap = Math.min(block.resultText.length, room - callCap);
+  callCap = Math.min(block.callText.length, room - resultCap);
+  return `${truncateMiddle(block.callText, callCap)}\n\n${truncateMiddle(block.resultText, resultCap)}`;
 }
 
 /** Preserve the start (identity/context) and end (outcome) within the cap. */
