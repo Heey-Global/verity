@@ -2,7 +2,8 @@ import { subscribeLiveRefresh } from '../lib/liveConnection';
 import { router, usePathname } from 'expo-router';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, PanResponder, Pressable, Text, useWindowDimensions, View } from 'react-native';
+import { Animated, PanResponder, Pressable, useWindowDimensions, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
@@ -19,6 +20,8 @@ import {
   subscribeFollowedRemoteMeeting,
   syncMeetingSession,
 } from '../lib/liveMeetingSync';
+import { Button, Text } from './ui';
+import { Dot } from './ui/Status';
 
 const WIDTH = 200;
 
@@ -231,35 +234,22 @@ export function ActiveMeetingOverlay() {
       <Animated.View
         {...pan.panHandlers}
         onLayout={(event) => setOverlayHeight(event.nativeEvent.layout.height)}
-        style={{
-          position: 'absolute',
-          top,
-          right: 12,
-          width: WIDTH,
-          minHeight: 105,
-          transform: position.getTranslateTransform(),
-          backgroundColor: '#211d2d',
-          borderColor: '#655b82',
-          borderWidth: 1,
-          borderRadius: 16,
-          padding: 12,
-          gap: 8,
-          shadowColor: '#000',
-          shadowOpacity: 0.35,
-          shadowRadius: 12,
-          elevation: 8,
-        }}
+        style={[styles.card, { top, width: WIDTH, transform: position.getTranslateTransform() }]}
       >
         <Pressable
           onPress={openMeeting}
           accessibilityRole="button"
           accessibilityLabel="Return to live meeting"
         >
-          <Text style={{ color: '#eee9f7', fontWeight: '700' }}>
-            {meeting.captureStatus === 'paused' ? 'Ⅱ Paused' : '● Live Meeting'} ·{' '}
-            {Math.floor((now - meeting.startedAt) / 60000)} min
-          </Text>
-          <Text style={{ color: '#aaa2ba', fontSize: 11 }}>
+          <View style={styles.titleRow}>
+            {/* Recording is shown in the problem colour, as on the meeting screen. */}
+            <Dot intent={meeting.captureStatus === 'paused' ? 'optional' : 'needsSetup'} />
+            <Text variant="row" style={styles.title}>
+              {meeting.captureStatus === 'paused' ? 'Paused' : 'Live meeting'} ·{' '}
+              {Math.floor((now - meeting.startedAt) / 60000)} min
+            </Text>
+          </View>
+          <Text variant="footnote">
             {activePendingCommand
               ? recorderOnline
                 ? `Waiting to ${activePendingCommand} · keep recorder app open`
@@ -267,54 +257,64 @@ export function ActiveMeetingOverlay() {
               : 'Drag to move · Open meeting'}
           </Text>
         </Pressable>
-        {error ? <Text style={{ color: '#ffaba5', fontSize: 11 }}>{error}</Text> : null}
-        {voiceSending ? (
-          <Text style={{ color: '#aaa2ba', fontSize: 11 }}>Sending voice request…</Text>
+        {error ? (
+          <Text variant="footnote" tone="attention">
+            {error}
+          </Text>
         ) : null}
+        {voiceSending ? <Text variant="footnote">Sending voice request…</Text> : null}
         {voiceRequestSent ? (
-          <Text style={{ color: '#aaa2ba', fontSize: 11 }}>Answer will appear in the meeting</Text>
+          <Text variant="footnote">Answer will appear in the meeting</Text>
         ) : null}
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          <Pressable
-            onPress={togglePause}
-            disabled={
-              busy ||
-              !!activePendingCommand ||
-              (meeting.captureStatus !== 'listening' && meeting.captureStatus !== 'paused')
-            }
-            accessibilityRole="button"
-            accessibilityLabel={
-              meeting.captureStatus === 'paused' ? 'Resume meeting' : 'Pause meeting'
-            }
-            style={{
-              flex: 1,
-              alignItems: 'center',
-              padding: 7,
-              borderRadius: 9,
-              backgroundColor: '#383149',
-            }}
-          >
-            <Text style={{ color: '#eee9f7' }}>
-              {meeting.captureStatus === 'paused' ? '▶ Resume' : 'Ⅱ Pause'}
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={stop}
-            disabled={busy || activePendingCommand === 'stop'}
-            accessibilityRole="button"
+        <View style={styles.actions}>
+          <View style={styles.grow}>
+            <Button
+              label={meeting.captureStatus === 'paused' ? 'Resume' : 'Pause'}
+              accessibilityLabel={
+                meeting.captureStatus === 'paused' ? 'Resume meeting' : 'Pause meeting'
+              }
+              icon={meeting.captureStatus === 'paused' ? 'play' : 'pause'}
+              variant="secondary"
+              size="compact"
+              disabled={
+                busy ||
+                !!activePendingCommand ||
+                (meeting.captureStatus !== 'listening' && meeting.captureStatus !== 'paused')
+              }
+              onPress={togglePause}
+              fullWidth
+            />
+          </View>
+          <Button
+            label="Stop"
             accessibilityLabel="Stop meeting"
-            style={{
-              alignItems: 'center',
-              padding: 7,
-              borderRadius: 9,
-              borderColor: '#a9475d',
-              borderWidth: 1,
-            }}
-          >
-            <Text style={{ color: '#ff6878' }}>■ Stop</Text>
-          </Pressable>
+            icon="square"
+            variant="destructive"
+            size="compact"
+            disabled={busy || activePendingCommand === 'stop'}
+            onPress={stop}
+          />
         </View>
       </Animated.View>
     </View>
   );
 }
+
+const styles = StyleSheet.create((theme) => ({
+  card: {
+    position: 'absolute',
+    right: theme.spacing.md,
+    minHeight: 105,
+    padding: theme.spacing.md,
+    gap: theme.spacing.sm,
+    borderRadius: theme.radius.card,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+    ...theme.elevation.floating,
+  },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  title: { flexShrink: 1 },
+  actions: { flexDirection: 'row', gap: theme.spacing.sm },
+  grow: { flex: 1 },
+}));

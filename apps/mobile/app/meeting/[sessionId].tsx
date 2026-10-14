@@ -1137,10 +1137,10 @@ export default function MeetingScreen() {
           }
           tone={
             card.status === 'ready'
-              ? colors.tone.done
+              ? colors.success
               : card.status === 'failed'
-                ? colors.tone.danger
-                : colors.primary
+                ? colors.attention
+                : colors.action
           }
           working={card.status === 'working'}
           prominent
@@ -1250,7 +1250,7 @@ export default function MeetingScreen() {
                 ? 'OPEN QUESTION'
                 : 'WORTH CHECKING'
           }
-          tone={contradiction ? colors.accent : colors.primary}
+          tone={contradiction ? colors.signature : colors.action}
           time={timeOfDay(insight.createdAt)}
           quote={`“${insight.evidenceA}”${insight.evidenceB ? ` · “${insight.evidenceB}”` : ''}`}
           title={insight.summary}
@@ -1395,7 +1395,7 @@ export default function MeetingScreen() {
                 style={[
                   styles.segmentText,
                   mode === value && {
-                    color: value === 'note' ? colors.tone.done : colors.accent,
+                    color: value === 'note' ? colors.success : colors.signature,
                   },
                 ]}
               >
@@ -1456,7 +1456,7 @@ export default function MeetingScreen() {
     <View style={styles.composerPanel}>
       {composerMode('ask')}
       <View style={styles.composer}>
-        <Text style={[styles.composerTime, { color: colors.accent }]}>✦</Text>
+        <Text style={[styles.composerTime, { color: colors.signature }]}>✦</Text>
         <TextInput
           accessibilityLabel="Ask Verity about this meeting"
           autoFocus={autoFocus}
@@ -1608,7 +1608,7 @@ export default function MeetingScreen() {
                 onPress={submitNote}
                 style={styles.recoveryButton}
               >
-                <Icon name="rotate-cw" size={16} color={colors.primary} />
+                <Icon name="rotate-cw" size={16} color={colors.action} />
                 <Text style={styles.recoveryButtonText}>
                   {noteUnsaved ? 'Retry save' : 'Save note'}
                 </Text>
@@ -1637,7 +1637,7 @@ export default function MeetingScreen() {
                 >
                   <Text
                     style={{
-                      color: meetingSource === source ? colors.primary : colors.text,
+                      color: meetingSource === source ? colors.action : colors.text,
                     }}
                   >
                     {source === 'presence' ? 'In person' : 'Online meeting'}
@@ -1764,7 +1764,7 @@ export default function MeetingScreen() {
             style={styles.startButton}
           >
             {busy ? (
-              <ActivityIndicator color={colors.primary} />
+              <ActivityIndicator color={colors.action} />
             ) : (
               <>
                 {returning ? null : <View style={styles.recordDot} />}
@@ -1836,9 +1836,7 @@ export default function MeetingScreen() {
               }
               size={22}
               color={
-                noteUnsaved || meeting.state === 'interrupted'
-                  ? colors.tone.danger
-                  : colors.tone.done
+                noteUnsaved || meeting.state === 'interrupted' ? colors.attention : colors.success
               }
             />
             <View style={styles.fill}>{statusLines}</View>
@@ -1948,18 +1946,15 @@ export default function MeetingScreen() {
                   : '')}
       </Text>
       <View
-        style={[styles.pill, voiceSending && { borderColor: colors.accent }]}
+        style={[styles.pill, voiceSending && { borderColor: colors.signature }]}
         accessibilityLabel={paused ? 'Paused' : `Recording ${elapsed(meeting.startedAt, now)}`}
       >
         {voiceSending ? (
-          <Text style={[styles.pillText, { color: colors.accent }]}>✦ Sending request…</Text>
+          <Text style={[styles.pillText, { color: colors.signature }]}>✦ Sending request…</Text>
         ) : (
           <>
-            <BreathingDot
-              color={paused ? colors.tone.attention : colors.tone.danger}
-              breathing={!paused && !preparing}
-            />
-            <Text style={[styles.pillText, paused && { color: colors.tone.attention }]}>
+            <BreathingDot color={colors.attention} breathing={!paused && !preparing} />
+            <Text style={[styles.pillText, paused && { color: colors.attention }]}>
               {paused ? 'Paused' : preparing ? 'Preparing…' : elapsed(meeting.startedAt, now)}
             </Text>
           </>
@@ -2015,7 +2010,7 @@ export default function MeetingScreen() {
   const noticed = (
     <View style={styles.block}>
       <View style={styles.noticedHeader}>
-        <Text style={[styles.sparkle, { color: colors.accent }]}>✦</Text>
+        <Text style={[styles.sparkle, { color: colors.signature }]}>✦</Text>
         <Text style={styles.noticedTitle}>Verity noticed</Text>
         {cards.length ? <Text style={styles.hint}>{cards.length}</Text> : null}
       </View>
@@ -2241,8 +2236,8 @@ const styles = StyleSheet.create((theme) => {
     },
     pillText: {
       color: colors.text,
-      fontSize: theme.text.md,
-      fontWeight: '700',
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.bold,
       fontVariant: ['tabular-nums'],
     },
     dotRing: {
@@ -2266,24 +2261,60 @@ const styles = StyleSheet.create((theme) => {
     headerStatus: {
       flex: 1,
       color: colors.textFaint,
-      fontSize: theme.text.xs,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
       textAlign: 'right',
     },
-    endButtonText: { color: colors.tone.danger, fontWeight: '700', fontSize: theme.text.md },
-    status: { color: colors.textMuted, fontSize: theme.text.xs },
-    statusError: { color: colors.tone.danger },
-    error: { color: colors.tone.danger, fontSize: theme.text.sm },
-    hint: { color: colors.textFaint, fontSize: theme.text.sm },
-    body: { color: colors.text, fontSize: theme.text.md, lineHeight: 22 },
-    link: { color: colors.primary, fontSize: theme.text.md },
+    endButtonText: {
+      color: colors.attention,
+      fontFamily: theme.fonts.bold,
+      fontSize: theme.typography.row.fontSize,
+    },
+    status: {
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
+    },
+    statusError: { color: colors.attention },
+    error: {
+      color: colors.attention,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+    },
+    hint: {
+      color: colors.textFaint,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+    },
+    body: {
+      color: colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+      lineHeight: 22,
+    },
+    link: {
+      color: colors.action,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+    },
     centered: { alignItems: 'center', paddingVertical: theme.spacing.sm },
     avatarLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
     avatarRow: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.md },
     noticedHeader: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-    sparkle: { fontSize: theme.text.md },
-    noticedTitle: { flex: 1, color: colors.text, fontSize: theme.text.lg, fontWeight: '700' },
-    note: { color: colors.text, fontSize: theme.text.md, lineHeight: 22 },
-    noteTime: { color: colors.textFaint, fontWeight: '700' },
+    sparkle: { fontFamily: theme.fonts.regular, fontSize: theme.typography.row.fontSize },
+    noticedTitle: {
+      flex: 1,
+      color: colors.text,
+      fontSize: theme.typography.title.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
+    note: {
+      color: colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+      lineHeight: 22,
+    },
+    noteTime: { color: colors.textFaint, fontFamily: theme.fonts.bold },
     notesCard: {
       flex: 1,
       backgroundColor: colors.surface,
@@ -2319,11 +2350,16 @@ const styles = StyleSheet.create((theme) => {
       paddingRight: 0,
       paddingVertical: theme.spacing.xs,
     },
-    composerTime: { color: colors.primary, fontWeight: '700', fontSize: theme.text.sm },
+    composerTime: {
+      color: colors.action,
+      fontFamily: theme.fonts.bold,
+      fontSize: theme.typography.bodySmall.fontSize,
+    },
     composerInput: {
       alignSelf: 'stretch',
       color: colors.text,
-      fontSize: theme.text.md,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
       minHeight: 40,
       maxHeight: 120,
       paddingVertical: theme.spacing.sm,
@@ -2351,17 +2387,26 @@ const styles = StyleSheet.create((theme) => {
       alignItems: 'center',
       justifyContent: 'center',
     },
-    barButtonText: { color: colors.text, fontSize: theme.text.md, fontWeight: '700' },
-    barButtonPrimary: { borderColor: colors.primary, backgroundColor: 'transparent' },
-    barButtonPrimaryText: { color: colors.primary, fontSize: theme.text.md, fontWeight: '700' },
+    barButtonText: {
+      color: colors.text,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
+    barButtonPrimary: { borderColor: colors.action, backgroundColor: 'transparent' },
+    barButtonPrimaryText: {
+      color: colors.action,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
     columns: { flex: 1, flexDirection: 'row', gap: theme.spacing.xl, paddingTop: theme.spacing.md },
     column: { flex: 1, gap: theme.spacing.md },
     divider: { width: 1, backgroundColor: colors.border },
     titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-    title: { color: colors.text, fontSize: theme.text.xl, fontWeight: '800' },
+    title: { color: colors.text, fontSize: theme.text.xl, fontFamily: theme.fonts.extrabold },
     subtitle: {
       color: colors.textMuted,
-      fontSize: theme.text.sm,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
       marginTop: -theme.spacing.lg,
     },
     segmented: {
@@ -2380,9 +2425,17 @@ const styles = StyleSheet.create((theme) => {
       borderWidth: 1,
       borderColor: 'transparent',
     },
-    segmentSelected: { borderColor: colors.primary, backgroundColor: colors.background },
-    segmentText: { color: colors.textMuted, fontSize: theme.text.md },
-    segmentTextSelected: { color: colors.primary, fontSize: theme.text.md, fontWeight: '700' },
+    segmentSelected: { borderColor: colors.action, backgroundColor: colors.background },
+    segmentText: {
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+    },
+    segmentTextSelected: {
+      color: colors.action,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
     row: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -2394,8 +2447,19 @@ const styles = StyleSheet.create((theme) => {
       paddingHorizontal: theme.spacing.lg,
       paddingVertical: theme.spacing.md,
     },
-    rowText: { flex: 1, color: colors.text, fontSize: theme.text.md },
-    rowValue: { flex: 1, color: colors.textMuted, fontSize: theme.text.sm, textAlign: 'right' },
+    rowText: {
+      flex: 1,
+      color: colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+    },
+    rowValue: {
+      flex: 1,
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.bodySmall.fontSize,
+      textAlign: 'right',
+    },
     engineChoice: { paddingHorizontal: theme.spacing.lg, paddingVertical: theme.spacing.sm },
     startButton: {
       flexDirection: 'row',
@@ -2405,32 +2469,40 @@ const styles = StyleSheet.create((theme) => {
       minHeight: 56,
       borderRadius: theme.radius.pill,
       borderWidth: 1,
-      borderColor: colors.accent,
-      backgroundColor: colors.accent,
+      borderColor: colors.signature,
+      backgroundColor: colors.signature,
     },
-    recordDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: colors.tone.danger },
-    startButtonText: { color: colors.text, fontSize: theme.text.lg, fontWeight: '700' },
+    recordDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: colors.attention },
+    startButtonText: {
+      color: colors.text,
+      fontSize: theme.typography.title.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
     recoveryCard: {
       gap: theme.spacing.sm,
       borderWidth: 1,
-      borderColor: colors.tone.danger,
+      borderColor: colors.attention,
       backgroundColor: colors.surface,
       borderRadius: theme.radius.lg,
       padding: theme.spacing.lg,
     },
-    recoveryTitle: { color: colors.text, fontSize: theme.text.md, fontWeight: '700' },
+    recoveryTitle: {
+      color: colors.text,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
     recoveryButton: {
       flexDirection: 'row',
       alignSelf: 'flex-start',
       alignItems: 'center',
       gap: theme.spacing.sm,
       borderWidth: 1,
-      borderColor: colors.primary,
+      borderColor: colors.action,
       borderRadius: theme.radius.pill,
       paddingHorizontal: theme.spacing.lg,
       paddingVertical: theme.spacing.sm,
     },
-    recoveryButtonText: { color: colors.primary, fontWeight: '700' },
+    recoveryButtonText: { color: colors.action, fontFamily: theme.fonts.bold },
     savedCard: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -2448,9 +2520,18 @@ const styles = StyleSheet.create((theme) => {
       gap: theme.spacing.md,
     },
     sheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-    sheetTitle: { color: colors.text, fontSize: theme.text.lg, fontWeight: '700' },
+    sheetTitle: {
+      color: colors.text,
+      fontSize: theme.typography.title.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
     transcriptContent: { gap: theme.spacing.md, paddingBottom: theme.spacing.xl },
-    transcriptText: { color: colors.text, fontSize: theme.text.md, lineHeight: 24 },
+    transcriptText: {
+      color: colors.text,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.row.fontSize,
+      lineHeight: 24,
+    },
     transcriptPending: { color: colors.textMuted },
   };
 });

@@ -35,6 +35,10 @@ type Counts = Partial<Record<Rule, number>>;
 const EXEMPT: Partial<Record<string, Counts>> = {
   // The switch knob is white with dark ink in both themes, not a theme role.
   'components/ui/Toggle.tsx': { rawColor: 2 },
+  // The meeting wave runs from signature to action through a fixed violet
+  // midpoint; a role in the middle would turn the gradient grey or pink.
+  'components/meeting/MeetingUI.tsx': { rawColor: 1 },
+  'components/meeting/MeetingWave.tsx': { rawColor: 1 },
   // A QR code needs a white quiet zone to stay scannable in either theme.
   'components/settings/settingsStyles.ts': { rawColor: 1 },
   // The pairing QR code itself: black modules on white, in either theme.
