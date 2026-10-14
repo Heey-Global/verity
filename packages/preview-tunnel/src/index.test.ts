@@ -63,6 +63,57 @@ afterEach(async () => {
   while (cleanups.length) await cleanups.pop()?.();
 });
 
+describe('POST query PIN authentication', () => {
+  it.each([
+    ['?pin=123456&token=audio%20~&p%69n=duplicate', 200],
+    ['?pin=000000', 401],
+    ['?pin=', 401],
+    ['', 303],
+  ] as const)('handles %s without losing the request body', async (query, status) => {
+    const reached = vi.fn();
+    const target = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => {
+        reached();
+        response.setHeader('content-type', 'application/json');
+        response.end(
+          JSON.stringify({
+            method: request.method,
+            path: request.url,
+            body: Buffer.concat(chunks).toString('base64'),
+            contentType: request.headers['content-type'],
+          }),
+        );
+      });
+    });
+    const targetPort = await listen(target);
+    cleanups.push(() => closeServer(target));
+    const { edgePort } = await bridge('post-query-pin', targetPort);
+    const body = Buffer.from([0, 255, 123, 10, 42]);
+    const response = await fetch(`http://127.0.0.1:${edgePort}/events${query}`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/octet-stream' },
+      body,
+    });
+    expect(response.status).toBe(status);
+    if (status === 200) {
+      expect(response.headers.get('location')).toBeNull();
+      expect(await response.json()).toEqual({
+        method: 'POST',
+        path: '/events?token=audio%20~',
+        body: body.toString('base64'),
+        contentType: 'application/octet-stream',
+      });
+      expect(reached).toHaveBeenCalledOnce();
+    } else {
+      await response.text();
+      expect(reached).not.toHaveBeenCalled();
+    }
+  });
+});
+
 describe('preview browser origin protection', () => {
   const shareId = 'share-origin-guard';
   const origin = `https://${shareId}.preview.example.test`;

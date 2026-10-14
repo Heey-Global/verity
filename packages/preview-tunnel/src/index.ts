@@ -826,7 +826,28 @@ export class PreviewEdge {
         await this.handleLogin(request, response, { pin, next: url.pathname + url.search });
         return;
       }
-      if (!this.options.webhookPath && !this.sessionAuthorized(request)) {
+      let postPinAuthorized = false;
+      if (
+        !this.options.webhookPath &&
+        request.method === 'POST' &&
+        url.searchParams.has('pin') &&
+        !this.sessionAuthorized(request)
+      ) {
+        postPinAuthorized = await this.authorizePin(
+          request,
+          () => Promise.resolve(url.searchParams.get('pin') ?? ''),
+          (status, message, retryAfter) => sendPreviewError(response, status, message, retryAfter),
+        );
+        if (!postPinAuthorized) return;
+        // Remove edge credentials without changing signed application query bytes.
+        const query = url.search
+          .slice(1)
+          .split('&')
+          .filter((parameter) => !new URLSearchParams(parameter).has('pin'))
+          .join('&');
+        url.search = query ? `?${query}` : '';
+      }
+      if (!this.options.webhookPath && !postPinAuthorized && !this.sessionAuthorized(request)) {
         response.writeHead(303, {
           location: `${LOGIN_PATH}?next=${encodeURIComponent(url.pathname + url.search)}`,
           'cache-control': 'no-store',
