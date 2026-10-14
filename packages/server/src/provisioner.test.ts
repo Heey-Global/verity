@@ -884,6 +884,84 @@ describe('ProvisionerImpl (#174)', () => {
     expect(busyProbe).toHaveBeenCalledWith(id, requestingSessionIds);
   });
 
+  it.each([false, true])(
+    'restores a retained runner-only key safely (symlink: %s)',
+    async (symlink) => {
+      const runnerGid = process.getgid?.();
+      if (runnerGid === undefined) return;
+      const id = await seedProject('active');
+      const secretRoot = mkdtempSync(join(tmpdir(), 'verity-wake-key-'));
+      const keyDir = join(secretRoot, 'claude-egress');
+      mkdirSync(keyDir, { recursive: true, mode: 0o700 });
+      const keyPath = join(keyDir, `egress_client.${id}.key`);
+      const targetPath = symlink ? join(keyDir, 'other.key') : keyPath;
+      writeFileSync(targetPath, 'OLD-KEY\n', { mode: 0o600 });
+      chmodSync(targetPath, 0o040);
+      if (symlink) symlinkSync(targetPath, keyPath);
+      const before = statSync(targetPath);
+      writeFileSync(join(keyDir, `egress_ca.${id}.crt`), 'OLD-CA');
+      writeFileSync(join(keyDir, `egress_client.${id}.crt`), 'OLD-CERT');
+      const retained = {
+        id: 'container-1',
+        running: false,
+        image: 'sandbox:test',
+        labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+        mounts: [
+          {
+            source: keyPath,
+            destination: '/run/verity/claude-egress/client.key',
+            readWrite: false,
+          },
+        ],
+      };
+      try {
+        await ctx.store.updateProjectSleepState(id, 'sleeping', {
+          sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+          sleepingSince: new Date(),
+          wakeStartedAt: null,
+        });
+        const { client: docker, calls } = fakeDocker({
+          inspectContainer: vi
+            .fn()
+            .mockResolvedValueOnce(retained)
+            .mockResolvedValue({ ...retained, running: true }),
+        });
+        const relay = defaultProjectRelay();
+        relay.reactivate = relay.start.bind(relay);
+        relay.sleep = async () => {};
+        const { service } = fakeEgressIdentity();
+        const provisioner = createProvisioner({
+          store: ctx.store,
+          db: ctx.db,
+          docker,
+          projectTokenMint: async () => undefined,
+          defaultImageRef: 'sandbox:test',
+          hostCloneRoot: '/work',
+          projectRelay: relay,
+          gitSecretRoot: secretRoot,
+          claudeEgressIdentity: service,
+          runnerRuntimeGid: runnerGid,
+        });
+        if (symlink) {
+          await expect(provisioner.ensureProjectSandboxAwake(id)).rejects.toThrow(
+            'not a regular file',
+          );
+          expect(calls.some((call) => call.method === 'startContainer')).toBe(false);
+        } else {
+          // Root bypasses owner write permissions; non-root runs catch a wake that
+          // tries to truncate the 0040 key before restoring its owner's access.
+          expect((await provisioner.ensureProjectSandboxAwake(id)).state).toBe('active');
+          expect(statSync(keyPath).ino).toBe(before.ino);
+        }
+        expect(statSync(targetPath).mode & 0o777).toBe(0o040);
+        chmodSync(targetPath, 0o600);
+        expect(readFileSync(targetPath, 'utf8')).toBe(symlink ? 'OLD-KEY\n' : 'CLIENT-KEY-PEM\n');
+      } finally {
+        rmSync(secretRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('keeps a retained sleeping Sandbox when Docker inspection fails transiently', async () => {
     const id = await seedProject('active');
     const retained = {
