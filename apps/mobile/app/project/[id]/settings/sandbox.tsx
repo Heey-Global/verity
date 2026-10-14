@@ -15,7 +15,7 @@ import {
 } from '@verity/mobile';
 import { useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import {
@@ -30,7 +30,7 @@ import { createVerityClient } from '../../../../lib/client';
 import { repairProject } from '../../../../lib/projectRepair';
 import { toolkitDriftNotice } from '../../../../lib/projectSetup';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
-import { useConfirm } from '../../../../components/ui';
+import { Button, useConfirm } from '../../../../components/ui';
 
 export default function ProjectSandboxScreen() {
   const { id } = useLocalSearchParams<{ id: string | string[] }>();
@@ -401,7 +401,6 @@ function SandboxSection({
   const primary = running
     ? {
         label: 'Pause',
-        busyLabel: 'Pausing…',
         run: pause,
         busy: working === 'pause',
         enabled: true,
@@ -409,14 +408,12 @@ function SandboxSection({
     : failed || starting
       ? {
           label: 'Repair',
-          busyLabel: 'Repairing…',
           run: start,
           busy: working === 'start',
           enabled: true,
         }
       : {
           label: 'Start',
-          busyLabel: 'Starting…',
           run: start,
           busy: working === 'start',
           enabled: stopped,
@@ -444,22 +441,15 @@ function SandboxSection({
                   ? 'The workspace is starting. Repair restarts provisioning if it stalls.'
                   : 'The workspace is stopped. Starting it provisions the container again.'}
           </Text>
-          <Pressable
-            style={({ pressed }) => [
-              styles.primaryButton,
-              styles.selfStart,
-              !primary.enabled || working ? styles.buttonDisabled : null,
-              pressed ? styles.pressed : null,
-            ]}
-            onPress={primary.run}
-            disabled={!primary.enabled || working !== undefined}
-            accessibilityRole="button"
-            accessibilityLabel={`${primary.label} project`}
-          >
-            <Text style={styles.primaryButtonLabel}>
-              {primary.busy ? primary.busyLabel : primary.label}
-            </Text>
-          </Pressable>
+          <View style={styles.selfStart}>
+            <Button
+              label={primary.label}
+              accessibilityLabel={`${primary.label} project`}
+              loading={primary.busy}
+              disabled={!primary.enabled || (working !== undefined && !primary.busy)}
+              onPress={primary.run}
+            />
+          </View>
           {/* Both notices live beside Start/Repair/Update rather than on a facts
               list somewhere else: they describe the sandbox, and the actions
               that answer them are right here. */}
@@ -481,21 +471,17 @@ function SandboxSection({
                   'available'}
               </Text>
             </View>
-            <Pressable
-              style={({ pressed }) => [
-                styles.reproButton,
-                working ? styles.buttonDisabled : null,
-                pressed ? styles.pressed : null,
-              ]}
-              onPress={runUpdate}
-              disabled={working !== undefined}
-              accessibilityRole="button"
-              accessibilityLabel="Update project sandbox"
-            >
-              <Text style={styles.reproButtonLabel}>
-                {working === 'update' ? 'Updating…' : 'Update'}
-              </Text>
-            </Pressable>
+            <View style={styles.selfStart}>
+              <Button
+                label="Update"
+                accessibilityLabel="Update project sandbox"
+                variant="secondary"
+                size="compact"
+                loading={working === 'update'}
+                disabled={working !== undefined}
+                onPress={runUpdate}
+              />
+            </View>
           </SettingsPanel>
         </SettingsGroup>
       ) : null}
@@ -507,21 +493,17 @@ function SandboxSection({
               Rebuild the project image from the repository devcontainer without the build cache,
               for a change the cached image cannot see.
             </Text>
-            <Pressable
-              style={({ pressed }) => [
-                styles.reproButton,
-                working ? styles.buttonDisabled : null,
-                pressed ? styles.pressed : null,
-              ]}
-              onPress={rebuild}
-              disabled={working !== undefined}
-              accessibilityRole="button"
-              accessibilityLabel="Rebuild project image"
-            >
-              <Text style={styles.reproButtonLabel}>
-                {working === 'rebuild' ? 'Rebuilding…' : 'Rebuild image'}
-              </Text>
-            </Pressable>
+            <View style={styles.selfStart}>
+              <Button
+                label="Rebuild image"
+                accessibilityLabel="Rebuild project image"
+                variant="secondary"
+                size="compact"
+                loading={working === 'rebuild'}
+                disabled={working !== undefined}
+                onPress={rebuild}
+              />
+            </View>
           </SettingsPanel>
         </SettingsGroup>
       ) : null}

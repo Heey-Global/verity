@@ -13,7 +13,7 @@ import {
 } from '@verity/mobile';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import {
@@ -28,6 +28,7 @@ import type { StatusPillIntent } from '../../../../components/StatusPill';
 import { createVerityClient } from '../../../../lib/client';
 import { useDeleteProject } from '../../../../lib/projectDelete';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
+import { Button } from '../../../../components/ui';
 
 export default function ProjectSettingsIndexScreen() {
   const { id } = useLocalSearchParams<{ id: string | string[] }>();
@@ -280,19 +281,14 @@ function ProjectSettingsIndexView({
       </SettingsGroup>
 
       <View style={styles.settingsGroup}>
-        <Pressable
-          style={({ pressed }) => [
-            styles.dangerButton,
-            deleting ? styles.buttonDisabled : null,
-            pressed ? styles.pressed : null,
-          ]}
-          onPress={() => remove(project)}
-          disabled={deleting}
-          accessibilityRole="button"
-          accessibilityLabel="Delete project"
-        >
-          <Text style={styles.dangerButtonLabel}>{deleting ? 'Deleting…' : 'Delete project'}</Text>
-        </Pressable>
+        <View style={styles.selfStart}>
+          <Button
+            label="Delete project"
+            variant="destructive"
+            loading={deleting}
+            onPress={() => remove(project)}
+          />
+        </View>
         <Text style={styles.footnote}>
           Removes the project from Verity, stops its secure workspace, and deletes the local clone
           and the project's sessions.

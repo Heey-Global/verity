@@ -6,6 +6,7 @@ import type { ManagedDevServer } from '@verity/mobile';
 import { Icon } from '../Icon';
 import { StatusPill } from '../StatusPill';
 import { Toggle } from '../Toggle';
+import { Button } from '../ui';
 
 // Servers the agent set up and Verity runs (concept 2.6). Each has two access
 // switches, Local and Online sharing; any switch on runs the server and none on
@@ -127,14 +128,13 @@ export function ManagedServerBlock({
           <Text style={styles.elsewhereText} numberOfLines={1}>
             {`Also running in ‘${other.sessionName ?? 'another session'}’`}
           </Text>
-          <Pressable
-            onPress={() => onStopElsewhere(other.instanceId)}
-            hitSlop={12}
-            accessibilityRole="button"
+          <Button
+            label="Stop"
             accessibilityLabel={`Stop ${server.name} in ${other.sessionName ?? 'the other session'}`}
-          >
-            <Text style={styles.elsewhereStop}>Stop</Text>
-          </Pressable>
+            variant="destructive"
+            size="compact"
+            onPress={() => onStopElsewhere(other.instanceId)}
+          />
         </View>
       ))}
       <View style={styles.card}>
@@ -361,51 +361,53 @@ export function ManagedServerDetail({
       <View style={styles.actions}>
         {state === 'running' || state === 'starting' ? (
           <>
-            <Pressable
-              style={[styles.secondaryButton, styles.grow]}
-              onPress={onRestart}
-              disabled={busy}
-              accessibilityRole="button"
-              accessibilityLabel="Restart"
-            >
-              <Icon name="rotate-cw" size={16} color={theme.colors.text} />
-              <Text style={styles.secondaryText}>Restart</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.dangerButton, styles.grow]}
-              onPress={onStop}
-              disabled={busy}
-              accessibilityRole="button"
-              accessibilityLabel="Stop"
-            >
-              <Icon name="square" size={16} color={theme.colors.attention} />
-              <Text style={styles.dangerText}>Stop</Text>
-            </Pressable>
+            <View style={styles.grow}>
+              <Button
+                label="Restart"
+                icon="rotate-cw"
+                variant="secondary"
+                size="compact"
+                disabled={busy}
+                onPress={onRestart}
+                fullWidth
+              />
+            </View>
+            <View style={styles.grow}>
+              <Button
+                label="Stop"
+                icon="square"
+                variant="destructive"
+                size="compact"
+                disabled={busy}
+                onPress={onStop}
+                fullWidth
+              />
+            </View>
           </>
         ) : (
           <>
-            <Pressable
-              style={[styles.primaryButton, styles.grow]}
-              onPress={onStart}
-              disabled={busy}
-              accessibilityRole="button"
-              accessibilityLabel={state === 'crashed' ? 'Start again' : 'Start'}
-            >
-              <Icon name="play" size={16} color={theme.colors.onAction} />
-              <Text style={styles.primaryText}>
-                {state === 'crashed' ? 'Start again' : 'Start'}
-              </Text>
-            </Pressable>
+            <View style={styles.grow}>
+              <Button
+                label={state === 'crashed' ? 'Start again' : 'Start'}
+                icon="play"
+                size="compact"
+                disabled={busy}
+                onPress={onStart}
+                fullWidth
+              />
+            </View>
             {state === 'crashed' && onAskAgent ? (
-              <Pressable
-                style={[styles.secondaryButton, styles.grow]}
-                onPress={onAskAgent}
-                accessibilityRole="button"
-                accessibilityLabel="Ask the agent to fix it"
-              >
-                <Icon name="message-circle" size={16} color={theme.colors.text} />
-                <Text style={styles.secondaryText}>Ask the agent</Text>
-              </Pressable>
+              <View style={styles.grow}>
+                <Button
+                  label="Ask the agent"
+                  accessibilityLabel="Ask the agent to fix it"
+                  icon="message-circle"
+                  variant="secondary"
+                  size="compact"
+                  onPress={onAskAgent}
+                  fullWidth
+                />
+              </View>
             ) : null}
           </>
         )}
@@ -426,21 +428,23 @@ export function ManagedServerDetail({
         ) : null}
       </View>
       <Text style={styles.rowDetail}>Set up by the agent. Ask it to change the command.</Text>
-      <Pressable
-        onPress={onDelete}
-        disabled={busy}
-        style={styles.dangerButton}
-        accessibilityRole="button"
-        accessibilityLabel="Delete entry"
-      >
-        <Icon name="trash-2" size={16} color={theme.colors.attention} />
-        <Text style={styles.dangerText}>Delete entry</Text>
-      </Pressable>
+      <View style={styles.inline}>
+        <Button
+          label="Delete entry"
+          icon="trash-2"
+          variant="destructive"
+          size="compact"
+          disabled={busy}
+          onPress={onDelete}
+        />
+      </View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
+  // A button keeps the width of its label instead of spanning the column.
+  inline: { flexDirection: 'row' },
   scroll: { flex: 1, minHeight: 0 },
   list: { gap: theme.spacing.md, paddingBottom: theme.spacing.md },
   label: {
@@ -465,11 +469,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   elsewhere: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   elsewhereText: { ...theme.typography.footnote, flexShrink: 1, color: theme.colors.textMuted },
-  elsewhereStop: {
-    ...theme.typography.footnote,
-    fontFamily: theme.fonts.semibold,
-    color: theme.colors.attention,
-  },
   card: {
     borderRadius: theme.radius.lg,
     borderWidth: 1,
@@ -514,43 +513,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   actions: { flexDirection: 'row', gap: theme.spacing.sm },
   grow: { flex: 1 },
-  primaryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.xs,
-    minHeight: 44,
-    paddingHorizontal: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.action,
-  },
-  primaryText: { ...theme.typography.button, color: theme.colors.onAction },
-  secondaryButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.xs,
-    minHeight: 44,
-    paddingHorizontal: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-  },
-  secondaryText: { ...theme.typography.button, color: theme.colors.text },
-  dangerButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.xs,
-    minHeight: 44,
-    paddingHorizontal: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.attention,
-    backgroundColor: theme.colors.surface,
-  },
-  dangerText: { ...theme.typography.button, color: theme.colors.attention },
   output: {
     padding: theme.spacing.md,
     borderRadius: theme.radius.md,

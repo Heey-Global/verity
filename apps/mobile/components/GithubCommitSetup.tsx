@@ -3,6 +3,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Linking, Pressable, Text, TextInput, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { Button } from './ui';
 
 const GITHUB_SIGNING_KEY_URL = 'https://github.com/settings/ssh/new';
 
@@ -204,15 +205,13 @@ export function GithubCommitSetup({
             GitHub could not provide a personal commit author. Enter yours once to continue.
           </Text>
           {phase.message ? <Text style={styles.error}>{phase.message}</Text> : null}
-          <Pressable
-            style={[styles.primaryButton, !authorReady ? styles.buttonDisabled : null]}
-            onPress={submitAuthor}
-            disabled={!authorReady}
-            accessibilityRole="button"
+          <Button
+            label="Continue"
             accessibilityLabel="Create signing key"
-          >
-            <Text style={styles.primaryButtonLabel}>Continue</Text>
-          </Pressable>
+            disabled={!authorReady}
+            onPress={submitAuthor}
+            fullWidth
+          />
         </>
       ) : null}
 
@@ -221,9 +220,9 @@ export function GithubCommitSetup({
           <Text style={styles.error} accessibilityRole="alert">
             {phase.message}
           </Text>
-          <Pressable onPress={() => generate()} accessibilityRole="button">
-            <Text style={styles.linkText}>Try again</Text>
-          </Pressable>
+          <View style={styles.inline}>
+            <Button label="Try again" variant="text" size="compact" onPress={() => generate()} />
+          </View>
         </View>
       ) : null}
 
@@ -268,16 +267,16 @@ export function GithubCommitSetup({
                   {phase.publicKey}
                 </Text>
               </Pressable>
-              <Pressable
-                style={copied ? styles.retryButton : styles.primaryButton}
-                onPress={() => copy(phase.publicKey)}
-                accessibilityRole="button"
-                accessibilityLabel="Copy signing public key"
-              >
-                <Text style={copied ? styles.retryButtonLabel : styles.primaryButtonLabel}>
-                  {copied ? 'Copy again' : 'Copy signing key'}
-                </Text>
-              </Pressable>
+              <View style={styles.inline}>
+                <Button
+                  label={copied ? 'Copy again' : 'Copy signing key'}
+                  accessibilityLabel="Copy signing public key"
+                  icon={copied ? 'check' : 'copy'}
+                  variant={copied ? 'secondary' : 'primary'}
+                  size="compact"
+                  onPress={() => copy(phase.publicKey)}
+                />
+              </View>
             </View>
           </View>
 
@@ -293,22 +292,17 @@ export function GithubCommitSetup({
                 In GitHub, choose “Signing Key” as the key type, paste the key, and save it. Then
                 return to Verity.
               </Text>
-              <Pressable
-                style={copied && !githubOpened ? styles.primaryButton : styles.secondaryButton}
-                onPress={openGithub}
-                accessibilityRole="link"
-                accessibilityLabel="Open GitHub signing key settings"
-              >
-                <Text
-                  style={
-                    copied && !githubOpened
-                      ? styles.primaryButtonLabel
-                      : styles.secondaryButtonLabel
-                  }
-                >
-                  {githubOpened ? 'Open GitHub again ↗' : 'Open GitHub ↗'}
-                </Text>
-              </Pressable>
+              <View style={styles.inline}>
+                <Button
+                  label={githubOpened ? 'Open GitHub again' : 'Open GitHub'}
+                  accessibilityLabel="Open GitHub signing key settings"
+                  role="link"
+                  icon="external-link"
+                  variant={copied && !githubOpened ? 'primary' : 'secondary'}
+                  size="compact"
+                  onPress={openGithub}
+                />
+              </View>
             </View>
           </View>
 
@@ -349,6 +343,8 @@ export function GithubCommitSetup({
 }
 
 const styles = StyleSheet.create((theme) => ({
+  // A button keeps the width of its label instead of spanning the column.
+  inline: { flexDirection: 'row' },
   card: {
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.md,
@@ -385,19 +381,6 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.attention,
   },
   errorBlock: { gap: theme.spacing.sm },
-  linkText: { ...theme.typography.button, color: theme.colors.text },
-  primaryButton: {
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.sm,
-    backgroundColor: theme.colors.action,
-  },
-  buttonDisabled: { opacity: 0.45 },
-  primaryButtonLabel: {
-    ...theme.typography.button,
-    color: theme.colors.onAction,
-  },
   keyBox: {
     minHeight: 72,
     padding: theme.spacing.md,
@@ -407,17 +390,6 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
   },
   keyText: { ...theme.typography.footnote, color: theme.colors.text },
-  actions: { flexDirection: 'row', gap: theme.spacing.sm },
-  secondaryButton: {
-    flex: 1,
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-  },
-  secondaryButtonLabel: { ...theme.typography.button, color: theme.colors.text },
   verificationIntro: { gap: theme.spacing.sm },
   requiredLabel: {
     ...theme.typography.footnote,
@@ -447,8 +419,6 @@ const styles = StyleSheet.create((theme) => ({
     marginLeft: 14,
     backgroundColor: theme.colors.border,
   },
-  retryButton: { minHeight: 36, alignItems: 'flex-start', justifyContent: 'center' },
-  retryButtonLabel: { ...theme.typography.button, color: theme.colors.text },
   checkboxRow: {
     minHeight: 52,
     padding: theme.spacing.sm,
