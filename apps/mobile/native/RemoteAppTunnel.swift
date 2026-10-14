@@ -64,9 +64,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
         // queued behind the stalled one fails with the same error. A transport
         // error means the socket is already going down for a reason the reader
         // or heartbeat records; stopping on it would hide that reason.
-        if Self.isStall(error), !stallRaised {
+        if Self.isStall(error), !stallRaised, let onStall {
           stallRaised = true
-          onStall?()
+          onStall()
         }
         throw error
       }
@@ -803,7 +803,11 @@ final class RemoteAppTunnel: @unchecked Sendable {
   // Drops at once; the frame goes out behind the queue without the caller
   // waiting on it, so the reader never blocks on a send. Its place in the
   // queue is therefore not the caller's order, which is harmless: the ID is
-  // retired and never reused, and the peer discards late frames for it.
+  // retired and never reused, and the peer discards late frames for it. No
+  // caller depends on the frame having left: `drop` has already cancelled the
+  // local connection, the pump's worker and the write queue end with it, and
+  // a reset that reaches the queue after `stop` is dropped along with the
+  // attachment the peer is told has ended.
   private func reset(_ id: String, code: String) async {
     guard drop(id, reason: "local_reset_\(code)") else { return }
     let writer = self.writer

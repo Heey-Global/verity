@@ -57,7 +57,7 @@ struct WriterDeadlineCheck {
         }
       }
       Task {
-        try? await Task.sleep(for: .seconds(30))
+        try? await Task.sleep(for: .seconds(Int(Writer.sendDeadlineSeconds) * 2))
         first.answer("writer-deadline-not-enforced")
       }
     }

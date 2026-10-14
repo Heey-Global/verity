@@ -35,7 +35,7 @@ it('bounds every WebSocket send in the writer queue and ends the attachment on a
   // A missed deadline must reach the tunnel, which stops with a stall reason
   // the JavaScript recovery recognises and replaces.
   expect(writer).toMatch(
-    /if Self\.isStall\(error\), !stallRaised \{\s*stallRaised = true\s*onStall\?\(\)/u,
+    /if Self\.isStall\(error\), !stallRaised, let onStall \{\s*stallRaised = true\s*onStall\(\)/u,
   );
   expect(source).toMatch(
     /stop\(reason: "stall: send unanswered within \\\(Writer\.sendDeadlineSeconds\) s", cause: \.sendStall\)/u,
