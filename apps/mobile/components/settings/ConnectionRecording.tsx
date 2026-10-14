@@ -47,6 +47,7 @@ function parseSaved(raw: string | null): SavedRun | null {
       runId: value.runId,
       expiresAt: value.expiresAt,
       startedAt: value.startedAt,
+      diagnosticsVersion: value.diagnosticsVersion ?? 1,
       local: value.local === null ? null : validateStoredRemoteRecording(value.local),
     };
   } catch {

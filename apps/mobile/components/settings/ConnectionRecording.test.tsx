@@ -124,6 +124,7 @@ it('stops locally offline, retains run across reopening and retries collection w
   fireEvent.press(screen.getByText('Stop and collect'));
   await screen.findByText('App, Core and Uplink recording copied.');
   expect(next.stopConnectionRecording).toHaveBeenCalledWith(runId);
+  expect(next.exportConnectionRecording).toHaveBeenCalledWith(runId, 2);
   expect(mockStart).toHaveBeenCalledTimes(1);
 });
 it('a late Core start cannot restore ready after Stop', async () => {
@@ -204,4 +205,16 @@ it('explains missing version support before another recording attempt', async ()
     expect(screen.getByText(/Uplink does not support this recording version/)).toBeTruthy(),
   );
   expect(mockStop).toHaveBeenCalled();
+});
+
+it('collects legacy saved runs using version 1', async () => {
+  await AsyncStorage.setItem(
+    'verity.connectionRecording.v1.paired-core',
+    JSON.stringify({ runId, startedAt: Date.now(), expiresAt: Date.now() + 120000, local: null }),
+  );
+  const api = client();
+  render(<ConnectionRecording client={api as never} />);
+  await screen.findByText(/Saved run available/);
+  fireEvent.press(screen.getByText('Stop and collect'));
+  await waitFor(() => expect(api.exportConnectionRecording).toHaveBeenCalledWith(runId, 1));
 });
