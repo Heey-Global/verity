@@ -7715,7 +7715,7 @@ function TodoGroup({ tools }: { tools: ToolCallMessage[] }) {
   const last = tools[tools.length - 1];
   if (!last) return null;
   const view = toolCallView(last.tool);
-  // Always the "active" tone: a todo list reads as one live, in-progress widget
+  // Always the action colour: a todo list reads as one live, in-progress widget
   // rather than per-op success/error states.
   const color = theme.colors.action;
   return (
@@ -8363,7 +8363,7 @@ function BranchSwitcherSheet({
                     accessibilityRole="button"
                     accessibilityLabel={`Preview pushed branch ${branch}`}
                   >
-                    {/* Accent dot marks a preview (detached) row vs a local switch. */}
+                    {/* Signature dot marks a preview (detached) row vs a local switch. */}
                     <View style={[styles.sheetDot, { backgroundColor: theme.colors.signature }]} />
                     <Text style={styles.sheetRowLabel} numberOfLines={1}>
                       {branch}
@@ -11829,7 +11829,7 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  // The agent's default pick: outlined in the primary accent so it stands out.
+  // The agent's default pick: outlined in the action colour so it stands out.
   chipRecommended: {
     borderColor: theme.colors.action,
   },
