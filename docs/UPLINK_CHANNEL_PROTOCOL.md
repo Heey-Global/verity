@@ -633,6 +633,22 @@ Two consequences the implementation must handle:
 body bytes, and request timeout. The installation applies them locally as an early guard; the Uplink
 enforces them regardless. Limits exist for abuse containment, not billing (ADR 0012 D11).
 
+The self-hosted preview tunnel admits eight active HTTP requests by default. The edge queues up to
+64 additional requests in FIFO order before reading their bodies; the connector has a smaller
+eight-request reserve to absorb differences in when the two hops release a slot. Both queues allow
+30 seconds of waiting, separate from the upstream request deadline. A full queue or expired wait
+returns HTTP 503 with `Retry-After: 1`; the tunnel does not replay requests automatically.
+The TypeScript options `maxConcurrentRequests`, `maxQueuedRequests`, and `queueTimeoutMs` configure
+these bounds. Edge and connector settings should be kept aligned for active requests.
+
+At the connector, waiting request bodies share a one-MiB budget (or `maxBodyBytes`, if smaller), and
+all retained request bodies share a `maxBodyBytes` budget. Exhausting either budget also returns 503.
+These byte budgets prevent increased parallelism from multiplying the upload buffer allowance.
+Browser disconnects, connector replacement or loss, share expiry, and shutdown cancel queued work.
+Long-lived HTTP responses and WebSockets retain their separate stream ceiling; the default stream
+ceiling remains four when neither concurrency option is supplied. These are tunnel implementation
+defaults, not a statement of hosted Uplink policy.
+
 ## Errors and closure
 
 - Protocol violations close the connection with `protocol_error`. There is no partial-tolerance mode.
