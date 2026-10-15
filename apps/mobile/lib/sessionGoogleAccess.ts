@@ -23,22 +23,6 @@ function sessionMethods(client: VerityClient, service: GoogleService) {
   };
 }
 
-async function projectGrant(
-  client: VerityClient,
-  projectId: string | null | undefined,
-  service: GoogleService,
-) {
-  if (!projectId) return undefined;
-  try {
-    return await client.getProjectGoogleConnection(projectId, service);
-  } catch (error) {
-    // Older servers support session grants but have no project-access endpoint.
-    // Authentication and transport failures must never be mistaken for that case.
-    if (error instanceof VerityApiError && error.status === 404) return undefined;
-    throw error;
-  }
-}
-
 export async function connectSessionGoogleService(
   client: VerityClient,
   sessionId: string,
@@ -114,25 +98,6 @@ export async function disconnectSessionGoogleService(
 ): Promise<'project' | 'session'> {
   await client.setSessionGoogleAccess(sessionId, service, { mode: 'disabled' });
   return 'session';
-}
-
-export async function getProjectGoogleAccess(
-  client: VerityClient,
-  projectId: string | null | undefined,
-): Promise<Record<GoogleService, boolean>> {
-  const services = ['gmail', 'calendar', 'contacts'] as const;
-  const grants = await Promise.all(
-    services.map((service) =>
-      projectGrant(client, projectId, service).then(
-        (grant) => grant?.enabled === true,
-        () => false,
-      ),
-    ),
-  );
-  return Object.fromEntries(services.map((service, index) => [service, grants[index]])) as Record<
-    GoogleService,
-    boolean
-  >;
 }
 
 export async function hasConnectedGoogleAccount(
