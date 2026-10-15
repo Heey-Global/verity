@@ -1,4 +1,5 @@
 import type { EventStore } from '@verity/store';
+import { assertDriveFileInLinkedFolder } from './google-drive-project-routes.js';
 export interface SessionWorkspaceFile {
   accountId?: string | null;
   folderLinkId?: string | null;
@@ -44,6 +45,7 @@ export async function assertWorkspaceWriteAccess(
   store: Pick<GoogleWorkspaceToolStore, 'getProjectSettings' | 'googleAccounts'>,
   projectId: string,
   file?: SessionWorkspaceFile,
+  accessToken?: string,
 ): Promise<void> {
   if (store.googleAccounts && file && !file.folderLinkId) {
     const links = await store.googleAccounts.folders(projectId);
@@ -56,6 +58,19 @@ export async function assertWorkspaceWriteAccess(
     );
     if (!link || link.accountId !== file.accountId || link.accessMode === 'read-only')
       throw new Error('The assigned file has no writable project folder access');
+    if (!accessToken) throw new Error('Google Drive is not connected');
+    await assertDriveFileInLinkedFolder(accessToken, link.folderId, file.fileId);
+    const current = (await store.googleAccounts.folders(projectId)).find(
+      (candidate) => candidate.id === link.id,
+    );
+    const account = await store.googleAccounts.get(link.accountId);
+    if (
+      !current ||
+      current.revision !== link.revision ||
+      !account ||
+      (file.credentialVersion != null && account.credentialVersion !== file.credentialVersion)
+    )
+      throw new Error('Google account or folder access changed before editing');
     return;
   }
   const settings = await store.getProjectSettings?.(projectId);

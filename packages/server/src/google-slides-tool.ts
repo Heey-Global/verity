@@ -338,7 +338,7 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
     if (token === undefined) throw new Error('Google Drive is not connected');
     const request = input.request as SlidesToolRequest;
     if (request.action === 'edit' || request.action === 'insert_image')
-      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck);
+      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck, token);
 
     if (request.action === 'inspect_deck') {
       await assertStillAssigned(input.sessionId, deck.assignmentId, deck.credentialVersion);
@@ -431,7 +431,7 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
         throw new Error('This Google Slides edit may already have run; inspect the deck first');
       }
       await assertStillAssigned(input.sessionId, deck.assignmentId, deck.credentialVersion);
-      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck);
+      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck, token);
       const uploaded =
         attachment === undefined
           ? undefined
@@ -442,7 +442,7 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
             });
       if (uploaded === undefined) {
         const imageRequest = createImageRequest(request, publicImageUrl as string);
-        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck);
+        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck, token);
         const result = await slides.update(
           token,
           deck.fileId,
@@ -476,12 +476,12 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
       }
       let permissionId: string | null = null;
       try {
-        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck);
+        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck, token);
         permissionId = await drive.share(token, uploaded.id);
         await deps.eventStore.setGoogleSlideImageCleanupPermission(cleanupId, permissionId);
         const url = `https://lh3.googleusercontent.com/d/${encodeURIComponent(uploaded.id)}`;
         const imageRequest = createImageRequest(request, url);
-        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck);
+        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck, token);
         const result = await slides.update(
           token,
           deck.fileId,
@@ -517,7 +517,7 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
       throw new Error('This Google Slides edit may already have run; inspect the deck first');
     }
     await assertStillAssigned(input.sessionId, deck.assignmentId, deck.credentialVersion);
-    await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck);
+    await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, deck, token);
     const result = await slides.update(token, deck.fileId, requests, request.revisionId);
     const revisionId = result.writeControl.requiredRevisionId;
     await deps.eventStore.updateSessionSlideDeckRevision(

@@ -128,7 +128,7 @@ export function createGoogleDocsTool(deps: GoogleDocsToolDeps): {
         return document;
       }
       if (request.action === 'edit')
-        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, file);
+        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, file, token);
       if (request.action !== 'edit') throw new Error('Unsupported Google Docs action');
       validateEdit(request.requests);
       if (request.revisionId === undefined) {
@@ -143,7 +143,7 @@ export function createGoogleDocsTool(deps: GoogleDocsToolDeps): {
       if (request.revisionId !== file.revisionId)
         throw new Error('The Google Docs revision is stale');
       await assigned(input.sessionId, file.assignmentId, file.credentialVersion);
-      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, file);
+      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, file, token);
       const updated = await docs.update(token, file.fileId, request.requests, request.revisionId);
       await deps.eventStore.updateSessionWorkspaceRevision(
         input.sessionId,

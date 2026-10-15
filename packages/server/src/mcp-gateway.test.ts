@@ -1098,7 +1098,7 @@ describe('account-bound approval snapshots', () => {
   it('requires a different approval receipt after authority changes on a transport retry', async () => {
     let authority = 'account-one:grant-one';
     const receipts: string[] = [];
-    const { gateway } = harness({
+    const { gateway, invokeTool } = harness({
       authorizationSnapshot: async () => authority,
       requestApproval: async (input) => {
         receipts.push(input.invocationId);
@@ -1110,5 +1110,6 @@ describe('account-bound approval snapshots', () => {
     await gateway.handle({ projectId: 'p1', token: 'session-token', body: call() });
     expect(receipts).toHaveLength(2);
     expect(receipts[0]).not.toBe(receipts[1]);
+    expect(invokeTool.mock.calls.map(([input]) => input.invocationId)).toEqual(receipts);
   });
 });

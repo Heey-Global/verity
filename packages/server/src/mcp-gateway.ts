@@ -796,7 +796,12 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
     }
     let answer: ExternalPermissionAnswer;
     let standingAuthorization = false;
-    const invocationId = mcpGatewayInvocationId(id, toolName, turnId, keyed.requestMac);
+    const baseInvocationId = mcpGatewayInvocationId(id, toolName, turnId, keyed.requestMac);
+    // Approval receipts and durable mutation claims must identify the same authority.
+    const invocationId =
+      authorizationSnapshot === undefined
+        ? baseInvocationId
+        : `${baseInvocationId}:${createHash('sha256').update(authorizationSnapshot).digest('hex')}`;
     if (deps.hasStandingAuthorization !== undefined) {
       try {
         standingAuthorization = await deps.hasStandingAuthorization({
@@ -831,10 +836,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           projectId,
           sessionId,
           callId,
-          invocationId:
-            authorizationSnapshot === undefined
-              ? invocationId
-              : `${invocationId}:${createHash('sha256').update(authorizationSnapshot).digest('hex')}`,
+          invocationId,
           ...keyed,
           toolName: toolName,
           input: request.data,

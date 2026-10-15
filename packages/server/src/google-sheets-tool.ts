@@ -155,7 +155,7 @@ export function createGoogleSheetsTool(deps: GoogleSheetsToolDeps): {
         await assigned(input.sessionId, file.assignmentId, file.credentialVersion);
         return sheets.read(token, file.fileId, request.range);
       }
-      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, file);
+      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, file, token);
       if (!['write_range', 'clear_range', 'structural_edit'].includes(request.action)) {
         throw new Error('Unsupported Google Sheets action');
       }
@@ -170,7 +170,7 @@ export function createGoogleSheetsTool(deps: GoogleSheetsToolDeps): {
           'This Google Sheets edit may already have run; inspect the spreadsheet first',
         );
       await assigned(input.sessionId, file.assignmentId, file.credentialVersion);
-      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, file);
+      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, file, token);
       let result: unknown;
       if (request.action === 'write_range')
         result = await sheets.write(token, file.fileId, request.range!, request.values!);

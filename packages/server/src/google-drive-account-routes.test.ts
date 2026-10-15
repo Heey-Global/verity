@@ -195,3 +195,86 @@ it('keeps mixed-account folder operations on the chosen credentials and permissi
     }),
   ).rejects.toThrow('authorized Google account');
 });
+
+it('refuses to edit an assigned document that moved outside its linked folder', async () => {
+  const { createGoogleDocsTool } = await import('./google-docs-tool.js');
+  const account = await ctx.store.googleAccounts.save({
+    email: 'moved@example.test',
+    clientId: 'client',
+    refreshToken: 'refresh',
+    scopes: [],
+  });
+  const link = await ctx.store.googleAccounts.linkFolder({
+    projectId: 'p',
+    accountId: account.id,
+    folderId: 'root',
+    name: 'Root',
+    accessMode: 'read-write',
+  });
+  await ctx.store.setSessionWorkspaceFile({
+    sessionId: 's',
+    accountId: account.id,
+    folderLinkId: link.id,
+    fileId: 'moved',
+    name: 'Moved',
+    kind: 'docs',
+    revisionId: 'r1',
+    webViewLink: 'https://docs.google.com/document/d/moved/edit',
+  });
+  const docs = {
+    inspect: vi.fn(),
+    read: vi.fn(),
+    update: vi.fn().mockResolvedValue({ revisionId: 'r2', result: {} }),
+  };
+  const tool = createGoogleDocsTool({
+    eventStore: ctx.store,
+    googleAccessToken: async () => 'token',
+    docs,
+  });
+  let outside = true;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      async (url: string) =>
+        new Response(
+          JSON.stringify({
+            id: url.includes('/files/root?') ? 'root' : 'moved',
+            name: 'Moved',
+            mimeType: 'application/vnd.google-apps.document',
+            parents: outside ? [] : ['root'],
+          }),
+        ),
+    ),
+  );
+  try {
+    await expect(
+      tool.invoke({
+        projectId: 'p',
+        sessionId: 's',
+        turnId: 't',
+        invocationId: 'moved',
+        request: {
+          action: 'edit',
+          revisionId: 'r1',
+          requests: [{ insertText: { text: 'x', location: { index: 1 } } }],
+        },
+      }),
+    ).rejects.toThrow('outside');
+    expect(docs.update).not.toHaveBeenCalled();
+    outside = false;
+    await tool.invoke({
+      projectId: 'p',
+      sessionId: 's',
+      turnId: 't',
+      invocationId: 'returned',
+      request: {
+        action: 'edit',
+        revisionId: 'r1',
+        requests: [{ insertText: { text: 'x', location: { index: 1 } } }],
+      },
+    });
+    expect(docs.update).toHaveBeenCalledOnce();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
