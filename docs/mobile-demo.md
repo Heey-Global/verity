@@ -21,7 +21,7 @@ scroll positions.
 
 | Surface | Demo behavior |
 | --- | --- |
-| Project and session overview | Sample project and conversation through the normal screens |
+| Project and session overview | Sample project, conversation and subscription usage through the normal screens |
 | New sessions and chat | Local creation, delayed simulated replies, approval decisions, stop, rename and model selection |
 | Review changes | Sample Edit tool card and simulated button color change |
 | Files | Browse sample directories, read and edit text files, download sample files |
@@ -75,7 +75,7 @@ captured by hand. `apps/mobile/lib/demoShowcase.ts` defines a showcase scenario
 with several projects, sessions in different states, a Gmail approval and filled
 Project Knowledge. It replaces the welcome sample only when the browser's
 `localStorage` contains `verity.demoShowcase.v1`; native apps never see it, so
-the review walkthrough above stays unchanged. The demo banner is hidden in the
+the review walkthrough above keeps its sample project. The demo banner is hidden in the
 showcase.
 
 ```sh

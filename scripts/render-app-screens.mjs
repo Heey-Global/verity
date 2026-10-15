@@ -126,7 +126,12 @@ const CONTENT_TYPES = {
  */
 function serve(dist) {
   const server = createServer((req, res) => {
-    const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://local').pathname);
+    let pathname = '/';
+    try {
+      pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://local').pathname);
+    } catch {
+      // A malformed escape is served the app shell like any unknown path.
+    }
     let file = join(dist, pathname.replace(/^\/app(?=\/|$)/, ''));
     if (!file.startsWith(dist + sep) || !existsSync(file) || statSync(file).isDirectory())
       file = join(dist, 'index.html');
@@ -200,14 +205,16 @@ async function render(browser, base, scene, out) {
     const box = await cropBox(page, crop.text);
     if (!box) throw new Error(`${scene.name}: no element contains ${crop.text.join(' + ')}`);
     const pad = crop.pad ?? 0;
+    const x = Math.max(0, box.x - pad);
+    const y = Math.max(0, box.y - pad);
     await page.screenshot({
       path: join(out, `app-${crop.name}.png`),
       clip: {
-        x: Math.max(0, box.x - pad),
-        y: Math.max(0, box.y - pad),
-        width: box.width + 2 * pad,
+        x,
+        y,
+        width: Math.min(box.x + box.width + pad, scene.viewport.width) - x,
         // Lists and sheets fill their column; cut the empty space below them.
-        height: Math.min(box.height + 2 * pad, crop.maxHeight ?? Infinity),
+        height: Math.min(box.y + box.height + pad - y, crop.maxHeight ?? Infinity),
       },
     });
     console.log(`app-${crop.name}.png`);
