@@ -2423,15 +2423,26 @@ export class EventStore implements EventSink {
     sessionId: string;
     fileId: string;
   }): Promise<void> {
-    await this.db
-      .insertInto('google_slide_image_cleanup')
-      .values({
-        id: input.id,
-        session_id: input.sessionId,
-        file_id: input.fileId,
-        account_id: input.accountId ?? null,
-      })
-      .execute();
+    await this.db.transaction().execute(async (tx) => {
+      if (input.accountId != null) {
+        // Keep account removal behind the cleanup record that retains its credentials.
+        await tx
+          .selectFrom('google_accounts')
+          .select('id')
+          .where('id', '=', input.accountId)
+          .forUpdate()
+          .executeTakeFirstOrThrow();
+      }
+      await tx
+        .insertInto('google_slide_image_cleanup')
+        .values({
+          id: input.id,
+          session_id: input.sessionId,
+          file_id: input.fileId,
+          account_id: input.accountId ?? null,
+        })
+        .execute();
+    });
   }
 
   async setGoogleSlideImageCleanupPermission(id: string, permissionId: string): Promise<void> {

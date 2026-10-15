@@ -160,6 +160,7 @@ export class GoogleAccountStore {
         .selectFrom('google_accounts')
         .select('email')
         .where('id', '=', id)
+        .forUpdate()
         .executeTakeFirst();
       if (!account) return;
       const cleanup = await tx
