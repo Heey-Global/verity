@@ -449,3 +449,70 @@ it('shares the queued body byte budget across waiting requests', async () => {
     ),
   );
 });
+
+it('allows a full upstream deadline after waiting in the connector queue', async () => {
+  let held: ServerResponse | undefined;
+  const { origin } = await pair(
+    (request, response) => {
+      if (request.url === '/hold') held = response;
+      else setTimeout(() => response.end('finished upstream'), 700);
+    },
+    { maxConcurrentRequests: 8, requestTimeoutMs: 1000, queueTimeoutMs: 1200 },
+    { maxConcurrentRequests: 1, requestTimeoutMs: 1000, queueTimeoutMs: 1200 },
+  );
+  const first = fetch(`${origin}/hold`);
+  await vi.waitFor(() => expect(held).toBeDefined());
+  const queued = fetch(`${origin}/slow`);
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  held!.end('released');
+  await (await first).text();
+  const response = await queued;
+  expect(response.status).toBe(200);
+  expect(await response.text()).toBe('finished upstream');
+});
+
+it('still bounds upstream time after connector admission', async () => {
+  const { origin } = await pair(
+    () => {},
+    { requestTimeoutMs: 100, queueTimeoutMs: 500 },
+    { requestTimeoutMs: 100, queueTimeoutMs: 500 },
+  );
+  const response = await fetch(`${origin}/silent-target`);
+  expect(response.status).toBe(504);
+  expect(await response.text()).toContain('timed out');
+});
+
+it('does not restart stream classification after slow upstream headers', async () => {
+  const { origin } = await pair(
+    (request, response) => {
+      if (request.url === '/events') {
+        setTimeout(() => {
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.write('data: ready\n\n');
+        }, 300);
+      } else response.end('asset');
+    },
+    { maxConcurrentRequests: 1, requestTimeoutMs: 400, queueTimeoutMs: 200 },
+    { maxConcurrentRequests: 1, requestTimeoutMs: 400, queueTimeoutMs: 200 },
+  );
+  const abort = new AbortController();
+  cleanups.push(() => abort.abort());
+  const stream = await fetch(`${origin}/events`, { signal: abort.signal });
+  const reader: ReadableStreamDefaultReader<Uint8Array> = stream.body!.getReader();
+  await reader.read();
+  const response = await fetch(`${origin}/asset`);
+  expect(response.status).toBe(200);
+  expect(await response.text()).toBe('asset');
+  abort.abort();
+});
+
+it('retains an edge watchdog when a connector does not enforce the upstream deadline', async () => {
+  const { origin } = await pair(
+    () => {},
+    { requestTimeoutMs: 100, queueTimeoutMs: 100 },
+    { requestTimeoutMs: 5000 },
+  );
+  const response = await fetch(`${origin}/silent-target`);
+  expect(response.status).toBe(504);
+  expect(await response.text()).toContain('timed out');
+});

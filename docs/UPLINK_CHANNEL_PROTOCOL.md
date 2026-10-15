@@ -638,6 +638,12 @@ The self-hosted preview tunnel admits eight active HTTP requests by default. The
 eight-request reserve to absorb differences in when the two hops release a slot. Both queues allow
 30 seconds of waiting, separate from the upstream request deadline. A full queue or expired wait
 returns HTTP 503 with `Retry-After: 1`; the tunnel does not replay requests automatically.
+The connector starts its upstream deadline after admission and returns 504 if headers do not arrive
+in time. Before response headers, the edge allows the combined connector queue and request budgets
+as a transport watchdog. Response metadata may include a non-negative integer `upstreamElapsedMs`,
+measured since connector admission, so the edge can classify long-lived responses without counting
+queue wait or restarting their full deadline at the headers. Older peers ignore the optional field;
+an edge receiving no elapsed duration conservatively allows a full response interval.
 The TypeScript options `maxConcurrentRequests`, `maxQueuedRequests`, and `queueTimeoutMs` configure
 these bounds. Edge and connector settings should be kept aligned for active requests.
 

@@ -981,19 +981,14 @@ export class PreviewEdge {
           abandon('client_gone', 'preview reader disconnected');
         };
         response.on('close', onReaderGone);
-        let headArrived = false;
-        timer = setTimeout(() => {
-          // The deadline no longer ends an exchange that is making progress, it
-          // reclassifies one. Every response is a stream now, so the head cannot
-          // say whether this is a page load or a live feed — but outliving the
-          // request deadline can, and it needs no guess about the content type.
-          if (!headArrived) {
-            abandon('timeout', 'preview request timed out');
-            return;
-          }
-          // Long-lived exchanges leave the request pool so a stalled EventSource
-          // cannot starve page loads, which means they need a ceiling of their
-          // own rather than an unbounded second life.
+        // The connector owns the precise upstream deadline after admission.
+        // This watchdog also allows its bounded queue wait, otherwise a late
+        // admission would inherit only the unused tail of the edge's deadline.
+        timer = setTimeout(
+          () => abandon('timeout', 'preview request timed out'),
+          Math.min(MAX_TIMEOUT_MS, this.options.queueTimeoutMs + this.options.requestTimeoutMs),
+        );
+        const classifyStream = (): void => {
           if (this.activeStreams >= this.options.maxConcurrentStreams) {
             abandon('concurrency_limit', 'preview stream concurrency limit reached');
             return;
@@ -1002,12 +997,23 @@ export class PreviewEdge {
           streaming = true;
           this.activeStreams += 1;
           releaseRequest?.();
-        }, this.options.requestTimeoutMs);
+        };
         this.streams.openOutbound(streamId, 'http', {
           fail: (error) => settle(() => reject(error)),
           head: (meta) => {
-            const { status, headers: responseHeaders } = meta as HttpResponseMeta;
-            headArrived = true;
+            const {
+              status,
+              headers: responseHeaders,
+              upstreamElapsedMs = 0,
+            } = meta as HttpResponseMeta;
+            // The elapsed duration keeps both pools aligned without depending
+            // on wall-clock agreement or counting the connector's queue wait.
+            // Older connectors omit it and get a conservative full interval.
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(
+              classifyStream,
+              Math.max(1, this.options.requestTimeoutMs - upstreamElapsedMs),
+            );
             response.writeHead(
               status,
               sanitizeResponseHeaders(responseHeaders, this.options.accessMode),
@@ -1799,12 +1805,13 @@ export class PreviewConnector {
   ): Promise<void> {
     let deadline: NodeJS.Timeout | undefined;
     const disconnected = new AbortController();
+    const expired = new AbortController();
+    const upstreamStarted = performance.now();
     const abortOnDisconnect = (): void => disconnected.abort();
     socket.once('close', abortOnDisconnect);
     try {
       const target = new URL(context.meta.path, this.options.targetOrigin);
       if (target.origin !== this.options.targetOrigin) throw new Error('target origin changed');
-      const expired = new AbortController();
       // Before the head the deadline is a timeout: `maxBodyBytes` caps size, not
       // time, so a target that never answers would hold a slot indefinitely.
       // After it, the same instant is instead where an exchange that is still
@@ -1852,6 +1859,7 @@ export class PreviewConnector {
         channel: 'http',
         meta: {
           status: upstream.status,
+          upstreamElapsedMs: Math.max(0, Math.floor(performance.now() - upstreamStarted)),
           headers: filteredResponseHeaders(upstream.headers, target, this.options.accessMode),
         },
       });
@@ -1870,7 +1878,7 @@ export class PreviewConnector {
         sendErrorResponse(
           socket,
           streamId,
-          502,
+          expired.signal.aborted ? 504 : 502,
           error instanceof Error ? error.message : 'connector request failed',
           this.options.maxBodyBytes,
         );
