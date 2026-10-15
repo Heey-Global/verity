@@ -45,17 +45,19 @@ it.each(['/sessions/s/google-workspace/file', '/sessions/s/google-slides/deck'])
     const fetch = vi.fn(async (input: string | URL | Request) => {
       const target =
         typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-      if (target.includes('oauth2.googleapis.com'))
+      const url = new URL(target);
+      if (url.origin === 'https://oauth2.googleapis.com')
         return new Response(JSON.stringify({ access_token: 'access', expires_in: 3600 }));
-      if (target.includes('slides.googleapis.com')) {
+      if (url.origin === 'https://slides.googleapis.com') {
         if (revoke) await ctx.store.googleAccounts.unlinkFolder('p', link.id);
         return new Response(
           JSON.stringify({ presentationId: 'deck', title: 'Deck', revisionId: 'revision' }),
         );
       }
+      if (url.origin !== 'https://www.googleapis.com') throw new Error('Unexpected API origin');
       return new Response(
         JSON.stringify({
-          id: target.includes('/files/root?') ? 'root' : 'deck',
+          id: url.pathname === '/drive/v3/files/root' ? 'root' : 'deck',
           name: 'Deck',
           mimeType: 'application/vnd.google-apps.presentation',
           capabilities: { canEdit: true },

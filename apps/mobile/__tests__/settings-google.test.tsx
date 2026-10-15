@@ -65,6 +65,18 @@ it('does not change credentials when authorization is cancelled', async () => {
   await waitFor(() => expect(runGmailAuth).toHaveBeenCalled());
   expect(client.connectGmail).not.toHaveBeenCalled();
 });
+it.each([
+  ['https://www.googleapis.com/auth/drive', true],
+  ['https://www.googleapis.com/auth/drive.readonly', false],
+  ['https://example.test/https://www.googleapis.com/auth/drive', false],
+] as const)('requires the exact Drive scope: %s', async (scope, enabled) => {
+  setup([scope]);
+  render(<GoogleSettings />);
+  await screen.findAllByText('me@example.test');
+  const workspace = screen.getByRole('button', { name: 'Docs, Sheets & Slides' });
+  if (enabled) expect(workspace).toBeEnabled();
+  else expect(workspace).toBeDisabled();
+});
 it('requires confirmation before disconnecting the account', async () => {
   const client = setup([]);
   render(<GoogleSettings />);

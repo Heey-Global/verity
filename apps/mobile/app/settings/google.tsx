@@ -134,11 +134,13 @@ function GoogleSettingsContent({ client }: { client: VerityClient }) {
                 disabled={
                   busy ||
                   (service === 'Docs, Sheets & Slides' &&
-                    !account.scopes.includes('https://www.googleapis.com/auth/drive'))
+                    !account.scopes.some(
+                      (scope) => scope === 'https://www.googleapis.com/auth/drive',
+                    ))
                 }
                 subtitle={
                   service === 'Docs, Sheets & Slides' &&
-                  !account.scopes.includes('https://www.googleapis.com/auth/drive')
+                  !account.scopes.some((scope) => scope === 'https://www.googleapis.com/auth/drive')
                     ? 'Connect Drive first'
                     : scopes.every((scope) =>
                           account.scopes.includes(`https://www.googleapis.com/auth/${scope}`),
