@@ -501,3 +501,24 @@ it('automatically reads nested project documents but rejects files moved outside
   ).rejects.toThrow('explicit approval');
   expect(exportFile).not.toHaveBeenCalled();
 });
+
+it('does not persist a Workspace assignment when its folder access disappears during lookup', async () => {
+  const { tool, drive, eventStore } = setup({
+    doc: {
+      id: 'doc',
+      name: 'Document',
+      mimeType: 'application/vnd.google-apps.document',
+      parents: ['root'],
+    },
+  });
+  const original = drive.get;
+  drive.get = async (token, id) => {
+    const file = await original(token, id);
+    eventStore.getProjectSettings.mockResolvedValue(undefined as never);
+    return file;
+  };
+  await expect(
+    tool.invoke({ ...input, request: { action: 'select_workspace_file', fileId: 'doc' } }),
+  ).rejects.toThrow('access changed');
+  expect(eventStore.setSessionWorkspaceFile).not.toHaveBeenCalled();
+});

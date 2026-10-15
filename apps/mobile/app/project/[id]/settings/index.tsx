@@ -65,6 +65,7 @@ function ProjectSettingsIndexView({
     mcp: false,
     matrix: false,
   });
+  const [driveFolderNames, setDriveFolderNames] = useState<string[] | null>(null);
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -77,9 +78,14 @@ function ProjectSettingsIndexView({
         Promise.resolve().then(() => client.listHttpMcpConnections()),
         Promise.resolve().then(() => client.listIntegrations()),
         Promise.resolve().then(() => client.listProjectMcpBindings(projectId)),
+        Promise.resolve().then(() => client.listProjectDriveFolders(projectId)),
       ]).then((results) => {
         if (!active) return;
-        const [settings, drive, gmail, calendar, contacts, mcp, integrations, bindings] = results;
+        const [settings, drive, gmail, calendar, contacts, mcp, integrations, bindings, folders] =
+          results;
+        setDriveFolderNames(
+          folders.status === 'fulfilled' ? folders.value.map((folder) => folder.name) : null,
+        );
         setUsage({
           google: [gmail, calendar, contacts].filter(
             (item) => item.status === 'fulfilled' && item.value.enabled,
@@ -203,10 +209,20 @@ function ProjectSettingsIndexView({
             <SettingsNavRow
               icon="folder"
               title="Google Drive"
-              subtitle="Choose the project folder"
+              subtitle="Choose the project folders"
               status={{
-                intent: detail.settings?.googleDriveFolderId ? 'ready' : 'optional',
-                label: detail.settings?.googleDriveFolderName ?? 'Not selected',
+                intent: (
+                  driveFolderNames
+                    ? driveFolderNames.length > 0
+                    : detail.settings?.googleDriveFolderId
+                )
+                  ? 'ready'
+                  : 'optional',
+                label: driveFolderNames
+                  ? driveFolderNames.length
+                    ? driveFolderNames.join(', ')
+                    : 'Not selected'
+                  : (detail.settings?.googleDriveFolderName ?? 'Not selected'),
               }}
               onPress={() => toService('drive')}
             />

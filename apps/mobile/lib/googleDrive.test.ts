@@ -48,7 +48,10 @@ it.each([
     expect(AuthSession.AuthRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         scopes: scopes.map((scope) => `https://www.googleapis.com/auth/${scope}`),
-        extraParams: expect.objectContaining({ include_granted_scopes: 'true' }),
+        extraParams: expect.objectContaining({
+          include_granted_scopes: 'true',
+          prompt: 'select_account consent',
+        }),
       }),
     );
   },
@@ -78,6 +81,7 @@ it('does not open Google sign-in after purpose consent is cancelled', async () =
 
 it('expands a partial legacy Workspace grant to the whole bundle', async () => {
   const client = {
+    listGoogleAccounts: jest.fn().mockResolvedValue([]),
     getGoogleDriveConnection: jest.fn().mockResolvedValue({
       clientId: 'client',
       scopes: ['https://www.googleapis.com/auth/documents'],
@@ -97,6 +101,7 @@ it('expands a partial legacy Workspace grant to the whole bundle', async () => {
 
 it('uses a complete Workspace bundle without asking for consent again', async () => {
   const client = {
+    listGoogleAccounts: jest.fn().mockResolvedValue([]),
     getGoogleDriveConnection: jest.fn().mockResolvedValue({
       clientId: 'client',
       scopes: ['documents', 'spreadsheets', 'presentations'].map(
@@ -139,3 +144,19 @@ it.each([runGoogleDriveAuth, runGmailAuth, runCalendarAuth, runContactsAuth])(
     expect(AuthSession.AuthRequest).not.toHaveBeenCalled();
   },
 );
+
+it('rejects ambiguous Workspace consent instead of trusting combined scopes', async () => {
+  const client = {
+    listGoogleAccounts: jest.fn().mockResolvedValue([{ id: 'one' }, { id: 'two' }]),
+    getGoogleDriveConnection: jest.fn().mockResolvedValue({
+      clientId: 'client',
+      scopes: ['documents', 'spreadsheets', 'presentations'].map(
+        (scope) => 'https://www.googleapis.com/auth/' + scope,
+      ),
+    }),
+  } as unknown as VerityClient;
+  await expect(
+    ensureGoogleWorkspaceAccess(client, 'application/vnd.google-apps.document'),
+  ).rejects.toThrow('Choose a Google account');
+  expect(AuthSession.AuthRequest).not.toHaveBeenCalled();
+});

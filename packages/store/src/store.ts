@@ -1,3 +1,4 @@
+import { GoogleAccountStore } from './google-accounts.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   type AgentEvent,
@@ -97,6 +98,11 @@ export interface PendingSessionLinkMessage {
 export type GoogleWorkspaceFileKind = 'slides' | 'docs' | 'sheets';
 
 export interface SessionWorkspaceFileRecord {
+  accountEmail?: string | null;
+  accountName?: string | null;
+  accountId?: string | null;
+  folderLinkId?: string | null;
+  credentialVersion?: number | null;
   sessionId: string;
   assignmentId: string;
   kind: GoogleWorkspaceFileKind;
@@ -111,6 +117,7 @@ export interface SessionWorkspaceFileRecord {
 export type SessionSlideDeckRecord = SessionWorkspaceFileRecord;
 
 export interface GoogleSlideImageCleanupRecord {
+  accountId?: string | null;
   id: string;
   sessionId: string;
   fileId: string;
@@ -771,18 +778,24 @@ export type VeritySettingsPatch = {
 };
 
 export interface SessionGmailConnection {
+  accountId?: string;
+  source?: 'project' | 'session';
   sessionId: string;
   accountEmail: string;
   enabledAt: Date;
 }
 
 export interface SessionCalendarConnection {
+  accountId?: string;
+  source?: 'project' | 'session';
   sessionId: string;
   accountEmail: string;
   enabledAt: Date;
 }
 
 export interface SessionContactsConnection {
+  accountId?: string;
+  source?: 'project' | 'session';
   sessionId: string;
   accountEmail: string;
   enabledAt: Date;
@@ -1877,7 +1890,13 @@ export class EventStore implements EventSink {
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     if (row === undefined) return undefined;
+    const account = row.account_id ? await this.googleAccounts.get(row.account_id) : undefined;
     return {
+      accountEmail: account?.email ?? null,
+      accountName: account?.displayName ?? null,
+      accountId: row.account_id,
+      folderLinkId: row.folder_link_id,
+      credentialVersion: account?.credentialVersion ?? null,
       sessionId: row.session_id,
       assignmentId: row.assignment_id,
       kind: row.kind,
@@ -1895,6 +1914,8 @@ export class EventStore implements EventSink {
   }
 
   async setSessionWorkspaceFile(input: {
+    accountId?: string | null;
+    folderLinkId?: string | null;
     sessionId: string;
     kind: GoogleWorkspaceFileKind;
     fileId: string;
@@ -1906,6 +1927,8 @@ export class EventStore implements EventSink {
       const assigned = await trx
         .insertInto('session_slide_decks')
         .values({
+          account_id: input.accountId ?? null,
+          folder_link_id: input.folderLinkId ?? null,
           session_id: input.sessionId,
           assignment_id: randomUUID(),
           kind: input.kind,
@@ -1916,6 +1939,8 @@ export class EventStore implements EventSink {
         })
         .onConflict((conflict) =>
           conflict.column('session_id').doUpdateSet({
+            account_id: input.accountId ?? null,
+            folder_link_id: input.folderLinkId ?? null,
             assignment_id: randomUUID(),
             kind: input.kind,
             file_id: input.fileId,
@@ -1927,9 +1952,23 @@ export class EventStore implements EventSink {
         )
         .returningAll()
         .executeTakeFirstOrThrow();
+      if (input.accountId)
+        await trx
+          .insertInto('google_workspace_recents')
+          .values({
+            account_id: input.accountId,
+            file_id: input.fileId,
+            kind: input.kind,
+          })
+          .onConflict((conflict) =>
+            conflict
+              .columns(['account_id', 'file_id'])
+              .doUpdateSet({ kind: input.kind, last_assigned_at: sql`now()` }),
+          )
+          .execute();
       await trx
         .insertInto('recent_google_slide_decks')
-        .values({ file_id: input.fileId, kind: input.kind })
+        .values({ file_id: input.fileId, kind: input.kind, account_id: input.accountId ?? null })
         .onConflict((conflict) =>
           conflict
             .column('file_id')
@@ -1939,6 +1978,8 @@ export class EventStore implements EventSink {
       return assigned;
     });
     return {
+      accountId: row.account_id,
+      folderLinkId: row.folder_link_id,
       sessionId: row.session_id,
       assignmentId: row.assignment_id,
       kind: row.kind,
@@ -1966,6 +2007,24 @@ export class EventStore implements EventSink {
       .where('session_id', '=', sessionId)
       .where('kind', '=', 'slides')
       .execute();
+  }
+
+  get googleAccounts(): GoogleAccountStore {
+    return new GoogleAccountStore(this.db, this.cipher);
+  }
+
+  async getGoogleServiceCredentials(sessionId: string, service: 'gmail' | 'calendar' | 'contacts') {
+    const effective = await this.googleAccounts.effectiveAccess(sessionId, service);
+    if (!effective) return undefined;
+    const credentials = await this.googleAccounts.credentials(effective.account.id);
+    if (!credentials) return undefined;
+    return {
+      ...credentials,
+      accountId: effective.account.id,
+      accountEmail: effective.account.email,
+      scopes: effective.account.scopes,
+      source: effective.source,
+    };
   }
 
   async countLegacyProjectGoogleSessions(
@@ -2004,6 +2063,15 @@ export class EventStore implements EventSink {
     service: 'gmail' | 'calendar' | 'contacts',
     accountEmail: string,
   ): Promise<void> {
+    const accounts = await this.googleAccounts.list();
+    const account = accounts.find(
+      (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
+    );
+    if (accounts.length > 0 && !account) throw new Error('Google account is not connected');
+    if (account) {
+      await this.googleAccounts.setProjectAccess(projectId, service, account.id);
+      return;
+    }
     await this.db
       .insertInto('project_google_connections')
       .values({ project_id: projectId, service, account_email: accountEmail })
@@ -2017,6 +2085,10 @@ export class EventStore implements EventSink {
     projectId: string,
     service: 'gmail' | 'calendar' | 'contacts',
   ): Promise<void> {
+    if ((await this.googleAccounts.list()).length > 0) {
+      await this.googleAccounts.setProjectAccess(projectId, service, null);
+      return;
+    }
     await this.db.transaction().execute(async (transaction) => {
       await transaction
         .deleteFrom('project_google_connections')
@@ -2049,6 +2121,19 @@ export class EventStore implements EventSink {
   }
 
   async getSessionGmailConnection(sessionId: string): Promise<SessionGmailConnection | undefined> {
+    const override = await this.googleAccounts.sessionAccess(sessionId, 'gmail');
+    if (override.mode !== 'inherit' || (await this.googleAccounts.list()).length > 0) {
+      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'gmail');
+      return effective
+        ? {
+            sessionId,
+            accountId: effective.account.id,
+            accountEmail: effective.account.email,
+            enabledAt: new Date(),
+            source: effective.source,
+          }
+        : undefined;
+    }
     const row = await this.db
       .selectFrom('session_gmail_connections')
       .selectAll()
@@ -2067,6 +2152,16 @@ export class EventStore implements EventSink {
     sessionId: string,
     accountEmail: string,
   ): Promise<SessionGmailConnection> {
+    const accounts = await this.googleAccounts.list();
+    const account = accounts.find(
+      (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
+    );
+    if (accounts.length > 0 && !account) throw new Error('Google account is not connected');
+    if (account)
+      await this.googleAccounts.setSessionAccess(sessionId, 'gmail', {
+        mode: 'account',
+        accountId: account.id,
+      });
     const row = await this.db
       .insertInto('session_gmail_connections')
       .values({ session_id: sessionId, account_email: accountEmail })
@@ -2085,6 +2180,8 @@ export class EventStore implements EventSink {
   }
 
   async disableSessionGmail(sessionId: string): Promise<void> {
+    if ((await this.googleAccounts.list()).length > 0)
+      await this.googleAccounts.setSessionAccess(sessionId, 'gmail', { mode: 'disabled' });
     await this.db
       .deleteFrom('session_gmail_connections')
       .where('session_id', '=', sessionId)
@@ -2099,6 +2196,19 @@ export class EventStore implements EventSink {
   async getSessionCalendarConnection(
     sessionId: string,
   ): Promise<SessionCalendarConnection | undefined> {
+    const override = await this.googleAccounts.sessionAccess(sessionId, 'calendar');
+    if (override.mode !== 'inherit' || (await this.googleAccounts.list()).length > 0) {
+      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'calendar');
+      return effective
+        ? {
+            sessionId,
+            accountId: effective.account.id,
+            accountEmail: effective.account.email,
+            enabledAt: new Date(),
+            source: effective.source,
+          }
+        : undefined;
+    }
     const row = await this.db
       .selectFrom('session_calendar_connections')
       .selectAll()
@@ -2117,6 +2227,16 @@ export class EventStore implements EventSink {
     sessionId: string,
     accountEmail: string,
   ): Promise<SessionCalendarConnection> {
+    const accounts = await this.googleAccounts.list();
+    const account = accounts.find(
+      (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
+    );
+    if (accounts.length > 0 && !account) throw new Error('Google account is not connected');
+    if (account)
+      await this.googleAccounts.setSessionAccess(sessionId, 'calendar', {
+        mode: 'account',
+        accountId: account.id,
+      });
     const row = await this.db
       .insertInto('session_calendar_connections')
       .values({ session_id: sessionId, account_email: accountEmail })
@@ -2135,6 +2255,8 @@ export class EventStore implements EventSink {
   }
 
   async disableSessionCalendar(sessionId: string): Promise<void> {
+    if ((await this.googleAccounts.list()).length > 0)
+      await this.googleAccounts.setSessionAccess(sessionId, 'calendar', { mode: 'disabled' });
     await this.db
       .deleteFrom('session_calendar_connections')
       .where('session_id', '=', sessionId)
@@ -2152,6 +2274,19 @@ export class EventStore implements EventSink {
   async getSessionContactsConnection(
     sessionId: string,
   ): Promise<SessionContactsConnection | undefined> {
+    const override = await this.googleAccounts.sessionAccess(sessionId, 'contacts');
+    if (override.mode !== 'inherit' || (await this.googleAccounts.list()).length > 0) {
+      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'contacts');
+      return effective
+        ? {
+            sessionId,
+            accountId: effective.account.id,
+            accountEmail: effective.account.email,
+            enabledAt: new Date(),
+            source: effective.source,
+          }
+        : undefined;
+    }
     const row = await this.db
       .selectFrom('session_contacts_connections')
       .selectAll()
@@ -2170,6 +2305,16 @@ export class EventStore implements EventSink {
     sessionId: string,
     accountEmail: string,
   ): Promise<SessionContactsConnection> {
+    const accounts = await this.googleAccounts.list();
+    const account = accounts.find(
+      (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
+    );
+    if (accounts.length > 0 && !account) throw new Error('Google account is not connected');
+    if (account)
+      await this.googleAccounts.setSessionAccess(sessionId, 'contacts', {
+        mode: 'account',
+        accountId: account.id,
+      });
     const row = await this.db
       .insertInto('session_contacts_connections')
       .values({ session_id: sessionId, account_email: accountEmail })
@@ -2188,6 +2333,8 @@ export class EventStore implements EventSink {
   }
 
   async disableSessionContacts(sessionId: string): Promise<void> {
+    if ((await this.googleAccounts.list()).length > 0)
+      await this.googleAccounts.setSessionAccess(sessionId, 'contacts', { mode: 'disabled' });
     await this.db
       .deleteFrom('session_contacts_connections')
       .where('session_id', '=', sessionId)
@@ -2226,21 +2373,44 @@ export class EventStore implements EventSink {
     return this.updateSessionWorkspaceRevision(sessionId, assignmentId, revisionId);
   }
 
-  async listRecentGoogleWorkspaceFileIds(limit = 8): Promise<string[]> {
+  async listRecentGoogleWorkspaceFileIds(limit = 8, accountId?: string): Promise<string[]> {
+    if (accountId) {
+      const rows = await this.db
+        .selectFrom('google_workspace_recents')
+        .select('file_id')
+        .where('account_id', '=', accountId)
+        .orderBy('last_assigned_at', 'desc')
+        .limit(limit)
+        .execute();
+      return rows.map((row) => row.file_id);
+    }
     const rows = await this.db
       .selectFrom('recent_google_slide_decks')
       .select('file_id')
+      .$if(accountId !== undefined, (query) => query.where('account_id', '=', accountId!))
       .orderBy('last_assigned_at', 'desc')
       .limit(limit)
       .execute();
     return rows.map((row) => row.file_id);
   }
 
-  async listRecentGoogleSlideDeckFileIds(limit = 8): Promise<string[]> {
+  async listRecentGoogleSlideDeckFileIds(limit = 8, accountId?: string): Promise<string[]> {
+    if (accountId) {
+      const rows = await this.db
+        .selectFrom('google_workspace_recents')
+        .select('file_id')
+        .where('account_id', '=', accountId)
+        .where('kind', '=', 'slides')
+        .orderBy('last_assigned_at', 'desc')
+        .limit(limit)
+        .execute();
+      return rows.map((row) => row.file_id);
+    }
     const rows = await this.db
       .selectFrom('recent_google_slide_decks')
       .select('file_id')
       .where('kind', '=', 'slides')
+      .$if(accountId !== undefined, (query) => query.where('account_id', '=', accountId!))
       .orderBy('last_assigned_at', 'desc')
       .limit(limit)
       .execute();
@@ -2248,14 +2418,31 @@ export class EventStore implements EventSink {
   }
 
   async createGoogleSlideImageCleanup(input: {
+    accountId?: string | null;
     id: string;
     sessionId: string;
     fileId: string;
   }): Promise<void> {
-    await this.db
-      .insertInto('google_slide_image_cleanup')
-      .values({ id: input.id, session_id: input.sessionId, file_id: input.fileId })
-      .execute();
+    await this.db.transaction().execute(async (tx) => {
+      if (input.accountId != null) {
+        // Keep account removal behind the cleanup record that retains its credentials.
+        await tx
+          .selectFrom('google_accounts')
+          .select('id')
+          .where('id', '=', input.accountId)
+          .forUpdate()
+          .executeTakeFirstOrThrow();
+      }
+      await tx
+        .insertInto('google_slide_image_cleanup')
+        .values({
+          id: input.id,
+          session_id: input.sessionId,
+          file_id: input.fileId,
+          account_id: input.accountId ?? null,
+        })
+        .execute();
+    });
   }
 
   async setGoogleSlideImageCleanupPermission(id: string, permissionId: string): Promise<void> {
@@ -2302,6 +2489,7 @@ export class EventStore implements EventSink {
       .limit(limit)
       .execute();
     return rows.map((row) => ({
+      accountId: row.account_id,
       id: row.id,
       sessionId: row.session_id,
       fileId: row.file_id,

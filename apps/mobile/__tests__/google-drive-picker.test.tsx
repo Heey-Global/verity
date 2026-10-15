@@ -108,6 +108,8 @@ it('selects a folder without importing or assigning a document', async () => {
   expect(importFile).not.toHaveBeenCalled();
   fireEvent.press(screen.getByText('Project documents'));
   fireEvent.press(await screen.findByText('Connect this folder'));
-  await waitFor(() => expect(connectFolder).toHaveBeenCalledWith('session-1', 'folder-1'));
+  await waitFor(() =>
+    expect(connectFolder).toHaveBeenCalledWith('session-1', 'folder-1', 'read-only', undefined),
+  );
   await waitFor(() => expect(mockBack).toHaveBeenCalledTimes(1));
 });

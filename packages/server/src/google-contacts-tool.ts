@@ -1,11 +1,15 @@
 import {
+  resolveGoogleServiceCredential,
+  type GoogleServiceCredentialStore,
+} from './google-service-credentials.js';
+import {
   googleContactsRequestSchema,
   invokeGoogleContactsApi,
   type GoogleContactsRequest,
 } from './google-contacts.js';
 import type { WorkspaceInvocationInput } from './google-workspace-tool-types.js';
 
-export interface GoogleContactsToolStore {
+export interface GoogleContactsToolStore extends GoogleServiceCredentialStore {
   getSession(sessionId: string): Promise<{ projectId: string | null } | undefined>;
   getSessionContactsConnection(
     sessionId: string,
@@ -25,11 +29,26 @@ export function googleContactsHasStandingAuthorization(request: unknown): boolea
 }
 export function createGoogleContactsTool(deps: {
   eventStore: GoogleContactsToolStore;
-  googleAccessToken: () => Promise<string | undefined>;
+  googleAccessToken: (accountId?: string) => Promise<string | undefined>;
   contacts?: (token: string, request: GoogleContactsRequest) => Promise<unknown>;
 }): { invoke(input: WorkspaceInvocationInput): Promise<unknown> } {
   const authorized = async (input: WorkspaceInvocationInput) => {
     const session = await deps.eventStore.getSession(input.sessionId);
+    if (deps.eventStore.getGoogleServiceCredentials) {
+      if (session?.projectId !== input.projectId)
+        throw new Error('Google access is restricted to the calling session');
+      const credential = await resolveGoogleServiceCredential(
+        deps.eventStore,
+        input.sessionId,
+        'contacts',
+      );
+      return {
+        credentialVersion: credential.credentialVersion,
+        accountId: credential.accountId,
+        email: credential.accountEmail,
+        refreshToken: credential.refreshToken,
+      };
+    }
     const connection = await deps.eventStore.getSessionContactsConnection(input.sessionId);
     const settings = await deps.eventStore.getVeritySettings();
     if (
@@ -52,14 +71,16 @@ export function createGoogleContactsTool(deps: {
     async invoke(input) {
       const credential = await authorized(input);
       const request = googleContactsRequestSchema.parse(input.request);
-      const token = await deps.googleAccessToken();
+      const token = await deps.googleAccessToken(credential.accountId);
       if (!token) throw new Error('Google Contacts is not connected');
       // Every newly started request must still have the original session grant.
       const verifyCredentialUnchanged = async () => {
         const current = await authorized(input);
         if (
           current.email.toLowerCase() !== credential.email.toLowerCase() ||
-          current.refreshToken !== credential.refreshToken
+          current.refreshToken !== credential.refreshToken ||
+          current.accountId !== credential.accountId ||
+          current.credentialVersion !== credential.credentialVersion
         )
           throw new Error('The connected Google account changed during this operation');
       };

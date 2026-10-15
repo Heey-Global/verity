@@ -34,25 +34,26 @@ the bundle is not requested when merely connecting Drive.
 
 ## Project access and removal
 
-Connect one Google account under **Settings → Connections → Google**. Grant only
-those services you need through incremental consent. In **Project settings →
-Connections → Google**, enable Gmail, Calendar, and Contacts separately. Each
-project grant applies to all its sessions, including future sessions. The
-attachment menu provides shortcuts to these project settings.
+Connect Google accounts under **Settings → Connections → Google**. Each account
+has its own permissions, optional name and project usage. Grant only the services
+you need through incremental consent. In **Project settings → Connections →
+Google**, choose one account for each of Gmail, Calendar and Contacts.
 
-Drive remains limited to the folder selected for that project. Native Docs,
-Sheets, and Slides remain limited to the file assigned to an individual session:
-open the session's folder icon, choose **Google Drive**, tap a native file, and
-choose **Use in this chat**.
+Existing and future sessions inherit the current project default. In a chat,
+choose another account, disable the service only for that chat, or select **Use
+project default** to restore inheritance. Project changes affect inheriting
+sessions; chat exceptions and other sessions remain unchanged.
 
-Existing session-only Gmail, Calendar, and Contacts grants stay session-only
-when upgrading. They are not automatically promoted to project grants. To extend
-access, explicitly enable the service in project settings. Disabling a service
-for a project removes its project grant and legacy session grants in that project.
-Project settings show how many existing chats retain separate access and offer
-an explicit action to revoke all access for that service in the project. Other
-projects remain unaffected. A session disconnect button only removes a
-legacy session grant; access granted by its project is managed in project settings.
+Drive uses account-bound folders selected for the project, each with independent
+read/write access. Native Docs, Sheets and Slides remain limited to the file
+assigned to an individual session: open the session's folder icon, choose
+**Google Drive**, tap a native file, and choose **Use in this chat**.
+A single folder opens directly, multiple folders from one account form a folder
+list, and folders across accounts are grouped by email address.
+
+Existing session-only grants stay session-only when upgrading; stale account
+bindings become disabled rather than inheriting access. Project grants remain
+project defaults. Disabling a project default preserves explicit session grants.
 
 Later tool calls, including a change awaiting approval, recheck effective access.
 An HTTP request already sent to Google cannot be recalled. Contacts lookup checks
@@ -60,9 +61,11 @@ access again between Google's cache warmup and the actual search. Google Contact
 is read-only; ambiguous names or email addresses must be resolved with you before
 sending mail or inviting attendees.
 
-Disconnecting the Google account removes project and session grants. Changing
-accounts or losing a service's scopes clears affected grants, requiring explicit
-enablement for the new account.
+Disconnecting an account removes its project access and disables its session
+exceptions without selecting a replacement account. Other accounts retain access.
+Scope upgrades must return the selected identity. Account, credential and grant
+changes invalidate pending approvals. Disconnecting waits for outstanding
+temporary Slides image cleanup so its credentials remain available for cleanup.
 
 ## Calendar changes and Google Meet
 

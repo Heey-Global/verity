@@ -17,6 +17,7 @@ import {
 } from './google-oauth-scopes.js';
 
 const connectBody = z.object({
+  accountId: z.string().min(1).optional(),
   code: z.string().trim().min(1).max(4096),
   codeVerifier: z.string().trim().min(1).max(256),
   redirectUri: z.string().trim().min(1).max(2048),
@@ -30,6 +31,7 @@ const sessionParams = z.object({
 const REQUIRED_CALENDAR_SCOPES = new Set(['https://www.googleapis.com/auth/userinfo.email']);
 
 type CalendarRouteStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySettings'> &
+  Partial<Pick<EventStore, 'googleAccounts'>> &
   Pick<
     EventStore,
     | 'getSession'
@@ -80,6 +82,15 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
     };
 
     instance.get('/calendar/connection', async () => {
+      if (deps.eventStore.googleAccounts) {
+        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
+          hasGoogleCalendarScopes(account.scopes),
+        );
+        return {
+          connected: accounts.length > 0,
+          accountEmail: accounts.length === 1 ? accounts[0]!.email : null,
+        };
+      }
       const current = await settings();
       const connected =
         current?.calendarAuthorized === true && Boolean(current.googleDriveRefreshToken?.trim());
@@ -137,6 +148,38 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
           reply.code(502);
           return { error: 'Could not verify the connected Calendar account' };
         }
+        if (deps.eventStore.googleAccounts) {
+          if (!accountEmail)
+            return reply.code(502).send({ error: 'Could not verify the connected Google account' });
+          let account;
+          try {
+            account = await deps.eventStore.googleAccounts.save({
+              email: accountEmail,
+              clientId,
+              refreshToken: tokens.refreshToken,
+              scopes: tokens.scopes ?? [],
+              ...(body.accountId === undefined ? {} : { expectedAccountId: body.accountId }),
+            });
+          } catch (error) {
+            if (error instanceof SealedError) throw error;
+            return reply
+              .code(409)
+              .send({ error: 'The selected Google account does not match the signed-in account' });
+          }
+          if ((await deps.eventStore.googleAccounts.list()).length === 1) {
+            await deps.eventStore.updateVeritySettings({
+              googleDriveClientId: clientId,
+              googleDriveRefreshToken: tokens.refreshToken,
+              googleDriveAccountEmail: accountEmail,
+              googleGrantedScopes: tokens.scopes ?? [],
+              gmailAuthorized: hasGoogleGmailScopes(tokens.scopes),
+              calendarAuthorized: hasGoogleCalendarScopes(tokens.scopes),
+              contactsAuthorized: hasGoogleContactsScopes(tokens.scopes),
+            });
+          }
+          deps.onCredentialsChanged?.();
+          return { connected: true as const, accountEmail, accountId: account.id };
+        }
         const previous = await settings();
         const contactsAuthorized = hasGoogleContactsScopes(tokens.scopes);
         if (
@@ -171,6 +214,26 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
         reply.code(404);
         return { error: `session ${id} not found` };
       }
+      if (deps.eventStore.googleAccounts) {
+        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
+          hasGoogleCalendarScopes(account.scopes),
+        );
+        const effective = await deps.eventStore.googleAccounts.effectiveAccess(id, 'calendar');
+        const access = await deps.eventStore.googleAccounts.sessionAccess(id, 'calendar');
+        return {
+          enabled: effective !== undefined && hasGoogleCalendarScopes(effective.account.scopes),
+          connected: accounts.length > 0,
+          clientId:
+            googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ??
+            effective?.account.clientId ??
+            accounts[0]?.clientId ??
+            null,
+          accountId: effective?.account.id ?? null,
+          accountEmail: effective?.account.email ?? null,
+          source: effective?.source ?? null,
+          mode: access.mode,
+        };
+      }
       const connection = await deps.eventStore.getSessionCalendarConnection(id);
       const current = await settings();
       const connected =
@@ -193,6 +256,29 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
       if ((await deps.eventStore.getSession(id)) === undefined) {
         reply.code(404);
         return { error: `session ${id} not found` };
+      }
+      if (deps.eventStore.googleAccounts) {
+        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
+          hasGoogleCalendarScopes(account.scopes),
+        );
+        if (accounts.length !== 1)
+          return reply.code(409).send({ error: 'Choose an authorized Google account' });
+        const account = accounts[0]!;
+        await deps.eventStore.googleAccounts.setSessionAccess(id, 'calendar', {
+          mode: 'account',
+          accountId: account.id,
+        });
+        return {
+          enabled: true,
+          connected: true,
+          accountId: account.id,
+          accountEmail: account.email,
+          clientId:
+            googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ??
+            account.clientId,
+          source: 'session',
+          mode: 'account',
+        };
       }
       const current = await settings();
       if (current?.calendarAuthorized !== true || !current.googleDriveRefreshToken?.trim()) {

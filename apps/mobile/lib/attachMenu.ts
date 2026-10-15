@@ -1,3 +1,4 @@
+import type { GmailSessionConnection } from '@verity/mobile';
 // Row model for the composer's attach ("+") menu. Kept out of `app/` as pure
 // data — no Unistyles StyleSheet, no component imports — so the row set, and in
 // particular which entry points are feature-flagged in or out, can be unit
@@ -23,13 +24,27 @@ export interface AttachMenuHandlers {
   onConnectContacts: () => void;
 }
 
+export type GoogleMenuAccess = Partial<
+  Record<'gmail' | 'calendar' | 'contacts', GmailSessionConnection | null>
+>;
+function googleDetail(connection: GmailSessionConnection | null | undefined, fallback: string) {
+  if (connection?.enabled)
+    return `${connection.source === 'project' ? 'Project access' : 'This chat'} · ${connection.accountEmail ?? ''}`;
+  return connection?.mode === 'disabled' ? 'Disabled for this chat' : fallback;
+}
+
 /** Google shortcuts require a centrally connected account. */
 export function attachMenuRows(
   handlers: AttachMenuHandlers,
   {
     meetingAudioEnabled = MEETING_AUDIO_ENABLED,
     googleConnected = false,
-  }: { meetingAudioEnabled?: boolean; googleConnected?: boolean } = {},
+    googleAccess = {},
+  }: {
+    meetingAudioEnabled?: boolean;
+    googleConnected?: boolean;
+    googleAccess?: GoogleMenuAccess;
+  } = {},
 ): AttachMenuRow[] {
   return [
     { icon: 'camera', label: 'Take photo', onPress: handlers.onCapturePhoto },
@@ -53,19 +68,19 @@ export function attachMenuRows(
           {
             icon: 'mail' as IconName,
             label: 'Gmail',
-            detail: 'Read & draft',
+            detail: googleDetail(googleAccess.gmail, 'Read & draft'),
             onPress: handlers.onConnectGmail,
           },
           {
             icon: 'calendar' as IconName,
             label: 'Google Calendar',
-            detail: 'Read & approve changes',
+            detail: googleDetail(googleAccess.calendar, 'Read & approve changes'),
             onPress: handlers.onConnectCalendar,
           },
           {
             icon: 'users' as IconName,
             label: 'Google Contacts',
-            detail: 'Read names & emails',
+            detail: googleDetail(googleAccess.contacts, 'Read names & emails'),
             onPress: handlers.onConnectContacts,
           },
         ]

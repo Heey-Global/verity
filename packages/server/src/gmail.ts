@@ -611,6 +611,8 @@ export async function createGmailDraft(
 }
 
 export interface GmailDraftSendSnapshot {
+  accountId?: string;
+  credentialVersion?: number;
   draftId: string;
   messageId: string;
   to: string[];

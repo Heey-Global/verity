@@ -33,8 +33,9 @@ function iconForFile(file: DriveFile): IconName {
 
 export default function GoogleDrivePickerScreen() {
   const { theme } = useUnistyles();
-  const { sessionId } = useLocalSearchParams<{
+  const { sessionId, accountId } = useLocalSearchParams<{
     sessionId: string;
+    accountId?: string;
   }>();
   const client = useMemo(() => createVerityClient(), []);
   if (!client) {
@@ -49,10 +50,18 @@ export default function GoogleDrivePickerScreen() {
       </View>
     );
   }
-  return <GoogleDrivePicker client={client} sessionId={sessionId} />;
+  return <GoogleDrivePicker client={client} sessionId={sessionId} accountId={accountId} />;
 }
 
-function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessionId: string }) {
+function GoogleDrivePicker({
+  client,
+  sessionId,
+  accountId,
+}: {
+  client: VerityClient;
+  sessionId: string;
+  accountId?: string;
+}) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
 
@@ -72,7 +81,8 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const requestSequence = useRef(0);
 
-  const connected = settings?.googleDriveConnected === true;
+  const [accountConnected, setAccountConnected] = useState(false);
+  const connected = accountId ? accountConnected : settings?.googleDriveConnected === true;
   const clientId = settings?.googleDriveClientId ?? '';
   const parentId = path.length > 0 ? path[path.length - 1]?.id : undefined;
 
@@ -80,12 +90,20 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
     try {
       const next = await client.getVeritySettings();
       setSettings(next);
+      if (accountId)
+        setAccountConnected(
+          (await client.listGoogleAccounts()).some(
+            (account) =>
+              account.id === accountId &&
+              account.scopes.includes('https://www.googleapis.com/auth/drive'),
+          ),
+        );
     } catch {
       setSettings(null);
     } finally {
       setSettingsLoaded(true);
     }
-  }, [client]);
+  }, [client, accountId]);
 
   useEffect(() => {
     void loadSettings();
@@ -105,6 +123,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
         const sharedRoot =
           driveView === 'shared' && sharedDriveId === null && folderId === undefined;
         const page = await client.listGoogleDriveFiles({
+          ...(accountId ? { accountId } : {}),
           ...(query.length > 0 ? { query } : { parentId: folderId }),
           ...(sharedRoot && query.length === 0 ? { sharedWithMe: true } : {}),
           ...(sharedDriveId ? { driveId: sharedDriveId } : {}),
@@ -117,7 +136,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
           const drives = [];
           let drivesPageToken: string | undefined;
           do {
-            const drivesPage = await client.listGoogleSharedDrives(drivesPageToken);
+            const drivesPage = await client.listGoogleSharedDrives(drivesPageToken, accountId);
             drives.push(...drivesPage.drives);
             drivesPageToken = drivesPage.nextPageToken;
           } while (drivesPageToken !== undefined);
@@ -150,7 +169,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
         if (sequence === requestSequence.current) setLoading(false);
       }
     },
-    [client, driveView, sharedDriveId],
+    [client, driveView, sharedDriveId, accountId],
   );
 
   // Reload when the folder changes or after the search input settles. Drive
@@ -173,6 +192,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
       const result = await runGoogleDriveAuth(clientId);
       if (result.kind === 'cancelled') return false;
       await client.connectGoogleDrive({
+        ...(accountId ? { accountId } : {}),
         code: result.code,
         codeVerifier: result.codeVerifier,
         redirectUri: result.redirectUri,
@@ -187,7 +207,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
     } finally {
       setConnecting(false);
     }
-  }, [client, clientId, loadSettings]);
+  }, [client, clientId, loadSettings, accountId]);
 
   const openFolder = useCallback(
     (folder: DriveFile) => {
@@ -218,27 +238,12 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
     });
   }, [driveView]);
 
-  const disconnect = useCallback(() => {
-    void (async () => {
-      try {
-        await client.disconnectGoogleDrive();
-        setPath([]);
-        setFiles([]);
-        await loadSettings();
-      } catch (err) {
-        const message =
-          err instanceof VerityApiError ? err.message : 'Could not disconnect Google Drive.';
-        Alert.alert('Could not disconnect', message);
-      }
-    })();
-  }, [client, loadSettings]);
-
   const connectCurrentFolder = useCallback(() => {
     const folder = path.at(-1);
     if (folder === undefined || importingId !== null) return;
     setImportingId(folder.id);
     void client
-      .connectProjectGoogleDriveFolder(sessionId, folder.id)
+      .connectProjectGoogleDriveFolder(sessionId, folder.id, 'read-only', accountId)
       .then(() => router.back())
       .catch((err: unknown) =>
         Alert.alert(
@@ -247,7 +252,7 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
         ),
       )
       .finally(() => setImportingId(null));
-  }, [client, importingId, path, sessionId]);
+  }, [client, importingId, path, sessionId, accountId]);
 
   const onPressItem = useCallback(
     (file: DriveFile) => {
@@ -264,17 +269,6 @@ function GoogleDrivePicker({ client, sessionId }: { client: VerityClient; sessio
       <Stack.Screen
         options={{
           title,
-          headerRight: connected
-            ? () => (
-                <Button
-                  label="Disconnect"
-                  accessibilityLabel="Disconnect Google Drive"
-                  variant="text"
-                  size="compact"
-                  onPress={disconnect}
-                />
-              )
-            : undefined,
         }}
       />
 

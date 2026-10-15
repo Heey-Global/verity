@@ -24,11 +24,13 @@ individual projects.
 
 - **GitHub:** the project's repository. Author and signing configuration stay
   server-wide.
-- **Google Drive:** a selected folder with read-only or read/write access. Docs, Sheets, and Slides editing still
+- **Google Drive:** one or more account-bound folders, each with read-only or read/write access. Docs, Sheets, and Slides editing still
   requires explicitly assigning a native file in a session's file browser.
 - **Google Gmail, Calendar, and Contacts:** enable each service separately for
-  the project. These grants apply to every session in that project. Upgrading
-  preserves older session-only grants without extending them to other sessions.
+  the project and choose one account per service. Existing and new sessions inherit
+  the current project default. A session can select another account or disable
+  a service for that chat; resetting the exception restores inheritance. Changes
+  in a chat leave the project default and other sessions unchanged.
 - **Matrix:** select invited rooms in project settings. The global account screen
   gives an overview; existing room assignments survive the navigation change.
 - **Doppler:** choose a project and configuration.
@@ -44,3 +46,11 @@ Hiding it does not change access, and project settings remain available.
 
 Drive file actions and approval/recovery behavior are described in [File connections](file-connections.md). NAS/SMB remains a separate planned feature and is not presented as usable before
 its implementation exists.
+
+## Google accounts
+
+Settings → Google lists connected accounts by email, with optional display names,
+authorized services and project usage. Add, reconnect or remove accounts individually.
+Service permission upgrades verify the selected account identity. Removing an
+account removes its access without substituting another connected account.
+Google sender aliases remain sender identities within their Gmail account.

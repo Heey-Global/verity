@@ -34,7 +34,7 @@ async function setup(initial: Partial<VeritySettingsRecord> = {}) {
     agentLogin: {} as AgentLoginService,
     parseSettingsPatch: (body) => body as VeritySettingsPatch,
     storeAgentCredentials: async () => {},
-    publicSettings: (value) => ({ ...value, opencodeApiKey: undefined }),
+    publicSettings: async (value) => ({ ...value, opencodeApiKey: undefined }),
     effectiveTranscription: () => ({ baseUrl: null, model: null, apiKeyConfigured: false }),
     transcriptionConfigured: () => false,
     onOpenCodeSettingsChanged: changed,

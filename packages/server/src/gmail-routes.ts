@@ -9,10 +9,15 @@ import {
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
-import { hasGoogleCalendarScopes, hasGoogleContactsScopes } from './google-oauth-scopes.js';
+import {
+  hasGoogleGmailScopes,
+  hasGoogleCalendarScopes,
+  hasGoogleContactsScopes,
+} from './google-oauth-scopes.js';
 import { GoogleDriveError, exchangeGoogleAuthCode, type GoogleFetch } from './google-drive.js';
 
 const connectBody = z.object({
+  accountId: z.string().min(1).optional(),
   code: z.string().trim().min(1).max(4096),
   codeVerifier: z.string().trim().min(1).max(256),
   redirectUri: z.string().trim().min(1).max(2048),
@@ -30,6 +35,7 @@ const REQUIRED_GMAIL_SCOPES = new Set([
 ]);
 
 type GmailRouteStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySettings'> &
+  Partial<Pick<EventStore, 'googleAccounts'>> &
   Pick<
     EventStore,
     | 'getSession'
@@ -82,6 +88,15 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
     };
 
     instance.get('/gmail/connection', async () => {
+      if (deps.eventStore.googleAccounts) {
+        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
+          hasGoogleGmailScopes(account.scopes),
+        );
+        return {
+          connected: accounts.length > 0,
+          accountEmail: accounts.length === 1 ? accounts[0]!.email : null,
+        };
+      }
       const current = await settings();
       const connected =
         current?.gmailAuthorized === true && Boolean(current.googleDriveRefreshToken?.trim());
@@ -139,6 +154,38 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
           reply.code(502);
           return { error: 'Could not verify the connected Gmail account' };
         }
+        if (deps.eventStore.googleAccounts) {
+          if (!accountEmail)
+            return reply.code(502).send({ error: 'Could not verify the connected Google account' });
+          let account;
+          try {
+            account = await deps.eventStore.googleAccounts.save({
+              email: accountEmail,
+              clientId,
+              refreshToken: tokens.refreshToken,
+              scopes: tokens.scopes ?? [],
+              ...(body.accountId === undefined ? {} : { expectedAccountId: body.accountId }),
+            });
+          } catch (error) {
+            if (error instanceof SealedError) throw error;
+            return reply
+              .code(409)
+              .send({ error: 'The selected Google account does not match the signed-in account' });
+          }
+          if ((await deps.eventStore.googleAccounts.list()).length === 1) {
+            await deps.eventStore.updateVeritySettings({
+              googleDriveClientId: clientId,
+              googleDriveRefreshToken: tokens.refreshToken,
+              googleDriveAccountEmail: accountEmail,
+              googleGrantedScopes: tokens.scopes ?? [],
+              gmailAuthorized: hasGoogleGmailScopes(tokens.scopes),
+              calendarAuthorized: hasGoogleCalendarScopes(tokens.scopes),
+              contactsAuthorized: hasGoogleContactsScopes(tokens.scopes),
+            });
+          }
+          deps.onCredentialsChanged?.();
+          return { connected: true as const, accountEmail, accountId: account.id };
+        }
         const previous = await settings();
         const contactsAuthorized = hasGoogleContactsScopes(tokens.scopes);
         const calendarAuthorized = hasGoogleCalendarScopes(tokens.scopes);
@@ -172,6 +219,26 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
         reply.code(404);
         return { error: `session ${id} not found` };
       }
+      if (deps.eventStore.googleAccounts) {
+        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
+          hasGoogleGmailScopes(account.scopes),
+        );
+        const effective = await deps.eventStore.googleAccounts.effectiveAccess(id, 'gmail');
+        const access = await deps.eventStore.googleAccounts.sessionAccess(id, 'gmail');
+        return {
+          enabled: effective !== undefined && hasGoogleGmailScopes(effective.account.scopes),
+          connected: accounts.length > 0,
+          clientId:
+            googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ??
+            effective?.account.clientId ??
+            accounts[0]?.clientId ??
+            null,
+          accountId: effective?.account.id ?? null,
+          accountEmail: effective?.account.email ?? null,
+          source: effective?.source ?? null,
+          mode: access.mode,
+        };
+      }
       const connection = await deps.eventStore.getSessionGmailConnection(id);
       const current = await settings();
       const connected =
@@ -194,6 +261,29 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
       if ((await deps.eventStore.getSession(id)) === undefined) {
         reply.code(404);
         return { error: `session ${id} not found` };
+      }
+      if (deps.eventStore.googleAccounts) {
+        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
+          hasGoogleGmailScopes(account.scopes),
+        );
+        if (accounts.length !== 1)
+          return reply.code(409).send({ error: 'Choose an authorized Google account' });
+        const account = accounts[0]!;
+        await deps.eventStore.googleAccounts.setSessionAccess(id, 'gmail', {
+          mode: 'account',
+          accountId: account.id,
+        });
+        return {
+          enabled: true,
+          connected: true,
+          accountId: account.id,
+          accountEmail: account.email,
+          clientId:
+            googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ??
+            account.clientId,
+          source: 'session',
+          mode: 'account',
+        };
       }
       const current = await settings();
       if (current?.gmailAuthorized !== true || !current.googleDriveRefreshToken?.trim()) {
