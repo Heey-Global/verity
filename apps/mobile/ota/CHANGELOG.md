@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.72.3](https://github.com/Heey-Global/verity/compare/mobile-v1.72.2...mobile-v1.72.3) (2026-10-15)
+
+
+### Features
+
+* **google:** support multiple accounts across Workspace ([#1654](https://github.com/Heey-Global/verity/issues/1654)) ([064049f](https://github.com/Heey-Global/verity/commit/064049f0353b04d87565deb41b3558b4b0772b1a))
+
+
+### Bug Fixes
+
+* **deps:** update dependency zod to v4.6.6 ([#1648](https://github.com/Heey-Global/verity/issues/1648)) ([b29dffc](https://github.com/Heey-Global/verity/commit/b29dffc9ccf5011dffc3c51ed840bcfac325fffb))
+
 ## [1.72.2](https://github.com/Heey-Global/verity/compare/mobile-v1.72.1...mobile-v1.72.2) (2026-10-14)
 
 
