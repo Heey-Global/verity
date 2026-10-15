@@ -298,8 +298,18 @@ export function createGoogleSlidesTool(deps: GoogleSlidesToolDeps): {
     if (pending.length === 0) return;
     for (const cleanup of pending) {
       if (cleanup.accountId === null) continue;
-      const token = await deps.googleAccessToken(cleanup.accountId);
-      if (token) await finishCleanup(token, cleanup);
+      try {
+        const token = await deps.googleAccessToken(cleanup.accountId);
+        if (token) await finishCleanup(token, cleanup);
+      } catch (error) {
+        // A revoked account must not strand other accounts' temporary public images.
+        await deps.eventStore
+          .failGoogleSlideImageCleanup(
+            cleanup.id,
+            error instanceof Error ? error.message : 'cleanup token refresh failed',
+          )
+          .catch(() => undefined);
+      }
     }
   };
   let recovery: Promise<void> | undefined;

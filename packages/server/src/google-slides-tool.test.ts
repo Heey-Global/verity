@@ -643,17 +643,30 @@ it('preserves native Slides reads while refusing edits in read-only projects', a
 });
 
 it('recovers each temporary image with its owning account and never substitutes a connected account', async () => {
+  const fail = vi.fn().mockResolvedValue(undefined);
   const eventStore = store({
+    failGoogleSlideImageCleanup: fail,
     listGoogleSlideImageCleanups: vi.fn().mockResolvedValue([
+      {
+        id: 'expired',
+        accountId: 'revoked',
+        fileId: 'expired-image',
+        permissionId: 'public-expired',
+      },
       { id: 'one', accountId: 'personal', fileId: 'personal-image', permissionId: 'public-one' },
       { id: 'two', accountId: 'work', fileId: 'work-image', permissionId: 'public-two' },
       { id: 'three', accountId: null, fileId: 'orphan', permissionId: 'public-three' },
       { id: 'four', accountId: 'removed', fileId: 'removed-image', permissionId: 'public-four' },
     ]),
   });
-  const googleAccessToken = vi.fn(async (accountId?: string) =>
-    accountId === 'personal' ? 'personal-token' : accountId === 'work' ? 'work-token' : undefined,
-  );
+  const googleAccessToken = vi.fn(async (accountId?: string) => {
+    if (accountId === 'revoked') throw new Error('refresh revoked');
+    return accountId === 'personal'
+      ? 'personal-token'
+      : accountId === 'work'
+        ? 'work-token'
+        : undefined;
+  });
   const drive = {
     upload: vi.fn(),
     share: vi.fn(),
@@ -668,6 +681,7 @@ it('recovers each temporary image with its owning account and never substitutes 
   });
   try {
     await tool.recover();
+    expect(fail).toHaveBeenCalledWith('expired', 'refresh revoked');
     expect(drive.deletePermission.mock.calls).toEqual([
       ['personal-token', 'personal-image', 'public-one'],
       ['work-token', 'work-image', 'public-two'],
