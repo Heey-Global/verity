@@ -1077,6 +1077,24 @@ it.each([
 });
 
 describe('account-bound approval snapshots', () => {
+  it('refuses a bearer retired while rechecking account authority', async () => {
+    let retired = false;
+    let snapshots = 0;
+    const { gateway, invokeTool } = harness({
+      resolveCaller: async () => (retired ? undefined : { sessionId: 'sess-1', turnId: 'turn-1' }),
+      authorizationSnapshot: async () => {
+        if (++snapshots === 2) retired = true;
+        return 'unchanged-account';
+      },
+    });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(),
+    });
+    expect(response).toEqual({ status: 401, body: { error: 'unauthorized' } });
+    expect(invokeTool).not.toHaveBeenCalled();
+  });
   it('does not execute when account authority changes while approval is pending', async () => {
     let authority = 'account-one:grant-one';
     const { gateway, invokeTool } = harness({

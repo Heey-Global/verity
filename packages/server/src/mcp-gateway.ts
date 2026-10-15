@@ -881,20 +881,6 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         toolError(id, 'The approved request was edited; edits are not supported here.'),
       );
     }
-    // A card can be parked for minutes, and the caller's turn may settle while it waits —
-    // which retires the bearer that admitted this call. Re-check the credential on the way
-    // out of the wait, so an approval cannot land a call on a turn that no longer exists.
-    //
-    // This is the last point at which a check means anything, and it does not need a lease
-    // to be exact: nothing awaits between the resolve below and entering `invokeTool`, so a
-    // release cannot interleave there. A turn that settles once the call is on the wire is
-    // not a window any check could close — the request has left. What bounds that case is
-    // the tool's own at-most-once fence, which keys on the turn this bearer named.
-    const still = token === undefined ? undefined : await deps.resolveCaller({ projectId, token });
-    if (still === undefined || still.sessionId !== sessionId || still.turnId !== turnId) {
-      return reject(projectId, callId, 'unauthenticated', keyed, toolName, unauthorized);
-    }
-
     let result: unknown;
     try {
       if (authorizationSnapshot !== undefined) {
@@ -910,6 +896,21 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
             'Google access changed while waiting for approval. Submit the operation again.',
           );
       }
+      // A card can be parked for minutes, and the caller's turn may settle while it waits —
+      // which retires the bearer that admitted this call. Re-check the credential on the way
+      // out of the wait, so an approval cannot land a call on a turn that no longer exists.
+      //
+      // This is the last point at which a check means anything, and it does not need a lease
+      // to be exact: nothing awaits between the resolve below and entering `invokeTool`, so a
+      // release cannot interleave there. A turn that settles once the call is on the wire is
+      // not a window any check could close — the request has left. What bounds that case is
+      // the tool's own at-most-once fence, which keys on the turn this bearer named.
+      const still =
+        token === undefined ? undefined : await deps.resolveCaller({ projectId, token });
+      if (still === undefined || still.sessionId !== sessionId || still.turnId !== turnId) {
+        return reject(projectId, callId, 'unauthenticated', keyed, toolName, unauthorized);
+      }
+
       result = await deps.invokeTool({
         projectId,
         sessionId,
