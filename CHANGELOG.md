@@ -6,6 +6,15 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.47.3](https://github.com/Heey-Global/verity/compare/v4.47.2...v4.47.3) (2026-10-15)
+
+
+### Bug Fixes
+
+* **deps:** update dependency opencode-ai to v1.19.0 ([#1649](https://github.com/Heey-Global/verity/issues/1649)) ([7bb3636](https://github.com/Heey-Global/verity/commit/7bb3636412e10e22ce1d482fad21a98cb75af4aa))
+* **deps:** update dependency zod to v4.6.6 ([#1648](https://github.com/Heey-Global/verity/issues/1648)) ([b29dffc](https://github.com/Heey-Global/verity/commit/b29dffc9ccf5011dffc3c51ed840bcfac325fffb))
+* **preview:** accept project dependency volumes ([#1653](https://github.com/Heey-Global/verity/issues/1653)) ([924be1f](https://github.com/Heey-Global/verity/commit/924be1faca102400257a6cc18cde68465d46e571))
+
 ## [4.47.2](https://github.com/Heey-Global/verity/compare/v4.47.1...v4.47.2) (2026-10-14)
 
 
