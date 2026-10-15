@@ -1535,7 +1535,8 @@ function ProviderLimitSegment({
     setShowPaceInfo(false);
     setPaceInfoAnchor(null);
   }, [screenHeight, screenWidth]);
-  const text = limit === null ? '--' : formatResetDisplay(limit.resetsAt, window);
+  const text =
+    limit === null ? '--' : formatResetDisplay(limit.resetsAt, window, { compact: true });
   const percentText =
     reported === undefined || !Number.isFinite(reported) ? undefined : `${Math.round(usage)}%`;
   const accessibilityText =

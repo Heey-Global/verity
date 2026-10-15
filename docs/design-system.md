@@ -123,6 +123,14 @@ keys use the platform monospace font. All sizes scale with the in-app font-zoom 
 | Floating | Soft dark shadow downward (`0 18px 50px` black at 60 %) | Sheets, menus, dialogs                                                                                                                                                                                                                                             |
 | Glow     | Colored halo                                            | Three uses only: brand moments in `signature` (success check), the selected card in `action`, and success and attention status dots in their tone. Buttons never glow. Dark theme only — in light, the selected card keeps its plain border and dots have no halo. |
 
+**Website.** `docs/website/site/index.html` uses the same roles, Inter, the
+`control` radius for buttons and the tonal primary button. It has two brand moments
+the app does not: the hero headline's second phrase runs from `signature` through a
+violet midpoint to `action` as a text gradient, and a faint `signature` halo sits
+behind the hero. Neither appears anywhere else on the page, and neither marks
+something clickable. Product images on the page are rendered from the app itself
+(`npm run render:app-screens`, see `docs/mobile-demo.md`), never mocked up.
+
 ## 5. Components
 
 Each component is implemented once in a shared module and covers every state listed.

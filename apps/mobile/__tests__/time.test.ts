@@ -64,6 +64,28 @@ describe('formatResetDisplay', () => {
   });
 });
 
+// The overview meter cell is sized for "21:24"; a full 12-hour time ("09:24 PM",
+// "Sun 11:23 PM") is cut off with an ellipsis there without failing anything.
+describe('formatResetDisplay compact', () => {
+  it('drops the leading zero and the space before the day period on a 12-hour clock', () => {
+    mockCalendars = [{ uses24hourClock: false }];
+    const full = formatClockTime(EPOCH_SECONDS);
+    const compact = formatResetDisplay(EPOCH_SECONDS, 'five_hour', { compact: true });
+    expect(compact).toMatch(/^[1-9]\d?:\d{2}[a-z]+$/);
+    expect(compact.length).toBeLessThan(full.length);
+    expect(formatResetDisplay(EPOCH_SECONDS, 'weekly', { compact: true })).toMatch(
+      /^[A-Z][a-z]{2} [1-9]\d?:\d{2}[a-z]+$/,
+    );
+  });
+
+  it('leaves a 24-hour clock unchanged', () => {
+    mockCalendars = [{ uses24hourClock: true }];
+    expect(formatResetDisplay(EPOCH_SECONDS, 'five_hour', { compact: true })).toBe(
+      formatClockTime(EPOCH_SECONDS),
+    );
+  });
+});
+
 describe('formatTurnTimestamp', () => {
   const EPOCH_MS = EPOCH_SECONDS * 1000;
 

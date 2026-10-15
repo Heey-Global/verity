@@ -42,7 +42,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
-    "enrollment:schemas": "node scripts/enrollment-proof/export-schemas.ts"
+    "enrollment:schemas": "node scripts/enrollment-proof/export-schemas.ts",
+    "render:app-screens": "node scripts/render-app-screens.mjs"
   },
   "devDependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.89.1",
@@ -62,6 +63,7 @@
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",
     "pg-connection-string": "2.14.1",
+    "playwright": "1.64.0",
     "prettier": "3.9.10",
     "react": "19.2.3",
     "react-native": "0.86.3",

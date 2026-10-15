@@ -351,6 +351,7 @@ import {
 } from '../../lib/transcriptAnchor';
 import { settleTranscriptJump } from '../../lib/transcriptJump';
 import { formatResetDisplay, formatTurnTimestamp } from '../../lib/time';
+import { WEB_NO_FOCUS_RING } from '../../lib/webFocusRing';
 
 // In-memory per-session draft cache: keeps the typed/dictated draft when the
 // operator leaves a session and returns (within the app's lifetime), so input work
@@ -9878,11 +9879,7 @@ function InputBar({
           <PromptComposerInput
             key={Platform.OS === 'web' ? 'web-composer' : sendNonce}
             ref={inputRef}
-            style={[
-              styles.input,
-              compact && styles.inputCompact,
-              Platform.OS === 'web' ? { outlineWidth: 0 } : null,
-            ]}
+            style={[styles.input, compact && styles.inputCompact, WEB_NO_FOCUS_RING]}
             value={value}
             onChangeText={onChangeText}
             containerStyle={compact ? styles.inputContainerCompact : undefined}

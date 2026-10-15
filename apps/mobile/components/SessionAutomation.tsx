@@ -327,11 +327,11 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     color: theme.colors.text,
     fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontFamily: theme.fonts.semibold,
   },
   barSchedule: {
     color: theme.colors.textMuted,
-    fontWeight: '400',
+    fontFamily: theme.fonts.regular,
   },
   backdrop: {
     flex: 1,
@@ -358,13 +358,13 @@ const styles = StyleSheet.create((theme) => ({
   sheetEyebrow: {
     color: theme.colors.textMuted,
     fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
   },
   sheetTitle: {
     color: theme.colors.text,
     fontSize: theme.text.lg,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
     marginTop: 2,
     marginBottom: theme.spacing.sm,
   },
@@ -381,7 +381,7 @@ const styles = StyleSheet.create((theme) => ({
   sectionLabel: {
     color: theme.colors.textFaint,
     fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
   },
   sectionText: {
@@ -414,7 +414,7 @@ const styles = StyleSheet.create((theme) => ({
   secondaryButtonText: {
     color: theme.colors.text,
     fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontFamily: theme.fonts.semibold,
   },
   dangerText: {
     color: theme.colors.tone.danger,
@@ -442,18 +442,18 @@ const styles = StyleSheet.create((theme) => ({
   cardEyebrow: {
     color: theme.colors.textMuted,
     fontSize: theme.text.xs,
-    fontWeight: '600',
+    fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
   },
   cardTitle: {
     color: theme.colors.text,
     fontSize: theme.text.md,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
   },
   cardSchedule: {
     color: theme.colors.primary,
     fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontFamily: theme.fonts.semibold,
   },
   promptScroll: {
     maxHeight: 240,
@@ -499,7 +499,7 @@ const styles = StyleSheet.create((theme) => ({
   confirmText: {
     color: theme.colors.background,
     fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
   },
   starter: {
     flexDirection: 'row',
@@ -531,7 +531,7 @@ const styles = StyleSheet.create((theme) => ({
   starterTitle: {
     color: theme.colors.text,
     fontSize: theme.text.sm,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
   },
   starterText: {
     color: theme.colors.textMuted,
@@ -547,7 +547,7 @@ const styles = StyleSheet.create((theme) => ({
   badgeText: {
     color: theme.colors.background,
     fontSize: 10 * theme.fontScale,
-    fontWeight: '700',
+    fontFamily: theme.fonts.bold,
     textTransform: 'uppercase',
   },
 }));

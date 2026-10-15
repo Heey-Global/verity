@@ -16,6 +16,7 @@ import {
 import Svg, { Defs, LinearGradient, RadialGradient, Rect, Stop } from 'react-native-svg';
 import { authenticateBrowser, pairBrowser } from '../lib/browserSession';
 import { createVerityClient } from '../lib/client';
+import { WEB_NO_FOCUS_RING } from '../lib/webFocusRing';
 
 const VERITY_WEBSITE = 'https://verity.build';
 
@@ -62,7 +63,7 @@ export default function WebConnectScreen() {
   const fieldStyle = (name: string) => [
     styles.input,
     focused === name ? styles.inputFocused : null,
-    Platform.OS === 'web' ? { outlineWidth: 0 } : null,
+    WEB_NO_FOCUS_RING,
   ];
   return (
     <View style={styles.page}>

@@ -1,10 +1,15 @@
 import {
+  gmailSendSummary,
   LiveConnection,
+  matrixSendSummary,
+  overviewProviderLimitRows,
+  planProposalContent,
   VerityClient,
   decodeLiveServerFrame,
   SessionStream,
   SessionModel,
 } from '@verity/mobile';
+import { DEMO_SHOWCASE_STORAGE_KEY } from './demoShowcase';
 import { DEMO_BASE_URL, demoFetch, createDemoSocket, resetDemoData } from './demoTransport';
 
 function requiredVersion(file: { version?: string }): string {
@@ -105,6 +110,18 @@ it('serves the core surfaces through the real validating client', async () => {
     connected: false,
   });
   expect(await api.listSessionDevServers(id)).toEqual([]);
+});
+
+// The overview drops a window once it has reset, so sample readings pinned to a
+// fixed date would leave the demo's usage meters silently empty again.
+it('reports provider usage that the overview still shows', async () => {
+  const limits = await client().listProviderLimits();
+  const rows = overviewProviderLimitRows([], limits, Date.now() + 60 * 60_000);
+  expect(rows.map((row) => row.providerLabel)).toEqual(['Claude', 'Codex']);
+  for (const row of rows) {
+    expect(row.fiveHour?.usedPercent).toBeGreaterThan(0);
+    expect(row.weekly?.usedPercent).toBeGreaterThan(0);
+  }
 });
 
 it('streams schema-valid replies and changes a local file without calling network fetch', async () => {
@@ -393,4 +410,54 @@ it('invalidates watched project data when its fold state changes', async () => {
   expect(live.frames).toContainEqual({ k: 'invalidate', path: '/projects' });
   expect((await api.listProjects())[0]?.collapsed).toBe(true);
   live.socket.close();
+});
+
+// Product images are rendered from this scenario. A card the app no longer
+// recognises falls back to raw JSON, and a session left without its pending
+// approval renders as idle; both would still render, just as the wrong picture.
+describe('showcase scenario', () => {
+  const storage = globalThis as { localStorage?: Pick<Storage, 'getItem'> };
+  afterEach(() => {
+    delete storage.localStorage;
+    resetDemoData();
+  });
+
+  it('replaces the welcome sample only when the browser flag is set', async () => {
+    storage.localStorage = {
+      getItem: (key) => (key === DEMO_SHOWCASE_STORAGE_KEY ? '1' : null),
+    };
+    resetDemoData();
+    const api = client();
+    expect(await api.listProjects()).toHaveLength(3);
+    const { sessions } = await api.listSessionOverview();
+    expect(sessions.length).toBeGreaterThan(1);
+    const awaiting = sessions.filter((session) => session.status === 'awaiting_input');
+    const pending = await Promise.all(
+      awaiting.map(async ({ sessionId }) => {
+        const activity = await api.getActivity(sessionId);
+        const history = await api.getHistory(sessionId);
+        return history.events
+          .map((frame) => frame.event)
+          .find(
+            (event) =>
+              event.t === 'permission' && (activity.pendingPermissions ?? []).includes(event.id),
+          );
+      }),
+    );
+    const inputs = pending.map((event) => (event && 'input' in event ? event.input : undefined));
+    expect(inputs.some((input) => gmailSendSummary(input) !== null)).toBe(true);
+    expect(inputs.some((input) => matrixSendSummary(input) !== null)).toBe(true);
+    const details = await Promise.all(sessions.map(({ sessionId }) => api.getSession(sessionId)));
+    const plan = details.find((detail) => detail.planning === 'active')?.planningPlan;
+    expect(planProposalContent(plan ?? '').steps.length).toBeGreaterThan(1);
+    expect(
+      (await api.listSessionFiles(awaiting[0]!.sessionId, '', 'knowledge')).entries.map(
+        (entry) => entry.name,
+      ),
+    ).toEqual(expect.arrayContaining(['sources', 'insights']));
+
+    delete storage.localStorage;
+    resetDemoData();
+    expect(await client().listProjects()).toHaveLength(1);
+  });
 });
