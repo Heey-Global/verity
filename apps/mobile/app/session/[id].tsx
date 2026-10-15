@@ -9802,6 +9802,9 @@ function InputBar({
 }) {
   const { theme } = useUnistyles();
   const [dropActive, setDropActive] = useState(false);
+  // The browser's own focus ring is removed (WEB_NO_FOCUS_RING); the card
+  // shows focus in the action color instead, so keyboard users keep a cue.
+  const [focused, setFocused] = useState(false);
   const attachBtnRef = useRef<View>(null);
   const openAttachMenu = useAttachmentMenuAnchor(attachBtnRef, onAttach);
   const onComposerKeyPress = useCallback(
@@ -9874,6 +9877,7 @@ function InputBar({
             styles.inputCard,
             compact && styles.inputCardCompact,
             dropActive ? styles.inputCardDropActive : null,
+            Platform.OS === 'web' && focused && !dropActive ? styles.inputCardFocused : null,
           ]}
         >
           <PromptComposerInput
@@ -9886,8 +9890,14 @@ function InputBar({
             submitOnReturn={shouldSubmitOnReturn(keyboardHeight)}
             onSend={onSend}
             onKeyPress={onComposerKeyPress}
-            onFocus={onFocus}
-            onBlur={onBlur}
+            onFocus={() => {
+              setFocused(true);
+              onFocus?.();
+            }}
+            onBlur={() => {
+              setFocused(false);
+              onBlur?.();
+            }}
             placeholder={
               dead
                 ? 'This session can’t be resumed'
@@ -12165,6 +12175,9 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: 3,
     paddingBottom: 3,
     gap: theme.spacing.sm,
+  },
+  inputCardFocused: {
+    borderColor: theme.colors.action,
   },
   inputCardDropActive: {
     borderColor: theme.colors.action,

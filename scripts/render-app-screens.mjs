@@ -14,7 +14,7 @@
 // directly in the website's assets folder because the website's checks and
 // Dockerfile list every asset by its flat `assets/<file>` path.
 /// <reference lib="dom" />
-/* global document, localStorage */
+/* global document, HTMLElement, localStorage */
 import { createReadStream, existsSync, mkdirSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, extname, join, resolve, sep } from 'node:path';
@@ -197,6 +197,11 @@ async function render(browser, base, scene, out) {
     await settle(page);
   }
   if (errors.length) throw new Error(`${scene.name}: ${errors.join('; ')}`);
+  // The browser client focuses the composer; images show it at rest.
+  await page.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  });
+  await page.waitForTimeout(300);
   if (!scene.cropsOnly) {
     await page.screenshot({ path: join(out, `app-${scene.name}.png`) });
     console.log(`app-${scene.name}.png`);
