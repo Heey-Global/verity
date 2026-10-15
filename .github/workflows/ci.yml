@@ -1062,6 +1062,7 @@ jobs:
         run: |
           set -euo pipefail
           npx vitest run \
+            packages/store/src/google-account-cleanup-postgres.test.ts \
             packages/store/src/runner-frames-postgres.test.ts \
             packages/store/src/schema-forward-postgres.test.ts \
             packages/store/src/pool-checkout-error-postgres.test.ts \
