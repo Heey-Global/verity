@@ -71,6 +71,30 @@ it.each(['/sessions/s/google-workspace/file', '/sessions/s/google-slides/deck'])
       expect((await app.inject({ method: 'PUT', url, payload })).statusCode).not.toBe(200);
       expect(await ctx.store.getSessionWorkspaceFile('s')).toBeUndefined();
       outside = false;
+      await ctx.store.googleAccounts.linkFolder({
+        projectId: 'p',
+        accountId: account.id,
+        folderId: 'root',
+        name: 'Root',
+        accessMode: 'read-only',
+      });
+      expect(
+        (
+          await app.inject({
+            method: 'PUT',
+            url,
+            payload: { fileId: 'deck', accountId: account.id },
+          })
+        ).statusCode,
+      ).toBe(409);
+      expect(await ctx.store.getSessionWorkspaceFile('s')).toBeUndefined();
+      await ctx.store.googleAccounts.linkFolder({
+        projectId: 'p',
+        accountId: account.id,
+        folderId: 'root',
+        name: 'Root',
+        accessMode: 'read-write',
+      });
       expect((await app.inject({ method: 'PUT', url, payload })).statusCode).toBe(200);
       expect(await ctx.store.getSessionWorkspaceFile('s')).toMatchObject({
         accountId: account.id,
@@ -115,6 +139,16 @@ it('keeps mixed-account folder operations on the chosen credentials and permissi
     name: 'Work',
     accessMode: 'read-write',
   });
+  const { assertWorkspaceWriteAccess } = await import('./google-workspace-tool-types.js');
+  await expect(
+    assertWorkspaceWriteAccess(ctx.store, 'p', {
+      accountId: personal.id,
+      assignmentId: 'unbound',
+      fileId: 'doc',
+      kind: 'docs',
+      revisionId: null,
+    }),
+  ).rejects.toThrow('folder');
   const googleAccessToken = vi.fn(async (id?: string) => id);
   const drive = {
     get: vi.fn(async () => ({

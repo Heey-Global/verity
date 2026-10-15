@@ -45,6 +45,11 @@ export async function assertWorkspaceWriteAccess(
   projectId: string,
   file?: SessionWorkspaceFile,
 ): Promise<void> {
+  if (store.googleAccounts && file && !file.folderLinkId) {
+    const links = await store.googleAccounts.folders(projectId);
+    if (links.some((link) => link.accountId === file.accountId))
+      throw new Error('Select a linked project folder before editing the assigned file');
+  }
   if (file?.folderLinkId && store.googleAccounts) {
     const link = (await store.googleAccounts.folders(projectId)).find(
       (candidate) => candidate.id === file.folderLinkId,

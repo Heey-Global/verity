@@ -573,11 +573,14 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         : undefined;
     if (!account || !hasGoogleDriveScopes(account.scopes)) return undefined;
     const session = await deps.eventStore.getSession(sessionId);
+    const links = session?.projectId
+      ? await deps.eventStore.googleAccounts.folders(session.projectId)
+      : [];
+    // Omitting the binding must not turn a folder's read-only grant into editing access.
+    if (!folderLinkId && links.some((item) => item.accountId === account.id)) return undefined;
     const link =
       folderLinkId && session?.projectId
-        ? (await deps.eventStore.googleAccounts.folders(session.projectId)).find(
-            (item) => item.id === folderLinkId,
-          )
+        ? links.find((item) => item.id === folderLinkId)
         : undefined;
     if (folderLinkId && (!link || link.accountId !== account.id)) return undefined;
     return { account, link, projectId: session?.projectId };

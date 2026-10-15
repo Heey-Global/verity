@@ -81,3 +81,6 @@ groups appear above their linked folders. Only project-linked folders are expose
 Browsing, uploads, imports and native Workspace assignments retain the account
 and folder link. Agent requests select a folder link explicitly when several
 are available; an ambiguous request never falls back to another account.
+When an account has linked project folders, assign Workspace files through their
+linked folder in Explorer. Direct assignments without that folder binding are
+rejected so they cannot bypass the folder's read-only permissions.
