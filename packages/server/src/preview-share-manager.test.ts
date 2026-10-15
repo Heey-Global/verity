@@ -27,6 +27,8 @@ import {
   openCodeSettingsConfig,
   materializeOpenCodeSettings,
   projectNetworkName,
+  projectNodeModulesVolumeName,
+  NODE_MODULES_TARGET,
   RUNNER_BROKER_CAPABILITIES,
 } from './provisioner.js';
 
@@ -2355,6 +2357,69 @@ describe('session port previews', () => {
 });
 
 describe('shared sandbox mount contract', () => {
+  const dependencyMount = {
+    type: 'volume',
+    name: projectNodeModulesVolumeName(project.id),
+    destination: NODE_MODULES_TARGET,
+    readWrite: true,
+  };
+
+  function dependencyFixture(mount: NonNullable<ContainerInspect['mounts']>[number]) {
+    const setup = fixture();
+    setup.store.getSession.mockResolvedValue({
+      sessionId: 's1',
+      projectId: project.id,
+      worktree: '/data/p1/sessions/s1',
+      model: 'test',
+      name: null,
+      lastSeenEventCount: null,
+    });
+    setup.docker.inspectContainer.mockResolvedValue({
+      ...setup.inspect,
+      mounts: [mount],
+      mountCount: 1,
+    });
+    return setup;
+  }
+
+  it.each(['local', 'public'] as const)(
+    'accepts the provisioned dependency volume for %s previews',
+    async (access) => {
+      const { manager } = dependencyFixture(dependencyMount);
+      const result =
+        access === 'local'
+          ? manager.prepareLocalTarget('s1', {})
+          : manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 });
+      await expect(result).resolves.toBeDefined();
+    },
+  );
+
+  it.each([
+    { name: projectNodeModulesVolumeName('other-project') },
+    { name: undefined },
+    { type: 'bind', source: '/srv/dependencies' },
+    { destination: '/work/other' },
+    { readWrite: false },
+    { readWrite: undefined },
+    { subpath: 'nested' },
+    { subpath: '../secrets' },
+  ])('rejects unsupported dependency mount metadata: %j', async (metadata) => {
+    const { manager, edge, docker } = dependencyFixture({ ...dependencyMount, ...metadata });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(manager.prepareLocalTarget('s1', {})).rejects.toThrow(
+        /unsupported sandbox mount/,
+      );
+      await expect(
+        manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+      ).rejects.toThrow(/unsupported sandbox mount/);
+      expect(edge.create).not.toHaveBeenCalled();
+      expect(docker.createContainer).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it.each(['bind', 'volume'] as const)(
     'accepts provisioned standard mounts as %s mounts',
     async (type) => {
