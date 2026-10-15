@@ -72,7 +72,7 @@
     "uuid": "14.0.3",
     "vitest": "5.0.3",
     "xcode": "3.0.1",
-    "zod": "4.6.5",
+    "zod": "4.6.6",
     "query-string": "file:vendor/expo-router-query-string"
   }
 }
