@@ -41,12 +41,11 @@ export interface GoogleWorkspaceToolStore extends Partial<Pick<EventStore, 'goog
   completeGoogleWorkspaceInvocation(invocationId: string, result: unknown): Promise<void>;
 }
 
-export async function assertWorkspaceWriteAccess(
+export async function assertWorkspaceWritePermission(
   store: Pick<GoogleWorkspaceToolStore, 'getProjectSettings' | 'googleAccounts'>,
   projectId: string,
   file?: SessionWorkspaceFile,
-  accessToken?: string,
-): Promise<void> {
+) {
   if (store.googleAccounts && file && !file.folderLinkId) {
     const links = await store.googleAccounts.folders(projectId);
     if (links.some((link) => link.accountId === file.accountId))
@@ -58,6 +57,22 @@ export async function assertWorkspaceWriteAccess(
     );
     if (!link || link.accountId !== file.accountId || link.accessMode === 'read-only')
       throw new Error('The assigned file has no writable project folder access');
+    return link;
+  }
+  const settings = await store.getProjectSettings?.(projectId);
+  if (settings?.googleDriveFolderId && settings.googleDriveAccessMode === 'read-only')
+    throw new Error('This project has read-only Google Drive access');
+}
+
+/** Executors additionally prove current file membership with the selected account token. */
+export async function assertWorkspaceWriteAccess(
+  store: Pick<GoogleWorkspaceToolStore, 'getProjectSettings' | 'googleAccounts'>,
+  projectId: string,
+  file: SessionWorkspaceFile,
+  accessToken: string | undefined,
+): Promise<void> {
+  const link = await assertWorkspaceWritePermission(store, projectId, file);
+  if (link && store.googleAccounts) {
     if (!accessToken) throw new Error('Google Drive is not connected');
     await assertDriveFileInLinkedFolder(accessToken, link.folderId, file.fileId);
     const current = (await store.googleAccounts.folders(projectId)).find(
@@ -71,9 +86,5 @@ export async function assertWorkspaceWriteAccess(
       (file.credentialVersion != null && account.credentialVersion !== file.credentialVersion)
     )
       throw new Error('Google account or folder access changed before editing');
-    return;
   }
-  const settings = await store.getProjectSettings?.(projectId);
-  if (settings?.googleDriveFolderId && settings.googleDriveAccessMode === 'read-only')
-    throw new Error('This project has read-only Google Drive access');
 }

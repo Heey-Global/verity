@@ -139,9 +139,9 @@ it('keeps mixed-account folder operations on the chosen credentials and permissi
     name: 'Work',
     accessMode: 'read-write',
   });
-  const { assertWorkspaceWriteAccess } = await import('./google-workspace-tool-types.js');
+  const { assertWorkspaceWritePermission } = await import('./google-workspace-tool-types.js');
   await expect(
-    assertWorkspaceWriteAccess(ctx.store, 'p', {
+    assertWorkspaceWritePermission(ctx.store, 'p', {
       accountId: personal.id,
       assignmentId: 'unbound',
       fileId: 'doc',

@@ -3,7 +3,7 @@ import {
   googleApprovalAccount,
 } from './google-account-presentation.js';
 import { resolveGoogleDriveAuthority } from './google-drive-authority.js';
-import { assertWorkspaceWriteAccess } from './google-workspace-tool-types.js';
+import { assertWorkspaceWritePermission } from './google-workspace-tool-types.js';
 import { resolveGoogleServiceCredential } from './google-service-credentials.js';
 import { createMatrixTool, matrixRequestSchema } from './matrix-tool.js';
 import { attendeeResearchHints } from './attendee-research.js';
@@ -6289,7 +6289,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               'Google Workspace requires a matching file assigned to the calling session',
             );
           }
-          if (writing) await assertWorkspaceWriteAccess(deps.eventStore, projectId, file);
+          if (writing) await assertWorkspaceWritePermission(deps.eventStore, projectId, file);
           const account = file.accountId
             ? await deps.eventStore.googleAccounts.get(file.accountId)
             : undefined;

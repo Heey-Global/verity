@@ -33,6 +33,7 @@ async function harness(
   }) => Promise<void>,
   onApproval?: (store: EventStore) => Promise<void>,
   allow = true,
+  toolName: 'verity_google_drive' | 'verity_google_docs' = 'verity_google_drive',
 ) {
   const cipher = createSealableSecretCipher();
   cipher.unlock('ab'.repeat(32));
@@ -66,15 +67,26 @@ async function harness(
     email: 'me@example.test',
     clientId: 'client',
     refreshToken: 'refresh',
-    scopes: ['https://www.googleapis.com/auth/drive'],
+    scopes: ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/documents'],
   });
-  await store.googleAccounts.linkFolder({
+  const link = await store.googleAccounts.linkFolder({
     projectId: 'p1',
     accountId: account.id,
     folderId: 'root',
     name: 'Root',
     accessMode: 'read-write',
   });
+  if (toolName === 'verity_google_docs')
+    await store.setSessionWorkspaceFile({
+      sessionId: 's1',
+      accountId: account.id,
+      folderLinkId: link.id,
+      kind: 'docs',
+      fileId: 'doc',
+      name: 'Doc',
+      revisionId: 'r1',
+      webViewLink: 'https://docs.google.com/document/d/doc/edit',
+    });
   const mutate = vi.fn().mockResolvedValue({ id: 'file', trashed: true });
   const drive: GoogleDriveAgentApi = {
     get: vi.fn(async (_token, id) => ({
@@ -112,9 +124,15 @@ async function harness(
     secretCipher: cipher,
     conductor: { requestExternalPermission: approvals } as unknown as Conductor,
     mcpGateway: {
-      servedTools: ['verity_google_drive'],
+      servedTools: [toolName],
       resolveCaller: async (input) => tokens.resolve(input),
-      invokeTool: (input) => tool.invoke(input),
+      invokeTool: async (input) => {
+        if (toolName === 'verity_google_docs') {
+          await mutate(input);
+          return { edited: true };
+        }
+        return tool.invoke(input);
+      },
       recordCall: async () => {},
       requestMac: async ({ request: input }) => ({
         requestMac: createHash('sha256').update(JSON.stringify(input)).digest('hex'),
@@ -142,7 +160,7 @@ async function harness(
           jsonrpc: '2.0',
           id: ++id,
           method: 'tools/call',
-          params: { name: 'verity_google_drive', arguments: args },
+          params: { name: toolName, arguments: args },
         });
         return new Promise((resolve, reject) => {
           const req = request(
@@ -180,6 +198,26 @@ async function harness(
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+it('authorizes a writable folder-bound Workspace edit through the production gateway', async () => {
+  await harness(
+    async ({ call, mutate }) => {
+      expect(
+        (
+          await call({
+            action: 'edit',
+            revisionId: 'r1',
+            requests: [{ insertText: { text: 'x', location: { index: 1 } } }],
+          })
+        ).result?.isError,
+      ).not.toBe(true);
+      expect(mutate).toHaveBeenCalledOnce();
+    },
+    undefined,
+    true,
+    'verity_google_docs',
+  );
+});
 
 it('requires a card for every destructive Drive action, but not reads', async () => {
   await harness(async ({ call, approvals, mutate }) => {
