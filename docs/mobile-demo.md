@@ -72,7 +72,7 @@ reach the build under review; repository changes alone do not update TestFlight.
 
 The website's app images are rendered from the browser export instead of
 captured by hand. `apps/mobile/lib/demoShowcase.ts` defines a showcase scenario
-with several projects, sessions in different states, a Gmail approval and filled
+with several projects, sessions in different states, Gmail and Matrix approvals and filled
 Project Knowledge. It replaces the welcome sample only when the browser's
 `localStorage` contains `verity.demoShowcase.v1`; native apps never see it, so
 the review walkthrough above keeps its sample project. The demo banner is hidden in the
