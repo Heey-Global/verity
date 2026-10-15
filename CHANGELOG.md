@@ -6,6 +6,18 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.48.0](https://github.com/Heey-Global/verity/compare/v4.47.3...v4.48.0) (2026-10-15)
+
+
+### Features
+
+* **google:** support multiple accounts across Workspace ([#1654](https://github.com/Heey-Global/verity/issues/1654)) ([064049f](https://github.com/Heey-Global/verity/commit/064049f0353b04d87565deb41b3558b4b0772b1a))
+
+
+### Bug Fixes
+
+* **preview:** queue request bursts before rejecting traffic ([#1655](https://github.com/Heey-Global/verity/issues/1655)) ([21973cf](https://github.com/Heey-Global/verity/commit/21973cff250ac99f7f559f16a4999f09dbe63a9d))
+
 ## [4.47.3](https://github.com/Heey-Global/verity/compare/v4.47.2...v4.47.3) (2026-10-15)
 
 
