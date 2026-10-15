@@ -13,8 +13,6 @@
 // smallest element containing all of the crop's text markers. The files sit
 // directly in the website's assets folder because the website's checks and
 // Dockerfile list every asset by its flat `assets/<file>` path.
-/// <reference lib="dom" />
-/* global document, HTMLElement, localStorage */
 import { createReadStream, existsSync, mkdirSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, extname, join, resolve, sep } from 'node:path';
@@ -106,6 +104,21 @@ const SCENES = [
   },
 ];
 
+// The callbacks passed to `page.evaluate` run in the page. The scripts' type
+// program has no DOM library (adding it would retype `fetch` for every script),
+// so each callback reads the few browser globals it needs through this shape.
+/**
+ * @typedef {{ innerText: string, getBoundingClientRect(): { x: number, y: number, width: number, height: number } }} PageElement
+ * @typedef {{
+ *   document: {
+ *     fonts: { ready: Promise<unknown> },
+ *     querySelectorAll(selector: string): ArrayLike<PageElement>,
+ *     activeElement: { blur?: () => void } | null,
+ *   },
+ *   localStorage: { setItem(key: string, value: string): void },
+ * }} PageGlobals
+ */
+
 /** @type {Record<string, string>} */
 const CONTENT_TYPES = {
   '.html': 'text/html',
@@ -144,7 +157,9 @@ function serve(dist) {
 /** @param {import('playwright').Page} page */
 async function settle(page) {
   await page.waitForLoadState('networkidle');
-  await page.evaluate(() => document.fonts.ready);
+  await page.evaluate(
+    () => /** @type {PageGlobals} */ (/** @type {unknown} */ (globalThis)).document.fonts.ready,
+  );
   // Demo replies and layout animations are timer-driven, not network-driven.
   await page.waitForTimeout(1500);
 }
@@ -155,9 +170,10 @@ async function settle(page) {
  */
 async function cropBox(page, markers) {
   return page.evaluate((needles) => {
-    /** @param {HTMLElement} el */
+    const { document } = /** @type {PageGlobals} */ (/** @type {unknown} */ (globalThis));
+    /** @param {PageElement} el */
     const area = (el) => el.getBoundingClientRect().width * el.getBoundingClientRect().height;
-    const match = [...document.querySelectorAll('div')]
+    const match = Array.from(document.querySelectorAll('div'))
       .filter((el) => area(el) > 0 && needles.every((needle) => el.innerText.includes(needle)))
       .sort((a, b) => area(a) - area(b))[0];
     if (!match) return null;
@@ -181,6 +197,7 @@ async function render(browser, base, scene, out) {
     timezoneId: 'Europe/Berlin',
   });
   await context.addInitScript((entries) => {
+    const { localStorage } = /** @type {PageGlobals} */ (/** @type {unknown} */ (globalThis));
     for (const [key, value] of Object.entries(entries)) localStorage.setItem(key, value);
   }, STORAGE);
   const page = await context.newPage();
@@ -199,7 +216,8 @@ async function render(browser, base, scene, out) {
   if (errors.length) throw new Error(`${scene.name}: ${errors.join('; ')}`);
   // The browser client focuses the composer; images show it at rest.
   await page.evaluate(() => {
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    const { document } = /** @type {PageGlobals} */ (/** @type {unknown} */ (globalThis));
+    document.activeElement?.blur?.();
   });
   await page.waitForTimeout(300);
   if (!scene.cropsOnly) {
