@@ -36,6 +36,7 @@ import {
 } from './framing.js';
 import type { PreviewPinBudget, PinBudgetResult } from './pin-budget.js';
 import { StreamRegistry } from './streams.js';
+import { RequestQueue, RequestQueueError } from './request-queue.js';
 import { expiredPage, loginPage, PREVIEW_PAGE_CSP, previewErrorPage } from './preview-page.js';
 
 const LOGIN_PATH = '/__verity/login';
@@ -72,7 +73,12 @@ export interface PreviewEdgeOptions {
   requestBudget?: { acquire(): boolean; release(): void };
   maxBodyBytes?: number;
   requestTimeoutMs?: number;
+  /** Active HTTP requests; defaults to 8 independently of the stream pool. */
   maxConcurrentRequests?: number;
+  /** Waiting HTTP requests; defaults to 64 at the edge and 8 at the connector. */
+  maxQueuedRequests?: number;
+  /** Queue wait only; defaults to 30 seconds, separate from the request deadline. */
+  queueTimeoutMs?: number;
   /**
    * Ceiling for streams, which leave the request pool so a stalled EventSource
    * cannot starve page loads. The total in flight is therefore this plus
@@ -103,7 +109,12 @@ export interface PreviewConnectorOptions {
   onDiagnostic?: (diagnostic: PreviewConnectorDiagnostic) => void;
   /** Deadline for the edge upgrade, independent of target request deadlines. */
   connectTimeoutMs?: number;
+  /** Active HTTP requests; defaults to 8 independently of the stream pool. */
   maxConcurrentRequests?: number;
+  /** Waiting HTTP requests; defaults to 64 at the edge and 8 at the connector. */
+  maxQueuedRequests?: number;
+  /** Queue wait only; defaults to 30 seconds, separate from the request deadline. */
+  queueTimeoutMs?: number;
   /**
    * Ceiling for streams, which leave the request pool so a stalled EventSource
    * cannot starve page loads. The total in flight is therefore this plus
@@ -145,6 +156,10 @@ interface ConnectorHttpStream extends ConnectorStreamBase {
   chunks: Buffer[];
   cancelled: AbortController;
   headSent: boolean;
+  releaseRequest?: () => void;
+  bodyComplete: boolean;
+  bodyBytes: number;
+  waiting: boolean;
   /** Why the body relay is being torn down, when it is not an upstream fault. */
   failureCode?: StreamResetCode;
 }
@@ -235,7 +250,8 @@ export class PreviewEdge {
   private readonly streams: StreamRegistry<EdgeStream>;
   private readonly loginFailures = new Map<string, number[]>();
   private connector: WebSocket | undefined;
-  private activeRequests = 0;
+  private readonly admissions = new Set<AbortController>();
+  private readonly requests: RequestQueue;
   private activeStreams = 0;
   private loginVerifications = 0;
   private readonly expiresAtMs: number;
@@ -259,6 +275,8 @@ export class PreviewEdge {
     validatePositiveIntegerOption(options.maxBodyBytes, 'maxBodyBytes');
     validatePositiveIntegerOption(options.requestTimeoutMs, 'requestTimeoutMs');
     validatePositiveIntegerOption(options.maxConcurrentRequests, 'maxConcurrentRequests');
+    validatePositiveIntegerOption(options.maxQueuedRequests, 'maxQueuedRequests');
+    validatePositiveIntegerOption(options.queueTimeoutMs, 'queueTimeoutMs');
     validatePositiveIntegerOption(options.maxConcurrentStreams, 'maxConcurrentStreams');
     const origin = new URL(options.publicOrigin);
     if (
@@ -275,11 +293,18 @@ export class PreviewEdge {
       publicOrigin: origin.origin,
       maxBodyBytes: options.maxBodyBytes ?? 10 * 1024 * 1024,
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
-      maxConcurrentRequests: options.maxConcurrentRequests ?? 4,
+      maxConcurrentRequests: options.maxConcurrentRequests ?? 8,
+      maxQueuedRequests: options.maxQueuedRequests ?? 64,
+      queueTimeoutMs: options.queueTimeoutMs ?? 30_000,
       maxConcurrentStreams: options.maxConcurrentStreams ?? options.maxConcurrentRequests ?? 4,
       trustedProxyHops: options.trustedProxyHops ?? 0,
       expiresAt: options.expiresAt ?? new Date(8_640_000_000_000_000).toISOString(),
     };
+    this.requests = new RequestQueue(
+      this.options.maxConcurrentRequests,
+      this.options.maxQueuedRequests,
+      this.options.queueTimeoutMs,
+    );
     this.expiresAtMs = Date.parse(this.options.expiresAt);
     if (!Number.isFinite(this.expiresAtMs)) throw new Error('expiresAt must be an ISO timestamp');
     this.streams = new StreamRegistry<EdgeStream>({ maxBodyBytes: this.options.maxBodyBytes });
@@ -751,11 +776,16 @@ export class PreviewEdge {
    * or the connector goes away — nothing would ever complete these, and a
    * WebSocket left open would outlive the share it belongs to. */
   private resetAll(error: Error): void {
+    this.requests.cancelPending(error);
+    for (const admission of this.admissions) admission.abort(error);
     for (const record of this.streams.drain()) record.context.fail(error);
   }
 
   private async handleHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    let counted = false;
+    let releaseRequest: (() => void) | undefined;
+    const admission = new AbortController();
+    const readerGone = (): void => admission.abort(new Error('preview reader disconnected'));
+    response.once('close', readerGone);
     let streaming = false;
     let budgetAcquired = false;
     try {
@@ -897,9 +927,13 @@ export class PreviewEdge {
         );
         return;
       }
-      if (this.activeRequests >= this.options.maxConcurrentRequests) {
-        sendPreviewError(response, 503, 'The preview is busy. Try again shortly.', '1');
-        return;
+      this.admissions.add(admission);
+      releaseRequest = await this.requests.acquire(admission.signal);
+      // Admission may resume after the reader left or a connector was replaced.
+      admission.signal.throwIfAborted();
+      if (this.expired()) throw new Error('preview share expired');
+      if (this.connector !== connector || connector.readyState !== WebSocket.OPEN) {
+        throw new Error('preview connector disconnected');
       }
       if (
         this.options.requestBudget &&
@@ -912,13 +946,13 @@ export class PreviewEdge {
           return;
         }
       }
-      this.activeRequests += 1;
-      counted = true;
       const body = await readBody(
         request,
         this.options.maxBodyBytes,
         this.options.requestTimeoutMs,
+        admission.signal,
       );
+      admission.signal.throwIfAborted();
       if (this.expired()) throw new Error('preview share expired');
       const streamId = randomUUID();
       await new Promise<void>((resolve, reject) => {
@@ -947,19 +981,14 @@ export class PreviewEdge {
           abandon('client_gone', 'preview reader disconnected');
         };
         response.on('close', onReaderGone);
-        let headArrived = false;
-        timer = setTimeout(() => {
-          // The deadline no longer ends an exchange that is making progress, it
-          // reclassifies one. Every response is a stream now, so the head cannot
-          // say whether this is a page load or a live feed — but outliving the
-          // request deadline can, and it needs no guess about the content type.
-          if (!headArrived) {
-            abandon('timeout', 'preview request timed out');
-            return;
-          }
-          // Long-lived exchanges leave the request pool so a stalled EventSource
-          // cannot starve page loads, which means they need a ceiling of their
-          // own rather than an unbounded second life.
+        // The connector owns the precise upstream deadline after admission.
+        // This watchdog also allows its bounded queue wait, otherwise a late
+        // admission would inherit only the unused tail of the edge's deadline.
+        timer = setTimeout(
+          () => abandon('timeout', 'preview request timed out'),
+          Math.min(MAX_TIMEOUT_MS, this.options.queueTimeoutMs + this.options.requestTimeoutMs),
+        );
+        const classifyStream = (): void => {
           if (this.activeStreams >= this.options.maxConcurrentStreams) {
             abandon('concurrency_limit', 'preview stream concurrency limit reached');
             return;
@@ -967,14 +996,24 @@ export class PreviewEdge {
           timer = undefined;
           streaming = true;
           this.activeStreams += 1;
-          this.activeRequests -= 1;
-          counted = false;
-        }, this.options.requestTimeoutMs);
+          releaseRequest?.();
+        };
         this.streams.openOutbound(streamId, 'http', {
           fail: (error) => settle(() => reject(error)),
           head: (meta) => {
-            const { status, headers: responseHeaders } = meta as HttpResponseMeta;
-            headArrived = true;
+            const {
+              status,
+              headers: responseHeaders,
+              upstreamElapsedMs = 0,
+            } = meta as HttpResponseMeta;
+            // The elapsed duration keeps both pools aligned without depending
+            // on wall-clock agreement or counting the connector's queue wait.
+            // Older connectors omit it and get a conservative full interval.
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(
+              classifyStream,
+              Math.max(1, this.options.requestTimeoutMs - upstreamElapsedMs),
+            );
             response.writeHead(
               status,
               sanitizeResponseHeaders(responseHeaders, this.options.accessMode),
@@ -1026,6 +1065,10 @@ export class PreviewEdge {
         response.destroy(error instanceof Error ? error : new Error(message));
         return;
       }
+      if (error instanceof RequestQueueError) {
+        sendPreviewError(response, 503, error.message, '1');
+        return;
+      }
       const status = message.includes('preview share expired')
         ? 410
         : message.includes('preview request too large')
@@ -1045,7 +1088,9 @@ export class PreviewEdge {
       });
     } finally {
       if (budgetAcquired) this.options.requestBudget?.release();
-      if (counted) this.activeRequests -= 1;
+      this.admissions.delete(admission);
+      response.off('close', readerGone);
+      releaseRequest?.();
       if (streaming) this.activeStreams -= 1;
     }
   }
@@ -1263,8 +1308,10 @@ export class PreviewConnector {
   private readonly streams: StreamRegistry<ConnectorStream>;
   private socket: WebSocket | undefined;
   private disconnected: Promise<void> = Promise.resolve();
-  private activeRequests = 0;
+  private readonly requests: RequestQueue;
   private activeStreams = 0;
+  private bufferedRequestBytes = 0;
+  private queuedRequestBytes = 0;
   private heartbeat: NodeJS.Timeout | undefined;
   private heartbeatDeadline: NodeJS.Timeout | undefined;
 
@@ -1273,6 +1320,8 @@ export class PreviewConnector {
     validatePositiveIntegerOption(options.maxBodyBytes, 'maxBodyBytes');
     validatePositiveIntegerOption(options.requestTimeoutMs, 'requestTimeoutMs');
     validatePositiveIntegerOption(options.maxConcurrentRequests, 'maxConcurrentRequests');
+    validatePositiveIntegerOption(options.maxQueuedRequests, 'maxQueuedRequests');
+    validatePositiveIntegerOption(options.queueTimeoutMs, 'queueTimeoutMs');
     validatePositiveIntegerOption(options.maxConcurrentStreams, 'maxConcurrentStreams');
     const edge = new URL(options.edgeUrl);
     if (!['ws:', 'wss:'].includes(edge.protocol)) throw new Error('edgeUrl must use ws or wss');
@@ -1305,9 +1354,16 @@ export class PreviewConnector {
       onDiagnostic: options.onDiagnostic ?? (() => undefined),
       maxBodyBytes: options.maxBodyBytes ?? 10 * 1024 * 1024,
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
-      maxConcurrentRequests: options.maxConcurrentRequests ?? 4,
+      maxConcurrentRequests: options.maxConcurrentRequests ?? 8,
+      maxQueuedRequests: options.maxQueuedRequests ?? 8,
+      queueTimeoutMs: options.queueTimeoutMs ?? 30_000,
       maxConcurrentStreams: options.maxConcurrentStreams ?? options.maxConcurrentRequests ?? 4,
     };
+    this.requests = new RequestQueue(
+      this.options.maxConcurrentRequests,
+      this.options.maxQueuedRequests,
+      this.options.queueTimeoutMs,
+    );
     this.streams = new StreamRegistry<ConnectorStream>({
       maxBodyBytes: this.options.maxBodyBytes,
     });
@@ -1479,34 +1535,23 @@ export class PreviewConnector {
       if (!isHttpRequestMeta(frame.meta)) {
         return this.faultStream(socket, frame.streamId, 'protocol_error');
       }
-      if (this.activeRequests >= this.options.maxConcurrentRequests) {
-        // Refused with a real status rather than a bare reset: nothing has been
-        // sent yet, so the reader can still be told to retry instead of being
-        // handed the generic failure a reset would surface as.
-        sendErrorResponse(
-          socket,
-          frame.streamId,
-          503,
-          'Connector request concurrency limit reached.',
-          this.options.maxBodyBytes,
-        );
-        return;
-      }
       const context: ConnectorHttpStream = {
         channel: 'http',
         meta: frame.meta,
         chunks: [],
         cancelled: new AbortController(),
-        counted: true,
+        counted: false,
         streaming: false,
         headSent: false,
+        bodyComplete: false,
+        bodyBytes: 0,
+        waiting: true,
       };
-      this.activeRequests += 1;
       const result = this.streams.acceptOpen(frame.streamId, 'http', context);
       if (!result.ok) {
-        this.activeRequests -= 1;
         return this.faultStream(socket, frame.streamId, result.code);
       }
+      this.admitRequest(socket, frame.streamId, context);
       return;
     }
     // As on the edge, a frame for a stream this side already released lost a race
@@ -1520,6 +1565,19 @@ export class PreviewConnector {
         if (!result.ok) return this.faultStream(socket, frame.streamId, result.code);
         const context = record.context;
         if (context.channel === 'http') {
+          // Bound the whole request pool as well as its smaller waiting reserve.
+          if (
+            this.bufferedRequestBytes + payload.byteLength > this.options.maxBodyBytes ||
+            (context.waiting &&
+              this.queuedRequestBytes + payload.byteLength >
+                Math.min(this.options.maxBodyBytes, 1024 * 1024))
+          ) {
+            this.rejectRequest(socket, frame.streamId, context, 'Preview request buffer is busy.');
+            return;
+          }
+          context.bodyBytes += payload.byteLength;
+          this.bufferedRequestBytes += payload.byteLength;
+          if (context.waiting) this.queuedRequestBytes += payload.byteLength;
           context.chunks.push(payload);
           return;
         }
@@ -1551,7 +1609,8 @@ export class PreviewConnector {
           return;
         }
         // The request is complete, so the exchange can go upstream.
-        void this.relay(socket, frame.streamId, context);
+        context.bodyComplete = true;
+        if (context.counted) void this.relay(socket, frame.streamId, context);
         return;
       }
       case 'stream.reset': {
@@ -1562,6 +1621,47 @@ export class PreviewConnector {
         return;
       }
     }
+  }
+
+  private admitRequest(socket: WebSocket, streamId: string, context: ConnectorHttpStream): void {
+    const admitted = (release: () => void): void => {
+      if (context.cancelled.signal.aborted || socket.readyState !== WebSocket.OPEN) {
+        release();
+        return;
+      }
+      this.queuedRequestBytes -= context.bodyBytes;
+      context.waiting = false;
+      context.releaseRequest = release;
+      context.counted = true;
+      if (context.bodyComplete) void this.relay(socket, streamId, context);
+    };
+    const refused = (error: unknown): void => {
+      if (!context.cancelled.signal.aborted) {
+        this.rejectRequest(
+          socket,
+          streamId,
+          context,
+          error instanceof Error ? error.message : 'Preview request admission failed.',
+        );
+      }
+    };
+    try {
+      const admission = this.requests.acquire(context.cancelled.signal);
+      if (typeof admission === 'function') admitted(admission);
+      else void admission.then(admitted, refused);
+    } catch (error) {
+      refused(error);
+    }
+  }
+
+  private rejectRequest(
+    socket: WebSocket,
+    streamId: string,
+    context: ConnectorHttpStream,
+    message: string,
+  ): void {
+    sendErrorResponse(socket, streamId, 503, message, this.options.maxBodyBytes);
+    this.release(streamId, context);
   }
 
   private faultStream(socket: WebSocket, streamId: string, code: StreamResetCode): void {
@@ -1667,6 +1767,7 @@ export class PreviewConnector {
    * anything at all.
    */
   private abandonAll(): void {
+    this.requests.cancelPending(new Error('preview connector disconnected'));
     for (const record of this.streams.drain()) {
       const context = record.context;
       this.release(record.streamId, context);
@@ -1681,12 +1782,19 @@ export class PreviewConnector {
   private release(streamId: string, context: ConnectorStream): void {
     this.streams.reset(streamId);
     if (context.counted) {
-      this.activeRequests -= 1;
       context.counted = false;
+      if (context.channel === 'http') context.releaseRequest?.();
     }
     if (context.streaming) {
       this.activeStreams -= 1;
       context.streaming = false;
+    }
+    if (context.channel === 'http') {
+      context.cancelled.abort(new Error('preview request released'));
+      this.bufferedRequestBytes -= context.bodyBytes;
+      if (context.waiting) this.queuedRequestBytes -= context.bodyBytes;
+      context.bodyBytes = 0;
+      context.chunks = [];
     }
   }
 
@@ -1697,12 +1805,13 @@ export class PreviewConnector {
   ): Promise<void> {
     let deadline: NodeJS.Timeout | undefined;
     const disconnected = new AbortController();
+    const expired = new AbortController();
+    const upstreamStarted = performance.now();
     const abortOnDisconnect = (): void => disconnected.abort();
     socket.once('close', abortOnDisconnect);
     try {
       const target = new URL(context.meta.path, this.options.targetOrigin);
       if (target.origin !== this.options.targetOrigin) throw new Error('target origin changed');
-      const expired = new AbortController();
       // Before the head the deadline is a timeout: `maxBodyBytes` caps size, not
       // time, so a target that never answers would hold a slot indefinitely.
       // After it, the same instant is instead where an exchange that is still
@@ -1721,8 +1830,8 @@ export class PreviewConnector {
         context.streaming = true;
         this.activeStreams += 1;
         if (context.counted) {
-          this.activeRequests -= 1;
           context.counted = false;
+          context.releaseRequest?.();
         }
       }, this.options.requestTimeoutMs);
       const init: RequestInit = {
@@ -1734,6 +1843,7 @@ export class PreviewConnector {
       if (context.meta.method !== 'GET' && context.meta.method !== 'HEAD') {
         init.body = Buffer.concat(context.chunks);
       }
+      context.chunks = [];
       const upstream = await fetch(target, init);
       // A declared `content-length` is deliberately not compared against
       // `maxBodyBytes`. The response is sliced into frames and relayed, never
@@ -1749,6 +1859,7 @@ export class PreviewConnector {
         channel: 'http',
         meta: {
           status: upstream.status,
+          upstreamElapsedMs: Math.max(0, Math.floor(performance.now() - upstreamStarted)),
           headers: filteredResponseHeaders(upstream.headers, target, this.options.accessMode),
         },
       });
@@ -1767,7 +1878,7 @@ export class PreviewConnector {
         sendErrorResponse(
           socket,
           streamId,
-          502,
+          expired.signal.aborted ? 504 : 502,
           error instanceof Error ? error.message : 'connector request failed',
           this.options.maxBodyBytes,
         );
@@ -1848,7 +1959,12 @@ export class PreviewConnector {
   }
 }
 
-function readBody(request: IncomingMessage, limit: number, timeoutMs?: number): Promise<Buffer> {
+function readBody(
+  request: IncomingMessage,
+  limit: number,
+  timeoutMs?: number,
+  signal?: AbortSignal,
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -1859,6 +1975,7 @@ function readBody(request: IncomingMessage, limit: number, timeoutMs?: number): 
       request.off('end', onEnd);
       request.off('error', onError);
       request.off('aborted', onAborted);
+      signal?.removeEventListener('abort', onCancelled);
     };
     const fail = (error: Error, closeConnection = false): void => {
       cleanup();
@@ -1880,6 +1997,12 @@ function readBody(request: IncomingMessage, limit: number, timeoutMs?: number): 
     };
     const onError = (error: Error): void => fail(error);
     const onAborted = (): void => fail(new Error('preview request aborted'));
+    const onCancelled = (): void => fail(signal?.reason as Error, true);
+    if (signal?.aborted) {
+      onCancelled();
+      return;
+    }
+    signal?.addEventListener('abort', onCancelled, { once: true });
     request.on('data', onData);
     request.once('end', onEnd);
     request.once('error', onError);
