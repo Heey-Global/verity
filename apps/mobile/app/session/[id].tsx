@@ -9805,6 +9805,14 @@ function InputBar({
   // The browser's own focus ring is removed (WEB_NO_FOCUS_RING); the card
   // shows focus in the action color instead, so keyboard users keep a cue.
   const [focused, setFocused] = useState(false);
+  const onComposerFocus = useCallback(() => {
+    setFocused(true);
+    onFocus?.();
+  }, [onFocus]);
+  const onComposerBlur = useCallback(() => {
+    setFocused(false);
+    onBlur?.();
+  }, [onBlur]);
   const attachBtnRef = useRef<View>(null);
   const openAttachMenu = useAttachmentMenuAnchor(attachBtnRef, onAttach);
   const onComposerKeyPress = useCallback(
@@ -9890,14 +9898,8 @@ function InputBar({
             submitOnReturn={shouldSubmitOnReturn(keyboardHeight)}
             onSend={onSend}
             onKeyPress={onComposerKeyPress}
-            onFocus={() => {
-              setFocused(true);
-              onFocus?.();
-            }}
-            onBlur={() => {
-              setFocused(false);
-              onBlur?.();
-            }}
+            onFocus={onComposerFocus}
+            onBlur={onComposerBlur}
             placeholder={
               dead
                 ? 'This session can’t be resumed'

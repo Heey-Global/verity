@@ -234,10 +234,13 @@ if (!existsSync(join(dist, 'index.html')))
   );
 const out = resolve(args.out ?? '');
 mkdirSync(out, { recursive: true });
-const only = args.only;
-const scenes = only ? SCENES.filter((scene) => only.includes(scene.name)) : SCENES;
-if (scenes.length === 0)
-  throw new Error(`Unknown scene. Known: ${SCENES.map((s) => s.name).join(', ')}`);
+const only = args.only ?? [];
+const unknown = only.filter((name) => !SCENES.some((scene) => scene.name === name));
+if (unknown.length)
+  throw new Error(
+    `Unknown scene ${unknown.join(', ')}. Known: ${SCENES.map((s) => s.name).join(', ')}`,
+  );
+const scenes = only.length ? SCENES.filter((scene) => only.includes(scene.name)) : SCENES;
 
 const server = await serve(dist);
 const browser = await chromium.launch();
