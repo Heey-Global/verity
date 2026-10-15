@@ -7,23 +7,17 @@ function sessionMethods(client: VerityClient, service: GoogleService) {
   if (service === 'gmail')
     return {
       get: client.getSessionGmailConnection.bind(client),
-      enable: client.enableSessionGmail.bind(client),
-      disable: client.disableSessionGmail.bind(client),
       connect: client.connectGmail.bind(client),
       auth: runGmailAuth,
     };
   if (service === 'calendar')
     return {
       get: client.getSessionCalendarConnection.bind(client),
-      enable: client.enableSessionCalendar.bind(client),
-      disable: client.disableSessionCalendar.bind(client),
       connect: client.connectCalendar.bind(client),
       auth: runCalendarAuth,
     };
   return {
     get: client.getSessionContactsConnection.bind(client),
-    enable: client.enableSessionContacts.bind(client),
-    disable: client.disableSessionContacts.bind(client),
     connect: client.connectContacts.bind(client),
     auth: runContactsAuth,
   };
@@ -49,6 +43,7 @@ export async function connectSessionGoogleService(
   client: VerityClient,
   sessionId: string,
   service: GoogleService,
+  accountId?: string | null,
 ): Promise<
   | { kind: 'cancelled' }
   | {
@@ -58,21 +53,40 @@ export async function connectSessionGoogleService(
     }
 > {
   const methods = sessionMethods(client, service);
-  const connection = await methods.get(sessionId);
-  if (!connection.connected) {
+  let selectedId = accountId;
+  if (selectedId === undefined) {
+    const accounts = (await client.listGoogleAccounts()).filter((account) => {
+      const suffixes = {
+        gmail: ['gmail.readonly', 'gmail.compose', 'gmail.settings.basic'],
+        calendar: ['calendar.calendarlist.readonly', 'calendar.events'],
+        contacts: ['contacts.readonly'],
+      }[service];
+      return suffixes.every((scope) =>
+        account.scopes.includes(`https://www.googleapis.com/auth/${scope}`),
+      );
+    });
+    if (accounts.length > 1) throw new Error('Choose a Google account');
+    selectedId = accounts[0]?.id;
+  }
+  if (!selectedId) {
+    const connection = await client.getGoogleDriveConnection();
     if (!connection.clientId) throw new Error('Google sign-in is not configured on this server.');
     const auth = await methods.auth(connection.clientId);
     if (auth.kind === 'cancelled') return { kind: 'cancelled' };
-    await methods.connect({
+    const connected = await methods.connect({
       code: auth.code,
       codeVerifier: auth.codeVerifier,
       redirectUri: auth.redirectUri,
     });
+    if (!connected.accountId)
+      throw new Error('The connected Google account could not be identified');
+    selectedId = connected.accountId;
   }
-  // A chat toggle grants this session only; project-wide access is an explicit
-  // project setting and must never be created as a side effect of a chat.
-  const enabled = await methods.enable(sessionId);
-  // Consent can switch accounts or remove scopes, revoking sibling grants.
+  const enabled = await client.setSessionGoogleAccess(sessionId, service, {
+    mode: 'account',
+    accountId: selectedId,
+  });
+  // Reload effective access without changing sibling service grants.
   const services = ['gmail', 'calendar', 'contacts'] as const;
   const snapshots = await Promise.all(
     services.map(async (current) => {
@@ -95,16 +109,10 @@ export async function connectSessionGoogleService(
 export async function disconnectSessionGoogleService(
   client: VerityClient,
   sessionId: string,
-  projectId: string | null | undefined,
+  _projectId: string | null | undefined,
   service: GoogleService,
 ): Promise<'project' | 'session'> {
-  // A project grant keeps the session enabled, so revoking only the session
-  // grant would leave access in place.
-  if ((await projectGrant(client, projectId, service))?.enabled) {
-    await client.disableProjectGoogleConnection(projectId!, service);
-    return 'project';
-  }
-  await sessionMethods(client, service).disable(sessionId);
+  await client.setSessionGoogleAccess(sessionId, service, { mode: 'disabled' });
   return 'session';
 }
 
@@ -132,7 +140,7 @@ export async function hasConnectedGoogleAccount(
   sessionId: string,
 ): Promise<boolean> {
   try {
-    return (await client.getGoogleConnection()).connected;
+    return (await client.listGoogleAccounts()).length > 0;
   } catch (error) {
     if (!(error instanceof VerityApiError) || error.status !== 404) throw error;
     const connections = await Promise.all(

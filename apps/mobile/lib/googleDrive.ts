@@ -161,7 +161,11 @@ async function runGoogleAuth(clientId: string, scopes: string[]): Promise<Google
     redirectUri,
     usePKCE: true,
     responseType: AuthSession.ResponseType.Code,
-    extraParams: { access_type: 'offline', prompt: 'consent', include_granted_scopes: 'true' },
+    extraParams: {
+      access_type: 'offline',
+      prompt: 'select_account consent',
+      include_granted_scopes: 'true',
+    },
   });
   // Building the URL generates and stores the PKCE code verifier on the request.
   await request.makeAuthUrlAsync(DISCOVERY);
@@ -179,14 +183,22 @@ async function runGoogleAuth(clientId: string, scopes: string[]): Promise<Google
 export async function ensureGoogleWorkspaceAccess(
   client: VerityClient,
   mimeType: string,
+  accountId?: string,
 ): Promise<boolean> {
   const scope = googleWorkspaceScope(mimeType);
   if (!scope) throw new Error('Unsupported Google Workspace file type');
   const connection = await client.getGoogleDriveConnection();
-  if (WORKSPACE_SCOPES.every((required) => connection.scopes.includes(required))) return true;
+  const accounts = await client.listGoogleAccounts();
+  if (!accountId && accounts.length > 1) throw new Error('Choose a Google account');
+  const selected = accountId ? accounts.find((account) => account.id === accountId) : accounts[0];
+  if (accountId && !selected) throw new Error('The Google account is no longer connected');
+  if (
+    WORKSPACE_SCOPES.every((required) => (selected?.scopes ?? connection.scopes).includes(required))
+  )
+    return true;
   if (!connection.clientId) throw new Error('Google sign-in is not configured');
   const auth = await runGoogleWorkspaceAuth(connection.clientId, mimeType);
   if (auth.kind === 'cancelled') return false;
-  await client.connectGoogleDrive(auth);
+  await client.connectGoogleDrive({ ...auth, ...(selected ? { accountId: selected.id } : {}) });
   return true;
 }

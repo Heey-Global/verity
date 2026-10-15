@@ -1075,3 +1075,40 @@ it.each([
   expect(invokeTool).toHaveBeenCalledOnce();
   expect(invokeTool).toHaveBeenCalledWith(expect.objectContaining({ request }));
 });
+
+describe('account-bound approval snapshots', () => {
+  it('does not execute when account authority changes while approval is pending', async () => {
+    let authority = 'account-one:grant-one';
+    const { gateway, invokeTool } = harness({
+      authorizationSnapshot: async () => authority,
+      requestApproval: async () => {
+        authority = 'account-two:grant-two';
+        return ALLOW;
+      },
+    });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(),
+    });
+    expect(resultOf(response.body).isError).toBe(true);
+    expect(invokeTool).not.toHaveBeenCalled();
+  });
+
+  it('requires a different approval receipt after authority changes on a transport retry', async () => {
+    let authority = 'account-one:grant-one';
+    const receipts: string[] = [];
+    const { gateway } = harness({
+      authorizationSnapshot: async () => authority,
+      requestApproval: async (input) => {
+        receipts.push(input.invocationId);
+        return ALLOW;
+      },
+    });
+    await gateway.handle({ projectId: 'p1', token: 'session-token', body: call() });
+    authority = 'account-two:grant-two';
+    await gateway.handle({ projectId: 'p1', token: 'session-token', body: call() });
+    expect(receipts).toHaveLength(2);
+    expect(receipts[0]).not.toBe(receipts[1]);
+  });
+});

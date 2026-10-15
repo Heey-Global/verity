@@ -48,6 +48,7 @@ export function registerConnectionUsageRoutes(
         }
       }
       if (
+        (await store.googleAccounts.folders(project.id)).length > 0 ||
         settings?.googleDriveFolderId ||
         grants.some((grant) => grant !== undefined) ||
         legacyGoogle

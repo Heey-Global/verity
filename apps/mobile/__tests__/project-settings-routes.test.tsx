@@ -998,25 +998,36 @@ describe('project settings — GitHub', () => {
   });
 });
 
-it('changes only the project Drive access mode', async () => {
+it('changes only the selected account-bound project Drive folder mode', async () => {
   setSearchParams({ id: 'p/1', section: 'drive' });
-  const detail = makeDetail();
-  detail.settings = {
-    ...detail.settings!,
-    googleDriveFolderId: 'root',
-    googleDriveFolderName: 'Documents',
-    googleDriveAccessMode: 'read-only',
-  };
-  const updateProjectSettings = jest
-    .fn()
-    .mockResolvedValue({ ...detail.settings, googleDriveAccessMode: 'read-write' });
-  mockCreateVerityClient.mockReturnValue(makeClient({ detail, updateProjectSettings }));
+  const connectProjectGoogleDriveFolder = jest.fn().mockResolvedValue({});
+  const client = makeClient({ detail: makeDetail() });
+  Object.assign(client, {
+    listProjectDriveFolders: jest.fn().mockResolvedValue([
+      {
+        id: 'link',
+        projectId: 'p/1',
+        accountId: 'work',
+        accountEmail: 'work@example.test',
+        accountName: null,
+        folderId: 'root',
+        name: 'Documents',
+        accessMode: 'read-only',
+      },
+    ]),
+    connectProjectGoogleDriveFolder,
+  });
+  mockCreateVerityClient.mockReturnValue(client);
   render(<ProjectServicesScreen />);
-  fireEvent.press(await screen.findByText('Google Drive folder'));
+  fireEvent.press(await screen.findByText('Google Drive folders'));
+  fireEvent.press(await screen.findByText('Documents'));
   fireEvent.press(await screen.findByLabelText(/^Allow changes to Google Drive files(,|$)/));
   await waitFor(() =>
-    expect(updateProjectSettings).toHaveBeenCalledWith('p/1', {
-      googleDriveAccessMode: 'read-write',
-    }),
+    expect(connectProjectGoogleDriveFolder).toHaveBeenCalledWith(
+      'p/1',
+      'root',
+      'read-write',
+      'work',
+    ),
   );
 });

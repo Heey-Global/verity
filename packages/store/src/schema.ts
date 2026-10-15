@@ -100,6 +100,8 @@ interface SessionLinkPendingMessagesTable {
 
 /** One native Google Workspace file explicitly assigned to a session. */
 interface SessionSlideDecksTable {
+  folder_link_id: ColumnType<string | null, string | null | undefined, string | null>;
+  account_id: ColumnType<string | null, string | null | undefined, string | null>;
   session_id: string;
   assignment_id: string;
   kind: 'slides' | 'docs' | 'sheets';
@@ -110,8 +112,49 @@ interface SessionSlideDecksTable {
   assigned_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
+export interface GoogleAccountsTable {
+  id: string;
+  email: string;
+  subject: string | null;
+  display_name: string | null;
+  client_id: string;
+  refresh_token: string;
+  scopes: ColumnType<string[], string, string>;
+  credential_version: ColumnType<number, number | undefined, number>;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
+export interface GoogleServiceOverridesTable {
+  mode: 'inherit' | 'disabled' | 'account';
+  revision: string;
+  session_id: string;
+  service: 'gmail' | 'calendar' | 'contacts';
+  account_id: string | null;
+  updated_at: ColumnType<Date, string | undefined, string>;
+}
+
+export interface ProjectGoogleDriveFoldersTable {
+  revision: string;
+  id: string;
+  project_id: string;
+  account_id: string;
+  folder_id: string;
+  name: string;
+  access_mode: 'read-only' | 'read-write';
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
+interface GoogleWorkspaceRecentsTable {
+  account_id: string;
+  file_id: string;
+  kind: 'docs' | 'sheets' | 'slides';
+  last_assigned_at: ColumnType<Date, string | undefined, string | undefined>;
+}
+
 /** Explicit Gmail access grant for one session. */
 interface ProjectGoogleConnectionsTable {
+  revision: ColumnType<string | null, string | null | undefined, string | null>;
+  account_id: ColumnType<string | null, string | null | undefined, string | null>;
   project_id: string;
   service: 'gmail' | 'calendar' | 'contacts';
   account_email: string;
@@ -140,6 +183,7 @@ interface SessionContactsConnectionsTable {
 
 /** Workspace file ids ordered by their latest explicit assignment. */
 interface RecentGoogleSlideDecksTable {
+  account_id: ColumnType<string | null, string | null | undefined, string | null>;
   file_id: string;
   kind: 'slides' | 'docs' | 'sheets';
   last_assigned_at: ColumnType<Date, string | undefined, string | undefined>;
@@ -147,6 +191,7 @@ interface RecentGoogleSlideDecksTable {
 
 /** Durable cleanup outbox created before a temporary Drive image becomes public. */
 interface GoogleSlideImageCleanupTable {
+  account_id: ColumnType<string | null, string | null | undefined, string | null>;
   id: string;
   session_id: string;
   file_id: string;
@@ -507,12 +552,10 @@ export interface VeritySettingsTable {
   opencode_api_key: ColumnType<string | null, string | null | undefined, string | null>;
   opencode_models: ColumnType<string | null, string | null | undefined, string | null>;
   opencode_disabled_models: ColumnType<string | null, string | null | undefined, string | null>;
-  /** Google connection for Drive imports and assigned Slides editing (ADRs 0009/0016). The iOS
-   *  OAuth client id is non-secret config (it ships in the app); the connected
-   *  account email is non-secret display metadata; the refresh token is a
-   *  secret, encrypted at rest via the store's SecretCipher. Singleton columns
-   *  (like the GitHub App credential); a per-account table replaces these when
-   *  multi-account support lands. */
+  /** Legacy Google singleton fields retained for migration and older clients.
+   * Credentials and grants are resolved through google_accounts. The OAuth client
+   * id and email are public metadata; the legacy refresh token remains encrypted
+   * with SecretCipher while compatibility writes retain it. */
   google_drive_client_id: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_account_email: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_refresh_token: ColumnType<string | null, string | null | undefined, string | null>;
@@ -1458,6 +1501,10 @@ export interface Database {
   starter_project: StarterProjectTable;
   sessions: SessionsTable;
   session_slide_decks: SessionSlideDecksTable;
+  google_workspace_recents: GoogleWorkspaceRecentsTable;
+  google_accounts: GoogleAccountsTable;
+  google_service_overrides: GoogleServiceOverridesTable;
+  project_google_drive_folders: ProjectGoogleDriveFoldersTable;
   project_google_connections: ProjectGoogleConnectionsTable;
   session_gmail_connections: SessionGmailConnectionsTable;
   session_calendar_connections: SessionCalendarConnectionsTable;

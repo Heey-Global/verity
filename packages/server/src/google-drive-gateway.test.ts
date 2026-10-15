@@ -62,6 +62,19 @@ async function harness(
     googleDriveRefreshToken: 'refresh',
     googleDriveAccountEmail: 'me@example.test',
   });
+  const account = await store.googleAccounts.save({
+    email: 'me@example.test',
+    clientId: 'client',
+    refreshToken: 'refresh',
+    scopes: ['https://www.googleapis.com/auth/drive'],
+  });
+  await store.googleAccounts.linkFolder({
+    projectId: 'p1',
+    accountId: account.id,
+    folderId: 'root',
+    name: 'Root',
+    accessMode: 'read-write',
+  });
   const mutate = vi.fn().mockResolvedValue({ id: 'file', trashed: true });
   const drive: GoogleDriveAgentApi = {
     get: vi.fn(async (_token, id) => ({
@@ -191,7 +204,8 @@ it('does not mutate after access is revoked while approval is pending', async ()
       expect(mutate).not.toHaveBeenCalled();
     },
     async (store) => {
-      await store.updateProjectSettings('p1', { googleDriveAccessMode: 'read-only' });
+      const link = (await store.googleAccounts.folders('p1'))[0]!;
+      await store.googleAccounts.linkFolder({ ...link, accessMode: 'read-only' });
     },
   );
 });
@@ -209,7 +223,10 @@ it('does not treat a denied card as permission to trash a file', async () => {
 
 it('requires approval for a document URL read without a project folder', async () => {
   await harness(async ({ store, call, approvals, mutate }) => {
-    await store.updateProjectSettings('p1', { googleDriveFolderId: null });
+    await store.googleAccounts.unlinkFolder(
+      'p1',
+      (await store.googleAccounts.folders('p1'))[0]!.id,
+    );
     const result = await call({
       action: 'read_document_url',
       url: 'https://docs.google.com/document/d/shared/edit',
@@ -218,6 +235,16 @@ it('requires approval for a document URL read without a project folder', async (
     expect(result.result).toBeDefined();
     expect(result.result?.isError).not.toBe(true);
     expect(approvals).toHaveBeenCalledOnce();
+    expect(approvals).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          googleAccount: {
+            id: (await store.googleAccounts.list())[0]!.id,
+            email: 'me@example.test',
+          },
+        }),
+      }),
+    );
     expect(mutate).not.toHaveBeenCalled();
     const denied = await call({ action: 'list' });
     expect(denied.error !== undefined || denied.result?.isError === true).toBe(true);
@@ -238,7 +265,10 @@ it('reads document URLs inside the linked folder without approval', async () => 
 it('does not export a document when external read approval is denied', async () => {
   await harness(
     async ({ store, call, approvals }) => {
-      await store.updateProjectSettings('p1', { googleDriveFolderId: null });
+      await store.googleAccounts.unlinkFolder(
+        'p1',
+        (await store.googleAccounts.folders('p1'))[0]!.id,
+      );
       const result = await call({
         action: 'read_document_url',
         url: 'https://docs.google.com/document/d/shared/edit',

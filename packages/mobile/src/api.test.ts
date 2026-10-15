@@ -4158,3 +4158,39 @@ it('sends explicit replay and retry options to the welcome endpoint', async () =
   expect(calls[0]?.init?.method).toBe('POST');
   expect(calls[0]?.init?.body).toBe(JSON.stringify({ replay: true, retry: true }));
 });
+
+it('keeps account selection and session exceptions in account-aware requests', async () => {
+  const status = {
+    connected: true,
+    enabled: true,
+    clientId: 'client',
+    accountId: 'work',
+    accountEmail: 'work@example.test',
+    accountName: null,
+    source: 'session',
+    mode: 'account',
+  };
+  const { fetch, calls } = fakeFetchSequence(
+    json(status),
+    json({ ...status, enabled: false, mode: 'disabled' }),
+    json({ ...status, mode: 'inherit', source: 'project' }),
+    json({ connected: true, accountEmail: 'work@example.test', accountId: 'work' }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.setSessionGoogleAccess('s/1', 'gmail', { mode: 'account', accountId: 'work' });
+  await client.setSessionGoogleAccess('s/1', 'gmail', { mode: 'disabled' });
+  await client.setSessionGoogleAccess('s/1', 'gmail', { mode: 'inherit' });
+  expect(
+    await client.connectGmail({
+      accountId: 'work',
+      code: 'code',
+      codeVerifier: 'verifier',
+      redirectUri: 'app:/oauth',
+    }),
+  ).toMatchObject({ accountId: 'work' });
+  expect(calls[0]?.url).toBe('http://host/sessions/s%2F1/google/gmail');
+  expect(jsonBody(calls[0])).toEqual({ mode: 'account', accountId: 'work' });
+  expect(jsonBody(calls[1])).toEqual({ mode: 'disabled' });
+  expect(jsonBody(calls[2])).toEqual({ mode: 'inherit' });
+  expect(jsonBody(calls[3])).toMatchObject({ accountId: 'work' });
+});

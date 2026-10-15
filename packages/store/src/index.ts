@@ -209,3 +209,5 @@ export * from './knowledge.js';
 export * from './knowledge-sources.js';
 
 export { redactSecrets, redactProcessStderr } from './redact.js';
+
+export * from './google-accounts.js';

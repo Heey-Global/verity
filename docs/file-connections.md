@@ -6,7 +6,8 @@ not host paths. No complete folder synchronization is performed.
 
 ## Google Drive
 
-Connect a folder in Project settings → Connections → Google Drive. New folder
+Connect folders in Project settings → Connections → Google Drive, choosing the
+Google account for each folder. Each link has independent permissions. New folder
 connections start read-only. Enable **Allow changes to Google Drive files** to
 allow writes. Existing linked folders retain their previous write permission
 when upgraded. The server enforces the selected mode on agent tools and HTTP
@@ -71,3 +72,12 @@ A provider must advertise its own recovery and concurrency semantics. Google
 Drive supports recoverable recursive trash and conditional writes but does not
 support native-document byte replacement. A future SMB provider must implement
 its own version and recovery behavior, rather than claiming Drive's capabilities.
+
+## Multiple accounts in Explorer
+
+The Google Drive tab opens a single linked folder directly. Several linked folders
+from one account appear as a folder list. When folders span accounts, email-address
+groups appear above their linked folders. Only project-linked folders are exposed.
+Browsing, uploads, imports and native Workspace assignments retain the account
+and folder link. Agent requests select a folder link explicitly when several
+are available; an ambiguous request never falls back to another account.

@@ -910,12 +910,53 @@ export const sharedDriveListSchema = z.object({
 });
 export type SharedDriveList = z.infer<typeof sharedDriveListSchema>;
 
+const googleAccountSchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  displayName: z.string().nullable(),
+  clientId: z.string(),
+  scopes: z.array(z.string()),
+  credentialVersion: z.number(),
+  projects: z.array(z.object({ id: z.string(), name: z.string() })).default([]),
+});
+export type GoogleAccount = z.infer<typeof googleAccountSchema>;
+export type GoogleService = 'gmail' | 'calendar' | 'contacts';
+export type GoogleSessionAccess =
+  { mode: 'inherit' } | { mode: 'disabled' } | { mode: 'account'; accountId: string };
+const projectDriveFolderSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  accountId: z.string(),
+  folderId: z.string(),
+  name: z.string(),
+  accessMode: z.enum(['read-only', 'read-write']),
+  accountEmail: z.string(),
+  accountName: z.string().nullable(),
+});
+export type ProjectDriveFolder = z.infer<typeof projectDriveFolderSchema>;
+const googleSessionAccessSchema = z.object({
+  connected: z.boolean(),
+  clientId: z.string().nullable(),
+  mode: z.enum(['inherit', 'disabled', 'account']),
+  enabled: z.boolean(),
+  accountId: z.string().nullable(),
+  accountEmail: z.string().nullable(),
+  accountName: z.string().nullable(),
+  source: z.enum(['session', 'project']).nullable(),
+});
+export type GoogleSessionAccessStatus = z.infer<typeof googleSessionAccessSchema>;
+
 const googleDriveConnectResultSchema = z.object({
+  accountId: z.string().optional(),
   connected: z.literal(true),
   accountEmail: z.string().nullable(),
 });
 
 const gmailSessionConnectionSchema = z.object({
+  accountId: z.string().nullable().optional(),
+  accountName: z.string().nullable().optional(),
+  source: z.enum(['project', 'session']).nullable().optional(),
+  mode: z.enum(['inherit', 'disabled', 'account']).optional(),
   enabled: z.boolean(),
   accountEmail: z.string().nullable(),
   clientId: z.string().nullable(),
@@ -933,6 +974,10 @@ export const googleDriveImportResultSchema = z.object({
 export type GoogleDriveImportResult = z.infer<typeof googleDriveImportResultSchema>;
 
 const sessionGoogleWorkspaceFileSchema = z.object({
+  accountEmail: z.string().nullable().optional(),
+  accountName: z.string().nullable().optional(),
+  accountId: z.string().nullable().optional(),
+  folderLinkId: z.string().nullable().optional(),
   assignmentId: z.string(),
   kind: z.enum(['slides', 'docs', 'sheets']),
   fileId: z.string(),
@@ -2964,6 +3009,7 @@ export class VerityClient {
   /** Browse a Google Drive folder or search the connected Drive (ADR 0009).
    *  Omit `parentId` for My Drive root; pass `query` for a global name search. */
   async listGoogleDriveFiles(params?: {
+    accountId?: string;
     parentId?: string;
     query?: string;
     sharedWithMe?: boolean;
@@ -2972,6 +3018,7 @@ export class VerityClient {
     purpose?: 'import' | 'workspace' | 'folder';
   }): Promise<DriveFileList> {
     const search = new URLSearchParams();
+    if (params?.accountId) search.set('accountId', params.accountId);
     if (params?.parentId) search.set('parentId', params.parentId);
     if (params?.query) search.set('query', params.query);
     if (params?.sharedWithMe) search.set('sharedWithMe', 'true');
@@ -2985,8 +3032,11 @@ export class VerityClient {
     return driveFileListSchema.parse(await res.json());
   }
 
-  async listGoogleSharedDrives(pageToken?: string): Promise<SharedDriveList> {
-    const query = pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : '';
+  async listGoogleSharedDrives(pageToken?: string, accountId?: string): Promise<SharedDriveList> {
+    const search = new URLSearchParams();
+    if (pageToken) search.set('pageToken', pageToken);
+    if (accountId) search.set('accountId', accountId);
+    const query = search.size ? `?${search.toString()}` : '';
     const res = await this.request(`/google-drive/drives${query}`, { method: 'GET' });
     return sharedDriveListSchema.parse(await res.json());
   }
@@ -2994,17 +3044,21 @@ export class VerityClient {
   /** Complete the native OAuth (PKCE) connect: hand the server the one-time code
    *  + verifier + redirect uri; it exchanges them and stores the refresh token. */
   async connectGoogleDrive(input: {
+    accountId?: string;
     code: string;
     codeVerifier: string;
     redirectUri: string;
-  }): Promise<{ accountEmail: string | null }> {
+  }): Promise<{ accountEmail: string | null; accountId?: string }> {
     const res = await this.request('/google-drive/connect', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),
     });
     const parsed = googleDriveConnectResultSchema.parse(await res.json());
-    return { accountEmail: parsed.accountEmail };
+    return {
+      accountEmail: parsed.accountEmail,
+      ...(parsed.accountId ? { accountId: parsed.accountId } : {}),
+    };
   }
 
   async getGoogleDriveConnection(): Promise<{
@@ -3049,6 +3103,61 @@ export class VerityClient {
       .parse(await response.json());
   }
 
+  async listGoogleAccounts(): Promise<GoogleAccount[]> {
+    const response = await this.request('/google/accounts', { method: 'GET' });
+    return z.object({ accounts: z.array(googleAccountSchema) }).parse(await response.json())
+      .accounts;
+  }
+  async renameGoogleAccount(accountId: string, displayName: string | null): Promise<void> {
+    await this.request(`/google/accounts/${encodeURIComponent(accountId)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ displayName }),
+    });
+  }
+  async removeGoogleAccount(accountId: string): Promise<void> {
+    await this.request(`/google/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' });
+  }
+  async getSessionGoogleAccess(
+    sessionId: string,
+    service: GoogleService,
+  ): Promise<GoogleSessionAccessStatus> {
+    const response = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/google/${service}`,
+      { method: 'GET' },
+    );
+    return googleSessionAccessSchema.parse(await response.json());
+  }
+  async setSessionGoogleAccess(
+    sessionId: string,
+    service: GoogleService,
+    access: GoogleSessionAccess,
+  ): Promise<GoogleSessionAccessStatus> {
+    const response = await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/google/${service}`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(access),
+      },
+    );
+    return googleSessionAccessSchema.parse(await response.json());
+  }
+  async listProjectDriveFolders(projectId: string): Promise<ProjectDriveFolder[]> {
+    const response = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folders`,
+      { method: 'GET' },
+    );
+    return z.object({ folders: z.array(projectDriveFolderSchema) }).parse(await response.json())
+      .folders;
+  }
+  async unlinkProjectDriveFolder(projectId: string, linkId: string): Promise<void> {
+    await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folders/${encodeURIComponent(linkId)}`,
+      { method: 'DELETE' },
+    );
+  }
+
   async getGoogleConnection() {
     const res = await this.request('/google/connection', { method: 'GET' });
     return z
@@ -3076,9 +3185,12 @@ export class VerityClient {
   async enableProjectGoogleConnection(
     projectId: string,
     service: 'gmail' | 'calendar' | 'contacts',
+    accountId?: string,
   ): Promise<GmailSessionConnection> {
     const res = await this.request(`/projects/${encodeURIComponent(projectId)}/google/${service}`, {
       method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId }),
     });
     return gmailSessionConnectionSchema.parse(await res.json());
   }
@@ -3100,17 +3212,21 @@ export class VerityClient {
   }
 
   async connectGmail(input: {
+    accountId?: string;
     code: string;
     codeVerifier: string;
     redirectUri: string;
-  }): Promise<{ accountEmail: string | null }> {
+  }): Promise<{ accountEmail: string | null; accountId?: string }> {
     const res = await this.request('/gmail/connect', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),
     });
     const parsed = googleDriveConnectResultSchema.parse(await res.json());
-    return { accountEmail: parsed.accountEmail };
+    return {
+      accountEmail: parsed.accountEmail,
+      ...(parsed.accountId ? { accountId: parsed.accountId } : {}),
+    };
   }
 
   async enableSessionGmail(sessionId: string): Promise<GmailSessionConnection> {
@@ -3132,17 +3248,21 @@ export class VerityClient {
   }
 
   async connectCalendar(input: {
+    accountId?: string;
     code: string;
     codeVerifier: string;
     redirectUri: string;
-  }): Promise<{ accountEmail: string | null }> {
+  }): Promise<{ accountEmail: string | null; accountId?: string }> {
     const res = await this.request('/calendar/connect', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),
     });
     const parsed = googleDriveConnectResultSchema.parse(await res.json());
-    return { accountEmail: parsed.accountEmail };
+    return {
+      accountEmail: parsed.accountEmail,
+      ...(parsed.accountId ? { accountId: parsed.accountId } : {}),
+    };
   }
 
   async enableSessionCalendar(sessionId: string): Promise<CalendarSessionConnection> {
@@ -3164,17 +3284,21 @@ export class VerityClient {
   }
 
   async connectContacts(input: {
+    accountId?: string;
     code: string;
     codeVerifier: string;
     redirectUri: string;
-  }): Promise<{ accountEmail: string | null }> {
+  }): Promise<{ accountEmail: string | null; accountId?: string }> {
     const res = await this.request('/contacts/connect', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),
     });
     const parsed = googleDriveConnectResultSchema.parse(await res.json());
-    return { accountEmail: parsed.accountEmail };
+    return {
+      accountEmail: parsed.accountEmail,
+      ...(parsed.accountId ? { accountId: parsed.accountId } : {}),
+    };
   }
 
   async enableSessionContacts(sessionId: string): Promise<ContactsSessionConnection> {
@@ -3192,13 +3316,14 @@ export class VerityClient {
     projectId: string,
     fileId: string,
     accessMode: 'read-only' | 'read-write' = 'read-only',
+    accountId?: string,
   ): Promise<{ id: string; name: string }> {
     const res = await this.request(
       `/projects/${encodeURIComponent(projectId)}/google-drive/folder`,
       {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fileId, accessMode }),
+        body: JSON.stringify({ fileId, accessMode, accountId }),
       },
     );
     return z
@@ -3292,13 +3417,15 @@ export class VerityClient {
   async assignSessionGoogleWorkspaceFile(
     sessionId: string,
     fileId: string,
+    accountId?: string,
+    folderLinkId?: string,
   ): Promise<SessionGoogleWorkspaceFile> {
     const res = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/google-workspace/file`,
       {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fileId }),
+        body: JSON.stringify({ fileId, accountId, folderLinkId }),
       },
     );
     return z.object({ file: sessionGoogleWorkspaceFileSchema }).parse(await res.json()).file;

@@ -1,3 +1,10 @@
+import type { GoogleMenuAccess } from '../../lib/attachMenu';
+import { driveOverview, singleDriveFolderPath } from '../../lib/driveHierarchy';
+import type { ProjectDriveFolder } from '@verity/mobile';
+import {
+  useGoogleAccountPicker,
+  googleAccountSupports,
+} from '../../components/settings/GoogleAccountPicker';
 import { MatrixSendPreview } from '../../components/ui/MatrixSendPreview';
 import { Button } from '../../components/ui/Button';
 import { useDeferredSessionWork } from '../../hooks/useDeferredSessionWork';
@@ -271,7 +278,6 @@ import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
 import { ensureGoogleWorkspaceAccess } from '../../lib/googleDrive';
 import {
   hasConnectedGoogleAccount,
-  getProjectGoogleAccess,
   connectSessionGoogleService,
   disconnectSessionGoogleService,
   type GoogleService,
@@ -2625,16 +2631,12 @@ export const SessionChat = memo(function SessionChat({
     if (attachments.length === 0) setSaveAttachmentsToKnowledge(false);
   }, [attachments.length]);
   const [workspaceFile, setWorkspaceFile] = useState<SessionGoogleWorkspaceFile | null>(null);
+  const [chooseGoogleAccount, googleAccountSheet] = useGoogleAccountPicker();
   const [googleConnected, setGoogleConnected] = useState(false);
   const [gmailConnection, setGmailConnection] = useState<GmailSessionConnection | null>(null);
   const [calendarConnection, setCalendarConnection] = useState<CalendarSessionConnection | null>(
     null,
   );
-  const [projectGoogleAccess, setProjectGoogleAccess] = useState<Record<GoogleService, boolean>>({
-    gmail: false,
-    calendar: false,
-    contacts: false,
-  });
   useFocusEffect(
     useCallback(() => {
       let active = true;
@@ -2666,11 +2668,6 @@ export const SessionChat = memo(function SessionChat({
         .getSessionContactsConnection(sessionId)
         .then((connection) => {
           if (active) setContactsConnection(connection);
-        })
-        .catch(() => undefined);
-      void getProjectGoogleAccess(client, projectId)
-        .then((access) => {
-          if (active) setProjectGoogleAccess(access);
         })
         .catch(() => undefined);
       return () => {
@@ -3273,22 +3270,47 @@ export const SessionChat = memo(function SessionChat({
   const onConnectGoogleService = useCallback(
     (service: GoogleService) => {
       setAttachMenuOpen(false);
-      void connectSessionGoogleService(client, sessionId, service)
-        .then((result) => {
-          if (result.kind === 'session') {
-            setGmailConnection(result.connections.gmail);
-            setCalendarConnection(result.connections.calendar);
-            setContactsConnection(result.connections.contacts);
-          }
-        })
-        .catch((error: unknown) =>
-          Alert.alert(
-            'Could not connect Google service',
-            error instanceof Error ? error.message : String(error),
-          ),
+      void (async () => {
+        const accounts = (await client.listGoogleAccounts()).filter((account) =>
+          googleAccountSupports(account, service),
         );
+        const status = await client.getSessionGoogleAccess(sessionId, service);
+        const choice = await chooseGoogleAccount({
+          accounts,
+          sessionOptions: status.enabled || status.mode !== 'inherit',
+        });
+        if (!choice) return;
+        if (choice.kind === 'inherit' || choice.kind === 'disabled') {
+          await client.setSessionGoogleAccess(sessionId, service, { mode: choice.kind });
+          const [gmail, calendar, contacts] = await Promise.all([
+            client.getSessionGmailConnection(sessionId),
+            client.getSessionCalendarConnection(sessionId),
+            client.getSessionContactsConnection(sessionId),
+          ]);
+          setGmailConnection(gmail);
+          setCalendarConnection(calendar);
+          setContactsConnection(contacts);
+          return;
+        }
+        const result = await connectSessionGoogleService(
+          client,
+          sessionId,
+          service,
+          choice.kind === 'account' ? choice.accountId : null,
+        );
+        if (result.kind === 'session') {
+          setGmailConnection(result.connections.gmail);
+          setCalendarConnection(result.connections.calendar);
+          setContactsConnection(result.connections.contacts);
+        }
+      })().catch((error: unknown) =>
+        Alert.alert(
+          'Could not connect Google service',
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
     },
-    [client, sessionId],
+    [client, sessionId, chooseGoogleAccount],
   );
   const onConnectGmail = useCallback(
     () => onConnectGoogleService('gmail'),
@@ -3306,18 +3328,41 @@ export const SessionChat = memo(function SessionChat({
     (service: GoogleService) => {
       void disconnectSessionGoogleService(client, sessionId, projectId, service)
         .then(() => {
-          setProjectGoogleAccess((current) => ({ ...current, [service]: false }));
           if (service === 'gmail')
             setGmailConnection((current) =>
-              current === null ? null : { ...current, enabled: false },
+              current === null
+                ? null
+                : {
+                    ...current,
+                    enabled: false,
+                    mode: 'disabled',
+                    source: null,
+                    accountEmail: null,
+                  },
             );
           else if (service === 'calendar')
             setCalendarConnection((current) =>
-              current === null ? null : { ...current, enabled: false },
+              current === null
+                ? null
+                : {
+                    ...current,
+                    enabled: false,
+                    mode: 'disabled',
+                    source: null,
+                    accountEmail: null,
+                  },
             );
           else
             setContactsConnection((current) =>
-              current === null ? null : { ...current, enabled: false },
+              current === null
+                ? null
+                : {
+                    ...current,
+                    enabled: false,
+                    mode: 'disabled',
+                    source: null,
+                    accountEmail: null,
+                  },
             );
         })
         .catch((error: unknown) =>
@@ -4048,7 +4093,8 @@ export const SessionChat = memo(function SessionChat({
               color={theme.colors.action}
             />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              {workspaceFile.name} ↗
+              {workspaceFile.name}
+              {workspaceFile.accountEmail ? ` · ${workspaceFile.accountEmail}` : ''} ↗
             </Text>
           </Pressable>
           <Pressable
@@ -4061,6 +4107,7 @@ export const SessionChat = memo(function SessionChat({
           </Pressable>
         </View>
       ) : null}
+      {googleAccountSheet}
       {automation ? (
         <AutomationBar
           automation={automation}
@@ -4070,22 +4117,23 @@ export const SessionChat = memo(function SessionChat({
       ) : null}
       {gmailConnection?.enabled ? (
         <View style={styles.workspaceFileBar}>
-          <View style={styles.slideDeckLink}>
+          <Pressable
+            style={styles.slideDeckLink}
+            onPress={() => onConnectGoogleService('gmail')}
+            accessibilityRole="button"
+            accessibilityLabel="Change Gmail account"
+          >
             <Icon name="mail" size={16} color={theme.colors.action} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Gmail{projectGoogleAccess.gmail ? ' · Project access' : ''}
+              Gmail{gmailConnection.source === 'project' ? ' · Project access' : ''}
               {gmailConnection.accountEmail ? ` · ${gmailConnection.accountEmail}` : ''}
             </Text>
-          </View>
+          </Pressable>
           <Pressable
             onPress={disableGmail}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel={
-              projectGoogleAccess.gmail
-                ? 'Disable Gmail for this project'
-                : 'Disconnect Gmail from this session'
-            }
+            accessibilityLabel={'Disable Gmail for this chat'}
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -4093,22 +4141,23 @@ export const SessionChat = memo(function SessionChat({
       ) : null}
       {calendarConnection?.enabled ? (
         <View style={styles.workspaceFileBar}>
-          <View style={styles.slideDeckLink}>
+          <Pressable
+            style={styles.slideDeckLink}
+            onPress={() => onConnectGoogleService('calendar')}
+            accessibilityRole="button"
+            accessibilityLabel="Change Google Calendar account"
+          >
             <Icon name="calendar" size={16} color={theme.colors.action} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Google Calendar{projectGoogleAccess.calendar ? ' · Project access' : ''}
+              Google Calendar{calendarConnection.source === 'project' ? ' · Project access' : ''}
               {calendarConnection.accountEmail ? ` · ${calendarConnection.accountEmail}` : ''}
             </Text>
-          </View>
+          </Pressable>
           <Pressable
             onPress={disableCalendar}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel={
-              projectGoogleAccess.calendar
-                ? 'Disable Google Calendar for this project'
-                : 'Disconnect Google Calendar from this session'
-            }
+            accessibilityLabel={'Disable Google Calendar for this chat'}
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -4116,22 +4165,23 @@ export const SessionChat = memo(function SessionChat({
       ) : null}
       {contactsConnection?.enabled ? (
         <View style={styles.workspaceFileBar}>
-          <View style={styles.slideDeckLink}>
+          <Pressable
+            style={styles.slideDeckLink}
+            onPress={() => onConnectGoogleService('contacts')}
+            accessibilityRole="button"
+            accessibilityLabel="Change Google Contacts account"
+          >
             <Icon name="users" size={16} color={theme.colors.action} />
             <Text style={styles.slideDeckName} numberOfLines={1}>
-              Google Contacts{projectGoogleAccess.contacts ? ' · Project access' : ''}
+              Google Contacts{contactsConnection.source === 'project' ? ' · Project access' : ''}
               {contactsConnection.accountEmail ? ` · ${contactsConnection.accountEmail}` : ''}
             </Text>
-          </View>
+          </Pressable>
           <Pressable
             onPress={disableContacts}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel={
-              projectGoogleAccess.contacts
-                ? 'Disable Google Contacts for this project'
-                : 'Disconnect Google Contacts from this session'
-            }
+            accessibilityLabel={'Disable Google Contacts for this chat'}
           >
             <Icon name="x" size={16} color={theme.colors.textMuted} />
           </Pressable>
@@ -4803,6 +4853,11 @@ export const SessionChat = memo(function SessionChat({
         onPickMeetingAudio={onPickMeetingAudio}
         onLiveMeeting={onLiveMeeting}
         googleConnected={googleConnected}
+        googleAccess={{
+          gmail: gmailConnection,
+          calendar: calendarConnection,
+          contacts: contactsConnection,
+        }}
         onConnectGmail={onConnectGmail}
         onConnectCalendar={onConnectCalendar}
         onConnectContacts={onConnectContacts}
@@ -5074,6 +5129,7 @@ function SessionFilesSheet({
   const [dropActive, setDropActive] = useState(false);
   const [driveActive, setDriveActive] = useState(false);
   const [driveCanWrite, setDriveCanWrite] = useState(false);
+  const [driveLinks, setDriveLinks] = useState<ProjectDriveFolder[]>([]);
   const [driveFolderId, setDriveFolderId] = useState<string | null>(null);
   const [drivePath, setDrivePath] = useState<Array<{ id: string; name: string }>>([]);
   const [driveEntries, setDriveEntries] = useState<DriveFile[]>([]);
@@ -5178,35 +5234,49 @@ function SessionFilesSheet({
     if (!driveActive || !projectId) return;
     let active = true;
     const loadDrive = async (): Promise<void> => {
+      setDriveCanWrite(false);
       setLoading(true);
       setError(null);
       setDriveUnconfigured(false);
       try {
-        let folderId = driveFolderId;
-        let nextPath = drivePath;
-        const detail = await client.getProject(projectId);
-        const configuredFolderId = detail.settings?.googleDriveFolderId ?? null;
-        const folderName = detail.settings?.googleDriveFolderName ?? null;
-        if (active) setDriveCanWrite(detail.settings?.googleDriveAccessMode !== 'read-only');
-        if (!configuredFolderId || !folderName) {
-          if (active) {
-            setDriveEntries([]);
-            setDriveFolderId(null);
-            setDriveCanWrite(false);
-            setDriveUnconfigured(true);
-          }
+        const links = await client.listProjectDriveFolders(projectId);
+        if (!active) return;
+        setDriveLinks(links);
+        if (links.length === 0) {
+          if (drivePath.length) setDrivePath([]);
+          setDriveEntries([]);
+          setDriveFolderId(null);
+          setDriveCanWrite(false);
+          setDriveUnconfigured(true);
           return;
         }
-        if (!folderId || folderId !== configuredFolderId) {
-          folderId = configuredFolderId;
-          nextPath = [{ id: folderId, name: folderName }];
-          if (active) {
-            setDriveFolderId(folderId);
-            setDrivePath(nextPath);
-          }
+        let nextPath = drivePath;
+        if (links.length === 1 && !nextPath.some((part) => part.id.startsWith('link:'))) {
+          nextPath = singleDriveFolderPath(links);
+          setDrivePath(nextPath);
         }
-        const parentId = nextPath.at(-1)?.id ?? folderId;
-        const page = await client.listProjectGoogleDriveFiles(projectId, folderId, { parentId });
+        const selectedId = nextPath.find((part) => part.id.startsWith('link:'))?.id.slice(5);
+        const link = links.find((candidate) => candidate.id === selectedId);
+        if (!link) {
+          if (selectedId) {
+            setDrivePath([]);
+            return;
+          }
+          const accountId = nextPath.find((part) => part.id.startsWith('account:'))?.id.slice(8);
+          setDriveFolderId(null);
+          setDriveCanWrite(false);
+          if (accountId && !links.some((candidate) => candidate.accountId === accountId)) {
+            setDrivePath([]);
+            return;
+          }
+          setDriveEntries(driveOverview(links, accountId));
+          return;
+        }
+        setDriveFolderId(link.id);
+        setDriveCanWrite(link.accessMode === 'read-write');
+        const last = nextPath.at(-1)?.id;
+        const parentId = !last || last.startsWith('link:') ? link.folderId : last;
+        const page = await client.listProjectGoogleDriveFiles(projectId, link.id, { parentId });
         if (active) setDriveEntries(page.files);
       } catch (caught) {
         if (active) {
@@ -5288,7 +5358,9 @@ function SessionFilesSheet({
         setUploading(true);
         for (const file of picked) {
           await client.uploadProjectGoogleDriveFile(projectId, driveFolderId, {
-            parentId: drivePath.at(-1)?.id,
+            parentId: drivePath.at(-1)?.id.startsWith('link:')
+              ? driveLinks.find((link) => link.id === driveFolderId)?.folderId
+              : drivePath.at(-1)?.id,
             fileName: file.fileName,
             mimeType: 'application/octet-stream',
             data: new FsFile(file.uri),
@@ -5311,7 +5383,7 @@ function SessionFilesSheet({
         setUploading(false);
       }
     })();
-  }, [client, driveFolderId, drivePath, projectId, driveCanWrite]);
+  }, [client, driveFolderId, drivePath, driveLinks, projectId, driveCanWrite]);
 
   const openDriveFile = useCallback(
     (file: DriveFile) => {
@@ -5343,8 +5415,20 @@ function SessionFilesSheet({
                   onPress: () => {
                     setMutating(true);
                     void (async () => {
-                      if (!(await ensureGoogleWorkspaceAccess(client, file.mimeType))) return;
-                      await client.assignSessionGoogleWorkspaceFile(sessionId, file.id);
+                      if (
+                        !(await ensureGoogleWorkspaceAccess(
+                          client,
+                          file.mimeType,
+                          driveLinks.find((link) => link.id === driveFolderId)?.accountId,
+                        ))
+                      )
+                        return;
+                      await client.assignSessionGoogleWorkspaceFile(
+                        sessionId,
+                        file.id,
+                        driveLinks.find((link) => link.id === driveFolderId)?.accountId,
+                        driveFolderId,
+                      );
                       onClose();
                     })()
                       .catch((caught: unknown) =>
@@ -5378,7 +5462,7 @@ function SessionFilesSheet({
         { cancelable: true },
       );
     },
-    [client, driveFolderId, onClose, projectId, sessionId],
+    [client, driveFolderId, driveLinks, onClose, projectId, sessionId],
   );
 
   const uploadDroppedFiles = useCallback(
@@ -6076,13 +6160,19 @@ function SessionFilesSheet({
           </View>
         ) : null}
         {preview ? null : driveActive ? (
-          drivePath.length > 1 ? (
+          (driveLinks.length > 1 ? drivePath.length > 0 : drivePath.length > 1) ? (
             <FileBreadcrumb
               rootIcon="hard-drive"
-              rootLabel={drivePath[0]?.name ?? 'Google Drive'}
-              segments={drivePath.slice(1).map(({ id, name }) => ({ key: id, name }))}
+              rootLabel={
+                driveLinks.length > 1 ? 'Google Drive' : (drivePath[0]?.name ?? 'Google Drive')
+              }
+              segments={(driveLinks.length > 1 ? drivePath : drivePath.slice(1)).map(
+                ({ id, name }) => ({ key: id, name }),
+              )}
               disabled={mutating}
-              onNavigate={(index) => setDrivePath((current) => current.slice(0, index + 2))}
+              onNavigate={(index) =>
+                setDrivePath((current) => current.slice(0, index + (driveLinks.length > 1 ? 1 : 2)))
+              }
             />
           ) : null
         ) : path ? (
@@ -8694,6 +8784,14 @@ function PermissionPrompt({
     typeof pending.input === 'object' && pending.input !== null && !Array.isArray(pending.input)
       ? (pending.input as Record<string, unknown>)
       : undefined;
+  const googleAccount = grantInput?.googleAccount;
+  const googleAccountEmail =
+    typeof googleAccount === 'object' &&
+    googleAccount !== null &&
+    'email' in googleAccount &&
+    typeof googleAccount.email === 'string'
+      ? googleAccount.email
+      : null;
   const reusableScopes = secretGrantScopes(pending.tool, grantInput);
   const isScopedSecretTool = reusableScopes.length > 0;
   // A brokered request whose input the summariser could not read still has to be
@@ -8831,6 +8929,11 @@ function PermissionPrompt({
                 : pending.riskClass}
         </Text>
       </View>
+      {googleAccountEmail ? (
+        <Text style={styles.permissionSubtitle} selectable>
+          Google account: {spellOutBidiControls(googleAccountEmail)}
+        </Text>
+      ) : null}
       {isPresentPlan ? (
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionHttpMeta}>
@@ -9884,6 +9987,7 @@ the Claude app — it sits with the composer instead of the nav bar). */}
 // file) — instead of a full-width bottom sheet.
 function AttachMenu({
   googleConnected,
+  googleAccess,
   visible,
   anchor,
   onCapturePhoto,
@@ -9898,6 +10002,7 @@ function AttachMenu({
   onDismiss,
 }: {
   googleConnected: boolean;
+  googleAccess: GoogleMenuAccess;
   visible: boolean;
   anchor: AttachAnchor | null;
   onCapturePhoto: () => void;
@@ -9924,7 +10029,7 @@ function AttachMenu({
       onConnectCalendar,
       onConnectContacts,
     },
-    { googleConnected },
+    { googleConnected, googleAccess },
   );
   // Dock to the button: left-aligned and clamped on-screen; placed above the button
   // (the composer sits at the bottom, so the menu opens upward).

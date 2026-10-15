@@ -1,3 +1,10 @@
+import {
+  googleAccountSettingsStatus,
+  googleApprovalAccount,
+} from './google-account-presentation.js';
+import { resolveGoogleDriveAuthority } from './google-drive-authority.js';
+import { assertWorkspaceWriteAccess } from './google-workspace-tool-types.js';
+import { resolveGoogleServiceCredential } from './google-service-credentials.js';
 import { createMatrixTool, matrixRequestSchema } from './matrix-tool.js';
 import { attendeeResearchHints } from './attendee-research.js';
 import { AttendeeMeetings } from './attendee-meetings.js';
@@ -1513,6 +1520,8 @@ export interface ServerDeps {
     projectId: string;
     sessionId: string;
     url: string;
+    accountId?: string | undefined;
+    folderLinkId?: string | undefined;
   }) => Promise<boolean>;
   /**
    * The loopback MCP gateway's dependencies, minus its approval seam (ADR 0014 D1). When
@@ -5428,12 +5437,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     agentLogin,
     parseSettingsPatch: (body) => veritySettingsBody.parse(body),
     storeAgentCredentials,
-    publicSettings: (settings, request) => ({
+    publicSettings: async (settings, request) => ({
       ...publicVeritySettings(
         settings,
         googleAppClient(request, deps.googleDriveClientId, deps.stagingGoogleClientId) ??
           (request.headers['x-verity-app-variant'] === undefined ? undefined : null),
       ),
+      ...(await googleAccountSettingsStatus(deps.eventStore)),
       claudeCredentialStatus: (
         deps.claudeOAuthTokenProvider ?? dbClaudeOAuthTokenProvider
       ).statusForCredentials?.(settings.claudeCodeOauthCredentialsJson) ?? {
@@ -6199,24 +6209,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         if (toolName === 'verity_google_drive') {
           const session = await deps.eventStore.getSession(sessionId);
-          const settings = await deps.eventStore.getProjectSettings(projectId);
-          const globalSettings = await deps.eventStore.getVeritySettings();
+          if (session?.projectId !== projectId)
+            throw new ControlPlaneSessionAuthorityError('session project changed');
           const driveRequest = googleDriveRequestSchema.parse(input.request);
+          if (driveRequest.action === 'capabilities' && !driveRequest.folderLinkId) return;
+          const authority = await resolveGoogleDriveAuthority(
+            deps.eventStore,
+            projectId,
+            driveRequest,
+          );
           if (
-            session?.projectId !== projectId ||
-            (driveRequest.action !== 'read_document_url' && !settings?.googleDriveFolderId) ||
-            !hasGoogleDriveScopes(globalSettings?.googleGrantedScopes)
-          ) {
-            throw new ControlPlaneSessionAuthorityError(
-              'Google Drive requires a folder connected to the calling project',
-            );
-          }
-          if (
-            googleDriveIsMutation(googleDriveRequestSchema.parse(input.request)) &&
-            settings?.googleDriveAccessMode === 'read-only'
+            googleDriveIsMutation(driveRequest) &&
+            authority.googleDriveAccessMode === 'read-only'
           )
             throw new ControlPlaneSessionAuthorityError(
-              'This project has read-only Google Drive access',
+              'This project folder has read-only Google Drive access',
             );
           return;
         }
@@ -6230,37 +6237,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         ) {
           const session = await deps.eventStore.getSession(sessionId);
           if (toolName === 'verity_google_contacts') {
-            const connection = await deps.eventStore.getSessionContactsConnection(sessionId);
-            const settings = await deps.eventStore.getVeritySettings();
-            if (
-              session?.projectId !== projectId ||
-              connection === undefined ||
-              settings?.contactsAuthorized !== true ||
-              !settings.googleDriveRefreshToken?.trim() ||
-              settings.googleDriveAccountEmail?.toLowerCase() !==
-                connection.accountEmail.toLowerCase()
-            ) {
+            if (session?.projectId !== projectId)
               throw new ControlPlaneSessionAuthorityError(
-                'Google Contacts requires access enabled for the calling session',
+                'Google access is restricted to the calling session',
               );
-            }
+            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'contacts');
             return;
           }
           if (toolName === 'verity_google_calendar') {
-            const connection = await deps.eventStore.getSessionCalendarConnection(sessionId);
-            const settings = await deps.eventStore.getVeritySettings();
-            if (
-              session?.projectId !== projectId ||
-              connection === undefined ||
-              settings?.calendarAuthorized !== true ||
-              !settings.googleDriveRefreshToken?.trim() ||
-              settings.googleDriveAccountEmail?.toLowerCase() !==
-                connection.accountEmail.toLowerCase()
-            ) {
+            if (session?.projectId !== projectId)
               throw new ControlPlaneSessionAuthorityError(
-                'Google Calendar requires access enabled for the calling session',
+                'Google access is restricted to the calling session',
               );
-            }
+            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'calendar');
             return;
           }
           if (toolName === 'verity_gmail') {
@@ -6272,23 +6261,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             ) {
               assertSafeGmailSendSnapshot(input.request as unknown as GmailDraftSendSnapshot);
             }
-            const connection = await deps.eventStore.getSessionGmailConnection(sessionId);
-            const settings = await deps.eventStore.getVeritySettings();
-            if (
-              session === undefined ||
-              session.projectId !== projectId ||
-              connection === undefined ||
-              settings?.gmailAuthorized !== true ||
-              settings.googleDriveAccountEmail?.toLowerCase() !==
-                connection.accountEmail.toLowerCase()
-            ) {
+            if (session?.projectId !== projectId)
               throw new ControlPlaneSessionAuthorityError(
-                'Gmail requires access enabled for the calling session',
+                'Google access is restricted to the calling session',
               );
-            }
+            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'gmail');
             return;
           }
-          const projectSettings = await deps.eventStore.getProjectSettings(projectId);
           const action = (input.request as { action?: string }).action;
           const writing =
             toolName === 'verity_google_docs'
@@ -6296,28 +6275,25 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               : toolName === 'verity_google_slides'
                 ? action === 'edit' || action === 'insert_image'
                 : ['write_range', 'clear_range', 'structural_edit'].includes(action ?? '');
-          if (
-            writing &&
-            projectSettings?.googleDriveFolderId &&
-            projectSettings.googleDriveAccessMode === 'read-only'
-          )
-            throw new ControlPlaneSessionAuthorityError(
-              'This project has read-only Google Drive access',
-            );
           const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
           const expectedKind = toolName.slice('verity_google_'.length);
-          const globalSettings = await deps.eventStore.getVeritySettings();
+
           if (
             session === undefined ||
             session.projectId !== projectId ||
             file === undefined ||
+            !file.accountId ||
             file.kind !== expectedKind
           ) {
             throw new ControlPlaneSessionAuthorityError(
               'Google Workspace requires a matching file assigned to the calling session',
             );
           }
-          if (!hasGoogleWorkspaceScope(globalSettings?.googleGrantedScopes, file.kind)) {
+          if (writing) await assertWorkspaceWriteAccess(deps.eventStore, projectId, file);
+          const account = file.accountId
+            ? await deps.eventStore.googleAccounts.get(file.accountId)
+            : undefined;
+          if (!account || !hasGoogleWorkspaceScope(account.scopes, file.kind)) {
             throw new ControlPlaneSessionAuthorityError(
               `Google ${expectedKind} needs additional permission. Open this native file for editing in the Google Drive picker to grant access to its file type.`,
             );
@@ -6362,6 +6338,46 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         )
           return;
         await controlPlaneSessionTools.authorizeCaller({ projectId, sessionId });
+      },
+      authorizationSnapshot: async ({ sessionId, projectId, toolName, request }) => {
+        const service =
+          toolName === 'verity_gmail'
+            ? 'gmail'
+            : toolName === 'verity_google_calendar'
+              ? 'calendar'
+              : toolName === 'verity_google_contacts'
+                ? 'contacts'
+                : undefined;
+        if (service)
+          return JSON.stringify(
+            await deps.eventStore.googleAccounts.authorizationSnapshot(sessionId, service),
+          );
+        if (toolName === 'verity_google_drive') {
+          const parsed = googleDriveRequestSchema.parse(request);
+          if (parsed.action === 'capabilities') return undefined;
+          return JSON.stringify(
+            await resolveGoogleDriveAuthority(deps.eventStore, projectId, parsed),
+          );
+        }
+        if (
+          ['verity_google_docs', 'verity_google_sheets', 'verity_google_slides'].includes(toolName)
+        ) {
+          const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
+          if (!file?.accountId) throw new Error('No Google account is assigned');
+          const account = await deps.eventStore.googleAccounts.get(file.accountId);
+          const link = file.folderLinkId
+            ? (await deps.eventStore.googleAccounts.folders(projectId)).find(
+                (candidate) => candidate.id === file.folderLinkId,
+              )
+            : undefined;
+          return JSON.stringify({
+            assignmentId: file.assignmentId,
+            accountId: account?.id,
+            credentialVersion: account?.credentialVersion,
+            folder: link,
+          });
+        }
+        return undefined;
       },
       hasStandingAuthorization: async ({
         turnId,
@@ -6429,24 +6445,25 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         }
         if (toolName === 'verity_google_drive') {
           if (!googleDriveHasStandingAuthorization(request)) return false;
-          const session = await deps.eventStore.getSession(sessionId);
-          const settings = await deps.eventStore.getProjectSettings(projectId);
-          const globalSettings = await deps.eventStore.getVeritySettings();
-          if (
-            session?.projectId !== projectId ||
-            !hasGoogleDriveScopes(globalSettings?.googleGrantedScopes)
-          )
-            return false;
+          if ((await deps.eventStore.getSession(sessionId))?.projectId !== projectId) return false;
           const driveRequest = googleDriveRequestSchema.parse(request);
+          if (driveRequest.action === 'capabilities') return true;
+          try {
+            await resolveGoogleDriveAuthority(deps.eventStore, projectId, driveRequest);
+          } catch {
+            return false;
+          }
           if (driveRequest.action === 'read_document_url')
             return (
               (await deps.googleDriveDocumentIsWithinProject?.({
                 projectId,
                 sessionId,
                 url: driveRequest.url,
+                accountId: driveRequest.accountId,
+                folderLinkId: driveRequest.folderLinkId,
               })) ?? false
             );
-          return Boolean(settings?.googleDriveFolderId);
+          return true;
         }
         if (
           toolName !== 'verity_google_slides' &&
@@ -6461,44 +6478,40 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         if (session === undefined || session.projectId !== projectId) return false;
         if (toolName === 'verity_google_contacts') {
           if (!googleContactsHasStandingAuthorization(request)) return false;
-          const connection = await deps.eventStore.getSessionContactsConnection(sessionId);
-          const settings = await deps.eventStore.getVeritySettings();
-          return (
-            connection !== undefined &&
-            settings?.contactsAuthorized === true &&
-            Boolean(settings.googleDriveRefreshToken?.trim()) &&
-            settings.googleDriveAccountEmail?.toLowerCase() ===
-              connection.accountEmail.toLowerCase()
-          );
+          try {
+            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'contacts');
+            return true;
+          } catch {
+            return false;
+          }
         }
         if (toolName === 'verity_google_calendar') {
           if (!googleCalendarHasStandingAuthorization(request)) return false;
-          const connection = await deps.eventStore.getSessionCalendarConnection(sessionId);
-          const settings = await deps.eventStore.getVeritySettings();
-          return (
-            connection !== undefined &&
-            settings?.calendarAuthorized === true &&
-            Boolean(settings.googleDriveRefreshToken?.trim()) &&
-            settings.googleDriveAccountEmail?.toLowerCase() ===
-              connection.accountEmail.toLowerCase()
-          );
+          try {
+            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'calendar');
+            return true;
+          } catch {
+            return false;
+          }
         }
         if (toolName === 'verity_gmail') {
           if (!gmailHasStandingAuthorization(request)) return false;
-          const connection = await deps.eventStore.getSessionGmailConnection(sessionId);
-          const settings = await deps.eventStore.getVeritySettings();
-          return (
-            connection !== undefined &&
-            settings?.gmailAuthorized === true &&
-            settings.googleDriveAccountEmail?.toLowerCase() ===
-              connection.accountEmail.toLowerCase()
-          );
+          try {
+            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'gmail');
+            return true;
+          } catch {
+            return false;
+          }
         }
         const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
-        const globalSettings = await deps.eventStore.getVeritySettings();
-        return (
-          file?.kind === toolName.slice('verity_google_'.length) &&
-          hasGoogleWorkspaceScope(globalSettings?.googleGrantedScopes, file.kind)
+        const account = file?.accountId
+          ? await deps.eventStore.googleAccounts.get(file.accountId)
+          : undefined;
+        return Boolean(
+          file &&
+          account &&
+          file.kind === toolName.slice('verity_google_'.length) &&
+          hasGoogleWorkspaceScope(account.scopes, file.kind),
         );
       },
       invokeTool: async (input) => {
@@ -6693,13 +6706,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           });
           if (!created) throw new Error('linked message is already awaiting approval');
         }
+        const googleAccount = await googleApprovalAccount(deps.eventStore, {
+          projectId,
+          sessionId,
+          toolName,
+          request: input,
+        });
         let answer;
         try {
           answer = await conductor.requestExternalPermission({
             sessionId,
             toolUseId: callId,
             toolName,
-            input,
+            input: googleAccount ? { ...input, googleAccount } : input,
             channel: 'acp',
             // Secret tools reuse consent for their bound request shape.
             allowStandingGrant:

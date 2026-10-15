@@ -1,4 +1,8 @@
 import {
+  resolveGoogleServiceCredential,
+  type GoogleServiceCredentialStore,
+} from './google-service-credentials.js';
+import {
   appendGmailSignature,
   createGmailDraft,
   prepareGmailReplyDraft,
@@ -23,7 +27,7 @@ export interface GmailInvocationInput {
   request: unknown;
 }
 
-export interface GmailToolStore {
+export interface GmailToolStore extends GoogleServiceCredentialStore {
   getSession(sessionId: string): Promise<{ projectId: string | null } | undefined>;
   getSessionGmailConnection(
     sessionId: string,
@@ -81,7 +85,7 @@ export function gmailHasStandingAuthorization(request: unknown): boolean {
 
 export function createGmailTool(deps: {
   eventStore: GmailToolStore;
-  googleAccessToken: () => Promise<string | undefined>;
+  googleAccessToken: (accountId?: string) => Promise<string | undefined>;
   gmail?: {
     search(token: string, query: string, maxResults: number, pageToken?: string): Promise<unknown>;
     readThread(token: string, threadId: string): Promise<unknown>;
@@ -112,8 +116,28 @@ export function createGmailTool(deps: {
   };
   const authorized = async (
     input: GmailInvocationInput,
-  ): Promise<{ accountEmail: string; refreshToken: string }> => {
+  ): Promise<{
+    accountId?: string;
+    credentialVersion?: number;
+    accountEmail: string;
+    refreshToken: string;
+  }> => {
     const session = await deps.eventStore.getSession(input.sessionId);
+    if (deps.eventStore.getGoogleServiceCredentials) {
+      if (session?.projectId !== input.projectId)
+        throw new Error('Google access is restricted to the calling session');
+      const credential = await resolveGoogleServiceCredential(
+        deps.eventStore,
+        input.sessionId,
+        'gmail',
+      );
+      return {
+        credentialVersion: credential.credentialVersion,
+        accountId: credential.accountId,
+        accountEmail: credential.accountEmail,
+        refreshToken: credential.refreshToken,
+      };
+    }
     const connection = await deps.eventStore.getSessionGmailConnection(input.sessionId);
     const settings = await deps.eventStore.getVeritySettings();
     if (
@@ -135,12 +159,19 @@ export function createGmailTool(deps: {
   };
   const verifyCredentialUnchanged = async (
     input: GmailInvocationInput,
-    expected: { accountEmail: string; refreshToken: string },
+    expected: {
+      accountId?: string;
+      credentialVersion?: number;
+      accountEmail: string;
+      refreshToken: string;
+    },
   ): Promise<void> => {
     const current = await authorized(input);
     if (
       current.accountEmail.toLowerCase() !== expected.accountEmail.toLowerCase() ||
-      current.refreshToken !== expected.refreshToken
+      current.refreshToken !== expected.refreshToken ||
+      current.accountId !== expected.accountId ||
+      current.credentialVersion !== expected.credentialVersion
     ) {
       throw new Error('The connected Gmail account changed during this operation');
     }
@@ -152,7 +183,7 @@ export function createGmailTool(deps: {
       if (typeof request !== 'object' || request === null || typeof request.action !== 'string') {
         throw new Error('Gmail request requires an action');
       }
-      const token = await deps.googleAccessToken();
+      const token = await deps.googleAccessToken(credential.accountId);
       if (token === undefined) throw new Error('Gmail is not connected');
       if (request.action === 'list_senders') {
         await verifyCredentialUnchanged(input, credential);
@@ -168,7 +199,13 @@ export function createGmailTool(deps: {
       }
       if (request.action === 'prepare_draft_send') {
         await verifyCredentialUnchanged(input, credential);
-        return gmail.prepareDraftSend(token, request.draftId);
+        const snapshot = await gmail.prepareDraftSend(token, request.draftId);
+        return {
+          ...snapshot,
+          ...(credential.accountId
+            ? { accountId: credential.accountId, credentialVersion: credential.credentialVersion }
+            : {}),
+        };
       }
       if (
         request.action !== 'create_draft' &&
@@ -177,6 +214,13 @@ export function createGmailTool(deps: {
       ) {
         throw new Error('Unsupported Gmail action');
       }
+      if (
+        request.action === 'send_draft' &&
+        credential.accountId &&
+        (request.accountId !== credential.accountId ||
+          request.credentialVersion !== credential.credentialVersion)
+      )
+        throw new Error('The Gmail account changed since the draft was prepared; prepare it again');
       let requestWithSignature: Extract<GmailRequest, { action: 'create_draft' | 'send_draft' }>;
       if (request.action === 'create_draft' || request.action === 'create_reply_draft') {
         const aliases = await gmail.listSenders(token);

@@ -605,3 +605,11 @@ export type { TransportLane, TransportRequestInit } from './api.js';
 export { sameSnapshotValue, reuseSnapshotRecords } from './snapshotIdentity.js';
 
 export { matrixSendSummary, type MatrixSendSummary } from './ui/matrixSendSummary.js';
+
+export type {
+  GoogleAccount,
+  GoogleService,
+  GoogleSessionAccess,
+  GoogleSessionAccessStatus,
+  ProjectDriveFolder,
+} from './api.js';

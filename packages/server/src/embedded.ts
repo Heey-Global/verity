@@ -1,3 +1,4 @@
+import { createGoogleAccountAccessToken } from './google-account-token.js';
 import { createMatrixTool } from './matrix-tool.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
 import { CoordinatedRecordingManager } from './coordinated-recording.js';
@@ -94,7 +95,6 @@ import { createAuthTokenRegistry } from './auth.js';
 import { CONTROL_PLANE_PROJECT_ID, ensureControlPlaneProject } from './control-plane-project.js';
 import { createTrustedCliOutputStore } from './trusted-cli-output.js';
 import { createMcpGatewayToolExecutor, createTrustedCliPreflight } from './mcp-gateway-tools.js';
-import { createCachedGoogleAccessToken } from './google-drive.js';
 import { createGoogleSlidesTool } from './google-slides-tool.js';
 import { createGoogleDocsTool } from './google-docs-tool.js';
 import { createGoogleContactsTool } from './google-contacts-tool.js';
@@ -1908,12 +1908,8 @@ export async function buildEmbeddedServer(
   if (config.controlPlaneRunner === true) {
     await ensureControlPlaneProject(eventStore);
   }
-  const googleAccessToken = createCachedGoogleAccessToken(async () => {
-    if (secretCipher.isSealed()) return undefined;
-    const settings = await eventStore.getVeritySettings();
-    const clientId = settings?.googleDriveClientId ?? '';
-    const refreshToken = settings?.googleDriveRefreshToken ?? '';
-    return clientId.length > 0 && refreshToken.length > 0 ? { clientId, refreshToken } : undefined;
+  const googleAccessToken = createGoogleAccountAccessToken(eventStore, {
+    isSealed: () => secretCipher.isSealed(),
   });
   const googleSlidesTool = createGoogleSlidesTool({ eventStore, googleAccessToken });
   const invokeGoogleSlides = googleSlidesTool.invoke;

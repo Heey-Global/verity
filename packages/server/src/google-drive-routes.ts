@@ -1,3 +1,4 @@
+import { createGoogleAccountAccessToken } from './google-account-token.js';
 import { googleAppClient } from './google-app-client.js';
 import type { EventStore, SealableSecretCipher, VeritySettingsRecord } from '@verity/store';
 import { chmod } from 'node:fs/promises';
@@ -33,7 +34,10 @@ import { GoogleSheetsError, getSheetsSpreadsheet } from './google-sheets.js';
 import { writeReferenceDocFile } from './reference-docs.js';
 import { ensureProjectKnowledge, KNOWLEDGE_DOCUMENTS_DIR } from './knowledge-folder.js';
 import { extractKnowledgeFile } from './knowledge-file-ingest.js';
-import { registerProjectGoogleDriveRoutes } from './google-drive-project-routes.js';
+import {
+  assertDriveFileInLinkedFolder,
+  registerProjectGoogleDriveRoutes,
+} from './google-drive-project-routes.js';
 
 const sessionParams = z.object({
   id: z
@@ -42,11 +46,13 @@ const sessionParams = z.object({
     .regex(/^[A-Za-z0-9_-]+$/),
 });
 const connectBody = z.object({
+  accountId: z.string().min(1).optional(),
   code: z.string().trim().min(1).max(4096),
   codeVerifier: z.string().trim().min(1).max(256),
   redirectUri: z.string().trim().min(1).max(2048),
 });
 const filesQuery = z.object({
+  accountId: z.string().min(1).optional(),
   parentId: z.string().trim().min(1).max(512).optional(),
   query: z.string().trim().min(1).max(200).optional(),
   sharedWithMe: z.enum(['true']).optional(),
@@ -54,7 +60,11 @@ const filesQuery = z.object({
   pageToken: z.string().trim().min(1).max(4096).optional(),
   purpose: z.enum(['import', 'slides', 'workspace', 'folder']).optional(),
 });
-const importBody = z.object({ fileId: z.string().trim().min(1).max(512) });
+const importBody = z.object({
+  folderLinkId: z.string().min(1).optional(),
+  fileId: z.string().trim().min(1).max(512),
+  accountId: z.string().min(1).optional(),
+});
 const projectParams = z.object({ id: z.string().trim().min(1).max(512) });
 const SLIDES_PICKER_MIME_TYPES = [
   'application/vnd.google-apps.folder',
@@ -71,7 +81,8 @@ const WORKSPACE_PICKER_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 ] as const;
 
-type SettingsStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySettings'>;
+type SettingsStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySettings'> &
+  Partial<Pick<EventStore, 'googleAccounts'>>;
 interface GoogleDriveRouteDeps {
   eventStore: SettingsStore &
     Pick<
@@ -134,9 +145,27 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       ? { clientId, refreshToken }
       : undefined;
   };
-  const accessToken = createCachedGoogleAccessToken(resolveCredentials);
+  const accessToken = deps.eventStore.googleAccounts
+    ? createGoogleAccountAccessToken(
+        { googleAccounts: deps.eventStore.googleAccounts },
+        {
+          isSealed: () => deps.secretCipher?.isSealed() === true,
+          acceptAccount: (account) => hasGoogleDriveScopes(account.scopes),
+        },
+      )
+    : Object.assign(async () => legacyAccessToken(), {
+        invalidate: () => legacyAccessToken.invalidate(),
+      });
+  const legacyAccessToken = createCachedGoogleAccessToken(resolveCredentials);
   registerProjectGoogleDriveRoutes(app, {
     getLinkedFolder: async (projectId, folderId) => {
+      if (deps.eventStore.googleAccounts) {
+        const links = await deps.eventStore.googleAccounts.folders(projectId);
+        const link =
+          links.find((candidate) => candidate.id === folderId) ??
+          (links.length === 1 && links[0]?.folderId === folderId ? links[0] : undefined);
+        return link ? { ...link, linkId: link.id } : undefined;
+      }
       const settings = await deps.eventStore.getProjectSettings(projectId);
       return settings?.googleDriveFolderId === folderId && settings.googleDriveFolderName
         ? {
@@ -148,7 +177,11 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         : undefined;
     },
     googleAccessToken: accessToken,
-    googleAccountIdentity: async () => {
+    googleAccountIdentity: async (accountId) => {
+      if (deps.eventStore.googleAccounts && accountId) {
+        const account = await deps.eventStore.googleAccounts.get(accountId);
+        return account ? `${account.id}:${account.credentialVersion}` : undefined;
+      }
       const credentials = await resolveCredentials();
       return credentials ? JSON.stringify(credentials) : undefined;
     },
@@ -159,9 +192,12 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       deps.secretCipher?.isSealed() === true
         ? undefined
         : await deps.eventStore.getVeritySettings();
-    const connected =
-      Boolean(settings?.googleDriveRefreshToken?.trim()) &&
-      hasGoogleDriveScopes(settings?.googleGrantedScopes);
+    const accounts = await deps.eventStore.googleAccounts?.list();
+    const eligible = accounts?.filter((account) => hasGoogleDriveScopes(account.scopes));
+    const connected = eligible
+      ? eligible.length > 0
+      : Boolean(settings?.googleDriveRefreshToken?.trim()) &&
+        hasGoogleDriveScopes(settings?.googleGrantedScopes);
     return {
       connected,
       clientId:
@@ -170,8 +206,16 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
           ? settings?.googleDriveClientId
           : null) ??
         null,
-      accountEmail: connected ? (settings?.googleDriveAccountEmail ?? null) : null,
-      scopes: settings?.googleGrantedScopes ?? [],
+      accountEmail: eligible
+        ? eligible.length === 1
+          ? eligible[0]!.email
+          : null
+        : connected
+          ? (settings?.googleDriveAccountEmail ?? null)
+          : null,
+      scopes: accounts
+        ? [...new Set(accounts.flatMap((account) => account.scopes))]
+        : (settings?.googleGrantedScopes ?? []),
     };
   });
   app.post(
@@ -211,6 +255,38 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       } catch {
         accountEmail = undefined;
       }
+      if (deps.eventStore.googleAccounts) {
+        if (!accountEmail)
+          return reply.code(502).send({ error: 'Could not verify the connected Google account' });
+        let account;
+        try {
+          account = await deps.eventStore.googleAccounts.save({
+            email: accountEmail,
+            clientId,
+            refreshToken: tokens.refreshToken,
+            scopes: tokens.scopes ?? [],
+            ...(body.accountId === undefined ? {} : { expectedAccountId: body.accountId }),
+          });
+        } catch (error) {
+          if (error instanceof SealedError) throw error;
+          return reply
+            .code(409)
+            .send({ error: 'The selected Google account does not match the signed-in account' });
+        }
+        if ((await deps.eventStore.googleAccounts.list()).length === 1) {
+          await deps.eventStore.updateVeritySettings({
+            googleDriveClientId: clientId,
+            googleDriveRefreshToken: tokens.refreshToken,
+            googleDriveAccountEmail: accountEmail,
+            googleGrantedScopes: tokens.scopes ?? [],
+            gmailAuthorized: hasGoogleGmailScopes(tokens.scopes),
+            calendarAuthorized: hasGoogleCalendarScopes(tokens.scopes),
+            contactsAuthorized: hasGoogleContactsScopes(tokens.scopes),
+          });
+        }
+        deps.onCredentialsChanged?.();
+        return { connected: true as const, accountEmail, accountId: account.id };
+      }
       const previous = await deps.eventStore.getVeritySettings();
       const calendarAuthorized = hasGoogleCalendarScopes(tokens.scopes);
       const accountChanged =
@@ -245,8 +321,14 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     },
   );
 
-  app.post('/google-drive/disconnect', async () => {
+  app.post('/google-drive/disconnect', async (_request, reply) => {
     if (deps.secretCipher?.isSealed() === true) throw new SealedError();
+    if (deps.eventStore.googleAccounts) {
+      const accounts = await deps.eventStore.googleAccounts.list();
+      if (accounts.length > 1)
+        return reply.code(409).send({ error: 'Choose the Google account to disconnect' });
+      if (accounts[0]) await deps.eventStore.googleAccounts.remove(accounts[0].id);
+    }
     await deps.eventStore.clearSessionGmailConnections();
     await deps.eventStore.clearSessionCalendarConnections();
     await deps.eventStore.clearSessionContactsConnections();
@@ -268,7 +350,7 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     '/google-drive/files',
     async (request, reply): Promise<DriveFileList | { error: string }> => {
       const query = filesQuery.parse(request.query);
-      const token = await accessToken();
+      const token = await accessToken(query.accountId);
       if (token === undefined) {
         reply.code(409);
         return { error: 'Google Drive is not connected' };
@@ -306,8 +388,14 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         }
         const recentIds =
           query.purpose === 'workspace'
-            ? await deps.eventStore.listRecentGoogleWorkspaceFileIds()
-            : await deps.eventStore.listRecentGoogleSlideDeckFileIds();
+            ? await deps.eventStore.listRecentGoogleWorkspaceFileIds(
+                8,
+                query.accountId ?? (await deps.eventStore.googleAccounts?.list())?.[0]?.id,
+              )
+            : await deps.eventStore.listRecentGoogleSlideDeckFileIds(
+                8,
+                query.accountId ?? (await deps.eventStore.googleAccounts?.list())?.[0]?.id,
+              );
         const pickerMimeTypes: readonly string[] =
           query.purpose === 'workspace' ? WORKSPACE_PICKER_MIME_TYPES : SLIDES_PICKER_MIME_TYPES;
         const recent = (
@@ -336,9 +424,12 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     '/google-drive/drives',
     async (request, reply): Promise<SharedDriveList | { error: string }> => {
       const query = z
-        .object({ pageToken: z.string().trim().min(1).max(4096).optional() })
+        .object({
+          pageToken: z.string().trim().min(1).max(4096).optional(),
+          accountId: z.string().min(1).optional(),
+        })
         .parse(request.query);
-      const token = await accessToken();
+      const token = await accessToken(query.accountId);
       if (token === undefined) {
         reply.code(409);
         return { error: 'Google Drive is not connected' };
@@ -356,16 +447,46 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     },
   );
 
+  app.get('/projects/:id/google-drive/folders', async (request, reply) => {
+    const { id } = projectParams.parse(request.params);
+    if (!(await deps.eventStore.getProject(id)))
+      return reply.code(404).send({ error: 'Project not found' });
+    return { folders: (await deps.eventStore.googleAccounts?.folders(id)) ?? [] };
+  });
+  app.delete('/projects/:id/google-drive/folders/:linkId', async (request, reply) => {
+    const { id, linkId } = projectParams
+      .extend({ linkId: z.string().min(1) })
+      .parse(request.params);
+    if (!(await deps.eventStore.getProject(id)))
+      return reply.code(404).send({ error: 'Project not found' });
+    await deps.eventStore.googleAccounts?.unlinkFolder(id, linkId);
+    return reply.code(204).send();
+  });
+
   app.put('/projects/:id/google-drive/folder', async (request, reply) => {
     const { id } = projectParams.parse(request.params);
-    const { fileId, accessMode } = importBody
+    const { fileId, accessMode, accountId } = importBody
       .extend({ accessMode: z.enum(['read-only', 'read-write']).default('read-only') })
       .parse(request.body);
     if ((await deps.eventStore.getProject(id)) === undefined) {
       reply.code(404);
       return { error: `project ${id} not found` };
     }
-    const token = await accessToken();
+    const accounts = await deps.eventStore.googleAccounts?.list();
+    const selected = accountId
+      ? accounts?.find((candidate) => candidate.id === accountId)
+      : accounts?.length === 1
+        ? accounts[0]
+        : undefined;
+    if (accounts && !selected) return reply.code(409).send({ error: 'Select a Google account' });
+    if (!accountId && deps.eventStore.googleAccounts) {
+      const links = await deps.eventStore.googleAccounts.folders(id);
+      if (links.length > 1 || links.some((link) => link.folderId !== fileId))
+        return reply
+          .code(409)
+          .send({ error: 'Select an account explicitly to add or update a folder' });
+    }
+    const token = await accessToken(selected?.id ?? accountId);
     if (token === undefined) {
       reply.code(409);
       return { error: 'Google Drive is not connected' };
@@ -379,6 +500,21 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       if (accessMode === 'read-write' && folder.canEdit !== true) {
         reply.code(403);
         return { error: 'You need edit access to connect this folder' };
+      }
+      if (deps.eventStore.googleAccounts) {
+        const current = selected
+          ? await deps.eventStore.googleAccounts.get(selected.id)
+          : undefined;
+        if (!selected || !current || current.credentialVersion !== selected.credentialVersion)
+          return reply.code(409).send({ error: 'Google account changed during folder selection' });
+        const link = await deps.eventStore.googleAccounts.linkFolder({
+          projectId: id,
+          accountId: selected.id,
+          folderId: folder.id,
+          name: folder.name,
+          accessMode,
+        });
+        return { folder: { id: folder.id, name: folder.name }, linkId: link.id };
       }
       await deps.eventStore.updateProjectSettings(id, {
         googleDriveFolderId: folder.id,
@@ -400,6 +536,12 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       reply.code(404);
       return { error: `project ${id} not found` };
     }
+    if (deps.eventStore.googleAccounts) {
+      const links = await deps.eventStore.googleAccounts.folders(id);
+      if (links.length > 1)
+        return reply.code(409).send({ error: 'Select the folder link to disconnect' });
+      if (links[0]) await deps.eventStore.googleAccounts.unlinkFolder(id, links[0].id);
+    }
     await deps.eventStore.updateProjectSettings(id, {
       googleDriveFolderId: null,
       googleDriveFolderName: null,
@@ -417,14 +559,59 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     return { file: (await deps.eventStore.getSessionWorkspaceFile(id)) ?? null };
   });
 
+  const assignmentBinding = async (
+    sessionId: string,
+    accountId?: string,
+    folderLinkId?: string,
+  ) => {
+    if (!deps.eventStore.googleAccounts) return undefined;
+    const accounts = await deps.eventStore.googleAccounts.list();
+    const account = accountId
+      ? accounts.find((item) => item.id === accountId)
+      : accounts.length === 1
+        ? accounts[0]
+        : undefined;
+    if (!account || !hasGoogleDriveScopes(account.scopes)) return undefined;
+    const session = await deps.eventStore.getSession(sessionId);
+    const link =
+      folderLinkId && session?.projectId
+        ? (await deps.eventStore.googleAccounts.folders(session.projectId)).find(
+            (item) => item.id === folderLinkId,
+          )
+        : undefined;
+    if (folderLinkId && (!link || link.accountId !== account.id)) return undefined;
+    return { account, link, projectId: session?.projectId };
+  };
+  const verifyAssignmentBinding = async (
+    sessionId: string,
+    binding: Awaited<ReturnType<typeof assignmentBinding>>,
+    token: string,
+    fileId: string,
+  ) => {
+    if (!binding) return;
+    if (binding.link) await assertDriveFileInLinkedFolder(token, binding.link.folderId, fileId);
+    const current = await assignmentBinding(sessionId, binding.account.id, binding.link?.id);
+    if (
+      !current ||
+      current.account.credentialVersion !== binding.account.credentialVersion ||
+      current.projectId !== binding.projectId ||
+      current.link?.revision !== binding.link?.revision
+    )
+      throw new Error('Google account or folder access changed during assignment');
+  };
+
   app.put('/sessions/:id/google-workspace/file', async (request, reply) => {
     const { id } = sessionParams.parse(request.params);
-    const { fileId } = importBody.parse(request.body);
+    const { fileId, accountId, folderLinkId } = importBody.parse(request.body);
     if ((await deps.eventStore.getSession(id)) === undefined) {
       reply.code(404);
       return { error: `session ${id} not found` };
     }
-    const token = await accessToken();
+    const binding = await assignmentBinding(id, accountId, folderLinkId);
+    if (deps.eventStore.googleAccounts && !binding)
+      return reply.code(409).send({ error: 'Choose an available Google account and folder' });
+    const selectedAccount = binding?.account;
+    const token = await accessToken(selectedAccount?.id ?? accountId);
     if (token === undefined) {
       reply.code(409);
       return { error: 'Google Drive is not connected' };
@@ -446,10 +633,9 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       const requiredScope =
         kind === 'slides' ? 'presentations' : kind === 'docs' ? 'documents' : 'spreadsheets';
       const settings = await deps.eventStore.getVeritySettings();
+      const scopes = selectedAccount?.scopes ?? settings?.googleGrantedScopes;
       if (
-        !settings?.googleGrantedScopes.some(
-          (granted) => granted === `https://www.googleapis.com/auth/${requiredScope}`,
-        )
+        !scopes?.some((granted) => granted === `https://www.googleapis.com/auth/${requiredScope}`)
       ) {
         reply.code(409);
         return { error: 'Reconnect Google Drive to grant Workspace editing access' };
@@ -478,7 +664,10 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       }
       const path =
         kind === 'slides' ? 'presentation' : kind === 'docs' ? 'document' : 'spreadsheets';
+      await verifyAssignmentBinding(id, binding, token, fileId);
       const file = await deps.eventStore.setSessionWorkspaceFile({
+        accountId: selectedAccount?.id ?? null,
+        folderLinkId: folderLinkId ?? null,
         sessionId: id,
         kind,
         fileId: canonicalId,
@@ -525,12 +714,16 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
 
   app.put('/sessions/:id/google-slides/deck', async (request, reply) => {
     const { id } = sessionParams.parse(request.params);
-    const { fileId } = importBody.parse(request.body);
+    const { fileId, accountId, folderLinkId } = importBody.parse(request.body);
     if ((await deps.eventStore.getSession(id)) === undefined) {
       reply.code(404);
       return { error: `session ${id} not found` };
     }
-    const token = await accessToken();
+    const binding = await assignmentBinding(id, accountId, folderLinkId);
+    if (deps.eventStore.googleAccounts && !binding)
+      return reply.code(409).send({ error: 'Choose an available Google account and folder' });
+    const selectedAccount = binding?.account;
+    const token = await accessToken(selectedAccount?.id ?? accountId);
     if (token === undefined) {
       reply.code(409);
       return { error: 'Google Drive is not connected' };
@@ -546,16 +739,16 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         return { error: 'You need edit access to assign this Google Slides deck' };
       }
       const settings = await deps.eventStore.getVeritySettings();
-      if (
-        !settings?.googleGrantedScopes.some(
-          (granted) => granted === 'https://www.googleapis.com/auth/presentations',
-        )
-      ) {
+      const scopes = selectedAccount?.scopes ?? settings?.googleGrantedScopes;
+      if (!scopes?.some((granted) => granted === 'https://www.googleapis.com/auth/presentations')) {
         reply.code(409);
         return { error: 'Reconnect Google Drive to grant presentation editing access' };
       }
       const presentation = await getSlidesPresentation(token, fileId);
+      await verifyAssignmentBinding(id, binding, token, fileId);
       const deck = await deps.eventStore.setSessionSlideDeck({
+        accountId: selectedAccount?.id ?? null,
+        folderLinkId: folderLinkId ?? null,
         sessionId: id,
         fileId: presentation.presentationId,
         name: presentation.title,
@@ -588,7 +781,7 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
 
   app.post('/sessions/:id/google-drive/import', async (request, reply) => {
     const { id } = sessionParams.parse(request.params);
-    const { fileId } = importBody.parse(request.body);
+    const { fileId, accountId, folderLinkId } = importBody.parse(request.body);
     const session = await deps.eventStore.getSession(id);
     if (!session) {
       reply.code(404);
@@ -598,7 +791,10 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       reply.code(409);
       return { error: 'Google Drive knowledge import requires a project session' };
     }
-    const token = await accessToken();
+    const binding = await assignmentBinding(id, accountId, folderLinkId);
+    if (deps.eventStore.googleAccounts && !binding)
+      return reply.code(409).send({ error: 'Choose an available Google account and folder' });
+    const token = await accessToken(binding?.account.id ?? accountId);
     if (token === undefined) {
       reply.code(409);
       return { error: 'Google Drive is not connected' };
@@ -632,6 +828,7 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       reply.code(502);
       return { error: `Could not download the Google Drive file (${reason})` };
     }
+    await verifyAssignmentBinding(id, binding, token, fileId);
     const fileName = referenceDocFileName(file.name, plan.extension, fileId);
     const root = await ensureProjectKnowledge(deps.dataRoot, session.projectId);
     const importsDir = `${root}/${KNOWLEDGE_DOCUMENTS_DIR}`;

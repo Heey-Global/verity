@@ -15,7 +15,7 @@ type DocsRequest =
 
 export interface GoogleDocsToolDeps {
   eventStore: GoogleWorkspaceToolStore;
-  googleAccessToken: () => Promise<string | undefined>;
+  googleAccessToken: (accountId?: string) => Promise<string | undefined>;
   docs?: {
     inspect(token: string, fileId: string): Promise<{ revisionId: string }>;
     read(token: string, fileId: string): Promise<{ revisionId: string }>;
@@ -82,12 +82,15 @@ export function createGoogleDocsTool(deps: GoogleDocsToolDeps): {
   const assigned = async (
     sessionId: string,
     assignmentId?: string,
+    credentialVersion?: number | null,
   ): Promise<SessionWorkspaceFile> => {
     const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
     if (
       file === undefined ||
       file.kind !== 'docs' ||
-      (assignmentId !== undefined && file.assignmentId !== assignmentId)
+      (assignmentId !== undefined && file.assignmentId !== assignmentId) ||
+      file.accountId === null ||
+      (credentialVersion !== undefined && file.credentialVersion !== credentialVersion)
     ) {
       throw new Error(
         assignmentId === undefined
@@ -105,12 +108,12 @@ export function createGoogleDocsTool(deps: GoogleDocsToolDeps): {
         throw new Error('Google Docs is restricted to the calling session');
       }
       const file = await assigned(input.sessionId);
-      const token = await deps.googleAccessToken();
+      const token = await deps.googleAccessToken(file.accountId ?? undefined);
       if (token === undefined) throw new Error('Google Drive is not connected');
       const request = parseRequest(input.request);
 
       if (request.action === 'inspect_document' || request.action === 'read_document') {
-        await assigned(input.sessionId, file.assignmentId);
+        await assigned(input.sessionId, file.assignmentId, file.credentialVersion);
         const document = await (request.action === 'inspect_document'
           ? docs.inspect(token, file.fileId)
           : docs.read(token, file.fileId));
@@ -125,13 +128,13 @@ export function createGoogleDocsTool(deps: GoogleDocsToolDeps): {
         return document;
       }
       if (request.action === 'edit')
-        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId);
+        await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, file);
       if (request.action !== 'edit') throw new Error('Unsupported Google Docs action');
       validateEdit(request.requests);
       if (request.revisionId === undefined) {
         throw new Error('This edit depends on previously read state and requires revisionId');
       }
-      await assigned(input.sessionId, file.assignmentId);
+      await assigned(input.sessionId, file.assignmentId, file.credentialVersion);
       const claim = await deps.eventStore.claimGoogleWorkspaceInvocation(input);
       if (claim.status === 'completed') return claim.result;
       if (claim.status === 'pending') {
@@ -139,8 +142,8 @@ export function createGoogleDocsTool(deps: GoogleDocsToolDeps): {
       }
       if (request.revisionId !== file.revisionId)
         throw new Error('The Google Docs revision is stale');
-      await assigned(input.sessionId, file.assignmentId);
-      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId);
+      await assigned(input.sessionId, file.assignmentId, file.credentialVersion);
+      await assertWorkspaceWriteAccess(deps.eventStore, input.projectId, file);
       const updated = await docs.update(token, file.fileId, request.requests, request.revisionId);
       await deps.eventStore.updateSessionWorkspaceRevision(
         input.sessionId,
