@@ -27,6 +27,8 @@ import {
   OPENCODE_KNOWLEDGE_READ_PERMISSION,
   projectClonePath,
   projectNetworkName,
+  projectNodeModulesVolumeName,
+  NODE_MODULES_TARGET,
   RUNNER_AGENT_UID,
   RUNNER_BROKER_CAPABILITIES,
 } from './provisioner.js';
@@ -1693,6 +1695,17 @@ async function assertEligibleSandbox(
       mount.readWrite === STANDARD_MOUNTS.disabledTokenScript.writable &&
       mount.destination === STANDARD_MOUNTS.disabledTokenScript.target &&
       mount.source === '/dev/null'
+    ) {
+      continue;
+    }
+    // The provisioner mounts dependencies from a separate project volume, not
+    // from Verity's data volume. Never accept an arbitrary source at this target.
+    if (
+      mount.type === 'volume' &&
+      mount.name === projectNodeModulesVolumeName(projectId) &&
+      mount.destination === NODE_MODULES_TARGET &&
+      mount.readWrite === true &&
+      (mount.subpath === undefined || mount.subpath === '')
     ) {
       continue;
     }
