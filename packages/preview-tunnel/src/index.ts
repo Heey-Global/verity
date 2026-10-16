@@ -95,7 +95,7 @@ export type PreviewConnectorDiagnostic =
   | { event: 'connect.started' }
   | { event: 'connect.established'; elapsedMs: number }
   | { event: 'connect.failed'; cause: string; elapsedMs: number; statusCode?: number }
-  | { event: 'heartbeat.timeout' }
+  | { event: 'heartbeat.timeout'; phase: 'write' | 'pong' }
   | { event: 'connection.closed'; code: number; opened: boolean; elapsedMs: number };
 
 export interface PreviewConnectorOptions {
@@ -1444,10 +1444,10 @@ export class PreviewConnector {
       if (this.heartbeatDeadline) clearTimeout(this.heartbeatDeadline);
       this.heartbeatDeadline = undefined;
     };
-    const deadline = (): void => {
+    const deadline = (phase: 'write' | 'pong'): void => {
       this.heartbeatDeadline = setTimeout(() => {
         if (!active() || !pending) return;
-        this.options.onDiagnostic({ event: 'heartbeat.timeout' });
+        this.options.onDiagnostic({ event: 'heartbeat.timeout', phase });
         socket.terminate();
       }, CONNECTOR_HEARTBEAT_MS);
       this.heartbeatDeadline.unref();
@@ -1463,7 +1463,7 @@ export class PreviewConnector {
       pending = probe;
       // Socket writes can queue behind application frames. Bound that wait,
       // then give the peer a separate reply window once the write completes.
-      deadline();
+      deadline('write');
       try {
         socket.ping(probe, undefined, (error?: Error) => {
           if (!active() || pending !== probe) return;
@@ -1472,7 +1472,7 @@ export class PreviewConnector {
             socket.terminate();
             return;
           }
-          deadline();
+          deadline('pong');
         });
       } catch {
         clearDeadline();
