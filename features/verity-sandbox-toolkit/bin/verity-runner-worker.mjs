@@ -2291,7 +2291,7 @@ var require_versions = __commonJS({
     exports.version = {
       major: 4,
       minor: 6,
-      patch: 6
+      patch: 7
     };
     (function() {
       var keys = Object.getOwnPropertyNames(exports);
