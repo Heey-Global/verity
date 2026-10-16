@@ -492,3 +492,19 @@ it('exports only the HTTP status from a failed preparation response', async () =
   expect(report.preparation).toEqual({ stage: 'remote-start', failed: true, httpStatus: 403 });
   expect(mockCopy.mock.calls[0]![0]).not.toContain('secret response');
 });
+
+it('retains completed preparation after reopening', async () => {
+  const api = client();
+  const view = render(<ConnectionRecording client={api as never} />);
+  await pressStart();
+  await screen.findByText(/Ready — turn off VPN/);
+  view.unmount();
+  render(<ConnectionRecording client={api as never} />);
+  await screen.findByText(/Saved run available/);
+  fireEvent.press(screen.getByText('Stop and collect'));
+  await waitFor(() => expect(mockCopy).toHaveBeenCalled());
+  expect(JSON.parse(mockCopy.mock.calls[0]![0] as string).preparation).toEqual({
+    stage: 'ready',
+    failed: false,
+  });
+});

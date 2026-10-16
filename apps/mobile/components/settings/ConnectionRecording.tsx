@@ -354,6 +354,10 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
       )
         throw new Error('Not ready');
       saved.preparation = { stage: 'ready', failed: false };
+      await save(saved);
+      if (!current()) return;
+      if (captureDeadline.current <= performance.now() || saved.expiresAt <= Date.now())
+        throw new Error('Recording expired');
       setRemaining(Math.min(left, saved.expiresAt - Date.now()));
       setReady(true);
       setMessage('Ready — turn off VPN and use the app normally. Stop and collect when finished.');
