@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.72.5](https://github.com/Heey-Global/verity/compare/mobile-v1.72.4...mobile-v1.72.5) (2026-10-16)
+
+
+### Features
+
+* **website:** render product images from the app and rebuild the homepage ([#1657](https://github.com/Heey-Global/verity/issues/1657)) ([79eac56](https://github.com/Heey-Global/verity/commit/79eac56417ef70c019c71a18f401f5e1666b9c23))
+
+
+### Bug Fixes
+
+* **deps:** update dependency zod to v4.6.7 ([#1661](https://github.com/Heey-Global/verity/issues/1661)) ([c253e3d](https://github.com/Heey-Global/verity/commit/c253e3d70851ff52832e486d89ee8d2064467f1d))
+
 ## [1.72.4](https://github.com/Heey-Global/verity/compare/mobile-v1.72.3...mobile-v1.72.4) (2026-10-16)
 
 
