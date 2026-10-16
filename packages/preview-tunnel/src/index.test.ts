@@ -1069,10 +1069,104 @@ describe('preview tunnel', () => {
     await vi.advanceTimersByTimeAsync(15_000);
     await connector.waitForDisconnect();
     expect(diagnostics.mock.calls).toEqual([
-      [{ event: 'heartbeat.timeout' }],
+      [{ event: 'heartbeat.timeout', phase: 'pong' }],
       [{ event: 'connection.closed', code: 1006, opened: true, elapsedMs: expect.any(Number) }],
     ]);
     expect(JSON.stringify(diagnostics.mock.calls)).not.toContain('secret-token');
+  });
+
+  it('gives a ping queued behind real socket backpressure its full reply window', async () => {
+    const server = createServer();
+    const websocketServer = new WebSocketServer({ server, autoPong: false });
+    const peerConnected = new Promise<WebSocket>((resolve) =>
+      websocketServer.once('connection', resolve),
+    );
+    const port = await listen(server);
+    const diagnostics = vi.fn<(diagnostic: PreviewConnectorDiagnostic) => void>();
+    const connector = new PreviewConnector({
+      edgeUrl: `ws://127.0.0.1:${port}/__verity/connector`,
+      connectorToken: 'backpressure-test',
+      targetOrigin: 'http://127.0.0.1:3000',
+      onDiagnostic: diagnostics,
+    });
+    cleanups.push(async () => {
+      vi.useRealTimers();
+      connector.close();
+      for (const peer of websocketServer.clients) peer.terminate();
+      websocketServer.close();
+      await closeServer(server);
+    });
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
+    await connector.connect();
+    const peer = await peerConnected;
+    const socket = (connector as unknown as { socket: WebSocket }).socket;
+    peer.pause();
+    // A paused TCP reader makes control frames wait behind actual queued data.
+    const chunk = Buffer.alloc(256 * 1024);
+    for (let count = 0; count < 128; count++) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      socket.send(chunk);
+      if (socket.bufferedAmount > 0) break;
+    }
+    expect(socket.bufferedAmount).toBeGreaterThan(0);
+    let written = false;
+    let writeError: Error | null | undefined;
+    const originalPing = socket.ping.bind(socket);
+    let resolveWritten!: () => void;
+    const writeCompleted = new Promise<void>((resolve) => {
+      resolveWritten = resolve;
+    });
+    vi.spyOn(socket, 'ping').mockImplementation((data, mask, callback) => {
+      originalPing(data, mask, (error) => {
+        writeError = error;
+        written = true;
+        (callback as ((error?: Error) => void) | undefined)?.(error);
+        resolveWritten();
+      });
+    });
+    const receivedPing = new Promise<Buffer>((resolve) => peer.once('ping', resolve));
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(written).toBe(false);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(written).toBe(false);
+    peer.resume();
+    const [payload] = await Promise.all([receivedPing, writeCompleted]);
+    expect(writeError == null).toBe(true);
+    await vi.advanceTimersByTimeAsync(5_001);
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    expect(diagnostics).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'heartbeat.timeout' }),
+    );
+    const receivedPong = new Promise<void>((resolve) => socket.once('pong', () => resolve()));
+    peer.pong(payload);
+    await receivedPong;
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it('the preview edge automatically answers native heartbeat pings', async () => {
+    const token = generatePreviewSecret();
+    const edge = new PreviewEdge({
+      shareId: 'heartbeat-edge',
+      pinHash: hashPreviewPin('123456'),
+      connectorTokenHash: hashPreviewSecret(token),
+      sessionSecretHash,
+      publicOrigin: 'https://heartbeat-edge.preview.example.test',
+    });
+    const port = await edge.listen();
+    cleanups.push(() => edge.close());
+    const connector = new PreviewConnector({
+      edgeUrl: `ws://127.0.0.1:${port}/__verity/connector`,
+      connectorToken: token,
+      targetOrigin: 'http://127.0.0.1:3000',
+    });
+    cleanups.push(() => connector.close());
+    await connector.connect();
+    const socket = (connector as unknown as { socket: WebSocket }).socket;
+    const payload = Buffer.from('native-heartbeat');
+    const pong = new Promise<Buffer>((resolve) => socket.once('pong', resolve));
+    socket.ping(payload);
+    expect(await pong).toEqual(payload);
   });
 
   it.each(['delayed-send', 'stalled-send', 'early-pong', 'wrong-pong', 'close-pending'] as const)(
@@ -1081,7 +1175,9 @@ describe('preview tunnel', () => {
       const server = createServer();
       const websocketServer = new WebSocketServer({ server, autoPong: false });
       const port = await listen(server);
+      const diagnostics = vi.fn<(diagnostic: PreviewConnectorDiagnostic) => void>();
       const connector = new PreviewConnector({
+        onDiagnostic: diagnostics,
         edgeUrl: `ws://127.0.0.1:${port}/__verity/connector`,
         connectorToken: 'heartbeat-test',
         targetOrigin: 'http://127.0.0.1:3000',
@@ -1107,6 +1203,7 @@ describe('preview tunnel', () => {
       if (scenario === 'stalled-send') {
         await vi.advanceTimersByTimeAsync(15_000);
         await connector.waitForDisconnect();
+        expect(diagnostics).toHaveBeenCalledWith({ event: 'heartbeat.timeout', phase: 'write' });
         return;
       }
       if (scenario === 'close-pending') {
