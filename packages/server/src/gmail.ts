@@ -17,6 +17,7 @@ interface GmailHeader {
 }
 
 interface GmailPart {
+  partId?: string;
   mimeType?: string;
   filename?: string;
   headers?: GmailHeader[];
@@ -91,12 +92,20 @@ function messageBodies(
 
 function normalizeMessage(message: GmailMessage): Record<string, unknown> {
   const payload = message.payload;
-  const attachments: { filename: string; mimeType?: string; size?: number }[] = [];
+  const attachments: {
+    filename: string;
+    partId?: string;
+    attachmentId?: string;
+    mimeType?: string;
+    size?: number;
+  }[] = [];
   const collectAttachments = (part: GmailPart | undefined): void => {
     if (part === undefined) return;
     if (part.filename !== undefined && part.filename.length > 0) {
       attachments.push({
         filename: part.filename,
+        ...(part.partId === undefined ? {} : { partId: part.partId }),
+        ...(part.body?.attachmentId === undefined ? {} : { attachmentId: part.body.attachmentId }),
         ...(part.mimeType === undefined ? {} : { mimeType: part.mimeType }),
         ...(part.body?.size === undefined ? {} : { size: part.body.size }),
       });
@@ -178,6 +187,58 @@ export async function readGmailThread(
     id: thread.id,
     historyId: thread.historyId,
     messages: (thread.messages ?? []).map(normalizeMessage),
+  };
+}
+
+/** Fetch a MIME part by its message-local identity, including inline attachments. */
+export async function downloadGmailAttachment(
+  accessToken: string,
+  messageId: string,
+  partId: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<unknown> {
+  const message = await gmailJson<GmailMessage>(
+    `/messages/${encodeURIComponent(messageId)}?format=full`,
+    accessToken,
+    {},
+    fetchImpl,
+  );
+  const find = (part: GmailPart | undefined): GmailPart | undefined => {
+    if (part?.partId === partId) return part;
+    for (const child of part?.parts ?? []) {
+      const match = find(child);
+      if (match !== undefined) return match;
+    }
+    return undefined;
+  };
+  const part = find(message.payload);
+  if (!part?.filename) throw new Error('The requested Gmail attachment is not in this message');
+  const maxBytes = 10 * 1024 * 1024;
+  const checkSize = (size: number): void => {
+    if (size > maxBytes) throw new Error('Gmail attachment exceeds the 10 MiB download limit');
+  };
+  checkSize(part.body?.size ?? 0);
+  const body =
+    part.body?.attachmentId === undefined
+      ? part.body
+      : await gmailJson<{ data?: string; size?: number }>(
+          `/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(part.body.attachmentId)}`,
+          accessToken,
+          {},
+          fetchImpl,
+        );
+  if (body?.data === undefined) throw new Error('The Gmail attachment has no data');
+  checkSize(body.size ?? 0);
+  checkSize(Math.floor((body.data.replace(/=+$/u, '').length * 3) / 4));
+  const bytes = Buffer.from(body.data, 'base64url');
+  return {
+    messageId,
+    partId,
+    filename: part.filename,
+    mimeType: part.mimeType ?? 'application/octet-stream',
+    size: bytes.length,
+    encoding: 'base64',
+    content: bytes.toString('base64'),
   };
 }
 

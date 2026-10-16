@@ -24,6 +24,7 @@ function setup(overrides: Partial<GmailToolStore> = {}) {
     ...overrides,
   };
   const gmail = {
+    downloadAttachment: vi.fn().mockResolvedValue({ encoding: 'base64', content: 'AP8=' }),
     search: vi.fn().mockResolvedValue({ messages: [] }),
     readThread: vi.fn().mockResolvedValue({ id: 't1', messages: [] }),
     createDraft: vi.fn().mockResolvedValue({ id: 'd1' }),
@@ -77,6 +78,26 @@ describe('Gmail session tool', () => {
     expect(gmailHasStandingAuthorization({ action: 'create_draft' })).toBe(true);
     expect(gmailHasStandingAuthorization({ action: 'prepare_draft_send' })).toBe(true);
     expect(gmailHasStandingAuthorization({ action: 'send_draft' })).toBe(false);
+  });
+
+  it('downloads attachments only with session access and unchanged credentials', async () => {
+    const request = { action: 'download_attachment', messageId: 'm1', partId: '1' };
+    const { tool, gmail, claimGoogleWorkspaceInvocation } = setup();
+    expect(gmailHasStandingAuthorization(request)).toBe(true);
+    await expect(tool.invoke(input(request))).resolves.toMatchObject({ content: 'AP8=' });
+    expect(gmail.downloadAttachment).toHaveBeenCalledWith('token', 'm1', '1');
+    expect(claimGoogleWorkspaceInvocation).not.toHaveBeenCalled();
+    const denied = setup({ getSessionGmailConnection: vi.fn().mockResolvedValue(undefined) });
+    await expect(denied.tool.invoke(input(request))).rejects.toThrow('Gmail is not enabled');
+    expect(denied.gmail.downloadAttachment).not.toHaveBeenCalled();
+    const changed = setup({
+      getSessionGmailConnection: vi
+        .fn()
+        .mockResolvedValueOnce({ accountEmail: 'me@example.test' })
+        .mockResolvedValue(undefined),
+    });
+    await expect(changed.tool.invoke(input(request))).rejects.toThrow('Gmail is not enabled');
+    expect(changed.gmail.downloadAttachment).not.toHaveBeenCalled();
   });
 
   it('rejects an unknown send action', async () => {
