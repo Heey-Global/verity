@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.72.4](https://github.com/Heey-Global/verity/compare/mobile-v1.72.3...mobile-v1.72.4) (2026-10-16)
+
+
+### Bug Fixes
+
+* **mobile:** preserve recording preparation failures and partial exports ([#1663](https://github.com/Heey-Global/verity/issues/1663)) ([f5f63d0](https://github.com/Heey-Global/verity/commit/f5f63d057b1e619546ea694b2aeeea32196ee523))
+
 ## [1.72.3](https://github.com/Heey-Global/verity/compare/mobile-v1.72.2...mobile-v1.72.3) (2026-10-15)
 
 
