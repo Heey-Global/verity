@@ -28,6 +28,15 @@ export interface ShowcaseSession {
   pendingPermission?: string;
   /** Markdown of a plan awaiting the Implement decision. */
   plan?: string;
+  /** The open pull request of the session's branch, with its CI state. */
+  pullRequest?: ShowcasePullRequest;
+}
+
+export interface ShowcasePullRequest {
+  number: number;
+  title: string;
+  /** `running` leaves some checks pending; `success` makes the PR merge-ready. */
+  pipeline: 'running' | 'success';
 }
 
 export const SHOWCASE_PROJECTS = [
@@ -36,16 +45,21 @@ export const SHOWCASE_PROJECTS = [
   { id: 'showcase-app', repo: 'Northwind App' },
 ] as const;
 
-const CLAUDE = 'claude-sonnet-4-6';
-const CODEX = 'codex/gpt-5.4';
+const CLAUDE = 'claude-opus-5-5';
+const CODEX = 'codex/gpt-6.1-sol';
 const OPENCODE = 'verity/qwen3-coder';
 
-/** One model per engine and more, so the model picker shows all three groups. */
+/** The model new showcase sessions start with; listed in `SHOWCASE_MODELS`. */
+export const SHOWCASE_DEFAULT_MODEL = CLAUDE;
+
+/** Current models of every engine, so the model picker shows all three groups. */
 export const SHOWCASE_MODELS = [
-  'claude-opus-4-6',
+  'claude-fable-5-1',
   CLAUDE,
+  'claude-sonnet-5-5',
   CODEX,
-  'codex/gpt-5.4-mini',
+  'codex/gpt-6-astra',
+  'codex/gpt-6-sol',
   OPENCODE,
   'verity/kimi-k2',
 ];
@@ -95,7 +109,22 @@ export function showcaseSessions(): ShowcaseSession[] {
       model: CLAUDE,
       branch: 'feat/single-page-checkout',
       state: 'running',
+      pullRequest: {
+        number: 218,
+        title: 'feat(checkout): single-page checkout',
+        pipeline: 'running',
+      },
       events: [
+        {
+          t: 'prompt',
+          text: 'Where do customers drop off in checkout? Check the interviews in Knowledge.',
+        },
+        {
+          t: 'text',
+          delta:
+            'All three interviews point at the same place:\n\n- **Address step:** checkout asks for the shipping address twice.\n- **Payment step:** customers who re-enter the address there leave most often.\n- **Confirmation:** no complaints.\n\nI saved this as the insight `checkout-friction.md`.',
+        },
+        { t: 'result', usage, stopReason: 'end_turn' },
         {
           t: 'prompt',
           text: 'Merge the address and payment steps into a single checkout page. Keep the payment tests green.',
@@ -137,15 +166,55 @@ export function showcaseSessions(): ShowcaseSession[] {
       model: CODEX,
       branch: 'fix/payment-retry-backoff',
       state: 'idle',
+      pullRequest: {
+        number: 214,
+        title: 'fix(payments): back off retries with jitter',
+        pipeline: 'success',
+      },
       events: [
+        {
+          t: 'prompt',
+          text: 'How often did payments fail last night?',
+        },
+        {
+          t: 'text',
+          delta:
+            '37 of 2,140 charges failed between 19:00 and 21:00. In 31 cases the provider returned `429 Too Many Requests`, and our retry failed within the same second.',
+        },
+        { t: 'result', usage, stopReason: 'end_turn' },
         {
           t: 'prompt',
           text: 'Payments sometimes fail twice in a row during peak hours. Find out why.',
         },
         {
+          t: 'tool_call',
+          id: 'showcase-retry-read',
+          name: 'Read',
+          input: { file_path: '/workspace/src/payments/retry.ts' },
+        },
+        { t: 'tool_result', id: 'showcase-retry-read', output: '64 lines', isError: false },
+        {
+          t: 'tool_call',
+          id: 'showcase-retry-edit',
+          name: 'Edit',
+          input: {
+            file_path: '/workspace/src/payments/retry.ts',
+            old_string: 'await charge(order)',
+            new_string: 'await withBackoff(() => charge(order), { jitter: true })',
+          },
+        },
+        { t: 'tool_result', id: 'showcase-retry-edit', output: 'Edited', isError: false },
+        {
+          t: 'tool_call',
+          id: 'showcase-retry-test',
+          name: 'Bash',
+          input: { command: 'npm test' },
+        },
+        { t: 'tool_result', id: 'showcase-retry-test', output: '214 passed', isError: false },
+        {
           t: 'text',
           delta:
-            'Retries fired immediately, so a busy provider rejected them again. Retries now back off exponentially with jitter, and a new test covers three consecutive failures. All 214 tests pass.',
+            'Retries fired immediately, so a busy provider rejected them again. They now back off exponentially with jitter, and a new test covers three failures in a row. All 214 tests pass, and pull request #214 is green and ready to merge.',
         },
         { t: 'result', usage, stopReason: 'end_turn' },
       ],
@@ -189,6 +258,16 @@ export function showcaseSessions(): ShowcaseSession[] {
       events: [
         {
           t: 'prompt',
+          text: 'What changed in Knowledge since last week?',
+        },
+        {
+          t: 'text',
+          delta:
+            'Three new interview transcripts and the pricing survey with 412 responses. I added the insight `weekly-reporting.md`.',
+        },
+        { t: 'result', usage, stopReason: 'end_turn' },
+        {
+          t: 'prompt',
           text: 'Every Monday morning, summarize new interviews and survey answers in Knowledge.',
         },
         {
@@ -209,34 +288,54 @@ export function showcaseSessions(): ShowcaseSession[] {
     },
     {
       projectId: 'showcase-app',
-      name: 'Release notes 2.4',
-      model: OPENCODE,
-      branch: 'chore/release-notes-2-4',
+      name: 'Offline order notes',
+      model: CODEX,
+      branch: 'feat/offline-order-notes',
       state: 'awaiting_approval',
-      pendingPermission: 'showcase-matrix-send',
+      pendingPermission: 'showcase-package-install',
       events: [
         {
           t: 'prompt',
-          text: 'Draft the release notes for 2.4 and post them to the release room.',
+          text: 'Let staff add order notes while offline and sync them later.',
+        },
+        {
+          t: 'text',
+          delta: 'Offline storage needs the `idb` package. Installing it first.',
+        },
+        {
+          t: 'permission',
+          id: 'showcase-package-install',
+          tool: 'verity_package_install',
+          riskClass: 'ask',
+          input: { command: 'npm install idb', manager: 'npm', supported: true },
+        },
+      ],
+    },
+    {
+      projectId: 'showcase-app',
+      name: 'Search ranking',
+      model: OPENCODE,
+      branch: 'feat/search-ranking',
+      state: 'awaiting_approval',
+      pendingPermission: 'showcase-migrate',
+      events: [
+        {
+          t: 'prompt',
+          text: 'Rank search results by recent orders and try it on staging.',
         },
         {
           t: 'text',
           delta:
-            'Drafted `RELEASE_NOTES.md` with four user-facing changes and one fix. The announcement waits for your approval.',
+            'Ranking is implemented and covered by tests. Applying the index migration to the staging database needs your approval.',
         },
         {
           t: 'permission',
-          id: 'showcase-matrix-send',
-          tool: 'verity_matrix',
+          id: 'showcase-migrate',
+          tool: 'Bash',
           riskClass: 'ask',
           input: {
-            action: 'send',
-            accountId: '@verity:northwind.example',
-            endpoint: 'https://matrix.northwind.example',
-            roomId: '!releases:northwind.example',
-            roomName: 'Releases',
-            bindingVersion: 1,
-            body: 'Northwind App 2.4 is out: single-page checkout, weekly sales emails, faster search and offline order notes. Thanks to everyone who tested the beta!',
+            command: 'npm run db:migrate -- --env staging',
+            description: 'Apply the search index migration to staging',
           },
         },
       ],

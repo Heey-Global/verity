@@ -1,4 +1,5 @@
 import type {
+  BranchList,
   LiveSocket,
   SessionAutomation,
   SessionDetail,
@@ -8,6 +9,7 @@ import { randomUUID } from 'expo-crypto';
 
 import {
   isDemoShowcase,
+  SHOWCASE_DEFAULT_MODEL,
   SHOWCASE_MODELS,
   SHOWCASE_PROJECTS,
   showcaseKnowledgeFiles,
@@ -62,6 +64,7 @@ interface DemoSession {
   timers: Set<ReturnType<typeof setTimeout>>;
   files: Record<string, string>;
   branch: string;
+  pullRequest?: NonNullable<BranchList['pullRequest']>;
 }
 // Sample subscription readings so the usage meters show their filled state.
 // Times are relative to the request: fixed timestamps would expire and the
@@ -290,6 +293,28 @@ function seedShowcase(): void {
     session.detail.projectId = scenario.projectId;
     session.detail.worktree = '/workspace';
     session.branch = scenario.branch;
+    if (scenario.pullRequest !== undefined) {
+      const { number, title, pipeline } = scenario.pullRequest;
+      const done = pipeline === 'success' ? 5 : 3;
+      session.pullRequest = {
+        number,
+        title,
+        url: `https://github.com/northwind/shop/pull/${number}`,
+        phase: 'open',
+        pipeline,
+        checks: { completed: done, total: 5, successful: done, failed: 0, pending: 5 - done },
+        mergeable: pipeline === 'success' ? true : null,
+        mergeState: pipeline === 'success' ? 'clean' : 'unstable',
+        baseRef: 'main',
+      };
+      session.detail.pullRequest = session.pullRequest;
+      session.detail.pr = {
+        phase: 'open',
+        pipeline,
+        mergeable: session.pullRequest.mergeable,
+        mergeState: session.pullRequest.mergeState,
+      };
+    }
     if (scenario.plan !== undefined) {
       session.detail.planning = 'active';
       session.detail.planningPlan = scenario.plan;
@@ -494,7 +519,7 @@ const demoFetchImpl: typeof fetch = async (input, init) => {
   if (path === '/models' && method === 'GET')
     return json({
       models: isDemoShowcase() ? SHOWCASE_MODELS : [MODEL, 'claude-sonnet-4-6'],
-      default: MODEL,
+      default: isDemoShowcase() ? SHOWCASE_DEFAULT_MODEL : MODEL,
     });
   if (path === '/provider-limits' && method === 'GET') return json(providerLimits());
   if (path === '/projects' && method === 'GET') return json([...projects.values()]);
@@ -777,7 +802,12 @@ const demoFetchImpl: typeof fetch = async (input, init) => {
       return json({
         current: session.branch,
         switchable: [session.branch],
-        currentPr: null,
+        currentPr: session.pullRequest?.number ?? null,
+        ...(session.pullRequest && {
+          pullRequest: session.pullRequest,
+          owner: 'northwind',
+          repo: 'shop',
+        }),
       });
     if (rest === '/dev-servers' && method === 'GET') return json({ devServers: [] });
     if (rest === '/links' && method === 'GET') return json({ links: [] });

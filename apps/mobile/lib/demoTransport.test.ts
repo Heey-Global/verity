@@ -1,7 +1,7 @@
 import {
   gmailSendSummary,
   LiveConnection,
-  matrixSendSummary,
+  packageInstallSummary,
   overviewProviderLimitRows,
   planProposalContent,
   VerityClient,
@@ -446,7 +446,10 @@ describe('showcase scenario', () => {
     );
     const inputs = pending.map((event) => (event && 'input' in event ? event.input : undefined));
     expect(inputs.some((input) => gmailSendSummary(input) !== null)).toBe(true);
-    expect(inputs.some((input) => matrixSendSummary(input) !== null)).toBe(true);
+    expect(inputs.some((input) => packageInstallSummary(input)?.supported)).toBe(true);
+    // The coding images need a merge-ready pull request in the overview and its branch.
+    const ready = sessions.find((session) => session.pr?.mergeable === true);
+    expect((await api.getBranches(ready!.sessionId)).pullRequest?.pipeline).toBe('success');
     const details = await Promise.all(sessions.map(({ sessionId }) => api.getSession(sessionId)));
     const plan = details.find((detail) => detail.planning === 'active')?.planningPlan;
     expect(planProposalContent(plan ?? '').steps.length).toBeGreaterThan(1);
@@ -455,6 +458,9 @@ describe('showcase scenario', () => {
         (entry) => entry.name,
       ),
     ).toEqual(expect.arrayContaining(['sources', 'insights']));
+    // A default outside the list leaves the model picker without a selection.
+    const models = await api.listModels();
+    expect(models.models).toContain(models.default);
 
     delete storage.localStorage;
     resetDemoData();

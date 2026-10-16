@@ -49,14 +49,16 @@ const SCENES = [
     crops: [
       {
         name: 'session-list',
-        text: ['WEEK', 'Northwind Shop', 'Release notes 2.4'],
+        text: ['WEEK', 'Northwind Shop', 'Search ranking'],
         maxHeight: 615,
       },
+      { name: 'usage-meters', text: ['Claude', 'Codex', 'WEEK'], maxHeight: 120 },
     ],
   },
   {
     name: 'phone-approval',
     viewport: PHONE,
+    cropsOnly: true,
     steps: [{ click: 'Interview synthesis' }],
     crops: [{ name: 'approval-email', text: ['Send email to', 'Deny'], pad: 12 }],
   },
@@ -73,21 +75,27 @@ const SCENES = [
     steps: [{ click: 'Research digest' }],
   },
   {
-    name: 'phone-matrix',
+    name: 'phone-pr',
+    viewport: PHONE,
+    steps: [{ click: 'Fix payment retries' }],
+    crops: [{ name: 'pull-request', text: ['PR #214', 'Merge'], pad: 12 }],
+  },
+  {
+    name: 'phone-package',
     viewport: PHONE,
     cropsOnly: true,
-    steps: [{ click: 'Release notes 2.4' }],
-    crops: [{ name: 'approval-matrix', text: ['Send Matrix message to', 'Deny'], pad: 12 }],
+    steps: [{ click: 'Offline order notes' }],
+    crops: [{ name: 'release-delay', text: ['install dependencies', 'Set up delay'], pad: 12 }],
   },
   {
     name: 'phone-models',
     viewport: PHONE,
     cropsOnly: true,
     steps: [
-      { click: 'Release notes 2.4' },
+      { click: 'Search ranking' },
       { press: 'Current model: qwen3-coder. Tap to switch model.' },
     ],
-    crops: [{ name: 'model-picker', text: ['SWITCH MODEL', 'kimi-k2'], maxHeight: 390 }],
+    crops: [{ name: 'model-picker', text: ['SWITCH MODEL', 'kimi-k2'], maxHeight: 470 }],
   },
   {
     name: 'phone-knowledge',
