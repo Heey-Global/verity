@@ -6,6 +6,19 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.49.0](https://github.com/Heey-Global/verity/compare/v4.48.1...v4.49.0) (2026-10-16)
+
+
+### Features
+
+* **gmail:** support agent attachment downloads ([#1667](https://github.com/Heey-Global/verity/issues/1667)) ([ff57b1b](https://github.com/Heey-Global/verity/commit/ff57b1b2101e8ca03bed10851ef960ed23aeb8d7))
+* **website:** render product images from the app and rebuild the homepage ([#1657](https://github.com/Heey-Global/verity/issues/1657)) ([79eac56](https://github.com/Heey-Global/verity/commit/79eac56417ef70c019c71a18f401f5e1666b9c23))
+
+
+### Bug Fixes
+
+* **deps:** update dependency zod to v4.6.7 ([#1661](https://github.com/Heey-Global/verity/issues/1661)) ([c253e3d](https://github.com/Heey-Global/verity/commit/c253e3d70851ff52832e486d89ee8d2064467f1d))
+
 ## [4.48.1](https://github.com/Heey-Global/verity/compare/v4.48.0...v4.48.1) (2026-10-16)
 
 
