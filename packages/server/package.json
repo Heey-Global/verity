@@ -39,7 +39,7 @@
     "sharp": "0.35.5",
     "sigstore": "5.0.0",
     "ws": "8.22.0",
-    "zod": "4.6.6",
+    "zod": "4.6.7",
     "@verity/preview-tunnel": "*"
   },
   "devDependencies": {
