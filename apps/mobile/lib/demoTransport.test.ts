@@ -449,6 +449,7 @@ describe('showcase scenario', () => {
     expect(inputs.some((input) => packageInstallSummary(input)?.supported)).toBe(true);
     // The coding images need a merge-ready pull request in the overview and its branch.
     const ready = sessions.find((session) => session.pr?.mergeable === true);
+    expect(ready).toBeDefined();
     expect((await api.getBranches(ready!.sessionId)).pullRequest?.pipeline).toBe('success');
     const details = await Promise.all(sessions.map(({ sessionId }) => api.getSession(sessionId)));
     const plan = details.find((detail) => detail.planning === 'active')?.planningPlan;

@@ -440,9 +440,11 @@
         animation: drift 7s ease-in-out infinite;
       }
 
+      /* Overhangs the browser window, but never the viewport: the offset shrinks
+         with the margin beside the stage. */
       .float-delay {
         top: 22%;
-        left: -72px;
+        left: max(-72px, min(-12px, calc(568px - 50vw)));
         width: 300px;
       }
 
@@ -463,14 +465,6 @@
         .float {
           animation: none;
         }
-      }
-
-      .frame {
-        overflow: hidden;
-        border: 1px solid var(--border);
-        border-radius: var(--radius-card);
-        background: var(--surface);
-        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
       }
 
       /* Spotlights: one product feature per full-width row. */
@@ -604,13 +598,13 @@
         width: 100%;
       }
 
-      /* Callouts sit on the parts of the approval card that carry no text. */
-      .approval {
+      /* Callouts sit on the parts of the annotated card that carry no text. */
+      .annotated {
         position: relative;
         width: min(100%, 460px);
       }
 
-      .approval .spotlight-card {
+      .annotated .spotlight-card {
         width: 100%;
       }
 
@@ -627,6 +621,16 @@
       .callout-c {
         bottom: 5%;
         left: -36px;
+      }
+
+      @media (max-width: 1200px) {
+        .callout-b {
+          right: -8px;
+        }
+
+        .callout-c {
+          left: -8px;
+        }
       }
 
       .models {
@@ -919,12 +923,6 @@
         color: var(--text-muted);
         font-size: 13px;
         font-weight: 600;
-      }
-
-      .note {
-        margin-top: 16px;
-        color: var(--text-faint);
-        font-size: 13px;
       }
 
       /* Anywhere */
@@ -1391,7 +1389,7 @@
             </ul>
           </div>
           <div class="spotlight-visual">
-            <div class="approval">
+            <div class="annotated">
             <div class="spotlight-card">
               <img
                 src="assets/app-approval-email.png"
@@ -1476,7 +1474,7 @@
             </ul>
           </div>
           <div class="spotlight-visual">
-            <div class="approval">
+            <div class="annotated">
               <div class="spotlight-card">
                 <img
                   src="assets/app-knowledge-files.png"

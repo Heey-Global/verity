@@ -299,7 +299,7 @@ function seedShowcase(): void {
       session.pullRequest = {
         number,
         title,
-        url: `https://github.com/northwind/shop/pull/${number}`,
+        url: `https://github.example/northwind/shop/pull/${number}`,
         phase: 'open',
         pipeline,
         checks: { completed: done, total: 5, successful: done, failed: 0, pending: 5 - done },
@@ -803,11 +803,8 @@ const demoFetchImpl: typeof fetch = async (input, init) => {
         current: session.branch,
         switchable: [session.branch],
         currentPr: session.pullRequest?.number ?? null,
-        ...(session.pullRequest && {
-          pullRequest: session.pullRequest,
-          owner: 'northwind',
-          repo: 'shop',
-        }),
+        // No owner/repo: the header would link them to a real github.com namespace.
+        ...(session.pullRequest && { pullRequest: session.pullRequest }),
       });
     if (rest === '/dev-servers' && method === 'GET') return json({ devServers: [] });
     if (rest === '/links' && method === 'GET') return json({ links: [] });
