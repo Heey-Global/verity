@@ -849,9 +849,17 @@
         font-weight: 600;
       }
 
-      .arch .spotlight-card {
+      /* The release-delay card stays outside the role="img" drawing, so its
+         alt text still reaches screen readers. */
+      .arch-stack {
+        display: grid;
+        gap: 24px;
+        width: min(100%, 480px);
+      }
+
+      .arch-stack .arch,
+      .arch-stack .spotlight-card {
         width: 100%;
-        margin-top: 14px;
       }
 
       /* Connectors and features as a bento grid of differently sized tiles. */
@@ -1520,7 +1528,8 @@
             <a class="text-link" href="https://github.com/Heey-Global/verity/blob/main/SECURITY.md">Read the security model</a>
           </div>
           <div class="spotlight-visual">
-            <div class="arch" role="img" aria-label="Inside your server, the agent works in a gVisor sandbox without credentials. Approved requests go to the broker, which holds the credentials and calls GitHub, Google, and model providers.">
+            <div class="arch-stack">
+<div class="arch" role="img" aria-label="Inside your server, the agent works in a gVisor sandbox without credentials. Approved requests go to the broker, which holds the credentials and calls GitHub, Google, and model providers.">
               <div class="arch-server">
                 <span class="arch-label">Your server</span>
                 <div class="arch-sandbox">
@@ -1536,7 +1545,8 @@
               </div>
               <div class="arch-link">Authenticated call</div>
               <div class="arch-services"><span>GitHub</span><span>Google</span><span>Model providers</span></div>
-              <div class="spotlight-card">
+            </div>
+            <div class="spotlight-card">
                 <img
                   src="assets/app-release-delay.png"
                   alt="Before installing dependencies, Verity recommends a three-day delay for newly released versions"
