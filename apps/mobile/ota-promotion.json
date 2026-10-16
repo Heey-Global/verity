@@ -1,15 +1,20 @@
 {
   "schema": 1,
-  "version": "1.66.2",
-  "runtime": "1.66.0",
+  "version": "1.72.5",
+  "runtime": "1.72.0",
   "channel": "production",
-  "commit": "b01e0797b813f68cef80b12068295b3762e0ac59",
-  "tag": "mobile-v1.66.2",
-  "branch": "staging-mobile-v1.66.2-b01e0797b813f68cef80b12068295b3762e0ac59",
-  "baseline": "mobile-v1.66.1",
-  "group": "557de2fc-be9c-4f5f-a9e5-f741f9648540",
+  "commit": "883e6f00608e64af5f42a94e9d523a53af5a38a6",
+  "tag": "mobile-v1.72.5",
+  "branch": "staging-mobile-v1.72.5-883e6f00608e64af5f42a94e9d523a53af5a38a6",
+  "baseline": "mobile-v1.72.0",
+  "group": "26648ea5-e83a-4062-a999-745673c7e83a",
   "notes": [
-    "correlate touch diagnostics and expose route waits (#1496)",
-    "correct session keyboard visibility and overlap (#1495)"
+    "update dependency zod to v4.6.7 (#1661)",
+    "render product images from the app and rebuild the homepage (#1657)",
+    "preserve recording preparation failures and partial exports (#1663)",
+    "support multiple accounts across Workspace (#1654)",
+    "update dependency zod to v4.6.6 (#1648)",
+    "capture selected sessions with fresh readiness (#1639)",
+    "verify versioned socket evidence exports (#1634)"
   ]
 }
