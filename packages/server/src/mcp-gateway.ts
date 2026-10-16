@@ -344,7 +344,7 @@ const TOOL_SCHEMAS = {
       .object({
         action: z.literal('download_attachment'),
         messageId: z.string().min(1).max(512),
-        partId: z.string().min(1).max(512),
+        partId: z.string().max(512),
       })
       .strict(),
     z

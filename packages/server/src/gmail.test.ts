@@ -71,13 +71,13 @@ describe('Gmail API', () => {
       const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
         response({
           payload: {
-            partId: '0',
+            partId: '',
             filename: 'note.txt',
             body: { data: Buffer.from(content).toString('base64url') },
           },
         }),
       );
-      await expect(downloadGmailAttachment('token', 'm1', '0', fetch)).resolves.toMatchObject({
+      await expect(downloadGmailAttachment('token', 'm1', '', fetch)).resolves.toMatchObject({
         content: Buffer.from(content).toString('base64'),
         size: Buffer.byteLength(content),
       });

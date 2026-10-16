@@ -1055,6 +1055,7 @@ it('returns a bounded replay identity usable by the Matrix status action', () =>
 
 it.each([
   { action: 'download_attachment', messageId: 'm1', partId: '1.0' },
+  { action: 'download_attachment', messageId: 'm1', partId: '' },
   { action: 'list_senders' },
   {
     action: 'create_draft',
