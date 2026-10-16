@@ -1398,18 +1398,18 @@
           </div>
           <div class="spotlight-visual">
             <div class="annotated">
-            <div class="spotlight-card">
-              <img
-                src="assets/app-approval-email.png"
-                alt="An approval card with sender, recipient, subject, and the full text of an email, with Deny and Allow buttons"
-                width="393"
-                height="409"
-                loading="lazy"
-              />
-            </div>
-            <span class="callout callout-a" aria-hidden="true">Sent by the broker</span>
-            <span class="callout callout-b" aria-hidden="true">Exactly this text, once</span>
-            <span class="callout callout-c" aria-hidden="true">Your decision</span>
+              <div class="spotlight-card">
+                <img
+                  src="assets/app-approval-email.png"
+                  alt="An approval card with sender, recipient, subject, and the full text of an email, with Deny and Allow buttons"
+                  width="393"
+                  height="409"
+                  loading="lazy"
+                />
+              </div>
+              <span class="callout callout-a" aria-hidden="true">Sent by the broker</span>
+              <span class="callout callout-b" aria-hidden="true">Exactly this text, once</span>
+              <span class="callout callout-c" aria-hidden="true">Your decision</span>
             </div>
           </div>
         </div>
@@ -1529,24 +1529,24 @@
           </div>
           <div class="spotlight-visual">
             <div class="arch-stack">
-<div class="arch" role="img" aria-label="Inside your server, the agent works in a gVisor sandbox without credentials. Approved requests go to the broker, which holds the credentials and calls GitHub, Google, and model providers.">
-              <div class="arch-server">
-                <span class="arch-label">Your server</span>
-                <div class="arch-sandbox">
-                  <span class="arch-label">Project sandbox · gVisor</span>
-                  <div class="arch-chips"><span>Agent</span><span>Repository</span><span>Tools</span></div>
-                  <span class="arch-note">No passwords. No tokens.</span>
+              <div class="arch" role="img" aria-label="Inside your server, the agent works in a gVisor sandbox without credentials. Approved requests go to the broker, which holds the credentials and calls GitHub, Google, and model providers.">
+                <div class="arch-server">
+                  <span class="arch-label">Your server</span>
+                  <div class="arch-sandbox">
+                    <span class="arch-label">Project sandbox · gVisor</span>
+                    <div class="arch-chips"><span>Agent</span><span>Repository</span><span>Tools</span></div>
+                    <span class="arch-note">No passwords. No tokens.</span>
+                  </div>
+                  <div class="arch-link">Approved request</div>
+                  <div class="arch-broker">
+                    <span class="flow-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span>
+                    <div><strong>Broker</strong><span>Holds the credentials and asks you first.</span></div>
+                  </div>
                 </div>
-                <div class="arch-link">Approved request</div>
-                <div class="arch-broker">
-                  <span class="flow-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span>
-                  <div><strong>Broker</strong><span>Holds the credentials and asks you first.</span></div>
-                </div>
+                <div class="arch-link">Authenticated call</div>
+                <div class="arch-services"><span>GitHub</span><span>Google</span><span>Model providers</span></div>
               </div>
-              <div class="arch-link">Authenticated call</div>
-              <div class="arch-services"><span>GitHub</span><span>Google</span><span>Model providers</span></div>
-            </div>
-            <div class="spotlight-card">
+              <div class="spotlight-card">
                 <img
                   src="assets/app-release-delay.png"
                   alt="Before installing dependencies, Verity recommends a three-day delay for newly released versions"
