@@ -137,6 +137,7 @@ it('stops locally offline, retains run across reopening and retries collection w
   await pressStart();
   await screen.findByText(/Ready — turn off VPN/);
   api.stopConnectionRecording.mockRejectedValue(new Error('offline'));
+  api.exportConnectionRecording.mockRejectedValue(new Error('offline'));
   fireEvent.press(screen.getByText('Stop and collect'));
   await screen.findByText(/Partial recording copied/);
   expect(mockStop.mock.invocationCallOrder[0]).toBeLessThan(
@@ -445,4 +446,49 @@ it('does not apply the expired previous deadline while a new native arm is pendi
   } finally {
     jest.useRealTimers();
   }
+});
+
+it('preserves the failed preparation stage across reopening without exporting raw errors', async () => {
+  const api = client();
+  api.startConnectionRecording.mockRejectedValue(new Error('private token and URL'));
+  const view = render(<ConnectionRecording client={api as never} />);
+  await pressStart();
+  await screen.findByText(/Preparation failed/);
+  view.unmount();
+  render(<ConnectionRecording client={api as never} />);
+  await screen.findByText(/Saved run available/);
+  fireEvent.press(screen.getByText('Stop and collect'));
+  await waitFor(() => expect(mockCopy).toHaveBeenCalled());
+  const report = JSON.parse(mockCopy.mock.calls[0]![0] as string);
+  expect(report.preparation).toEqual({ stage: 'remote-start', failed: true });
+  expect(JSON.stringify(report)).not.toContain('private token');
+});
+
+it('retrieves retained remote evidence even when stop acknowledgement fails', async () => {
+  const api = client();
+  render(<ConnectionRecording client={api as never} />);
+  await pressStart();
+  await screen.findByText(/Ready — turn off VPN/);
+  api.stopConnectionRecording.mockRejectedValue(new Error('response lost'));
+  fireEvent.press(screen.getByText('Stop and collect'));
+  await waitFor(() => expect(mockCopy).toHaveBeenCalled());
+  const report = JSON.parse(mockCopy.mock.calls[0]![0] as string);
+  expect(api.exportConnectionRecording).toHaveBeenCalledWith(runId, 3);
+  expect(report.remote.available).toBe(true);
+  expect(report.remote.stopped).toBe(false);
+});
+
+it('exports only the HTTP status from a failed preparation response', async () => {
+  const api = client();
+  api.startConnectionRecording.mockRejectedValue(
+    Object.assign(new Error('secret response'), { status: 403 }),
+  );
+  render(<ConnectionRecording client={api as never} />);
+  await pressStart();
+  await screen.findByText(/HTTP 403/);
+  fireEvent.press(screen.getByText('Stop and collect'));
+  await waitFor(() => expect(mockCopy).toHaveBeenCalled());
+  const report = JSON.parse(mockCopy.mock.calls[0]![0] as string);
+  expect(report.preparation).toEqual({ stage: 'remote-start', failed: true, httpStatus: 403 });
+  expect(mockCopy.mock.calls[0]![0]).not.toContain('secret response');
 });
