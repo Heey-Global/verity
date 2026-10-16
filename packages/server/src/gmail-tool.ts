@@ -4,6 +4,7 @@ import {
 } from './google-service-credentials.js';
 import {
   appendGmailSignature,
+  downloadGmailAttachment,
   createGmailDraft,
   prepareGmailReplyDraft,
   listGmailSendAs,
@@ -52,6 +53,7 @@ type GmailRequest =
   | { action: 'list_senders' }
   | { action: 'search'; query: string; maxResults?: number; pageToken?: string }
   | { action: 'read_thread'; threadId: string }
+  | { action: 'download_attachment'; messageId: string; partId: string }
   | {
       action: 'create_reply_draft';
       threadId: string;
@@ -88,6 +90,7 @@ export function createGmailTool(deps: {
   googleAccessToken: (accountId?: string) => Promise<string | undefined>;
   gmail?: {
     search(token: string, query: string, maxResults: number, pageToken?: string): Promise<unknown>;
+    downloadAttachment?(token: string, messageId: string, partId: string): Promise<unknown>;
     readThread(token: string, threadId: string): Promise<unknown>;
     createDraft(
       token: string,
@@ -105,6 +108,7 @@ export function createGmailTool(deps: {
   };
 }): { invoke(input: GmailInvocationInput): Promise<unknown> } {
   const gmail = deps.gmail ?? {
+    downloadAttachment: downloadGmailAttachment,
     search: searchGmail,
     readThread: readGmailThread,
     createDraft: createGmailDraft,
@@ -196,6 +200,14 @@ export function createGmailTool(deps: {
       if (request.action === 'read_thread') {
         await verifyCredentialUnchanged(input, credential);
         return gmail.readThread(token, request.threadId);
+      }
+      if (request.action === 'download_attachment') {
+        await verifyCredentialUnchanged(input, credential);
+        return (gmail.downloadAttachment ?? downloadGmailAttachment)(
+          token,
+          request.messageId,
+          request.partId,
+        );
       }
       if (request.action === 'prepare_draft_send') {
         await verifyCredentialUnchanged(input, credential);

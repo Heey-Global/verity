@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   appendGmailSignature,
+  downloadGmailAttachment,
   createGmailDraft,
   createGmailReplyDraft,
   listGmailSendAs,
@@ -22,6 +23,92 @@ function response(value: unknown): Response {
 }
 
 describe('Gmail API', () => {
+  it('exposes nested attachment identities and downloads exact binary bytes', async () => {
+    const bytes = Buffer.from([0, 255, 128, 13, 10]);
+    const message = {
+      id: 'm/1',
+      payload: {
+        parts: [
+          {
+            parts: [
+              {
+                partId: '1.0',
+                filename: 'report.pdf',
+                mimeType: 'application/pdf',
+                body: { attachmentId: 'a/1', size: bytes.length },
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(response({ messages: [message] }))
+      .mockResolvedValueOnce(response(message))
+      .mockResolvedValueOnce(response({ data: bytes.toString('base64url'), size: bytes.length }));
+    const thread = await readGmailThread('token', 't1', fetch);
+    expect(thread).toMatchObject({
+      messages: [{ attachments: [{ partId: '1.0', attachmentId: 'a/1', filename: 'report.pdf' }] }],
+    });
+    await expect(downloadGmailAttachment('token', 'm/1', '1.0', fetch)).resolves.toEqual({
+      messageId: 'm/1',
+      partId: '1.0',
+      filename: 'report.pdf',
+      mimeType: 'application/pdf',
+      size: bytes.length,
+      encoding: 'base64',
+      content: bytes.toString('base64'),
+    });
+    expect(fetch.mock.calls[2]?.[0]).toBe(
+      'https://gmail.googleapis.com/gmail/v1/users/me/messages/m%2F1/attachments/a%2F1',
+    );
+    expect(fetch.mock.calls[2]?.[1]?.headers).toMatchObject({ Authorization: 'Bearer token' });
+  });
+
+  it('downloads inline and empty attachment bodies without a separate fetch', async () => {
+    for (const content of ['', 'hello']) {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        response({
+          payload: {
+            partId: '',
+            filename: 'note.txt',
+            body: { data: Buffer.from(content).toString('base64url') },
+          },
+        }),
+      );
+      await expect(downloadGmailAttachment('token', 'm1', '', fetch)).resolves.toMatchObject({
+        content: Buffer.from(content).toString('base64'),
+        size: Buffer.byteLength(content),
+      });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('rejects missing parts, missing data, oversized files, and API failures', async () => {
+    for (const body of [{ size: 10 * 1024 * 1024 + 1, attachmentId: 'a1' }, {}]) {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        response({
+          payload: {
+            partId: '0',
+            filename: 'file',
+            body,
+          },
+        }),
+      );
+      await expect(downloadGmailAttachment('token', 'm1', '0', fetch)).rejects.toThrow();
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(response({ payload: { partId: '0', filename: 'file' } }));
+    await expect(downloadGmailAttachment('token', 'm1', 'missing', fetch)).rejects.toThrow(
+      'not in this message',
+    );
+    fetch.mockResolvedValue(new Response('', { status: 403 }));
+    await expect(downloadGmailAttachment('token', 'm1', '0', fetch)).rejects.toThrow('HTTP 403');
+  });
+
   it('reads the configured send-as signature as safe plain text', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
       response({

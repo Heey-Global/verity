@@ -1054,6 +1054,8 @@ it('returns a bounded replay identity usable by the Matrix status action', () =>
 });
 
 it.each([
+  { action: 'download_attachment', messageId: 'm1', partId: '1.0' },
+  { action: 'download_attachment', messageId: 'm1', partId: '' },
   { action: 'list_senders' },
   {
     action: 'create_draft',
@@ -1062,7 +1064,7 @@ it.each([
     subject: 'Hello',
     body: 'Body',
   },
-])('accepts Gmail sender selection through the gateway: %j', async (request) => {
+])('accepts Gmail read and draft actions through the gateway: %j', async (request) => {
   const { gateway, invokeTool } = harness({
     servedTools: ['verity_gmail'],
     hasStandingAuthorization: async () => true,
