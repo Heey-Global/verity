@@ -32,7 +32,7 @@ export interface ShowcaseSession {
   pullRequest?: ShowcasePullRequest;
 }
 
-export interface ShowcasePullRequest {
+interface ShowcasePullRequest {
   number: number;
   title: string;
   /** `running` leaves some checks pending; `success` makes the PR merge-ready. */
