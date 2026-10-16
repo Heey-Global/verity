@@ -26,6 +26,18 @@ RUN --mount=type=secret,id=apple_team_id,required=false \
     && rm /tmp/apple-app-site-association.json
 USER 101:101
 COPY --chown=101:101 docs/website/site/assets/hero-product-verity-v5.png /usr/share/nginx/html/assets/hero-product-verity-v5.png
+# Product images rendered from the app by `npm run render:app-screens`.
+COPY --chown=101:101 docs/website/site/assets/app-approval-email.png /usr/share/nginx/html/assets/app-approval-email.png
+COPY --chown=101:101 docs/website/site/assets/app-desktop-session.png /usr/share/nginx/html/assets/app-desktop-session.png
+COPY --chown=101:101 docs/website/site/assets/app-knowledge-files.png /usr/share/nginx/html/assets/app-knowledge-files.png
+COPY --chown=101:101 docs/website/site/assets/app-model-picker.png /usr/share/nginx/html/assets/app-model-picker.png
+COPY --chown=101:101 docs/website/site/assets/app-phone-automation.png /usr/share/nginx/html/assets/app-phone-automation.png
+COPY --chown=101:101 docs/website/site/assets/app-phone-pr.png /usr/share/nginx/html/assets/app-phone-pr.png
+COPY --chown=101:101 docs/website/site/assets/app-plan.png /usr/share/nginx/html/assets/app-plan.png
+COPY --chown=101:101 docs/website/site/assets/app-pull-request.png /usr/share/nginx/html/assets/app-pull-request.png
+COPY --chown=101:101 docs/website/site/assets/app-release-delay.png /usr/share/nginx/html/assets/app-release-delay.png
+COPY --chown=101:101 docs/website/site/assets/app-session-list.png /usr/share/nginx/html/assets/app-session-list.png
+COPY --chown=101:101 docs/website/site/assets/app-usage-meters.png /usr/share/nginx/html/assets/app-usage-meters.png
 COPY --chown=101:101 docs/website/site/assets/verity-mark.png /usr/share/nginx/html/assets/verity-mark.png
 COPY --chown=101:101 docs/website/site/assets/verity-favicon.png /usr/share/nginx/html/assets/verity-favicon.png
 # Self-host Inter and distribute its SIL OFL licence with it.

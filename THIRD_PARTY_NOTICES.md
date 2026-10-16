@@ -50,7 +50,7 @@ separately by `TRADEMARKS.md`.
 | (MIT OR CC0-1.0) | 1 |
 | (Unlicense OR Apache-2.0) | 1 |
 | 0BSD | 2 |
-| Apache-2.0 | 57 |
+| Apache-2.0 | 59 |
 | Apache-2.0 AND LGPL-3.0-or-later | 3 |
 | Apache-2.0 AND LGPL-3.0-or-later AND MIT | 1 |
 | BlueOak-1.0.0 | 7 |
@@ -1070,6 +1070,8 @@ separately by `TRADEMARKS.md`.
 | pirates | MIT | [source](https://www.npmjs.com/package/pirates) |
 | pkce-challenge | MIT | [source](https://www.npmjs.com/package/pkce-challenge) |
 | pkg-dir | MIT | [source](https://www.npmjs.com/package/pkg-dir) |
+| playwright-core | Apache-2.0 | [source](https://www.npmjs.com/package/playwright-core) |
+| playwright | Apache-2.0 | [source](https://www.npmjs.com/package/playwright) |
 | plist | MIT | [source](https://www.npmjs.com/package/plist) |
 | pngjs | MIT | [source](https://www.npmjs.com/package/pngjs) |
 | postcss-value-parser | MIT | [source](https://www.npmjs.com/package/postcss-value-parser) |

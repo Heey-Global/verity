@@ -37,6 +37,7 @@ import { restoreUnprotectedAuthToken } from '../lib/authToken';
 import { applyStartupUpdate, downloadAppUpdate } from '../lib/automaticUpdates';
 import { getVerityBaseUrl, hydrateVerityBaseUrl } from '../lib/client';
 import { isDemoMode, useDemoRevision } from '../lib/demoMode';
+import { isDemoShowcase } from '../lib/demoShowcase';
 // One subpath per weight: the package root would pull all eighteen Inter
 // files (about 6 MB) into the bundle, not just the four the theme uses.
 import { Inter_400Regular } from '@expo-google-fonts/inter/400Regular';
@@ -307,7 +308,11 @@ function HydratedRoot() {
               <Stack.Screen name="onboarding" options={{ headerShown: false }} />
             </Stack>
             {isDemoMode() ? (
-              <DemoBanner />
+              // Product images are rendered from the showcase; the banner would
+              // only have to be cropped out of every one of them.
+              isDemoShowcase() ? null : (
+                <DemoBanner />
+              )
             ) : (
               <>
                 <ActiveMeetingOverlay />

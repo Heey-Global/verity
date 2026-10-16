@@ -21,7 +21,7 @@ scroll positions.
 
 | Surface | Demo behavior |
 | --- | --- |
-| Project and session overview | Sample project and conversation through the normal screens |
+| Project and session overview | Sample project, conversation and subscription usage through the normal screens |
 | New sessions and chat | Local creation, delayed simulated replies, approval decisions, stop, rename and model selection |
 | Review changes | Sample Edit tool card and simulated button color change |
 | Files | Browse sample directories, read and edit text files, download sample files |
@@ -67,3 +67,27 @@ Before resubmitting, exercise this walkthrough on the actual iOS build, disclose
 these limitations in review notes, and determine whether additional review
 access is required. A new binary or compatible update containing the demo must
 reach the build under review; repository changes alone do not update TestFlight.
+
+## Product images
+
+The website's app images are rendered from the browser export instead of
+captured by hand. `apps/mobile/lib/demoShowcase.ts` defines a showcase scenario
+with several projects, coding sessions with pull requests and CI status, a Gmail
+approval, a command approval, the dependency release-delay prompt and filled Project
+Knowledge. It replaces the welcome sample only when the browser's
+`localStorage` contains `verity.demoShowcase.v1`; native apps never see it, so
+the review walkthrough above keeps its sample project. The demo banner is hidden in the
+showcase.
+
+```sh
+npm run build:web --workspace @verity/mobile-app -- --max-workers 1
+npx playwright install chromium-headless-shell
+npm run render:app-screens
+```
+
+The script serves the export locally, opens each scene in headless Chromium
+at twice the CSS resolution and writes the PNGs to
+`docs/website/site/assets/` as `app-*.png`. Scenes and component crops are listed at the
+top of the script; `--only <scene>` renders a single scene. On Linux, Chromium
+needs its system libraries (`npx playwright install-deps chromium`). Clock
+times in the images follow the moment of rendering.

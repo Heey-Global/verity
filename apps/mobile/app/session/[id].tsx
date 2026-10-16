@@ -351,6 +351,7 @@ import {
 } from '../../lib/transcriptAnchor';
 import { settleTranscriptJump } from '../../lib/transcriptJump';
 import { formatResetDisplay, formatTurnTimestamp } from '../../lib/time';
+import { WEB_NO_FOCUS_RING } from '../../lib/webFocusRing';
 
 // In-memory per-session draft cache: keeps the typed/dictated draft when the
 // operator leaves a session and returns (within the app's lifetime), so input work
@@ -9801,6 +9802,17 @@ function InputBar({
 }) {
   const { theme } = useUnistyles();
   const [dropActive, setDropActive] = useState(false);
+  // The browser's own focus ring is removed (WEB_NO_FOCUS_RING); the card
+  // shows focus in the action color instead, so keyboard users keep a cue.
+  const [focused, setFocused] = useState(false);
+  const onComposerFocus = useCallback(() => {
+    setFocused(true);
+    onFocus?.();
+  }, [onFocus]);
+  const onComposerBlur = useCallback(() => {
+    setFocused(false);
+    onBlur?.();
+  }, [onBlur]);
   const attachBtnRef = useRef<View>(null);
   const openAttachMenu = useAttachmentMenuAnchor(attachBtnRef, onAttach);
   const onComposerKeyPress = useCallback(
@@ -9873,24 +9885,21 @@ function InputBar({
             styles.inputCard,
             compact && styles.inputCardCompact,
             dropActive ? styles.inputCardDropActive : null,
+            Platform.OS === 'web' && focused && !dropActive ? styles.inputCardFocused : null,
           ]}
         >
           <PromptComposerInput
             key={Platform.OS === 'web' ? 'web-composer' : sendNonce}
             ref={inputRef}
-            style={[
-              styles.input,
-              compact && styles.inputCompact,
-              Platform.OS === 'web' ? { outlineWidth: 0 } : null,
-            ]}
+            style={[styles.input, compact && styles.inputCompact, WEB_NO_FOCUS_RING]}
             value={value}
             onChangeText={onChangeText}
             containerStyle={compact ? styles.inputContainerCompact : undefined}
             submitOnReturn={shouldSubmitOnReturn(keyboardHeight)}
             onSend={onSend}
             onKeyPress={onComposerKeyPress}
-            onFocus={onFocus}
-            onBlur={onBlur}
+            onFocus={onComposerFocus}
+            onBlur={onComposerBlur}
             placeholder={
               dead
                 ? 'This session can’t be resumed'
@@ -12168,6 +12177,9 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: 3,
     paddingBottom: 3,
     gap: theme.spacing.sm,
+  },
+  inputCardFocused: {
+    borderColor: theme.colors.action,
   },
   inputCardDropActive: {
     borderColor: theme.colors.action,
