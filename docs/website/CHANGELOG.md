@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0](https://github.com/Heey-Global/verity/compare/website-v2.2.2...website-v2.3.0) (2026-10-16)
+
+
+### Features
+
+* **website:** render product images from the app and rebuild the homepage ([#1657](https://github.com/Heey-Global/verity/issues/1657)) ([79eac56](https://github.com/Heey-Global/verity/commit/79eac56417ef70c019c71a18f401f5e1666b9c23))
+
 ## [2.2.2](https://github.com/Heey-Global/verity/compare/website-v2.2.1...website-v2.2.2) (2026-10-15)
 
 
