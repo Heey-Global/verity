@@ -350,12 +350,14 @@
         line-height: 1.45;
       }
 
+      /* The screenshot takes whatever height the header leaves, so a header
+         that wraps to more lines at a narrow column pushes it down instead
+         of running under it. */
       .shot {
-        position: absolute;
-        top: 150px;
-        right: 24px;
-        bottom: -2px;
-        left: 24px;
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        margin: 24px 24px -2px;
       }
 
       .shot img {
@@ -368,6 +370,8 @@
       }
 
       .shot-list img {
+        position: absolute;
+        inset: 0;
         height: 100%;
         object-fit: cover;
         object-position: top;
@@ -378,7 +382,7 @@
       .shot-card {
         display: flex;
         align-items: center;
-        bottom: 22px;
+        margin-bottom: 22px;
         filter: drop-shadow(0 20px 40px rgba(0, 0, 0, 0.55));
       }
 
@@ -387,19 +391,20 @@
       }
 
       .shot-phone {
-        top: 165px;
-        left: 50%;
+        display: flex;
         width: 76%;
-        transform: translateX(-50%);
+        margin: 39px auto -2px;
       }
 
       .shot-phone .iphone {
-        height: 100%;
+        display: flex;
+        flex: 1;
+        flex-direction: column;
         border-radius: 42px 42px 0 0;
       }
 
       .shot-phone .iphone-screen {
-        height: 100%;
+        flex: 1;
         border-radius: 34px 34px 0 0;
       }
 
@@ -419,11 +424,8 @@
         height: 18px;
       }
 
-
-
       /* The browser window and the iPhone are drawn in CSS around rendered
          app screens. */
-
 
       .browser {
         overflow: hidden;
@@ -513,14 +515,6 @@
         background: #000;
         transform: translateX(-50%);
       }
-
-
-
-
-
-
-
-
 
       /* Spotlights: one product feature per full-width row. */
       .spotlight {
@@ -843,6 +837,7 @@
       }
 
       .cta h2 {
+        margin-top: 12px;
         font-size: clamp(36px, 5vw, 56px);
       }
 
@@ -855,10 +850,6 @@
       .cta .actions {
         justify-content: center;
         margin-top: 28px;
-      }
-
-      .cta h2 {
-        margin-top: 12px;
       }
 
       .cta code {
@@ -991,12 +982,6 @@
         .hero {
           padding: 72px 0 96px;
         }
-
-
-
-
-
-
 
         .models .spotlight-card + .spotlight-card {
           position: static;
