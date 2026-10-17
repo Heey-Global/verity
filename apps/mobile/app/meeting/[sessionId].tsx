@@ -1169,7 +1169,7 @@ export default function MeetingScreen() {
             card.status === 'ready'
               ? [
                   {
-                    label: 'Open in chat ›',
+                    label: 'Open in chat',
                     accessibilityLabel: 'Open answer in chat',
                     primary: true,
                     onPress: () =>
