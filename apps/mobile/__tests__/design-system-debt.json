@@ -1,7 +1,6 @@
 {
   "app/index.tsx": {
     "rawColor": 10,
-    "legacyColor": 2,
     "fontSize": 7
   },
   "app/meeting/[sessionId].tsx": {
@@ -15,14 +14,10 @@
   },
   "app/session/[id].tsx": {
     "rawColor": 11,
-    "legacyColor": 5,
     "fontSize": 3
   },
   "components/ActionMenu.tsx": {
     "rawColor": 1
-  },
-  "components/AttentionMarkers.tsx": {
-    "legacyColor": 1
   },
   "components/FeatureHint.tsx": {
     "rawColor": 1
@@ -44,9 +39,6 @@
   },
   "components/SessionAutomation.tsx": {
     "fontSize": 1
-  },
-  "components/SessionMarkerColumn.tsx": {
-    "legacyColor": 1
   },
   "components/SessionRowActions.tsx": {
     "rawColor": 1

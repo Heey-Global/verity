@@ -18,9 +18,6 @@ const RULES = {
   // (`${theme.colors.text}33`). Roles come from the theme; transparencies
   // from `tint()` in components/ui/tint.ts.
   rawColor: /['"`]#[0-9a-fA-F]{3,8}['"`]|\brgba?\(|\}[0-9a-fA-F]{2}`/g,
-  // The pre-design-system names kept as aliases in theme/tokens.ts until the
-  // last screen stops reading them.
-  legacyColor: /\bcolors\.(?:setup|primary|onPrimary|accent|tone|linked)\b/g,
   // A size not taken from a named type style (`...theme.typography.body`).
   fontSize: /\bfontSize:(?!\s*theme\.typography\.)/g,
   // Inter ships one family per weight; a fontWeight on top of it is

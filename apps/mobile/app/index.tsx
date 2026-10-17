@@ -119,6 +119,7 @@ import type { ProjectOverviewStatus } from '../lib/projectSetup';
 import { projectGroups, type SessionProjectGroup } from '../lib/projectGroups';
 import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
+import { toneColor } from '../theme/tokens';
 
 export default function SessionsScreen() {
   const client = useMemo(() => createVerityClient(), []);
@@ -1185,7 +1186,7 @@ const ProjectGroup = memo(function ProjectGroup({
   // has no second `string | undefined` to narrow.
   const indicator = controlPlane ? undefined : sandboxUpdateIndicator(group.project?.sandboxUpdate);
   const updateGlyph = indicator
-    ? { ...indicator, color: theme.colors.tone[indicator.tone] }
+    ? { ...indicator, color: toneColor(theme.colors, indicator.tone) }
     : undefined;
   const updating =
     group.project !== undefined && updatingProjectIds?.has(group.project.id) === true;
@@ -1747,7 +1748,7 @@ const SessionRow = memo(function SessionRow({
       markSessionSwitch(sessionSwitchTiming(session.sessionId), 'selected-row-react-commit');
   }, [selected, session.sessionId]);
   const badge = sessionBadge(session.status);
-  const toneColor = theme.colors.tone[badge.tone];
+  const badgeColor = toneColor(theme.colors, badge.tone);
   const label = sessionLabel(session);
   const favorite = session.favorite === true;
   const subtitle = modelDisplayName(session.model);
@@ -1826,10 +1827,10 @@ const SessionRow = memo(function SessionRow({
               <View
                 style={[
                   styles.statusPill,
-                  { borderColor: toneColor, backgroundColor: `${toneColor}1f` },
+                  { borderColor: badgeColor, backgroundColor: `${badgeColor}1f` },
                 ]}
               >
-                <Text style={[styles.statusPillText, { color: toneColor }]} numberOfLines={1}>
+                <Text style={[styles.statusPillText, { color: badgeColor }]} numberOfLines={1}>
                   {badge.label}
                 </Text>
               </View>
