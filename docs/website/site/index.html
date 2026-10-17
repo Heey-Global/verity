@@ -3,25 +3,25 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Verity — Your agents. Your server. Your rules.</title>
+    <title>Verity — Let AI agents run on their own. Safely.</title>
     <meta
       name="description"
-      content="Run AI coding agents on your own server, each in an isolated sandbox with no credentials inside. They work around the clock, and every access to your accounts goes through you."
+      content="Verity runs Claude Code, Codex, and OpenCode on your own server, each in an isolated sandbox without your credentials. You approve what matters, from anywhere."
     />
     <meta name="author" content="Heey GmbH" />
     <meta name="publisher" content="Heey GmbH" />
     <meta name="robots" content="index, follow" />
-    <meta property="og:title" content="Verity — Your agents. Your server. Your rules." />
+    <meta property="og:title" content="Verity — Let AI agents run on their own. Safely." />
     <meta
       property="og:description"
-      content="Run AI coding agents on your own server in isolated sandboxes, with Claude Code, Codex, or OpenCode, from browser, iPad, or iPhone."
+      content="Run Claude Code, Codex, or OpenCode on your own server, each in an isolated sandbox without your credentials, from browser, iPad, or iPhone."
     />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="Verity — Your agents. Your server. Your rules." />
+    <meta name="twitter:title" content="Verity — Let AI agents run on their own. Safely." />
     <meta
       name="twitter:description"
-      content="Run AI coding agents on your own server in isolated sandboxes, with Claude Code, Codex, or OpenCode, from browser, iPad, or iPhone."
+      content="Run Claude Code, Codex, or OpenCode on your own server, each in an isolated sandbox without your credentials, from browser, iPad, or iPhone."
     />
     <link rel="icon" type="image/png" href="assets/verity-favicon.png" />
     <link rel="apple-touch-icon" href="assets/verity-favicon.png" />
@@ -250,13 +250,14 @@
       .hero-copy {
         position: relative;
         z-index: 1;
-        max-width: 860px;
+        max-width: 1040px;
         margin: 0 auto;
       }
 
+      /* Sized so the first sentence stays on one line at desktop width. */
       .hero h1 {
-        margin: 16px auto 24px;
-        font-size: clamp(44px, 7vw, 80px);
+        margin: 0 auto 24px;
+        font-size: clamp(42px, 5.6vw, 66px);
         font-weight: 800;
       }
 
@@ -275,48 +276,154 @@
       }
 
       .hero .actions {
+        align-items: center;
         justify-content: center;
+        gap: 22px;
         margin-top: 32px;
       }
 
-      .proof-strip {
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: center;
-        gap: 8px;
-        margin-top: 28px;
+      .hero .actions .text-link {
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+        margin-top: 0;
+      }
+
+      /* Hero pillars: the three promises, each with the app component that
+         keeps it. The screenshots run off the bottom edge of their tile. */
+      .pillars {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 18px;
+        margin: 64px 0 0;
         padding: 0;
         list-style: none;
+        text-align: left;
       }
 
-      .proof-strip li {
-        padding: 6px 12px;
-        border: 1px solid var(--border);
-        border-radius: 999px;
-        color: var(--text-muted);
-        font-size: 12px;
-        font-weight: 600;
-      }
-
-      /* Hero stage: a browser window and an iPhone, both drawn in CSS around
-         the rendered app screens, with single components floating in front. */
-      .stage {
+      .pillars li {
         position: relative;
-        max-width: 1120px;
-        margin: 80px auto 0;
-        padding: 0 120px 56px 0;
+        display: flex;
+        flex-direction: column;
+        height: 480px;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        background: linear-gradient(180deg, var(--surface-alt), var(--surface));
       }
 
-      .stage::before {
-        content: "";
-        position: absolute;
-        inset: 8% 4% 0;
-        background:
-          radial-gradient(closest-side at 30% 40%, rgba(24, 200, 245, 0.22), transparent),
-          radial-gradient(closest-side at 75% 60%, rgba(255, 24, 183, 0.2), transparent);
-        filter: blur(40px);
-        z-index: -1;
+      .tile-head {
+        display: grid;
+        grid-template-columns: 44px 1fr;
+        gap: 14px;
+        align-items: start;
+        padding: 24px 24px 0;
       }
+
+      .pillar-icon {
+        display: grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        background: var(--action-fill);
+        color: var(--action);
+      }
+
+      .pillar-icon svg {
+        width: 22px;
+        height: 22px;
+      }
+
+      .tile-head strong {
+        display: block;
+        margin-top: 2px;
+        font-size: 22px;
+        letter-spacing: -0.02em;
+      }
+
+      .tile-head span {
+        display: block;
+        margin-top: 6px;
+        color: var(--text-muted);
+        font-size: 14px;
+        line-height: 1.45;
+      }
+
+      .shot {
+        position: absolute;
+        top: 150px;
+        right: 24px;
+        bottom: -2px;
+        left: 24px;
+      }
+
+      .shot img {
+        width: 100%;
+      }
+
+      .shot-list {
+        overflow: hidden;
+        border-radius: 14px;
+      }
+
+      .shot-list img {
+        height: 100%;
+        object-fit: cover;
+        object-position: top;
+        border: 1px solid #30354d;
+        border-radius: 14px;
+      }
+
+      .shot-card {
+        display: flex;
+        align-items: center;
+        bottom: 22px;
+        filter: drop-shadow(0 20px 40px rgba(0, 0, 0, 0.55));
+      }
+
+      .shot-card img {
+        border-radius: 14px;
+      }
+
+      .shot-phone {
+        top: 165px;
+        left: 50%;
+        width: 76%;
+        transform: translateX(-50%);
+      }
+
+      .shot-phone .iphone {
+        height: 100%;
+        border-radius: 42px 42px 0 0;
+      }
+
+      .shot-phone .iphone-screen {
+        height: 100%;
+        border-radius: 34px 34px 0 0;
+      }
+
+      .shot-phone .iphone-screen img {
+        width: calc(100% - 20px);
+        margin: 6px 10px 0;
+      }
+
+      .shot-phone .iphone-status {
+        height: 34px;
+        padding: 3px 18px 0 22px;
+        font-size: 11px;
+      }
+
+      .shot-phone .iphone-island {
+        top: 8px;
+        height: 18px;
+      }
+
+
+
+      /* The browser window and the iPhone are drawn in CSS around rendered
+         app screens. */
+
 
       .browser {
         overflow: hidden;
@@ -407,61 +514,13 @@
         transform: translateX(-50%);
       }
 
-      .stage .iphone {
-        position: absolute;
-        right: 0;
-        bottom: 0;
-        width: 27%;
-        max-width: 300px;
-      }
 
-      .stage .iphone-status {
-        height: 40px;
-        padding: 4px 22px 0 26px;
-        font-size: 12px;
-      }
 
-      .stage .iphone-island {
-        top: 9px;
-        height: 22px;
-      }
 
-      .float {
-        position: absolute;
-        overflow: hidden;
-        border: 1px solid #30354d;
-        border-radius: 16px;
-        background: var(--surface-alt);
-        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65);
-        animation: drift 7s ease-in-out infinite;
-      }
 
-      /* Overhangs the browser window, but never the viewport: the offset shrinks
-         with the margin beside the stage. */
-      .float-delay {
-        top: 22%;
-        left: max(-72px, min(-12px, calc(568px - 50vw)));
-        width: 300px;
-      }
 
-      .float-plan {
-        bottom: 6px;
-        left: 6%;
-        width: 300px;
-        animation-delay: -3.5s;
-      }
 
-      @keyframes drift {
-        50% {
-          transform: translateY(-10px);
-        }
-      }
 
-      @media (prefers-reduced-motion: reduce) {
-        .float {
-          animation: none;
-        }
-      }
 
       /* Spotlights: one product feature per full-width row. */
       .spotlight {
@@ -607,6 +666,17 @@
         font-size: 13px;
       }
 
+      .product-shot {
+        max-width: 1120px;
+        margin: 0 auto 56px;
+      }
+
+      .product-shot img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
       /* How it works: three steps, each with the app component it produces. */
       .steps {
         display: grid;
@@ -676,118 +746,14 @@
         font-weight: 700;
       }
 
-      /* Security: the trust boundary drawn as nested boxes. */
-      .arch {
-        position: relative;
-        display: grid;
-        gap: 10px;
-        width: min(100%, 480px);
-        font-size: 14px;
-      }
-
-      .arch-server {
-        display: grid;
-        gap: 10px;
-        padding: 18px;
-        border: 1px solid #30354d;
-        border-radius: 20px;
-        background: var(--surface);
-        box-shadow: 0 40px 100px rgba(0, 0, 0, 0.6);
-      }
-
-      .arch-label {
-        color: var(--text-faint);
-        font-size: 11px;
-        font-weight: 800;
-        letter-spacing: 0.16em;
-        text-transform: uppercase;
-      }
-
-      .arch-sandbox {
-        display: grid;
-        gap: 12px;
-        padding: 16px;
-        border: 1px dashed var(--action-border);
-        border-radius: 14px;
-        background: rgba(24, 200, 245, 0.05);
-      }
-
-      .arch-sandbox .arch-label {
-        color: var(--action-label);
-      }
-
-      .arch-chips {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-      }
-
-      .arch-chips span {
-        padding: 6px 12px;
-        border: 1px solid var(--border);
-        border-radius: 999px;
-        background: var(--surface-alt);
-        font-weight: 600;
-      }
-
-      .arch-note {
-        color: var(--success);
-        font-weight: 700;
-      }
-
-      .arch-link {
-        color: var(--text-faint);
-        font-size: 11px;
-        font-weight: 800;
-        letter-spacing: 0.16em;
-        text-align: center;
-        text-transform: uppercase;
-      }
-
-      .arch-broker {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 14px 16px;
-        border: 1px solid rgba(255, 24, 183, 0.4);
-        border-radius: 14px;
-        background: rgba(255, 24, 183, 0.07);
-      }
-
-      .arch-broker strong {
-        display: block;
-      }
-
-      .arch-broker span {
-        color: var(--text-muted);
-      }
-
-      .arch-services {
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: center;
-        gap: 8px;
-      }
-
-      .arch-services span {
-        padding: 8px 14px;
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        background: var(--surface);
-        color: var(--text-muted);
-        font-weight: 600;
-      }
-
-      /* The release-delay card stays outside the role="img" drawing, so its
-         alt text still reaches screen readers. */
-      .arch-stack {
+      /* Security: the approval and the quarantine card, stacked. */
+      .card-stack {
         display: grid;
         gap: 24px;
-        width: min(100%, 480px);
+        width: min(100%, 460px);
       }
 
-      .arch-stack .arch,
-      .arch-stack .spotlight-card {
+      .card-stack .spotlight-card {
         width: 100%;
       }
 
@@ -991,6 +957,18 @@
       }
 
       @media (max-width: 900px) {
+        .hero h1 br {
+          display: none;
+        }
+
+        .pillars {
+          grid-template-columns: 1fr;
+        }
+
+        .pillars li {
+          height: 420px;
+        }
+
         .spotlight {
           grid-template-columns: 1fr;
           gap: 48px;
@@ -1014,39 +992,11 @@
           padding: 72px 0 96px;
         }
 
-        .stage {
-          padding: 0 0 120px;
-        }
 
-        .stage .iphone {
-          width: 38%;
-          padding: 7px;
-          border-radius: 34px;
-        }
 
-        .stage .iphone-screen {
-          border-radius: 28px;
-        }
 
-        .stage .iphone-status {
-          height: 24px;
-          padding: 2px 14px 0 18px;
-          font-size: 8px;
-        }
 
-        .stage .iphone-status svg {
-          height: 7px;
-        }
 
-        .stage .iphone-island {
-          top: 5px;
-          height: 13px;
-        }
-
-        .float-delay,
-        .float-plan {
-          display: none;
-        }
 
         .models .spotlight-card + .spotlight-card {
           position: static;
@@ -1116,67 +1066,80 @@
       <section class="hero">
         <div class="wrap">
           <div class="hero-copy">
-            <span class="eyebrow">Self-hosted · Open source · Beta</span>
-            <h1>Your agents. Your server. <span>Your rules.</span></h1>
+            <h1>Let AI agents run on their own. <br /><span>Safely.</span></h1>
             <p class="sub">
-              Verity runs AI coding agents on your own server, each in an
-              isolated sandbox with no credentials inside. They work around the
-              clock. Every access to your accounts and secrets goes through you.
+              Verity runs Claude Code, Codex, and OpenCode on your own server,
+              each in an isolated sandbox without your credentials. You approve
+              what matters, from anywhere.
             </p>
             <div class="actions">
               <a class="button" href="#install">Install Verity</a>
-              <a class="button button-secondary" href="#security">See how it's secured</a>
+              <a class="text-link" href="#security">See how it's secured</a>
             </div>
-            <ul class="proof-strip" aria-label="At a glance">
-              <li>Claude Code · Codex · OpenCode</li>
-              <li>Browser · iPad · iPhone</li>
-              <li>Apache 2.0</li>
-            </ul>
           </div>
 
-          <div class="stage">
-            <div class="browser">
-              <div class="browser-bar" aria-hidden="true">
-                <i></i><i></i><i></i>
-                <span class="browser-url"><b>verity.</b>your-server.example</span>
-              </div>
-              <img
-                src="assets/app-desktop-session.png"
-                alt="Verity in the browser: three projects with parallel sessions, subscription usage for Claude and Codex, and a coding session that works from findings in project knowledge"
-                width="1440"
-                height="900"
-              />
-            </div>
-            <div class="iphone">
-              <div class="iphone-screen">
-                <div class="iphone-status" aria-hidden="true">
-                  <span>9:41</span>
-                  <svg viewBox="0 0 64 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/><path d="M30 3.2a10 10 0 0 1 12 0l-1.3 1.6a8 8 0 0 0-9.4 0zM32.4 6.3a6 6 0 0 1 7.2 0L38.3 8a4 4 0 0 0-4.6 0zM36 12l-1.6-2a2.4 2.4 0 0 1 3.2 0z"/><rect x="45.5" y="0.5" width="16" height="11" rx="3" fill="none" stroke="currentColor" opacity="0.5"/><rect x="47.5" y="2.5" width="11" height="7" rx="1.5"/><rect x="62.5" y="4" width="1.5" height="4" rx="0.7" opacity="0.5"/></svg>
+          <ul class="pillars" aria-label="What Verity gives you">
+            <li>
+              <div class="tile-head">
+                <span class="pillar-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 3 7.5v9L12 21l9-4.5v-9z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/></svg></span>
+                <div>
+                  <strong>Isolated</strong>
+                  <span>Each project in its own gVisor sandbox. No view into the others.</span>
                 </div>
-                <div class="iphone-island"></div>
+              </div>
+              <div class="shot shot-list">
                 <img
-                  src="assets/app-phone-pr.png"
-                  alt="Verity on iPhone: a coding agent fixed payment retries, all tests pass, and its pull request is ready to merge"
-                  width="393"
-                  height="852"
+                  src="assets/app-project-list.png"
+                  alt="Three projects, each with its own sessions on Claude, Codex, and OpenCode"
+                  width="379"
+                  height="560"
                 />
               </div>
-            </div>
-            <img
-              class="float float-delay"
-              src="assets/app-release-delay.png"
-              alt="Before installing dependencies, Verity offers a three-day delay for newly released package versions"
-              width="393"
-              height="196"
-            />
-            <img
-              class="float float-plan"
-              src="assets/app-plan.png"
-              alt="A four-step plan waiting for the Implement decision"
-              width="393"
-              height="306"
-            />
-          </div>
+            </li>
+            <li>
+              <div class="tile-head">
+                <span class="pillar-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4.5"/><path d="M11.5 11.5 21 2m-3 3 3 3m-6 0 2.5 2.5"/></svg></span>
+                <div>
+                  <strong>Nothing to steal</strong>
+                  <span>Secrets stay in the broker. The agent gets the result, never the key.</span>
+                </div>
+              </div>
+              <div class="shot shot-card">
+                <img
+                  src="assets/app-approval-secret.png"
+                  alt="An agent asks to use the secret STRIPE_API_KEY for a request to api.stripe.com; the secret stays server-side, and you choose Deny or Allow"
+                  width="393"
+                  height="289"
+                />
+              </div>
+            </li>
+            <li>
+              <div class="tile-head">
+                <span class="pillar-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+                <div>
+                  <strong>Always on</strong>
+                  <span>Runs on your server, on a schedule if you like. Approve from your phone.</span>
+                </div>
+              </div>
+              <div class="shot shot-phone">
+                <div class="iphone">
+                  <div class="iphone-screen">
+                    <div class="iphone-status" aria-hidden="true">
+                      <span>9:41</span>
+                      <svg viewBox="0 0 64 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/><path d="M30 3.2a10 10 0 0 1 12 0l-1.3 1.6a8 8 0 0 0-9.4 0zM32.4 6.3a6 6 0 0 1 7.2 0L38.3 8a4 4 0 0 0-4.6 0zM36 12l-1.6-2a2.4 2.4 0 0 1 3.2 0z"/><rect x="45.5" y="0.5" width="16" height="11" rx="3" fill="none" stroke="currentColor" opacity="0.5"/><rect x="47.5" y="2.5" width="11" height="7" rx="1.5"/><rect x="62.5" y="4" width="1.5" height="4" rx="0.7" opacity="0.5"/></svg>
+                    </div>
+                    <div class="iphone-island"></div>
+                    <img
+                      src="assets/app-automation-card.png"
+                      alt="A recurring task on iPhone: every Monday at 08:30 the agent summarizes new interviews from project knowledge"
+                      width="385"
+                      height="220"
+                    />
+                  </div>
+                </div>
+              </div>
+            </li>
+          </ul>
         </div>
       </section>
 
@@ -1208,23 +1171,15 @@
             </p>
           </div>
           <div class="spotlight-visual">
-            <div class="arch-stack">
-              <div class="arch" role="img" aria-label="Inside your server, the agent works in a gVisor sandbox without credentials. Approved requests go to the broker, which holds the credentials and calls GitHub, Google, and model providers.">
-                <div class="arch-server">
-                  <span class="arch-label">Your server</span>
-                  <div class="arch-sandbox">
-                    <span class="arch-label">Project sandbox · gVisor</span>
-                    <div class="arch-chips"><span>Agent</span><span>Repository</span><span>Tools</span></div>
-                    <span class="arch-note">No passwords. No tokens.</span>
-                  </div>
-                  <div class="arch-link">Approved request</div>
-                  <div class="arch-broker">
-                    <span class="flow-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span>
-                    <div><strong>Broker</strong><span>Holds the credentials and asks you first.</span></div>
-                  </div>
-                </div>
-                <div class="arch-link">Authenticated call</div>
-                <div class="arch-services"><span>GitHub</span><span>Google</span><span>Model providers</span></div>
+            <div class="card-stack">
+              <div class="spotlight-card">
+                <img
+                  src="assets/app-approval-email.png"
+                  alt="Before an email leaves through the broker, Verity shows the recipient, subject, and body and waits for Deny or Allow"
+                  width="393"
+                  height="409"
+                  loading="lazy"
+                />
               </div>
               <div class="spotlight-card">
                 <img
@@ -1328,6 +1283,21 @@
               branch, and opens a pull request you review and merge. Project
               knowledge stays on your server for the next session.
             </p>
+          </div>
+          <div class="product-shot">
+            <div class="browser">
+              <div class="browser-bar" aria-hidden="true">
+                <i></i><i></i><i></i>
+                <span class="browser-url"><b>verity.</b>your-server.example</span>
+              </div>
+              <img
+                src="assets/app-desktop-session.png"
+                alt="Verity in the browser: three projects with parallel sessions, subscription usage for Claude and Codex, and a coding session that works from findings in project knowledge"
+                width="1440"
+                height="900"
+                loading="lazy"
+              />
+            </div>
           </div>
           <div class="steps">
             <article class="step">
