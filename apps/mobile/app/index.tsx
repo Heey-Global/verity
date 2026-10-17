@@ -2078,7 +2078,7 @@ const styles = StyleSheet.create((theme) => ({
     width: 32,
     flexShrink: 0,
     color: theme.colors.textMuted,
-    fontSize: 10 * theme.fontScale,
+    fontSize: theme.typography.caption.fontSize,
     fontFamily: theme.fonts.extrabold,
     textAlign: 'right',
     textTransform: 'uppercase',
@@ -2167,20 +2167,20 @@ const styles = StyleSheet.create((theme) => ({
   },
   limitPaceInfoTitle: {
     color: theme.colors.text,
-    fontSize: 11 * theme.fontScale,
+    fontSize: theme.typography.caption.fontSize,
     fontFamily: theme.fonts.extrabold,
   },
   limitPaceInfoText: {
     color: theme.colors.text,
     fontFamily: theme.fonts.regular,
-    fontSize: 10 * theme.fontScale,
+    fontSize: theme.typography.caption.fontSize,
     lineHeight: 14 * theme.fontScale,
   },
   limitPaceInfoHint: {
     marginTop: 2,
     color: theme.colors.textMuted,
     fontFamily: theme.fonts.regular,
-    fontSize: 9 * theme.fontScale,
+    fontSize: theme.typography.caption.fontSize,
     lineHeight: 12 * theme.fontScale,
   },
   limitPaceInfoClose: {
@@ -2193,26 +2193,28 @@ const styles = StyleSheet.create((theme) => ({
   },
   limitPaceInfoCloseText: {
     color: theme.colors.action,
-    fontSize: 10 * theme.fontScale,
+    fontSize: theme.typography.caption.fontSize,
     fontFamily: theme.fonts.extrabold,
   },
   limitValue: {
     flex: 1,
     minWidth: 0,
     color: theme.colors.textMuted,
-    fontSize: 10 * theme.fontScale,
+    fontSize: theme.typography.caption.fontSize,
     fontFamily: theme.fonts.bold,
   },
   limitPercent: {
     position: 'absolute',
     left: 2,
-    // Track sits 4px up (marginBottom lane); keep the percent above it.
-    bottom: 11,
-    width: 30,
+    // Track sits 4px up and is 5px tall (bottom edge at 9); the percent sits
+    // on it, and its Caption line fills the rest of the 22px chart.
+    bottom: 9,
+    // Wide enough for "100%" in Caption ExtraBold.
+    width: 36,
     color: theme.colors.textMuted,
-    fontSize: 8 * theme.fontScale,
+    fontSize: theme.typography.caption.fontSize,
     fontFamily: theme.fonts.extrabold,
-    lineHeight: 9 * theme.fontScale,
+    lineHeight: theme.typography.caption.lineHeight,
     textAlign: 'left',
   },
   limitValueBlocked: {

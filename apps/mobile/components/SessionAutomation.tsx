@@ -552,7 +552,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   badgeText: {
     color: theme.colors.onAction,
-    fontSize: 10 * theme.fontScale,
+    fontSize: theme.typography.caption.fontSize,
     fontFamily: theme.fonts.bold,
     textTransform: 'uppercase',
   },

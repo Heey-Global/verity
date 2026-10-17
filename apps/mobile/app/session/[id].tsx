@@ -10702,7 +10702,7 @@ const styles = StyleSheet.create((theme) => ({
   headerIssueLink: { color: theme.colors.action },
   headerBookmarkCount: {
     color: theme.colors.textMuted,
-    fontSize: 11 * theme.fontScale,
+    fontSize: theme.typography.caption.fontSize,
     fontFamily: theme.fonts.semibold,
   },
   headerActions: {
@@ -10747,7 +10747,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   headerActionBadgeText: {
     color: '#ffffff',
-    fontSize: 11 * theme.fontScale,
+    fontSize: theme.typography.caption.fontSize,
     fontFamily: theme.fonts.bold,
   },
   // The tappable engine chip (#switch-engine): the engine pill + a quiet caret/spinner
@@ -11276,7 +11276,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   prDismissText: {
     color: theme.colors.textFaint,
-    fontSize: 22 * theme.fontScale,
+    fontSize: theme.typography.title.fontSize,
     lineHeight: 24 * theme.fontScale,
     fontFamily: theme.fonts.regular,
   },
