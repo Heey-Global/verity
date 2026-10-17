@@ -1044,6 +1044,25 @@ describe('Gmail draft attachments', () => {
     expect(attachmentBytes(decodeRaw(fetch, sendCall), 'filename="report.pdf"')).toEqual(pdf);
   });
 
+  // The approved snapshot arrives through the gateway schema, whose key order is its own.
+  it('sends when the approved attachments list its fields in another order', async () => {
+    const snapshot = await readGmailDraftForSend('token', 'd1', routedFetch(draftWith(pdf), pdf));
+    const reordered = {
+      ...snapshot,
+      attachments: snapshot.attachments!.map(({ sha256, size, mimeType, filename, partId }) => ({
+        sha256,
+        size,
+        mimeType,
+        filename,
+        partId,
+      })),
+    };
+    const fetch = routedFetch(draftWith(pdf), pdf);
+    await expect(sendGmailDraft('token', reordered, fetch)).resolves.toMatchObject({
+      draftRetained: false,
+    });
+  });
+
   // Without the digest check, an attachment swapped after approval would be sent.
   it('refuses to send when the draft attachment changed after approval', async () => {
     const snapshot = await readGmailDraftForSend('token', 'd1', routedFetch(draftWith(pdf), pdf));

@@ -438,6 +438,26 @@ export interface GmailDraftAttachment {
   sha256: string;
 }
 
+/** Compare field by field, so the order in which a snapshot was built cannot matter. */
+function sameAttachments(
+  left: GmailDraftAttachment[] | undefined,
+  right: GmailDraftAttachment[] | undefined,
+): boolean {
+  const a = left ?? [];
+  const b = right ?? [];
+  return (
+    a.length === b.length &&
+    a.every(
+      (attachment, index) =>
+        attachment.partId === b[index]?.partId &&
+        attachment.filename === b[index].filename &&
+        attachment.mimeType === b[index].mimeType &&
+        attachment.size === b[index].size &&
+        attachment.sha256 === b[index].sha256,
+    )
+  );
+}
+
 const MIME_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/iu;
 
 export function assertGmailAttachment(attachment: GmailOutgoingAttachment): void {
@@ -1013,7 +1033,7 @@ export async function sendGmailDraft(
   if ((approved.attachments?.length ?? 0) > 0) {
     // The snapshot names attachments by digest only; send the bytes that were approved.
     const current = await readGmailDraft(accessToken, approved.draftId, fetchImpl);
-    if (JSON.stringify(current.snapshot.attachments) !== JSON.stringify(approved.attachments))
+    if (!sameAttachments(current.snapshot.attachments, approved.attachments))
       throw new Error('The Gmail draft attachments changed since approval; prepare it again');
     attachments = current.attachments;
   }
@@ -1066,7 +1086,11 @@ export async function sendGmailDraft(
       'attachments',
     ];
     if (
-      fields.some((field) => JSON.stringify(current[field]) !== JSON.stringify(approved[field]))
+      fields.some((field) =>
+        field === 'attachments'
+          ? !sameAttachments(current.attachments, approved.attachments)
+          : JSON.stringify(current[field]) !== JSON.stringify(approved[field]),
+      )
     ) {
       draftCleanup = 'changed';
     } else {
