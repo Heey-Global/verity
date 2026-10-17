@@ -41,7 +41,7 @@ export function FileBreadcrumb({
         <Icon
           name={rootIcon}
           size={15}
-          color={disabled || atRoot ? theme.colors.textMuted : theme.colors.primary}
+          color={disabled || atRoot ? theme.colors.textMuted : theme.colors.action}
         />
       </Pressable>
       {segments.map((segment, index) => {
@@ -93,8 +93,8 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     gap: theme.spacing.xs,
   },
-  label: { fontSize: theme.text.sm },
-  link: { color: theme.colors.primary },
-  current: { color: theme.colors.text, fontWeight: '600' },
+  label: { fontFamily: theme.fonts.regular, fontSize: theme.typography.bodySmall.fontSize },
+  link: { color: theme.colors.action },
+  current: { color: theme.colors.text, fontFamily: theme.fonts.semibold },
   disabledLabel: { color: theme.colors.textFaint },
 }));

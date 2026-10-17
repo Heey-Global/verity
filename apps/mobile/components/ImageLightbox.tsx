@@ -284,8 +284,8 @@ const styles = StyleSheet.create((theme) => ({
     right: theme.spacing.lg,
     bottom: 48,
     color: '#fff',
-    fontSize: theme.text.sm,
-    fontWeight: '600',
+    fontSize: theme.typography.bodySmall.fontSize,
+    fontFamily: theme.fonts.semibold,
     textAlign: 'center',
     textShadowColor: 'rgba(0,0,0,0.55)',
     textShadowRadius: 8,
@@ -303,8 +303,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   closeGlyph: {
     color: '#fff',
-    fontSize: theme.text.lg,
-    fontWeight: '700',
+    fontSize: theme.typography.title.fontSize,
+    fontFamily: theme.fonts.bold,
     lineHeight: 24 * theme.fontScale,
   },
 }));

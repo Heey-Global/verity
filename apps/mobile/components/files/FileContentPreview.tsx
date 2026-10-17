@@ -106,7 +106,15 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomColor: 'transparent',
     marginBottom: -StyleSheet.hairlineWidth,
   },
-  modeActive: { borderBottomColor: theme.colors.primary },
-  modeLabel: { color: theme.colors.textMuted, fontSize: theme.text.xs },
-  modeLabelActive: { color: theme.colors.text, fontSize: theme.text.xs, fontWeight: '600' },
+  modeActive: { borderBottomColor: theme.colors.action },
+  modeLabel: {
+    color: theme.colors.textMuted,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
+  },
+  modeLabelActive: {
+    color: theme.colors.text,
+    fontSize: theme.typography.footnote.fontSize,
+    fontFamily: theme.fonts.semibold,
+  },
 }));

@@ -54,9 +54,10 @@ const styles = StyleSheet.create((theme) => ({
   // The row's second-line text (`rowSub` on the overview).
   text: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 17 * theme.fontScale,
   },
   // Tappable like the preview icon beside it, so it takes that icon's color.
-  link: { color: theme.colors.primary },
+  link: { color: theme.colors.action },
 }));
