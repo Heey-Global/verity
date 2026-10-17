@@ -1002,7 +1002,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   countLabel: {
     color: theme.colors.text,
-    fontSize: theme.text.micro,
+    fontSize: theme.typography.caption.fontSize,
     fontFamily: theme.fonts.semibold,
   },
   row: {

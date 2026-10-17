@@ -76,12 +76,13 @@ export type TypeStyles = Record<
   | 'button'
   | 'subtitle'
   | 'footnote'
+  | 'caption'
   | 'eyebrow'
   | 'label'
   | 'code',
   TypeStyle
 >;
-// The eleven named styles from docs/design-system.md § 3, unscaled. Colors are not
+// The twelve named styles from docs/design-system.md § 3, unscaled. Colors are not
 // part of a style: each component applies the role its spec names. Display uses
 // ExtraBold, the nearest static weight to the specified 750.
 const baseTypography: TypeStyles = {
@@ -93,6 +94,7 @@ const baseTypography: TypeStyles = {
   button: { fontFamily: fonts.bold, fontSize: 15, lineHeight: 18, letterSpacing: 0 },
   subtitle: { fontFamily: fonts.regular, fontSize: 13, lineHeight: 18, letterSpacing: 0 },
   footnote: { fontFamily: fonts.regular, fontSize: 12, lineHeight: 17, letterSpacing: 0 },
+  caption: { fontFamily: fonts.regular, fontSize: 10, lineHeight: 13, letterSpacing: 0 },
   eyebrow: {
     fontFamily: fonts.extrabold,
     fontSize: 11,

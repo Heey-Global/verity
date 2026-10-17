@@ -661,7 +661,7 @@ const styles = StyleSheet.create((theme) => ({
   thumbName: {
     color: theme.colors.textMuted,
     fontFamily: theme.fonts.regular,
-    fontSize: theme.text.micro,
+    fontSize: theme.typography.caption.fontSize,
     textAlign: 'center',
   },
   thumbRemove: {

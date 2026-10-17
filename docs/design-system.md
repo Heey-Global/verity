@@ -82,6 +82,7 @@ keys use the platform monospace font. All sizes scale with the in-app font-zoom 
 | Button    | 15   | 700    | 0        | 1           | per variant | Button and link labels                        |
 | Subtitle  | 13   | 400    | 0        | 1.4         | `textMuted` | Second line under titles                      |
 | Footnote  | 12   | 400    | 0        | 1.4         | `textFaint` | Versions, timestamps, hints                   |
+| Caption   | 10   | 400    | 0        | 1.3         | `textMuted` | Meters, counters and badges in dense bars     |
 | Eyebrow   | 11   | 800    | 0.18em   | 1.2         | `signature` | Uppercase group header on content screens     |
 | Label     | 11   | 700    | 0.14em   | 1.2         | `textMuted` | Uppercase section headers in lists, tags      |
 | Code      | 14   | 400    | 0        | 1.4         | `text`      | Branches, commands, keys (monospace)          |
