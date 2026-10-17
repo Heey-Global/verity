@@ -12296,7 +12296,8 @@ const styles = StyleSheet.create((theme) => ({
     textAlign: 'center',
   },
   // Compact add popover docked to the plus button, not a bottom sheet.
-  menuBackdrop: { flex: 1, backgroundColor: tint(theme.colors.background, 'ring') },
+  // A light dim in both themes; a popover does not take the full scrim.
+  menuBackdrop: { flex: 1, backgroundColor: tint(theme.elevation.floating.shadowColor, 'ring') },
   menuCard: {
     position: 'absolute',
     backgroundColor: theme.colors.surface,
