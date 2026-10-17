@@ -18,11 +18,6 @@
     "legacyColor": 5,
     "fontSize": 3
   },
-  "app/web-connect.tsx": {
-    "rawColor": 38,
-    "fontSize": 12,
-    "fontWeight": 7
-  },
   "components/ActionMenu.tsx": {
     "rawColor": 1
   },
