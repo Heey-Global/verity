@@ -86,7 +86,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.11.1'
+          node-version: '26.12.0'
       - name: Reserve approved release commits
         if: github.event_name == 'push' || format('{0}', inputs.reconcile) == 'true'
         env:

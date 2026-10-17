@@ -43,7 +43,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.11.1'
+          node-version: '26.12.0'
       - id: classify
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -80,7 +80,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.11.1'
+          node-version: '26.12.0'
 
       # The persistent shared builder — see the note on the setup-buildx step in
       # ci.yml's `server-image` job. Same pull_request shape as the sandbox build:
