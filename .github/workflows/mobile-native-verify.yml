@@ -190,6 +190,11 @@ jobs:
         timeout-minutes: 6
         run: bash scripts/remote-control-tunnel/verify-native-protocol.sh
 
+      - name: Verify late attachment cannot revive a stopped listener
+        if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.tunnel == 'true'
+        timeout-minutes: 6
+        run: bash scripts/remote-control-tunnel/verify-late-attachment.sh
+
       - name: Verify enrollment reference model and macOS Keychain probe
         if: needs.changes.outputs.compile == 'true' || needs.changes.outputs.enrollment == 'true'
         timeout-minutes: 5

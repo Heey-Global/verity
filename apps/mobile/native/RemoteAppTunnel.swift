@@ -406,51 +406,13 @@ final class RemoteAppTunnel: @unchecked Sendable {
       else { throw RemoteSmokeError.invalidFrame }
 
       dataDiagnostics.record(.attached)
-      let parameters = NWParameters.tcp
-      parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
-      let listener = try NWListener(using: parameters)
-      lock.withLock { self.listener = listener }
-      let port = try await withCheckedThrowingContinuation {
-        (continuation: CheckedContinuation<Int, Error>) in
-        var completed = false
-        listener.stateUpdateHandler = { [weak listener] state in
-          guard !completed else { return }
-          switch state {
-          case .ready:
-            completed = true
-            if let port = listener?.port { continuation.resume(returning: Int(port.rawValue)) }
-            else { continuation.resume(throwing: RemoteSmokeError.closed) }
-          case .failed(let error):
-            completed = true
-            continuation.resume(throwing: error)
-          case .cancelled:
-            completed = true
-            continuation.resume(throwing: RemoteSmokeError.closed)
-          default: break
-          }
+      let port = try await startLocalListener()
+      try lock.withLock {
+        guard !stopped else { throw RemoteSmokeError.closed }
+        reader = Task { [weak self] in
+          guard let self else { return }
+          await self.readFrames()
         }
-        listener.newConnectionHandler = { [weak self] connection in
-          guard let self else { connection.cancel(); return }
-          let admitted = self.lock.withLock {
-            if self.stopped || self.pendingLocal >= 16 { return false }
-            self.pendingLocal += 1
-            self.localConnections += 1
-            self.lastStreamEvent = "local_connected"
-            return true
-          }
-          guard admitted else { connection.cancel(); return }
-          connection.start(queue: self.queue)
-          Task { await self.accept(connection) }
-        }
-        listener.start(queue: queue)
-      }
-      reader = Task { [weak self] in
-        guard let self else { return }
-        await self.readFrames()
-      }
-      // One attachment per instance (the socket is created in init and resumed
-      // once); reset together anyway so the fields can never mix two lives.
-      lock.withLock {
         attachedAt = Date()
         pingsSent = 0
         pongsReceived = 0
@@ -464,6 +426,69 @@ final class RemoteAppTunnel: @unchecked Sendable {
       throw error
     }
   }
+
+  private func startLocalListener() async throws -> Int {
+    let parameters = NWParameters.tcp
+    parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+    let listener = try NWListener(using: parameters)
+    let port = try await withCheckedThrowingContinuation {
+      (continuation: CheckedContinuation<Int, Error>) in
+      var completed = false
+      listener.stateUpdateHandler = { [weak listener] state in
+        guard !completed else { return }
+        switch state {
+        case .ready:
+          completed = true
+          if let port = listener?.port { continuation.resume(returning: Int(port.rawValue)) }
+          else { continuation.resume(throwing: RemoteSmokeError.closed) }
+        case .failed(let error):
+          completed = true
+          continuation.resume(throwing: error)
+        case .cancelled:
+          completed = true
+          continuation.resume(throwing: RemoteSmokeError.closed)
+        default: break
+        }
+      }
+      listener.newConnectionHandler = { [weak self] connection in
+        guard let self else { connection.cancel(); return }
+        let admitted = self.lock.withLock {
+          if self.stopped || self.pendingLocal >= 16 { return false }
+          self.pendingLocal += 1
+          self.localConnections += 1
+          self.lastStreamEvent = "local_connected"
+          return true
+        }
+        guard admitted else { connection.cancel(); return }
+        connection.start(queue: self.queue)
+        Task { await self.accept(connection) }
+      }
+      // Stop must see every started listener; a late attachment cannot
+      // publish a resource after the idempotent cleanup has finished.
+      let installed = lock.withLock {
+        guard !stopped else { return false }
+        self.listener = listener
+        listener.start(queue: queue)
+        return true
+      }
+      if !installed {
+        listener.stateUpdateHandler = nil
+        listener.cancel()
+        continuation.resume(throwing: RemoteSmokeError.closed)
+      }
+    }
+    return port
+  }
+
+#if VERITY_ATTACHMENT_LIFECYCLE_TEST
+  // Exercise the production continuation after an attached reply, without
+  // requiring an external broker or starting a WebSocket receive loop.
+  func testLateAttachment() async throws -> Int {
+    try await startLocalListener()
+  }
+
+  var testListener: NWListener? { lock.withLock { listener } }
+#endif
 
   @discardableResult
   func enableDataDiagnostics(duration: TimeInterval = RemoteDataDiagnostics.duration) -> Bool {
