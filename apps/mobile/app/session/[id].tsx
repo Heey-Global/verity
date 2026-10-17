@@ -353,6 +353,7 @@ import {
 import { settleTranscriptJump } from '../../lib/transcriptJump';
 import { formatResetDisplay, formatTurnTimestamp } from '../../lib/time';
 import { WEB_NO_FOCUS_RING } from '../../lib/webFocusRing';
+import { toneColor } from '../../theme/tokens';
 
 // In-memory per-session draft cache: keeps the typed/dictated draft when the
 // operator leaves a session and returns (within the app's lifetime), so input work
@@ -7620,7 +7621,7 @@ function ToolImageItem({
 function ToolCard({ message }: { message: ToolCallMessage }) {
   const { theme } = useUnistyles();
   const view = toolCallView(message.tool);
-  const color = theme.colors.tone[toolToneColor(view.tone)];
+  const color = toneColor(theme.colors, toolToneColor(view.tone));
   const [expanded, setExpanded] = useState(false);
   // A `Skill` call (e.g. /code-review) carries the injected SKILL.md
   // body; show it as this card's collapsed detail instead of leaking it as prose,
@@ -7709,7 +7710,7 @@ function ToolGroup({ tools }: { tools: ToolCallMessage[] }) {
   if (!last) return null;
   if (tools.length === 1) return <ToolCard message={last} />;
   const view = toolCallView(last.tool);
-  const color = theme.colors.tone[toolToneColor(view.tone)];
+  const color = toneColor(theme.colors, toolToneColor(view.tone));
   return (
     <View>
       <Pressable
@@ -7751,7 +7752,7 @@ function DelegatedAgent({ row }: { row: Extract<Row, { kind: 'delegated-agent' }
   const { theme } = useUnistyles();
   const [expanded, setExpanded] = useState(false);
   const view = toolCallView(row.parent.tool);
-  const color = theme.colors.tone[toolToneColor(view.tone)];
+  const color = toneColor(theme.colors, toolToneColor(view.tone));
   const state = row.parent.tool.state;
   const verb = state === 'running' ? 'Running' : state === 'error' ? 'Failed' : 'Done';
   const summary = `⎿ ${verb} · ${String(row.toolCount)} ${row.toolCount === 1 ? 'tool' : 'tools'}`;
@@ -7996,7 +7997,7 @@ function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest:
   const actions = useContext(SessionActionsContext);
   const [showTechnical, setShowTechnical] = useState(false);
   const descriptor = agentEventDescriptor(message.event);
-  const color = theme.colors.tone[eventToneColor(descriptor.tone)];
+  const color = toneColor(theme.colors, eventToneColor(descriptor.tone));
   // A task change is bookkeeping, not conversation: one muted line that opens
   // the panel when tapped, so it never competes with the reply around it.
   if (descriptor.action === 'tasks') {
@@ -10475,7 +10476,7 @@ function Banner({
   action?: { label: string; onPress: () => void };
 }) {
   const { theme } = useUnistyles();
-  const color = theme.colors.tone[tone];
+  const color = toneColor(theme.colors, tone);
   return (
     <View style={[styles.banner, { borderLeftColor: color }]}>
       <View style={styles.bannerRow}>

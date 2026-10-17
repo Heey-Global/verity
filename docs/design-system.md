@@ -497,9 +497,9 @@ can never drift because there is only one copy of it.
 1. **Theme:** move the roles, type scale, spacing, radii and elevation into
    `apps/mobile/theme/tokens.ts` and bundle Inter. Retire the separate `colors.setup.*`
    palette and the meeting override palette (`components/meeting/meetingPalette.ts`).
-   The current status tones map as follows: `tone.done` becomes `success`, `tone.danger`
-   becomes `attention` (red), and the existing amber `tone.attention` is removed. Until
-   that lands, `tone.attention` in code still means amber and must not be used for errors.
+   Done: the theme has only the roles of § 2. Data-layer tones (badge, tool and event
+   tones) are drawn through `toneColor`: `done` is `success`, `active` is `action`,
+   `idle` is `textFaint`, and `attention` and `danger` share `attention`.
 2. **Components:** implement section 5 as one shared module. It replaces the duplicated
    building blocks in `components/settings/SettingsChrome.tsx`,
    `components/premium/PremiumChrome.tsx` and the local button, pill, chip, input and sheet
@@ -509,13 +509,14 @@ can never drift because there is only one copy of it.
 3. **Catalog:** add a developer screen that renders every component in every state. It
    becomes the visual reference for future work, also on the web.
 4. **Enforcement:** `apps/mobile/__tests__/design-system-guard.test.ts` scans `app/` and
-   `components/` for raw colors (hex, `rgb()`, alpha suffixes glued onto a role), the legacy
-   color names (`setup.*`, `primary`, `onPrimary`, `accent`, `tone.*`, `linked`), font sizes
-   not taken from `theme.typography` and `fontWeight`. Code written before the design system
+   `components/` for raw colors (hex, `rgb()`, alpha suffixes glued onto a role), font sizes
+   not taken from `theme.typography` and `fontWeight`. Color names outside the roles no
+   longer exist in the theme, so TypeScript rejects them. Code written before the design system
    is recorded per file in `design-system-debt.json`. A file above its count fails, and so
    does one below it until its entry is lowered, so the record only shrinks. The
    contributor rule is in `AGENTS.md`.
-5. **Migration:** move screens area by area, starting with Settings.
+5. **Migration:** done area by area, starting with Settings. What remains is recorded in
+   `design-system-debt.json`.
 
 The visual workbench used to reach these decisions is
 [`design-system/index.html`](./design-system/index.html). It shows every component and pattern
