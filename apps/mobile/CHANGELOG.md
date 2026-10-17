@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.74.0](https://github.com/Heey-Global/verity/compare/mobile-v1.73.0...mobile-v1.74.0) (2026-10-17)
+
+
+### Features
+
+* **mobile:** add the Caption type style and empty the design-system debt ([#1687](https://github.com/Heey-Global/verity/issues/1687)) ([774ad81](https://github.com/Heey-Global/verity/commit/774ad81692e014619ebe4f2d28bfe321edadcfb6))
+
+
+### Bug Fixes
+
+* **mobile:** draw usage meters grey, white and red ([#1690](https://github.com/Heey-Global/verity/issues/1690)) ([e4290e7](https://github.com/Heey-Global/verity/commit/e4290e7a1d4bb4ad6208f243d9d208936fc7656d))
+* **mobile:** prevent late attachment from reviving stopped tunnel ([#1689](https://github.com/Heey-Global/verity/issues/1689)) ([13b1b13](https://github.com/Heey-Global/verity/commit/13b1b1328016fee67ea292d959aea431037fb8c2))
+* **mobile:** use the shared buttons in meeting answer cards ([#1693](https://github.com/Heey-Global/verity/issues/1693)) ([5b35dfb](https://github.com/Heey-Global/verity/commit/5b35dfb3a8901b0ba9239b1826c501d594492c65))
+
 ## [1.73.0](https://github.com/Heey-Global/verity/compare/mobile-v1.72.0...mobile-v1.73.0) (2026-10-17)
 
 
