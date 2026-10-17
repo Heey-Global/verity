@@ -6,13 +6,13 @@
 # and per-user builds (ADR migration #299, PR-A).
 #
 # Layout mirrors the legacy dev-server dev-base: Node Bookworm runtime with
-# Python 3.14 multi-stage-copied from python:3.14-bookworm (both debian-bookworm,
+# Python 3.15 multi-stage-copied from python:3.15-bookworm (both debian-bookworm,
 # so OS-level shared libs match and Python's C extensions link without rebuild).
 #
 # Built for linux/amd64 (the pinned gh/doppler tarballs are amd64-only).
 
 # Digest-pinned (audit M12) so the Python runtime copied wholesale into every
-# sandbox is reproducible, not whatever `python:3.14-bookworm` currently resolves
+# sandbox is reproducible, not whatever `python:3.15-bookworm` currently resolves
 # to. Renovate (docker:pinDigests) bumps tag+digest together.
 # renovate: datasource=docker depName=python
 ARG PYTHON_VERSION=3.15-bookworm@sha256:dac6cb177b8c0f3dfeeaf57f0c6f708e1ca660ac8e952b0f4ac0c07972815385
@@ -42,19 +42,19 @@ RUN apt-get update \
       tk libuuid1 zlib1g \
  && rm -rf /var/lib/apt/lists/*
 
-# Python 3.14 — copied wholesale from python:3.14-bookworm. Placed under
-# /usr/local/ to match python:3.14-bookworm's own layout so sys.prefix and
+# Python 3.15 — copied wholesale from python:3.15-bookworm. Placed under
+# /usr/local/ to match python:3.15-bookworm's own layout so sys.prefix and
 # shared-lib search paths resolve without env-var hacks. Symlink python3/pip3.
-COPY --from=python-source /usr/local/bin/python3.14   /usr/local/bin/python3.14
-COPY --from=python-source /usr/local/bin/pip3.14      /usr/local/bin/pip3.14
-COPY --from=python-source /usr/local/lib/python3.14   /usr/local/lib/python3.14
-COPY --from=python-source /usr/local/lib/libpython3.14.so.1.0 /usr/local/lib/libpython3.14.so.1.0
-COPY --from=python-source /usr/local/include/python3.14 /usr/local/include/python3.14
+COPY --from=python-source /usr/local/bin/python3.15   /usr/local/bin/python3.15
+COPY --from=python-source /usr/local/bin/pip3.15      /usr/local/bin/pip3.15
+COPY --from=python-source /usr/local/lib/python3.15   /usr/local/lib/python3.15
+COPY --from=python-source /usr/local/lib/libpython3.15.so.1.0 /usr/local/lib/libpython3.15.so.1.0
+COPY --from=python-source /usr/local/include/python3.15 /usr/local/include/python3.15
 RUN ldconfig \
- && ln -sf /usr/local/bin/python3.14 /usr/local/bin/python3 \
- && ln -sf /usr/local/bin/python3.14 /usr/local/bin/python \
- && ln -sf /usr/local/bin/pip3.14    /usr/local/bin/pip3 \
- && ln -sf /usr/local/bin/pip3.14    /usr/local/bin/pip \
+ && ln -sf /usr/local/bin/python3.15 /usr/local/bin/python3 \
+ && ln -sf /usr/local/bin/python3.15 /usr/local/bin/python \
+ && ln -sf /usr/local/bin/pip3.15    /usr/local/bin/pip3 \
+ && ln -sf /usr/local/bin/pip3.15    /usr/local/bin/pip \
  && python3 --version && pip3 --version \
  && python3 -c 'import bz2, ctypes, lzma, readline, sqlite3, ssl, tkinter, uuid'
 
