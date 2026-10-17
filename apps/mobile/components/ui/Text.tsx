@@ -11,6 +11,7 @@ export type TextVariant =
   | 'button'
   | 'subtitle'
   | 'footnote'
+  | 'caption'
   | 'eyebrow'
   | 'label'
   | 'code';
@@ -18,7 +19,7 @@ export type TextVariant =
 export type TextTone = 'default' | 'muted' | 'faint' | 'action' | 'signature' | 'attention';
 
 /**
- * Text in one of the eleven named styles (docs/design-system.md § 3), colored by a
+ * Text in one of the twelve named styles (docs/design-system.md § 3), colored by a
  * role. The default tone follows the spec: subtitles and labels are muted,
  * footnotes faint, eyebrows in the signature color, everything else in `text`.
  */
@@ -53,6 +54,7 @@ const styles = StyleSheet.create((theme) => ({
   button: { ...theme.typography.button, color: theme.colors.text },
   subtitle: { ...theme.typography.subtitle, color: theme.colors.textMuted },
   footnote: { ...theme.typography.footnote, color: theme.colors.textFaint },
+  caption: { ...theme.typography.caption, color: theme.colors.textMuted },
   eyebrow: { ...theme.typography.eyebrow, color: theme.colors.signature },
   label: { ...theme.typography.label, color: theme.colors.textMuted },
   code: { ...theme.typography.code, color: theme.colors.text },

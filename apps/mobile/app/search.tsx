@@ -275,7 +275,7 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     color: theme.colors.text,
     fontFamily: theme.fonts.regular,
-    fontSize: 17,
+    fontSize: theme.typography.row.fontSize,
     paddingVertical: theme.spacing.sm,
   },
   cancel: {

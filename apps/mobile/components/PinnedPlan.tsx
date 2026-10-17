@@ -164,7 +164,7 @@ const styles = StyleSheet.create((theme) => ({
   updated: {
     color: theme.colors.background,
     backgroundColor: theme.colors.signature,
-    fontSize: theme.text.micro,
+    fontSize: theme.typography.caption.fontSize,
     fontFamily: theme.fonts.bold,
     textTransform: 'uppercase',
     borderRadius: theme.radius.sm,

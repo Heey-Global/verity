@@ -368,7 +368,7 @@ export function QuickCaptureBubble() {
                 style={{
                   color: theme.colors.onAction,
                   textAlign: 'center',
-                  fontSize: 11,
+                  fontSize: theme.typography.caption.fontSize,
                   fontFamily: theme.fonts.bold,
                 }}
               >

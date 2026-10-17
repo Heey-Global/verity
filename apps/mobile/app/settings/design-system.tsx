@@ -61,6 +61,7 @@ export default function DesignSystemCatalog() {
         <Text variant="bodySmall">BodySmall · Codex gpt-6.1 · 3 open tasks</Text>
         <Text variant="subtitle">Subtitle · Preview links over the internet</Text>
         <Text variant="footnote">Footnote · App 1.65.1 · Server 4.35.0</Text>
+        <Text variant="caption">Caption · 5H · 13% · Tue 07:00</Text>
         <Text variant="eyebrow">Eyebrow</Text>
         <Text variant="label">Label</Text>
         <Text variant="code">feat/checkout · a1b2c3d</Text>
