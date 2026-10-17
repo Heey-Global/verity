@@ -57,7 +57,7 @@ export function HeaderTextButton({
   accessibilityLabel?: string;
 }) {
   const { theme } = useUnistyles();
-  const color = emphasis === 'destructive' ? theme.colors.tone.danger : theme.colors.primary;
+  const color = emphasis === 'destructive' ? theme.colors.attention : theme.colors.action;
   return (
     <Pressable
       onPress={onPress}
@@ -103,7 +103,7 @@ export function HeaderIconButton({
   tint?: boolean;
 }) {
   const { theme } = useUnistyles();
-  const color = tint ? theme.colors.primary : theme.colors.textMuted;
+  const color = tint ? theme.colors.action : theme.colors.textMuted;
   return (
     <Pressable
       onPress={onPress}
@@ -146,12 +146,13 @@ const styles = StyleSheet.create((theme) => ({
   },
   title: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
-    fontWeight: '700',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.bold,
   },
   subtitle: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     marginTop: 1,
   },
   textButton: {
@@ -162,10 +163,10 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.sm,
   },
   textLabel: {
-    fontSize: theme.text.md,
-    fontWeight: '500',
+    fontSize: theme.typography.row.fontSize,
+    fontFamily: theme.fonts.regular,
   },
-  strong: { fontWeight: '700' },
+  strong: { fontFamily: theme.fonts.bold },
   iconButton: {
     width: 36,
     height: 36,

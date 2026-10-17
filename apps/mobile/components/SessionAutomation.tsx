@@ -45,7 +45,7 @@ export function AutomationBar({
         <Icon
           name="repeat"
           size={16}
-          color={paused ? theme.colors.textMuted : theme.colors.primary}
+          color={paused ? theme.colors.textMuted : theme.colors.action}
         />
         <Text style={styles.barText} numberOfLines={1}>
           {automation.name} ·{' '}
@@ -151,7 +151,7 @@ export function AutomationSheet({
               updating ? styles.disabled : null,
             ]}
           >
-            <Icon name="trash-2" size={15} color={theme.colors.tone.danger} />
+            <Icon name="trash-2" size={15} color={theme.colors.attention} />
             <Text style={[styles.secondaryButtonText, styles.dangerText]}>Delete</Text>
           </Pressable>
         </View>
@@ -212,7 +212,7 @@ export function AutomationProposalCard({
   return (
     <View style={styles.card}>
       <View style={styles.cardHeader}>
-        <Icon name="repeat" size={16} color={theme.colors.primary} />
+        <Icon name="repeat" size={16} color={theme.colors.action} />
         <Text style={styles.cardEyebrow}>Recurring task</Text>
       </View>
       <Text style={styles.cardTitle}>{proposal.name}</Text>
@@ -286,7 +286,7 @@ export function SessionStarterCard({
   return (
     <View style={styles.starter}>
       <View style={styles.starterIcon}>
-        <Icon name={icon} size={18} color={theme.colors.primary} />
+        <Icon name={icon} size={18} color={theme.colors.action} />
       </View>
       <View style={styles.starterBody}>
         <View style={styles.starterTitleRow}>
@@ -326,7 +326,7 @@ const styles = StyleSheet.create((theme) => ({
   barText: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.semibold,
   },
   barSchedule: {
@@ -335,7 +335,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: theme.colors.scrim,
   },
   sheet: {
     backgroundColor: theme.colors.surface,
@@ -357,13 +357,13 @@ const styles = StyleSheet.create((theme) => ({
   },
   sheetEyebrow: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
   },
   sheetTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.lg,
+    fontSize: theme.typography.title.fontSize,
     fontFamily: theme.fonts.bold,
     marginTop: 2,
     marginBottom: theme.spacing.sm,
@@ -380,18 +380,20 @@ const styles = StyleSheet.create((theme) => ({
   },
   sectionLabel: {
     color: theme.colors.textFaint,
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
   },
   sectionText: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
   },
   sectionHint: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
   sheetActions: {
@@ -413,11 +415,11 @@ const styles = StyleSheet.create((theme) => ({
   },
   secondaryButtonText: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.semibold,
   },
   dangerText: {
-    color: theme.colors.tone.danger,
+    color: theme.colors.attention,
   },
   pressed: {
     opacity: 0.7,
@@ -441,18 +443,18 @@ const styles = StyleSheet.create((theme) => ({
   },
   cardEyebrow: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     fontFamily: theme.fonts.semibold,
     textTransform: 'uppercase',
   },
   cardTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.md,
+    fontSize: theme.typography.row.fontSize,
     fontFamily: theme.fonts.bold,
   },
   cardSchedule: {
-    color: theme.colors.primary,
-    fontSize: theme.text.sm,
+    color: theme.colors.action,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.semibold,
   },
   promptScroll: {
@@ -460,12 +462,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   cardPrompt: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 20 * theme.fontScale,
   },
   cardHint: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
   checkBlock: {
@@ -479,13 +483,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   scriptText: {
     color: theme.colors.text,
-    fontSize: theme.text.xs,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 18 * theme.fontScale,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
   },
   errorText: {
-    color: theme.colors.tone.danger,
-    fontSize: theme.text.xs,
+    color: theme.colors.attention,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
   },
   confirm: {
     minHeight: 44,
@@ -494,11 +499,11 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     gap: theme.spacing.sm,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   confirmText: {
     color: theme.colors.background,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.bold,
   },
   starter: {
@@ -530,19 +535,20 @@ const styles = StyleSheet.create((theme) => ({
   },
   starterTitle: {
     color: theme.colors.text,
-    fontSize: theme.text.sm,
+    fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.bold,
   },
   starterText: {
     color: theme.colors.textMuted,
-    fontSize: theme.text.xs,
+    fontFamily: theme.fonts.regular,
+    fontSize: theme.typography.footnote.fontSize,
     lineHeight: 18 * theme.fontScale,
   },
   badge: {
     paddingHorizontal: 6,
     paddingVertical: 1,
     borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.action,
   },
   badgeText: {
     color: theme.colors.background,
