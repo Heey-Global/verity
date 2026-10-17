@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.73.1](https://github.com/Heey-Global/verity/compare/mobile-v1.73.0...mobile-v1.73.1) (2026-10-17)
+
+
+### Features
+
+* **mobile:** add the Caption type style and empty the design-system debt ([#1687](https://github.com/Heey-Global/verity/issues/1687)) ([774ad81](https://github.com/Heey-Global/verity/commit/774ad81692e014619ebe4f2d28bfe321edadcfb6))
+
 ## [1.72.5](https://github.com/Heey-Global/verity/compare/mobile-v1.72.4...mobile-v1.72.5) (2026-10-16)
 
 
