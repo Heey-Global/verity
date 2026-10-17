@@ -2206,13 +2206,15 @@ const styles = StyleSheet.create((theme) => ({
   limitPercent: {
     position: 'absolute',
     left: 2,
-    // Track sits 4px up (marginBottom lane); keep the percent above it.
-    bottom: 11,
-    width: 30,
+    // Track sits 4px up and is 5px tall (bottom edge at 9); the percent sits
+    // on it, and its Caption line fills the rest of the 22px chart.
+    bottom: 9,
+    // Wide enough for "100%" in Caption ExtraBold.
+    width: 36,
     color: theme.colors.textMuted,
     fontSize: theme.typography.caption.fontSize,
     fontFamily: theme.fonts.extrabold,
-    lineHeight: theme.typography.caption.fontSize,
+    lineHeight: theme.typography.caption.lineHeight,
     textAlign: 'left',
   },
   limitValueBlocked: {
