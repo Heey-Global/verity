@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.73.0](https://github.com/Heey-Global/verity/compare/mobile-v1.72.0...mobile-v1.73.0) (2026-10-17)
+
+
+### Features
+
+* **diagnostics:** verify versioned socket evidence exports ([#1634](https://github.com/Heey-Global/verity/issues/1634)) ([77d5f7a](https://github.com/Heey-Global/verity/commit/77d5f7a04aaede29450da93b9a9ed4b14c3ef109))
+* **gmail:** attach workspace files to agent drafts ([#1678](https://github.com/Heey-Global/verity/issues/1678)) ([867af92](https://github.com/Heey-Global/verity/commit/867af92a3cf490c32eb273043d9383115f80f896))
+* **google:** connect Google accounts with a single consent ([08fa71a](https://github.com/Heey-Global/verity/commit/08fa71af688e53fce828bd0477b86230e29f8f0e))
+* **google:** support multiple accounts across Workspace ([#1654](https://github.com/Heey-Global/verity/issues/1654)) ([064049f](https://github.com/Heey-Global/verity/commit/064049f0353b04d87565deb41b3558b4b0772b1a))
+* **website:** render product images from the app and rebuild the homepage ([#1657](https://github.com/Heey-Global/verity/issues/1657)) ([79eac56](https://github.com/Heey-Global/verity/commit/79eac56417ef70c019c71a18f401f5e1666b9c23))
+
+
+### Bug Fixes
+
+* **diagnostics:** capture selected sessions with fresh readiness ([#1639](https://github.com/Heey-Global/verity/issues/1639)) ([40e9194](https://github.com/Heey-Global/verity/commit/40e9194ff92ceecc7ff94e030fe60387eb1aa777))
+* **mobile:** preserve recording preparation failures and partial exports ([#1663](https://github.com/Heey-Global/verity/issues/1663)) ([f5f63d0](https://github.com/Heey-Global/verity/commit/f5f63d057b1e619546ea694b2aeeea32196ee523))
+
 ## [1.72.0](https://github.com/Heey-Global/verity/compare/mobile-v1.71.0...mobile-v1.72.0) (2026-10-14)
 
 
