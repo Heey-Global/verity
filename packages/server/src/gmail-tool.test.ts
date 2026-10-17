@@ -372,6 +372,17 @@ describe('Gmail draft attachments from the session workspace', () => {
     expect(claimGoogleWorkspaceInvocation).not.toHaveBeenCalled();
   });
 
+  // A name that merely starts with two dots is still inside the worktree.
+  it('accepts a worktree file whose name starts with two dots', async () => {
+    const { worktree } = await workspace();
+    await writeFile(join(worktree, '..notes.txt'), 'notes');
+    const { tool, gmail } = setup({
+      getSession: vi.fn().mockResolvedValue({ projectId: 'p1', worktree }),
+    });
+    await tool.invoke(input(draft([{ path: '..notes.txt' }])));
+    expect(gmail.createDraft).toHaveBeenCalledOnce();
+  });
+
   it('refuses attachments for a session without a workspace', async () => {
     const { tool, gmail } = setup();
     await expect(tool.invoke(input(draft([{ path: 'a.pdf' }])))).rejects.toThrow('no workspace');

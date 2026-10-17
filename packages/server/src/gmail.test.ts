@@ -873,12 +873,20 @@ describe('Gmail API', () => {
 describe('Gmail draft attachments', () => {
   const pdf = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0x0d, 0x0a]);
   const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+  // Messages with attachments travel as the message/rfc822 part of a media upload.
   function decodeRaw(fetch: ReturnType<typeof vi.fn>, call: number): string {
-    const body = JSON.parse(fetch.mock.calls[call]?.[1]?.body as string) as {
-      raw?: string;
-      message?: { raw: string };
-    };
-    return Buffer.from(body.raw ?? body.message!.raw, 'base64url').toString('utf8');
+    const [url, init] = fetch.mock.calls[call] as [string, RequestInit];
+    expect(url).toMatch(/^https:\/\/gmail\.googleapis\.com\/upload\/.*\?uploadType=multipart$/u);
+    const boundary = /boundary=(\S+)/u.exec(
+      (init.headers as Record<string, string>)['Content-Type']!,
+    )![1]!;
+    const body = (init.body as Buffer).toString('utf8');
+    const part = body.indexOf('Content-Type: message/rfc822\r\n\r\n');
+    expect(part).toBeGreaterThan(0);
+    return body.slice(
+      part + 'Content-Type: message/rfc822\r\n\r\n'.length,
+      body.lastIndexOf(`\r\n--${boundary}--`),
+    );
   }
   function attachmentBytes(raw: string, filenameHeader: string): Buffer {
     const start = raw.indexOf(filenameHeader);
@@ -918,12 +926,13 @@ describe('Gmail draft attachments', () => {
   function routedFetch(draft: unknown, bytes: Buffer) {
     return vi.fn<typeof globalThis.fetch>(async (url, init) => {
       const target = url as string;
-      if (target.endsWith('/drafts') && init?.method === 'POST')
+      if (target.includes('/drafts?uploadType') && init?.method === 'POST')
         return response({ id: 'd1', message: { id: 'm1' } });
       if (target.includes('/drafts/d1?format=full')) return response(draft);
       if (target.endsWith('/messages/m1/attachments/att-1'))
         return response({ data: bytes.toString('base64url'), size: bytes.length });
-      if (target.endsWith('/messages/send')) return response({ id: 'sent', threadId: 't1' });
+      if (target.includes('/messages/send?uploadType'))
+        return response({ id: 'sent', threadId: 't1' });
       if (init?.method === 'DELETE') return new Response(null, { status: 204 });
       throw new Error(`unexpected ${target}`);
     });
@@ -1030,7 +1039,7 @@ describe('Gmail draft attachments', () => {
       draftRetained: false,
     });
     const sendCall = fetch.mock.calls.findIndex(([url]) =>
-      (url as string).endsWith('/messages/send'),
+      (url as string).includes('/messages/send'),
     );
     expect(attachmentBytes(decodeRaw(fetch, sendCall), 'filename="report.pdf"')).toEqual(pdf);
   });
@@ -1043,7 +1052,7 @@ describe('Gmail draft attachments', () => {
     await expect(sendGmailDraft('token', snapshot, fetch)).rejects.toThrow(
       'attachments changed since approval',
     );
-    expect(fetch.mock.calls.some(([url]) => (url as string).endsWith('/messages/send'))).toBe(
+    expect(fetch.mock.calls.some(([url]) => (url as string).includes('/messages/send'))).toBe(
       false,
     );
   });

@@ -1,4 +1,5 @@
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1/users/me';
+const GMAIL_UPLOAD_API = 'https://gmail.googleapis.com/upload/gmail/v1/users/me';
 const MAX_BODY_CHARS = 100_000;
 
 class GmailError extends Error {
@@ -722,21 +723,64 @@ function rawMessage(input: GmailDraftInput): string {
   return Buffer.from(headers.join('\r\n'), 'utf8').toString('base64url');
 }
 
+/**
+ * Create a draft or send a message. Messages with attachments go through Gmail's media
+ * upload endpoint: the JSON endpoint caps request bodies far below Gmail's 25 MB limit,
+ * and `raw` inside JSON would base64-encode the attachments a second time.
+ */
+async function postGmailMessage<T>(
+  path: string,
+  accessToken: string,
+  raw: string,
+  upload: boolean,
+  resource: (message: { raw?: string }) => Record<string, unknown>,
+  fetchImpl: FetchLike,
+): Promise<T> {
+  if (!upload) {
+    return gmailJson<T>(
+      path,
+      accessToken,
+      { method: 'POST', body: JSON.stringify(resource({ raw })) },
+      fetchImpl,
+    );
+  }
+  const boundary = `verity_upload_${randomBytes(16).toString('hex')}`;
+  const body = Buffer.concat([
+    Buffer.from(
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(resource({}))}\r\n--${boundary}\r\nContent-Type: message/rfc822\r\n\r\n`,
+      'utf8',
+    ),
+    Buffer.from(raw, 'base64url'),
+    Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8'),
+  ]);
+  const response = await fetchImpl(`${GMAIL_UPLOAD_API}${path}?uploadType=multipart`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+      'Content-Type': `multipart/related; boundary=${boundary}`,
+    },
+    body,
+  });
+  if (!response.ok) {
+    throw new GmailError(`Gmail request failed (HTTP ${String(response.status)})`, response.status);
+  }
+  return (await response.json()) as T;
+}
+
 export async function createGmailDraft(
   accessToken: string,
   input: GmailDraftInput,
   fetchImpl: FetchLike = fetch,
 ): Promise<unknown> {
   const raw = rawMessage(input);
-  const draft = await gmailJson<{ id?: string; message?: GmailMessage }>(
+  const threadId = input.threadId ? { threadId: input.threadId } : {};
+  const draft = await postGmailMessage<{ id?: string; message?: GmailMessage }>(
     '/drafts',
     accessToken,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        message: { raw, ...(input.threadId ? { threadId: input.threadId } : {}) },
-      }),
-    },
+    raw,
+    (input.attachments?.length ?? 0) > 0,
+    (message) => ({ message: { ...message, ...threadId } }),
     fetchImpl,
   );
   return { id: draft.id, messageId: draft.message?.id, threadId: draft.message?.threadId };
@@ -987,16 +1031,15 @@ export async function sendGmailDraft(
     ...(approved.inReplyTo === undefined ? {} : { inReplyTo: approved.inReplyTo }),
     ...(approved.references === undefined ? {} : { references: approved.references }),
   });
-  const sent = await gmailJson<GmailMessage>(
+  const sent = await postGmailMessage<GmailMessage>(
     '/messages/send',
     accessToken,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        raw,
-        ...(approved.threadId === undefined ? {} : { threadId: approved.threadId }),
-      }),
-    },
+    raw,
+    attachments.length > 0,
+    (message) => ({
+      ...message,
+      ...(approved.threadId === undefined ? {} : { threadId: approved.threadId }),
+    }),
     fetchImpl,
   );
   // The approved snapshot is sent independently of the mutable Gmail draft. Only remove
@@ -1049,5 +1092,5 @@ export async function sendGmailDraft(
     ...(draftCleanup === undefined ? {} : { draftCleanup }),
   };
 }
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import sanitizeHtml from 'sanitize-html';

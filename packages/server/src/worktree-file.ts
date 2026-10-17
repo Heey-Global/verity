@@ -1,6 +1,9 @@
 import { constants } from 'node:fs';
 import { open, realpath, type FileHandle } from 'node:fs/promises';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
+
+const escapes = (fromWorktree: string): boolean =>
+  fromWorktree === '..' || fromWorktree.startsWith(`..${sep}`) || isAbsolute(fromWorktree);
 
 async function readBounded(handle: FileHandle, maxBytes: number, tooLarge: string) {
   const chunks: Buffer[] = [];
@@ -30,7 +33,7 @@ export async function readWorktreeFile(
   // Refuse an obvious escape before opening anything: opening a device outside the
   // worktree can have side effects even though the descriptor check below rejects it.
   const lexical = relative(worktreeReal, target);
-  if (lexical === '' || lexical.startsWith('..') || isAbsolute(lexical)) {
+  if (lexical === '' || escapes(lexical)) {
     throw new Error(`${options.label} must stay inside the session worktree`);
   }
   const handle = await open(
@@ -44,7 +47,7 @@ export async function readWorktreeFile(
     // the exact bytes we inspect and upload.
     const openedReal = await realpath(`/proc/self/fd/${handle.fd}`);
     const fromWorktree = relative(worktreeReal, openedReal);
-    if (fromWorktree === '' || fromWorktree.startsWith('..') || isAbsolute(fromWorktree)) {
+    if (fromWorktree === '' || escapes(fromWorktree)) {
       throw new Error(`${options.label} must stay inside the session worktree`);
     }
     const metadata = await handle.stat();
