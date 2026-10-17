@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.0](https://github.com/Heey-Global/verity/compare/website-v2.3.0...website-v2.4.0) (2026-10-17)
+
+
+### Features
+
+* **website:** focus the homepage on six blocks around agent security ([#1680](https://github.com/Heey-Global/verity/issues/1680)) ([c3cf16b](https://github.com/Heey-Global/verity/commit/c3cf16b4029f0c0e624fa2e1e8916e46bdbb81de))
+
 ## [2.3.0](https://github.com/Heey-Global/verity/compare/website-v2.2.2...website-v2.3.0) (2026-10-16)
 
 
