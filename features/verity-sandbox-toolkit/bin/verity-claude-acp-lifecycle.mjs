@@ -38,8 +38,18 @@ function replaceOnce(source, from, to, label) {
                                     break;
                                 }
 `;
-    from = from.replace(header, header + guard);
-    to = to.replace(header, header + guard);
+    let boundary = guard;
+    if (name === 'task_notification') {
+      const staleEnd = `                                // In the RFD form, a resumed child runs under the call that
+                                // resumed it, and the end of an earlier delegation ends
+                                // nothing: the child and its live task belong to the new run.
+                                if (subagents.isStaleEnd(message.task_id, message.tool_use_id))
+                                    break;
+`;
+      if (source.includes(header + guard + staleEnd)) boundary += staleEnd;
+    }
+    from = from.replace(header, header + boundary);
+    to = to.replace(header, header + boundary);
   }
   const first = source.indexOf(from);
   if (first === -1 || source.indexOf(from, first + from.length) !== -1) {
@@ -154,8 +164,7 @@ source = replaceOnce(
 source = replaceOnce(
   source,
   `                            case "task_updated":
-                                await asyncTasks.taskUpdated(message.task_id, message.patch);
-                                // terminal-status task_updated patch`,
+                                await asyncTasks.taskUpdated(message.task_id, message.patch);`,
   `                            case "task_updated":
                                 await asyncTasks.taskUpdated(message.task_id, message.patch);
                                 const status = message.patch.status;
@@ -173,8 +182,7 @@ source = replaceOnce(
                                             status,
                                         } } },
                                     },
-                                });
-                                // terminal-status task_updated patch`,
+                                });`,
   'task_updated start',
 );
 

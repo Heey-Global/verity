@@ -99,6 +99,28 @@ describe('Claude ACP structured lifecycle feature patch', () => {
     }
   });
 
+  it('keeps resumed delegation end guards before ending lifecycle metadata', async () => {
+    const boundary = `                                // In the RFD form, a resumed child runs under the call that
+                                // resumed it, and the end of an earlier delegation ends
+                                // nothing: the child and its live task belong to the new run.
+                                if (subagents.isStaleEnd(message.task_id, message.tool_use_id))
+                                    break;
+`;
+    const guarded = PINNED_ADAPTER.replace(
+      'case "task_notification":\n',
+      `case "task_notification":
+                                if (isLateTaskRun(session, message.task_id, message.run_id)) {
+                                    this.logger.log(\`Ignoring task_notification for task \${message.task_id} from earlier run \${message.run_id}\`);
+                                    break;
+                                }
+` + boundary,
+    );
+    const patched = await fixture(guarded);
+    const branch = patched.slice(patched.indexOf('case "task_notification":'));
+    expect(branch).toContain(boundary);
+    expect(branch.indexOf(boundary)).toBeLessThan(branch.indexOf('await sendUpdate('));
+  });
+
   it('fails closed when a pinned adapter seam moves', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'verity-claude-lifecycle-drift-'));
     await mkdir(path.join(root, 'dist'));
