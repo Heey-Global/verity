@@ -6,6 +6,13 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.50.1](https://github.com/Heey-Global/verity/compare/v4.50.0...v4.50.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **mobile:** prevent late attachment from reviving stopped tunnel ([#1689](https://github.com/Heey-Global/verity/issues/1689)) ([13b1b13](https://github.com/Heey-Global/verity/commit/13b1b1328016fee67ea292d959aea431037fb8c2))
+
 ## [4.50.0](https://github.com/Heey-Global/verity/compare/v4.49.0...v4.50.0) (2026-10-17)
 
 
