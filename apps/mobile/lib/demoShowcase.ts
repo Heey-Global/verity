@@ -221,6 +221,38 @@ export function showcaseSessions(): ShowcaseSession[] {
     },
     {
       projectId: 'showcase-shop',
+      name: 'Refund duplicate charges',
+      model: CLAUDE,
+      branch: 'main',
+      state: 'awaiting_approval',
+      pendingPermission: 'showcase-refund',
+      events: [
+        {
+          t: 'prompt',
+          text: 'Refund the customers who were charged twice last night.',
+        },
+        {
+          t: 'text',
+          delta:
+            "31 charges were duplicated between 19:00 and 21:00. Refunding them calls the payment provider with the project's API key, which needs your approval.",
+        },
+        {
+          t: 'permission',
+          id: 'showcase-refund',
+          tool: 'verity_http_request',
+          riskClass: 'ask',
+          input: {
+            method: 'POST',
+            url: 'https://api.stripe.com/v1/refunds',
+            secretAlias: 'STRIPE_API_KEY',
+            auth: { kind: 'static', header: 'authorization', scheme: 'Bearer' },
+            body: { charge: 'ch_3SKq1xLp2', reason: 'duplicate' },
+          },
+        },
+      ],
+    },
+    {
+      projectId: 'showcase-shop',
       name: 'Weekly sales email',
       model: CODEX,
       branch: 'feat/weekly-sales-email',
