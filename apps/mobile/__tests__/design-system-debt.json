@@ -32,14 +32,8 @@
   "components/FeatureHint.tsx": {
     "rawColor": 1
   },
-  "components/ImageLightbox.tsx": {
-    "rawColor": 5,
-    "fontSize": 2,
-    "fontWeight": 2
-  },
   "components/PinnedPlan.tsx": {
-    "legacyColor": 7,
-    "fontSize": 11
+    "fontSize": 1
   },
   "components/QuickCaptureBubble.tsx": {
     "rawColor": 3,
@@ -54,13 +48,6 @@
     "rawColor": 1
   },
   "components/SessionAutomation.tsx": {
-    "rawColor": 1,
-    "legacyColor": 9,
-    "fontSize": 18
-  },
-  "components/SessionIssueRef.tsx": {
-    "rawColor": 1,
-    "legacyColor": 1,
     "fontSize": 1
   },
   "components/SessionMarkerColumn.tsx": {
@@ -69,12 +56,6 @@
   "components/SessionRowActions.tsx": {
     "rawColor": 1
   },
-  "components/SessionSettingsDialog.tsx": {
-    "rawColor": 10,
-    "legacyColor": 26,
-    "fontSize": 21,
-    "fontWeight": 11
-  },
   "components/TaskIssuesList.tsx": {
     "fontSize": 1
   },
@@ -82,49 +63,8 @@
     "rawColor": 1,
     "fontSize": 1
   },
-  "components/files/FileActionMenu.tsx": {
-    "rawColor": 1,
-    "legacyColor": 2,
-    "fontSize": 3,
-    "fontWeight": 2
-  },
-  "components/files/FileBreadcrumb.tsx": {
-    "legacyColor": 2,
-    "fontSize": 1,
-    "fontWeight": 1
-  },
-  "components/files/FileContentPreview.tsx": {
-    "legacyColor": 1,
-    "fontSize": 2,
-    "fontWeight": 1
-  },
-  "components/files/FileNameDialog.tsx": {
-    "rawColor": 1,
-    "legacyColor": 3,
-    "fontSize": 4,
-    "fontWeight": 1
-  },
-  "components/files/FileSheetHeader.tsx": {
-    "legacyColor": 3,
-    "fontSize": 3,
-    "fontWeight": 3
-  },
-  "components/files/FileTextEditor.tsx": {
-    "legacyColor": 1,
-    "fontSize": 1
-  },
   "components/meeting/MeetingUI.tsx": {
     "fontSize": 1
-  },
-  "components/meeting/SavedMeetingCard.tsx": {
-    "fontSize": 3,
-    "fontWeight": 2
-  },
-  "components/project/StaticPreviewSheet.tsx": {
-    "rawColor": 4,
-    "legacyColor": 44,
-    "fontSize": 28,
-    "fontWeight": 20
   },
   "components/ui/Button.tsx": {
     "fontSize": 1

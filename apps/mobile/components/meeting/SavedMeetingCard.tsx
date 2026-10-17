@@ -63,8 +63,20 @@ const styles = StyleSheet.create((theme) => {
       backgroundColor: colors.surface,
     },
     body: { flex: 1, gap: 4 },
-    label: { color: colors.success, fontSize: theme.text.xs, fontWeight: '700' },
-    title: { color: colors.text, fontSize: theme.text.md, fontWeight: '700' },
-    metrics: { color: colors.textMuted, fontSize: theme.text.xs },
+    label: {
+      color: colors.success,
+      fontSize: theme.typography.footnote.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
+    title: {
+      color: colors.text,
+      fontSize: theme.typography.row.fontSize,
+      fontFamily: theme.fonts.bold,
+    },
+    metrics: {
+      color: colors.textMuted,
+      fontFamily: theme.fonts.regular,
+      fontSize: theme.typography.footnote.fontSize,
+    },
   };
 });

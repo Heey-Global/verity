@@ -35,6 +35,11 @@ type Counts = Partial<Record<Rule, number>>;
 const EXEMPT: Partial<Record<string, Counts>> = {
   // The switch knob is white with dark ink in both themes, not a theme role.
   'components/ui/Toggle.tsx': { rawColor: 2 },
+  // A photo viewer: the image sits on near-black with white controls in
+  // either theme, so the picture's own colours are not tinted by the theme.
+  'components/ImageLightbox.tsx': { rawColor: 5 },
+  // Not a colour: a doc comment shows an issue reference as `#123`.
+  'components/SessionIssueRef.tsx': { rawColor: 1 },
   // The meeting wave runs from signature to action through a fixed violet
   // midpoint; a role in the middle would turn the gradient grey or pink.
   'components/meeting/MeetingUI.tsx': { rawColor: 1 },
