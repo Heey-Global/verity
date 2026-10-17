@@ -7,24 +7,24 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "node": "26.11.1"
+      "node": "26.12.0"
     },
     "preview": {
       "distribution": "internal",
       "channel": "preview",
-      "node": "26.11.1"
+      "node": "26.12.0"
     },
     "simulator": {
       "ios": {
         "simulator": true
       },
-      "node": "26.11.1"
+      "node": "26.12.0"
     },
     "production": {
       "autoIncrement": true,
       "environment": "production",
       "channel": "production",
-      "node": "26.11.1"
+      "node": "26.12.0"
     },
     "testflight": {
       "distribution": "store",
@@ -35,7 +35,7 @@
         "VERITY_APP_VARIANT": "production",
         "EXPO_UPDATE_CHANNEL": "production"
       },
-      "node": "26.11.1"
+      "node": "26.12.0"
     },
     "staging": {
       "distribution": "store",
@@ -46,7 +46,7 @@
         "VERITY_APP_VARIANT": "staging",
         "EXPO_UPDATE_CHANNEL": "staging"
       },
-      "node": "26.11.1"
+      "node": "26.12.0"
     }
   },
   "submit": {

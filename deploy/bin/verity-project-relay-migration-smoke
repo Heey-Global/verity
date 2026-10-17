@@ -15,7 +15,7 @@ suffix="${VERITY_MIGRATION_SMOKE_ID:-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMP
 smoke_label="verity.migration-smoke=$suffix"
 harness="verity-relay-migration-harness-${suffix}"
 harness_volume="verity-relay-migration-harness-${suffix}"
-probe_image='node:26.11.1-bookworm-slim@sha256:86f07bc9c5dce4578cf37e5a418b7bfc7f817cda25cde66e2b66e95ed86c4567'
+probe_image='node:26.12.0-bookworm-slim@sha256:298992629d69bbd5b2b03ad57094d8e4fcb3a8eeb7c4e25d29de656519568913'
 
 cleanup() {
   docker rm -f "$harness" >/dev/null 2>&1 || true
