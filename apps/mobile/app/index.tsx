@@ -1518,7 +1518,8 @@ function ProviderLimitSegment({
     reported !== undefined && Number.isFinite(reported) ? reported : blocked ? 100 : 0;
   const usage = Math.max(0, percent);
   const clamped = Math.min(100, usage);
-  // Grey while there is room, white when it runs low, red once it is spent:
+  // Faint while there is room, full text colour when it runs low, the problem
+  // colour once it is spent:
   // a meter is a state, so it never takes the action or brand colour.
   const fillColor =
     meterLevel === 'spent'
