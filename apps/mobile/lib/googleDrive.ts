@@ -8,6 +8,7 @@ import { Alert, Platform } from 'react-native';
 import * as AuthSession from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 import { isDemoMode } from './demoMode';
+import { GOOGLE_SERVICES, googleScope as scope, missingGoogleServices } from './googleServices';
 
 // Dismisses any lingering auth session view when the app is re-focused. Safe to
 // call at module load; a no-op on native but recommended by expo-auth-session.
@@ -18,14 +19,10 @@ const DISCOVERY: AuthSession.DiscoveryDocument = {
   tokenEndpoint: 'https://oauth2.googleapis.com/token',
 };
 
-// A linked folder is a read/write project workspace. Google does not grant
-// folder-wide access to existing children through `drive.file`, so request the
-// Drive scope and enforce the selected folder at Verity's project boundary.
-const SCOPES = ['https://www.googleapis.com/auth/drive'];
-const GMAIL_SCOPES = [
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.compose',
-  'https://www.googleapis.com/auth/gmail.settings.basic',
+// The account email identifies the connection even when every service is deselected.
+const ACCOUNT_SCOPES = [
+  ...GOOGLE_SERVICES.flatMap((service) => service.scopes),
+  scope('userinfo.email'),
 ];
 
 /**
@@ -43,105 +40,41 @@ export type GoogleDriveAuthResult =
   | { kind: 'cancelled' };
 
 /**
- * Run the interactive Google authorization. Returns the one-time code + PKCE
- * verifier + redirect uri to forward to the server, or `cancelled` if the user
- * dismissed the browser. `access_type=offline` + `prompt=consent` force Google to
- * mint a refresh token every time (so a reconnect always yields a fresh token).
+ * Run the interactive Google authorization for every service at once. Returns the one-time
+ * code + PKCE verifier + redirect uri to forward to the server, or `cancelled` if the user
+ * dismissed the browser. `access_type=offline` + `prompt=consent` force Google to mint a
+ * refresh token every time (so a reconnect always yields a fresh token).
  */
-export async function runGoogleDriveAuth(clientId: string): Promise<GoogleDriveAuthResult> {
-  if (
-    !(await explainGoogleAccess(
-      'Google Drive',
-      'Browse and import files, and use connected project folders as read/write workspaces. Docs, Sheets, and Slides editing is requested together when you first select a native file.',
-    ))
-  )
-    return { kind: 'cancelled' };
-  return runGoogleAuth(clientId, SCOPES);
+export async function runGoogleAccountAuth(clientId: string): Promise<GoogleDriveAuthResult> {
+  if (!(await explainGoogleAccess())) return { kind: 'cancelled' };
+  return runGoogleAuth(clientId, ACCOUNT_SCOPES);
 }
-
-/** Incremental authorization retains existing grants without requesting unrelated services. */
-export async function runGmailAuth(clientId: string): Promise<GoogleDriveAuthResult> {
-  if (
-    !(await explainGoogleAccess(
-      'Gmail',
-      'Read email, create drafts, and send only after your approval. Verity also reads your Gmail signature for drafts.',
-    ))
-  )
-    return { kind: 'cancelled' };
-  return runGoogleAuth(clientId, GMAIL_SCOPES);
-}
-
-/** Calendar mutations are gated by per-action approval on the server. */
-export async function runCalendarAuth(clientId: string): Promise<GoogleDriveAuthResult> {
-  if (
-    !(await explainGoogleAccess(
-      'Google Calendar',
-      'Read calendars and events. Creating, changing, or deleting events requires your approval, including attendee invitations and Google Meet links. Your account email identifies the connection.',
-    ))
-  )
-    return { kind: 'cancelled' };
-  return runGoogleAuth(clientId, [
-    'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
-    'https://www.googleapis.com/auth/calendar.events',
-    'https://www.googleapis.com/auth/userinfo.email',
-  ]);
-}
-
-export async function runContactsAuth(clientId: string): Promise<GoogleDriveAuthResult> {
-  if (
-    !(await explainGoogleAccess(
-      'Google Contacts',
-      'Read contact names and email addresses to find recipients for email and calendar invitations. Verity cannot change your contacts. Your account email identifies the connection.',
-    ))
-  )
-    return { kind: 'cancelled' };
-  return runGoogleAuth(clientId, [
-    'https://www.googleapis.com/auth/contacts.readonly',
-    'https://www.googleapis.com/auth/userinfo.email',
-  ]);
-}
-
-const WORKSPACE_SCOPES = ['documents', 'spreadsheets', 'presentations'].map(
-  (name) => `https://www.googleapis.com/auth/${name}`,
-);
 
 function googleWorkspaceScope(mimeType: string): string | null {
-  const scopes: Record<string, string> = {
+  const names: Record<string, string> = {
     'application/vnd.google-apps.document': 'documents',
     'application/vnd.google-apps.spreadsheet': 'spreadsheets',
     'application/vnd.google-apps.presentation': 'presentations',
   };
-  const name = scopes[mimeType];
-  return name ? `https://www.googleapis.com/auth/${name}` : null;
+  const name = names[mimeType];
+  return name ? scope(name) : null;
 }
 
-export async function runGoogleWorkspaceAuth(
-  clientId: string,
-  mimeType: string,
-): Promise<GoogleDriveAuthResult> {
-  const scope = googleWorkspaceScope(mimeType);
-  if (!scope) throw new Error('Unsupported Google Workspace file type');
-  if (
-    !(await explainGoogleAccess(
-      'Workspace editing',
-      'Read and edit Google Docs, Sheets, and Slides together. Google grants access to all three file types across your account; Verity limits edits to the file you select for this session.',
-    ))
-  )
-    return { kind: 'cancelled' };
-  return runGoogleAuth(clientId, WORKSPACE_SCOPES);
-}
+const GOOGLE_ACCESS_TITLE = 'Connect Google account?';
+const GOOGLE_ACCESS_PURPOSE =
+  'Verity requests Drive, Gmail, Calendar, Contacts, and Docs, Sheets & Slides together. You can deselect any of them on the Google screen. Each project decides which account it uses, and sending email or changing events still needs your approval.';
 
-function explainGoogleAccess(service: string, purpose: string): Promise<boolean> {
+function explainGoogleAccess(): Promise<boolean> {
   if (Platform.OS === 'web') {
     return Promise.resolve(
       typeof globalThis.confirm === 'function' &&
-        globalThis.confirm(`Connect ${service}?\n\n${purpose}`),
+        globalThis.confirm(`${GOOGLE_ACCESS_TITLE}\n\n${GOOGLE_ACCESS_PURPOSE}`),
     );
   }
   return new Promise((resolve) =>
     Alert.alert(
-      `Connect ${service}?`,
-      purpose,
+      GOOGLE_ACCESS_TITLE,
+      GOOGLE_ACCESS_PURPOSE,
       [
         { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
         { text: 'Continue', onPress: () => resolve(true) },
@@ -185,20 +118,24 @@ export async function ensureGoogleWorkspaceAccess(
   mimeType: string,
   accountId?: string,
 ): Promise<boolean> {
-  const scope = googleWorkspaceScope(mimeType);
-  if (!scope) throw new Error('Unsupported Google Workspace file type');
+  if (!googleWorkspaceScope(mimeType)) throw new Error('Unsupported Google Workspace file type');
   const connection = await client.getGoogleDriveConnection();
   const accounts = await client.listGoogleAccounts();
   if (!accountId && accounts.length > 1) throw new Error('Choose a Google account');
   const selected = accountId ? accounts.find((account) => account.id === accountId) : accounts[0];
   if (accountId && !selected) throw new Error('The Google account is no longer connected');
   if (
-    WORKSPACE_SCOPES.every((required) => (selected?.scopes ?? connection.scopes).includes(required))
+    !missingGoogleServices(selected?.scopes ?? connection.scopes).includes('Docs, Sheets & Slides')
   )
     return true;
   if (!connection.clientId) throw new Error('Google sign-in is not configured');
-  const auth = await runGoogleWorkspaceAuth(connection.clientId, mimeType);
+  const auth = await runGoogleAccountAuth(connection.clientId);
   if (auth.kind === 'cancelled') return false;
-  await client.connectGoogleDrive({ ...auth, ...(selected ? { accountId: selected.id } : {}) });
+  const connected = await client.connectGoogleAccount({
+    ...auth,
+    ...(selected ? { accountId: selected.id } : {}),
+  });
+  if (missingGoogleServices(connected.scopes).includes('Docs, Sheets & Slides'))
+    throw new Error('Google did not grant access to Docs, Sheets & Slides');
   return true;
 }

@@ -946,10 +946,11 @@ const googleSessionAccessSchema = z.object({
 });
 export type GoogleSessionAccessStatus = z.infer<typeof googleSessionAccessSchema>;
 
-const googleDriveConnectResultSchema = z.object({
-  accountId: z.string().optional(),
+const googleConnectResultSchema = z.object({
   connected: z.literal(true),
-  accountEmail: z.string().nullable(),
+  accountId: z.string(),
+  accountEmail: z.string(),
+  scopes: z.array(z.string()),
 });
 
 const gmailSessionConnectionSchema = z.object({
@@ -3041,24 +3042,22 @@ export class VerityClient {
     return sharedDriveListSchema.parse(await res.json());
   }
 
-  /** Complete the native OAuth (PKCE) connect: hand the server the one-time code
-   *  + verifier + redirect uri; it exchanges them and stores the refresh token. */
-  async connectGoogleDrive(input: {
+  /** Complete the native OAuth (PKCE) connect for every Google service at once: the server
+   *  exchanges the one-time code and keeps whatever permissions Google granted. Pass
+   *  `accountId` to add missing permissions to that account rather than another one. */
+  async connectGoogleAccount(input: {
     accountId?: string;
     code: string;
     codeVerifier: string;
     redirectUri: string;
-  }): Promise<{ accountEmail: string | null; accountId?: string }> {
-    const res = await this.request('/google-drive/connect', {
+  }): Promise<{ accountEmail: string; accountId: string; scopes: string[] }> {
+    const res = await this.request('/google/connect', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),
     });
-    const parsed = googleDriveConnectResultSchema.parse(await res.json());
-    return {
-      accountEmail: parsed.accountEmail,
-      ...(parsed.accountId ? { accountId: parsed.accountId } : {}),
-    };
+    const { accountEmail, accountId, scopes } = googleConnectResultSchema.parse(await res.json());
+    return { accountEmail, accountId, scopes };
   }
 
   async getGoogleDriveConnection(): Promise<{
@@ -3211,24 +3210,6 @@ export class VerityClient {
     return gmailSessionConnectionSchema.parse(await res.json());
   }
 
-  async connectGmail(input: {
-    accountId?: string;
-    code: string;
-    codeVerifier: string;
-    redirectUri: string;
-  }): Promise<{ accountEmail: string | null; accountId?: string }> {
-    const res = await this.request('/gmail/connect', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
-    });
-    const parsed = googleDriveConnectResultSchema.parse(await res.json());
-    return {
-      accountEmail: parsed.accountEmail,
-      ...(parsed.accountId ? { accountId: parsed.accountId } : {}),
-    };
-  }
-
   async enableSessionGmail(sessionId: string): Promise<GmailSessionConnection> {
     const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/gmail`, {
       method: 'PUT',
@@ -3247,24 +3228,6 @@ export class VerityClient {
     return gmailSessionConnectionSchema.parse(await res.json());
   }
 
-  async connectCalendar(input: {
-    accountId?: string;
-    code: string;
-    codeVerifier: string;
-    redirectUri: string;
-  }): Promise<{ accountEmail: string | null; accountId?: string }> {
-    const res = await this.request('/calendar/connect', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
-    });
-    const parsed = googleDriveConnectResultSchema.parse(await res.json());
-    return {
-      accountEmail: parsed.accountEmail,
-      ...(parsed.accountId ? { accountId: parsed.accountId } : {}),
-    };
-  }
-
   async enableSessionCalendar(sessionId: string): Promise<CalendarSessionConnection> {
     const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/calendar`, {
       method: 'PUT',
@@ -3281,24 +3244,6 @@ export class VerityClient {
       method: 'GET',
     });
     return gmailSessionConnectionSchema.parse(await res.json());
-  }
-
-  async connectContacts(input: {
-    accountId?: string;
-    code: string;
-    codeVerifier: string;
-    redirectUri: string;
-  }): Promise<{ accountEmail: string | null; accountId?: string }> {
-    const res = await this.request('/contacts/connect', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
-    });
-    const parsed = googleDriveConnectResultSchema.parse(await res.json());
-    return {
-      accountEmail: parsed.accountEmail,
-      ...(parsed.accountId ? { accountId: parsed.accountId } : {}),
-    };
   }
 
   async enableSessionContacts(sessionId: string): Promise<ContactsSessionConnection> {

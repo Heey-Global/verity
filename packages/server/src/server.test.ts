@@ -806,11 +806,11 @@ describe('startProjectRelayMigrationScheduler', () => {
   });
 });
 
-describe('POST /google-drive/connect', () => {
+describe('POST /google/connect', () => {
   it('rate-limits authorization attempts', async () => {
     const request = {
       method: 'POST' as const,
-      url: '/google-drive/connect',
+      url: '/google/connect',
       payload: { code: 'code', codeVerifier: 'verifier', redirectUri: 'verity://oauth' },
     };
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -820,6 +820,24 @@ describe('POST /google-drive/connect', () => {
     expect(blocked.statusCode, blocked.body).toBe(429);
     expect(blocked.headers['retry-after']).toBe('60');
     expect(blocked.json()).toEqual({ error: 'invalid request' });
+  });
+
+  it('is the only Google code exchange the server accepts', async () => {
+    // A per-service exchange left behind would store a second, narrower grant
+    // for the same account outside the unified consent.
+    for (const url of [
+      '/google-drive/connect',
+      '/gmail/connect',
+      '/calendar/connect',
+      '/contacts/connect',
+    ]) {
+      const response = await app.inject({
+        method: 'POST',
+        url,
+        payload: { code: 'code', codeVerifier: 'verifier', redirectUri: 'verity://oauth' },
+      });
+      expect(response.statusCode, url).toBe(404);
+    }
   });
 });
 

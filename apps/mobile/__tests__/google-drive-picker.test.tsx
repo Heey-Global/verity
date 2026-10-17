@@ -15,8 +15,7 @@ jest.mock('../lib/client', () => ({
   createVerityClient: () => mockCreateVerityClient(),
 }));
 jest.mock('../lib/googleDrive', () => ({
-  runGoogleDriveAuth: (...args: unknown[]) => mockRunGoogleDriveAuth(...args),
-  runGoogleWorkspaceAuth: (...args: unknown[]) => mockRunGoogleDriveAuth(...args),
+  runGoogleAccountAuth: (...args: unknown[]) => mockRunGoogleDriveAuth(...args),
   ensureGoogleWorkspaceAccess: jest.fn().mockResolvedValue(true),
 }));
 

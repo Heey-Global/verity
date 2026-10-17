@@ -11,9 +11,7 @@ import {
   GoogleDriveError,
   createCachedGoogleAccessToken,
   downloadDriveFile,
-  exchangeGoogleAuthCode,
   exportDriveFile,
-  getDriveAccountEmail,
   getDriveFile,
   listDriveFiles,
   listSharedDrives,
@@ -22,12 +20,7 @@ import {
   type DriveFileList,
   type SharedDriveList,
 } from './google-drive.js';
-import {
-  hasGoogleCalendarScopes,
-  hasGoogleContactsScopes,
-  hasGoogleGmailScopes,
-  hasGoogleDriveScopes,
-} from './google-oauth-scopes.js';
+import { hasGoogleDriveScopes } from './google-oauth-scopes.js';
 import { GoogleSlidesError, getSlidesPresentation } from './google-slides.js';
 import { GoogleDocsError, getDocsDocumentMetadata } from './google-docs.js';
 import { GoogleSheetsError, getSheetsSpreadsheet } from './google-sheets.js';
@@ -44,12 +37,6 @@ const sessionParams = z.object({
     .string()
     .min(1)
     .regex(/^[A-Za-z0-9_-]+$/),
-});
-const connectBody = z.object({
-  accountId: z.string().min(1).optional(),
-  code: z.string().trim().min(1).max(4096),
-  codeVerifier: z.string().trim().min(1).max(256),
-  redirectUri: z.string().trim().min(1).max(2048),
 });
 const filesQuery = z.object({
   accountId: z.string().min(1).optional(),
@@ -218,109 +205,6 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         : (settings?.googleGrantedScopes ?? []),
     };
   });
-  app.post(
-    '/google-drive/connect',
-    { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
-    async (request, reply) => {
-      if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-      const body = connectBody.parse(request.body);
-      const clientId =
-        googleAppClient(request, deps.googleDriveClientId, deps.stagingGoogleClientId) ?? '';
-      if (!clientId) {
-        reply.code(400);
-        return { error: 'Google Drive is not configured on this server' };
-      }
-      let tokens;
-      try {
-        tokens = await exchangeGoogleAuthCode({ clientId, ...body });
-      } catch (error) {
-        const reason = error instanceof GoogleDriveError ? error.reason : 'exchange_failed';
-        request.log.error({ reason }, 'verity: google drive code exchange failed');
-        reply.code(502);
-        return { error: `Google sign-in failed (${reason})` };
-      }
-      if (tokens.refreshToken === undefined) {
-        reply.code(400);
-        return {
-          error: 'Google did not return a refresh token — reconnect and allow offline access',
-        };
-      }
-      if (!hasGoogleDriveScopes(tokens.scopes)) {
-        reply.code(400);
-        return { error: 'Google did not grant Drive access' };
-      }
-      let accountEmail: string | undefined;
-      try {
-        accountEmail = await getDriveAccountEmail(tokens.accessToken);
-      } catch {
-        accountEmail = undefined;
-      }
-      if (deps.eventStore.googleAccounts) {
-        if (!accountEmail)
-          return reply.code(502).send({ error: 'Could not verify the connected Google account' });
-        let account;
-        try {
-          account = await deps.eventStore.googleAccounts.save({
-            email: accountEmail,
-            clientId,
-            refreshToken: tokens.refreshToken,
-            scopes: tokens.scopes ?? [],
-            ...(body.accountId === undefined ? {} : { expectedAccountId: body.accountId }),
-          });
-        } catch (error) {
-          if (error instanceof SealedError) throw error;
-          return reply
-            .code(409)
-            .send({ error: 'The selected Google account does not match the signed-in account' });
-        }
-        if ((await deps.eventStore.googleAccounts.list()).length === 1) {
-          await deps.eventStore.updateVeritySettings({
-            googleDriveClientId: clientId,
-            googleDriveRefreshToken: tokens.refreshToken,
-            googleDriveAccountEmail: accountEmail,
-            googleGrantedScopes: tokens.scopes ?? [],
-            gmailAuthorized: hasGoogleGmailScopes(tokens.scopes),
-            calendarAuthorized: hasGoogleCalendarScopes(tokens.scopes),
-            contactsAuthorized: hasGoogleContactsScopes(tokens.scopes),
-          });
-        }
-        deps.onCredentialsChanged?.();
-        return { connected: true as const, accountEmail, accountId: account.id };
-      }
-      const previous = await deps.eventStore.getVeritySettings();
-      const calendarAuthorized = hasGoogleCalendarScopes(tokens.scopes);
-      const accountChanged =
-        previous?.googleDriveAccountEmail !== null &&
-        previous?.googleDriveAccountEmail !== undefined &&
-        previous.googleDriveAccountEmail.toLowerCase() !== accountEmail?.toLowerCase();
-      const gmailAuthorized = hasGoogleGmailScopes(tokens.scopes);
-      const contactsAuthorized = hasGoogleContactsScopes(tokens.scopes);
-      if (!contactsAuthorized || accountChanged)
-        await deps.eventStore.clearSessionContactsConnections();
-      if (!gmailAuthorized || accountChanged) {
-        await deps.eventStore.clearSessionGmailConnections();
-      }
-      if (!calendarAuthorized || accountChanged) {
-        await deps.eventStore.clearSessionCalendarConnections();
-      }
-      await deps.eventStore.updateVeritySettings({
-        contactsAuthorized,
-        googleGrantedScopes: tokens.scopes ?? [],
-        calendarAuthorized,
-        googleDriveClientId: clientId,
-        googleDriveRefreshToken: tokens.refreshToken,
-        googleDriveAccountEmail: accountEmail ?? null,
-        gmailAuthorized,
-      });
-      // Google may return the same refresh-token string when consent expands an
-      // existing grant. Its server-side scopes still changed, so keying only on
-      // that string would keep serving the cached read-only access token.
-      accessToken.invalidate();
-      deps.onCredentialsChanged?.();
-      return { connected: true as const, accountEmail: accountEmail ?? null };
-    },
-  );
-
   app.post('/google-drive/disconnect', async (_request, reply) => {
     if (deps.secretCipher?.isSealed() === true) throw new SealedError();
     if (deps.eventStore.googleAccounts) {

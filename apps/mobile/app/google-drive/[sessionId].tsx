@@ -15,7 +15,8 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../../components/Icon';
 import { createVerityClient } from '../../lib/client';
-import { runGoogleDriveAuth } from '../../lib/googleDrive';
+import { runGoogleAccountAuth } from '../../lib/googleDrive';
+import { missingGoogleServices } from '../../lib/googleServices';
 import { Button } from '../../components/ui';
 
 type Crumb = { id: string; name: string };
@@ -189,15 +190,19 @@ function GoogleDrivePicker({
     }
     setConnecting(true);
     try {
-      const result = await runGoogleDriveAuth(clientId);
+      const result = await runGoogleAccountAuth(clientId);
       if (result.kind === 'cancelled') return false;
-      await client.connectGoogleDrive({
+      const connected = await client.connectGoogleAccount({
         ...(accountId ? { accountId } : {}),
         code: result.code,
         codeVerifier: result.codeVerifier,
         redirectUri: result.redirectUri,
       });
       await loadSettings();
+      if (missingGoogleServices(connected.scopes).includes('Drive')) {
+        Alert.alert('Drive access missing', 'Google did not grant access to Google Drive.');
+        return false;
+      }
       return true;
     } catch (err) {
       const message =

@@ -1,22 +1,17 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
-jest.mock('../lib/googleDrive', () => ({
-  runGoogleDriveAuth: jest.fn(),
-  runGmailAuth: jest.fn(),
-  runCalendarAuth: jest.fn(),
-  runContactsAuth: jest.fn(),
-  runGoogleWorkspaceAuth: jest.fn(),
-}));
+jest.mock('../lib/googleDrive', () => ({ runGoogleAccountAuth: jest.fn() }));
 import GoogleSettings from '../app/settings/google';
-import { runGmailAuth } from '../lib/googleDrive';
+import { runGoogleAccountAuth } from '../lib/googleDrive';
+import { GOOGLE_SERVICES } from '../lib/googleServices';
 import {
   makeClient,
   mockCreateVerityClient,
   resetSettingsHarness,
 } from './support/settingsHarness';
 afterEach(() => {
-  jest.mocked(runGmailAuth).mockReset();
+  jest.mocked(runGoogleAccountAuth).mockReset();
   resetSettingsHarness();
   jest.restoreAllMocks();
 });
@@ -41,46 +36,72 @@ function setup(scopes: string[]) {
         projects: [],
       },
     ]),
-    connectGmail: jest.fn(),
+    connectGoogleAccount: jest.fn().mockResolvedValue({ accountId: 'one', scopes }),
     removeGoogleAccount: jest.fn().mockResolvedValue(undefined),
   });
   mockCreateVerityClient.mockReturnValue(client);
   return client;
 }
-it('shows a Gmail-only account and requires the complete editing scope set', async () => {
-  setup(['documents', 'gmail.compose'].map((scope) => `https://www.googleapis.com/auth/${scope}`));
+const allScopes = GOOGLE_SERVICES.flatMap((service) => service.scopes);
+const success = {
+  kind: 'success',
+  code: 'code',
+  codeVerifier: 'verifier',
+  redirectUri: 'app:/oauth',
+} as const;
+async function openAccount() {
   render(<GoogleSettings />);
-  await screen.findAllByText('me@example.test');
-  expect(screen.queryByText('Access granted')).toBeNull();
-  expect(screen.getByRole('button', { name: 'Docs, Sheets & Slides' })).toBeDisabled();
-  expect(screen.getByText('Connect Drive first')).toBeOnTheScreen();
-  expect(screen.getByText('Disconnect account')).toBeOnTheScreen();
+  fireEvent.press(await screen.findByText('me@example.test'));
+  await screen.findByText('Disconnect account');
+}
+
+it('summarises a fully granted account in one row', async () => {
+  setup(allScopes);
+  render(<GoogleSettings />);
+  await screen.findByText('me@example.test');
+  expect(screen.getByText('Full access')).toBeOnTheScreen();
+  expect(screen.queryByText(/Missing:/)).toBeNull();
+  expect(screen.queryByText('Disconnect account')).toBeNull();
 });
+
+// A service missing only one scope cannot be used; showing it as granted would hide that.
+it('lists services whose consent is incomplete', async () => {
+  setup(allScopes.filter((scope) => !scope.endsWith('/calendar.events')));
+  render(<GoogleSettings />);
+  await screen.findByText('me@example.test');
+  expect(screen.getByText('Missing: Calendar')).toBeOnTheScreen();
+  expect(screen.getByText('Incomplete')).toBeOnTheScreen();
+});
+
+it('adds an account with one consent and no service picker', async () => {
+  const client = setup(allScopes);
+  jest.mocked(runGoogleAccountAuth).mockResolvedValue({ ...success, code: 'new-code' });
+  render(<GoogleSettings />);
+  await screen.findByText('me@example.test');
+  fireEvent.press(screen.getByText('Add Google account'));
+  await waitFor(() =>
+    expect(client.connectGoogleAccount).toHaveBeenCalledWith({
+      code: 'new-code',
+      codeVerifier: 'verifier',
+      redirectUri: 'app:/oauth',
+    }),
+  );
+  expect(runGoogleAccountAuth).toHaveBeenCalledWith('google-client');
+});
+
 it('does not change credentials when authorization is cancelled', async () => {
   const client = setup([]);
-  jest.mocked(runGmailAuth).mockResolvedValue({ kind: 'cancelled' });
+  jest.mocked(runGoogleAccountAuth).mockResolvedValue({ kind: 'cancelled' });
   render(<GoogleSettings />);
-  await screen.findAllByText('me@example.test');
-  fireEvent.press(screen.getByText('Gmail'));
-  await waitFor(() => expect(runGmailAuth).toHaveBeenCalled());
-  expect(client.connectGmail).not.toHaveBeenCalled();
+  await screen.findByText('me@example.test');
+  fireEvent.press(screen.getByText('Add Google account'));
+  await waitFor(() => expect(runGoogleAccountAuth).toHaveBeenCalled());
+  expect(client.connectGoogleAccount).not.toHaveBeenCalled();
 });
-it.each([
-  ['https://www.googleapis.com/auth/drive', true],
-  ['https://www.googleapis.com/auth/drive.readonly', false],
-  ['https://example.test/https://www.googleapis.com/auth/drive', false],
-] as const)('requires the exact Drive scope: %s', async (scope, enabled) => {
-  setup([scope]);
-  render(<GoogleSettings />);
-  await screen.findAllByText('me@example.test');
-  const workspace = screen.getByRole('button', { name: 'Docs, Sheets & Slides' });
-  if (enabled) expect(workspace).toBeEnabled();
-  else expect(workspace).toBeDisabled();
-});
+
 it('requires confirmation before disconnecting the account', async () => {
   const client = setup([]);
-  render(<GoogleSettings />);
-  await screen.findAllByText('me@example.test');
+  await openAccount();
   fireEvent.press(screen.getByText('Disconnect account'));
   expect(client.removeGoogleAccount).not.toHaveBeenCalled();
   expect(screen.getByText('Disconnect Google account?')).toBeOnTheScreen();
@@ -88,19 +109,14 @@ it('requires confirmation before disconnecting the account', async () => {
   await waitFor(() => expect(client.removeGoogleAccount).toHaveBeenCalled());
 });
 
-it('keeps reconnect consent bound to the chosen account', async () => {
+// Without the account id the server could attach new grants to whichever account signed in.
+it('keeps missing-permission consent bound to the chosen account', async () => {
   const client = setup([]);
-  jest.mocked(runGmailAuth).mockResolvedValue({
-    kind: 'success',
-    code: 'code',
-    codeVerifier: 'verifier',
-    redirectUri: 'app:/oauth',
-  });
-  render(<GoogleSettings />);
-  await screen.findAllByText('me@example.test');
-  fireEvent.press(screen.getByText('Gmail'));
+  jest.mocked(runGoogleAccountAuth).mockResolvedValue(success);
+  await openAccount();
+  fireEvent.press(screen.getByText('Grant missing permissions'));
   await waitFor(() =>
-    expect(client.connectGmail).toHaveBeenCalledWith({
+    expect(client.connectGoogleAccount).toHaveBeenCalledWith({
       code: 'code',
       codeVerifier: 'verifier',
       redirectUri: 'app:/oauth',
@@ -109,23 +125,23 @@ it('keeps reconnect consent bound to the chosen account', async () => {
   );
 });
 
-it('blocks disconnection until pending consent finishes', async () => {
+it('blocks adding and opening accounts until pending consent finishes', async () => {
   const client = setup([]);
   let finish!: (value: { kind: 'cancelled' }) => void;
-  jest.mocked(runGmailAuth).mockReturnValue(
+  jest.mocked(runGoogleAccountAuth).mockReturnValue(
     new Promise((resolve) => {
       finish = resolve;
     }),
   );
   render(<GoogleSettings />);
-  await screen.findAllByText('me@example.test');
-  fireEvent.press(screen.getByText('Gmail'));
-  expect(screen.getByRole('button', { name: 'Disconnect account' })).toBeDisabled();
-  fireEvent.press(screen.getByText('Disconnect account'));
-  expect(screen.queryByText('Disconnect Google account?')).toBeNull();
-  expect(client.removeGoogleAccount).not.toHaveBeenCalled();
+  await screen.findByText('me@example.test');
+  fireEvent.press(screen.getByText('Add Google account'));
+  expect(screen.getByRole('button', { name: /me@example.test/ })).toBeDisabled();
+  fireEvent.press(screen.getByText('Add Google account'));
+  expect(runGoogleAccountAuth).toHaveBeenCalledTimes(1);
   await act(async () => finish({ kind: 'cancelled' }));
-  expect(screen.getByRole('button', { name: 'Disconnect account' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: /me@example.test/ })).toBeEnabled();
+  expect(client.connectGoogleAccount).not.toHaveBeenCalled();
 });
 
 it('blocks consent and duplicate removal until disconnect finishes', async () => {
@@ -136,8 +152,7 @@ it('blocks consent and duplicate removal until disconnect finishes', async () =>
       finish = resolve;
     }),
   );
-  render(<GoogleSettings />);
-  await screen.findAllByText('me@example.test');
+  await openAccount();
   fireEvent.press(screen.getByText('Disconnect account'));
   // The confirm button's own handler, twice before the next render.
   const confirm = screen.UNSAFE_getByProps({ label: 'Disconnect' }).props.onPress as () => void;
@@ -146,30 +161,9 @@ it('blocks consent and duplicate removal until disconnect finishes', async () =>
     confirm();
   });
   expect(client.removeGoogleAccount).toHaveBeenCalledTimes(1);
-  expect(screen.getByRole('button', { name: 'Gmail' })).toBeDisabled();
-  fireEvent.press(screen.getByText('Gmail'));
-  expect(runGmailAuth).not.toHaveBeenCalled();
-  await act(async () => finish());
-  expect(screen.getByRole('button', { name: 'Gmail' })).toBeEnabled();
-});
-
-it('lets a new account connect Gmail without requesting Drive access', async () => {
-  const client = setup([]);
-  jest.mocked(runGmailAuth).mockResolvedValue({
-    kind: 'success',
-    code: 'new-code',
-    codeVerifier: 'verifier',
-    redirectUri: 'app:/oauth',
-  });
-  render(<GoogleSettings />);
-  await screen.findAllByText('me@example.test');
+  expect(screen.getByRole('button', { name: 'Add Google account' })).toBeDisabled();
   fireEvent.press(screen.getByText('Add Google account'));
-  fireEvent.press(screen.getAllByText('Gmail').at(-1)!);
-  await waitFor(() =>
-    expect(client.connectGmail).toHaveBeenCalledWith({
-      code: 'new-code',
-      codeVerifier: 'verifier',
-      redirectUri: 'app:/oauth',
-    }),
-  );
+  expect(runGoogleAccountAuth).not.toHaveBeenCalled();
+  await act(async () => finish());
+  expect(screen.getByRole('button', { name: 'Add Google account' })).toBeEnabled();
 });
