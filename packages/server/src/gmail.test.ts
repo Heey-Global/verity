@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -865,6 +867,185 @@ describe('Gmail API', () => {
     expect(raw).toContain('To: friend@example.test');
     expect(raw).toContain('In-Reply-To: <sent@example.test>');
     expect(raw).not.toContain('<draft@example.test>');
+  });
+});
+
+describe('Gmail draft attachments', () => {
+  const pdf = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0x0d, 0x0a]);
+  const digest = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+  function decodeRaw(fetch: ReturnType<typeof vi.fn>, call: number): string {
+    const body = JSON.parse(fetch.mock.calls[call]?.[1]?.body as string) as {
+      raw?: string;
+      message?: { raw: string };
+    };
+    return Buffer.from(body.raw ?? body.message!.raw, 'base64url').toString('utf8');
+  }
+  function attachmentBytes(raw: string, filenameHeader: string): Buffer {
+    const start = raw.indexOf(filenameHeader);
+    const content = raw.slice(raw.indexOf('\r\n\r\n', start) + 4);
+    return Buffer.from(content.slice(0, content.indexOf('\r\n--')).replace(/\r\n/gu, ''), 'base64');
+  }
+  // A draft as Gmail returns it after Verity created it with one attachment.
+  function draftWith(bytes: Buffer, extraParts: object[] = []) {
+    return {
+      id: 'd1',
+      message: {
+        id: 'm1',
+        payload: {
+          mimeType: 'multipart/mixed',
+          headers: [
+            { name: 'To', value: 'friend@example.test' },
+            { name: 'Subject', value: 'Report' },
+          ],
+          parts: [
+            {
+              partId: '0',
+              mimeType: 'text/plain',
+              body: { data: Buffer.from('See attached').toString('base64url') },
+            },
+            {
+              partId: '1',
+              mimeType: 'application/pdf',
+              filename: 'report.pdf',
+              body: { attachmentId: 'att-1', size: bytes.length },
+            },
+            ...extraParts,
+          ],
+        },
+      },
+    };
+  }
+  function routedFetch(draft: unknown, bytes: Buffer) {
+    return vi.fn<typeof globalThis.fetch>(async (url, init) => {
+      const target = url as string;
+      if (target.endsWith('/drafts') && init?.method === 'POST')
+        return response({ id: 'd1', message: { id: 'm1' } });
+      if (target.includes('/drafts/d1?format=full')) return response(draft);
+      if (target.endsWith('/messages/m1/attachments/att-1'))
+        return response({ data: bytes.toString('base64url'), size: bytes.length });
+      if (target.endsWith('/messages/send')) return response({ id: 'sent', threadId: 't1' });
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 });
+      throw new Error(`unexpected ${target}`);
+    });
+  }
+
+  it('creates a multipart draft carrying the exact attachment bytes', async () => {
+    const fetch = routedFetch(undefined, pdf);
+    await createGmailDraft(
+      'token',
+      {
+        to: ['friend@example.test'],
+        subject: 'Report',
+        body: 'See attached',
+        attachments: [
+          { filename: 'report.pdf', mimeType: 'application/pdf', content: pdf },
+          { filename: 'Übersicht "Q3".txt', mimeType: 'text/plain', content: Buffer.from('ok') },
+        ],
+      },
+      fetch,
+    );
+    const raw = decodeRaw(fetch, 0);
+    expect(raw).toMatch(/Content-Type: multipart\/mixed; boundary="verity_mixed_[0-9a-f]+"/u);
+    expect(raw).toContain('Content-Disposition: attachment; filename="report.pdf"');
+    expect(attachmentBytes(raw, 'filename="report.pdf"')).toEqual(pdf);
+    // Quotes and non-ASCII must not break out of the header parameter.
+    expect(raw).toContain("filename*=UTF-8''%C3%9Cbersicht%20%22Q3%22.txt");
+    expect(Buffer.from(raw.match(/base64\r\n\r\n([^\r]+)/u)![1]!, 'base64').toString()).toBe(
+      'See attached',
+    );
+  });
+
+  it.each([
+    [{ filename: '../x.pdf', mimeType: 'application/pdf' }, 'plain file name'],
+    [{ filename: 'a\r\nBcc: x@example.test', mimeType: 'text/plain' }, 'plain file name'],
+    [{ filename: 'a.pdf', mimeType: 'application/pdf\r\nX: y' }, 'MIME type'],
+  ])('rejects unsafe attachment metadata before calling Gmail: %o', async (meta, message) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    await expect(
+      createGmailDraft(
+        'token',
+        {
+          to: ['a@example.test'],
+          subject: 's',
+          body: 'b',
+          attachments: [{ ...meta, content: pdf }],
+        },
+        fetch,
+      ),
+    ).rejects.toThrow(message);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects attachments above the total size limit before calling Gmail', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const big = Buffer.alloc(10 * 1024 * 1024);
+    await expect(
+      createGmailDraft(
+        'token',
+        {
+          to: ['a@example.test'],
+          subject: 's',
+          body: 'b',
+          attachments: [
+            { filename: 'a.bin', mimeType: 'application/octet-stream', content: big },
+            { filename: 'b.bin', mimeType: 'application/octet-stream', content: big },
+          ],
+        },
+        fetch,
+      ),
+    ).rejects.toThrow('18 MiB');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('lists every attachment with its digest in the send approval snapshot', async () => {
+    await expect(
+      readGmailDraftForSend('token', 'd1', routedFetch(draftWith(pdf), pdf)),
+    ).resolves.toMatchObject({
+      body: 'See attached',
+      attachments: [
+        {
+          partId: '1',
+          filename: 'report.pdf',
+          mimeType: 'application/pdf',
+          size: pdf.length,
+          sha256: digest(pdf),
+        },
+      ],
+    });
+  });
+
+  // An attachment the approver cannot see by name must never ride along.
+  it('rejects nested or unnamed parts next to the attachments', async () => {
+    const nested = { partId: '2', mimeType: 'multipart/related', parts: [{ partId: '2.0' }] };
+    await expect(
+      readGmailDraftForSend('token', 'd1', routedFetch(draftWith(pdf, [nested]), pdf)),
+    ).rejects.toThrow('unsupported MIME content');
+  });
+
+  it('sends the approved attachment bytes and deletes the unchanged draft', async () => {
+    const fetch = routedFetch(draftWith(pdf), pdf);
+    const snapshot = await readGmailDraftForSend('token', 'd1', fetch);
+    fetch.mockClear();
+    await expect(sendGmailDraft('token', snapshot, fetch)).resolves.toMatchObject({
+      draftRetained: false,
+    });
+    const sendCall = fetch.mock.calls.findIndex(([url]) =>
+      (url as string).endsWith('/messages/send'),
+    );
+    expect(attachmentBytes(decodeRaw(fetch, sendCall), 'filename="report.pdf"')).toEqual(pdf);
+  });
+
+  // Without the digest check, an attachment swapped after approval would be sent.
+  it('refuses to send when the draft attachment changed after approval', async () => {
+    const snapshot = await readGmailDraftForSend('token', 'd1', routedFetch(draftWith(pdf), pdf));
+    const swapped = Buffer.from('different bytes');
+    const fetch = routedFetch(draftWith(swapped), swapped);
+    await expect(sendGmailDraft('token', snapshot, fetch)).rejects.toThrow(
+      'attachments changed since approval',
+    );
+    expect(fetch.mock.calls.some(([url]) => (url as string).endsWith('/messages/send'))).toBe(
+      false,
+    );
   });
 });
 

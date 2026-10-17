@@ -417,7 +417,49 @@ function decodeMimeHeader(value: string): string {
   return decoded;
 }
 
+/** Gmail rejects messages above 25 MB; base64 adds a third, so keep raw files below that. */
+export const MAX_GMAIL_ATTACHMENT_BYTES = 18 * 1024 * 1024;
+export const MAX_GMAIL_ATTACHMENTS = 10;
+
+export interface GmailOutgoingAttachment {
+  filename: string;
+  mimeType: string;
+  content: Buffer;
+}
+
+/** What an approver sees of an attachment; `sha256` binds approval to exact bytes. */
+export interface GmailDraftAttachment {
+  partId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  sha256: string;
+}
+
+const MIME_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/iu;
+
+export function assertGmailAttachment(attachment: GmailOutgoingAttachment): void {
+  const { filename, mimeType } = attachment;
+  if (
+    filename.trim() === '' ||
+    filename.length > 255 ||
+    /[/\\]/u.test(filename) ||
+    [...filename].some((character) => character < ' ' || character === '\u007f')
+  )
+    throw new Error('Gmail attachment filenames must be a plain file name');
+  if (!MIME_TYPE.test(mimeType) || mimeType.length > 255)
+    throw new Error('Gmail attachment mimeType must be a MIME type such as application/pdf');
+}
+
+function assertAttachmentBudget(sizes: number[]): void {
+  if (sizes.length > MAX_GMAIL_ATTACHMENTS)
+    throw new Error(`Gmail drafts support at most ${MAX_GMAIL_ATTACHMENTS} attachments`);
+  if (sizes.reduce((total, size) => total + size, 0) > MAX_GMAIL_ATTACHMENT_BYTES)
+    throw new Error('Gmail attachments exceed the 18 MiB total limit');
+}
+
 export interface GmailDraftInput {
+  attachments?: GmailOutgoingAttachment[];
   from?: string;
   replyTo?: string;
   to: string[];
@@ -592,6 +634,18 @@ export async function readGmailSignature(
   return { text: gmailSignatureText(html), html, externalUrls: gmailHtmlExternalUrls(html) };
 }
 
+const base64Lines = (value: Buffer): string =>
+  value
+    .toString('base64')
+    .match(/.{1,76}/gu)
+    ?.join('\r\n') ?? '';
+
+function dispositionFilename(filename: string): string {
+  return /^[\x20-\x7e]+$/u.test(filename) && !/["\\]/u.test(filename)
+    ? `filename="${filename}"`
+    : `filename*=UTF-8''${encodeURIComponent(filename).replace(/['()*]/gu, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)}`;
+}
+
 function rawMessage(input: GmailDraftInput): string {
   const headers = [
     ...(input.from === undefined ? [] : [`From: ${safeHeader(input.from, 'from')}`]),
@@ -612,41 +666,57 @@ function rawMessage(input: GmailDraftInput): string {
       : [`References: ${safeHeader(input.references, 'references')}`]),
     'MIME-Version: 1.0',
   ];
-  if (input.htmlBody === undefined) {
-    headers.push(
-      'Content-Type: text/plain; charset=UTF-8',
-      'Content-Transfer-Encoding: 8bit',
-      '',
-      input.body.replace(/\r?\n/gu, '\r\n'),
-    );
-  } else {
-    const boundary = `verity_${createHash('sha256')
-      .update(input.body)
-      .update('\0')
-      .update(input.htmlBody)
-      .digest('hex')
-      .slice(0, 32)}`;
-    const encodePart = (value: string): string =>
-      Buffer.from(value, 'utf8')
-        .toString('base64')
-        .match(/.{1,76}/gu)
-        ?.join('\r\n') ?? '';
-    headers.push(
-      `Content-Type: multipart/alternative; boundary="${boundary}"`,
-      '',
-      `--${boundary}`,
-      'Content-Type: text/plain; charset=UTF-8',
-      'Content-Transfer-Encoding: base64',
-      '',
-      encodePart(input.body.replace(/\r?\n/gu, '\r\n')),
-      `--${boundary}`,
-      'Content-Type: text/html; charset=UTF-8',
-      'Content-Transfer-Encoding: base64',
-      '',
-      encodePart(input.htmlBody),
-      `--${boundary}--`,
-      '',
-    );
+  const attachments = input.attachments ?? [];
+  attachments.forEach(assertGmailAttachment);
+  assertAttachmentBudget(attachments.map((attachment) => attachment.content.length));
+  const plain = input.body.replace(/\r?\n/gu, '\r\n');
+  const digest = createHash('sha256').update(input.body).update('\0');
+  if (input.htmlBody !== undefined) digest.update(input.htmlBody);
+  for (const attachment of attachments) digest.update('\0').update(attachment.content);
+  const hash = digest.digest('hex').slice(0, 32);
+  const bodyEntity =
+    input.htmlBody === undefined
+      ? attachments.length === 0
+        ? ['Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: 8bit', '', plain]
+        : // Base64 keeps the text from ever containing the multipart boundary.
+          [
+            'Content-Type: text/plain; charset=UTF-8',
+            'Content-Transfer-Encoding: base64',
+            '',
+            base64Lines(Buffer.from(plain, 'utf8')),
+          ]
+      : [
+          `Content-Type: multipart/alternative; boundary="verity_${hash}"`,
+          '',
+          `--verity_${hash}`,
+          'Content-Type: text/plain; charset=UTF-8',
+          'Content-Transfer-Encoding: base64',
+          '',
+          base64Lines(Buffer.from(plain, 'utf8')),
+          `--verity_${hash}`,
+          'Content-Type: text/html; charset=UTF-8',
+          'Content-Transfer-Encoding: base64',
+          '',
+          base64Lines(Buffer.from(input.htmlBody, 'utf8')),
+          `--verity_${hash}--`,
+          '',
+        ];
+  if (attachments.length === 0) headers.push(...bodyEntity);
+  else {
+    const boundary = `verity_mixed_${hash}`;
+    headers.push(`Content-Type: multipart/mixed; boundary="${boundary}"`, '', `--${boundary}`);
+    headers.push(...bodyEntity);
+    for (const attachment of attachments) {
+      headers.push(
+        `--${boundary}`,
+        `Content-Type: ${attachment.mimeType}`,
+        `Content-Disposition: attachment; ${dispositionFilename(attachment.filename)}`,
+        'Content-Transfer-Encoding: base64',
+        '',
+        base64Lines(attachment.content),
+      );
+    }
+    headers.push(`--${boundary}--`, '');
   }
   return Buffer.from(headers.join('\r\n'), 'utf8').toString('base64url');
 }
@@ -672,6 +742,7 @@ export async function createGmailDraft(
 }
 
 export interface GmailDraftSendSnapshot {
+  attachments?: GmailDraftAttachment[];
   accountId?: string;
   credentialVersion?: number;
   draftId: string;
@@ -753,30 +824,12 @@ function utf8DraftPartBody(payload: GmailPart): string {
   );
 }
 
-export async function readGmailDraftForSend(
-  accessToken: string,
-  draftId: string,
-  fetchImpl: FetchLike = fetch,
-): Promise<GmailDraftSendSnapshot> {
-  const draft = await gmailJson<{ id?: string; message?: GmailMessage }>(
-    `/drafts/${encodeURIComponent(draftId)}?format=full`,
-    accessToken,
-    {},
-    fetchImpl,
-  );
-  const message = draft.message;
-  if (draft.id === undefined || message?.id === undefined) {
-    throw new Error('The Gmail draft is missing its identity');
-  }
-  const payload = message.payload;
-  if (payload === undefined || (payload.filename !== undefined && payload.filename !== '')) {
-    throw new Error('Gmail drafts with attachments cannot be sent');
-  }
-  let body: string;
-  let htmlBody: string | undefined;
-  if (payload.mimeType === 'text/plain' && (payload.parts?.length ?? 0) === 0) {
-    body = utf8DraftPartBody(payload);
-  } else if (payload.mimeType === 'multipart/alternative' && payload.parts?.length === 2) {
+function draftBodies(payload: GmailPart): { body: string; htmlBody?: string } {
+  if (payload.filename !== undefined && payload.filename !== '')
+    throw new Error('The Gmail draft contains unsupported MIME content');
+  if (payload.mimeType === 'text/plain' && (payload.parts?.length ?? 0) === 0)
+    return { body: utf8DraftPartBody(payload) };
+  if (payload.mimeType === 'multipart/alternative' && payload.parts?.length === 2) {
     const plain = payload.parts.find((part) => part.mimeType === 'text/plain');
     const html = payload.parts.find((part) => part.mimeType === 'text/html');
     if (
@@ -789,31 +842,120 @@ export async function readGmailDraftForSend(
     ) {
       throw new Error('The Gmail draft contains unsupported MIME content');
     }
-    body = utf8DraftPartBody(plain);
-    htmlBody = sanitizeGmailHtml(utf8DraftPartBody(html));
-  } else {
-    throw new Error('The Gmail draft contains unsupported MIME content');
+    return {
+      body: utf8DraftPartBody(plain),
+      htmlBody: sanitizeGmailHtml(utf8DraftPartBody(html)),
+    };
   }
+  throw new Error('The Gmail draft contains unsupported MIME content');
+}
+
+async function draftAttachmentBytes(
+  accessToken: string,
+  messageId: string,
+  part: GmailPart,
+  fetchImpl: FetchLike,
+): Promise<Buffer> {
+  const body =
+    part.body?.attachmentId === undefined
+      ? part.body
+      : await gmailJson<{ data?: string }>(
+          `/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(part.body.attachmentId)}`,
+          accessToken,
+          {},
+          fetchImpl,
+        );
+  if (body?.data === undefined) throw new Error('The Gmail draft attachment has no data');
+  return Buffer.from(body.data, 'base64url');
+}
+
+async function readGmailDraft(
+  accessToken: string,
+  draftId: string,
+  fetchImpl: FetchLike,
+): Promise<{ snapshot: GmailDraftSendSnapshot; attachments: GmailOutgoingAttachment[] }> {
+  const draft = await gmailJson<{ id?: string; message?: GmailMessage }>(
+    `/drafts/${encodeURIComponent(draftId)}?format=full`,
+    accessToken,
+    {},
+    fetchImpl,
+  );
+  const message = draft.message;
+  if (draft.id === undefined || message?.id === undefined) {
+    throw new Error('The Gmail draft is missing its identity');
+  }
+  const payload = message.payload;
+  if (payload === undefined) throw new Error('The Gmail draft contains unsupported MIME content');
+  const messageId = message.id;
+  let content: { body: string; htmlBody?: string };
+  let attachmentParts: GmailPart[] = [];
+  if (payload.mimeType === 'multipart/mixed') {
+    const [first, ...rest] = payload.parts ?? [];
+    if (first === undefined) throw new Error('The Gmail draft contains unsupported MIME content');
+    content = draftBodies(first);
+    attachmentParts = rest;
+  } else {
+    content = draftBodies(payload);
+  }
+  // Every non-body part must be a plain attachment the approver can see by name.
+  for (const part of attachmentParts) {
+    if (!part.filename || part.partId === undefined || (part.parts?.length ?? 0) > 0)
+      throw new Error('The Gmail draft contains unsupported MIME content');
+  }
+  assertAttachmentBudget(attachmentParts.map((part) => part.body?.size ?? 0));
+  const attachments: GmailOutgoingAttachment[] = [];
+  for (const part of attachmentParts) {
+    attachments.push({
+      filename: part.filename!,
+      mimeType: (part.mimeType ?? 'application/octet-stream').toLowerCase(),
+      content: await draftAttachmentBytes(accessToken, messageId, part, fetchImpl),
+    });
+  }
+  attachments.forEach(assertGmailAttachment);
+  assertAttachmentBudget(attachments.map((attachment) => attachment.content.length));
+  const { body, htmlBody } = content;
   const inReplyTo = header(message.payload, 'in-reply-to');
   const references = header(message.payload, 'references');
   const from = header(message.payload, 'from');
   const replyTo = header(message.payload, 'reply-to');
   return {
-    draftId: draft.id,
-    messageId: message.id,
-    to: addressList(header(message.payload, 'to')),
-    cc: addressList(header(message.payload, 'cc')),
-    bcc: addressList(header(message.payload, 'bcc')),
-    subject: decodeMimeHeader(header(message.payload, 'subject') ?? ''),
-    body,
-    ...(from === undefined ? {} : { from }),
-    ...(replyTo === undefined ? {} : { replyTo }),
-    ...(htmlBody === undefined ? {} : { htmlBody }),
-    externalUrls: htmlBody === undefined ? [] : gmailHtmlExternalUrls(htmlBody),
-    ...(message.threadId === undefined ? {} : { threadId: message.threadId }),
-    ...(inReplyTo === undefined ? {} : { inReplyTo }),
-    ...(references === undefined ? {} : { references }),
+    attachments,
+    snapshot: {
+      draftId: draft.id,
+      messageId,
+      to: addressList(header(message.payload, 'to')),
+      cc: addressList(header(message.payload, 'cc')),
+      bcc: addressList(header(message.payload, 'bcc')),
+      subject: decodeMimeHeader(header(message.payload, 'subject') ?? ''),
+      body,
+      ...(from === undefined ? {} : { from }),
+      ...(replyTo === undefined ? {} : { replyTo }),
+      ...(htmlBody === undefined ? {} : { htmlBody }),
+      externalUrls: htmlBody === undefined ? [] : gmailHtmlExternalUrls(htmlBody),
+      ...(message.threadId === undefined ? {} : { threadId: message.threadId }),
+      ...(inReplyTo === undefined ? {} : { inReplyTo }),
+      ...(references === undefined ? {} : { references }),
+      ...(attachments.length === 0
+        ? {}
+        : {
+            attachments: attachments.map((attachment, index) => ({
+              partId: attachmentParts[index]!.partId!,
+              filename: attachment.filename,
+              mimeType: attachment.mimeType,
+              size: attachment.content.length,
+              sha256: createHash('sha256').update(attachment.content).digest('hex'),
+            })),
+          }),
+    },
   };
+}
+
+export async function readGmailDraftForSend(
+  accessToken: string,
+  draftId: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<GmailDraftSendSnapshot> {
+  return (await readGmailDraft(accessToken, draftId, fetchImpl)).snapshot;
 }
 
 export async function sendGmailDraft(
@@ -822,7 +964,16 @@ export async function sendGmailDraft(
   fetchImpl: FetchLike = fetch,
 ): Promise<unknown> {
   assertSafeGmailSendSnapshot(approved);
+  let attachments: GmailOutgoingAttachment[] = [];
+  if ((approved.attachments?.length ?? 0) > 0) {
+    // The snapshot names attachments by digest only; send the bytes that were approved.
+    const current = await readGmailDraft(accessToken, approved.draftId, fetchImpl);
+    if (JSON.stringify(current.snapshot.attachments) !== JSON.stringify(approved.attachments))
+      throw new Error('The Gmail draft attachments changed since approval; prepare it again');
+    attachments = current.attachments;
+  }
   const raw = rawMessage({
+    ...(attachments.length === 0 ? {} : { attachments }),
     to: approved.to,
     cc: approved.cc,
     bcc: approved.bcc,
@@ -868,6 +1019,7 @@ export async function sendGmailDraft(
       'threadId',
       'inReplyTo',
       'references',
+      'attachments',
     ];
     if (
       fields.some((field) => JSON.stringify(current[field]) !== JSON.stringify(approved[field]))

@@ -86,6 +86,7 @@ import {
   freezeTranscriptTail,
   frozenTranscriptRows,
   gmailPreviewHtml,
+  formatAttachmentSize,
   gmailSendSummary,
   matrixSendSummary,
   calendarChangeSummary,
@@ -9140,6 +9141,19 @@ function PermissionPrompt({
               {spellOutBidiControls(gmailSummary.body)}
             </Text>
           </ScrollView>
+          {gmailSummary.attachments.length > 0 ? (
+            <View>
+              <Text style={styles.permissionHttpMeta}>
+                Attachments ({gmailSummary.attachments.length}):
+              </Text>
+              {gmailSummary.attachments.map((attachment, index) => (
+                <Text key={index} style={styles.permissionHttpMeta} selectable>
+                  {spellOutBidiControls(attachment.filename)} ·{' '}
+                  {formatAttachmentSize(attachment.size)} · {attachment.mimeType}
+                </Text>
+              ))}
+            </View>
+          ) : null}
           {gmailSummary.externalUrls.length > 0 ? (
             <View>
               <Text style={styles.permissionHttpMeta}>
@@ -9153,9 +9167,9 @@ function PermissionPrompt({
             </View>
           ) : null}
           <Text style={styles.permissionHttpMeta}>
-            Gmail sends exactly this text and HTML snapshot once. After sending, Verity deletes the
-            original draft if the final check still matches this preview. A change during cleanup
-            may be lost.
+            Gmail sends exactly this text, HTML, and attachment snapshot once. After sending, Verity
+            deletes the original draft if the final check still matches this preview. A change
+            during cleanup may be lost.
           </Text>
         </View>
       ) : brokeredRequestDetails !== null ? (

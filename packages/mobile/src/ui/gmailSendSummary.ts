@@ -1,3 +1,9 @@
+export interface GmailSendAttachment {
+  filename: string;
+  mimeType: string;
+  size: number;
+}
+
 export interface GmailSendSummary {
   draftId: string;
   to: string[];
@@ -9,10 +15,38 @@ export interface GmailSendSummary {
   replyTo: string | null;
   htmlBody: string | null;
   externalUrls: string[];
+  attachments: GmailSendAttachment[];
 }
 
 function strings(value: unknown): string[] | null {
   return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : null;
+}
+
+function attachmentList(value: unknown): GmailSendAttachment[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return null;
+  const attachments: GmailSendAttachment[] = [];
+  for (const item of value as unknown[]) {
+    if (typeof item !== 'object' || item === null) return null;
+    const { filename, mimeType, size } = item as Record<string, unknown>;
+    if (
+      typeof filename !== 'string' ||
+      typeof mimeType !== 'string' ||
+      typeof size !== 'number' ||
+      !Number.isInteger(size) ||
+      size < 0
+    )
+      return null;
+    attachments.push({ filename, mimeType, size });
+  }
+  return attachments;
+}
+
+/** Human-readable byte size for the approval card. */
+export function formatAttachmentSize(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export function gmailSendSummary(input: unknown): GmailSendSummary | null {
@@ -30,7 +64,10 @@ export function gmailSendSummary(input: unknown): GmailSendSummary | null {
   const bcc = strings(value['bcc']);
   const externalUrls = strings(value['externalUrls']);
   const htmlBody = value['htmlBody'];
+  // Unreadable attachment metadata must not yield a card that silently omits a file.
+  const attachments = attachmentList(value['attachments']);
   if (
+    attachments === null ||
     to === null ||
     to.length === 0 ||
     cc === null ||
@@ -50,6 +87,7 @@ export function gmailSendSummary(input: unknown): GmailSendSummary | null {
     replyTo: typeof value['replyTo'] === 'string' ? value['replyTo'] : null,
     htmlBody: typeof htmlBody === 'string' ? htmlBody : null,
     externalUrls,
+    attachments,
   };
 }
 

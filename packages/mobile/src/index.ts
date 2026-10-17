@@ -184,7 +184,9 @@ export {
 } from './ui/knowledgePublishSummary.js';
 export {
   gmailPreviewHtml,
+  formatAttachmentSize,
   gmailSendSummary,
+  type GmailSendAttachment,
   type GmailSendSummary,
 } from './ui/gmailSendSummary.js';
 export {
