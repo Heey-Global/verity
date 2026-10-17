@@ -1064,6 +1064,22 @@ it.each([
     subject: 'Hello',
     body: 'Body',
   },
+  {
+    action: 'create_draft',
+    to: ['friend@example.test'],
+    subject: 'Report',
+    body: 'Body',
+    attachments: [
+      { path: 'out/report.pdf' },
+      { path: 'a', filename: 'b.txt', mimeType: 'text/plain' },
+    ],
+  },
+  {
+    action: 'create_reply_draft',
+    threadId: 't1',
+    body: 'Body',
+    attachments: [{ path: 'out/report.pdf' }],
+  },
 ])('accepts Gmail read and draft actions through the gateway: %j', async (request) => {
   const { gateway, invokeTool } = harness({
     servedTools: ['verity_gmail'],
@@ -1076,6 +1092,26 @@ it.each([
   });
   expect(invokeTool).toHaveBeenCalledOnce();
   expect(invokeTool).toHaveBeenCalledWith(expect.objectContaining({ request }));
+});
+
+// The approval card lists attachments from send_draft; a malformed entry must not reach it.
+it.each([
+  { attachments: [{ path: 'a', extra: true }], action: 'create_draft' },
+  { attachments: Array.from({ length: 11 }, () => ({ path: 'a' })), action: 'create_draft' },
+])('rejects malformed Gmail attachment requests: %#', async ({ attachments, action }) => {
+  const { gateway, invokeTool } = harness({
+    servedTools: ['verity_gmail'],
+    hasStandingAuthorization: async () => true,
+  });
+  await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(
+      { action, to: ['friend@example.test'], subject: 'S', body: 'B', attachments },
+      'verity_gmail',
+    ),
+  });
+  expect(invokeTool).not.toHaveBeenCalled();
 });
 
 describe('account-bound approval snapshots', () => {

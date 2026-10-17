@@ -1,8 +1,5 @@
 import { assertWorkspaceWriteAccess } from './google-workspace-tool-types.js';
 import { randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
-import { open, realpath, type FileHandle } from 'node:fs/promises';
-import { isAbsolute, relative, resolve } from 'node:path';
 import type { EventStore, GoogleSlideImageCleanupRecord } from '@verity/store';
 
 import {
@@ -20,6 +17,7 @@ import {
   updateSlidesPresentation,
 } from './google-slides.js';
 import { richMcpToolResult } from './mcp-tool-result.js';
+import { readWorktreeFile } from './worktree-file.js';
 
 const MAX_IMAGE_BYTES = 50_000_000;
 const MAX_IMAGE_PIXELS = 25_000_000;
@@ -53,49 +51,18 @@ function imageMediaType(bytes: Buffer): 'image/png' | 'image/jpeg' | 'image/gif'
   throw new Error('insert_image imagePath must contain a PNG, JPEG, or GIF image');
 }
 
-async function readBoundedImage(handle: FileHandle): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  while (true) {
-    const chunk = Buffer.allocUnsafe(64 * 1024);
-    const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
-    if (bytesRead === 0) return Buffer.concat(chunks, total);
-    total += bytesRead;
-    if (total > MAX_IMAGE_BYTES) throw new Error('image exceeds 50 MB');
-    chunks.push(chunk.subarray(0, bytesRead));
-  }
-}
-
 async function readWorktreeImage(
   worktree: string,
   imagePath: string,
 ): Promise<{ mediaType: 'image/png' | 'image/jpeg' | 'image/gif'; bytes: Buffer }> {
-  if (isAbsolute(imagePath)) throw new Error('insert_image imagePath must be relative');
-  const worktreeReal = await realpath(worktree);
-  const handle = await open(
-    resolve(worktreeReal, imagePath),
-    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-  ).catch(() => undefined);
-  if (handle === undefined) throw new Error('insert_image imagePath does not exist');
-  try {
-    // Validate the opened object, not the pathname: an agent process may replace a
-    // path component after resolution, while this descriptor continues to identify
-    // the exact bytes we inspect and upload.
-    const openedReal = await realpath(`/proc/self/fd/${handle.fd}`);
-    const fromWorktree = relative(worktreeReal, openedReal);
-    if (fromWorktree === '' || fromWorktree.startsWith('..') || isAbsolute(fromWorktree)) {
-      throw new Error('insert_image imagePath must stay inside the session worktree');
-    }
-    const metadata = await handle.stat();
-    if (!metadata.isFile()) throw new Error('insert_image imagePath must name a file');
-    if (metadata.size > MAX_IMAGE_BYTES) throw new Error('image exceeds 50 MB');
-    const bytes = await readBoundedImage(handle);
-    const mediaType = imageMediaType(bytes);
-    assertImageLimits(bytes, mediaType);
-    return { mediaType, bytes };
-  } finally {
-    await handle.close();
-  }
+  const bytes = await readWorktreeFile(worktree, imagePath, {
+    label: 'insert_image imagePath',
+    maxBytes: MAX_IMAGE_BYTES,
+    tooLarge: 'image exceeds 50 MB',
+  });
+  const mediaType = imageMediaType(bytes);
+  assertImageLimits(bytes, mediaType);
+  return { mediaType, bytes };
 }
 
 interface GoogleSlidesToolDeps {
