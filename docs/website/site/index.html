@@ -14,14 +14,14 @@
     <meta property="og:title" content="Verity — Your agents. Your server. Your rules." />
     <meta
       property="og:description"
-      content="AI coding agents on your own server: isolated sandboxes, no credentials inside, Claude Code, Codex, and OpenCode, from browser, iPad, or iPhone."
+      content="Run AI coding agents on your own server in isolated sandboxes, with Claude Code, Codex, or OpenCode, from browser, iPad, or iPhone."
     />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary" />
     <meta name="twitter:title" content="Verity — Your agents. Your server. Your rules." />
     <meta
       name="twitter:description"
-      content="AI coding agents on your own server: isolated sandboxes, no credentials inside, Claude Code, Codex, and OpenCode, from browser, iPad, or iPhone."
+      content="Run AI coding agents on your own server in isolated sandboxes, with Claude Code, Codex, or OpenCode, from browser, iPad, or iPhone."
     />
     <link rel="icon" type="image/png" href="assets/verity-favicon.png" />
     <link rel="apple-touch-icon" href="assets/verity-favicon.png" />
@@ -225,10 +225,6 @@
       .section-head p {
         color: var(--text-muted);
         font-size: 17px;
-      }
-
-      .section-head-flush {
-        margin-bottom: 0;
       }
 
       /* Hero */
@@ -921,11 +917,17 @@
 
       .command code {
         flex: 1;
+        min-width: 0;
         overflow-x: auto;
         color: var(--text);
         font-size: 15px;
         white-space: nowrap;
         user-select: all;
+      }
+
+      /* .button sets display, which would override the hidden attribute. */
+      .command .copy[hidden] {
+        display: none;
       }
 
       .command .copy {
@@ -1397,8 +1399,8 @@
           </div>
           <p>
             The installer checks the machine, downloads the signed release,
-            starts it, and shows a pairing code for your first device. Add
-            <code>--preflight</code> to only run the checks. You need a Claude
+            starts it, and shows a pairing code for your first device. To only run the checks, end the command with
+            <code>bash -s -- --preflight</code>. You need a Claude
             or ChatGPT subscription or an OpenAI-compatible API key.
           </p>
           <div class="actions">
