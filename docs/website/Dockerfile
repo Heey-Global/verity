@@ -38,6 +38,7 @@ COPY --chown=101:101 docs/website/site/assets/app-pull-request.png /usr/share/ng
 COPY --chown=101:101 docs/website/site/assets/app-release-delay.png /usr/share/nginx/html/assets/app-release-delay.png
 COPY --chown=101:101 docs/website/site/assets/app-session-list.png /usr/share/nginx/html/assets/app-session-list.png
 COPY --chown=101:101 docs/website/site/assets/app-usage-meters.png /usr/share/nginx/html/assets/app-usage-meters.png
+COPY --chown=101:101 docs/website/site/assets/copy-command.js /usr/share/nginx/html/assets/copy-command.js
 COPY --chown=101:101 docs/website/site/assets/verity-mark.png /usr/share/nginx/html/assets/verity-mark.png
 COPY --chown=101:101 docs/website/site/assets/verity-favicon.png /usr/share/nginx/html/assets/verity-favicon.png
 # Self-host Inter and distribute its SIL OFL licence with it.
