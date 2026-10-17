@@ -5,6 +5,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { parseInline } from '@verity/mobile';
 
 import { Icon } from '../Icon';
+import { Button } from '../ui';
 
 // Both themes' literal color types, widened so one helper accepts either.
 type ThemeColors = ReturnType<typeof useUnistyles>['theme']['colors'];
@@ -160,18 +161,15 @@ function ActionRow({ actions }: { actions: CardAction[] }) {
   return (
     <View style={styles.actions}>
       {actions.map((action) => (
-        <Pressable
+        <Button
           key={action.label}
-          accessibilityRole="button"
+          label={action.label}
           accessibilityLabel={action.accessibilityLabel ?? action.label}
-          disabled={action.disabled}
+          variant={action.primary ? 'primary' : 'text'}
+          size="compact"
+          disabled={action.disabled === true}
           onPress={action.onPress}
-          style={[action.primary ? styles.primaryAction : styles.quietAction]}
-        >
-          <Text style={action.primary ? styles.primaryActionText : styles.quietActionText}>
-            {action.label}
-          </Text>
-        </Pressable>
+        />
       ))}
     </View>
   );
@@ -427,16 +425,5 @@ const styles = StyleSheet.create((theme) => {
       gap: theme.spacing.md,
       marginTop: theme.spacing.xs,
     },
-    primaryAction: {
-      borderColor: colors.signature,
-      backgroundColor: colors.signature,
-      borderWidth: 1,
-      borderRadius: theme.radius.pill,
-      paddingHorizontal: theme.spacing.lg,
-      paddingVertical: theme.spacing.sm,
-    },
-    primaryActionText: { color: colors.onAction, fontFamily: theme.fonts.bold },
-    quietAction: { paddingHorizontal: theme.spacing.xs, paddingVertical: theme.spacing.sm },
-    quietActionText: { color: colors.textMuted },
   };
 });
