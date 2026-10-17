@@ -1518,11 +1518,13 @@ function ProviderLimitSegment({
     reported !== undefined && Number.isFinite(reported) ? reported : blocked ? 100 : 0;
   const usage = Math.max(0, percent);
   const clamped = Math.min(100, usage);
+  // Grey while there is room, white when it runs low, red once it is spent:
+  // a meter is a state, so it never takes the action or brand colour.
   const fillColor =
     meterLevel === 'spent'
-      ? theme.colors.signature
+      ? theme.colors.attention
       : meterLevel === 'low'
-        ? theme.colors.action
+        ? theme.colors.text
         : theme.colors.textMuted;
   // Even-burn marker: where usage "should" sit now if the quota were spent at a
   // steady rate. Shown for both the five-hour and weekly windows.
@@ -2218,7 +2220,7 @@ const styles = StyleSheet.create((theme) => ({
     textAlign: 'left',
   },
   limitValueBlocked: {
-    color: theme.colors.signature,
+    color: theme.colors.attention,
   },
   centered: {
     flex: 1,
@@ -2487,8 +2489,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   projectUpdateButton: {
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: tint(theme.colors.signature, 'border'),
-    backgroundColor: tint(theme.colors.signature, 'fill'),
+    borderColor: tint(theme.colors.action, 'border'),
+    backgroundColor: tint(theme.colors.action, 'fill'),
   },
   // Outlined in the same attention tone as the row's status dot, so the broken
   // project and the action that fixes it read as one signal.
