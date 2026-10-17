@@ -1,26 +1,19 @@
 import { VerityApiError, type GmailSessionConnection, type VerityClient } from '@verity/mobile';
-import { runGmailAuth, runCalendarAuth, runContactsAuth } from './googleDrive';
+import { runGoogleAccountAuth } from './googleDrive';
+import { missingGoogleServices, type GoogleServiceName } from './googleServices';
 
 export type GoogleService = 'gmail' | 'calendar' | 'contacts';
 
+const serviceNames: Record<GoogleService, GoogleServiceName> = {
+  gmail: 'Gmail',
+  calendar: 'Calendar',
+  contacts: 'Contacts',
+};
+
 function sessionMethods(client: VerityClient, service: GoogleService) {
-  if (service === 'gmail')
-    return {
-      get: client.getSessionGmailConnection.bind(client),
-      connect: client.connectGmail.bind(client),
-      auth: runGmailAuth,
-    };
-  if (service === 'calendar')
-    return {
-      get: client.getSessionCalendarConnection.bind(client),
-      connect: client.connectCalendar.bind(client),
-      auth: runCalendarAuth,
-    };
-  return {
-    get: client.getSessionContactsConnection.bind(client),
-    connect: client.connectContacts.bind(client),
-    auth: runContactsAuth,
-  };
+  if (service === 'gmail') return { get: client.getSessionGmailConnection.bind(client) };
+  if (service === 'calendar') return { get: client.getSessionCalendarConnection.bind(client) };
+  return { get: client.getSessionContactsConnection.bind(client) };
 }
 
 export async function connectSessionGoogleService(
@@ -36,34 +29,27 @@ export async function connectSessionGoogleService(
       connections: Record<GoogleService, GmailSessionConnection | null>;
     }
 > {
-  const methods = sessionMethods(client, service);
+  const name = serviceNames[service];
   let selectedId = accountId;
   if (selectedId === undefined) {
-    const accounts = (await client.listGoogleAccounts()).filter((account) => {
-      const suffixes = {
-        gmail: ['gmail.readonly', 'gmail.compose', 'gmail.settings.basic'],
-        calendar: ['calendar.calendarlist.readonly', 'calendar.events'],
-        contacts: ['contacts.readonly'],
-      }[service];
-      return suffixes.every((scope) =>
-        account.scopes.includes(`https://www.googleapis.com/auth/${scope}`),
-      );
-    });
+    const accounts = (await client.listGoogleAccounts()).filter(
+      (account) => !missingGoogleServices(account.scopes).includes(name),
+    );
     if (accounts.length > 1) throw new Error('Choose a Google account');
     selectedId = accounts[0]?.id;
   }
   if (!selectedId) {
     const connection = await client.getGoogleDriveConnection();
     if (!connection.clientId) throw new Error('Google sign-in is not configured on this server.');
-    const auth = await methods.auth(connection.clientId);
+    const auth = await runGoogleAccountAuth(connection.clientId);
     if (auth.kind === 'cancelled') return { kind: 'cancelled' };
-    const connected = await methods.connect({
+    const connected = await client.connectGoogleAccount({
       code: auth.code,
       codeVerifier: auth.codeVerifier,
       redirectUri: auth.redirectUri,
     });
-    if (!connected.accountId)
-      throw new Error('The connected Google account could not be identified');
+    if (missingGoogleServices(connected.scopes).includes(name))
+      throw new Error(`Google did not grant access to ${name}`);
     selectedId = connected.accountId;
   }
   const enabled = await client.setSessionGoogleAccess(sessionId, service, {

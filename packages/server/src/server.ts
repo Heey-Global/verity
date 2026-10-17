@@ -268,6 +268,7 @@ import { registerGoogleCalendarRoutes } from './google-calendar-routes.js';
 import { registerConnectionUsageRoutes } from './connection-usage-routes.js';
 import { registerProjectGoogleRoutes } from './project-google-routes.js';
 import { registerGmailRoutes } from './gmail-routes.js';
+import { registerGoogleConnectRoutes } from './google-connect-routes.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerPairingRoutes } from './pairing-routes.js';
 import { registerWebAppRoutes, isWebAppRequest } from './web-app.js';
@@ -5477,6 +5478,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
       : {}),
   });
+  registerGoogleConnectRoutes(app, {
+    eventStore: deps.eventStore,
+    ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
+    ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.onGoogleCredentialsChanged !== undefined
+      ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
+      : {}),
+  });
   registerConnectionUsageRoutes(app, deps.eventStore, () => availableModels());
   registerProjectGoogleRoutes(app, deps.eventStore);
   registerGmailRoutes(app, {
@@ -5484,27 +5494,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
     ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.onGoogleCredentialsChanged !== undefined
-      ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
-      : {}),
   });
   registerGoogleCalendarRoutes(app, {
     eventStore: deps.eventStore,
     ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
     ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.onGoogleCredentialsChanged !== undefined
-      ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
-      : {}),
   });
   registerGoogleContactsRoutes(app, {
     eventStore: deps.eventStore,
     ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
     ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.onGoogleCredentialsChanged !== undefined
-      ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
-      : {}),
   });
 
   // ── Master-password secret-store lifecycle (ADR 0002 D3) ──────────────────

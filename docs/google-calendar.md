@@ -6,38 +6,42 @@ for calendars/Meet and the [People API](https://developers.google.com/people/qui
 for Contacts in that client's Google Cloud project. Configure the consent screen
 for the scopes of the services you intend to use.
 
-## Incremental consent
+## One consent per account
 
-Before Google sign-in, Verity explains what access is needed and why. Each
-connection requests only its own scopes; previously granted Google permissions
-are retained through incremental consent, without requesting unrelated services.
-Google may show existing permissions again during its consent screen.
+Adding a Google account requests every service in one Google sign-in. Before it
+opens, Verity briefly explains what is requested. Google's consent screen lets
+you deselect individual permissions; Verity stores whatever was granted and the
+account works for those services. An account must grant at least one service.
 
-| Action | Requested scopes | Purpose |
+| Service | Requested scopes | Purpose |
 | --- | --- | --- |
-| Connect email | `gmail.readonly`, `gmail.compose`, `gmail.settings.basic` | Read mail, prepare drafts, send after approval, and read the configured signature. |
-| Connect Google Calendar | `calendar.calendarlist.readonly`, `calendar.events`, `userinfo.email` | Discover calendars, read events, make approved changes, and identify the connected account. |
-| Connect Google Contacts | `contacts.readonly`, `userinfo.email` | Find names and email addresses for email recipients and calendar attendees; identify the connected account. |
-| Connect Google Drive | `drive` | Browse/import files and use connected project folders as read/write workspaces. |
-| First native file edit | `documents`, `spreadsheets`, and `presentations` together | Read/edit Docs, Sheets, and Slides. Google grants access to these file types across the account; Verity limits tools to the file assigned to the session. |
+| Drive | `drive` | Browse/import files and use connected project folders as read/write workspaces. |
+| Gmail | `gmail.readonly`, `gmail.compose`, `gmail.settings.basic` | Read mail, prepare drafts, send after approval, and read the configured signature. |
+| Calendar | `calendar.calendarlist.readonly`, `calendar.events` | Discover calendars, read events, and make approved changes. |
+| Contacts | `contacts.readonly` | Find names and email addresses for email recipients and calendar attendees. |
+| Docs, Sheets & Slides | `documents`, `spreadsheets`, `presentations` | Read/edit native files. Google grants access to these file types across the account; Verity limits tools to the file assigned to the session. |
+| Account identity | `userinfo.email` | Identify the connected account. |
 
 Scope names in this table have the prefix `https://www.googleapis.com/auth/`.
-Connecting Gmail, Calendar, or Contacts does not request Drive or native editor
-scopes. Drive availability is derived from the actual returned scopes, rather
-than from the presence of a shared refresh token. Existing stored connections
-retain their known permissions when upgrading; projects gain no Contacts
-access until explicitly enabled.
+A service is available only when all of its scopes were granted. Availability is
+derived from the scopes Google actually returned, rather than from the presence
+of a stored refresh token. Projects gain no Contacts access until explicitly
+enabled.
 
-Docs, Sheets, and Slides share one consent step when first opening a native file
-for editing. Existing partial editor permissions are expanded to this bundle;
-the bundle is not requested when merely connecting Drive.
+The server accepts the authorization code at `POST /google/connect`. The former
+per-service endpoints (`/google-drive/connect`, `/gmail/connect`,
+`/calendar/connect`, `/contacts/connect`) were removed; app versions that still
+call them cannot add or reconnect Google accounts until they are updated.
+Existing connections are unaffected.
 
 ## Project access and removal
 
-Connect Google accounts under **Settings → Connections → Google**. Each account
-has its own permissions, optional name and project usage. Grant only the services
-you need through incremental consent. In **Project settings → Connections →
-Google**, choose one account for each of Gmail, Calendar and Contacts.
+Add Google accounts under **Settings → Connections → Google**. The list shows one
+row per account with either full access or the services that are missing. Open
+an account to rename it, see its project usage, grant missing permissions through
+the same sign-in bound to that account, or disconnect it. In **Project settings →
+Connections → Google**, choose one account for each of Gmail, Calendar and
+Contacts.
 
 Existing and future sessions inherit the current project default. In a chat,
 choose another account, disable the service only for that chat, or select **Use

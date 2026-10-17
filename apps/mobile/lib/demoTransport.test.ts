@@ -240,7 +240,7 @@ it('replays history before a turn submitted while the stream is opening', async 
 });
 it('rejects unsupported operations and foreign addresses locally', async () => {
   await expect(
-    client().connectGoogleDrive({ code: 'demo', codeVerifier: 'demo', redirectUri: 'demo://' }),
+    client().connectGoogleAccount({ code: 'demo', codeVerifier: 'demo', redirectUri: 'demo://' }),
   ).rejects.toThrow('local demo');
   expect((await demoFetch('https://other.invalid/projects')).status).toBe(400);
 });

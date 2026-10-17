@@ -9,30 +9,14 @@ import {
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
-import {
-  hasGoogleGmailScopes,
-  hasGoogleCalendarScopes,
-  hasGoogleContactsScopes,
-} from './google-oauth-scopes.js';
-import { GoogleDriveError, exchangeGoogleAuthCode, type GoogleFetch } from './google-drive.js';
+import { hasGoogleGmailScopes } from './google-oauth-scopes.js';
 
-const connectBody = z.object({
-  accountId: z.string().min(1).optional(),
-  code: z.string().trim().min(1).max(4096),
-  codeVerifier: z.string().trim().min(1).max(256),
-  redirectUri: z.string().trim().min(1).max(2048),
-});
 const sessionParams = z.object({
   id: z
     .string()
     .min(1)
     .regex(/^[A-Za-z0-9_-]+$/),
 });
-const REQUIRED_GMAIL_SCOPES = new Set([
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.compose',
-  'https://www.googleapis.com/auth/gmail.settings.basic',
-]);
 
 type GmailRouteStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySettings'> &
   Partial<Pick<EventStore, 'googleAccounts'>> &
@@ -52,24 +36,6 @@ interface GmailRouteDeps {
   googleClientId?: string;
   stagingGoogleClientId?: string;
   secretCipher?: SealableSecretCipher;
-  fetch?: GoogleFetch;
-  onCredentialsChanged?: () => void;
-}
-
-async function gmailAccountEmail(
-  accessToken: string,
-  doFetch: GoogleFetch = fetch,
-): Promise<string | undefined> {
-  const response = await doFetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!response.ok)
-    throw new GoogleDriveError('Gmail profile request failed', `http_${response.status}`);
-  const body = (await response.json().catch(() => ({}))) as { emailAddress?: unknown };
-  return typeof body.emailAddress === 'string' && body.emailAddress.length > 0
-    ? body.emailAddress
-    : undefined;
 }
 
 /** Shared-Google-account Gmail consent and explicit per-session enablement. */
@@ -105,113 +71,6 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
         accountEmail: connected ? (current?.googleDriveAccountEmail ?? null) : null,
       };
     });
-
-    instance.post(
-      '/gmail/connect',
-      { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
-      async (request, reply) => {
-        if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-        const body = connectBody.parse(request.body);
-        const clientId =
-          googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ?? '';
-        if (!clientId) {
-          reply.code(400);
-          return { error: 'Google is not configured on this server' };
-        }
-        let tokens;
-        try {
-          tokens = await exchangeGoogleAuthCode(
-            { clientId, ...body },
-            deps.fetch === undefined ? {} : { fetch: deps.fetch },
-          );
-        } catch (error) {
-          const reason = error instanceof GoogleDriveError ? error.reason : 'exchange_failed';
-          request.log.error({ reason }, 'verity: Gmail code exchange failed');
-          reply.code(502);
-          return { error: `Google sign-in failed (${reason})` };
-        }
-        if (tokens.refreshToken === undefined) {
-          reply.code(400);
-          return {
-            error: 'Google did not return a refresh token — reconnect and allow offline access',
-          };
-        }
-        if (
-          tokens.scopes === undefined ||
-          [...REQUIRED_GMAIL_SCOPES].some((scope) => !tokens.scopes?.includes(scope))
-        ) {
-          reply.code(400);
-          return { error: 'Google did not grant the required Gmail permissions' };
-        }
-        let accountEmail: string;
-        try {
-          accountEmail =
-            (await gmailAccountEmail(tokens.accessToken, deps.fetch)) ??
-            (() => {
-              throw new Error('missing Gmail account email');
-            })();
-        } catch {
-          reply.code(502);
-          return { error: 'Could not verify the connected Gmail account' };
-        }
-        if (deps.eventStore.googleAccounts) {
-          if (!accountEmail)
-            return reply.code(502).send({ error: 'Could not verify the connected Google account' });
-          let account;
-          try {
-            account = await deps.eventStore.googleAccounts.save({
-              email: accountEmail,
-              clientId,
-              refreshToken: tokens.refreshToken,
-              scopes: tokens.scopes ?? [],
-              ...(body.accountId === undefined ? {} : { expectedAccountId: body.accountId }),
-            });
-          } catch (error) {
-            if (error instanceof SealedError) throw error;
-            return reply
-              .code(409)
-              .send({ error: 'The selected Google account does not match the signed-in account' });
-          }
-          if ((await deps.eventStore.googleAccounts.list()).length === 1) {
-            await deps.eventStore.updateVeritySettings({
-              googleDriveClientId: clientId,
-              googleDriveRefreshToken: tokens.refreshToken,
-              googleDriveAccountEmail: accountEmail,
-              googleGrantedScopes: tokens.scopes ?? [],
-              gmailAuthorized: hasGoogleGmailScopes(tokens.scopes),
-              calendarAuthorized: hasGoogleCalendarScopes(tokens.scopes),
-              contactsAuthorized: hasGoogleContactsScopes(tokens.scopes),
-            });
-          }
-          deps.onCredentialsChanged?.();
-          return { connected: true as const, accountEmail, accountId: account.id };
-        }
-        const previous = await settings();
-        const contactsAuthorized = hasGoogleContactsScopes(tokens.scopes);
-        const calendarAuthorized = hasGoogleCalendarScopes(tokens.scopes);
-        const accountChanged =
-          previous?.googleDriveAccountEmail !== null &&
-          previous?.googleDriveAccountEmail !== undefined &&
-          previous.googleDriveAccountEmail.toLowerCase() !== accountEmail.toLowerCase();
-        if (!contactsAuthorized || accountChanged)
-          await deps.eventStore.clearSessionContactsConnections();
-        if (accountChanged) await deps.eventStore.clearSessionGmailConnections();
-        if (!calendarAuthorized || accountChanged) {
-          await deps.eventStore.clearSessionCalendarConnections();
-        }
-        await deps.eventStore.updateVeritySettings({
-          googleGrantedScopes: tokens.scopes ?? [],
-          contactsAuthorized,
-          googleDriveClientId: clientId,
-          googleDriveRefreshToken: tokens.refreshToken,
-          googleDriveAccountEmail: accountEmail,
-          gmailAuthorized: true,
-          calendarAuthorized,
-        });
-        deps.onCredentialsChanged?.();
-        return { connected: true as const, accountEmail };
-      },
-    );
 
     instance.get('/sessions/:id/gmail', async (request, reply) => {
       const { id } = sessionParams.parse(request.params);

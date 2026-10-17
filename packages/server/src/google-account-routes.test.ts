@@ -1,8 +1,8 @@
 import Fastify from 'fastify';
 import { createTestDb, type TestDb } from '@verity/store/testing';
 import { beforeAll, afterAll, beforeEach, expect, it, vi } from 'vitest';
-import { registerGmailRoutes } from './gmail-routes.js';
 import { registerGoogleAccountRoutes } from './google-account-routes.js';
+import { registerGoogleConnectRoutes } from './google-connect-routes.js';
 let ctx: TestDb;
 const app = Fastify();
 beforeAll(async () => {
@@ -90,12 +90,12 @@ it('rejects mismatched OAuth upgrades without replacing either account or grant'
         }),
       ),
     )
-    .mockResolvedValueOnce(new Response(JSON.stringify({ emailAddress: two.email })));
-  registerGmailRoutes(oauth, { eventStore: ctx.store, googleClientId: 'client', fetch });
+    .mockResolvedValueOnce(new Response(JSON.stringify({ email: two.email, id: 'subject-two' })));
+  registerGoogleConnectRoutes(oauth, { eventStore: ctx.store, googleClientId: 'client', fetch });
   try {
     const response = await oauth.inject({
       method: 'POST',
-      url: '/gmail/connect',
+      url: '/google/connect',
       payload: {
         accountId: one.id,
         code: 'code',

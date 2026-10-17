@@ -9,26 +9,14 @@ import {
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
-import { GoogleDriveError, exchangeGoogleAuthCode, type GoogleFetch } from './google-drive.js';
-import {
-  hasGoogleCalendarScopes,
-  hasGoogleContactsScopes,
-  hasGoogleGmailScopes,
-} from './google-oauth-scopes.js';
+import { hasGoogleContactsScopes } from './google-oauth-scopes.js';
 
-const connectBody = z.object({
-  accountId: z.string().min(1).optional(),
-  code: z.string().trim().min(1).max(4096),
-  codeVerifier: z.string().trim().min(1).max(256),
-  redirectUri: z.string().trim().min(1).max(2048),
-});
 const sessionParams = z.object({
   id: z
     .string()
     .min(1)
     .regex(/^[A-Za-z0-9_-]+$/),
 });
-const REQUIRED_CONTACTS_SCOPES = new Set(['https://www.googleapis.com/auth/userinfo.email']);
 
 type ContactsRouteStore = Pick<EventStore, 'getVeritySettings' | 'updateVeritySettings'> &
   Partial<Pick<EventStore, 'googleAccounts'>> &
@@ -48,22 +36,6 @@ interface ContactsRouteDeps {
   googleClientId?: string;
   stagingGoogleClientId?: string;
   secretCipher?: SealableSecretCipher;
-  fetch?: GoogleFetch;
-  onCredentialsChanged?: () => void;
-}
-
-async function contactsAccountEmail(
-  accessToken: string,
-  doFetch: GoogleFetch = fetch,
-): Promise<string | undefined> {
-  const response = await doFetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!response.ok)
-    throw new GoogleDriveError('Contacts profile request failed', `http_${response.status}`);
-  const body = (await response.json().catch(() => ({}))) as { email?: unknown };
-  return typeof body.email === 'string' && body.email.length > 0 ? body.email : undefined;
 }
 
 /** Shared-Google-account Contacts consent and explicit per-session enablement. */
@@ -99,114 +71,6 @@ export function registerGoogleContactsRoutes(app: FastifyInstance, deps: Contact
         accountEmail: connected ? (current?.googleDriveAccountEmail ?? null) : null,
       };
     });
-
-    instance.post(
-      '/contacts/connect',
-      { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
-      async (request, reply) => {
-        if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-        const body = connectBody.parse(request.body);
-        const clientId =
-          googleAppClient(request, deps.googleClientId, deps.stagingGoogleClientId) ?? '';
-        if (!clientId) {
-          reply.code(400);
-          return { error: 'Google is not configured on this server' };
-        }
-        let tokens;
-        try {
-          tokens = await exchangeGoogleAuthCode(
-            { clientId, ...body },
-            deps.fetch === undefined ? {} : { fetch: deps.fetch },
-          );
-        } catch (error) {
-          const reason = error instanceof GoogleDriveError ? error.reason : 'exchange_failed';
-          request.log.error({ reason }, 'verity: Contacts code exchange failed');
-          reply.code(502);
-          return { error: `Google sign-in failed (${reason})` };
-        }
-        if (tokens.refreshToken === undefined) {
-          reply.code(400);
-          return {
-            error: 'Google did not return a refresh token — reconnect and allow offline access',
-          };
-        }
-        if (
-          !hasGoogleContactsScopes(tokens.scopes) ||
-          [...REQUIRED_CONTACTS_SCOPES].some((scope) => !tokens.scopes?.includes(scope))
-        ) {
-          reply.code(400);
-          return { error: 'Google did not grant the required Contacts permissions' };
-        }
-        let accountEmail: string;
-        try {
-          accountEmail =
-            (await contactsAccountEmail(tokens.accessToken, deps.fetch)) ??
-            (() => {
-              throw new Error('missing Contacts account email');
-            })();
-        } catch {
-          reply.code(502);
-          return { error: 'Could not verify the connected Contacts account' };
-        }
-        if (deps.eventStore.googleAccounts) {
-          if (!accountEmail)
-            return reply.code(502).send({ error: 'Could not verify the connected Google account' });
-          let account;
-          try {
-            account = await deps.eventStore.googleAccounts.save({
-              email: accountEmail,
-              clientId,
-              refreshToken: tokens.refreshToken,
-              scopes: tokens.scopes ?? [],
-              ...(body.accountId === undefined ? {} : { expectedAccountId: body.accountId }),
-            });
-          } catch (error) {
-            if (error instanceof SealedError) throw error;
-            return reply
-              .code(409)
-              .send({ error: 'The selected Google account does not match the signed-in account' });
-          }
-          if ((await deps.eventStore.googleAccounts.list()).length === 1) {
-            await deps.eventStore.updateVeritySettings({
-              googleDriveClientId: clientId,
-              googleDriveRefreshToken: tokens.refreshToken,
-              googleDriveAccountEmail: accountEmail,
-              googleGrantedScopes: tokens.scopes ?? [],
-              gmailAuthorized: hasGoogleGmailScopes(tokens.scopes),
-              calendarAuthorized: hasGoogleCalendarScopes(tokens.scopes),
-              contactsAuthorized: hasGoogleContactsScopes(tokens.scopes),
-            });
-          }
-          deps.onCredentialsChanged?.();
-          return { connected: true as const, accountEmail, accountId: account.id };
-        }
-        const previous = await settings();
-        const calendarAuthorized = hasGoogleCalendarScopes(tokens.scopes);
-        if (
-          previous?.googleDriveAccountEmail !== null &&
-          previous?.googleDriveAccountEmail !== undefined &&
-          previous.googleDriveAccountEmail.toLowerCase() !== accountEmail.toLowerCase()
-        ) {
-          await deps.eventStore.clearSessionContactsConnections();
-          await deps.eventStore.clearSessionGmailConnections();
-          await deps.eventStore.clearSessionCalendarConnections();
-        }
-        const gmailAuthorized = hasGoogleGmailScopes(tokens.scopes);
-        if (!calendarAuthorized) await deps.eventStore.clearSessionCalendarConnections();
-        if (!gmailAuthorized) await deps.eventStore.clearSessionGmailConnections();
-        await deps.eventStore.updateVeritySettings({
-          googleGrantedScopes: tokens.scopes ?? [],
-          calendarAuthorized,
-          googleDriveClientId: clientId,
-          googleDriveRefreshToken: tokens.refreshToken,
-          googleDriveAccountEmail: accountEmail,
-          contactsAuthorized: true,
-          gmailAuthorized,
-        });
-        deps.onCredentialsChanged?.();
-        return { connected: true as const, accountEmail };
-      },
-    );
 
     instance.get('/sessions/:id/contacts', async (request, reply) => {
       const { id } = sessionParams.parse(request.params);

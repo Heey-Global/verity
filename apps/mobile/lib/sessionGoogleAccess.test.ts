@@ -2,9 +2,7 @@ import type { VerityClient } from '@verity/mobile';
 import { connectSessionGoogleService, disconnectSessionGoogleService } from './sessionGoogleAccess';
 const mockAuth = jest.fn();
 jest.mock('./googleDrive', () => ({
-  runGmailAuth: (...args: unknown[]) => mockAuth(...args),
-  runCalendarAuth: (...args: unknown[]) => mockAuth(...args),
-  runContactsAuth: (...args: unknown[]) => mockAuth(...args),
+  runGoogleAccountAuth: (...args: unknown[]) => mockAuth(...args),
 }));
 const scopes = [
   'gmail.readonly',
@@ -28,7 +26,7 @@ function fixture() {
     accountEmail: 'one@example.test',
   });
   const accounts = jest.fn().mockResolvedValue([{ id: 'one', scopes }]);
-  const connect = jest.fn().mockResolvedValue({ accountId: 'new' });
+  const connect = jest.fn().mockResolvedValue({ accountId: 'new', scopes });
   const client = {
     listGoogleAccounts: accounts,
     setSessionGoogleAccess: access,
@@ -36,9 +34,7 @@ function fixture() {
     getSessionGmailConnection: get,
     getSessionCalendarConnection: get,
     getSessionContactsConnection: get,
-    connectGmail: connect,
-    connectCalendar: connect,
-    connectContacts: connect,
+    connectGoogleAccount: connect,
     disableProjectGoogleConnection: jest.fn(),
     enableProjectGoogleConnection: jest.fn(),
   } as unknown as VerityClient;
@@ -95,4 +91,21 @@ it('honors OAuth cancellation and binds a newly connected identity', async () =>
   });
   await connectSessionGoogleService(client, 's1', 'gmail', null);
   expect(access).toHaveBeenCalledWith('s1', 'gmail', { mode: 'account', accountId: 'new' });
+});
+it('refuses to bind a new account that declined the requested service', async () => {
+  const { client, access, connect } = fixture();
+  connect.mockResolvedValueOnce({
+    accountId: 'new',
+    scopes: scopes.filter((scope) => !scope.includes('gmail')),
+  });
+  mockAuth.mockResolvedValueOnce({
+    kind: 'success',
+    code: 'code',
+    codeVerifier: 'verifier',
+    redirectUri: 'app:/oauth',
+  });
+  await expect(connectSessionGoogleService(client, 's1', 'gmail', null)).rejects.toThrow(
+    'Google did not grant access to Gmail',
+  );
+  expect(access).not.toHaveBeenCalled();
 });
