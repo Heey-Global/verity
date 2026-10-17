@@ -32,14 +32,22 @@ type Counts = Partial<Record<Rule, number>>;
 const EXEMPT: Partial<Record<string, Counts>> = {
   // The switch knob is white with dark ink in both themes, not a theme role.
   'components/ui/Toggle.tsx': { rawColor: 2 },
+  // Not colours: doc comments show issue references as `#123`. The frosted
+  // message-navigation stack keeps 82 % of the surface so the transcript stays
+  // readable beneath it, and the header badge's white figure sits on signature,
+  // which has no on-colour role.
+  'app/session/[id].tsx': { rawColor: 4 },
+  // A photo thumbnail's remove control: white on a dark veil over any image.
+  'components/QuickCaptureCard.tsx': { rawColor: 2 },
   // A photo viewer: the image sits on near-black with white controls in
   // either theme, so the picture's own colours are not tinted by the theme.
   'components/ImageLightbox.tsx': { rawColor: 5 },
   // Not a colour: a doc comment shows an issue reference as `#123`.
   'components/SessionIssueRef.tsx': { rawColor: 1 },
   // The meeting wave runs from signature to action through a fixed violet
-  // midpoint; a role in the middle would turn the gradient grey or pink.
-  'components/meeting/MeetingUI.tsx': { rawColor: 1 },
+  // midpoint; a role in the middle would turn the gradient grey or pink. A
+  // participant avatar's initial scales with the avatar it sits in.
+  'components/meeting/MeetingUI.tsx': { rawColor: 1, fontSize: 1 },
   'components/meeting/MeetingWave.tsx': { rawColor: 1 },
   // A QR code needs a white quiet zone to stay scannable in either theme.
   'components/settings/settingsStyles.ts': { rawColor: 1 },

@@ -354,6 +354,7 @@ import { settleTranscriptJump } from '../../lib/transcriptJump';
 import { formatResetDisplay, formatTurnTimestamp } from '../../lib/time';
 import { WEB_NO_FOCUS_RING } from '../../lib/webFocusRing';
 import { toneColor } from '../../theme/tokens';
+import { tint } from '../../components/ui/tint';
 
 // In-memory per-session draft cache: keeps the typed/dictated draft when the
 // operator leaves a session and returns (within the app's lifetime), so input work
@@ -10790,7 +10791,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   sheetBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: theme.colors.scrim,
   },
   sheet: {
     backgroundColor: theme.colors.surface,
@@ -10941,7 +10942,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.md,
     borderTopWidth: 1,
     borderTopColor: theme.colors.action,
-    backgroundColor: `${theme.colors.action}14`,
+    backgroundColor: tint(theme.colors.action, 'neutral'),
   },
   filesDropHintText: {
     color: theme.colors.text,
@@ -11342,7 +11343,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   searchTermHighlight: {
     color: theme.colors.text,
-    backgroundColor: `${theme.colors.signature}66`,
+    backgroundColor: tint(theme.colors.signature, 'border'),
     borderRadius: 3,
   },
   // Spinner at the top of the transcript while older history is loading (scroll-up).
@@ -12198,7 +12199,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   inputCardDropActive: {
     borderColor: theme.colors.action,
-    backgroundColor: `${theme.colors.action}14`,
+    backgroundColor: tint(theme.colors.action, 'neutral'),
   },
   // The button row under the text field: attach + engine chip on the left,
   // mic + Send/Stop right.
@@ -12295,7 +12296,8 @@ const styles = StyleSheet.create((theme) => ({
     textAlign: 'center',
   },
   // Compact add popover docked to the plus button, not a bottom sheet.
-  menuBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.15)' },
+  // A light dim in both themes; a popover does not take the full scrim.
+  menuBackdrop: { flex: 1, backgroundColor: tint(theme.elevation.floating.shadowColor, 'ring') },
   menuCard: {
     position: 'absolute',
     backgroundColor: theme.colors.surface,
@@ -12303,7 +12305,7 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
     paddingVertical: theme.spacing.xs,
-    shadowColor: '#000',
+    shadowColor: theme.elevation.floating.shadowColor,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 12,
@@ -12385,7 +12387,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: `${theme.colors.surface}d1`,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    shadowColor: '#000',
+    shadowColor: theme.elevation.floating.shadowColor,
     shadowOpacity: 0.3,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },

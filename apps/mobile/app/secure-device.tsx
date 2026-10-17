@@ -112,9 +112,5 @@ const styles = StyleSheet.create((theme) => ({
     fontFamily: theme.fonts.extrabold,
     textTransform: 'uppercase',
   },
-  title: {
-    color: theme.colors.text,
-    fontSize: theme.text.xl,
-    fontFamily: theme.fonts.extrabold,
-  },
+  title: { ...theme.typography.display, color: theme.colors.text },
 }));

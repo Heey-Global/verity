@@ -568,7 +568,7 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
-    shadowColor: '#000',
+    shadowColor: theme.elevation.floating.shadowColor,
     shadowOpacity: 0.35,
     shadowRadius: 18,
     shadowOffset: { width: 0, height: 8 },

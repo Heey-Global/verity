@@ -146,7 +146,7 @@ const styles = StyleSheet.create((theme) => ({
   disabled: { opacity: 0.4 },
   pressed: { opacity: 0.8 },
   label: { ...theme.typography.button },
-  labelCompact: { fontSize: 14 * theme.fontScale },
+  labelCompact: { fontSize: theme.typography.bodySmall.fontSize },
   icon: {
     width: 40,
     height: 40,

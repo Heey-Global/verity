@@ -37,6 +37,7 @@ import { subscribeTasksPanel } from '../lib/taskPanelEvents';
 import { QuickCaptureCard } from './QuickCaptureCard';
 import { QuickCaptureIntro } from './QuickCaptureIntro';
 import { TasksPanel } from './TasksPanel';
+import { tint } from './ui/tint';
 
 /** Bubble diameter; half of it sits outside the screen edge. */
 const BUBBLE = 50;
@@ -319,9 +320,9 @@ export function QuickCaptureBubble() {
                 borderRadius: BUBBLE / 2,
                 // A primary tint reads as a control without shouting like a
                 // filled button; full strength only while it is in the hand.
-                backgroundColor: dragging ? 'rgba(42,176,255,0.26)' : 'rgba(42,176,255,0.16)',
+                backgroundColor: tint(theme.colors.action, dragging ? 'ring' : 'fill'),
                 borderWidth: 1,
-                borderColor: dragging ? theme.colors.action : 'rgba(42,176,255,0.55)',
+                borderColor: dragging ? theme.colors.action : tint(theme.colors.action, 'border'),
                 justifyContent: 'center',
                 alignItems: 'center',
               }}
@@ -368,7 +369,7 @@ export function QuickCaptureBubble() {
                   color: theme.colors.onAction,
                   textAlign: 'center',
                   fontSize: 11,
-                  fontWeight: '700',
+                  fontFamily: theme.fonts.bold,
                 }}
               >
                 {count}
