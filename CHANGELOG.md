@@ -6,6 +6,21 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.50.0](https://github.com/Heey-Global/verity/compare/v4.49.0...v4.50.0) (2026-10-17)
+
+
+### Features
+
+* **gmail:** attach workspace files to agent drafts ([#1678](https://github.com/Heey-Global/verity/issues/1678)) ([867af92](https://github.com/Heey-Global/verity/commit/867af92a3cf490c32eb273043d9383115f80f896))
+* **google:** connect Google accounts with a single consent ([08fa71a](https://github.com/Heey-Global/verity/commit/08fa71af688e53fce828bd0477b86230e29f8f0e))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1675](https://github.com/Heey-Global/verity/issues/1675)) ([42d3f7f](https://github.com/Heey-Global/verity/commit/42d3f7ffeea14894ac30f0bc71c2b893547fae54))
+* **deps:** update dependency @fastify/compress to v9.2.2 ([#1671](https://github.com/Heey-Global/verity/issues/1671)) ([fad7303](https://github.com/Heey-Global/verity/commit/fad7303d95779bae58471c012c67122e553ef2f1))
+* **deps:** update dependency fastify to v5.12.7 ([#1672](https://github.com/Heey-Global/verity/issues/1672)) ([d1bcc7b](https://github.com/Heey-Global/verity/commit/d1bcc7b34f9da227d1a5341d721bed1181df1af6))
+
 ## [4.49.0](https://github.com/Heey-Global/verity/compare/v4.48.1...v4.49.0) (2026-10-16)
 
 
