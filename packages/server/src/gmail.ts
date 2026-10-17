@@ -430,7 +430,7 @@ export interface GmailOutgoingAttachment {
 }
 
 /** What an approver sees of an attachment; `sha256` binds approval to exact bytes. */
-export interface GmailDraftAttachment {
+interface GmailDraftAttachment {
   partId: string;
   filename: string;
   mimeType: string;
@@ -460,7 +460,7 @@ function sameAttachments(
 
 const MIME_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/iu;
 
-export function assertGmailAttachment(attachment: GmailOutgoingAttachment): void {
+function assertGmailAttachment(attachment: GmailOutgoingAttachment): void {
   const { filename, mimeType } = attachment;
   if (
     filename.trim() === '' ||
