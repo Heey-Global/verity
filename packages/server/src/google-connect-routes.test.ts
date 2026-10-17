@@ -143,18 +143,23 @@ describe('POST /google/connect', () => {
     });
   });
 
-  it('rejects a consent that grants no Google service', async () => {
-    const onCredentialsChanged = vi.fn();
-    const server = await connectApp(googleFetch({ scopes: [scope('userinfo.email')] }), {
-      onCredentialsChanged,
-    });
+  // A lone editor scope is not a usable service: the app shows such an account as missing
+  // everything, so storing it would leave an account that grants nothing.
+  it.each([[[scope('userinfo.email')]], [[scope('userinfo.email'), scope('presentations')]]])(
+    'rejects a consent that grants no complete Google service: %j',
+    async (scopes) => {
+      const onCredentialsChanged = vi.fn();
+      const server = await connectApp(googleFetch({ scopes }), {
+        onCredentialsChanged,
+      });
 
-    const response = await server.inject({ method: 'POST', url: '/google/connect', payload });
+      const response = await server.inject({ method: 'POST', url: '/google/connect', payload });
 
-    expect(response.statusCode).toBe(400);
-    expect(await ctx.store.googleAccounts.list()).toEqual([]);
-    expect(onCredentialsChanged).not.toHaveBeenCalled();
-  });
+      expect(response.statusCode).toBe(400);
+      expect(await ctx.store.googleAccounts.list()).toEqual([]);
+      expect(onCredentialsChanged).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects a grant without a refresh token', async () => {
     const server = await connectApp(googleFetch({ refreshToken: null }));

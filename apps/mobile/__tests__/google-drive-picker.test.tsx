@@ -1,5 +1,6 @@
 import { type VerityClient } from '@verity/mobile';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 
 const mockBack = jest.fn();
 const mockCreateVerityClient = jest.fn<VerityClient | null, []>();
@@ -44,6 +45,47 @@ it('uses an existing Drive connection without authorizing it again', async () =>
 
   await waitFor(() => expect(screen.getByPlaceholderText('Search Google Drive')).toBeTruthy());
   expect(mockRunGoogleDriveAuth).not.toHaveBeenCalled();
+});
+
+// One consent covers every service, so a user can deselect Drive and still connect.
+it('reports missing Drive access after the unified consent', async () => {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  mockRunGoogleDriveAuth.mockResolvedValue({
+    kind: 'success',
+    code: 'code',
+    codeVerifier: 'verifier',
+    redirectUri: 'verity://oauth',
+  });
+  const connectGoogleAccount = jest.fn().mockResolvedValue({
+    connected: true,
+    accountEmail: 'me@example.test',
+    accountId: 'acct-1',
+    scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+  });
+  const client = {
+    getVeritySettings: jest.fn().mockResolvedValue({
+      googleDriveClientId: '123-example.apps.googleusercontent.com',
+      googleDriveConnected: false,
+    }),
+    connectGoogleAccount,
+  } as unknown as VerityClient;
+  mockCreateVerityClient.mockReturnValue(client);
+
+  render(<GoogleDrivePickerScreen />);
+  // The heading and the button share the label; the button comes last.
+  fireEvent.press((await screen.findAllByText('Connect Google Drive')).at(-1)!);
+
+  await waitFor(() =>
+    expect(alert).toHaveBeenCalledWith(
+      'Drive access missing',
+      'Google did not grant access to Google Drive.',
+    ),
+  );
+  expect(connectGoogleAccount).toHaveBeenCalledWith({
+    code: 'code',
+    codeVerifier: 'verifier',
+    redirectUri: 'verity://oauth',
+  });
 });
 
 it('opens a shared drive from the combined Shared view', async () => {

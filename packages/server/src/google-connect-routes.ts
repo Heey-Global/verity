@@ -36,7 +36,8 @@ function grantsAnyService(scopes: readonly string[]): boolean {
     hasGoogleGmailScopes(scopes) ||
     hasGoogleCalendarScopes(scopes) ||
     hasGoogleContactsScopes(scopes) ||
-    (['docs', 'sheets', 'slides'] as const).some((kind) => hasGoogleWorkspaceScope(scopes, kind))
+    // Docs, Sheets and Slides are one bundle, as the app counts them.
+    (['docs', 'sheets', 'slides'] as const).every((kind) => hasGoogleWorkspaceScope(scopes, kind))
   );
 }
 
