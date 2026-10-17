@@ -502,7 +502,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.action,
   },
   confirmText: {
-    color: theme.colors.background,
+    color: theme.colors.onAction,
     fontSize: theme.typography.bodySmall.fontSize,
     fontFamily: theme.fonts.bold,
   },
@@ -551,7 +551,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.action,
   },
   badgeText: {
-    color: theme.colors.background,
+    color: theme.colors.onAction,
     fontSize: 10 * theme.fontScale,
     fontFamily: theme.fonts.bold,
     textTransform: 'uppercase',
