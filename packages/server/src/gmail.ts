@@ -417,8 +417,9 @@ function decodeMimeHeader(value: string): string {
   return decoded;
 }
 
-/** Gmail rejects messages above 25 MB; base64 adds a third, so keep raw files below that. */
-export const MAX_GMAIL_ATTACHMENT_BYTES = 18 * 1024 * 1024;
+/** Gmail rejects messages above 25 MB. Base64 adds a third plus line breaks, and the body
+ * and headers need room too, so 17 MiB of files stays below that once encoded. */
+export const MAX_GMAIL_ATTACHMENT_BYTES = 17 * 1024 * 1024;
 export const MAX_GMAIL_ATTACHMENTS = 10;
 
 export interface GmailOutgoingAttachment {
@@ -455,7 +456,7 @@ function assertAttachmentBudget(sizes: number[]): void {
   if (sizes.length > MAX_GMAIL_ATTACHMENTS)
     throw new Error(`Gmail drafts support at most ${MAX_GMAIL_ATTACHMENTS} attachments`);
   if (sizes.reduce((total, size) => total + size, 0) > MAX_GMAIL_ATTACHMENT_BYTES)
-    throw new Error('Gmail attachments exceed the 18 MiB total limit');
+    throw new Error('Gmail attachments exceed the 17 MiB total limit');
 }
 
 export interface GmailDraftInput {

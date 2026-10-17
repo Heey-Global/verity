@@ -26,8 +26,15 @@ export async function readWorktreeFile(
 ): Promise<Buffer> {
   if (isAbsolute(path)) throw new Error(`${options.label} must be relative`);
   const worktreeReal = await realpath(worktree);
+  const target = resolve(worktreeReal, path);
+  // Refuse an obvious escape before opening anything: opening a device outside the
+  // worktree can have side effects even though the descriptor check below rejects it.
+  const lexical = relative(worktreeReal, target);
+  if (lexical === '' || lexical.startsWith('..') || isAbsolute(lexical)) {
+    throw new Error(`${options.label} must stay inside the session worktree`);
+  }
   const handle = await open(
-    resolve(worktreeReal, path),
+    target,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
   ).catch(() => undefined);
   if (handle === undefined) throw new Error(`${options.label} does not exist`);

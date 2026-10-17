@@ -128,7 +128,7 @@ async function readDraftAttachments(
     const content = await readWorktreeFile(worktree, attachment.path, {
       label: 'Gmail attachment path',
       maxBytes: remaining,
-      tooLarge: 'Gmail attachments exceed the 18 MiB total limit',
+      tooLarge: 'Gmail attachments exceed the 17 MiB total limit',
     });
     remaining -= content.length;
     const filename = attachment.filename ?? basename(attachment.path);

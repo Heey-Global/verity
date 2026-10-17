@@ -993,7 +993,7 @@ describe('Gmail draft attachments', () => {
         },
         fetch,
       ),
-    ).rejects.toThrow('18 MiB');
+    ).rejects.toThrow('17 MiB');
     expect(fetch).not.toHaveBeenCalled();
   });
 
