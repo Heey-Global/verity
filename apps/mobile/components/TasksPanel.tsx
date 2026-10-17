@@ -890,7 +890,7 @@ const styles = StyleSheet.create((theme) => ({
   backdrop: {
     flex: 1,
     justifyContent: 'flex-end',
-    backgroundColor: 'rgba(0,0,0,0.45)',
+    backgroundColor: theme.colors.scrim,
   },
   backdropWide: {
     justifyContent: 'flex-start',

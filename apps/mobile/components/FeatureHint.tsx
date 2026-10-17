@@ -101,7 +101,7 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     justifyContent: 'center',
     padding: theme.spacing.xl,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: theme.colors.scrim,
   },
   card: {
     backgroundColor: theme.colors.surface,

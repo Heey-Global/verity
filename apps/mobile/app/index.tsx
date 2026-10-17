@@ -119,6 +119,8 @@ import type { ProjectOverviewStatus } from '../lib/projectSetup';
 import { projectGroups, type SessionProjectGroup } from '../lib/projectGroups';
 import { formatResetDisplay } from '../lib/time';
 import { SessionChat } from './session/[id]';
+import { toneColor } from '../theme/tokens';
+import { tint } from '../components/ui/tint';
 
 export default function SessionsScreen() {
   const client = useMemo(() => createVerityClient(), []);
@@ -1185,7 +1187,7 @@ const ProjectGroup = memo(function ProjectGroup({
   // has no second `string | undefined` to narrow.
   const indicator = controlPlane ? undefined : sandboxUpdateIndicator(group.project?.sandboxUpdate);
   const updateGlyph = indicator
-    ? { ...indicator, color: theme.colors.tone[indicator.tone] }
+    ? { ...indicator, color: toneColor(theme.colors, indicator.tone) }
     : undefined;
   const updating =
     group.project !== undefined && updatingProjectIds?.has(group.project.id) === true;
@@ -1307,8 +1309,8 @@ const ProjectGroup = memo(function ProjectGroup({
                       styles.projectIconButton,
                       styles.projectUpdateButton,
                       {
-                        borderColor: `${updateGlyph.color}99`,
-                        backgroundColor: `${updateGlyph.color}1f`,
+                        borderColor: tint(updateGlyph.color, 'border'),
+                        backgroundColor: tint(updateGlyph.color, 'fill'),
                       },
                       updating ? styles.projectActionDisabled : null,
                     ]}
@@ -1747,7 +1749,7 @@ const SessionRow = memo(function SessionRow({
       markSessionSwitch(sessionSwitchTiming(session.sessionId), 'selected-row-react-commit');
   }, [selected, session.sessionId]);
   const badge = sessionBadge(session.status);
-  const toneColor = theme.colors.tone[badge.tone];
+  const badgeColor = toneColor(theme.colors, badge.tone);
   const label = sessionLabel(session);
   const favorite = session.favorite === true;
   const subtitle = modelDisplayName(session.model);
@@ -1826,10 +1828,10 @@ const SessionRow = memo(function SessionRow({
               <View
                 style={[
                   styles.statusPill,
-                  { borderColor: toneColor, backgroundColor: `${toneColor}1f` },
+                  { borderColor: badgeColor, backgroundColor: tint(badgeColor, 'fill') },
                 ]}
               >
-                <Text style={[styles.statusPillText, { color: toneColor }]} numberOfLines={1}>
+                <Text style={[styles.statusPillText, { color: badgeColor }]} numberOfLines={1}>
                   {badge.label}
                 </Text>
               </View>
@@ -2139,7 +2141,7 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     borderRadius: theme.radius.md,
     backgroundColor: theme.colors.surface,
-    shadowColor: '#000',
+    shadowColor: theme.elevation.floating.shadowColor,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.16,
     shadowRadius: 6,
@@ -2158,7 +2160,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   limitPaceInfoBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.34)',
+    backgroundColor: theme.colors.scrim,
   },
   limitPaceInfoContent: {
     gap: 2,
@@ -2483,15 +2485,15 @@ const styles = StyleSheet.create((theme) => ({
   },
   projectUpdateButton: {
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: `${theme.colors.signature}99`,
-    backgroundColor: `${theme.colors.signature}1f`,
+    borderColor: tint(theme.colors.signature, 'border'),
+    backgroundColor: tint(theme.colors.signature, 'fill'),
   },
   // Outlined in the same attention tone as the row's status dot, so the broken
   // project and the action that fixes it read as one signal.
   projectRepairButton: {
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: `${theme.colors.attention}99`,
-    backgroundColor: `${theme.colors.attention}1f`,
+    borderColor: tint(theme.colors.attention, 'border'),
+    backgroundColor: tint(theme.colors.attention, 'fill'),
   },
   projectActionDisabled: {
     opacity: 0.6,
@@ -2546,7 +2548,7 @@ const styles = StyleSheet.create((theme) => ({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: `${theme.colors.signature}4d`,
+    backgroundColor: tint(theme.colors.signature, 'border'),
   },
   rowPressed: {
     opacity: 0.6,

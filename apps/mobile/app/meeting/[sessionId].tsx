@@ -2402,7 +2402,7 @@ const styles = StyleSheet.create((theme) => {
     column: { flex: 1, gap: theme.spacing.md },
     divider: { width: 1, backgroundColor: colors.border },
     titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-    title: { color: colors.text, fontSize: theme.text.xl, fontFamily: theme.fonts.extrabold },
+    title: { ...theme.typography.display, color: colors.text },
     subtitle: {
       color: colors.textMuted,
       fontFamily: theme.fonts.regular,

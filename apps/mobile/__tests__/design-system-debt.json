@@ -1,75 +1,29 @@
 {
   "app/index.tsx": {
-    "rawColor": 10,
-    "legacyColor": 2,
     "fontSize": 7
-  },
-  "app/meeting/[sessionId].tsx": {
-    "fontSize": 1
   },
   "app/search.tsx": {
     "fontSize": 1
   },
-  "app/secure-device.tsx": {
-    "fontSize": 1
-  },
   "app/session/[id].tsx": {
-    "rawColor": 11,
-    "legacyColor": 5,
     "fontSize": 3
-  },
-  "app/web-connect.tsx": {
-    "rawColor": 38,
-    "fontSize": 12,
-    "fontWeight": 7
-  },
-  "components/ActionMenu.tsx": {
-    "rawColor": 1
-  },
-  "components/AttentionMarkers.tsx": {
-    "legacyColor": 1
-  },
-  "components/FeatureHint.tsx": {
-    "rawColor": 1
   },
   "components/PinnedPlan.tsx": {
     "fontSize": 1
   },
   "components/QuickCaptureBubble.tsx": {
-    "rawColor": 3,
-    "fontSize": 1,
-    "fontWeight": 1
-  },
-  "components/QuickCaptureCard.tsx": {
-    "rawColor": 3,
     "fontSize": 1
   },
-  "components/QuickCaptureIntro.tsx": {
-    "rawColor": 1
+  "components/QuickCaptureCard.tsx": {
+    "fontSize": 1
   },
   "components/SessionAutomation.tsx": {
     "fontSize": 1
-  },
-  "components/SessionMarkerColumn.tsx": {
-    "legacyColor": 1
-  },
-  "components/SessionRowActions.tsx": {
-    "rawColor": 1
   },
   "components/TaskIssuesList.tsx": {
     "fontSize": 1
   },
   "components/TasksPanel.tsx": {
-    "rawColor": 1,
-    "fontSize": 1
-  },
-  "components/meeting/MeetingUI.tsx": {
-    "fontSize": 1
-  },
-  "components/ui/Button.tsx": {
-    "fontSize": 1
-  },
-  "components/ui/Status.tsx": {
     "fontSize": 1
   }
 }

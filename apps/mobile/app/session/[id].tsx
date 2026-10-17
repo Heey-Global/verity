@@ -353,6 +353,8 @@ import {
 import { settleTranscriptJump } from '../../lib/transcriptJump';
 import { formatResetDisplay, formatTurnTimestamp } from '../../lib/time';
 import { WEB_NO_FOCUS_RING } from '../../lib/webFocusRing';
+import { toneColor } from '../../theme/tokens';
+import { tint } from '../../components/ui/tint';
 
 // In-memory per-session draft cache: keeps the typed/dictated draft when the
 // operator leaves a session and returns (within the app's lifetime), so input work
@@ -7620,7 +7622,7 @@ function ToolImageItem({
 function ToolCard({ message }: { message: ToolCallMessage }) {
   const { theme } = useUnistyles();
   const view = toolCallView(message.tool);
-  const color = theme.colors.tone[toolToneColor(view.tone)];
+  const color = toneColor(theme.colors, toolToneColor(view.tone));
   const [expanded, setExpanded] = useState(false);
   // A `Skill` call (e.g. /code-review) carries the injected SKILL.md
   // body; show it as this card's collapsed detail instead of leaking it as prose,
@@ -7709,7 +7711,7 @@ function ToolGroup({ tools }: { tools: ToolCallMessage[] }) {
   if (!last) return null;
   if (tools.length === 1) return <ToolCard message={last} />;
   const view = toolCallView(last.tool);
-  const color = theme.colors.tone[toolToneColor(view.tone)];
+  const color = toneColor(theme.colors, toolToneColor(view.tone));
   return (
     <View>
       <Pressable
@@ -7751,7 +7753,7 @@ function DelegatedAgent({ row }: { row: Extract<Row, { kind: 'delegated-agent' }
   const { theme } = useUnistyles();
   const [expanded, setExpanded] = useState(false);
   const view = toolCallView(row.parent.tool);
-  const color = theme.colors.tone[toolToneColor(view.tone)];
+  const color = toneColor(theme.colors, toolToneColor(view.tone));
   const state = row.parent.tool.state;
   const verb = state === 'running' ? 'Running' : state === 'error' ? 'Failed' : 'Done';
   const summary = `⎿ ${verb} · ${String(row.toolCount)} ${row.toolCount === 1 ? 'tool' : 'tools'}`;
@@ -7996,7 +7998,7 @@ function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest:
   const actions = useContext(SessionActionsContext);
   const [showTechnical, setShowTechnical] = useState(false);
   const descriptor = agentEventDescriptor(message.event);
-  const color = theme.colors.tone[eventToneColor(descriptor.tone)];
+  const color = toneColor(theme.colors, eventToneColor(descriptor.tone));
   // A task change is bookkeeping, not conversation: one muted line that opens
   // the panel when tapped, so it never competes with the reply around it.
   if (descriptor.action === 'tasks') {
@@ -10475,7 +10477,7 @@ function Banner({
   action?: { label: string; onPress: () => void };
 }) {
   const { theme } = useUnistyles();
-  const color = theme.colors.tone[tone];
+  const color = toneColor(theme.colors, tone);
   return (
     <View style={[styles.banner, { borderLeftColor: color }]}>
       <View style={styles.bannerRow}>
@@ -10789,7 +10791,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   sheetBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: theme.colors.scrim,
   },
   sheet: {
     backgroundColor: theme.colors.surface,
@@ -10940,7 +10942,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.md,
     borderTopWidth: 1,
     borderTopColor: theme.colors.action,
-    backgroundColor: `${theme.colors.action}14`,
+    backgroundColor: tint(theme.colors.action, 'neutral'),
   },
   filesDropHintText: {
     color: theme.colors.text,
@@ -11341,7 +11343,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   searchTermHighlight: {
     color: theme.colors.text,
-    backgroundColor: `${theme.colors.signature}66`,
+    backgroundColor: tint(theme.colors.signature, 'border'),
     borderRadius: 3,
   },
   // Spinner at the top of the transcript while older history is loading (scroll-up).
@@ -12197,7 +12199,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   inputCardDropActive: {
     borderColor: theme.colors.action,
-    backgroundColor: `${theme.colors.action}14`,
+    backgroundColor: tint(theme.colors.action, 'neutral'),
   },
   // The button row under the text field: attach + engine chip on the left,
   // mic + Send/Stop right.
@@ -12294,7 +12296,8 @@ const styles = StyleSheet.create((theme) => ({
     textAlign: 'center',
   },
   // Compact add popover docked to the plus button, not a bottom sheet.
-  menuBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.15)' },
+  // A light dim in both themes; a popover does not take the full scrim.
+  menuBackdrop: { flex: 1, backgroundColor: tint(theme.elevation.floating.shadowColor, 'ring') },
   menuCard: {
     position: 'absolute',
     backgroundColor: theme.colors.surface,
@@ -12302,7 +12305,7 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
     paddingVertical: theme.spacing.xs,
-    shadowColor: '#000',
+    shadowColor: theme.elevation.floating.shadowColor,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 12,
@@ -12384,7 +12387,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: `${theme.colors.surface}d1`,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    shadowColor: '#000',
+    shadowColor: theme.elevation.floating.shadowColor,
     shadowOpacity: 0.3,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },

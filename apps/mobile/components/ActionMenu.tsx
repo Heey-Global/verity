@@ -137,7 +137,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    shadowColor: '#000000',
+    shadowColor: theme.elevation.floating.shadowColor,
     shadowOpacity: 0.35,
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 6 },

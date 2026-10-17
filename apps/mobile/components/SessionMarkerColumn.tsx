@@ -80,7 +80,7 @@ export function SessionMarkerColumn({
             : marker.kind === 'automation'
               ? theme.colors.action
               : marker.kind === 'linked'
-                ? theme.colors.linked
+                ? theme.colors.textMuted
                 : theme.colors.success;
         const entry = (
           <View

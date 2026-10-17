@@ -13,7 +13,7 @@ import {
   TextField,
   ToggleRow,
 } from './index';
-import { darkTheme, lightTheme } from '../../theme/tokens';
+import { darkTheme, lightTheme, toneColor } from '../../theme/tokens';
 import { tint } from './tint';
 
 describe('Button', () => {
@@ -448,5 +448,21 @@ describe('tint', () => {
     'var(--x) trailing',
   ])('rejects unsupported color %s', (color) => {
     expect(() => tint(color, 'fill')).toThrow(/six-digit hex role color or CSS variable reference/);
+  });
+});
+
+describe('toneColor', () => {
+  // Session rows, tools and events are coloured from data tones; a tone that
+  // resolved to undefined would draw an invisible dot without any error.
+  it.each([
+    ['dark', darkTheme],
+    ['light', lightTheme],
+  ])('draws every data tone in a role of the %s theme', (_, theme) => {
+    const roles = Object.values(theme.colors);
+    for (const tone of ['idle', 'active', 'attention', 'done', 'danger'] as const) {
+      expect(roles).toContain(toneColor(theme.colors, tone));
+    }
+    expect(toneColor(theme.colors, 'danger')).toBe(theme.colors.attention);
+    expect(toneColor(theme.colors, 'done')).toBe(theme.colors.success);
   });
 });
