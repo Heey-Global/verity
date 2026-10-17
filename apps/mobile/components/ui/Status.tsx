@@ -141,7 +141,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   word: {
     ...theme.typography.subtitle,
-    fontSize: 14 * theme.fontScale,
+    fontSize: theme.typography.bodySmall.fontSize,
     color: theme.colors.textMuted,
   },
 }));

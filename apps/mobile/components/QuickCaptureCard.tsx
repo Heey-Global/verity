@@ -526,7 +526,7 @@ const styles = StyleSheet.create((theme) => ({
   backdrop: {
     flex: 1,
     justifyContent: 'flex-end',
-    backgroundColor: 'rgba(0,0,0,0.35)',
+    backgroundColor: theme.colors.scrim,
     paddingHorizontal: theme.spacing.sm,
   },
   card: {
