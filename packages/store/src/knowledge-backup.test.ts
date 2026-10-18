@@ -78,6 +78,7 @@ it('restores knowledge, revisions, grants and access provenance from a complete 
     source = undefined;
 
     archiveDb = new PGlite(sourcePath);
+    await archiveDb.waitReady;
     const archive = await archiveDb.dumpDataDir();
     await archiveDb.close();
     archiveDb = undefined;
