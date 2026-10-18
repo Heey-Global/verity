@@ -315,6 +315,13 @@ int main(int argc, char **argv) {
   while (command + 1 < argc && (!strcmp(argv[command], "--secret") ||
       (isolate_writes == 2 && !strcmp(argv[command], "--runtime-root")))) {
     if (argv[command + 1][0] != '/') { errno = EINVAL; fail("invalid secret path"); }
+    /* Validate private runtime storage after dropping to its owning identity;
+       the broker cannot traverse agent-owned 0700 transcript parents. */
+    if (!strcmp(argv[command], "--runtime-root")) {
+      struct stat metadata;
+      if (lstat(argv[command + 1], &metadata) < 0) fail("stat runtime root");
+      if (!S_ISDIR(metadata.st_mode)) { errno = EINVAL; fail("invalid runtime root"); }
+    }
     command += 2;
   }
   if (command >= argc || strcmp(argv[command], "--") || command + 1 >= argc) {

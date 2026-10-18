@@ -1,6 +1,6 @@
 import { nodeSpawner } from '@verity/session';
 import { spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
@@ -198,7 +198,7 @@ it('retains Codex rollout and SQLite storage across normal and planning homes', 
         {
           ...options,
           scriptSandboxPath: resolve(
-            'features/verity-sandbox-toolkit/prebuilt/linux-amd64/verity-script-sandbox',
+            `features/verity-sandbox-toolkit/prebuilt/linux-${process.arch === 'arm64' ? 'arm64' : 'amd64'}/verity-script-sandbox`,
           ),
         },
       );
@@ -221,4 +221,34 @@ it('retains Codex rollout and SQLite storage across normal and planning homes', 
     }
   }
   expect(await readFile(join(root, 'codex-sessions/rollout.jsonl'), 'utf8')).toBe('planning\n');
+});
+
+it('rejects a symlink supplied as persistent planning runtime storage', async () => {
+  const target = join(root, 'target');
+  const link = join(root, 'runtime-link');
+  await mkdir(target);
+  await symlink(target, link);
+  const result = spawnSync(
+    resolve(
+      `features/verity-sandbox-toolkit/prebuilt/linux-${process.arch === 'arm64' ? 'arm64' : 'amd64'}/verity-script-sandbox`,
+    ),
+    [
+      '--root',
+      root,
+      '--cwd',
+      root,
+      '--loading',
+      'dynamic',
+      '--dynamic-root',
+      target,
+      '--read-only-root',
+      '--runtime-root',
+      link,
+      '--',
+      '/bin/true',
+    ],
+    { encoding: 'utf8', timeout: 10000 },
+  );
+  expect(result.status).toBe(126);
+  expect(result.stderr).toContain('invalid runtime root');
 });

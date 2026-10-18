@@ -1205,11 +1205,6 @@ export async function materializeManagedAgentHome(request, options, connectorUrl
     ])
       await chmod(path, 0o644);
     await chmod(openCodeDir, 0o755);
-    for (const path of planningRuntimeRoots(request, options)) {
-      const metadata = await lstat(path);
-      if (!metadata.isDirectory() || metadata.isSymbolicLink())
-        throw new Error('Invalid planning runtime directory');
-    }
     return isolated;
   } catch (error) {
     await isolated.cleanup();
