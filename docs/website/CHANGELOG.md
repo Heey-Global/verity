@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.0](https://github.com/Heey-Global/verity/compare/website-v2.4.0...website-v2.5.0) (2026-10-18)
+
+
+### Features
+
+* **website:** open the homepage with the three promises behind the headline ([#1694](https://github.com/Heey-Global/verity/issues/1694)) ([6425fd8](https://github.com/Heey-Global/verity/commit/6425fd8248da152e4d015497065e5ce229649e79))
+
 ## [2.4.0](https://github.com/Heey-Global/verity/compare/website-v2.3.0...website-v2.4.0) (2026-10-17)
 
 
