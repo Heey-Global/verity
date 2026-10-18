@@ -774,13 +774,22 @@ describe('verity-runner supervisor runtime', () => {
     });
     // A custom model provider otherwise hides websearch even when inference succeeds.
     expect(spec.spawnOptions.env).toMatchObject({
-      OPENCODE_ENABLE_EXA: '1',
-      OPENCODE_WEBSEARCH_PROVIDER: 'exa',
       OPENCODE_DISABLE_PROJECT_CONFIG: '1',
-      OPENCODE_PURE: '1',
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
+      OPENCODE_DISABLE_MODELS_FETCH: '1',
     });
-    expect(JSON.parse(spec.spawnOptions.env?.OPENCODE_CONFIG_CONTENT ?? '{}')).toEqual({
+    expect(JSON.parse(spec.spawnOptions.env?.OPENCODE_CONFIG_CONTENT ?? '{}')).toMatchObject({
       instructions: ['/work/project/AGENTS.md'],
+      websearch: { provider: 'exa' },
+      permissions: [
+        { action: 'external_directory', resource: '*', effect: 'ask' },
+        { action: 'external_directory', resource: '/knowledge/**', effect: 'allow' },
+      ],
+      policies: [
+        { action: 'integration.use', resource: 'plugin:*', effect: 'deny' },
+        { action: 'provider.use', resource: '*', effect: 'deny' },
+        { action: 'provider.use', resource: 'verity', effect: 'allow' },
+      ],
     });
     expect(spec.spawnOptions.env).not.toHaveProperty('OPENCODE_CONFIG_DIR');
     expect(spec.spawnOptions.env).not.toHaveProperty('EXA_API_KEY');
@@ -810,10 +819,18 @@ describe('verity-runner supervisor runtime', () => {
       },
     );
     // A Wiki turn must not import instructions from the project it cannot access.
-    expect(spec.spawnOptions.env).not.toHaveProperty('OPENCODE_CONFIG_CONTENT');
+    expect(JSON.parse(spec.spawnOptions.env?.OPENCODE_CONFIG_CONTENT ?? '{}')).toMatchObject({
+      instructions: [],
+      policies: [
+        { action: 'integration.use', resource: 'plugin:*', effect: 'deny' },
+        { action: 'provider.use', resource: '*', effect: 'deny' },
+        { action: 'provider.use', resource: 'verity', effect: 'allow' },
+      ],
+    });
     expect(spec.spawnOptions.env).toMatchObject({
       OPENCODE_DISABLE_PROJECT_CONFIG: '1',
-      OPENCODE_PURE: '1',
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
+      OPENCODE_DISABLE_MODELS_FETCH: '1',
     });
   });
 

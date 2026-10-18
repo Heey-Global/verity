@@ -782,10 +782,8 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
           // agent, replace providers/MCP servers and load local tools. These
           // flags must be fixed here, never inherited from the container or turn.
           OPENCODE_DISABLE_PROJECT_CONFIG: '1',
-          OPENCODE_PURE: '1',
-          // Custom providers otherwise hide websearch; pin the tested search provider.
-          OPENCODE_ENABLE_EXA: '1',
-          OPENCODE_WEBSEARCH_PROVIDER: 'exa',
+          OPENCODE_DISABLE_AUTOUPDATE: '1',
+          OPENCODE_DISABLE_MODELS_FETCH: '1',
           XDG_DATA_HOME: `${OPENCODE_STATE_DIR}/data`,
           XDG_STATE_HOME: `${OPENCODE_STATE_DIR}/state`,
           XDG_CACHE_HOME: `${OPENCODE_STATE_DIR}/cache`,
@@ -997,7 +995,7 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
           autoupdate: false,
           provider: {
             verity: {
-              npm: '@ai-sdk/openai-compatible',
+              npm: '@opencode/ai/providers/openai-compatible',
               name: 'Verity',
               options: {
                 baseURL: `${gateway.origin}/opencode`,
@@ -1379,10 +1377,20 @@ export function agentLaunchSpec(request, options) {
         // Keep repository guidance as text, without allowing repository JSON to
         // configure providers, permissions or executable extensions. Wiki turns
         // deliberately receive no project instructions.
-        ...(request.command === 'opencode-acp' && !request.knowledgeIsolation
+        ...(request.command === 'opencode-acp'
           ? {
               OPENCODE_CONFIG_CONTENT: JSON.stringify({
-                instructions: [join(request.cwd, 'AGENTS.md')],
+                instructions: request.knowledgeIsolation ? [] : [join(request.cwd, 'AGENTS.md')],
+                websearch: { provider: 'exa' },
+                policies: [
+                  { action: 'integration.use', resource: 'plugin:*', effect: 'deny' },
+                  { action: 'provider.use', resource: '*', effect: 'deny' },
+                  { action: 'provider.use', resource: 'verity', effect: 'allow' },
+                ],
+                permissions: [
+                  { action: 'external_directory', resource: '*', effect: 'ask' },
+                  { action: 'external_directory', resource: '/knowledge/**', effect: 'allow' },
+                ],
               }),
             }
           : {}),

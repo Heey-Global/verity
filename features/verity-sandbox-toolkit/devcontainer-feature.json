@@ -49,12 +49,12 @@
     "installOpencode": {
       "type": "boolean",
       "default": true,
-      "description": "Install the opencode-ai CLI globally (requires node on PATH)."
+      "description": "Install the @opencode/cli CLI globally (requires node on PATH)."
     },
     "opencodeVersion": {
       "type": "string",
-      "default": "1.19.0",
-      "description": "Exact opencode-ai npm version to pin."
+      "default": "2.0.29",
+      "description": "Exact @opencode/cli npm version to pin."
     },
     "installRunnerSupervisor": {
       "type": "boolean",

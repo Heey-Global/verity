@@ -1,6 +1,6 @@
 /**
  * Exercise configuration discovery in the pinned OpenCode executable without
- * model requests, credentials, MCP processes, or network listeners.
+ * upstream model requests, credentials, or external MCP processes. V2 uses a private loopback server.
  * Run: node scripts/probes/opencode-config-isolation.mjs [opencode executable]
  */
 import assert from 'node:assert/strict';
@@ -19,7 +19,7 @@ const pin = JSON.parse(
     new URL('../../features/verity-sandbox-toolkit/npm/opencode/package.json', import.meta.url),
     'utf8',
   ),
-).dependencies['opencode-ai'];
+).dependencies['@opencode/cli'];
 const executableName = process.argv[2] ?? 'opencode';
 const executableLookup = spawnSync('which', [executableName], { encoding: 'utf8' });
 assert.equal(executableLookup.status, 0, 'OpenCode executable must resolve');
@@ -47,7 +47,7 @@ try {
     JSON.stringify({
       provider: {
         verity: {
-          npm: '@ai-sdk/openai-compatible',
+          npm: '@opencode/ai/providers/openai-compatible',
           name: 'Managed probe',
           options: {
             baseURL: 'http://127.0.0.1:1/managed',
@@ -82,11 +82,11 @@ try {
   );
   await writeFile(
     join(project, '.opencode', 'agents', 'project-probe.md'),
-    '---\ndescription: Harmless discovery probe\nmode: subagent\n---\nProbe only.\n',
+    '---\ndescription: Harmless discovery probe\nmode: primary\n---\nProbe only.\n',
   );
   await writeFile(
     join(project, '.opencode', 'plugins', 'project-probe.js'),
-    `import { writeFileSync } from 'node:fs';\nexport const Probe = async () => { writeFileSync(${JSON.stringify(marker)}, 'loaded'); return {}; };\n`,
+    `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'loaded');\nexport default { id: 'verity.probe', setup: async () => {} };\n`,
   );
 
   const isolatedEnv = {
@@ -105,7 +105,7 @@ try {
     encoding: 'utf8',
     timeout: 120_000,
   });
-  assert.equal(version.stdout.trim(), pin);
+  assert.equal(version.stdout.trim(), `opencode v${pin}`);
 
   async function openSession(extra, confined) {
     const argv = confined?.args.slice(7);
@@ -118,13 +118,14 @@ try {
         stdio: ['pipe', 'pipe', 'pipe'],
       },
     );
+    const closed = new Promise((done) => child.once('close', done));
     let errors = '';
     child.stderr.on('data', (chunk) => {
       errors += chunk;
     });
     const lines = createInterface({ input: child.stdout });
     try {
-      await new Promise((resolve, reject) => {
+      return await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error(`ACP timeout: ${errors}`)), 120_000);
         const fail = (error) => {
           clearTimeout(timer);
@@ -152,7 +153,7 @@ try {
           }
           if (reply.id === 2) {
             clearTimeout(timer);
-            resolve();
+            resolve(reply.result);
           }
         });
         child.stdin.write(
@@ -166,12 +167,21 @@ try {
       });
     } finally {
       lines.close();
-      child.kill('SIGKILL');
-      await new Promise((resolve) => child.once('close', resolve));
+      child.stdin.end();
+      const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
+      await closed;
+      clearTimeout(timer);
     }
   }
 
   function resolved(extra) {
+    // V2 debug commands otherwise reuse a background server with stale config.
+    const disable = spawnSync(executable, ['service', 'set', 'disabled', 'true'], {
+      env: { ...isolatedEnv, ...extra },
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    assert.equal(disable.status, 0, disable.stderr);
     const result = spawnSync(executable, ['debug', 'config'], {
       cwd: project,
       env: { ...isolatedEnv, ...extra },
@@ -180,8 +190,19 @@ try {
       maxBuffer: 4 * 1024 * 1024,
     });
     assert.equal(result.status, 0, result.stderr || String(result.error));
-    const start = result.stdout.indexOf('{');
-    return JSON.parse(result.stdout.slice(start));
+    const entries = JSON.parse(result.stdout);
+    assert.ok(Array.isArray(entries), 'V2 debug config must return configuration entries');
+    const merge = (left, right) => {
+      for (const [key, value] of Object.entries(right)) {
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          left[key] = merge(left[key] ?? {}, value);
+        } else if (Array.isArray(value)) {
+          left[key] = [...(left[key] ?? []), ...value];
+        } else left[key] = value;
+      }
+      return left;
+    };
+    return entries.reduce((config, entry) => merge(config, entry.info ?? {}), {});
   }
 
   const launch = agentLaunchSpec(
@@ -189,35 +210,59 @@ try {
     { agentUid: 1000, agentGid: 1000, env: {} },
   );
   const brokerFlags = Object.fromEntries(
-    ['OPENCODE_DISABLE_PROJECT_CONFIG', 'OPENCODE_PURE', 'OPENCODE_CONFIG_CONTENT'].map((key) => [
+    ['OPENCODE_DISABLE_PROJECT_CONFIG', 'OPENCODE_CONFIG_CONTENT'].map((key) => [
       key,
       launch.spawnOptions.env[key],
     ]),
   );
   const baseline = resolved({});
-  assert.ok(baseline.provider?.['project-probe']);
-  assert.equal(baseline.provider?.verity?.options?.baseURL, 'http://127.0.0.1:1/overridden');
-  assert.ok(baseline.provider?.['directory-probe']);
-  assert.ok(baseline.mcp?.['directory-probe']);
-  assert.ok(baseline.mcp?.['project-probe']);
-  assert.equal(baseline.agent?.plan?.permission?.edit, 'allow');
-  assert.ok(baseline.agent?.['project-probe']);
-  assert.ok(baseline.plugin?.some((entry) => JSON.stringify(entry).includes('project-probe')));
+  assert.ok(baseline.providers?.['project-probe']);
+  assert.equal(baseline.providers?.verity?.settings?.baseURL, 'http://127.0.0.1:1/overridden');
+  assert.ok(baseline.providers?.['directory-probe']);
+  assert.ok(baseline.mcp?.servers?.['directory-probe']);
+  assert.ok(baseline.mcp?.servers?.['project-probe']);
+  assert.ok(
+    baseline.agents?.plan?.permissions?.some(
+      (rule) => rule.action === 'edit' && rule.effect === 'allow',
+    ),
+  );
+  const baselineSession = await openSession({});
+  assert.ok(
+    baselineSession.configOptions
+      .find((option) => option.id === 'mode')
+      .options.some((option) => option.value === 'project-probe'),
+  );
+  assert.equal(await readFile(marker, 'utf8'), 'loaded');
+
   await rm(marker, { force: true });
   const hardened = resolved(brokerFlags);
-  assert.deepEqual(hardened.instructions, [join(project, 'AGENTS.md')]);
-  assert.equal(hardened.provider?.['project-probe'], undefined);
-  assert.equal(hardened.provider?.verity?.options?.baseURL, 'http://127.0.0.1:1/managed');
-  assert.ok(hardened.provider?.verity?.models?.['probe-model']);
-  assert.equal(hardened.provider?.['directory-probe'], undefined);
-  assert.equal(hardened.mcp?.['directory-probe'], undefined);
-  assert.equal(hardened.mcp?.['project-probe'], undefined);
-  assert.equal(hardened.agent?.plan?.permission?.edit, 'deny');
-  assert.equal(hardened.agent?.['project-probe'], undefined);
+  const hardenedSession = await openSession(brokerFlags);
+  assert.deepEqual(
+    hardenedSession.configOptions
+      .find((option) => option.id === 'model')
+      .options.map((option) => option.value),
+    ['verity/probe-model'],
+  );
   assert.equal(
-    hardened.plugin?.some((entry) => JSON.stringify(entry).includes('project-probe')),
+    hardenedSession.configOptions
+      .find((option) => option.id === 'mode')
+      .options.some((option) => option.value === 'project-probe'),
     false,
   );
+  assert.deepEqual(hardened.instructions, [join(project, 'AGENTS.md')]);
+  assert.equal(hardened.providers?.['project-probe'], undefined);
+  assert.equal(hardened.providers?.verity?.settings?.baseURL, 'http://127.0.0.1:1/managed');
+  assert.ok(hardened.providers?.verity?.models?.['probe-model']);
+  assert.equal(hardened.providers?.['directory-probe'], undefined);
+  assert.equal(hardened.mcp?.servers?.['directory-probe'], undefined);
+  assert.equal(hardened.mcp?.servers?.['project-probe'], undefined);
+  assert.ok(
+    hardened.agents?.plan?.permissions?.some(
+      (rule) => rule.action === 'edit' && rule.effect === 'deny',
+    ),
+  );
+  assert.equal(hardened.agents?.['project-probe'], undefined);
+
   assert.equal(await readFile(marker, 'utf8').catch(() => undefined), undefined);
 
   // These flags do not make writable global configuration trustworthy.
@@ -226,19 +271,19 @@ try {
     JSON.stringify({ provider: { 'global-probe': { name: 'Global probe' } } }),
   );
   const global = resolved(brokerFlags);
-  assert.ok(global.provider?.['global-probe']);
+  assert.ok(global.providers?.['global-probe']);
   await mkdir(join(config, 'opencode', 'plugins'), { recursive: true });
   await writeFile(
     join(config, 'opencode', 'plugins', 'global-probe.js'),
-    `import { writeFileSync } from 'node:fs';\nexport const Probe = async () => { writeFileSync(${JSON.stringify(marker)}, 'loaded'); return {}; };\n`,
+    `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'loaded');\nexport default { id: 'verity.probe', setup: async () => {} };\n`,
   );
-  await openSession({ ...brokerFlags, OPENCODE_PURE: '0' });
+  await openSession({ ...brokerFlags, OPENCODE_CONFIG_CONTENT: '{}' });
   assert.equal(await readFile(marker, 'utf8'), 'loaded');
   await rm(marker);
   await openSession(brokerFlags);
   assert.equal(await readFile(marker, 'utf8').catch(() => undefined), undefined);
   console.log(
-    'PASS: ACP session initialization loads a canary plugin only when pure mode is disabled.',
+    'PASS: ACP session initialization loads a canary plugin only when the plugin policy is removed.',
   );
   console.log('PASS: project provider, MCP, plan, agent and plugin discovery are isolated.');
   const options = {
@@ -267,9 +312,9 @@ try {
       XDG_CACHE_HOME: join(root, 'managed-cache'),
     };
     const actual = resolved(env);
-    assert.equal(actual.provider?.['global-probe'], undefined);
-    assert.equal(actual.provider?.['project-probe'], undefined);
-    assert.equal(actual.provider?.verity.options.baseURL, 'http://127.0.0.1:1/opencode');
+    assert.equal(actual.providers?.['global-probe'], undefined);
+    assert.equal(actual.providers?.['project-probe'], undefined);
+    assert.equal(actual.providers?.verity.settings.baseURL, 'http://127.0.0.1:1/opencode');
     await openSession(env);
     assert.equal(await readFile(marker, 'utf8').catch(() => undefined), undefined);
     console.log(
@@ -305,6 +350,9 @@ try {
         ...launch.spawnOptions.env,
         OPENCODE_DISABLE_AUTOUPDATE: '1',
         OPENCODE_DISABLE_MODELS_FETCH: '1',
+        XDG_DATA_HOME: join(root, 'opencode-state', 'data'),
+        XDG_STATE_HOME: join(root, 'opencode-state', 'state'),
+        XDG_CACHE_HOME: join(root, 'opencode-state', 'cache'),
       },
       launch,
     );

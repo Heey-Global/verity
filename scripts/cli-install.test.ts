@@ -10,6 +10,7 @@ import {
   realpathSync,
   existsSync,
   copyFileSync,
+  cpSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -109,13 +110,13 @@ process.exit(result.status ?? 1);
   return {
     prefix,
     tarball,
-    run(override?: string) {
+    run(override?: string, id = 'fixture') {
       return spawnSync(
         process.execPath,
         [
           '--input-type=module',
           '-e',
-          `import {installCli} from ${JSON.stringify(`file://${installer}`)}; installCli('fixture', ${JSON.stringify(override) ?? 'undefined'}, ${JSON.stringify(path.dirname(source))});`,
+          `import {installCli} from ${JSON.stringify(`file://${installer}`)}; installCli(${JSON.stringify(id)}, ${JSON.stringify(override) ?? 'undefined'}, ${JSON.stringify(path.dirname(source))});`,
         ],
         {
           encoding: 'utf8',
@@ -146,6 +147,22 @@ describe('locked CLI installation', () => {
     expect(calls).not.toContain('"install"');
     const repeat = item.run();
     expect(repeat.status, repeat.stderr).toBe(0);
+  });
+
+  it('removes the V1 global package when replacing OpenCode with the V2 package', () => {
+    const item = fixture();
+    cpSync(source, path.join(path.dirname(source), 'opencode'), { recursive: true });
+    const legacy = path.join(item.prefix, 'lib/node_modules/opencode-ai');
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(path.join(legacy, 'old-cli'), 'V1');
+    const result = item.run(undefined, 'opencode');
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(legacy)).toBe(false);
+    expect(
+      spawnSync(path.join(item.prefix, 'bin/verity-test-cli'), [], {
+        encoding: 'utf8',
+      }).stdout.trim(),
+    ).toBe('1.0.0');
   });
 
   it('rejects modified tarballs before exposing a CLI', () => {

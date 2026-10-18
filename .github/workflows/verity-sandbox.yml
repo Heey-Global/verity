@@ -56,6 +56,8 @@ on:
       - 'scripts/fixtures/fake-claude-recreate-smoke.mjs'
       - 'packages/server/src/runner-claude-live-server.ts'
       - 'packages/server/src/runner-claude-recreate-server.ts'
+      - 'scripts/probes/opencode-*.mjs'
+      - 'scripts/fixtures/opencode-v1/**'
       - 'scripts/test-runner-claude-live-container.sh'
       - 'scripts/test-runner-claude-live-recreate.sh'
       - 'scripts/build-runner-worker.mjs'
@@ -656,6 +658,19 @@ jobs:
       # Each script already namespaces the containers, volumes and networks it
       # creates by run; the image is the one name it takes from outside, so hand
       # it this run's tag rather than letting it fall back to the shared default.
+      - name: OpenCode V2 configuration and copied V1 session boundaries
+        shell: bash
+        run: |
+          docker run --rm --user dev --entrypoint sh \
+            --mount "type=bind,src=$PWD,dst=/verity-source,readonly" \
+            "$SMOKE_IMAGE" -ec '
+              node /verity-source/scripts/probes/opencode-config-isolation.mjs /usr/local/bin/opencode
+              fixture=$(mktemp -d)
+              cp /verity-source/scripts/fixtures/opencode-v1/package*.json "$fixture/"
+              npm ci --prefix "$fixture" --workspaces=false --ignore-scripts=false --no-audit --no-fund
+              node /verity-source/scripts/probes/opencode-v2-session.mjs /usr/local/bin/opencode "$fixture/node_modules/.bin/opencode"
+            '
+
       - name: Claude ACP Runner survives a hard Server restart
         shell: bash
         env:
