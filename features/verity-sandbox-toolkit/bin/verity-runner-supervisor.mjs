@@ -2582,6 +2582,8 @@ export async function handleSupervisorRequest(
         runnerInstanceId,
         // Both ride on the same helper. The Server reads `scriptIsolation` before it
         // raises an approval card for an entry script this Sandbox could not confine.
+        managedAgentConfig: true,
+        planningIsolation: capabilities.scriptIsolation,
         knowledgeIsolation: capabilities.scriptIsolation,
         scriptIsolation: capabilities.scriptIsolation,
       };
@@ -2595,7 +2597,10 @@ export async function handleSupervisorRequest(
       return { ok: true, ...(await claimTurn(runtimeDir, request, runnerInstanceId)) };
     case 'start-turn': {
       if (turnStarter === undefined) throw new Error('runner worker is not installed');
-      if (request.knowledgeIsolation === true && !capabilities.scriptIsolation) {
+      if (
+        (request.knowledgeIsolation === true || request.planning === true) &&
+        !capabilities.scriptIsolation
+      ) {
         throw new Error(SCRIPT_ISOLATION_UNAVAILABLE_ERROR);
       }
       // `start` throws on an invalid or refused request, so the acknowledgement can

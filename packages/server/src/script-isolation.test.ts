@@ -618,6 +618,29 @@ describe('Server pre-approval refusal', () => {
     },
   };
 
+  it.each([{}, { managedAgentConfig: true, planningIsolation: false }])(
+    'refuses entering planning before changing state when the boundary is unavailable',
+    async (status) => {
+      const preflight = createTrustedCliPreflight({
+        runnerRoot: '/r',
+        requestStatus: async () => status,
+      });
+      await expect(preflight({ ...call({}), toolName: 'verity_start_planning' })).rejects.toThrow(
+        'Planning requires',
+      );
+    },
+  );
+
+  it('allows entering planning only with affirmative runtime capabilities', async () => {
+    const preflight = createTrustedCliPreflight({
+      runnerRoot: '/r',
+      requestStatus: async () => ({ managedAgentConfig: true, planningIsolation: true }),
+    });
+    await expect(
+      preflight({ ...call({}), toolName: 'verity_start_planning' }),
+    ).resolves.toBeUndefined();
+  });
+
   it('refuses an entry script before the card when the Sandbox reports no isolation', async () => {
     const requestStatus = vi.fn(async () => ({ ok: true, scriptIsolation: false }));
     const preflight = createTrustedCliPreflight({ runnerRoot: '/srv/runners', requestStatus });

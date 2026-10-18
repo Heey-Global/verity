@@ -110,11 +110,10 @@ end-to-end and deployment smokes cover placeholder replacement, cross-project
 peer refusal, restart/unseal recovery, policy-before-credential ordering, and
 the absence of real credentials from runtime homes.
 
-Phase 4's remaining half (OpenCode O2 — its provider key is still mounted into
-the Sandbox from a shared volume; see the 2026-08-25 update below), Sandbox-generation
-certificate binding, and turn-scoped gateway grants remain roadmap work. They are
-not prerequisites for, or claims about, the deployed Claude and Codex credential
-boundary.
+OpenCode now uses generated placeholder-only configuration and the credential
+gateway as described in the 2026-10-18 update below. Sandbox-generation
+certificate binding and turn-scoped gateway grants remain roadmap work. They
+are not prerequisites for, or claims about, the deployed credential boundary.
 
 ### Security invariants — current vs. roadmap
 
@@ -505,6 +504,56 @@ now `['claude-acp', 'codex-acp', 'opencode-acp']`.
   per-project generated config closes — which makes O2 the gate for it too, not
   only for the provider key.
 
+#### Update (2026-10-18) — Credentials isolated; managed configuration across ACP backends
+
+The preceding update records the earlier ACP migration state. Its claims about
+a provider key in a writable shared volume no longer describe the current code:
+
+- `packages/server/src/provisioner.ts` generates configuration containing only
+  model names, the loopback connector URL and a fixed placeholder. It mounts the
+  configuration directory read-only at `/run/verity/opencode-config`, separately
+  from OpenCode's writable startup and state directories. The old
+  `opencode-config-verity` mount is absent from generated container specs.
+- `packages/server/src/codex-egress-gateway.ts` handles OpenCode inference through
+  the authenticated project gateway. `opencode-egress-policy.ts` restricts the
+  routes to models, chat completions and responses, rejects caller credentials,
+  requires an HTTPS upstream and injects the server-held provider key. Upstream
+  redirects are rejected. Historical exposed-key rotation still requires
+  deployment-specific confirmation; source changes cannot establish that it ran.
+- The read-only file alone is not an exclusive configuration boundary. The pinned
+  OpenCode 1.19.0 [configuration loader](https://github.com/anomalyco/opencode/blob/v1.19.0/packages/opencode/src/config/config.ts)
+  merges project configuration after `OPENCODE_CONFIG`, then loads local agent
+  definitions and plugins by default. The spawn broker now pins
+  `OPENCODE_DISABLE_PROJECT_CONFIG=1` and `OPENCODE_PURE=1`, preventing repository
+  configuration and `.opencode` agent/tool discovery from overriding managed
+  provider, MCP and plan settings, and disabling external plugins. These values
+  cannot be replaced by inherited container settings or turn environment.
+  The broker supplies only the current working directory's `AGENTS.md` as an
+  absolute text-instruction path through generated `OPENCODE_CONFIG_CONTENT`;
+  isolated knowledge turns omit that project guidance.
+  The broker also supplies a fresh, broker-owned HOME and XDG configuration
+  tree. Mutable global configuration and `$HOME/.opencode` from the former
+  home are not imported. Writable runtime data stays separate from policy.
+
+`packages/session/src/acp-opencode-backend.ts` reasserts the requested mode and
+fails closed when plan mode cannot be selected or read back. A successful mode
+readback alone is not a sandbox proof. All ACP backends now request the same
+native filesystem boundary for planning, which protects project files against
+shell and subprocess writes and fails closed when unavailable. The Server and
+worker refuse stale supervisor/broker capabilities. Claude receives only managed
+settings/MCP, and the Codex ACP installer removes automatic project trust. See
+[Managed agent security standard](../runbooks/agent-security-standard.md) for
+the matrix, runtime separation and required container updates. OpenCode 2 remains
+a separate migration.
+
+Project-secret authorization is a separate boundary from model credentials and
+OpenCode's local permissions. [ADR 0014 Amendment 4](0014-acp-secret-tools-approval-gated.md)
+admits OpenCode to the same per-turn MCP gateway and approved trusted-CLI
+execution as Claude and Codex. Project configuration cannot grant itself
+server-side secret authorization. Existing project-scoped grants can be used
+across backends within their scope; secret aliases reach the selected model
+provider. Neither property is backend-specific secret-value access.
+
 ### Lifecycle and operations
 
 Blue/green behind the stable name, drain, connector reconnect — plus: the
@@ -530,8 +579,8 @@ safe-to-resume does not yet.
 | 1 | Extract gateway process: control channel, spill file, live TLS reload, stable name, connector reconnect | Met — standalone lifecycle and Server-replacement smokes cover the boundary |
 | 2 | Claude default routing, remove legacy injection, path allowlist, leak/forgery tests | Met (2026-08-19) — no second token consumer remains; allowlist, isolation, redaction, and failure-path tests are in place |
 | 3 | Codex C1 → C2 spike → C3 gateway migration | Met — project and control-plane Codex use placeholder-only runtime homes and the generic gateway |
-| 4 | OpenCode O1 (runner path) → O2 (generated config, volume removal + key rotation) → O3 | Partial (2026-08-25) — O1 met and O3 dissolved by the ACP migration (ADR 0012 Amendment 4): an OpenCode turn now runs under the runner supervisor and survives a Server deploy. O2 is open and is the remainder of this phase — and it is no longer only a credential item: the same writable shared volume defines what `plan` permits, so O2 now gates a permission control as well as the provider key (see the update above) |
-| 5 | Shared production gate per backend: credential absence, restart mid-response, recreate + resume, revocation, cross-tenant, forgery, exactly one terminal result, no duplicated tool effect | Partial — Claude/Codex credential-boundary, isolation, restart, and failure-path tests are in place; the safe-resume guarantees listed above and all OpenCode criteria remain open. OpenCode's gate carries one criterion the other two do not: its plan mode is enforced by a config file every project's agent can write, so "credential absence" is not the whole of its boundary until O2 lands |
+| 4 | OpenCode O1 (runner path) → O2 (generated config, volume removal + key rotation) → O3 | Partial — O1 met and O3 dissolved by ACP. Generated placeholder-only configuration, read-only mounting and gateway credential injection are implemented; managed launches disable project overrides and external plugins. Historical key rotation requires deployment confirmation; managed configuration and native planning isolation require updated containers (2026-10-18 update) |
+| 5 | Shared production gate per backend: credential absence, restart mid-response, recreate + resume, revocation, cross-tenant, forgery, exactly one terminal result, no duplicated tool effect | Partial — credential-boundary tests include OpenCode policy, generated configuration and gateway forwarding. This does not establish the complete lifecycle matrix for every backend or an immutable OpenCode plan policy |
 
 Turn-scoped grants and broader audit/rate-limiting run as a parallel track
 alongside Phases 2–4.
@@ -559,10 +608,9 @@ artificially unify provider protocols.
 - Sandboxes created before the stable gateway URL and certificate SAN require
   a rolling recreation once — acceptable since sessions survive recreates.
 - Codex reaches the credential boundary through its spike-gated network adapter.
-  OpenCode does not reach it at all yet: since 2026-08-25 it is an in-Sandbox ACP
-  child rather than a serve process, but its provider key still comes from the
-  shared config volume. Generated per-project config pointing at the connector is
-  the open remainder of Phase 4, not a solved case.
+  OpenCode also reaches the gateway through the connector with a fixed
+  placeholder; its provider key remains server-side. Its project configuration
+  and plan-policy trust boundary remains distinct from credential isolation.
 
 ## References
 

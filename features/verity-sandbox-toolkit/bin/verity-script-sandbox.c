@@ -210,7 +210,7 @@ static void isolate_with_mounts(const char *root, const char *dynamic_root, char
   symlink_into(sandbox, "/proc/self/fd", "/dev/fd");
 
   bind_into(sandbox, root, !isolate_writes);
-  if (dynamic_root != NULL) bind_into(sandbox, dynamic_root, !isolate_writes);
+  if (dynamic_root != NULL) bind_into(sandbox, dynamic_root, isolate_writes == 2 || !isolate_writes);
   for (int i = 0; i < secret_count; i++) bind_into(sandbox, secret_paths[i * 2], 0);
   if (chroot(sandbox) < 0) fail("chroot");
   if (chdir("/") < 0) fail("chdir sandbox root");
@@ -259,7 +259,7 @@ static void isolate_reads(const char *root, const char *dynamic_root, char **sec
   for (size_t i = 0; i < sizeof(devices) / sizeof(devices[0]); i++)
     if (access(devices[i], F_OK) == 0)
       allow_path(ruleset, devices[i], LANDLOCK_ACCESS_FS_READ_FILE | (isolate_writes ? LANDLOCK_ACCESS_FS_WRITE_FILE : 0));
-  allow_path(ruleset, root, rights | (isolate_writes ? write_rights : 0));
+  allow_path(ruleset, root, rights | (isolate_writes == 1 ? write_rights : 0));
   if (dynamic_root != NULL) allow_path(ruleset, dynamic_root, rights | (isolate_writes ? write_rights : 0));
   for (int i = 0; i < secret_count; i++)
     allow_path(ruleset, secret_paths[i * 2], LANDLOCK_ACCESS_FS_READ_FILE);
@@ -279,7 +279,7 @@ int main(int argc, char **argv) {
   }
   if (argc < 9 || strcmp(argv[1], "--root") || strcmp(argv[3], "--cwd") ||
       strcmp(argv[5], "--loading")) {
-    fputs("usage: verity-script-sandbox --root PATH --cwd PATH --loading isolated|dynamic [--dynamic-root PATH] [--write-isolated] [--secret PATH] -- COMMAND\n",
+    fputs("usage: verity-script-sandbox --root PATH --cwd PATH --loading isolated|dynamic [--dynamic-root PATH] [--write-isolated|--read-only-root] [--secret PATH] -- COMMAND\n",
           stderr);
     return 126;
   }
@@ -298,9 +298,15 @@ int main(int argc, char **argv) {
     dynamic_root = argv[command + 1];
     command += 2;
   }
+  /* 1 confines writes to approved job data; 2 additionally makes the project
+     root read-only while retaining a writable runtime home. */
   int isolate_writes = 0;
   if (command < argc && !strcmp(argv[command], "--write-isolated")) {
     isolate_writes = 1;
+    command++;
+  }
+  if (command < argc && !strcmp(argv[command], "--read-only-root")) {
+    isolate_writes = 2;
     command++;
   }
   int secret_start = command;

@@ -703,6 +703,18 @@ else
   echo "!!                 skipping core.hooksPath so it is never a dead path." >&2
 fi
 
+# Preserve only installer-generated Git policy for isolated agent homes.
+install -d -m 0755 /etc/verity
+install -m 0644 /dev/null /etc/verity/agent.gitconfig
+for key in safe.directory gpg.format user.signingkey commit.gpgsign tag.gpgsign core.hooksPath; do
+  while IFS= read -r value; do
+    git config --file /etc/verity/agent.gitconfig --add "$key" "$value"
+  done < <(gc --get-all "$key" || true)
+done
+git config --file /etc/verity/agent.gitconfig --add url.https://github.com/.insteadOf 'git@github.com:'
+git config --file /etc/verity/agent.gitconfig --add url.https://github.com/.insteadOf 'ssh://git@github.com/'
+chown root:root /etc/verity/agent.gitconfig
+
 # ─── F11. Ownership (precise — only the paths we wrote) ────────────────────
 # Skip the chown when the target IS root (root already owns /root) or when
 # the user doesn't exist yet (shouldn't happen, but stay defensive).

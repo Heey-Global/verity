@@ -128,6 +128,8 @@ export type SupervisorStartTelemetry = {
 };
 
 export interface SupervisorRunnerClientOptions {
+  /** Test seam for legacy wire fixtures; production keeps the capability check enabled. */
+  securityPreflight?: boolean;
   runtimeDir: string;
   store: RunnerFrameStore;
   bus: EventBus;
@@ -1130,6 +1132,20 @@ export class SupervisorRunnerClient implements RunnerClient {
     }
     if (opts.storeSessionId === undefined || !SAFE_ID.test(opts.storeSessionId)) {
       throw new Error('supervisor runner requires storeSessionId');
+    }
+    if (this.options.securityPreflight !== false) {
+      const capabilities = await requestRunnerSupervisor(
+        join(this.options.runtimeDir, 'supervisor.sock'),
+        { kind: 'status' },
+        this.options.timeoutMs,
+      );
+      if (
+        capabilities['managedAgentConfig'] !== true ||
+        (opts.planning === true && capabilities['planningIsolation'] !== true)
+      )
+        throw new Error(
+          'Required agent security boundaries are unavailable; recreate the Sandbox with the updated toolkit',
+        );
     }
     const mcpServers = validatedMcpServers(opts.mcpServers);
     // `command`, `extraArgs`, `spawner`, `claudeHome` and `env` describe how the SERVER

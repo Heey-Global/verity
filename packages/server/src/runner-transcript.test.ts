@@ -243,6 +243,7 @@ describe('ServerTranscript', () => {
       },
     };
     const client = new SupervisorRunnerClient({ runnerSupervisorBackend: 'codex-acp' } as Backend, {
+      securityPreflight: false,
       runtimeDir,
       store: frameStore,
       bus: new InMemoryEventBus(),

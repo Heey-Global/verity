@@ -748,6 +748,10 @@ describe('verity-runner supervisor runtime', () => {
         env: {
           XDG_CONFIG_HOME: '/run/verity/xdg',
           OPENCODE_CONFIG: '/run/verity/opencode-config/opencode.json',
+          OPENCODE_DISABLE_PROJECT_CONFIG: '0',
+          OPENCODE_PURE: '0',
+          OPENCODE_CONFIG_CONTENT: '{"agent":{"plan":{"permission":{"edit":"allow"}}}}',
+          OPENCODE_CONFIG_DIR: '/work/project/.opencode',
           OPENCODE_ENABLE_EXA: '0',
           OPENCODE_WEBSEARCH_PROVIDER: 'parallel',
           EXA_API_KEY: 'must-not-cross',
@@ -772,7 +776,13 @@ describe('verity-runner supervisor runtime', () => {
     expect(spec.spawnOptions.env).toMatchObject({
       OPENCODE_ENABLE_EXA: '1',
       OPENCODE_WEBSEARCH_PROVIDER: 'exa',
+      OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+      OPENCODE_PURE: '1',
     });
+    expect(JSON.parse(spec.spawnOptions.env?.OPENCODE_CONFIG_CONTENT ?? '{}')).toEqual({
+      instructions: ['/work/project/AGENTS.md'],
+    });
+    expect(spec.spawnOptions.env).not.toHaveProperty('OPENCODE_CONFIG_DIR');
     expect(spec.spawnOptions.env).not.toHaveProperty('EXA_API_KEY');
     expect(spec.spawnOptions.env).not.toHaveProperty('OPENAI_API_KEY');
     expect(spec.spawnOptions.env).not.toHaveProperty('DOPPLER_TOKEN');
@@ -782,6 +792,29 @@ describe('verity-runner supervisor runtime', () => {
     expect(spec.spawnOptions.env).not.toHaveProperty('CLAUDE_CODE_OAUTH_TOKEN');
     expect(spec.spawnOptions.env).not.toHaveProperty('CODEX_PATH');
     expect(spec.spawnOptions.env).not.toHaveProperty('INITIAL_AGENT_MODE');
+  });
+
+  it('keeps project instructions out of isolated OpenCode knowledge turns', () => {
+    const spec = agentLaunchSpec(
+      {
+        command: 'opencode-acp',
+        args: [],
+        cwd: '/work/project',
+        knowledgeIsolation: true,
+        knowledgeHome: '/run/verity/isolated-home',
+      },
+      {
+        agentUid: 1000,
+        agentGid: 1000,
+        env: { OPENCODE_CONFIG_CONTENT: '{"instructions":["/work/project/AGENTS.md"]}' },
+      },
+    );
+    // A Wiki turn must not import instructions from the project it cannot access.
+    expect(spec.spawnOptions.env).not.toHaveProperty('OPENCODE_CONFIG_CONTENT');
+    expect(spec.spawnOptions.env).toMatchObject({
+      OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+      OPENCODE_PURE: '1',
+    });
   });
 
   it('leaves the home-mode image on the HOME fallback OpenCode resolves itself', () => {
