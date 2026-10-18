@@ -20,18 +20,32 @@ function verify(
     missingCore = false,
     missingProvenance = false,
     provenance = revisions,
+    nativeFields = {},
+    coreFields = {},
+    scenario = '',
   } = {},
   source = verifier,
 ) {
   const directory = mkdtempSync(join(tmpdir(), 'remote-result-'));
   try {
     const paths = ['native', 'core', 'provenance'].map((name) => join(directory, `${name}.json`));
-    writeFileSync(paths[0], JSON.stringify({ success: native }));
-    if (!missingCore) writeFileSync(paths[1], JSON.stringify({ success: core }));
+    writeFileSync(paths[0], JSON.stringify({ success: native, ...nativeFields }));
+    if (!missingCore) writeFileSync(paths[1], JSON.stringify({ success: core, ...coreFields }));
     if (!missingProvenance) writeFileSync(paths[2], JSON.stringify(provenance));
-    return spawnSync('python3', ['-c', source, ...paths, String(fixtureExit), String(nativeExit)], {
-      encoding: 'utf8',
-    });
+    return spawnSync(
+      'python3',
+      [
+        '-c',
+        source,
+        ...paths,
+        String(fixtureExit),
+        String(nativeExit),
+        ...(scenario ? [scenario] : []),
+      ],
+      {
+        encoding: 'utf8',
+      },
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -78,4 +92,39 @@ void test('rejects absent or malformed source revisions and catches an omitted p
   const broken = verifier.replace('provenance_valid and ', '');
   assert.notEqual(broken, verifier);
   assert.equal(verify({ missingProvenance: true }, broken).status, 0);
+});
+
+void test('requires scenario-specific pooled and partial-frame receipts', () => {
+  const scenario = 'frame-release';
+  const nativeFields = {
+    scenario,
+    checks: [
+      'pooled_large_digest',
+      'pooled_small_receipt',
+      'pooled_reuse_receipt',
+      'pooled_send_receipt',
+      'held_frame_released',
+    ],
+  };
+  const coreFields = {
+    scenario,
+    largeRequests: 1,
+    smallRequests: 2,
+    sendRequests: 1,
+    proxy: { intercepted: 1, missingBytes: 295, released: 1 },
+  };
+  assert.equal(verify({ scenario, nativeFields, coreFields }).status, 0);
+  assert.equal(verify({ scenario }).status, 1);
+  assert.equal(
+    verify({ scenario, nativeFields: { ...nativeFields, checks: [] }, coreFields }).status,
+    1,
+  );
+  assert.equal(
+    verify({
+      scenario,
+      nativeFields,
+      coreFields: { ...coreFields, proxy: { ...coreFields.proxy, released: 0 } },
+    }).status,
+    1,
+  );
 });
