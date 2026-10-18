@@ -129,8 +129,40 @@ jobs:
           fi
           echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
 
-  architecture-smoke:
+  native-helper-build:
     needs: dependency-changes
+    if: needs.dependency-changes.outputs.relevant == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # renovate: datasource=github-actions depName=docker/setup-buildx-action
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: |
+            memory=6g
+            memory-swap=6g
+            cpu-period=100000
+            cpu-quota=300000
+      - name: Build native sandbox helpers from source
+        run: scripts/build-script-sandbox-prebuilts.sh
+      # renovate: datasource=github-actions depName=actions/upload-artifact
+      - name: Upload verified native sandbox helpers
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-sandbox-helpers
+          path: |
+            features/verity-sandbox-toolkit/prebuilt/linux-amd64/verity-script-sandbox
+            features/verity-sandbox-toolkit/prebuilt/linux-arm64/verity-script-sandbox
+            features/verity-sandbox-toolkit/prebuilt/sha256sums.txt
+          retention-days: 1
+          if-no-files-found: error
+      - name: Committed native sandbox helpers match their source
+        run: git diff --exit-code --stat -- features/verity-sandbox-toolkit/prebuilt
+
+  architecture-smoke:
+    needs: [dependency-changes, native-helper-build]
     if: needs.dependency-changes.outputs.relevant == 'true'
     name: smoke-test (${{ matrix.architecture }})
     strategy:
@@ -182,26 +214,6 @@ jobs:
             memory-swap=6g
             cpu-period=100000
             cpu-quota=300000
-
-      - name: Build native sandbox helpers from source
-        run: scripts/build-script-sandbox-prebuilts.sh
-
-      # Keep the release artifacts reproducible without compiling inside target images.
-      # renovate: datasource=github-actions depName=actions/upload-artifact
-      - name: Upload verified native sandbox helpers
-        if: matrix.architecture == 'amd64'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: native-sandbox-helpers
-          path: |
-            features/verity-sandbox-toolkit/prebuilt/linux-amd64/verity-script-sandbox
-            features/verity-sandbox-toolkit/prebuilt/linux-arm64/verity-script-sandbox
-            features/verity-sandbox-toolkit/prebuilt/sha256sums.txt
-          retention-days: 1
-          if-no-files-found: error
-
-      - name: Committed native sandbox helpers match their source
-        run: git diff --exit-code --stat -- features/verity-sandbox-toolkit/prebuilt
 
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
