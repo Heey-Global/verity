@@ -1116,7 +1116,7 @@ export async function materializeManagedAgentHome(request, options, connectorUrl
     let gitPolicy = '';
     try {
       const template = await open(
-        '/etc/verity/agent.gitconfig',
+        '/etc/verity-agent.gitconfig',
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
       );
       try {

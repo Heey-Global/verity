@@ -62,9 +62,18 @@ describe('Control runner script sandbox image provisioning', () => {
 
 it('provisions the managed Git baseline when the Control image bypasses the Feature installer', () => {
   const dockerfile = readFileSync('deploy/Dockerfile', 'utf8');
-  const copy = dockerfile.match(/^COPY --chmod=0644 (\S+) \/etc\/verity\/agent\.gitconfig$/m);
+  const copy = dockerfile.match(/^COPY --chmod=0644 (\S+) \/etc\/verity-agent\.gitconfig$/m);
   expect(copy).not.toBeNull();
   const source = copy![1]!;
+  const destination = copy![0].split(' ').at(-1)!;
+  // Private deployment state can be root-only; policy must remain outside it.
+  const broker = readFileSync(
+    'features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs',
+    'utf8',
+  );
+  const installer = readFileSync('features/verity-sandbox-toolkit/install.sh', 'utf8');
+  expect(broker).toContain(`'${destination}'`);
+  expect(installer).toContain(`install -m 0644 /dev/null ${destination}`);
   const directories = execFileSync(
     'git',
     ['config', '--file', source, '--get-all', 'safe.directory'],

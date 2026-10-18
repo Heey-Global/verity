@@ -27,7 +27,7 @@ it('exports Git policy without importing executable user configuration', async (
     );
     const policy = source
       .slice(start, end)
-      .replaceAll('/etc/verity', root)
+      .replaceAll('/etc/verity-agent.gitconfig', join(root, 'agent.gitconfig'))
       .replace('chown root:root', 'true');
     const exported = spawnSync(
       'bash',
