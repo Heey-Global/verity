@@ -20,7 +20,10 @@ const pin = JSON.parse(
     'utf8',
   ),
 ).dependencies['opencode-ai'];
-const executable = process.argv[2] ?? 'opencode';
+const executableName = process.argv[2] ?? 'opencode';
+const executableLookup = spawnSync('which', [executableName], { encoding: 'utf8' });
+assert.equal(executableLookup.status, 0, 'OpenCode executable must resolve');
+const executable = executableLookup.stdout.trim();
 const root = await mkdtemp(join(tmpdir(), 'verity-opencode-config-'));
 try {
   const project = join(root, 'project');
@@ -106,11 +109,15 @@ try {
 
   async function openSession(extra, confined) {
     const argv = confined?.args.slice(7);
-    const child = spawn(argv?.[0] ?? executable, argv ? argv.slice(1) : ['acp'], {
-      cwd: project,
-      env: { ...isolatedEnv, ...extra },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const child = spawn(
+      argv?.[0] ?? executable,
+      argv ? [...argv.slice(1, -1), executable, 'acp'] : ['acp'],
+      {
+        cwd: project,
+        env: { ...isolatedEnv, ...extra },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
+    );
     let errors = '';
     child.stderr.on('data', (chunk) => {
       errors += chunk;
@@ -271,6 +278,7 @@ try {
   } finally {
     await managed.cleanup();
   }
+  await mkdir(join(root, 'opencode-state'), { recursive: true });
   const planHome = await materializeManagedAgentHome(
     { command: 'opencode-acp', planning: true },
     options,

@@ -1064,6 +1064,21 @@ export async function materializeKnowledgeIsolation(request, options, connectorU
   };
 }
 
+function planningRuntimeRoots(request, options) {
+  if (!request.planning || request.knowledgeIsolation) return [];
+  if (request.command === 'codex-acp' && options.runtimeDir)
+    return [join(options.runtimeDir, 'codex-sessions'), join(options.runtimeDir, 'codex-state')];
+  if (request.command === 'claude-agent-acp' && options.env?.CLAUDE_CONFIG_DIR)
+    return [join(options.env.CLAUDE_CONFIG_DIR, 'projects')];
+  if (request.command === 'opencode-acp')
+    return [
+      options.enforceRoot === false
+        ? join(options.runtimeDir, 'opencode-state')
+        : OPENCODE_STATE_DIR,
+    ];
+  return [];
+}
+
 /** Build a broker-owned configuration tree, separate from writable runtime data. */
 export async function materializeManagedAgentHome(request, options, connectorUrl) {
   const { uid, gid } = validateIdentity(options);
@@ -1124,7 +1139,7 @@ export async function materializeManagedAgentHome(request, options, connectorUrl
     await writeFile(
       configFile,
       [
-        `sqlite_home = ${JSON.stringify(options.runtimeDir && !request.planning ? join(options.runtimeDir, 'codex-state') : join(home, 'state'))}`,
+        `sqlite_home = ${JSON.stringify(options.runtimeDir ? join(options.runtimeDir, 'codex-state') : join(home, 'state'))}`,
         `log_dir = ${JSON.stringify(join(home, 'state'))}`,
         'skills.include_instructions = false',
         codexConfig,
@@ -1154,13 +1169,13 @@ export async function materializeManagedAgentHome(request, options, connectorUrl
       'telemetry',
     ])
       await writable(join(home, 'claude', name));
-    if (options.env?.CLAUDE_CONFIG_DIR && !request.planning) {
+    if (options.env?.CLAUDE_CONFIG_DIR) {
       await symlink(
         join(options.env.CLAUDE_CONFIG_DIR, 'projects'),
         join(home, 'claude', 'projects'),
       );
     } else await writable(join(home, 'claude', 'projects'));
-    if (options.runtimeDir && !request.planning) {
+    if (options.runtimeDir) {
       await symlink(
         join(options.runtimeDir, 'codex-state', 'thread-writer-locks'),
         join(home, 'codex', 'thread-writer-locks'),
@@ -1180,6 +1195,20 @@ export async function materializeManagedAgentHome(request, options, connectorUrl
       const path = join(home, 'config', 'opencode.json');
       await chown(path, process.getuid(), process.getgid());
       await chmod(path, 0o644);
+    }
+    for (const path of [
+      join(home, '.gitconfig'),
+      gitIgnore,
+      join(home, '.claude.json'),
+      join(home, 'codex', 'installation_id'),
+      join(openCodeDir, '.gitignore'),
+    ])
+      await chmod(path, 0o644);
+    await chmod(openCodeDir, 0o755);
+    for (const path of planningRuntimeRoots(request, options)) {
+      const metadata = await lstat(path);
+      if (!metadata.isDirectory() || metadata.isSymbolicLink())
+        throw new Error('Invalid planning runtime directory');
     }
     return isolated;
   } catch (error) {
@@ -1304,6 +1333,7 @@ export function agentLaunchSpec(request, options) {
             '--dynamic-root',
             request.knowledgeHome,
             request.planning ? '--read-only-root' : '--write-isolated',
+            ...planningRuntimeRoots(request, options).flatMap((path) => ['--runtime-root', path]),
             '--',
           ]
         : []),
@@ -1373,9 +1403,20 @@ export function agentLaunchSpec(request, options) {
               CODEX_HOME: join(request.knowledgeHome, 'codex'),
               XDG_CONFIG_HOME: join(request.knowledgeHome, 'config'),
               OPENCODE_CONFIG: join(request.knowledgeHome, 'config', 'opencode.json'),
-              XDG_DATA_HOME: join(request.knowledgeHome, 'data'),
-              XDG_STATE_HOME: join(request.knowledgeHome, 'state'),
-              XDG_CACHE_HOME: join(request.knowledgeHome, 'cache'),
+              ...(request.command === 'opencode-acp' &&
+              request.planning &&
+              !request.knowledgeIsolation
+                ? Object.fromEntries(
+                    ['data', 'state', 'cache'].map((name) => [
+                      `XDG_${name.toUpperCase()}_HOME`,
+                      join(planningRuntimeRoots(request, options)[0], name),
+                    ]),
+                  )
+                : {
+                    XDG_DATA_HOME: join(request.knowledgeHome, 'data'),
+                    XDG_STATE_HOME: join(request.knowledgeHome, 'state'),
+                    XDG_CACHE_HOME: join(request.knowledgeHome, 'cache'),
+                  }),
               npm_config_cache: join(request.knowledgeHome, 'cache'),
               TMPDIR: join(request.knowledgeHome, 'tmp'),
             }

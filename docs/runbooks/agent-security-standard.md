@@ -22,7 +22,7 @@ share the same Unix identity.
 
 The native helper confines the agent and its descendants with Landlock or a
 private user/mount namespace. Planning exposes the project tree read-only and a
-separate writable runtime home. It drops the optional Docker group and cannot
+separate writable runtime home and explicitly scoped persistent transcript/state directories. It drops the optional Docker group and cannot
 use an unconfined native-spawn fallback. Other project paths outside this
 filesystem view are unavailable. Entering planning during an executing turn does
 not retrofit that process: its local filesystem boundary takes effect from the
@@ -44,7 +44,7 @@ other write permissions. The agent receives its own writable temporary files,
 logs and caches. Claude project transcripts and Codex rollouts remain linked to
 existing runtime storage. Codex SQLite state and writer locks have a dedicated
 `codex-state` directory; OpenCode keeps its existing data/state/cache roots.
-Neither transcripts nor writable runtime directories are imported as policy.
+Neither transcripts nor writable runtime directories are imported as policy. Planning uses the same transcript stores as normal turns, without exposing their parent Runner control directory.
 Git hooks, signing and URL rewrites come from an image-owned Git policy template;
 the broker adds provisioned identity and a generated global ignore file. The old
 user Git configuration is not imported.

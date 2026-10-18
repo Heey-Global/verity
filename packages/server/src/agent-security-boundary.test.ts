@@ -41,11 +41,14 @@ it.each(commands)(
         OPENCODE_CONFIG: config,
       },
     };
-    const isolated = await materializeManagedAgentHome(
-      { command },
-      options,
-      'http://127.0.0.1:12345',
-    );
+    const isolated = await (async () => {
+      const previous = process.umask(0o077);
+      try {
+        return await materializeManagedAgentHome({ command }, options, 'http://127.0.0.1:12345');
+      } finally {
+        process.umask(previous);
+      }
+    })();
     try {
       const spec = agentLaunchSpec(
         { command, args: [], cwd: root, managedHome: isolated.home },
@@ -75,6 +78,16 @@ it.each(commands)(
         expect(metadata.mode & 0o022).toBe(0);
       }
       expect((await stat(join(isolated.home, 'state'))).mode & 0o700).toBe(0o700);
+      for (const name of [
+        '.gitconfig',
+        'config/git-ignore',
+        '.claude.json',
+        'codex/installation_id',
+        'config/opencode/.gitignore',
+      ])
+        expect((await stat(join(isolated.home, name))).mode & 0o777).toBe(0o644);
+      expect((await stat(join(isolated.home, 'config/opencode'))).mode & 0o777).toBe(0o755);
+
       expect(await readFile(join(poisoned, 'config.toml'), 'utf8')).toContain('attacker');
     } finally {
       await isolated.cleanup();
@@ -153,4 +166,59 @@ it('refuses a planning turn through the unconfined native spawner', () => {
   expect(() =>
     nodeSpawner('/bin/sh', ['-c', 'exit 0'], { cwd: root, env: {}, planning: true }),
   ).toThrow('Planning requires the isolated agent spawn broker');
+});
+
+it('retains Codex rollout and SQLite storage across normal and planning homes', async () => {
+  for (const directory of ['codex-sessions', 'codex-state/thread-writer-locks'])
+    await mkdir(join(root, directory), { recursive: true });
+  const options = {
+    enforceRoot: false,
+    agentUid: process.getuid!(),
+    agentGid: process.getgid!(),
+    runtimeDir: root,
+  };
+  for (const planning of [false, true, false]) {
+    const isolated = await materializeManagedAgentHome(
+      { command: 'codex-acp', planning },
+      options,
+      'http://127.0.0.1:1',
+    );
+    try {
+      const session = join(isolated.home, 'codex/sessions/rollout.jsonl');
+      if (!planning && !(await readFile(session, 'utf8').catch(() => '')))
+        await writeFile(session, 'normal');
+      const spec = agentLaunchSpec(
+        {
+          command: 'codex-acp',
+          args: [],
+          cwd: root,
+          planning,
+          ...(planning ? { knowledgeHome: isolated.home } : { managedHome: isolated.home }),
+        },
+        {
+          ...options,
+          scriptSandboxPath: resolve(
+            'features/verity-sandbox-toolkit/prebuilt/linux-amd64/verity-script-sandbox',
+          ),
+        },
+      );
+      if (planning) {
+        expect(spec.args).toContain('--runtime-root');
+        const confined = spec.args.slice(7, -1);
+        const result = spawnSync(
+          confined[0]!,
+          [...confined.slice(1), '/bin/sh', '-c', 'cat "$1"; echo planning > "$1"', 'sh', session],
+          { encoding: 'utf8', timeout: 10000 },
+        );
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toBe('normal');
+      }
+      expect(await readFile(join(isolated.home, 'codex/config.toml'), 'utf8')).toContain(
+        JSON.stringify(join(root, 'codex-state')),
+      );
+    } finally {
+      await isolated.cleanup();
+    }
+  }
+  expect(await readFile(join(root, 'codex-sessions/rollout.jsonl'), 'utf8')).toBe('planning\n');
 });

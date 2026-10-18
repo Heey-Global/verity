@@ -211,7 +211,8 @@ static void isolate_with_mounts(const char *root, const char *dynamic_root, char
 
   bind_into(sandbox, root, !isolate_writes);
   if (dynamic_root != NULL) bind_into(sandbox, dynamic_root, isolate_writes == 2 || !isolate_writes);
-  for (int i = 0; i < secret_count; i++) bind_into(sandbox, secret_paths[i * 2], 0);
+  for (int i = 0; i < secret_count; i++)
+    bind_into(sandbox, secret_paths[i * 2], !strcmp(secret_paths[i * 2 - 1], "--runtime-root"));
   if (chroot(sandbox) < 0) fail("chroot");
   if (chdir("/") < 0) fail("chdir sandbox root");
   if (write(cleanup[1], "x", 1) != 1) fail("clean sandbox root");
@@ -262,7 +263,8 @@ static void isolate_reads(const char *root, const char *dynamic_root, char **sec
   allow_path(ruleset, root, rights | (isolate_writes == 1 ? write_rights : 0));
   if (dynamic_root != NULL) allow_path(ruleset, dynamic_root, rights | (isolate_writes ? write_rights : 0));
   for (int i = 0; i < secret_count; i++)
-    allow_path(ruleset, secret_paths[i * 2], LANDLOCK_ACCESS_FS_READ_FILE);
+    allow_path(ruleset, secret_paths[i * 2], !strcmp(secret_paths[i * 2 - 1], "--runtime-root")
+      ? rights | write_rights : LANDLOCK_ACCESS_FS_READ_FILE);
   if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) fail("PR_SET_NO_NEW_PRIVS");
   if (syscall(SYS_landlock_restrict_self, ruleset, 0) < 0) fail("landlock_restrict_self");
   close(ruleset);
@@ -279,7 +281,7 @@ int main(int argc, char **argv) {
   }
   if (argc < 9 || strcmp(argv[1], "--root") || strcmp(argv[3], "--cwd") ||
       strcmp(argv[5], "--loading")) {
-    fputs("usage: verity-script-sandbox --root PATH --cwd PATH --loading isolated|dynamic [--dynamic-root PATH] [--write-isolated|--read-only-root] [--secret PATH] -- COMMAND\n",
+    fputs("usage: verity-script-sandbox --root PATH --cwd PATH --loading isolated|dynamic [--dynamic-root PATH] [--write-isolated|--read-only-root] [--secret PATH|--runtime-root PATH] -- COMMAND\n",
           stderr);
     return 126;
   }
@@ -310,7 +312,8 @@ int main(int argc, char **argv) {
     command++;
   }
   int secret_start = command;
-  while (command + 1 < argc && !strcmp(argv[command], "--secret")) {
+  while (command + 1 < argc && (!strcmp(argv[command], "--secret") ||
+      (isolate_writes == 2 && !strcmp(argv[command], "--runtime-root")))) {
     if (argv[command + 1][0] != '/') { errno = EINVAL; fail("invalid secret path"); }
     command += 2;
   }
