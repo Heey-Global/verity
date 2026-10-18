@@ -35,7 +35,7 @@
     "minimatch": "10.2.6",
     "pdfjs-dist": "6.4.299",
     "qrcode": "1.5.4",
-    "sanitize-html": "2.18.0",
+    "sanitize-html": "2.18.1",
     "sharp": "0.35.5",
     "sigstore": "5.0.0",
     "ws": "8.22.0",
