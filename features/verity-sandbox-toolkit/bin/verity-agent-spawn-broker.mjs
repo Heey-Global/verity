@@ -1344,6 +1344,7 @@ export function agentLaunchSpec(request, options) {
             '--dynamic-root',
             request.knowledgeHome,
             request.planning ? '--read-only-root' : '--write-isolated',
+            ...(request.command === 'opencode-acp' ? ['--self-proc-maps'] : []),
             ...planningRuntimeRoots(request, options).flatMap((path) => ['--runtime-root', path]),
             '--',
           ]
@@ -1379,12 +1380,6 @@ export function agentLaunchSpec(request, options) {
         // deliberately receive no project instructions.
         ...(request.command === 'opencode-acp'
           ? {
-              // Bun/glibc discovers main-thread stack bounds through procfs.
-              // A private PID/mount namespace exposes process metadata without
-              // granting access to other container processes under Landlock.
-              ...(request.planning || request.knowledgeIsolation
-                ? { VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE: '1' }
-                : {}),
               OPENCODE_CONFIG_CONTENT: JSON.stringify({
                 instructions: request.knowledgeIsolation ? [] : [join(request.cwd, 'AGENTS.md')],
                 websearch: { provider: 'exa' },

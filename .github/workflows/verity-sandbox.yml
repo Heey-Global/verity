@@ -183,6 +183,26 @@ jobs:
             cpu-period=100000
             cpu-quota=300000
 
+      - name: Build native sandbox helpers from source
+        run: scripts/build-script-sandbox-prebuilts.sh
+
+      # Keep the release artifacts reproducible without compiling inside target images.
+      # renovate: datasource=github-actions depName=actions/upload-artifact
+      - name: Upload verified native sandbox helpers
+        if: matrix.architecture == 'amd64'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-sandbox-helpers
+          path: |
+            features/verity-sandbox-toolkit/prebuilt/linux-amd64/verity-script-sandbox
+            features/verity-sandbox-toolkit/prebuilt/linux-arm64/verity-script-sandbox
+            features/verity-sandbox-toolkit/prebuilt/sha256sums.txt
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Committed native sandbox helpers match their source
+        run: git diff --exit-code --stat -- features/verity-sandbox-toolkit/prebuilt
+
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -662,7 +682,6 @@ jobs:
         shell: bash
         run: |
           docker run --rm --user dev --workdir /verity-source --entrypoint sh \
-            --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
             --mount "type=bind,src=$PWD,dst=/verity-source,readonly" \
             "$SMOKE_IMAGE" -ec '
               node /verity-source/scripts/probes/opencode-config-isolation.mjs /usr/local/bin/opencode

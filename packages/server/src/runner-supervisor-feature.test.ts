@@ -756,7 +756,10 @@ describe('verity-runner supervisor runtime', () => {
           env: { VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE: '0' },
         },
       );
-      expect(spec.spawnOptions.env?.VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE).toBe('1');
+      expect(spec.args).toContain('--self-proc-maps');
+      expect(spec.spawnOptions.env).not.toHaveProperty(
+        'VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE',
+      );
       expect(spec.args).toContain(isolation.planning ? '--read-only-root' : '--write-isolated');
     },
   );
