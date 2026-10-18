@@ -2081,7 +2081,11 @@ function validOpenCodeGatewayConfig(contents: string): boolean {
       options?: unknown;
       models?: unknown;
     };
-    if (npm !== '@ai-sdk/openai-compatible' || name !== 'OpenAI-compatible') return false;
+    if (
+      (npm !== '@opencode/ai/providers/openai-compatible' && npm !== '@ai-sdk/openai-compatible') ||
+      name !== 'OpenAI-compatible'
+    )
+      return false;
     if (typeof gateway !== 'object' || gateway === null || Array.isArray(gateway)) return false;
     if (!exactKeys(gateway, ['baseURL', 'apiKey', 'timeout'])) return false;
     const timeout = (gateway as { timeout?: unknown }).timeout;

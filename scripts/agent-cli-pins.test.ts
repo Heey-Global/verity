@@ -160,4 +160,6 @@ it('runs the OpenCode native probes in the architecture smoke matrix', () => {
   expect(probes.length).toBeGreaterThan(0);
   for (const name of probes) expect(workflow).toContain(`/verity-source/scripts/probes/${name}`);
   expect(workflow).toContain('scripts/fixtures/opencode-v1/**');
+  // The planning probe resolves its native helper from the mounted checkout.
+  expect(workflow).toContain('--workdir /verity-source');
 });

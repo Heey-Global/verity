@@ -1035,75 +1035,78 @@ describe('PreviewShareManager', () => {
     expect(edge.create).not.toHaveBeenCalled();
   });
 
-  it('allows only server-generated Codex and OpenCode gateway configuration', async () => {
-    const inspectArtifact = vi.fn(async (path: string) => {
-      const common = { uid: 1000, gid: 1000 };
-      if (path.endsWith('/opencode')) {
-        return { ...common, mode: 0o755, kind: 'directory' as const };
-      }
-      if (path.endsWith('/opencode/opencode.json')) {
+  it.each(['@ai-sdk/openai-compatible', '@opencode/ai/providers/openai-compatible'])(
+    'allows server-generated gateway configuration with %s',
+    async (providerPackage) => {
+      const inspectArtifact = vi.fn(async (path: string) => {
+        const common = { uid: 1000, gid: 1000 };
+        if (path.endsWith('/opencode')) {
+          return { ...common, mode: 0o755, kind: 'directory' as const };
+        }
+        if (path.endsWith('/opencode/opencode.json')) {
+          return {
+            ...common,
+            mode: 0o644,
+            kind: 'file' as const,
+            contents: JSON.stringify({
+              $schema: 'https://opencode.ai/config.json',
+              autoupdate: false,
+              permission: {
+                read: { '/knowledge/**': 'allow' },
+                external_directory: { '/knowledge/**': 'allow' },
+              },
+              provider: {
+                verity: {
+                  npm: providerPackage,
+                  name: 'OpenAI-compatible',
+                  options: {
+                    baseURL: 'http://127.0.0.1:47821/opencode',
+                    apiKey: 'verity-opencode-gateway-placeholder-v1',
+                  },
+                  models: { 'model-a': { name: 'model-a' } },
+                },
+              },
+            }),
+          };
+        }
         return {
           ...common,
           mode: 0o644,
           kind: 'file' as const,
-          contents: JSON.stringify({
-            $schema: 'https://opencode.ai/config.json',
-            autoupdate: false,
-            permission: {
-              read: { '/knowledge/**': 'allow' },
-              external_directory: { '/knowledge/**': 'allow' },
-            },
-            provider: {
-              verity: {
-                npm: '@ai-sdk/openai-compatible',
-                name: 'OpenAI-compatible',
-                options: {
-                  baseURL: 'http://127.0.0.1:47821/opencode',
-                  apiKey: 'verity-opencode-gateway-placeholder-v1',
-                },
-                models: { 'model-a': { name: 'model-a' } },
-              },
-            },
-          }),
+          contents: codexGatewayConfig(47_821),
         };
-      }
-      return {
-        ...common,
-        mode: 0o644,
-        kind: 'file' as const,
-        contents: codexGatewayConfig(47_821),
-      };
-    });
-    const { manager, docker, inspect } = fixture({
-      inspectArtifact,
-      listArtifactDirectory: async () => ['opencode.json'],
-    });
-    docker.inspectContainer.mockResolvedValueOnce({
-      ...inspect,
-      mountCount: 2,
-      mounts: [
-        {
-          type: 'volume',
-          name: 'verity-data',
-          source: '/var/lib/docker/volumes/verity-data/_data/secrets/codex/config.toml',
-          subpath: 'secrets/codex/config.toml',
-          destination: '/run/verity/codex/config.toml',
-          readWrite: false,
-        },
-        {
-          type: 'volume',
-          name: 'verity-data',
-          source: '/var/lib/docker/volumes/verity-data/_data/secrets/opencode',
-          subpath: 'secrets/opencode',
-          destination: '/run/verity/opencode-config',
-          readWrite: false,
-        },
-      ],
-    });
-    await expect(
-      manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
-    ).resolves.toMatchObject({ state: 'active' });
-  });
+      });
+      const { manager, docker, inspect } = fixture({
+        inspectArtifact,
+        listArtifactDirectory: async () => ['opencode.json'],
+      });
+      docker.inspectContainer.mockResolvedValueOnce({
+        ...inspect,
+        mountCount: 2,
+        mounts: [
+          {
+            type: 'volume',
+            name: 'verity-data',
+            source: '/var/lib/docker/volumes/verity-data/_data/secrets/codex/config.toml',
+            subpath: 'secrets/codex/config.toml',
+            destination: '/run/verity/codex/config.toml',
+            readWrite: false,
+          },
+          {
+            type: 'volume',
+            name: 'verity-data',
+            source: '/var/lib/docker/volumes/verity-data/_data/secrets/opencode',
+            subpath: 'secrets/opencode',
+            destination: '/run/verity/opencode-config',
+            readWrite: false,
+          },
+        ],
+      });
+      await expect(
+        manager.create({ devServerId: 'dev-1', pin: '123456', ttlSeconds: 3600 }),
+      ).resolves.toMatchObject({ state: 'active' });
+    },
+  );
 
   it('blocks provider credentials hidden in an otherwise valid gateway config mount', async () => {
     const { manager, docker, edge, inspect } = fixture({
