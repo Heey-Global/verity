@@ -252,3 +252,23 @@ it('rejects a symlink supplied as persistent planning runtime storage', async ()
   expect(result.status).toBe(126);
   expect(result.stderr).toContain('invalid runtime root');
 });
+
+it('cleans managed policy and private runtime directories without following symlinks', async () => {
+  const isolated = await materializeManagedAgentHome(
+    { command: 'codex-acp' },
+    {
+      enforceRoot: false,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
+      runtimeDir: root,
+    },
+    'http://127.0.0.1:1',
+  );
+  const outside = join(root, 'preserved');
+  await writeFile(outside, 'preserve');
+  await symlink(outside, join(isolated.home, 'state', 'link'));
+  await chmod(join(isolated.home, 'state'), 0);
+  await isolated.cleanup();
+  await expect(stat(isolated.home)).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await readFile(outside, 'utf8')).toBe('preserve');
+});

@@ -18,6 +18,7 @@ import {
   readFile,
   realpath,
   rm,
+  rmdir,
   symlink,
   truncate,
   writeFile,
@@ -1027,31 +1028,48 @@ async function removeKnowledgeIsolation(home, uid, gid, setprivPath = '/usr/bin/
     await rm(home, { recursive: true, force: true });
     return;
   } catch {
-    // A rootless namespace can stop the broker traversing a 0700 tree after it
-    // hands that tree to the agent uid. Let that same unprivileged identity
-    // remove its descendants. GNU find does not follow encountered symlinks;
-    // even if the agent races this walk, it has no privilege beyond its own uid.
-    await new Promise((resolveCleanup, rejectCleanup) => {
-      const cleanup = spawn(
-        setprivPath,
-        [
-          `--reuid=${String(uid)}`,
-          `--regid=${String(gid)}`,
-          '--clear-groups',
-          '/usr/bin/find',
-          home,
-          '-mindepth',
-          '1',
-          '-delete',
-        ],
-        { stdio: 'ignore' },
-      );
-      cleanup.once('error', rejectCleanup);
-      cleanup.once('close', resolveCleanup);
-    });
-    // Removing the now-empty home only needs write access to its broker-owned
-    // parent; it does not require traversing the agent-owned 0700 directory.
-    await rm(home, { recursive: true, force: true });
+    // Return only the broker-owned policy directories to the child. Its identity
+    // can then unlink root-owned policy files without traversing private data as root.
+    for (const name of ['config/opencode', 'config', 'codex', 'claude', '.']) {
+      const path = join(home, name);
+      try {
+        const metadata = await lstat(path);
+        if (metadata.isDirectory() && metadata.uid === process.getuid()) {
+          await chmod(path, 0o700);
+          await chown(path, uid, gid);
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT' && error.code !== 'EACCES') throw error;
+      }
+    }
+    const asAgent = async (args) => {
+      await new Promise((resolveCleanup, rejectCleanup) => {
+        const sameIdentity = process.getuid() === uid && process.getgid() === gid;
+        const child = spawn(
+          sameIdentity ? '/usr/bin/find' : setprivPath,
+          sameIdentity
+            ? args
+            : [
+                `--reuid=${String(uid)}`,
+                `--regid=${String(gid)}`,
+                '--clear-groups',
+                '/usr/bin/find',
+                ...args,
+              ],
+          { stdio: 'ignore' },
+        );
+        child.once('error', rejectCleanup);
+        child.once('close', (code) =>
+          code === 0 ? resolveCleanup() : rejectCleanup(new Error('Agent home cleanup failed')),
+        );
+      });
+    };
+    // Preorder chmod restores traversal even if the child left a mode-000 directory.
+    // Neither walk follows symlinks; both run with the unprivileged child identity.
+    await asAgent([home, '-type', 'd', '-exec', '/bin/chmod', 'u+rwx', '{}', ';']);
+    await asAgent([home, '-mindepth', '1', '-delete']);
+    // rmdir needs access to the broker-owned parent, not the private empty home.
+    await rmdir(home);
   }
 }
 
