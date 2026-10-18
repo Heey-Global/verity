@@ -1,9 +1,9 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AcpClaudeBackend } from './acp-claude-backend.js';
+import { AcpClaudeBackend, CLAUDE_ACP_PROFILE } from './acp-claude-backend.js';
 import { PLANNING_PERMISSION_MODE } from './runner.js';
 import { GATEWAY_UNAVAILABLE_DIRECTIVE } from './acp-backend.js';
 import type { SpawnedProcess, Spawner } from './backend-contract.js';
@@ -2103,4 +2103,24 @@ describe('AcpClaudeBackend', () => {
       state: 'crashed',
     });
   });
+});
+
+it('does not import repository guidance through a symlink', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'verity-claude-symlink-'));
+  try {
+    const outside = join(cwd, 'outside.md');
+    await writeFile(outside, 'Do not import this symlink target.');
+    await symlink(outside, join(cwd, 'AGENTS.md'));
+    const metadata = await CLAUDE_ACP_PROFILE.sessionMeta({
+      store: ctx.store,
+      worktree: cwd,
+      cwd,
+      prompt: 'Read',
+      appendSystemPrompt: 'Managed policy',
+    });
+    expect(metadata).toMatchObject({ systemPrompt: { append: 'Managed policy' } });
+    expect(JSON.stringify(metadata)).not.toContain('Do not import this symlink target.');
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });

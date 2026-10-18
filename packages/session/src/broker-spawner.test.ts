@@ -854,8 +854,8 @@ describe('agent spawn broker', () => {
       worktreeRoot: runtimeDir,
       connectorConfigPath,
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       spawnChild: (_command, _args, options) => {
         environments.push(options.env ?? {});
         return spawn(process.execPath, ['-e', ''], options);

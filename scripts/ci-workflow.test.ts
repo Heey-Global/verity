@@ -4146,7 +4146,16 @@ describe('Claude ACP sandbox smoke', () => {
     expect(source).toContain("runnerSupervisorBackend: 'claude-acp'");
     expect(script).toContain('-e DOPPLER_TOKEN=must-not-cross');
     expect(script).toContain('-e GITHUB_TOKEN=must-not-cross');
-    expect(script).toContain('"credentialBoundary":"no-credentials"');
+    expect(script).toContain('"credentialBoundary":"non-secret-placeholder"');
+    for (const harness of [
+      script,
+      readFileSync('scripts/test-runner-claude-live-recreate.sh', 'utf8'),
+    ]) {
+      expect(harness).toContain('umask 077; printf');
+      expect(harness).toContain(
+        'http://127.0.0.1:47821 > /run/verity-runner-broker/egress-connector.url',
+      );
+    }
   });
 
   it('waits for the ACP stream-json prompt before emitting Claude output', async () => {

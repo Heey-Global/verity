@@ -59,3 +59,19 @@ describe('Control runner script sandbox image provisioning', () => {
     },
   );
 });
+
+it('provisions the managed Git baseline when the Control image bypasses the Feature installer', () => {
+  const dockerfile = readFileSync('deploy/Dockerfile', 'utf8');
+  const copy = dockerfile.match(/^COPY --chmod=0644 (\S+) \/etc\/verity\/agent\.gitconfig$/m);
+  expect(copy).not.toBeNull();
+  const source = copy![1]!;
+  const directories = execFileSync(
+    'git',
+    ['config', '--file', source, '--get-all', 'safe.directory'],
+    { encoding: 'utf8' },
+  )
+    .trim()
+    .split('\n');
+  expect(directories).toContain('/work');
+  expect(directories).toContain('/srv/verity/sessions/*');
+});

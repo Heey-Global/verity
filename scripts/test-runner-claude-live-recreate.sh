@@ -57,6 +57,9 @@ start_sandbox() {
     sleep 1
   done
   docker exec "$sandbox" test -S /run/verity-runner/supervisor.sock
+  # Fake inference needs only the broker-owned local gateway coordinate.
+  docker exec --user 0:0 "$sandbox" sh -c \
+    'umask 077; printf "%s\n" http://127.0.0.1:47821 > /run/verity-runner-broker/egress-connector.url'
 }
 
 server_args=(--network "$network" --user 1000:1000 --group-add 1101 -w /repo

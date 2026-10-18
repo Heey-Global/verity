@@ -288,6 +288,8 @@ RUN install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-runne
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-egress-connector.mjs /usr/local/bin/verity-egress-connector \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-egress-connector-start /usr/local/bin/verity-egress-connector-start \
     && install -m 0755 /opt/verity-features/verity-sandbox-toolkit/bin/verity-agent-run /usr/local/bin/verity-agent-run
+# Control Runner bypasses the Feature installer and needs its own immutable Git baseline.
+COPY --chmod=0644 deploy/control-runner.gitconfig /etc/verity/agent.gitconfig
 COPY deploy/bin/verity-control-plane-runner-start /usr/local/bin/verity-control-plane-runner-start
 COPY deploy/bin/verity-control-plane-git-sign /usr/local/bin/verity-control-plane-git-sign
 COPY deploy/bin/verity-control-plane-memory /usr/local/bin/verity-memory

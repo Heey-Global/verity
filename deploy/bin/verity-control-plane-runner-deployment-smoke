@@ -183,7 +183,7 @@ broker_request() {
           protocolVersion: 1,
           kind: "spawn-agent",
           command: "claude-agent-acp",
-          args: ["--version"],
+          args: [],
           cwd: process.env.VERITY_SMOKE_CWD,
         }) + "\n",
       ),
