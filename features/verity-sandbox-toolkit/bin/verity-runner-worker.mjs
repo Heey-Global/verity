@@ -5037,7 +5037,7 @@ var require_memoizer = __commonJS({
       return bucket;
     }
     var handoff;
-    var open7 = [];
+    var open8 = [];
     var memo = {
       alloc(_inst, payload, empty) {
         const bucket = handoff;
@@ -5046,7 +5046,7 @@ var require_memoizer = __commonJS({
         handoff = void 0;
         const entry = { value: empty, issues: null };
         bucket.set(payload.value, entry);
-        open7.push(entry);
+        open8.push(entry);
         return empty;
       },
       guard(inst) {
@@ -5117,10 +5117,10 @@ var require_memoizer = __commonJS({
               return payload;
             }
             handoff = bucket;
-            const depth = open7.length;
+            const depth = open8.length;
             const result3 = base(payload, ctx);
             handoff = void 0;
-            const entry = open7.length > depth ? open7.pop() : void 0;
+            const entry = open8.length > depth ? open8.pop() : void 0;
             if (result3 instanceof Promise) {
               return result3.then((r) => {
                 if (entry)
@@ -23407,9 +23407,9 @@ var require_v4 = __commonJS({
 });
 
 // packages/session/dist/runner-worker-entry.js
-import { constants as constants4 } from "node:fs";
-import { open as open6, unlink } from "node:fs/promises";
-import { join as join3, resolve as resolve3 } from "node:path";
+import { constants as constants5 } from "node:fs";
+import { open as open7, unlink } from "node:fs/promises";
+import { join as join4, resolve as resolve3 } from "node:path";
 
 // node_modules/@verity/events/dist/events.js
 var import_zod = __toESM(require_zod(), 1);
@@ -25304,6 +25304,11 @@ var RUNNER_SUPERVISOR_BACKENDS = Object.freeze([
 function isRunnerSupervisorBackend(value) {
   return RUNNER_SUPERVISOR_BACKENDS.includes(value);
 }
+
+// packages/session/dist/acp-claude-backend.js
+import { constants as constants3 } from "node:fs";
+import { open as open2 } from "node:fs/promises";
+import { join as join2 } from "node:path";
 
 // node_modules/@agentclientprotocol/sdk/dist/schema/index.js
 var AGENT_METHODS = {
@@ -30115,6 +30120,8 @@ function killProcessGroup(child, signal = "SIGTERM") {
   }, PROCESS_TREE_KILL_GRACE_MS);
 }
 var nodeSpawner = (command, args, options) => {
+  if (options.planning === true)
+    throw new Error("Planning requires the isolated agent spawn broker");
   const keepOpen = options.keepStdinOpen === true;
   const feedStdin = options.stdin !== void 0 || keepOpen;
   const child = spawn(command, args, {
@@ -30477,7 +30484,8 @@ async function runAcpTurn(opts, profile) {
   const spawn2 = () => spawner(opts.command ?? profile.defaultCommand, args, {
     cwd: opts.cwd,
     env: opts.env ?? process.env,
-    keepStdinOpen: true
+    keepStdinOpen: true,
+    ...opts.planning === true ? { planning: true } : {}
   });
   let child = spawn2();
   const startupRecoveryDeadline = Date.now() + 16 * 6e4;
@@ -30685,10 +30693,11 @@ async function runAcpTurn(opts, profile) {
       if (!agentSpeaksHttpMcp && (opts.mcpServers?.length ?? 0) > 0) {
         turnOpts = withSystemDirective(turnOpts, MCP_SERVERS_UNAVAILABLE_DIRECTIVE);
       }
+      const metadata = profile.sessionMeta(turnOpts);
       const request2 = {
         cwd: opts.cwd,
         mcpServers: mcpServers2,
-        _meta: profile.sessionMeta(turnOpts)
+        _meta: metadata instanceof Promise ? await metadata : metadata
       };
       let session;
       if (opts.resumeSessionId !== void 0) {
@@ -31037,25 +31046,59 @@ var CLAUDE_ACP_PROFILE = {
   enforcesToolless: true,
   loadSessionUnsupported: "Claude ACP adapter does not support persistent session loading",
   clientCapabilitiesMeta: { "subagent-transcript": true },
-  sessionMeta: (opts) => ({
-    ...opts.appendSystemPrompt ? {
-      systemPrompt: {
-        type: "preset",
-        preset: "claude_code",
-        append: opts.appendSystemPrompt
-      }
-    } : {},
-    claudeCode: {
-      options: {
-        ...opts.model !== void 0 ? { model: opts.model } : {},
-        ...opts.allowedTools !== void 0 ? { allowedTools: [...opts.allowedTools] } : {},
-        ...opts.disallowedTools !== void 0 ? { disallowedTools: [...opts.disallowedTools] } : {},
-        // No built-in tools, no MCP beyond the (empty) list sent with the session,
-        // and no settings files whose allow rules or servers would add some back.
-        ...opts.toolless === true ? { tools: [], strictMcpConfig: true, settingSources: [] } : {}
+  sessionMeta: async (opts) => {
+    if (opts.toolless !== true) {
+      const handle = await open2(join2(opts.cwd, "AGENTS.md"), constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK).catch((error) => {
+        if (error.code === "ENOENT" || error.code === "ELOOP")
+          return void 0;
+        throw error;
+      });
+      if (handle !== void 0) {
+        try {
+          const metadata = await handle.stat();
+          if (metadata.isFile() && metadata.size <= 256 * 1024) {
+            const buffer = Buffer.alloc(256 * 1024);
+            const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+            const text = buffer.subarray(0, bytesRead).toString("utf8");
+            opts = {
+              ...opts,
+              appendSystemPrompt: [
+                opts.appendSystemPrompt,
+                `Repository instructions (AGENTS.md):
+${text}`
+              ].filter(Boolean).join("\n\n")
+            };
+          }
+        } finally {
+          await handle.close();
+        }
       }
     }
-  }),
+    return {
+      ...opts.appendSystemPrompt ? {
+        systemPrompt: {
+          type: "preset",
+          preset: "claude_code",
+          append: opts.appendSystemPrompt
+        }
+      } : {},
+      claudeCode: {
+        options: {
+          ...opts.model !== void 0 ? { model: opts.model } : {},
+          ...opts.allowedTools !== void 0 ? { allowedTools: [...opts.allowedTools] } : {},
+          ...opts.disallowedTools !== void 0 ? { disallowedTools: [...opts.disallowedTools] } : {},
+          // Project settings and extensions cannot add another provider or MCP
+          // server. Toolless queries additionally disable the built-in tool set.
+          settingSources: [],
+          strictMcpConfig: true,
+          plugins: [],
+          agents: {},
+          settings: { apiKeyHelper: "" },
+          ...opts.toolless === true ? { tools: [] } : {}
+        }
+      }
+    };
+  },
   defaultModelLabel: () => "claude",
   promptText: (opts) => opts.prompt ?? "",
   // Match the native Claude runner's fleet default (`auto`). The ACP adapter
@@ -31377,7 +31420,41 @@ function send(socket, frame) {
 `);
   return true;
 }
-function createBrokerSpawner(socketPath) {
+async function requireBrokerIsolation(socketPath, planning) {
+  await new Promise((resolve4, reject) => {
+    const peer2 = createConnection(socketPath);
+    let buffered = "";
+    const timer = setTimeout(() => finish(new Error("Agent security capability check timed out")), 1e4);
+    const finish = (error) => {
+      clearTimeout(timer);
+      peer2.destroy();
+      if (error)
+        reject(error);
+      else
+        resolve4();
+    };
+    peer2.once("error", finish);
+    peer2.once("connect", () => send(peer2, { protocolVersion: PROTOCOL_VERSION2, kind: "status" }));
+    peer2.on("data", (chunk) => {
+      buffered += chunk.toString("utf8");
+      if (Buffer.byteLength(buffered) > 8192)
+        return finish(new Error("Invalid broker capabilities"));
+      if (!buffered.includes("\n"))
+        return;
+      try {
+        const status = JSON.parse(buffered.split("\n")[0]);
+        if (status["ok"] !== true || status["managedAgentConfig"] !== true || planning && status["planningIsolation"] !== true) {
+          return finish(new Error("Agent configuration or planning isolation is unavailable; update the Sandbox toolkit"));
+        }
+        finish();
+      } catch {
+        finish(new Error("Invalid broker capabilities"));
+      }
+    });
+    peer2.once("end", () => finish(new Error("Broker did not report required security capabilities")));
+  });
+}
+function createBrokerSpawner(socketPath, requireManagedConfiguration = false) {
   const spawner = (command, args, options) => {
     const socket = createConnection(socketPath);
     let processBuffered = () => void 0;
@@ -31421,15 +31498,29 @@ function createBrokerSpawner(socketPath) {
       }
     };
     socket.once("connect", () => {
-      const sessionEnv = sessionRuntimeEnv(options.env);
-      send(socket, {
-        protocolVersion: PROTOCOL_VERSION2,
-        kind: "spawn-agent",
-        command,
-        args,
-        cwd: options.cwd,
-        ...Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}
-      });
+      void (async () => {
+        if (requireManagedConfiguration || options.planning === true) {
+          try {
+            await requireBrokerIsolation(socketPath, options.planning === true);
+          } catch (error) {
+            stderrTail.push(String(error));
+            settle(1);
+            return;
+          }
+        }
+        if (settled2)
+          return;
+        const sessionEnv = sessionRuntimeEnv(options.env);
+        send(socket, {
+          protocolVersion: PROTOCOL_VERSION2,
+          kind: "spawn-agent",
+          command,
+          args,
+          cwd: options.cwd,
+          ...options.planning === true ? { planning: true } : {},
+          ...Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}
+        });
+      })();
     });
     processBuffered = () => {
       if (Buffer.byteLength(buffered) > MAX_BROKER_FRAME_BYTES && !buffered.includes("\n")) {
@@ -31547,7 +31638,7 @@ function createBrokerSpawner(socketPath) {
 
 // packages/session/dist/runner-server.js
 import { createHash as createHash4, randomUUID as randomUUID3, timingSafeEqual } from "node:crypto";
-import { mkdir as mkdir3, open as open5 } from "node:fs/promises";
+import { mkdir as mkdir3, open as open6 } from "node:fs/promises";
 import { dirname as dirname3 } from "node:path";
 
 // packages/session/dist/runner-contract.js
@@ -31620,7 +31711,7 @@ ${this.runtimeNotice}`.trim();
 
 // packages/session/dist/runner-transport.js
 import { createHash as createHash3 } from "node:crypto";
-import { open as open2 } from "node:fs/promises";
+import { open as open3 } from "node:fs/promises";
 var MAX_FRAME_BYTES = 8 * 1024 * 1024;
 function frameBodyHash(body) {
   return createHash3("sha256").update(JSON.stringify(body)).digest("hex");
@@ -31645,7 +31736,7 @@ async function writeFrame(handle, frame) {
     await handle.appendFile(line, "utf8");
     return;
   }
-  const fh = await open2(handle.path, "a");
+  const fh = await open3(handle.path, "a");
   try {
     await fh.appendFile(line, "utf8");
   } finally {
@@ -31654,10 +31745,10 @@ async function writeFrame(handle, frame) {
 }
 
 // packages/session/dist/runner-control.js
-import { constants as constants3 } from "node:fs";
-import { mkdir as mkdir2, mkdtemp, open as open3, rm, symlink } from "node:fs/promises";
+import { constants as constants4 } from "node:fs";
+import { mkdir as mkdir2, mkdtemp, open as open4, rm, symlink } from "node:fs/promises";
 import { createConnection as createConnection2, createServer } from "node:net";
-import { dirname, join as join2, resolve as resolve2 } from "node:path";
+import { dirname, join as join3, resolve as resolve2 } from "node:path";
 var LF = 10;
 var MAX_CONTROL_LINE_BYTES = 1024 * 1024;
 function defaultAttachSnapshot() {
@@ -31773,9 +31864,9 @@ function isControlReply(value, expectedCommandId, commandKey2) {
   return record3.kind === "ack" && record3.commandId === expectedCommandId && (commandKind === "steer" && typeof record3.injected === "boolean" && record3.applied === void 0 || (commandKind === "cancel" || commandKind === "answer-permission") && typeof record3.applied === "boolean" && record3.injected === void 0) || record3.kind === "reject" && record3.commandId === expectedCommandId && ["stale-lease", "wrong-turn", "command-conflict", "ambiguous", "handler-error"].includes(String(record3.reason));
 }
 async function openControlJournal(journalPath) {
-  const handle = await open3(journalPath, constants3.O_RDWR | constants3.O_CREAT | constants3.O_APPEND | constants3.O_NOFOLLOW, 384);
+  const handle = await open4(journalPath, constants4.O_RDWR | constants4.O_CREAT | constants4.O_APPEND | constants4.O_NOFOLLOW, 384);
   try {
-    const parent = await open3(dirname(journalPath), constants3.O_RDONLY | constants3.O_DIRECTORY);
+    const parent = await open4(dirname(journalPath), constants4.O_RDONLY | constants4.O_DIRECTORY);
     try {
       await parent.sync();
     } finally {
@@ -32129,21 +32220,21 @@ async function serveControl(socketPath, handlers, opts = {}) {
 }
 
 // packages/session/dist/runner-state.js
-import { chmod, open as open4, rename, readFile as readFile2, writeFile as writeFile2 } from "node:fs/promises";
+import { chmod, open as open5, rename, readFile as readFile2, writeFile as writeFile2 } from "node:fs/promises";
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { dirname as dirname2 } from "node:path";
 async function writeRunnerState(path, state) {
   const tmp = `${path}.${randomUUID2()}.tmp`;
   await writeFile2(tmp, JSON.stringify(state), "utf8");
   await chmod(tmp, 416);
-  const file = await open4(tmp, "r");
+  const file = await open5(tmp, "r");
   try {
     await file.sync();
   } finally {
     await file.close();
   }
   await rename(tmp, path);
-  const directory = await open4(dirname2(path), "r");
+  const directory = await open5(dirname2(path), "r");
   try {
     await directory.sync();
   } finally {
@@ -32257,7 +32348,7 @@ var RunnerServer = class {
    */
   async run(eventFilePath, opts) {
     await mkdir3(dirname3(eventFilePath), { recursive: true });
-    const handle = await open5(eventFilePath, opts.exclusiveEventFile === true ? "wx" : "w", 416);
+    const handle = await open6(eventFilePath, opts.exclusiveEventFile === true ? "wx" : "w", 416);
     try {
       await handle.chmod(416);
     } catch (error) {
@@ -32478,7 +32569,7 @@ var startTurnRequestSchema = import_zod12.z.strictObject({
   }
 });
 async function consumeStartRequest(path) {
-  const handle = await open6(path, constants4.O_RDONLY | constants4.O_NOFOLLOW);
+  const handle = await open7(path, constants5.O_RDONLY | constants5.O_NOFOLLOW);
   try {
     const stats = await handle.stat();
     const uid = process.getuid?.();
@@ -32542,10 +32633,10 @@ var backends = {
   "opencode-acp": () => new AcpOpenCodeBackend()
 };
 var server = new RunnerServer(backends[request.backend]());
-var turn = await server.run(join3(turnDir, "events.jsonl"), {
+var turn = await server.run(join4(turnDir, "events.jsonl"), {
   turnId: request.turnId,
   controlCapability: request.startCommandId,
-  controlSocketPath: join3(turnDir, "control.sock"),
+  controlSocketPath: join4(turnDir, "control.sock"),
   exclusiveEventFile: true,
   terminalizeErrors: true,
   worktree: request.worktree,
@@ -32579,7 +32670,7 @@ var turn = await server.run(join3(turnDir, "events.jsonl"), {
   // provisioned into the container, never carried by the request. A bearer without a
   // URL was refused above, so this condition can no longer make a turn run tool-less.
   ...request.mcpGatewayToken !== void 0 && mcpGatewayUrl !== void 0 ? { mcpGateway: { url: mcpGatewayUrl, token: request.mcpGatewayToken } } : {},
-  spawner: createBrokerSpawner(brokerSocket)
+  spawner: createBrokerSpawner(brokerSocket, true)
 });
 var result2 = await turn.result;
 process.exitCode = result2.exitCode;

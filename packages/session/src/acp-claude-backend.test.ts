@@ -1,6 +1,9 @@
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AcpClaudeBackend } from './acp-claude-backend.js';
+import { AcpClaudeBackend, CLAUDE_ACP_PROFILE } from './acp-claude-backend.js';
 import { PLANNING_PERMISSION_MODE } from './runner.js';
 import { GATEWAY_UNAVAILABLE_DIRECTIVE } from './acp-backend.js';
 import type { SpawnedProcess, Spawner } from './backend-contract.js';
@@ -942,6 +945,33 @@ describe('AcpClaudeBackend', () => {
     expect(JSON.stringify(fake.writes)).not.toContain('turn-bearer');
   });
 
+  it('keeps repository guidance as text while excluding settings, plugins and extra MCP servers', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'verity-claude-guidance-'));
+    try {
+      await writeFile(join(cwd, 'AGENTS.md'), 'Use the project conventions.');
+      const fake = acpSpawner({ httpMcp: true });
+      await new AcpClaudeBackend().run({
+        store: ctx.store,
+        storeSessionId: 'managed-config',
+        worktree: cwd,
+        cwd,
+        prompt: 'Read',
+        spawner: fake.spawner,
+      });
+      const session = fake.writes.find((message) => message['method'] === 'session/new');
+      expect(session).toMatchObject({
+        params: {
+          _meta: {
+            claudeCode: { options: { settingSources: [], strictMcpConfig: true, plugins: [] } },
+            systemPrompt: { append: expect.stringContaining('Use the project conventions.') },
+          },
+        },
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('runs a toolless turn with no tools, no MCP servers, and no settings files', async () => {
     // A turn reading an untrusted chat image: any tool it keeps — built-in, the
     // gateway, or one a project settings file allows — is one an injected
@@ -1565,6 +1595,7 @@ describe('AcpClaudeBackend', () => {
     // In Verity's planning mode the operator accepts a plan through Verity, the same
     // way for every agent. A card here would let one tap carry out an unaccepted plan.
     const fake = acpSpawner({ planPermission: true, modes: CLAUDE_MODES });
+    const spawn = vi.fn(fake.spawner);
     const asked: string[] = [];
     await new AcpClaudeBackend().run({
       store: ctx.store,
@@ -1574,13 +1605,14 @@ describe('AcpClaudeBackend', () => {
       prompt: 'Plan it',
       permissionMode: PLANNING_PERMISSION_MODE,
       planning: true,
-      spawner: fake.spawner,
+      spawner: spawn,
       permissionControl: true,
       onPermissionRequest: (request, respond) => {
         asked.push(request.toolName);
         respond({ behavior: 'allow' });
       },
     });
+    expect(spawn.mock.calls[0]?.[2]).toMatchObject({ planning: true });
     expect(asked).toEqual([]);
     expect(fake.writes).toContainEqual(
       expect.objectContaining({
@@ -2071,4 +2103,24 @@ describe('AcpClaudeBackend', () => {
       state: 'crashed',
     });
   });
+});
+
+it('does not import repository guidance through a symlink', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'verity-claude-symlink-'));
+  try {
+    const outside = join(cwd, 'outside.md');
+    await writeFile(outside, 'Do not import this symlink target.');
+    await symlink(outside, join(cwd, 'AGENTS.md'));
+    const metadata = await CLAUDE_ACP_PROFILE.sessionMeta({
+      store: ctx.store,
+      worktree: cwd,
+      cwd,
+      prompt: 'Read',
+      appendSystemPrompt: 'Managed policy',
+    });
+    expect(metadata).toMatchObject({ systemPrompt: { append: 'Managed policy' } });
+    expect(JSON.stringify(metadata)).not.toContain('Do not import this symlink target.');
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });

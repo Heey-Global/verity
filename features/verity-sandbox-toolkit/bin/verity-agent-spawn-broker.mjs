@@ -5,7 +5,7 @@ import {
   createManagedSecretServers,
   stopTaggedManagedPids,
 } from './verity-managed-secret-servers.mjs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createConnection, createServer } from 'node:net';
 import {
   chmod,
@@ -18,6 +18,7 @@ import {
   readFile,
   realpath,
   rm,
+  rmdir,
   symlink,
   truncate,
   writeFile,
@@ -652,25 +653,10 @@ async function validateSpawnRequest(raw, options) {
   if (Buffer.byteLength(JSON.stringify(raw.args)) > MAX_ARGS_BYTES) {
     throw new Error('agent argv exceeds broker limit');
   }
-  // `opencode-acp` takes no argv at all, and the reason is the `cwd` check below.
-  // That check resolves the requested directory and refuses anything outside the
-  // worktree roots — but `opencode acp` accepts `--cwd`, so a request could satisfy
-  // the check with a legal `cwd` and then hand the agent a different working
-  // directory in its argv, while still receiving the broker-supplied child
-  // environment. Neither of the other two adapters has a flag that can do that, so
-  // this is not a general argv policy; it is the one place where argv would walk
-  // past a boundary this function enforces. Verity's OpenCode profile passes no
-  // arguments (`acp-opencode-backend.ts`), so nothing legitimate is refused: if a
-  // future turn needs one, add it to an allowlist here rather than reopening argv.
-  //
-  // Two flags in particular are not allowlist material. `--cwd` is the one above.
-  // The other is any flag that makes the agent LISTEN — `opencode serve` grew
-  // `--port`, `--hostname`, `--cors` and `--mdns`, and admitting one here would put a
-  // network-reachable agent back inside the Sandbox holding the turn's credentials,
-  // which is exactly the shared-server exposure ADR 0010 O3 was closed by removing
-  // (ADR 0012 Amendment 4). Admitting one reopens it and needs that decision retaken.
-  if (raw.command === 'opencode-acp' && raw.args.length > 0) {
-    throw new Error('opencode-acp takes no argv');
+  // ACP adapters take no caller-selected argv. Their CLI entry points can select
+  // another command or unmanaged configuration before the session policy applies.
+  if (raw.args.length > 0) {
+    throw new Error(`${raw.command} takes no argv`);
   }
   const [worktreeRoots, cwd] = await Promise.all([
     resolveAgentWorktreeRoots(options),
@@ -681,6 +667,8 @@ async function validateSpawnRequest(raw, options) {
   }
   if (raw.knowledgeIsolation !== undefined && typeof raw.knowledgeIsolation !== 'boolean')
     throw new Error('Invalid knowledge isolation policy');
+  if (raw.planning !== undefined && typeof raw.planning !== 'boolean')
+    throw new Error('Invalid planning isolation policy');
   return {
     kind: 'agent',
     command: raw.command,
@@ -688,6 +676,7 @@ async function validateSpawnRequest(raw, options) {
     cwd,
     sessionEnv: raw.sessionEnv,
     knowledgeIsolation: raw.knowledgeIsolation === true,
+    planning: raw.planning === true,
   };
 }
 
@@ -789,6 +778,11 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
       ? {
           ...copy('XDG_CONFIG_HOME'),
           ...copy('OPENCODE_CONFIG'),
+          // Repository config is executable policy: it can redefine the plan
+          // agent, replace providers/MCP servers and load local tools. These
+          // flags must be fixed here, never inherited from the container or turn.
+          OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+          OPENCODE_PURE: '1',
           // Custom providers otherwise hide websearch; pin the tested search provider.
           OPENCODE_ENABLE_EXA: '1',
           OPENCODE_WEBSEARCH_PROVIDER: 'exa',
@@ -1034,31 +1028,48 @@ async function removeKnowledgeIsolation(home, uid, gid, setprivPath = '/usr/bin/
     await rm(home, { recursive: true, force: true });
     return;
   } catch {
-    // A rootless namespace can stop the broker traversing a 0700 tree after it
-    // hands that tree to the agent uid. Let that same unprivileged identity
-    // remove its descendants. GNU find does not follow encountered symlinks;
-    // even if the agent races this walk, it has no privilege beyond its own uid.
-    await new Promise((resolveCleanup, rejectCleanup) => {
-      const cleanup = spawn(
-        setprivPath,
-        [
-          `--reuid=${String(uid)}`,
-          `--regid=${String(gid)}`,
-          '--clear-groups',
-          '/usr/bin/find',
-          home,
-          '-mindepth',
-          '1',
-          '-delete',
-        ],
-        { stdio: 'ignore' },
-      );
-      cleanup.once('error', rejectCleanup);
-      cleanup.once('close', resolveCleanup);
-    });
-    // Removing the now-empty home only needs write access to its broker-owned
-    // parent; it does not require traversing the agent-owned 0700 directory.
-    await rm(home, { recursive: true, force: true });
+    // Return only the broker-owned policy directories to the child. Its identity
+    // can then unlink root-owned policy files without traversing private data as root.
+    for (const name of ['config/opencode', 'config', 'codex', 'claude', '.']) {
+      const path = join(home, name);
+      try {
+        const metadata = await lstat(path);
+        if (metadata.isDirectory() && metadata.uid === process.getuid()) {
+          await chmod(path, 0o700);
+          await chown(path, uid, gid);
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT' && error.code !== 'EACCES') throw error;
+      }
+    }
+    const asAgent = async (args) => {
+      await new Promise((resolveCleanup, rejectCleanup) => {
+        const sameIdentity = process.getuid() === uid && process.getgid() === gid;
+        const child = spawn(
+          sameIdentity ? '/usr/bin/find' : setprivPath,
+          sameIdentity
+            ? args
+            : [
+                `--reuid=${String(uid)}`,
+                `--regid=${String(gid)}`,
+                '--clear-groups',
+                '/usr/bin/find',
+                ...args,
+              ],
+          { stdio: 'ignore' },
+        );
+        child.once('error', rejectCleanup);
+        child.once('close', (code) =>
+          code === 0 ? resolveCleanup() : rejectCleanup(new Error('Agent home cleanup failed')),
+        );
+      });
+    };
+    // Preorder chmod restores traversal even if the child left a mode-000 directory.
+    // Neither walk follows symlinks; both run with the unprivileged child identity.
+    await asAgent([home, '-type', 'd', '-exec', '/bin/chmod', 'u+rwx', '{}', ';']);
+    await asAgent([home, '-mindepth', '1', '-delete']);
+    // rmdir needs access to the broker-owned parent, not the private empty home.
+    await rmdir(home);
   }
 }
 
@@ -1069,6 +1080,154 @@ export async function materializeKnowledgeIsolation(request, options, connectorU
     home,
     cleanup: () => removeKnowledgeIsolation(home, uid, gid, options.setprivPath),
   };
+}
+
+function planningRuntimeRoots(request, options) {
+  if (!request.planning || request.knowledgeIsolation) return [];
+  if (request.command === 'codex-acp' && options.runtimeDir)
+    return [join(options.runtimeDir, 'codex-sessions'), join(options.runtimeDir, 'codex-state')];
+  if (request.command === 'claude-agent-acp' && options.env?.CLAUDE_CONFIG_DIR)
+    return [join(options.env.CLAUDE_CONFIG_DIR, 'projects')];
+  if (request.command === 'opencode-acp')
+    return [
+      options.enforceRoot === false
+        ? join(options.runtimeDir, 'opencode-state')
+        : OPENCODE_STATE_DIR,
+    ];
+  return [];
+}
+
+/** Build a broker-owned configuration tree, separate from writable runtime data. */
+export async function materializeManagedAgentHome(request, options, connectorUrl) {
+  const { uid, gid } = validateIdentity(options);
+  const isolated = await materializeKnowledgeIsolation(request, options, connectorUrl);
+  const home = isolated.home;
+  try {
+    // Hand ownership back before installing policy. Production runs as root;
+    // rootless tests use their own identity and exercise the generated content.
+    await chown(home, process.getuid(), process.getgid());
+    await chmod(home, 0o755);
+    for (const name of ['claude', 'codex', 'config']) {
+      const directory = join(home, name);
+      await chown(directory, process.getuid(), process.getgid());
+      await chmod(directory, 0o755);
+    }
+    // Import only the image-owned template, never the previous mutable user home.
+    let gitPolicy = '';
+    try {
+      const template = await open(
+        '/etc/verity-agent.gitconfig',
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      try {
+        const metadata = await template.stat();
+        if (
+          !metadata.isFile() ||
+          metadata.uid !== 0 ||
+          (metadata.mode & 0o022) !== 0 ||
+          metadata.size > 65536
+        )
+          throw new Error('Untrusted managed Git configuration');
+        gitPolicy = await template.readFile('utf8');
+      } finally {
+        await template.close();
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT' || options.enforceRoot !== false) throw error;
+    }
+    const gitValue = (value) => JSON.stringify(value);
+    const gitIgnore = join(home, 'config', 'git-ignore');
+    await writeFile(gitIgnore, '.gh-token\n.env\n.agents/.last-code-review-sha\n', { mode: 0o644 });
+    const gitIdentity = options.env ?? {};
+    await writeFile(
+      join(home, '.gitconfig'),
+      [
+        gitPolicy,
+        '[core]',
+        `excludesFile = ${gitValue(gitIgnore)}`,
+        '[user]',
+        ...(gitIdentity.GIT_USER_NAME ? [`name = ${gitValue(gitIdentity.GIT_USER_NAME)}`] : []),
+        ...(gitIdentity.GIT_USER_EMAIL ? [`email = ${gitValue(gitIdentity.GIT_USER_EMAIL)}`] : []),
+      ].join('\n'),
+      { mode: 0o644 },
+    );
+    const configFile = join(home, 'codex', 'config.toml');
+    await chown(configFile, process.getuid(), process.getgid());
+    const codexConfig = await readFile(configFile, 'utf8');
+    await writeFile(
+      configFile,
+      [
+        `sqlite_home = ${JSON.stringify(options.runtimeDir ? join(options.runtimeDir, 'codex-state') : join(home, 'state'))}`,
+        `log_dir = ${JSON.stringify(join(home, 'state'))}`,
+        'skills.include_instructions = false',
+        codexConfig,
+        '[features]',
+        'multi_agent = false',
+        'plugins = false',
+        '[hooks]',
+        // No trusted projects are imported from the former user home. Codex's
+        // loader disables project-local config, hooks and exec policies by default.
+      ].join('\n'),
+    );
+    await chmod(configFile, 0o644);
+    const writable = async (path) => {
+      await mkdir(path, { recursive: true, mode: 0o700 });
+      await chown(path, uid, gid);
+    };
+    await writeFile(join(home, 'codex', 'installation_id'), randomUUID(), { mode: 0o644 });
+    for (const name of ['tmp', '.tmp', 'skills', 'log', 'shell_snapshots'])
+      await writable(join(home, 'codex', name));
+    for (const name of [
+      'todos',
+      'tasks',
+      'debug',
+      'session-env',
+      'shell-snapshots',
+      'plans',
+      'telemetry',
+    ])
+      await writable(join(home, 'claude', name));
+    if (options.env?.CLAUDE_CONFIG_DIR) {
+      await symlink(
+        join(options.env.CLAUDE_CONFIG_DIR, 'projects'),
+        join(home, 'claude', 'projects'),
+      );
+    } else await writable(join(home, 'claude', 'projects'));
+    if (options.runtimeDir) {
+      await symlink(
+        join(options.runtimeDir, 'codex-state', 'thread-writer-locks'),
+        join(home, 'codex', 'thread-writer-locks'),
+      );
+      await symlink(join(options.runtimeDir, 'codex-sessions'), join(home, 'codex', 'sessions'));
+    } else {
+      await writable(join(home, 'codex', 'sessions'));
+      await writable(join(home, 'codex', 'thread-writer-locks'));
+    }
+    await writeFile(join(home, '.claude.json'), JSON.stringify({ hasCompletedOnboarding: true }), {
+      mode: 0o644,
+    });
+    const openCodeDir = join(home, 'config', 'opencode');
+    await mkdir(openCodeDir, { mode: 0o755 });
+    await writeFile(join(openCodeDir, '.gitignore'), '*\n', { mode: 0o644 });
+    if (request.command === 'opencode-acp') {
+      const path = join(home, 'config', 'opencode.json');
+      await chown(path, process.getuid(), process.getgid());
+      await chmod(path, 0o644);
+    }
+    for (const path of [
+      join(home, '.gitconfig'),
+      gitIgnore,
+      join(home, '.claude.json'),
+      join(home, 'codex', 'installation_id'),
+      join(openCodeDir, '.gitignore'),
+    ])
+      await chmod(path, 0o644);
+    await chmod(openCodeDir, 0o755);
+    return isolated;
+  } catch (error) {
+    await isolated.cleanup();
+    throw error;
+  }
 }
 
 /** A root-issued lease cannot be supplied through the agent spawn protocol. */
@@ -1152,7 +1311,7 @@ export function agentLaunchSpec(request, options) {
   if (typeof agentPath !== 'string') {
     throw new Error(`unsupported agent command '${String(request.command)}'`);
   }
-  if (request.knowledgeIsolation && typeof request.knowledgeHome !== 'string')
+  if ((request.knowledgeIsolation || request.planning) && typeof request.knowledgeHome !== 'string')
     throw new Error('Wiki isolation home was not prepared');
   return {
     command: setprivPath,
@@ -1167,21 +1326,27 @@ export function agentLaunchSpec(request, options) {
       // `options.dockerGid` is that one sanctioned variation, and it swaps
       // `--clear-groups` for `--groups=<docker>` — never the runtime GID.
       ...privilegeDropFlags(
-        request.knowledgeIsolation ? undefined : options.dockerGid,
+        request.knowledgeIsolation || request.planning ? undefined : options.dockerGid,
         options.runnerGid,
       ),
-      ...(request.knowledgeIsolation
+      ...(request.knowledgeIsolation || request.planning
         ? [
             options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH,
             '--root',
-            request.cwd,
+            request.planning
+              ? request.cwd === (options.worktreeRoot ?? DEFAULT_WORKTREE_ROOT) ||
+                request.cwd.startsWith(`${options.worktreeRoot ?? DEFAULT_WORKTREE_ROOT}/`)
+                ? (options.worktreeRoot ?? DEFAULT_WORKTREE_ROOT)
+                : (options.sharedSessionRoot ?? request.cwd)
+              : request.cwd,
             '--cwd',
             request.cwd,
             '--loading',
             'dynamic',
             '--dynamic-root',
             request.knowledgeHome,
-            '--write-isolated',
+            request.planning ? '--read-only-root' : '--write-isolated',
+            ...planningRuntimeRoots(request, options).flatMap((path) => ['--runtime-root', path]),
             '--',
           ]
         : []),
@@ -1210,16 +1375,62 @@ export function agentLaunchSpec(request, options) {
           },
           request.sessionEnv,
         ),
-        ...(request.knowledgeIsolation
+        // Disabling project config also disables automatic AGENTS.md discovery.
+        // Keep repository guidance as text, without allowing repository JSON to
+        // configure providers, permissions or executable extensions. Wiki turns
+        // deliberately receive no project instructions.
+        ...(request.command === 'opencode-acp' && !request.knowledgeIsolation
+          ? {
+              OPENCODE_CONFIG_CONTENT: JSON.stringify({
+                instructions: [join(request.cwd, 'AGENTS.md')],
+              }),
+            }
+          : {}),
+        ...(request.managedHome
+          ? {
+              HOME: request.managedHome,
+              ...(request.command === 'claude-agent-acp'
+                ? { CLAUDE_CONFIG_DIR: join(request.managedHome, 'claude') }
+                : {}),
+              ...(request.command === 'codex-acp'
+                ? { CODEX_HOME: join(request.managedHome, 'codex') }
+                : {}),
+              XDG_CONFIG_HOME: join(request.managedHome, 'config'),
+              ...(request.command === 'opencode-acp'
+                ? {
+                    OPENCODE_CONFIG: join(request.managedHome, 'config', 'opencode.json'),
+                  }
+                : {
+                    XDG_DATA_HOME: join(request.managedHome, 'data'),
+                    XDG_STATE_HOME: join(request.managedHome, 'state'),
+                    XDG_CACHE_HOME: join(request.managedHome, 'cache'),
+                  }),
+              npm_config_cache: join(request.managedHome, 'cache'),
+              TMPDIR: join(request.managedHome, 'tmp'),
+            }
+          : {}),
+        ...(request.knowledgeIsolation || request.planning
           ? {
               HOME: request.knowledgeHome,
               CLAUDE_CONFIG_DIR: join(request.knowledgeHome, 'claude'),
               CODEX_HOME: join(request.knowledgeHome, 'codex'),
               XDG_CONFIG_HOME: join(request.knowledgeHome, 'config'),
               OPENCODE_CONFIG: join(request.knowledgeHome, 'config', 'opencode.json'),
-              XDG_DATA_HOME: join(request.knowledgeHome, 'data'),
-              XDG_STATE_HOME: join(request.knowledgeHome, 'state'),
-              XDG_CACHE_HOME: join(request.knowledgeHome, 'cache'),
+              ...(request.command === 'opencode-acp' &&
+              request.planning &&
+              !request.knowledgeIsolation
+                ? Object.fromEntries(
+                    ['data', 'state', 'cache'].map((name) => [
+                      `XDG_${name.toUpperCase()}_HOME`,
+                      join(planningRuntimeRoots(request, options)[0], name),
+                    ]),
+                  )
+                : {
+                    XDG_DATA_HOME: join(request.knowledgeHome, 'data'),
+                    XDG_STATE_HOME: join(request.knowledgeHome, 'state'),
+                    XDG_CACHE_HOME: join(request.knowledgeHome, 'cache'),
+                  }),
+              npm_config_cache: join(request.knowledgeHome, 'cache'),
               TMPDIR: join(request.knowledgeHome, 'tmp'),
             }
           : {}),
@@ -2648,6 +2859,8 @@ export async function runAgentSpawnBroker(options = {}) {
           send(socket, {
             ok: true,
             protocolVersion: AGENT_SPAWN_PROTOCOL_VERSION,
+            managedAgentConfig: true,
+            planningIsolation: scriptIsolation.available,
             knowledgeIsolation: scriptIsolation.available,
             scriptIsolation: scriptIsolation.available,
           });
@@ -2680,7 +2893,7 @@ export async function runAgentSpawnBroker(options = {}) {
         if (
           !scriptIsolation.available &&
           ((request.kind === 'trusted-cli' && request.entryScript !== undefined) ||
-            (request.kind === 'agent' && request.knowledgeIsolation))
+            (request.kind === 'agent' && (request.knowledgeIsolation || request.planning)))
         ) {
           throw new Error(SCRIPT_ISOLATION_UNAVAILABLE_ERROR);
         }
@@ -2733,9 +2946,28 @@ export async function runAgentSpawnBroker(options = {}) {
           // They are maintained separately on purpose — one guards the socket, one
           // guards the exported function — so they can disagree, and the day they do
           // is the day this matters. Cheap enough to hold the guard open for.
-          if (request.kind === 'agent' && request.knowledgeIsolation) {
-            const isolated = await materializeKnowledgeIsolation(request, options, connectorUrl);
+          if (request.kind === 'agent' && (request.knowledgeIsolation || request.planning)) {
+            const isolated = await (request.planning && !request.knowledgeIsolation
+              ? materializeManagedAgentHome(request, options, connectorUrl)
+              : materializeKnowledgeIsolation(request, options, connectorUrl));
             request.knowledgeHome = isolated.home;
+            const cleanup = materialized.cleanup;
+            materialized.cleanup = async () => {
+              try {
+                return await cleanup();
+              } finally {
+                await isolated.cleanup();
+              }
+            };
+          }
+          if (
+            request.kind === 'agent' &&
+            !request.knowledgeIsolation &&
+            !request.planning &&
+            (options.enforceRoot !== false || connectorUrl !== undefined)
+          ) {
+            const isolated = await materializeManagedAgentHome(request, options, connectorUrl);
+            request.managedHome = isolated.home;
             const cleanup = materialized.cleanup;
             materialized.cleanup = async () => {
               try {

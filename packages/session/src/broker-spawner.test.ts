@@ -82,6 +82,36 @@ afterEach(async () => {
   await rm(runtimeDir, { recursive: true, force: true });
 });
 
+it.each(['claude-agent-acp', 'codex-acp', 'opencode-acp'])(
+  'refuses %s planning before spawning when filesystem isolation is unavailable',
+  async (command) => {
+    const spawnChild = vi.fn();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const broker = await runAgentSpawnBroker({
+      runtimeDir,
+      worktreeRoot: runtimeDir,
+      enforceRoot: false,
+      agentUid: 1000,
+      agentGid: 1000,
+      spawnChild,
+      scriptIsolation: { available: false, reason: 'unsupported kernel' },
+    });
+    stderr.mockRestore();
+    try {
+      const child = createBrokerSpawner(broker.socketPath)(command, [], {
+        cwd: runtimeDir,
+        env: {},
+        planning: true,
+      });
+      await expect(child.exited).resolves.toBe(1);
+      expect(child.stderr()).toContain('isolation is unavailable');
+      expect(spawnChild).not.toHaveBeenCalled();
+    } finally {
+      await broker.close();
+    }
+  },
+);
+
 describe('bounded agent signal trace lease', () => {
   const sessionId = '4fcd62fd-f7ca-4f40-80b3-db8346e31250';
   const now = 1_000_000;
@@ -824,8 +854,8 @@ describe('agent spawn broker', () => {
       worktreeRoot: runtimeDir,
       connectorConfigPath,
       enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
       spawnChild: (_command, _args, options) => {
         environments.push(options.env ?? {});
         return spawn(process.execPath, ['-e', ''], options);
@@ -849,7 +879,7 @@ describe('agent spawn broker', () => {
     }
   });
 
-  it('refuses argv for opencode-acp, which could otherwise reset the cwd it validated', async () => {
+  it('refuses adapter argv that could select unmanaged configuration or another command', async () => {
     // The cwd check two tests down is what confines an agent to the worktree, and
     // `opencode acp` accepts `--cwd`: a request could pass the check with a legal
     // directory and then name another one in its argv, keeping the broker-supplied
@@ -873,11 +903,12 @@ describe('agent spawn broker', () => {
       await expect(refused.exited).resolves.toBe(1);
       expect(refused.stderr()).toMatch(/opencode-acp takes no argv/);
       expect(spawnChild).not.toHaveBeenCalled();
-      // The other adapters keep their argv: they have no flag that can move the
-      // working directory, and the e2e paths pass the adapter's own module path.
-      const allowed = spawner('claude-agent-acp', ['--verbose'], { cwd: runtimeDir, env: {} });
-      await expect(allowed.exited).resolves.toBe(0);
-      expect(spawnChild).toHaveBeenCalledTimes(1);
+      for (const command of ['claude-agent-acp', 'codex-acp']) {
+        const refused = spawner(command, ['--verbose'], { cwd: runtimeDir, env: {} });
+        await expect(refused.exited).resolves.toBe(1);
+        expect(refused.stderr()).toContain(`${command} takes no argv`);
+      }
+      expect(spawnChild).not.toHaveBeenCalled();
     } finally {
       await broker.close();
       await rm(outside, { recursive: true, force: true });
@@ -1283,7 +1314,9 @@ function base64(text: string): string {
   return Buffer.from(text, 'utf8').toString('base64');
 }
 
-async function startScriptedBroker(): Promise<ScriptedBroker> {
+async function startScriptedBroker(
+  capabilities: Record<string, unknown> = { managedAgentConfig: true, planningIsolation: true },
+): Promise<ScriptedBroker> {
   const socketPath = join(scriptedDir, `scripted-${randomUUID().slice(0, 8)}.sock`);
   const requests: Record<string, unknown>[] = [];
   let peer: Socket | undefined;
@@ -1303,7 +1336,12 @@ async function startScriptedBroker(): Promise<ScriptedBroker> {
         const frame = JSON.parse(buffered.slice(0, newline)) as Record<string, unknown>;
         buffered = buffered.slice(newline + 1);
         requests.push(frame);
-        if (frame.kind === 'spawn-agent') announceSpawn(frame);
+        if (frame.kind === 'status')
+          socket.end(JSON.stringify({ ok: true, ...capabilities }) + '\n');
+        if (frame.kind === 'spawn-agent') {
+          peer = socket;
+          announceSpawn(frame);
+        }
       }
     });
   });
@@ -1341,7 +1379,7 @@ describe('broker spawner protocol handling', () => {
   /** Connect the spawner to `broker` and wait until its `spawn-agent` frame lands. */
   async function connect(
     broker: ScriptedBroker,
-    options: { keepStdinOpen?: boolean; stdin?: string } = {},
+    options: { keepStdinOpen?: boolean; stdin?: string; planning?: boolean } = {},
   ) {
     const handle = createBrokerSpawner(broker.socketPath)('claude-agent-acp', [], {
       cwd: scriptedDir,
@@ -1351,6 +1389,25 @@ describe('broker spawner protocol handling', () => {
     await broker.spawnRequest;
     return handle;
   }
+
+  it('carries planning isolation through the broker frame', async () => {
+    const broker = await startScriptedBroker();
+    const handle = await connect(broker, { planning: true });
+    expect(await broker.spawnRequest).toMatchObject({ planning: true });
+    broker.send({ ok: true, kind: 'exit', code: 0 });
+    await handle.exited;
+  });
+
+  it('refuses a stale broker without starting an agent', async () => {
+    const broker = await startScriptedBroker({});
+    const handle = createBrokerSpawner(broker.socketPath, true)('claude-agent-acp', [], {
+      cwd: scriptedDir,
+      env: {},
+    });
+    await expect(handle.exited).resolves.toBe(1);
+    expect(handle.stderr()).toContain('update the Sandbox toolkit');
+    expect(broker.requests.some((frame) => frame.kind === 'spawn-agent')).toBe(false);
+  });
 
   it('retains the latest 64 KiB of broker stderr bytes', async () => {
     const broker = await startScriptedBroker();

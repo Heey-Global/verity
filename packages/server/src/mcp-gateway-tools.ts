@@ -220,7 +220,10 @@ export const SCRIPT_ISOLATION_UNAVAILABLE_MESSAGE =
  * refuse the same request on their own, so
  * this only moves the refusal ahead of a card whose answer could not change the outcome.
  *
- * Only an explicit `scriptIsolation: false` refuses. A supervisor that predates the field
+ * Starting planning also requires an affirmative managed-configuration and planning
+ * capability before changing session state.
+ *
+ * For entry scripts, only an explicit `scriptIsolation: false` refuses. A supervisor that predates the field
  * started only after the helper's probe passed, and an unreachable supervisor fails the call
  * on its own after approval, exactly as before this check existed.
  */
@@ -232,6 +235,14 @@ export function createTrustedCliPreflight(options: {
     options.requestStatus ??
     ((socketPath: string) => requestRunnerSupervisor(socketPath, { kind: 'status' }));
   return async ({ projectId, toolName, request }) => {
+    if (toolName === 'verity_start_planning') {
+      const status = await requestStatus(join(options.runnerRoot, projectId, 'supervisor.sock'));
+      if (status['managedAgentConfig'] !== true || status['planningIsolation'] !== true)
+        throw new ControlPlaneSessionToolError(
+          'Planning requires the updated agent filesystem boundary; recreate the Sandbox with the updated toolkit.',
+        );
+      return;
+    }
     if (toolName !== 'verity_secret_run') return;
     if (
       typeof request !== 'object' ||

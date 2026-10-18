@@ -1,0 +1,7 @@
+# Image-owned baseline for isolated Control Runner agent homes.
+[safe]
+    directory = /work
+    directory = /srv/verity/sessions/*
+[url "https://github.com/"]
+    insteadOf = git@github.com:
+    insteadOf = ssh://git@github.com/

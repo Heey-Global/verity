@@ -140,7 +140,7 @@ export interface AcpBackendProfile {
   /** The agent enforces {@link RunTurnOptions.toolless} through `sessionMeta`. */
   readonly enforcesToolless?: boolean | undefined;
   /** `_meta` sent with `session/new` and `session/load`. */
-  sessionMeta(opts: RunTurnOptions): Record<string, unknown>;
+  sessionMeta(opts: RunTurnOptions): Record<string, unknown> | Promise<Record<string, unknown>>;
   /** Model recorded on the `session` event when the turn names none. */
   defaultModelLabel(opts: RunTurnOptions): string;
   /** The turn's prompt text — the hook for agents with no system-prompt field. */
@@ -566,6 +566,7 @@ export async function runAcpTurn(
       cwd: opts.cwd,
       env: opts.env ?? process.env,
       keepStdinOpen: true,
+      ...(opts.planning === true ? { planning: true } : {}),
     });
   let child = spawn();
   const startupRecoveryDeadline = Date.now() + 16 * 60_000;
@@ -924,10 +925,11 @@ export async function runAcpTurn(
           if (!agentSpeaksHttpMcp && (opts.mcpServers?.length ?? 0) > 0) {
             turnOpts = withSystemDirective(turnOpts, MCP_SERVERS_UNAVAILABLE_DIRECTIVE);
           }
+          const metadata = profile.sessionMeta(turnOpts);
           const request = {
             cwd: opts.cwd,
             mcpServers,
-            _meta: profile.sessionMeta(turnOpts),
+            _meta: metadata instanceof Promise ? await metadata : metadata,
           };
           let session: NewSessionResponse;
           if (opts.resumeSessionId !== undefined) {

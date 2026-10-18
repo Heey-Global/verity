@@ -33,6 +33,8 @@ export interface SpawnOptions {
    * stdin is closed right after the initial write.
    */
   keepStdinOpen?: boolean;
+  /** Require the broker's filesystem boundary before starting a planning agent. */
+  planning?: boolean;
 }
 
 export interface SpawnedProcess {

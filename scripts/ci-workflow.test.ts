@@ -4146,7 +4146,40 @@ describe('Claude ACP sandbox smoke', () => {
     expect(source).toContain("runnerSupervisorBackend: 'claude-acp'");
     expect(script).toContain('-e DOPPLER_TOKEN=must-not-cross');
     expect(script).toContain('-e GITHUB_TOKEN=must-not-cross');
-    expect(script).toContain('"credentialBoundary":"no-credentials"');
+    expect(script).toContain('"credentialBoundary":"non-secret-placeholder"');
+    for (const harness of [
+      script,
+      readFileSync('scripts/test-runner-claude-live-recreate.sh', 'utf8'),
+    ]) {
+      expect(harness).toContain('umask 077; printf');
+      expect(harness).toContain(
+        'http://127.0.0.1:47821 > /run/verity-runner-broker/egress-connector.url',
+      );
+    }
+  });
+
+  it('answers ACP auth probes with managed settings without starting a session', async () => {
+    const worktree = await mkdtemp(join(tmpdir(), 'verity-auth-probe-fixture-'));
+    try {
+      for (const fixture of ['fake-claude-live-smoke.mjs', 'fake-claude-recreate-smoke.mjs']) {
+        for (const settings of [[], ['--settings', '{"apiKeyHelper":""}']]) {
+          const result = spawnSync(
+            process.execPath,
+            [`scripts/fixtures/${fixture}`, 'auth', 'status', '--json', ...settings],
+            {
+              env: { VERITY_LIVE_SMOKE_WORKTREE: worktree },
+              encoding: 'utf8',
+              timeout: 5_000,
+            },
+          );
+          expect(result.status, result.stderr).toBe(0);
+          expect(result.stderr).toBe('');
+          expect(JSON.parse(result.stdout)).toEqual({ loggedIn: false });
+        }
+      }
+    } finally {
+      await rm(worktree, { recursive: true, force: true });
+    }
   });
 
   it('waits for the ACP stream-json prompt before emitting Claude output', async () => {

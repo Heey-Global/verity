@@ -1681,7 +1681,12 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
     let request: Record<string, unknown> | undefined;
     const server = createServer((peer) => {
       peer.on('data', (data) => {
-        request = JSON.parse(data.toString('utf8').trim()) as Record<string, unknown>;
+        const frame = JSON.parse(data.toString('utf8').trim()) as Record<string, unknown>;
+        if (frame['kind'] === 'status') {
+          peer.end(`${JSON.stringify({ ok: true, managedAgentConfig: true })}\n`);
+          return;
+        }
+        request = frame;
         peer.end(`${JSON.stringify({ ok: true, outcome: 'ambiguous' })}\n`);
       });
     });
@@ -2050,7 +2055,12 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
     let request: Record<string, unknown> | undefined;
     const server = createServer((peer) => {
       peer.once('data', (data) => {
-        request = JSON.parse(data.toString('utf8')) as Record<string, unknown>;
+        const frame = JSON.parse(data.toString('utf8')) as Record<string, unknown>;
+        if (frame['kind'] === 'status') {
+          peer.end(`${JSON.stringify({ ok: true, managedAgentConfig: true })}\n`);
+          return;
+        }
+        request = frame;
         // A benign non-launching outcome: the client rejects AFTER the guard passes and
         // the request reaches this project socket, so reaching here proves both.
         peer.end(`${JSON.stringify({ ok: true, outcome: 'ambiguous' })}\n`);

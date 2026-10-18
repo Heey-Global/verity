@@ -94,12 +94,20 @@ export function agentLaunchSpec(
   request: {
     command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp';
     knowledgeIsolation?: boolean;
+    planning?: boolean;
     knowledgeHome?: string;
+    managedHome?: string;
     args: string[];
     cwd: string;
   },
   options: AgentSpawnBrokerOptions,
 ): { command: string; args: string[]; spawnOptions: SpawnOptions };
+
+export function materializeManagedAgentHome(
+  request: { command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp'; planning?: boolean },
+  options: AgentSpawnBrokerOptions,
+  connectorUrl: string,
+): Promise<{ home: string; cleanup(): Promise<void> }>;
 
 export function materializeKnowledgeIsolation(
   request: { command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp' },
