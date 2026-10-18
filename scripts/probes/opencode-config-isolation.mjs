@@ -345,6 +345,25 @@ try {
         ),
       },
     );
+    const writeProbe = spawnSync(
+      launch.args[7],
+      [
+        ...launch.args.slice(8, -1),
+        '/bin/sh',
+        '-c',
+        `echo runtime > "$1/write-canary"; /bin/sh -c 'echo modified > "$1/AGENTS.md"' sh "$2"`,
+        'sh',
+        join(root, 'opencode-state'),
+        project,
+      ],
+      { ...launch.spawnOptions, encoding: 'utf8', timeout: 10_000 },
+    );
+    assert.notEqual(writeProbe.status, 0, writeProbe.stderr);
+    assert.equal(await readFile(join(root, 'opencode-state', 'write-canary'), 'utf8'), 'runtime\n');
+    assert.equal(
+      await readFile(join(project, 'AGENTS.md'), 'utf8'),
+      'Harmless repository instruction probe.\n',
+    );
     await openSession(
       {
         ...launch.spawnOptions.env,

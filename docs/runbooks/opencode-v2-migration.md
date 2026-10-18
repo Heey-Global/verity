@@ -27,6 +27,17 @@ V2 normally allows external directory access. Verity restores an explicit `ask`
 rule, with the existing `/knowledge/**` read exception. This permission rule is
 not a shell sandbox: native read-only project confinement remains mandatory for
 planning, and server-side tool and secret authorization remain authoritative.
+Confined OpenCode turns require unprivileged user, mount and PID namespaces.
+Bun/glibc reads procfs to discover its main-thread stack bounds; the restricted
+Landlock filesystem view cannot support that discovery for child processes.
+Verity therefore uses the helper's private mount/PID namespace implementation
+for OpenCode planning and knowledge isolation, exposing only its own process
+metadata while retaining read-only project mounts and separate writable runtime
+roots. Namespace setup failures refuse the turn; there is no unconfined fallback.
+gVisor supports this path. Docker hosts must permit the helper's unprivileged
+namespace syscalls in their seccomp/AppArmor policy; the disposable CI probe
+container removes those outer profiles to exercise the helper's own boundary.
+
 Neither copied approvals nor local OpenCode configuration grant access to Verity
 secrets. See [the shared security standard](agent-security-standard.md).
 

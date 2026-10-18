@@ -662,6 +662,7 @@ jobs:
         shell: bash
         run: |
           docker run --rm --user dev --workdir /verity-source --entrypoint sh \
+            --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
             --mount "type=bind,src=$PWD,dst=/verity-source,readonly" \
             "$SMOKE_IMAGE" -ec '
               node /verity-source/scripts/probes/opencode-config-isolation.mjs /usr/local/bin/opencode

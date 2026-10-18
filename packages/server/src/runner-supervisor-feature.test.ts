@@ -738,6 +738,29 @@ describe('verity-runner supervisor runtime', () => {
     expect(spec.spawnOptions.env).not.toHaveProperty('VERITY_CLAUDE_EGRESS');
   });
 
+  it.each([{ planning: true }, { knowledgeIsolation: true }])(
+    'requires private process metadata for confined OpenCode: %j',
+    (isolation) => {
+      const spec = agentLaunchSpec(
+        {
+          command: 'opencode-acp',
+          args: [],
+          cwd: '/work/project',
+          knowledgeHome: '/tmp/home',
+          ...isolation,
+        },
+        {
+          agentUid: 1000,
+          agentGid: 1000,
+          connectorUrl: 'http://127.0.0.1:47821',
+          env: { VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE: '0' },
+        },
+      );
+      expect(spec.spawnOptions.env?.VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE).toBe('1');
+      expect(spec.args).toContain(isolation.planning ? '--read-only-root' : '--write-isolated');
+    },
+  );
+
   it('launches OpenCode ACP through the fixed wrapper, with XDG_CONFIG_HOME and no secrets', () => {
     const spec = agentLaunchSpec(
       { command: 'opencode-acp', args: [], cwd: '/work/project' },
