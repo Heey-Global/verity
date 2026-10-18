@@ -107,9 +107,11 @@ const SCENES = [
     cropsOnly: true,
     steps: [
       { click: 'Search ranking' },
-      { press: 'Current model: qwen3-coder. Tap to switch model.' },
+      { press: 'Current model: Qwen3.8-Max. Tap to switch model.' },
     ],
-    crops: [{ name: 'model-picker', text: ['SWITCH MODEL', 'kimi-k2'], maxHeight: 470 }],
+    crops: [
+      { name: 'model-picker', text: ['SWITCH MODEL', 'DeepSeek-V4.1-Flash-1017'], maxHeight: 505 },
+    ],
   },
   {
     name: 'phone-knowledge',
