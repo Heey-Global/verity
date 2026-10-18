@@ -53,6 +53,12 @@ const SCENES = [
         maxHeight: 615,
       },
       { name: 'usage-meters', text: ['Claude', 'Codex', 'WEEK'], maxHeight: 120 },
+      // The project list without the usage meters above it, for the hero.
+      {
+        name: 'project-list',
+        text: ['Northwind Shop', 'Customer Research', 'Northwind App'],
+        maxHeight: 560,
+      },
     ],
   },
   {
@@ -73,6 +79,7 @@ const SCENES = [
     name: 'phone-automation',
     viewport: PHONE,
     steps: [{ click: 'Research digest' }],
+    crops: [{ name: 'automation-card', text: ['RECURRING TASK', 'Create automation'], pad: 12 }],
   },
   {
     name: 'phone-pr',
@@ -86,6 +93,13 @@ const SCENES = [
     cropsOnly: true,
     steps: [{ click: 'Offline order notes' }],
     crops: [{ name: 'release-delay', text: ['install dependencies', 'Set up delay'], pad: 12 }],
+  },
+  {
+    name: 'phone-secret',
+    viewport: PHONE,
+    cropsOnly: true,
+    steps: [{ click: 'Refund duplicate charges' }],
+    crops: [{ name: 'approval-secret', text: ['STRIPE_API_KEY', 'Deny'], pad: 12 }],
   },
   {
     name: 'phone-models',
