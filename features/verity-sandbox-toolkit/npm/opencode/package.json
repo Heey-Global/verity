@@ -3,6 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "@opencode/cli": "2.0.29"
+    "@opencode/cli": "2.0.30"
   }
 }
