@@ -3,7 +3,7 @@ import {
   sessionSwitchTiming,
   type SwitchTiming,
 } from '../sessionSwitchTiming.js';
-import type { AgentEvent, Attachment } from '@verity/events';
+import type { AgentEvent, Attachment, BoundedHistoryPage } from '@verity/events';
 import {
   VerityApiError,
   type AttachmentUpload,
@@ -21,11 +21,7 @@ import type { LiveSessionTransport } from '../live/connection.js';
 import { SessionStream, type SessionStreamConnectionState } from '../stream.js';
 import { engineLabel } from '../ui/modelPicker.js';
 
-/** How many of the most recent events to open a session from (the tail). One turn
- * is several events (prompt + text + tool calls/results), so this is ~15–20 recent
- * turns — enough context on open while skipping the bulk of a long backlog. Older
- * turns load on scroll-up. Stays within the server's 200 page cap. */
-const HISTORY_PAGE = 150;
+/** Explicit older-history requests also bound metadata-only scans. */
 const HISTORY_VISIBLE_SCAN_MAX_PAGES = 5;
 export const DEFAULT_ACTIVITY_POLL_MS = 10_000;
 
@@ -65,6 +61,8 @@ export interface SessionModelState {
   session: SessionState;
   /** Last stream error (server `error` frame / connection); cleared on the next event. */
   streamError: string | undefined;
+  historyError: string | undefined;
+  loadingHistory: boolean;
   /** Current live transport state, used for reconnecting/offline banners. */
   connectionState: SessionStreamConnectionState;
   /** A `sendTurn` POST is in flight. */
@@ -342,6 +340,12 @@ export class SessionModel {
   // has to OPEN the stream rather than resume a socket that does not exist.
   private _opened = false;
   private _historyAttemptComplete = false;
+  private _historyError: string | undefined;
+  private _historyLoad: AbortController | undefined;
+  // UI state can retire metadata frames; that must never erase the history cursor.
+  private _historyBefore: number | undefined;
+  private _historySnapshot: number | undefined;
+  private readonly _historyLifetime = new AbortController();
 
   private readonly timing: SwitchTiming | undefined;
 
@@ -441,6 +445,8 @@ export class SessionModel {
     return {
       session,
       streamError: this._streamError,
+      historyError: this._historyError,
+      loadingHistory: this._historyLoad !== undefined,
       connectionState: this._connectionState,
       sending: this._sending,
       sendError: this._sendError,
@@ -486,7 +492,7 @@ export class SessionModel {
       decidingPlanning: this._decidingPlanning,
       planningError: this._planningError,
       hasOlder: this._hasOlder,
-      oldestHistorySeq: this.stream.oldestSeq,
+      oldestHistorySeq: this._historyBefore,
       loadingOlder: this._loadingOlder,
       olderLoadStalled: this._olderLoadStalled,
       olderLoadNeedsContinuation: this._olderLoadNeedsContinuation,
@@ -717,56 +723,59 @@ export class SessionModel {
     this._activityTimer = undefined;
   }
 
-  /**
-   * Open the live stream from the session's TAIL: fetch recent history until it
-   * contains a visible message, seed the reducer from those REST pages, then resume
-   * the WS after the newest snapshot event. This keeps both large histories and
-   * long metadata-only tails out of the socket backlog while preserving the race:
-   * anything persisted after the REST snapshot is replayed by the stream.
-   * On any failure before a snapshot is seeded, fall back to a full replay.
-   */
+  /** Retry a failed initial snapshot without falling back to a full live replay. */
+  async retryHistory(): Promise<void> {
+    if (!this._running || this._historyAttemptComplete || this._historyLoad) return;
+    await this.openStreamFromTail();
+  }
+
   private async openStreamFromTail(): Promise<void> {
-    const timing = this.timing;
-    markSessionSwitch(timing, 'history-load-start');
+    markSessionSwitch(this.timing, 'history-load-start');
+    const controller = new AbortController();
+    this._historyLoad = controller;
+    this._historyError = undefined;
+    this.emit();
+    const pages: BoundedHistoryPage[] = [];
     try {
-      let page = await this.opts.client.getHistory(this.opts.sessionId, {
-        limit: HISTORY_PAGE,
-        timing,
-      });
-      const pages = [page.events];
-      const newest = page.events.at(-1)?.seq;
-      let oldest = page.events[0]?.seq;
-      while (
-        page.hasMore &&
-        oldest !== undefined &&
-        !this.historyPageRendersMessages(page.events, timing)
-      ) {
-        page = await this.opts.client.getHistory(this.opts.sessionId, {
-          beforeSeq: oldest,
-          limit: HISTORY_PAGE,
-          timing,
+      for (let count = 0; count < 2; count += 1) {
+        const previous = pages.at(-1);
+        const page = await this.opts.client.getBoundedHistory(this.opts.sessionId, {
+          ...(previous?.beforeSeq != null
+            ? { beforeSeq: previous.beforeSeq, snapshotSeq: previous.snapshotSeq }
+            : {}),
+          signal: controller.signal,
+          timing: this.timing,
         });
-        pages.push(page.events);
-        oldest = page.events[0]?.seq;
+        if (controller.signal.aborted || !this._running) return;
+        pages.push(page);
+        if (!page.hasMore || this.historyPageRendersMessages(page.events, this.timing)) break;
       }
-      if (!this._running) return;
-      if (newest !== undefined) {
-        this._hasOlder = page.hasMore;
-        this.stream.setSinceSeq(newest);
-        markSessionSwitch(timing, 'history-install-start', pages.length);
-        this.stream.seedHistory(pages.reverse().flat());
-        markSessionSwitch(timing, 'history-install-end');
-      }
-    } catch {
-      markSessionSwitch(timing, 'history-fallback-replay');
-      // No complete REST snapshot was installed, so seq 0 remains the safe cursor.
+    } catch (error) {
+      if (controller.signal.aborted || !this._running) return;
+      this._historyError =
+        error instanceof Error ? error.message : 'History could not be loaded. Retry.';
+    } finally {
+      if (this._historyLoad === controller) this._historyLoad = undefined;
     }
-    if (!this._running) return;
-    // Register the start even in background: the stream defers its socket until
-    // resume, otherwise a probe settling while paused leaves it unstarted forever.
-    this._historyAttemptComplete = true;
-    this.stream.start();
-    if (!this._paused) this.startActivityPoll();
+    if (controller.signal.aborted || !this._running) return;
+    const first = pages[0];
+    const last = pages.at(-1);
+    if (first && last) {
+      this._historySnapshot = first.snapshotSeq;
+      this._hasOlder = last.hasMore;
+      this._historyBefore = last.beforeSeq ?? undefined;
+      this._olderLoadStalled = this._historyError !== undefined;
+      this._olderLoadNeedsContinuation = last.hasMore;
+      this.stream.setSinceSeq(first.snapshotSeq);
+      markSessionSwitch(this.timing, 'history-install-start', pages.length);
+      this.stream.seedHistory(pages.flatMap((p) => p.events).sort((a, b) => a.seq - b.seq));
+      markSessionSwitch(this.timing, 'history-install-end');
+      this._loaded = true;
+      this._historyAttemptComplete = true;
+      this.stream.start();
+      if (!this._paused) this.startActivityPoll();
+    }
+    this.emit();
   }
 
   private historyPageRendersMessages(
@@ -794,14 +803,16 @@ export class SessionModel {
    * keep what's loaded and let the operator retry by scrolling again.
    */
   async loadOlder(): Promise<void> {
-    if (!this._hasOlder || this._loadingOlder) return;
-    const beforeSeq = this.stream.oldestSeq;
+    if (!this._running || !this._hasOlder || this._loadingOlder) return;
+    const beforeSeq = this._historyBefore;
     if (beforeSeq === undefined) return;
     this._loadingOlder = true;
+    this._historyError = undefined;
     this._olderLoadStalled = false;
     this._olderLoadNeedsContinuation = false;
     this.emit();
     const fetchedPages: SessionHistoryPage['events'][] = [];
+    let fetchedBefore = beforeSeq;
     let fetchedHasMore: boolean = this._hasOlder;
     let producedVisibleRows = false;
     try {
@@ -812,13 +823,16 @@ export class SessionModel {
       // normally reveals content without allowing malformed/huge metadata runs to
       // monopolize the UI or network.
       for (let pages = 0; pages < HISTORY_VISIBLE_SCAN_MAX_PAGES; pages += 1) {
-        const page = await this.opts.client.getHistory(this.opts.sessionId, {
+        const page = await this.opts.client.getBoundedHistory(this.opts.sessionId, {
           beforeSeq: cursor,
-          limit: HISTORY_PAGE,
+          snapshotSeq: this._historySnapshot,
+          signal: this._historyLifetime.signal,
           timing: this.timing,
         });
+        if (!this._running) return;
         fetchedPages.push(page.events);
         fetchedHasMore = page.hasMore;
+        fetchedBefore = page.beforeSeq ?? cursor;
         const pageRendersMessages = this.historyPageRendersMessages(page.events);
         producedVisibleRows ||= pageRendersMessages;
         if (!page.hasMore || pageRendersMessages) break;
@@ -831,22 +845,27 @@ export class SessionModel {
         }
         cursor = nextBeforeSeq;
       }
-    } catch {
+    } catch (error) {
+      this._historyError =
+        error instanceof Error ? error.message : 'History could not be loaded. Retry.';
       // Keep pages fetched before a later transient failure. Advancing the stream's
       // oldest cursor avoids refetching them on retry and preserves their events even
       // when they did not independently render a transcript row.
       this._olderLoadStalled = true;
     } finally {
-      if (fetchedPages.length > 0) {
-        const events = fetchedPages.reverse().flat();
-        this.installOlderHistory(events);
-        this._hasOlder = fetchedHasMore;
-        this._olderLoadNeedsContinuation =
-          fetchedHasMore && !this._olderLoadStalled && !producedVisibleRows;
+      if (this._running) {
+        if (fetchedPages.length > 0) {
+          const events = fetchedPages.reverse().flat();
+          this.installOlderHistory(events);
+          this._hasOlder = fetchedHasMore;
+          this._historyBefore = fetchedBefore;
+          this._olderLoadNeedsContinuation =
+            fetchedHasMore && !this._olderLoadStalled && !producedVisibleRows;
+        }
+        this._loadingOlder = false;
+        this._olderLoadGeneration += 1;
+        this.emit();
       }
-      this._loadingOlder = false;
-      this._olderLoadGeneration += 1;
-      this.emit();
     }
   }
 
@@ -856,46 +875,45 @@ export class SessionModel {
     this.stream.prependHistory(events, { notify: false });
     this._session = this.stream.state;
     this.retirePending();
-    this._streamError = undefined;
   }
 
   /**
-   * Load older history in ONE fetch down to (and including) `targetSeq` — the backing
-   * for a bookmark jump to a message that isn't in the loaded window. Instead of
-   * paging {@link HISTORY_PAGE} at a time (N round-trips, and the forward-only reducer
-   * rebuilt N times), it sizes a single request to the exact span between the current
-   * oldest loaded event and the target. `seq` is monotonic per event, so
-   * `oldestSeq - targetSeq` is an upper bound on the events in between — the target is
-   * always included (a sparse seq space just loads a few extra older events, never too
-   * few). No-op when the target is already loaded, nothing older exists, or a load is
-   * in flight. If the server caps the page below the requested span the target may not
-   * arrive in one shot — the caller re-invokes until it lands (or `hasOlder` clears),
-   * so this still converges far faster than the 150-at-a-time scroll path. Non-fatal on
-   * failure: keep what's loaded and let the caller retry.
+   * Load one bounded page toward `targetSeq` — the backing
+   * for a bookmark jump. Callers can continue explicitly until the target is in
+   * the loaded window. Sparse sequence IDs never become an event-count budget.
    */
   async loadOlderUntil(targetSeq: number): Promise<void> {
-    if (!this._hasOlder || this._loadingOlder) return;
-    const beforeSeq = this.stream.oldestSeq;
+    if (!this._running || !this._hasOlder || this._loadingOlder) return;
+    const beforeSeq = this._historyBefore;
     if (beforeSeq === undefined || targetSeq >= beforeSeq) return;
     this._loadingOlder = true;
+    this._historyError = undefined;
     this._olderLoadStalled = false;
     this._olderLoadNeedsContinuation = false;
     this.emit();
     try {
-      const page = await this.opts.client.getHistory(this.opts.sessionId, {
+      const page = await this.opts.client.getBoundedHistory(this.opts.sessionId, {
         beforeSeq,
-        limit: beforeSeq - targetSeq,
+        snapshotSeq: this._historySnapshot,
+        signal: this._historyLifetime.signal,
         timing: this.timing,
       });
+      if (!this._running) return;
       this.installOlderHistory(page.events);
       this._hasOlder = page.hasMore;
-    } catch {
+      this._historyBefore = page.beforeSeq ?? beforeSeq;
+    } catch (error) {
+      if (!this._running) return;
+      this._historyError =
+        error instanceof Error ? error.message : 'History could not be loaded. Retry.';
       // transient — leave _hasOlder as-is so a later attempt retries
       this._olderLoadStalled = true;
     } finally {
-      this._loadingOlder = false;
-      this._olderLoadGeneration += 1;
-      this.emit();
+      if (this._running) {
+        this._loadingOlder = false;
+        this._olderLoadGeneration += 1;
+        this.emit();
+      }
     }
   }
 
@@ -1155,6 +1173,8 @@ export class SessionModel {
   /** Close the stream (stops reconnecting) and stop the activity poll. */
   stop(): void {
     this._running = false;
+    this._historyLoad?.abort();
+    this._historyLifetime.abort();
     this.stream.stop();
     this.stopActivityPoll();
   }

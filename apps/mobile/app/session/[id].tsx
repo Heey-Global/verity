@@ -323,7 +323,6 @@ import {
   isOldestRowViewable,
   isScrollTowardHistory,
   migratedAnchorOffset,
-  shouldContinueOlderHistory,
   shouldContinueUserJump,
   shouldAcceptNativeLatestState,
   shouldFollowStreamingContent,
@@ -710,6 +709,9 @@ export const SessionChat = memo(function SessionChat({
     session,
     refreshMetadata,
     streamError,
+    historyError,
+    loadingHistory,
+    retryHistory,
     sending,
     sendError,
     cancelError,
@@ -2249,7 +2251,7 @@ export const SessionChat = memo(function SessionChat({
   // single flick from queueing page after page.
   const requestOlderHistory = useCallback(
     (allowStalledRetry = false) => {
-      if (pendingUserJump !== null) return;
+      if (pendingUserJump !== null || olderLoadNeedsContinuation) return;
       if (
         !shouldRequestOlderHistory(
           hasOlder,
@@ -2299,6 +2301,7 @@ export const SessionChat = memo(function SessionChat({
       loadingOlder,
       loadOlder,
       olderLoadStalled,
+      olderLoadNeedsContinuation,
       pendingUserJump,
       reportScrollDebug,
       initialListLoaded,
@@ -2308,24 +2311,6 @@ export const SessionChat = memo(function SessionChat({
   const onListContentSizeChange = useCallback((_width: number, height: number) => {
     lastContentHeightRef.current = height;
   }, []);
-  const initialHistoryPrefetchRef = useRef(false);
-  useEffect(() => {
-    if (
-      initialHistoryPrefetchRef.current ||
-      !initialListLoaded ||
-      !loaded ||
-      restoring ||
-      !hasOlder ||
-      loadingOlder
-    )
-      return;
-    initialHistoryPrefetchRef.current = true;
-    // Automatic pages must not compete with initial list measurement.
-    // A single extra page starts after FlashList reports its initial load.
-    // Subsequent pages use the measured four-viewport buffer, so opening a long session
-    // cannot pull its whole transcript into memory.
-    loadOlderNearStartRef.current();
-  }, [loaded, restoring, hasOlder, loadingOlder, initialListLoaded]);
   // Hold the settle window until the appended rows have been committed AND measured.
   // Nothing visible depends on it — it exists purely to space automatic follow-ups.
   useEffect(() => {
@@ -2366,36 +2351,6 @@ export const SessionChat = memo(function SessionChat({
       if (nearHistoryEdge && !userScrollActiveRef.current) loadOlderNearStartRef.current();
     }, HISTORY_APPEND_SETTLE_MS);
   }, [loadingOlder, olderLoadGeneration, reportScrollDebug]);
-  const observedOlderLoadGenerationRef = useRef(olderLoadGeneration);
-  useEffect(() => {
-    const completed = observedOlderLoadGenerationRef.current !== olderLoadGeneration;
-    observedOlderLoadGenerationRef.current = olderLoadGeneration;
-    if (
-      !shouldContinueOlderHistory(
-        completed,
-        hasOlder,
-        olderLoadStalled,
-        olderLoadNeedsContinuation,
-        isHistoryEdgeVisible(
-          lastScrollYRef.current,
-          lastContentHeightRef.current,
-          lastViewportHeightRef.current,
-          oldestVisibleIndexRef.current,
-          dataRef.current.length,
-        ),
-        userScrollActiveRef.current,
-        historyAppendSettlingRef.current,
-      )
-    )
-      return;
-
-    // A bounded scan may advance across metadata-only pages without changing any
-    // visible rows. Continue after React has committed the new cursor while the
-    // history edge remains visible. Failures/non-progress are deliberately excluded
-    // above, so this cannot become an automatic retry loop.
-    const raf = requestAnimationFrame(() => loadOlderNearStartRef.current());
-    return () => cancelAnimationFrame(raf);
-  }, [hasOlder, olderLoadGeneration, olderLoadNeedsContinuation, olderLoadStalled]);
   useEffect(() => {
     reportScrollDebug('loading-older-state', { loadingOlder });
   }, [loadingOlder, reportScrollDebug]);
@@ -4492,6 +4447,27 @@ export const SessionChat = memo(function SessionChat({
           )}
         />
       ) : null}
+      {historyError ? (
+        <>
+          <Banner tone="attention" text={historyError} />
+          <Button
+            label="Retry history"
+            variant="secondary"
+            size="compact"
+            loading={loadingHistory || loadingOlder}
+            onPress={loaded ? loadOlder : retryHistory}
+          />
+        </>
+      ) : null}
+      {hasOlder && olderLoadNeedsContinuation ? (
+        <Button
+          label="Load earlier history"
+          variant="secondary"
+          size="compact"
+          loading={loadingOlder}
+          onPress={loadOlder}
+        />
+      ) : null}
       {streamError ? <Banner tone="attention" text={`Stream: ${streamError}`} /> : null}
       {sendError ? <Banner tone="danger" text={`Send failed: ${sendError}`} /> : null}
       {switchModelError ? (
@@ -4529,7 +4505,7 @@ export const SessionChat = memo(function SessionChat({
         />
       ) : null}
       {voice.error ? <Banner tone="danger" text={`Voice: ${voice.error}`} /> : null}
-      {!loaded && !locallyCreated && messages.length === 0 && !streamError ? (
+      {!loaded && !locallyCreated && messages.length === 0 && !streamError && !historyError ? (
         // Still coming up: transcript hasn't drained yet and nothing has streamed in.
         // Show the loading animation inside the real chat body (header + composer
         // already rendered) rather than a blank pane. Locally-created sessions
@@ -4548,7 +4524,9 @@ export const SessionChat = memo(function SessionChat({
           contentContainerStyle={styles.starterScreen}
           keyboardShouldPersistTaps="handled"
         >
-          <Text style={styles.emptyTitle}>What should this session do?</Text>
+          <Text style={styles.emptyTitle}>
+            {hasOlder ? 'Earlier history is available' : 'What should this session do?'}
+          </Text>
           <View style={styles.starterList}>
             <SessionStarterCard
               icon="code"

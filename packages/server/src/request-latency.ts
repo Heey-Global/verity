@@ -18,6 +18,7 @@ const TRACKED_ROUTES = new Set([
   '/sessions',
   '/sessions/:id',
   '/sessions/:id/events',
+  '/sessions/:id/history/v1',
   '/sessions/:id/activity',
   '/sessions/:id/links',
   '/sessions/:id/branches',

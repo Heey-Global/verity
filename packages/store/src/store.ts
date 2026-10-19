@@ -1,4 +1,10 @@
 import { GoogleAccountStore } from './google-accounts.js';
+import {
+  HISTORY_MAX_BYTES,
+  HISTORY_MAX_EVENTS,
+  type BoundedHistoryPage,
+  type BoundedHistoryResult,
+} from '@verity/events';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   type AgentEvent,
@@ -4396,6 +4402,54 @@ export class EventStore implements EventSink {
   async getEvents(sessionId: string): Promise<AgentEvent[]> {
     const sequenced = await this.getEventsAfter(sessionId, 0);
     return sequenced.map((s) => s.event);
+  }
+
+  /** Return a contiguous suffix of complete events within the negotiated wire
+   * budget. An oversized boundary event remains the next event to request. */
+  async getBoundedHistory(
+    sessionId: string,
+    beforeSeq?: number,
+    snapshotSeq?: number,
+  ): Promise<BoundedHistoryResult> {
+    // One query establishes the initial snapshot, including the empty-log case.
+    const source = await this.getEventsBeforeSeq(
+      sessionId,
+      HISTORY_MAX_EVENTS,
+      snapshotSeq === undefined ? beforeSeq : Math.min(beforeSeq ?? Infinity, snapshotSeq + 1),
+    );
+    const snapshot = snapshotSeq ?? source.events.at(-1)?.seq ?? 0;
+    const page: BoundedHistoryPage = {
+      contract: 'bounded-history-v1',
+      kind: 'page',
+      events: [],
+      snapshotSeq: snapshot,
+      beforeSeq: null,
+      hasMore: false,
+    };
+    for (let i = source.events.length - 1; i >= 0; i -= 1) {
+      const event = source.events[i]!;
+      const candidate: BoundedHistoryPage = {
+        ...page,
+        events: [event, ...page.events],
+        beforeSeq: event.seq,
+        hasMore: i > 0 || source.hasMore,
+      };
+      const requiredBytes = Buffer.byteLength(JSON.stringify(candidate), 'utf8');
+      if (requiredBytes > HISTORY_MAX_BYTES) {
+        if (page.events.length === 0)
+          return {
+            contract: 'bounded-history-v1',
+            kind: 'oversized-event',
+            seq: event.seq,
+            requiredBytes,
+            maxBytes: HISTORY_MAX_BYTES,
+            snapshotSeq: snapshot,
+          };
+        return page;
+      }
+      Object.assign(page, candidate);
+    }
+    return page;
   }
 
   /**

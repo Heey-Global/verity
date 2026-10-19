@@ -1483,6 +1483,77 @@ describe('EventStore — append-only event log', () => {
     expect(page.events.map((s) => s.ts)).toEqual(rows.map((r) => r.created_at.getTime()));
   });
 
+  it('bounds whole history events by exact UTF-8 envelope bytes', async () => {
+    const saved = await ctx.store.appendEvent('s1', { t: 'text', delta: '' });
+    const empty = await ctx.store.getBoundedHistory('s1');
+    expect(empty.kind).toBe('page');
+    const budget = 256 * 1024;
+    const spare = budget - Buffer.byteLength(JSON.stringify(empty));
+    const delta = '🌍'.repeat(Math.floor(spare / 4)) + 'x'.repeat(spare % 4);
+    await sql`update events set payload = ${JSON.stringify({ t: 'text', delta })}::jsonb where id = ${saved.seq}`.execute(
+      ctx.db,
+    );
+    const exact = await ctx.store.getBoundedHistory('s1');
+    expect(exact.kind).toBe('page');
+    expect(Buffer.byteLength(JSON.stringify(exact))).toBe(budget);
+    if (exact.kind === 'page') expect(exact.events[0]?.event).toEqual({ t: 'text', delta });
+    await sql`update events set payload = ${JSON.stringify({ t: 'text', delta: delta + 'x' })}::jsonb where id = ${saved.seq}`.execute(
+      ctx.db,
+    );
+    expect(await ctx.store.getBoundedHistory('s1')).toMatchObject({
+      kind: 'oversized-event',
+      seq: saved.seq,
+      requiredBytes: budget + 1,
+    });
+  });
+
+  it('stops before oversized older events without skipping them', async () => {
+    const huge = await ctx.store.appendEvent('s1', { t: 'text', delta: 'x'.repeat(256 * 1024) });
+    const tail = await ctx.store.appendEvent('s1', { t: 'text', delta: 'whole tail' });
+    const page = await ctx.store.getBoundedHistory('s1');
+    expect(page.kind).toBe('page');
+    if (page.kind !== 'page') throw new Error('expected page');
+    expect(page.events.map((e) => e.seq)).toEqual([tail.seq]);
+    expect(page.hasMore).toBe(true);
+    expect(
+      await ctx.store.getBoundedHistory('s1', page.beforeSeq!, page.snapshotSeq),
+    ).toMatchObject({ kind: 'oversized-event', seq: huge.seq });
+  });
+
+  it('caps event count and preserves the snapshot across concurrent arrivals', async () => {
+    await ctx.store.createSession({ sessionId: 'sparse-other', worktree: '/wt/other', model: 'm' });
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'first' });
+    await ctx.store.appendEvent('sparse-other', { t: 'text', delta: 'sequence gap' });
+    const seqs = (await ctx.store.getEventsAfter('s1', 0)).map((e) => e.seq);
+    for (let i = 0; i < 151; i++)
+      seqs.push((await ctx.store.appendEvent('s1', { t: 'text', delta: String(i) })).seq);
+    const page = await ctx.store.getBoundedHistory('s1');
+    if (page.kind !== 'page') throw new Error('expected page');
+    expect(page.events.map((e) => e.seq)).toEqual(seqs.slice(-150));
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'concurrent' });
+    const older = await ctx.store.getBoundedHistory('s1', page.beforeSeq!, page.snapshotSeq);
+    if (older.kind !== 'page') throw new Error('expected page');
+    expect(older.snapshotSeq).toBe(page.snapshotSeq);
+    expect(older.events.map((e) => e.seq)).toEqual(seqs.slice(0, 2));
+    expect(older.hasMore).toBe(false);
+    expect((await ctx.store.getEventsAfter('s1', page.snapshotSeq)).map((e) => e.event)).toEqual([
+      { t: 'text', delta: 'concurrent' },
+    ]);
+  });
+
+  it('returns an explicit empty snapshot from which concurrent events can replay', async () => {
+    expect(await ctx.store.getBoundedHistory('s1')).toEqual({
+      contract: 'bounded-history-v1',
+      kind: 'page',
+      events: [],
+      snapshotSeq: 0,
+      beforeSeq: null,
+      hasMore: false,
+    });
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'after empty snapshot' });
+    expect(await ctx.store.getEventsAfter('s1', 0)).toHaveLength(1);
+  });
+
   it('getEventsBeforeSeq pages backward (newest tail first, then older)', async () => {
     const seqs: number[] = [];
     for (const event of sampleEvents) seqs.push((await ctx.store.appendEvent('s1', event)).seq);
