@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.74.1](https://github.com/Heey-Global/verity/compare/mobile-v1.74.0...mobile-v1.74.1) (2026-10-19)
+
+
+### Features
+
+* **website:** open the homepage with the three promises behind the headline ([#1694](https://github.com/Heey-Global/verity/issues/1694)) ([6425fd8](https://github.com/Heey-Global/verity/commit/6425fd8248da152e4d015497065e5ce229649e79))
+
+
+### Bug Fixes
+
+* **deps:** update dependency sanitize-html to v2.18.1 ([#1699](https://github.com/Heey-Global/verity/issues/1699)) ([580d818](https://github.com/Heey-Global/verity/commit/580d81843ffd9f054e4c0a5bc8ca61babb6d5199))
+* **mobile:** bound session history loading and expose recovery ([#1713](https://github.com/Heey-Global/verity/issues/1713)) ([023feee](https://github.com/Heey-Global/verity/commit/023feee98ea28d75ba78d6ea292717714f8e34a3))
+* **mobile:** keep the web app alive on plain-http origins without randomUUID ([#1705](https://github.com/Heey-Global/verity/issues/1705)) ([974b52b](https://github.com/Heey-Global/verity/commit/974b52bc3898ba30d8f4125650bde9fc4bbd055d))
+
 ## [1.72.5](https://github.com/Heey-Global/verity/compare/mobile-v1.72.4...mobile-v1.72.5) (2026-10-16)
 
 
