@@ -6,6 +6,39 @@ import type { RunResult, RunTurnOptions } from './backend-contract.js';
 import { runAcpTurn, type AcpBackendProfile } from './acp-backend.js';
 import { ALLOWED_PERMISSION_MODES } from './runner.js';
 
+const MAX_REPOSITORY_INSTRUCTIONS_BYTES = 256 * 1024;
+
+/**
+ * Direct read for spawners that do not supply the file themselves. Under the
+ * spawn broker the worker runs as a separate identity, and agent-made Git
+ * checkouts leave owner-only files it cannot open; that must not end the turn.
+ */
+async function readRepositoryInstructions(cwd: string): Promise<string | null> {
+  const handle = await open(
+    join(cwd, 'AGENTS.md'),
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  ).catch((error: NodeJS.ErrnoException) => {
+    if (
+      error.code === 'ENOENT' ||
+      error.code === 'ELOOP' ||
+      error.code === 'EACCES' ||
+      error.code === 'EPERM'
+    )
+      return undefined;
+    throw error;
+  });
+  if (handle === undefined) return null;
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.size > MAX_REPOSITORY_INSTRUCTIONS_BYTES) return null;
+    const buffer = Buffer.alloc(MAX_REPOSITORY_INSTRUCTIONS_BYTES);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, bytesRead).toString('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
 export const CLAUDE_ACP_PROFILE: AcpBackendProfile = {
   defaultCommand: 'claude-agent-acp',
   telemetryBackend: 'claude-acp',
@@ -13,36 +46,23 @@ export const CLAUDE_ACP_PROFILE: AcpBackendProfile = {
   enforcesToolless: true,
   loadSessionUnsupported: 'Claude ACP adapter does not support persistent session loading',
   clientCapabilitiesMeta: { 'subagent-transcript': true },
-  sessionMeta: async (opts) => {
+  sessionMeta: async (opts, context) => {
     // Settings discovery is disabled, so import repository guidance only as text.
     if (opts.toolless !== true) {
-      const handle = await open(
-        join(opts.cwd, 'AGENTS.md'),
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-      ).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === 'ENOENT' || error.code === 'ELOOP') return undefined;
-        throw error;
-      });
-      if (handle !== undefined) {
-        try {
-          const metadata = await handle.stat();
-          if (metadata.isFile() && metadata.size <= 256 * 1024) {
-            const buffer = Buffer.alloc(256 * 1024);
-            const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-            const text = buffer.subarray(0, bytesRead).toString('utf8');
-            opts = {
-              ...opts,
-              appendSystemPrompt: [
-                opts.appendSystemPrompt,
-                `Repository instructions (AGENTS.md):\n${text}`,
-              ]
-                .filter(Boolean)
-                .join('\n\n'),
-            };
-          }
-        } finally {
-          await handle.close();
-        }
+      const text =
+        context?.repositoryInstructions !== undefined
+          ? context.repositoryInstructions
+          : await readRepositoryInstructions(opts.cwd);
+      if (text !== null) {
+        opts = {
+          ...opts,
+          appendSystemPrompt: [
+            opts.appendSystemPrompt,
+            `Repository instructions (AGENTS.md):\n${text}`,
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
+        };
       }
     }
     return {

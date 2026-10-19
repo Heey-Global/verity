@@ -1,4 +1,4 @@
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
@@ -2123,4 +2123,51 @@ it('does not import repository guidance through a symlink', async () => {
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
+});
+
+describe('repository instructions under the spawn broker', () => {
+  const turn = (cwd: string) => ({
+    store: ctx.store,
+    worktree: cwd,
+    cwd,
+    prompt: 'Read',
+    appendSystemPrompt: 'Managed policy',
+  });
+
+  it('imports the text the broker read as the agent instead of opening the file', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'verity-claude-brokered-'));
+    try {
+      await writeFile(join(cwd, 'AGENTS.md'), 'Worker-visible copy');
+      const brokered = await CLAUDE_ACP_PROFILE.sessionMeta(turn(cwd), {
+        repositoryInstructions: 'Agent-read guidance',
+      });
+      expect(JSON.stringify(brokered)).toContain('Agent-read guidance');
+      expect(JSON.stringify(brokered)).not.toContain('Worker-visible copy');
+      // The broker found nothing to import; the worker must not second-guess it.
+      const none = await CLAUDE_ACP_PROFILE.sessionMeta(turn(cwd), {
+        repositoryInstructions: null,
+      });
+      expect(none).toMatchObject({ systemPrompt: { append: 'Managed policy' } });
+      expect(JSON.stringify(none)).not.toContain('Worker-visible copy');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // Root ignores file modes, so the EACCES this guards cannot be produced there.
+  it.skipIf(process.getuid?.() === 0)(
+    'starts the turn without guidance when the worker cannot read AGENTS.md',
+    async () => {
+      const cwd = await mkdtemp(join(tmpdir(), 'verity-claude-private-'));
+      try {
+        await writeFile(join(cwd, 'AGENTS.md'), 'Owner-only guidance', { mode: 0o000 });
+        const metadata = await CLAUDE_ACP_PROFILE.sessionMeta(turn(cwd));
+        expect(metadata).toMatchObject({ systemPrompt: { append: 'Managed policy' } });
+        expect(JSON.stringify(metadata)).not.toContain('Owner-only guidance');
+      } finally {
+        await chmod(join(cwd, 'AGENTS.md'), 0o600);
+        await rm(cwd, { recursive: true, force: true });
+      }
+    },
+  );
 });

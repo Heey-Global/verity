@@ -1,6 +1,7 @@
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 
 export const AGENT_SPAWN_PROTOCOL_VERSION: number;
+export const MAX_REPOSITORY_INSTRUCTIONS_BYTES: number;
 export const DEFAULT_RUNTIME_DIR: string;
 export const DEFAULT_CONTROL_DIR: string;
 export const DEFAULT_WORKTREE_ROOT: string;
@@ -170,6 +171,10 @@ export function loadTrustedCliArgvPolicy(
   },
 ): Promise<unknown | undefined>;
 export function validateTrustedCliExecutable(command: string): Promise<void>;
+export function readAgentRepositoryInstructions(
+  cwd: string,
+  options: Pick<AgentSpawnBrokerOptions, 'agentUid' | 'agentGid' | 'setprivPath' | 'enforceRoot'>,
+): Promise<string | null>;
 export function materializeTrustedCliEntryScript(
   request: {
     args: string[];

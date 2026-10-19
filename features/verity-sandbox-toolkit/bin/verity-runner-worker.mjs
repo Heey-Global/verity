@@ -30721,7 +30721,9 @@ async function runAcpTurn(opts, profile) {
       if (!agentSpeaksHttpMcp && (opts.mcpServers?.length ?? 0) > 0) {
         turnOpts = withSystemDirective(turnOpts, MCP_SERVERS_UNAVAILABLE_DIRECTIVE);
       }
-      const metadata = profile.sessionMeta(turnOpts);
+      const metadata = profile.sessionMeta(turnOpts, {
+        repositoryInstructions: child.repositoryInstructions?.()
+      });
       const request2 = {
         cwd: opts.cwd,
         mcpServers: mcpServers2,
@@ -31067,6 +31069,26 @@ ${message}`;
 }
 
 // packages/session/dist/acp-claude-backend.js
+var MAX_REPOSITORY_INSTRUCTIONS_BYTES = 256 * 1024;
+async function readRepositoryInstructions(cwd) {
+  const handle = await open2(join2(cwd, "AGENTS.md"), constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK).catch((error) => {
+    if (error.code === "ENOENT" || error.code === "ELOOP" || error.code === "EACCES" || error.code === "EPERM")
+      return void 0;
+    throw error;
+  });
+  if (handle === void 0)
+    return null;
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.size > MAX_REPOSITORY_INSTRUCTIONS_BYTES)
+      return null;
+    const buffer = Buffer.alloc(MAX_REPOSITORY_INSTRUCTIONS_BYTES);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
 var CLAUDE_ACP_PROFILE = {
   defaultCommand: "claude-agent-acp",
   telemetryBackend: "claude-acp",
@@ -31074,32 +31096,18 @@ var CLAUDE_ACP_PROFILE = {
   enforcesToolless: true,
   loadSessionUnsupported: "Claude ACP adapter does not support persistent session loading",
   clientCapabilitiesMeta: { "subagent-transcript": true },
-  sessionMeta: async (opts) => {
+  sessionMeta: async (opts, context) => {
     if (opts.toolless !== true) {
-      const handle = await open2(join2(opts.cwd, "AGENTS.md"), constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK).catch((error) => {
-        if (error.code === "ENOENT" || error.code === "ELOOP")
-          return void 0;
-        throw error;
-      });
-      if (handle !== void 0) {
-        try {
-          const metadata = await handle.stat();
-          if (metadata.isFile() && metadata.size <= 256 * 1024) {
-            const buffer = Buffer.alloc(256 * 1024);
-            const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-            const text = buffer.subarray(0, bytesRead).toString("utf8");
-            opts = {
-              ...opts,
-              appendSystemPrompt: [
-                opts.appendSystemPrompt,
-                `Repository instructions (AGENTS.md):
+      const text = context?.repositoryInstructions !== void 0 ? context.repositoryInstructions : await readRepositoryInstructions(opts.cwd);
+      if (text !== null) {
+        opts = {
+          ...opts,
+          appendSystemPrompt: [
+            opts.appendSystemPrompt,
+            `Repository instructions (AGENTS.md):
 ${text}`
-              ].filter(Boolean).join("\n\n")
-            };
-          }
-        } finally {
-          await handle.close();
-        }
+          ].filter(Boolean).join("\n\n")
+        };
       }
     }
     return {
@@ -31494,6 +31502,7 @@ function createBrokerSpawner(socketPath, requireManagedConfiguration = false) {
     let exitDetails;
     const stdoutDecoder = new StringDecoder("utf8");
     let pid;
+    let repositoryInstructions;
     let spawned = false;
     let settled2 = false;
     let buffered = "";
@@ -31587,6 +31596,8 @@ function createBrokerSpawner(socketPath, requireManagedConfiguration = false) {
         } else if (frame.kind === "spawned") {
           spawned = true;
           pid = typeof frame.pid === "number" ? frame.pid : void 0;
+          if (typeof frame.repositoryInstructions === "string" || frame.repositoryInstructions === null)
+            repositoryInstructions = frame.repositoryInstructions;
           flushInput();
         } else if (frame.kind === "stdout" && typeof frame.data === "string") {
           const decoded = stdoutDecoder.write(Buffer.from(frame.data, "base64"));
@@ -31631,6 +31642,7 @@ function createBrokerSpawner(socketPath, requireManagedConfiguration = false) {
       exited,
       stderr: () => stderrTail.text(),
       exitDetails: () => exitDetails,
+      repositoryInstructions: () => repositoryInstructions,
       kill: (signal = "SIGTERM") => {
         if (signal !== "SIGTERM" && signal !== "SIGKILL")
           return;
