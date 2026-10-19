@@ -3058,7 +3058,7 @@ export async function runAgentSpawnBroker(options = {}) {
               options,
             ).catch((error) => {
               process.stderr.write(
-                `verity-agent-spawn-broker: could not read repository instructions: ${error.code ?? error.message}\n`,
+                `verity-agent-spawn-broker: could not read repository instructions: ${error?.code ?? error?.message ?? String(error)}\n`,
               );
               return undefined;
             });
