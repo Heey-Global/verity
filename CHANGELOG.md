@@ -6,6 +6,20 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.51.0](https://github.com/Heey-Global/verity/compare/v4.50.1...v4.51.0) (2026-10-18)
+
+
+### Features
+
+* **website:** open the homepage with the three promises behind the headline ([#1694](https://github.com/Heey-Global/verity/issues/1694)) ([6425fd8](https://github.com/Heey-Global/verity/commit/6425fd8248da152e4d015497065e5ce229649e79))
+
+
+### Bug Fixes
+
+* **agents:** enforce shared configuration and planning boundaries ([#1706](https://github.com/Heey-Global/verity/issues/1706)) ([aa71a4e](https://github.com/Heey-Global/verity/commit/aa71a4e02579764d12bd61d73115be514c03ca5a))
+* **deps:** update dependency @anthropic-ai/claude-code to v2.1.300 ([#1698](https://github.com/Heey-Global/verity/issues/1698)) ([6820a80](https://github.com/Heey-Global/verity/commit/6820a8025fae6e7e0c08eef16f2d412637b09c15))
+* **deps:** update dependency sanitize-html to v2.18.1 ([#1699](https://github.com/Heey-Global/verity/issues/1699)) ([580d818](https://github.com/Heey-Global/verity/commit/580d81843ffd9f054e4c0a5bc8ca61babb6d5199))
+
 ## [4.50.1](https://github.com/Heey-Global/verity/compare/v4.50.0...v4.50.1) (2026-10-17)
 
 
