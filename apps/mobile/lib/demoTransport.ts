@@ -707,6 +707,45 @@ const demoFetchImpl: typeof fetch = async (input, init) => {
         name: session.detail.name,
         branch: session.branch,
       });
+    if (rest === '/history/v1' && method === 'GET') {
+      const snapshotSeq = Number(
+        url.searchParams.get('snapshotSeq') ?? session.events.at(-1)?.seq ?? 0,
+      );
+      const before = Number(url.searchParams.get('beforeSeq') ?? Infinity);
+      const available = session.events.filter((e) => e.seq < before && e.seq <= snapshotSeq);
+      let page = {
+        contract: 'bounded-history-v1',
+        kind: 'page',
+        snapshotSeq,
+        beforeSeq: null as number | null,
+        hasMore: false,
+        events: [] as StreamEventFrame[],
+      };
+      for (let i = available.length - 1; i >= Math.max(0, available.length - 150); i -= 1) {
+        const event = available[i]!;
+        const candidate = {
+          ...page,
+          events: [event, ...page.events],
+          beforeSeq: event.seq,
+          hasMore: i > 0,
+        };
+        const requiredBytes = new TextEncoder().encode(JSON.stringify(candidate)).byteLength;
+        if (requiredBytes > 256 * 1024) {
+          if (page.events.length === 0)
+            return json({
+              contract: page.contract,
+              kind: 'oversized-event',
+              snapshotSeq,
+              seq: event.seq,
+              requiredBytes,
+              maxBytes: 256 * 1024,
+            });
+          break;
+        }
+        page = candidate;
+      }
+      return json(page);
+    }
     if (rest === '/events' && method === 'GET') {
       const before = Number(url.searchParams.get('beforeSeq') ?? Infinity);
       const events = session.events.filter((event) => event.seq < before);

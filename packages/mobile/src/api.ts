@@ -1,3 +1,8 @@
+import {
+  boundedHistoryResultSchema,
+  HISTORY_MAX_BYTES,
+  type BoundedHistoryPage,
+} from '@verity/events';
 import { beginRuntimeApiRequest, runtimeRequestGroup } from './runtimeDiagnostics.js';
 import { recordingDigest, type RecordingDigest } from './recording-digest.js';
 import {
@@ -39,7 +44,7 @@ export interface TransportRequestInit extends RequestInit {
 function readTransportLane(path: string): TransportLane {
   const pathname = path.split('?')[0]!;
   return /^\/(?:sessions|projects)$/u.test(pathname) ||
-    /^\/sessions\/[^/]+(?:\/(?:events|activity))?$/u.test(pathname)
+    /^\/sessions\/[^/]+(?:\/(?:events|activity|history\/v1))?$/u.test(pathname)
     ? 'interactive'
     : 'background';
 }
@@ -1420,6 +1425,12 @@ export const sessionHistorySchema = z.object({
   hasMore: z.boolean(),
 });
 export type SessionHistoryPage = z.infer<typeof sessionHistorySchema>;
+interface BoundedHistoryOptions {
+  beforeSeq?: number;
+  snapshotSeq?: number | undefined;
+  signal?: AbortSignal;
+  timing?: SwitchTiming | undefined;
+}
 
 const turnResponseSchema = z.object({
   sessionId: z.string().min(1),
@@ -4435,6 +4446,104 @@ export class VerityClient {
     return page;
   }
 
+  /** A stalled fetch/body read must settle into a retryable state, even when a
+   * transport fails to reject its promise after cancellation. */
+  async getBoundedHistory(
+    id: string,
+    opts: BoundedHistoryOptions = {},
+  ): Promise<BoundedHistoryPage> {
+    const controller = new AbortController();
+    let interrupt!: (error: Error) => void;
+    const interrupted = new Promise<never>((_resolve, reject) => {
+      interrupt = reject;
+    });
+    const cancel = () => {
+      interrupt(new Error('History loading was cancelled.'));
+      controller.abort();
+    };
+    const timer = setTimeout(() => {
+      interrupt(new Error('History loading timed out. Retry.'));
+      controller.abort();
+    }, 30_000);
+    opts.signal?.addEventListener('abort', cancel, { once: true });
+    try {
+      if (opts.signal?.aborted) {
+        cancel();
+        return await interrupted;
+      }
+      return await Promise.race([
+        this.readBoundedHistory(id, { ...opts, signal: controller.signal }),
+        interrupted,
+      ]);
+    } finally {
+      clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', cancel);
+    }
+  }
+
+  /** A dedicated endpoint prevents older Core versions ignoring a byte-budget query. */
+  private async readBoundedHistory(
+    id: string,
+    opts: BoundedHistoryOptions,
+  ): Promise<BoundedHistoryPage> {
+    const params = new URLSearchParams();
+    if (opts.beforeSeq !== undefined) params.set('beforeSeq', String(opts.beforeSeq));
+    if (opts.snapshotSeq !== undefined) params.set('snapshotSeq', String(opts.snapshotSeq));
+    let res;
+    try {
+      res = await this.request(
+        `/sessions/${encodeURIComponent(id)}/history/v1?${params.toString()}`,
+        { method: 'GET', ...(opts.signal ? { signal: opts.signal } : {}) },
+        this.fetchImpl,
+        { trace: opts.timing },
+      );
+    } catch (error) {
+      if (error instanceof VerityApiError && error.status === 404) {
+        throw new Error(
+          'Bounded history is unavailable. Update Core and check that this session still exists.',
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+    markSessionSwitch(opts.timing, 'events-body-read-start');
+    const body = await res.text();
+    markSessionSwitch(opts.timing, 'events-body-read-end');
+    if (new TextEncoder().encode(body).byteLength > HISTORY_MAX_BYTES) {
+      throw new Error('Core returned history above the supported size limit. Update Core.');
+    }
+    let json: unknown;
+    try {
+      json = JSON.parse(body);
+    } catch {
+      throw new Error('Core does not support the required history contract. Update Core.');
+    }
+    const parsed = boundedHistoryResultSchema.safeParse(json);
+    if (!parsed.success)
+      throw new Error('Core does not support the required history contract. Update Core.');
+    const page = parsed.data;
+    if (page.kind === 'oversized-event') {
+      throw new Error(
+        `History event ${page.seq} exceeds the page size limit. No events were skipped.`,
+      );
+    }
+    if (
+      (opts.snapshotSeq !== undefined && page.snapshotSeq !== opts.snapshotSeq) ||
+      page.events.some(
+        (e, i) =>
+          e.seq > page.snapshotSeq ||
+          (opts.beforeSeq !== undefined && e.seq >= opts.beforeSeq) ||
+          (i > 0 && e.seq <= page.events[i - 1]!.seq),
+      ) ||
+      page.beforeSeq !== (page.events[0]?.seq ?? null) ||
+      (page.hasMore && page.events.length === 0)
+    ) {
+      throw new Error('Core returned invalid history cursors.');
+    }
+    markSessionSwitch(opts.timing, 'events-schema-end', page.events.length);
+    return page;
+  }
+
   /** Fire-and-forget mobile scroll diagnostics. The app catches/reporting failures;
    * this endpoint is intentionally observability-only and must never affect UI flow. */
   async reportScrollDiagnostic(id: string, diagnostic: MobileScrollDiagnostic): Promise<void> {
@@ -5046,7 +5155,8 @@ export class VerityClient {
       for (const listener of this.readListeners) listener(resource);
     }
     const timing = timingOverride?.trace;
-    const timingKind = path.includes('/events') ? 'events' : 'session';
+    const timingKind =
+      path.includes('/events') || path.includes('/history/v1') ? 'events' : 'session';
     markSessionSwitch(timing, `${timingKind}-request-start`);
     const diagnosticRequestId = beginSwitchTransportRequest(timing, timingKind);
     if (diagnosticRequestId) {

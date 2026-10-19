@@ -24,6 +24,7 @@ export interface UseSession extends SessionModelState {
   sendTurn: (prompt: string, opts?: Omit<TurnRequest, 'prompt'>) => Promise<boolean>;
   /** Load the previous page of older history (scroll-up); no-op when none/loading. */
   loadOlder: () => void;
+  retryHistory: () => void;
   /** Load older history in one fetch down to `targetSeq` (a bookmark jump to an
    * unloaded message); no-op when already loaded / nothing older / loading. */
   loadOlderUntil: (targetSeq: number) => void;
@@ -183,6 +184,10 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
     [model, sessionId],
   );
 
+  const retryHistory = useCallback(() => {
+    void model.retryHistory();
+  }, [model]);
+
   const loadOlder = useCallback(() => {
     void model.loadOlder();
   }, [model]);
@@ -220,6 +225,7 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
     refreshMetadata: () => model.refreshMetadata(),
     sendTurn,
     loadOlder,
+    retryHistory,
     loadOlderUntil,
     cancel,
     cancelWaiting,

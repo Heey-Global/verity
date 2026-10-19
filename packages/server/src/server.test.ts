@@ -2855,6 +2855,36 @@ describe('POST /sessions/:id/debug/scroll', () => {
 });
 
 describe('GET /sessions/:id/events (backward pagination)', () => {
+  it('negotiates whole byte-bounded history independently from the legacy route', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    await ctx.store.appendEvent('s1', { t: 'text', delta: '界'.repeat(100_000) });
+    const bounded = await app.inject({ method: 'GET', url: '/sessions/s1/history/v1' });
+    expect(bounded.statusCode).toBe(200);
+    expect(bounded.json()).toMatchObject({
+      contract: 'bounded-history-v1',
+      kind: 'oversized-event',
+    });
+    expect(Buffer.byteLength(bounded.body)).toBeLessThanOrEqual(256 * 1024);
+    const legacy = await app.inject({ method: 'GET', url: '/sessions/s1/events' });
+    expect(legacy.json().events[0].event.delta).toBe('界'.repeat(100_000));
+    await ctx.store.appendEvent('s1', { t: 'text', delta: 'complete tail '.repeat(1000) });
+    const plain = await app.inject({ method: 'GET', url: '/sessions/s1/history/v1' });
+    expect(plain.json()).toMatchObject({ kind: 'page', hasMore: true });
+    expect(plain.json().events).toHaveLength(1);
+    expect(plain.json().events[0].event.delta).toBe('complete tail '.repeat(1000));
+    expect(Buffer.byteLength(plain.body)).toBeLessThanOrEqual(256 * 1024);
+    const compressed = await app.inject({
+      method: 'GET',
+      url: '/sessions/s1/history/v1',
+      headers: { 'accept-encoding': 'gzip' },
+    });
+    expect(compressed.headers['content-encoding']).toBe('gzip');
+    expect(gunzipSync(compressed.rawPayload).toString()).toBe(plain.body);
+
+    const invalid = await app.inject({ method: 'GET', url: '/sessions/s1/history/v1?beforeSeq=0' });
+    expect(invalid.statusCode).toBe(400);
+  });
+
   it('negotiates compression for history while leaving other responses untouched', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.appendEvent('s1', { t: 'text', delta: 'history '.repeat(1_000) });

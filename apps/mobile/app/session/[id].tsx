@@ -323,7 +323,6 @@ import {
   isOldestRowViewable,
   isScrollTowardHistory,
   migratedAnchorOffset,
-  shouldContinueOlderHistory,
   shouldContinueUserJump,
   shouldAcceptNativeLatestState,
   shouldFollowStreamingContent,
@@ -710,6 +709,9 @@ export const SessionChat = memo(function SessionChat({
     session,
     refreshMetadata,
     streamError,
+    historyError,
+    loadingHistory,
+    retryHistory,
     sending,
     sendError,
     cancelError,
@@ -2249,7 +2251,7 @@ export const SessionChat = memo(function SessionChat({
   // single flick from queueing page after page.
   const requestOlderHistory = useCallback(
     (allowStalledRetry = false) => {
-      if (pendingUserJump !== null) return;
+      if (pendingUserJump !== null || olderLoadNeedsContinuation) return;
       if (
         !shouldRequestOlderHistory(
           hasOlder,
@@ -2299,6 +2301,7 @@ export const SessionChat = memo(function SessionChat({
       loadingOlder,
       loadOlder,
       olderLoadStalled,
+      olderLoadNeedsContinuation,
       pendingUserJump,
       reportScrollDebug,
       initialListLoaded,
@@ -2308,24 +2311,6 @@ export const SessionChat = memo(function SessionChat({
   const onListContentSizeChange = useCallback((_width: number, height: number) => {
     lastContentHeightRef.current = height;
   }, []);
-  const initialHistoryPrefetchRef = useRef(false);
-  useEffect(() => {
-    if (
-      initialHistoryPrefetchRef.current ||
-      !initialListLoaded ||
-      !loaded ||
-      restoring ||
-      !hasOlder ||
-      loadingOlder
-    )
-      return;
-    initialHistoryPrefetchRef.current = true;
-    // Automatic pages must not compete with initial list measurement.
-    // A single extra page starts after FlashList reports its initial load.
-    // Subsequent pages use the measured four-viewport buffer, so opening a long session
-    // cannot pull its whole transcript into memory.
-    loadOlderNearStartRef.current();
-  }, [loaded, restoring, hasOlder, loadingOlder, initialListLoaded]);
   // Hold the settle window until the appended rows have been committed AND measured.
   // Nothing visible depends on it — it exists purely to space automatic follow-ups.
   useEffect(() => {
@@ -2366,36 +2351,6 @@ export const SessionChat = memo(function SessionChat({
       if (nearHistoryEdge && !userScrollActiveRef.current) loadOlderNearStartRef.current();
     }, HISTORY_APPEND_SETTLE_MS);
   }, [loadingOlder, olderLoadGeneration, reportScrollDebug]);
-  const observedOlderLoadGenerationRef = useRef(olderLoadGeneration);
-  useEffect(() => {
-    const completed = observedOlderLoadGenerationRef.current !== olderLoadGeneration;
-    observedOlderLoadGenerationRef.current = olderLoadGeneration;
-    if (
-      !shouldContinueOlderHistory(
-        completed,
-        hasOlder,
-        olderLoadStalled,
-        olderLoadNeedsContinuation,
-        isHistoryEdgeVisible(
-          lastScrollYRef.current,
-          lastContentHeightRef.current,
-          lastViewportHeightRef.current,
-          oldestVisibleIndexRef.current,
-          dataRef.current.length,
-        ),
-        userScrollActiveRef.current,
-        historyAppendSettlingRef.current,
-      )
-    )
-      return;
-
-    // A bounded scan may advance across metadata-only pages without changing any
-    // visible rows. Continue after React has committed the new cursor while the
-    // history edge remains visible. Failures/non-progress are deliberately excluded
-    // above, so this cannot become an automatic retry loop.
-    const raf = requestAnimationFrame(() => loadOlderNearStartRef.current());
-    return () => cancelAnimationFrame(raf);
-  }, [hasOlder, olderLoadGeneration, olderLoadNeedsContinuation, olderLoadStalled]);
   useEffect(() => {
     reportScrollDebug('loading-older-state', { loadingOlder });
   }, [loadingOlder, reportScrollDebug]);
@@ -2503,18 +2458,15 @@ export const SessionChat = memo(function SessionChat({
   // When a jump target isn't in the loaded window yet, page older history toward it
   // until it appears — driven entirely by the effect below (ONE control path, so the
   // async prepends settle across re-renders and the initial call can't race the retry).
-  // `jumpRowsRef` records the row count at the last page request: if a load settles
-  // without adding rows we've made no progress — a flaky fetch, an empty page, or a
-  // target whose id re-keyed away across a coalescing boundary (older text deltas
-  // merging onto an earlier seq when a page prepends) — so we stop instead of
-  // refetching in a tight, unthrottled loop.
+  // Metadata-only pages and coalesced text can advance history without adding rows.
+  // Stop only when the event cursor stalls or a request fails.
   const [pendingJumpId, setPendingJumpId] = useState<string | null>(null);
   const pendingJumpQueryRef = useRef<string | null>(null);
   const highlightMessage = useCallback((messageId: string, searchQuery: string | null = null) => {
     setHighlightedMessageId(messageId);
     setHighlightedSearchQuery(searchQuery);
   }, []);
-  const jumpRowsRef = useRef(-1);
+  const bookmarkCursorRef = useRef<number | undefined>(undefined);
   const jumpToBookmark = useCallback(
     (messageId: string, searchQuery: string | null = null): boolean => {
       const index = rowIndexOfMessage(messageId);
@@ -2536,14 +2488,14 @@ export const SessionChat = memo(function SessionChat({
       // that effect falls through to paging exactly as it would have.
       if (frozenTailRef.current !== null) {
         snapshotLiveTail();
-        jumpRowsRef.current = -1;
+        bookmarkCursorRef.current = undefined;
         pendingJumpQueryRef.current = searchQuery;
         setPendingJumpId(messageId);
         return true;
       }
       // Not loaded — let the effect page toward it. Nothing older → the message is gone.
       if (hasOlder) {
-        jumpRowsRef.current = -1; // fresh jump: no page requested yet
+        bookmarkCursorRef.current = undefined; // fresh jump: no page requested yet
         pendingJumpQueryRef.current = searchQuery;
         setPendingJumpId(messageId);
         return true;
@@ -2607,14 +2559,19 @@ export const SessionChat = memo(function SessionChat({
       return;
     }
     if (loadingOlder) return; // a page is in flight — wait for it to settle
-    // Give up (don't spin) when there's nothing older left, or the last page added no
-    // rows (no progress toward the target).
-    if (!hasOlder || data.length === jumpRowsRef.current) {
+    if (
+      !shouldContinueUserJump(
+        hasOlder,
+        olderLoadStalled,
+        oldestHistorySeq,
+        bookmarkCursorRef.current,
+      )
+    ) {
       setPendingJumpId(null);
       pendingJumpQueryRef.current = null;
       return;
     }
-    jumpRowsRef.current = data.length;
+    bookmarkCursorRef.current = oldestHistorySeq;
     pageTowardMessage(pendingJumpId);
   }, [
     cancelPendingUserScrollSettle,
@@ -2624,6 +2581,8 @@ export const SessionChat = memo(function SessionChat({
     hasOlder,
     loadingOlder,
     pageTowardMessage,
+    oldestHistorySeq,
+    olderLoadStalled,
     highlightMessage,
     syncTailFreeze,
   ]);
@@ -4492,6 +4451,27 @@ export const SessionChat = memo(function SessionChat({
           )}
         />
       ) : null}
+      {historyError ? (
+        <>
+          <Banner tone="attention" text={historyError} />
+          <Button
+            label="Retry history"
+            variant="secondary"
+            size="compact"
+            loading={loadingHistory || loadingOlder}
+            onPress={loaded ? loadOlder : retryHistory}
+          />
+        </>
+      ) : null}
+      {hasOlder && olderLoadNeedsContinuation ? (
+        <Button
+          label="Load earlier history"
+          variant="secondary"
+          size="compact"
+          loading={loadingOlder}
+          onPress={loadOlder}
+        />
+      ) : null}
       {streamError ? <Banner tone="attention" text={`Stream: ${streamError}`} /> : null}
       {sendError ? <Banner tone="danger" text={`Send failed: ${sendError}`} /> : null}
       {switchModelError ? (
@@ -4529,7 +4509,7 @@ export const SessionChat = memo(function SessionChat({
         />
       ) : null}
       {voice.error ? <Banner tone="danger" text={`Voice: ${voice.error}`} /> : null}
-      {!loaded && !locallyCreated && messages.length === 0 && !streamError ? (
+      {!loaded && !locallyCreated && messages.length === 0 && !streamError && !historyError ? (
         // Still coming up: transcript hasn't drained yet and nothing has streamed in.
         // Show the loading animation inside the real chat body (header + composer
         // already rendered) rather than a blank pane. Locally-created sessions
@@ -4548,7 +4528,9 @@ export const SessionChat = memo(function SessionChat({
           contentContainerStyle={styles.starterScreen}
           keyboardShouldPersistTaps="handled"
         >
-          <Text style={styles.emptyTitle}>What should this session do?</Text>
+          <Text style={styles.emptyTitle}>
+            {hasOlder ? 'Earlier history is available' : 'What should this session do?'}
+          </Text>
           <View style={styles.starterList}>
             <SessionStarterCard
               icon="code"

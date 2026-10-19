@@ -877,6 +877,10 @@ describe('global auth gate (onRequest)', () => {
       const blocked = await app.inject({ method: 'GET', url: '/settings' });
       expect(blocked.statusCode).toBe(401);
       expect(blocked.json()).toEqual({ error: 'unauthorized' });
+      const history = await app.inject({ method: 'GET', url: '/sessions/private/history/v1' });
+      expect(history.statusCode).toBe(401);
+      expect(history.json()).toEqual({ error: 'unauthorized' });
+
       // Wrong token → 401.
       expect(
         (
