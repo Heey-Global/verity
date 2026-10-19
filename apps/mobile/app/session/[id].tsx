@@ -2360,9 +2360,6 @@ export const SessionChat = memo(function SessionChat({
   // sheet, which jumps back to the message.
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
-  const [sessionMenuAnchor, setSessionMenuAnchor] = useState<AttachAnchor | null>(null);
-  const sessionMenuRef = useRef<View>(null);
-  const openSessionMenu = useAttachmentMenuAnchor(sessionMenuRef, setSessionMenuAnchor);
   const [settingsProjects, setSettingsProjects] = useState<
     Awaited<ReturnType<VerityClient['listProjects']>>
   >([]);
@@ -3850,15 +3847,6 @@ export const SessionChat = memo(function SessionChat({
         {/* Actions sit on the title row as large round buttons, so the header needs a
             single row and the targets are big enough to hit and recognise. */}
         <View style={styles.headerActions}>
-          <View ref={sessionMenuRef} collapsable={false}>
-            <HeaderActionButton
-              icon="more-horizontal"
-              label="Session menu"
-              accessibilityLabel="Open session menu"
-              onHint={showHeaderHint}
-              onPress={openSessionMenu}
-            />
-          </View>
           {projectId ? (
             <HeaderActionButton
               icon="monitor"
@@ -4274,24 +4262,6 @@ export const SessionChat = memo(function SessionChat({
         />
       ) : null}
       {featureHint.sheet}
-      {sessionMenuAnchor ? (
-        <ActionMenu
-          anchor={sessionMenuAnchor}
-          label="Session menu"
-          onClose={() => setSessionMenuAnchor(null)}
-          items={[
-            {
-              icon: 'settings',
-              title: 'Session settings',
-              subtitle: 'Rename, link or manage this session',
-              onPress: () => {
-                setSessionMenuAnchor(null);
-                setSessionSettingsOpen(true);
-              },
-            },
-          ]}
-        />
-      ) : null}
       {sessionSettingsOpen ? (
         <SessionSettingsDialog
           key={sessionId}
