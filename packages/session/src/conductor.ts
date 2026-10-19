@@ -91,6 +91,10 @@ const UNCERTAIN_RECOVERY_EXHAUSTED_NOTICE =
   'session — send the message again if the work did not finish.';
 /** How often the in-flight liveness sweep runs. */
 const TURN_LIVENESS_SWEEP_MS = 30_000;
+/** Trailing stderr kept in the crash row the app shows when an agent dies silently.
+ * Matches the technical-detail tail the app renders (`TECHNICAL_LIMIT` in
+ * packages/mobile/src/ui/agentEvent.ts); more would be cut off there anyway. */
+const CRASH_STDERR_EXCERPT_CHARS = 2000;
 /** How many consecutive sweeps an in-flight turn may append NO event before its
  * Runner is probed. Startup recovery only settles turns a restart left behind; a
  * Runner that dies while the Server keeps running produced no such crash, so
@@ -5308,7 +5312,10 @@ export class Conductor {
       }
       return;
     }
-    const tail = result.stderr ? `: ${result.stderr.slice(-500)}` : '';
+    // Long enough for an adapter's error line above the stack trace it prints
+    // before exiting: Codex ACP reports a rejected app-server request as a Node
+    // stack plus "Internal error", which alone filled the former 500 characters.
+    const tail = result.stderr ? `: ${result.stderr.slice(-CRASH_STDERR_EXCERPT_CHARS)}` : '';
     const event = {
       t: 'error' as const,
       kind: 'crashed',

@@ -631,6 +631,43 @@ describe('Conductor.sendTurn', () => {
     expect(terminal[0]).toMatchObject({ t: 'error', kind: 'crashed' });
   });
 
+  it('keeps the error an adapter printed above its exit stack trace', async () => {
+    await ctx.store.createSession({ sessionId: 's-stack', worktree: '/wt/x', model: 'm' });
+    // Shape of a Codex ACP exit: the app-server's reason, then the adapter's Node
+    // stack for the rejected request. The stack alone used to fill the excerpt, so
+    // the operator saw only "Internal error" and never the reason above it.
+    const frame = (n: number) =>
+      `    at handleResponse (file:///usr/local/lib/node_modules/.verity-cli/codex-acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js:${2409 + n}:40)`;
+    const stderr = [
+      'ERROR codex_app_server: thread/resume failed: example reason',
+      'ResponseError: Internal error',
+      ...Array.from({ length: 8 }, (_, n) => frame(n)),
+      '',
+      'Internal error',
+    ].join('\n');
+    const backend: Backend = {
+      run: async (opts) => ({
+        sessionId: opts.storeSessionId,
+        exitCode: 1,
+        stderr,
+        aborted: false,
+      }),
+    };
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      worktreeExists: async () => true,
+    });
+
+    await conductor.sendTurn('s-stack', 'go');
+
+    const crashed = (await ctx.store.getEvents('s-stack')).find((e) => e.t === 'error');
+    expect(crashed).toMatchObject({ t: 'error', kind: 'crashed' });
+    expect(crashed && 'message' in crashed ? crashed.message : '').toContain(
+      'thread/resume failed: example reason',
+    );
+  });
+
   it.each([
     "You've hit your session limit · resets 7:30pm (UTC)",
     "You've reached your Fable limit. Switch to another model to continue.",
