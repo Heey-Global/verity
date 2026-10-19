@@ -24,7 +24,6 @@ import {
   agentSignalTraceSeconds,
   validateAgentSignalTraceLease,
   PRIVILEGE_DROP_FLAGS,
-  readAgentRepositoryInstructions,
   resolveAgentWorktreeRoots,
   resolveDockerGid,
   runAgentSpawnBroker,
@@ -360,37 +359,6 @@ describe('agent spawn broker', () => {
           { agentUid: 1000, agentGid: 1000 },
         ).spawnOptions.detached,
       ).toBe(true);
-    } finally {
-      await broker.close();
-    }
-  });
-
-  // The runner worker runs as the runtime identity and cannot open the 0600
-  // AGENTS.md an agent's own `umask 0077` checkout leaves behind. Before the broker
-  // handed the text over, every Claude turn in such a worktree died with EACCES.
-  it('hands Claude the repository instructions it read as the agent', async () => {
-    await writeFile(join(runtimeDir, 'AGENTS.md'), 'Owner-only guidance', { mode: 0o600 });
-    const broker = await runAgentSpawnBroker({
-      runtimeDir,
-      worktreeRoot: runtimeDir,
-      enforceRoot: false,
-      agentUid: 1000,
-      agentGid: 1000,
-      spawnChild: (_command, _args, options) => spawn(process.execPath, ['-e', ''], options),
-    });
-    try {
-      const spawner = createBrokerSpawner(broker.socketPath);
-      const claude = spawner('claude-agent-acp', [], { cwd: runtimeDir, env: {} });
-      await expect(claude.exited).resolves.toBe(0);
-      expect(claude.repositoryInstructions?.()).toBe('Owner-only guidance');
-      // Codex and OpenCode read AGENTS.md themselves, as the agent.
-      const codex = spawner('codex-acp', [], { cwd: runtimeDir, env: {} });
-      await expect(codex.exited).resolves.toBe(0);
-      expect(codex.repositoryInstructions?.()).toBeUndefined();
-      await rm(join(runtimeDir, 'AGENTS.md'));
-      const missing = spawner('claude-agent-acp', [], { cwd: runtimeDir, env: {} });
-      await expect(missing.exited).resolves.toBe(0);
-      expect(missing.repositoryInstructions?.()).toBeNull();
     } finally {
       await broker.close();
     }
@@ -1484,27 +1452,6 @@ describe('broker spawner protocol handling', () => {
     expect(handle.stderr()).toBe('invalid agent spawn request');
   });
 
-  it('accepts only text or null as repository instructions from the broker', async () => {
-    const text = await startScriptedBroker();
-    const textHandle = await connect(text);
-    text.send(
-      { ok: true, kind: 'spawned', pid: 1, repositoryInstructions: 'Guidance' },
-      { ok: true, kind: 'exit', code: 0 },
-    );
-    await expect(textHandle.exited).resolves.toBe(0);
-    expect(textHandle.repositoryInstructions?.()).toBe('Guidance');
-
-    const malformed = await startScriptedBroker();
-    const malformedHandle = await connect(malformed);
-    malformed.send(
-      { ok: true, kind: 'spawned', pid: 2, repositoryInstructions: 42 },
-      { ok: true, kind: 'exit', code: 0 },
-    );
-    await expect(malformedHandle.exited).resolves.toBe(0);
-    // Undefined, so the caller falls back to its own read instead of trusting it.
-    expect(malformedHandle.repositoryInstructions?.()).toBeUndefined();
-  });
-
   // POSIX 128+signum, so a killed agent is never reported as a clean 0. An
   // unrecognised signal name has no number, and must not silently become one.
   it('maps a signal-only exit to 128 + the signal number', async () => {
@@ -1767,49 +1714,6 @@ describe('trusted CLI entry-path failure classification', () => {
       expect(spawnChild).not.toHaveBeenCalled();
     } finally {
       await broker.close();
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('repository instructions read as the agent', () => {
-  it('reads owner-only guidance through the identity reader and refuses links', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'verity-agent-instructions-'));
-    const worktree = join(root, 'work');
-    await mkdir(worktree, { mode: 0o700 });
-    const uid = process.getuid!() || 1000;
-    const gid = process.getgid!() || 1000;
-    // Same subprocess transport as production, without requiring root: the shim
-    // checks the full privilege-drop prefix before running the fixed reader.
-    const setprivPath = join(root, 'setpriv');
-    const flags = [`--reuid=${uid}`, `--regid=${gid}`, ...PRIVILEGE_DROP_FLAGS];
-    await writeFile(
-      setprivPath,
-      `#!/bin/sh\n${flags.map((flag) => `[ "$1" = '${flag}' ] || exit 91; shift`).join('\n')}\nexec "$@"\n`,
-      { mode: 0o700 },
-    );
-    const identity = { agentUid: uid, agentGid: gid, setprivPath };
-    const getuid = vi.spyOn(process, 'getuid').mockReturnValue(0);
-    try {
-      await expect(readAgentRepositoryInstructions(worktree, identity)).resolves.toBeNull();
-      await writeFile(join(worktree, 'AGENTS.md'), 'Grüße from the agent', { mode: 0o600 });
-      await expect(readAgentRepositoryInstructions(worktree, identity)).resolves.toBe(
-        'Grüße from the agent',
-      );
-      await rm(join(worktree, 'AGENTS.md'));
-      await writeFile(join(root, 'outside.md'), 'Do not import this symlink target.');
-      await symlink(join(root, 'outside.md'), join(worktree, 'AGENTS.md'));
-      await expect(readAgentRepositoryInstructions(worktree, identity)).resolves.toBeNull();
-      await rm(join(worktree, 'AGENTS.md'));
-      await writeFile(join(worktree, 'AGENTS.md'), 'x'.repeat(256 * 1024 + 1));
-      await expect(readAgentRepositoryInstructions(worktree, identity)).resolves.toBeNull();
-      // Optional guidance the agent cannot read either must not abort the spawn.
-      if (uid !== 0) {
-        await chmod(join(worktree, 'AGENTS.md'), 0o000);
-        await expect(readAgentRepositoryInstructions(worktree, identity)).resolves.toBeNull();
-      }
-    } finally {
-      getuid.mockRestore();
       await rm(root, { recursive: true, force: true });
     }
   });

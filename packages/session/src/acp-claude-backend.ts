@@ -10,42 +10,6 @@ export const UNREADABLE_AGENTS_MD_DIRECTIVE =
   'Repository instructions: this worktree has an AGENTS.md that Verity could not import. ' +
   'Read AGENTS.md at the worktree root before you start and follow it.';
 
-const MAX_REPOSITORY_INSTRUCTIONS_BYTES = 256 * 1024;
-const UNREADABLE = Symbol('unreadable AGENTS.md');
-
-/**
- * Direct read for spawners that do not supply the file themselves. Under the
- * spawn broker the worker runs as a separate identity, which sees worktree files
- * only through their "other" bits. Agents run under umask 0077, so an AGENTS.md
- * they rewrote (an edit, a checkout, a merge) is 0600 and owned by the agent.
- * That must not end the turn; the agent itself can still read the file.
- */
-async function readRepositoryInstructions(cwd: string): Promise<string | null | typeof UNREADABLE> {
-  let unreadable = false;
-  const handle = await open(
-    join(cwd, 'AGENTS.md'),
-    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-  ).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT' || error.code === 'ELOOP') return undefined;
-    if (error.code === 'EACCES' || error.code === 'EPERM') {
-      unreadable = true;
-      return undefined;
-    }
-    throw error;
-  });
-  if (unreadable) return UNREADABLE;
-  if (handle === undefined) return null;
-  try {
-    const metadata = await handle.stat();
-    if (!metadata.isFile() || metadata.size > MAX_REPOSITORY_INSTRUCTIONS_BYTES) return null;
-    const buffer = Buffer.alloc(MAX_REPOSITORY_INSTRUCTIONS_BYTES);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    return buffer.subarray(0, bytesRead).toString('utf8');
-  } finally {
-    await handle.close();
-  }
-}
-
 export const CLAUDE_ACP_PROFILE: AcpBackendProfile = {
   defaultCommand: 'claude-agent-acp',
   telemetryBackend: 'claude-acp',
@@ -53,25 +17,50 @@ export const CLAUDE_ACP_PROFILE: AcpBackendProfile = {
   enforcesToolless: true,
   loadSessionUnsupported: 'Claude ACP adapter does not support persistent session loading',
   clientCapabilitiesMeta: { 'subagent-transcript': true },
-  sessionMeta: async (opts, context) => {
+  sessionMeta: async (opts) => {
     // Settings discovery is disabled, so import repository guidance only as text.
     if (opts.toolless !== true) {
-      const text =
-        context?.repositoryInstructions !== undefined
-          ? context.repositoryInstructions
-          : await readRepositoryInstructions(opts.cwd);
-      if (text !== null) {
-        opts = {
-          ...opts,
-          appendSystemPrompt: [
-            opts.appendSystemPrompt,
-            text === UNREADABLE
-              ? UNREADABLE_AGENTS_MD_DIRECTIVE
-              : `Repository instructions (AGENTS.md):\n${text}`,
-          ]
-            .filter(Boolean)
-            .join('\n\n'),
-        };
+      const handle = await open(
+        join(opts.cwd, 'AGENTS.md'),
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      ).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT' || error.code === 'ELOOP') return undefined;
+        // This read runs as the Runner uid, which sees worktree files only through
+        // their "other" bits. Agents run under umask 0077, so an AGENTS.md they
+        // rewrote (an edit, a checkout, a merge) is 0600 and owned by the agent.
+        // Failing here crashed every turn of such a session; the agent itself can
+        // still read the file, so point it there instead of importing the text.
+        if (error.code === 'EACCES' || error.code === 'EPERM') {
+          opts = {
+            ...opts,
+            appendSystemPrompt: [opts.appendSystemPrompt, UNREADABLE_AGENTS_MD_DIRECTIVE]
+              .filter(Boolean)
+              .join('\n\n'),
+          };
+          return undefined;
+        }
+        throw error;
+      });
+      if (handle !== undefined) {
+        try {
+          const metadata = await handle.stat();
+          if (metadata.isFile() && metadata.size <= 256 * 1024) {
+            const buffer = Buffer.alloc(256 * 1024);
+            const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+            const text = buffer.subarray(0, bytesRead).toString('utf8');
+            opts = {
+              ...opts,
+              appendSystemPrompt: [
+                opts.appendSystemPrompt,
+                `Repository instructions (AGENTS.md):\n${text}`,
+              ]
+                .filter(Boolean)
+                .join('\n\n'),
+            };
+          }
+        } finally {
+          await handle.close();
+        }
       }
     }
     return {

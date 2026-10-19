@@ -2137,36 +2137,6 @@ it('does not import repository guidance through a symlink', async () => {
   }
 });
 
-describe('repository instructions under the spawn broker', () => {
-  const turn = (cwd: string) => ({
-    store: ctx.store,
-    worktree: cwd,
-    cwd,
-    prompt: 'Read',
-    appendSystemPrompt: 'Managed policy',
-  });
-
-  it('imports the text the broker read as the agent instead of opening the file', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'verity-claude-brokered-'));
-    try {
-      await writeFile(join(cwd, 'AGENTS.md'), 'Worker-visible copy');
-      const brokered = await CLAUDE_ACP_PROFILE.sessionMeta(turn(cwd), {
-        repositoryInstructions: 'Agent-read guidance',
-      });
-      expect(JSON.stringify(brokered)).toContain('Agent-read guidance');
-      expect(JSON.stringify(brokered)).not.toContain('Worker-visible copy');
-      // The broker found nothing to import; the worker must not second-guess it.
-      const none = await CLAUDE_ACP_PROFILE.sessionMeta(turn(cwd), {
-        repositoryInstructions: null,
-      });
-      expect(none).toMatchObject({ systemPrompt: { append: 'Managed policy' } });
-      expect(JSON.stringify(none)).not.toContain('Worker-visible copy');
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
-});
-
 it('starts the turn when the Runner uid cannot read AGENTS.md', async () => {
   // Agents write under umask 0077, so an AGENTS.md they rewrote is 0600 and
   // agent-owned while this read runs as the Runner uid. Rethrowing EACCES here

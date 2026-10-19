@@ -121,12 +121,6 @@ export interface AcpSessionSetup {
   notice(text: string): Promise<void>;
 }
 
-/** What the spawned agent process contributes to its session's `_meta`. */
-export interface AcpSessionContext {
-  /** See {@link SpawnedProcess.repositoryInstructions}. */
-  readonly repositoryInstructions?: string | null | undefined;
-}
-
 /** Everything that differs between the ACP agents Verity drives. The turn loop
  *  itself — streaming, permissions, persist-before-publish ordering, steering,
  *  cancellation and the abort-vs-crash status rules — is shared. */
@@ -146,10 +140,7 @@ export interface AcpBackendProfile {
   /** The agent enforces {@link RunTurnOptions.toolless} through `sessionMeta`. */
   readonly enforcesToolless?: boolean | undefined;
   /** `_meta` sent with `session/new` and `session/load`. */
-  sessionMeta(
-    opts: RunTurnOptions,
-    context?: AcpSessionContext,
-  ): Record<string, unknown> | Promise<Record<string, unknown>>;
+  sessionMeta(opts: RunTurnOptions): Record<string, unknown> | Promise<Record<string, unknown>>;
   /** Model recorded on the `session` event when the turn names none. */
   defaultModelLabel(opts: RunTurnOptions): string;
   /** The turn's prompt text — the hook for agents with no system-prompt field. */
@@ -934,9 +925,7 @@ export async function runAcpTurn(
           if (!agentSpeaksHttpMcp && (opts.mcpServers?.length ?? 0) > 0) {
             turnOpts = withSystemDirective(turnOpts, MCP_SERVERS_UNAVAILABLE_DIRECTIVE);
           }
-          const metadata = profile.sessionMeta(turnOpts, {
-            repositoryInstructions: child.repositoryInstructions?.(),
-          });
+          const metadata = profile.sessionMeta(turnOpts);
           const request = {
             cwd: opts.cwd,
             mcpServers,

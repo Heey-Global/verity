@@ -157,7 +157,6 @@ export function createBrokerSpawner(
     let exitDetails: { code: number | null; signal: NodeJS.Signals | null } | undefined;
     const stdoutDecoder = new StringDecoder('utf8');
     let pid: number | undefined;
-    let repositoryInstructions: string | null | undefined;
     let spawned = false;
     let settled = false;
     let buffered = '';
@@ -245,11 +244,6 @@ export function createBrokerSpawner(
         } else if (frame.kind === 'spawned') {
           spawned = true;
           pid = typeof frame.pid === 'number' ? frame.pid : undefined;
-          if (
-            typeof frame.repositoryInstructions === 'string' ||
-            frame.repositoryInstructions === null
-          )
-            repositoryInstructions = frame.repositoryInstructions;
           flushInput();
         } else if (frame.kind === 'stdout' && typeof frame.data === 'string') {
           const decoded = stdoutDecoder.write(Buffer.from(frame.data, 'base64'));
@@ -296,7 +290,6 @@ export function createBrokerSpawner(
       exited,
       stderr: () => stderrTail.text(),
       exitDetails: () => exitDetails,
-      repositoryInstructions: () => repositoryInstructions,
       kill: (signal = 'SIGTERM') => {
         if (signal !== 'SIGTERM' && signal !== 'SIGKILL') return;
         if (!spawned) pendingSignal = signal;

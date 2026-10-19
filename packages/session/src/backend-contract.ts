@@ -64,12 +64,6 @@ export interface SpawnedProcess {
    * exit. Idempotent and safe to call on an already-dead child.
    */
   closeStdin?: () => void;
-  /**
-   * The worktree's `AGENTS.md` as the spawn broker read it under the agent's own
-   * identity: the text, `null` when there is none to import, or `undefined` when
-   * this spawner does not provide it and the caller has to read it itself.
-   */
-  repositoryInstructions?: () => string | null | undefined;
 }
 
 export interface Spawner {

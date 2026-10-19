@@ -29,11 +29,6 @@ import { fileURLToPath, URL } from 'node:url';
 
 export const AGENT_SPAWN_PROTOCOL_VERSION = 1;
 /**
- * Upper bound for the repository `AGENTS.md` the broker reads for Claude turns.
- * Larger files are skipped, matching the runner worker's former direct read.
- */
-export const MAX_REPOSITORY_INSTRUCTIONS_BYTES = 256 * 1024;
-/**
  * Where `opencode acp` keeps everything that is not its config: session storage
  * and logs (`$XDG_DATA_HOME/opencode`), lock files (`$XDG_STATE_HOME/opencode`),
  * and its downloaded helper binaries (`$XDG_CACHE_HOME/opencode`).
@@ -236,20 +231,6 @@ process.stdin.on('end', async () => {
         if (!(await handle.stat()).isFile()) throw new Error('trusted CLI entry script must be a regular file');
         value = (await handle.readFile()).toString('base64');
       } finally { await handle.close(); }
-    } else if (operation === 'readInstructions') {
-      const handle = await fs.open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-        .catch(error => { if (['ENOENT', 'ELOOP', 'EACCES', 'EPERM'].includes(error.code)) return undefined; throw error; });
-      value = null;
-      if (handle !== undefined) {
-        try {
-          const stat = await handle.stat();
-          if (stat.isFile() && stat.size <= ${String(MAX_REPOSITORY_INSTRUCTIONS_BYTES)}) {
-            const buffer = Buffer.alloc(${String(MAX_REPOSITORY_INSTRUCTIONS_BYTES)});
-            const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-            value = buffer.subarray(0, bytesRead).toString('base64');
-          }
-        } finally { await handle.close(); }
-      }
     } else throw new Error('invalid workspace read operation');
     process.stdout.write(JSON.stringify({ value }));
   } catch (error) {
@@ -277,26 +258,6 @@ async function agentWorkspaceRead(operation, path, options) {
         if (!(await handle.stat()).isFile())
           throw new Error('trusted CLI entry script must be a regular file');
         return await handle.readFile();
-      } finally {
-        await handle.close();
-      }
-    }
-    if (operation === 'readInstructions') {
-      const handle = await open(
-        path,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-      ).catch((error) => {
-        // Optional guidance: a file the agent itself cannot read is not imported.
-        if (['ENOENT', 'ELOOP', 'EACCES', 'EPERM'].includes(error.code)) return undefined;
-        throw error;
-      });
-      if (handle === undefined) return null;
-      try {
-        const metadata = await handle.stat();
-        if (!metadata.isFile() || metadata.size > MAX_REPOSITORY_INSTRUCTIONS_BYTES) return null;
-        const buffer = Buffer.alloc(MAX_REPOSITORY_INSTRUCTIONS_BYTES);
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-        return buffer.subarray(0, bytesRead).toString('utf8');
       } finally {
         await handle.close();
       }
@@ -374,13 +335,6 @@ async function agentWorkspaceRead(operation, path, options) {
     if (typeof value !== 'string') throw new Error('invalid workspace entry response');
     return Buffer.from(value, 'base64');
   }
-  if (operation === 'readInstructions') {
-    if (value === null) return null;
-    const bytes = typeof value === 'string' ? Buffer.from(value, 'base64') : undefined;
-    if (bytes === undefined || bytes.length > MAX_REPOSITORY_INSTRUCTIONS_BYTES)
-      throw new Error('invalid workspace instructions response');
-    return bytes.toString('utf8');
-  }
   if (operation === 'lstat')
     return {
       ...value,
@@ -389,14 +343,6 @@ async function agentWorkspaceRead(operation, path, options) {
       isSocket: () => value.socket,
     };
   return value;
-}
-
-/**
- * The worktree's `AGENTS.md` as the agent can read it: its text, or `null` when it
- * is missing, a symlink, not a regular file, or larger than the import limit.
- */
-export async function readAgentRepositoryInstructions(cwd, options) {
-  return await agentWorkspaceRead('readInstructions', join(cwd, 'AGENTS.md'), options);
 }
 
 function isSafeTrustedCliEnvName(name) {
@@ -1226,7 +1172,22 @@ export async function materializeManagedAgentHome(request, options, connectorUrl
       await mkdir(path, { recursive: true, mode: 0o700 });
       await chown(path, uid, gid);
     };
-    await writeFile(join(home, 'codex', 'installation_id'), randomUUID(), { mode: 0o644 });
+    // Codex opens its installation id read-write at startup and exits with EACCES
+    // when it cannot (codex 0.163). It cannot create one in the broker-owned
+    // CODEX_HOME either, so pre-create it owned by the agent. It is a random
+    // identifier, not policy. Created exclusively and changed through its own
+    // handle, so the broker never writes or hands over a path it did not create.
+    const installationId = await open(
+      join(home, 'codex', 'installation_id'),
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      await installationId.writeFile(randomUUID());
+      await installationId.chown(uid, gid);
+    } finally {
+      await installationId.close();
+    }
     for (const name of ['tmp', '.tmp', 'skills', 'log', 'shell_snapshots'])
       await writable(join(home, 'codex', name));
     for (const name of [
@@ -1270,7 +1231,6 @@ export async function materializeManagedAgentHome(request, options, connectorUrl
       join(home, '.gitconfig'),
       gitIgnore,
       join(home, '.claude.json'),
-      join(home, 'codex', 'installation_id'),
       join(openCodeDir, '.gitignore'),
     ])
       await chmod(path, 0o644);
@@ -2949,8 +2909,6 @@ export async function runAgentSpawnBroker(options = {}) {
           trustedCliFailurePhase = 'validation';
         }
         const request = await validateSpawnRequest(raw, options);
-        /** Read by the broker as the agent; never taken from the request. */
-        let repositoryInstructions;
         if (request.kind === 'trusted-cli') trustedCliCorrelationId = request.correlationId;
         // Still inside validation: nothing of the request is on disk yet. Both launch
         // paths below wrap the command in the script sandbox, which cannot confine it
@@ -3041,27 +2999,6 @@ export async function runAgentSpawnBroker(options = {}) {
                 await isolated.cleanup();
               }
             };
-          }
-          if (
-            request.kind === 'agent' &&
-            request.command === 'claude-agent-acp' &&
-            !request.knowledgeIsolation
-          ) {
-            // The runner worker imports this as Claude's repository guidance but
-            // runs as the runtime identity, which cannot read the 0600 files an
-            // agent's own `umask 0077` Git checkouts leave behind. Read it as the
-            // agent instead, under the same no-symlink, regular-file and size rules.
-            // Optional guidance never gates the spawn: on a reader failure the field
-            // stays unset and the worker falls back to its own best-effort read.
-            repositoryInstructions = await readAgentRepositoryInstructions(
-              request.cwd,
-              options,
-            ).catch((error) => {
-              process.stderr.write(
-                `verity-agent-spawn-broker: could not read repository instructions: ${error?.code ?? error?.message ?? String(error)}\n`,
-              );
-              return undefined;
-            });
           }
           if (request.kind === 'trusted-cli') trustedCliFailurePhase = 'launch-spec';
           if (request.kind === 'agent' && request.command === 'codex-acp') {
@@ -3196,7 +3133,6 @@ export async function runAgentSpawnBroker(options = {}) {
           ok: true,
           kind: 'spawned',
           pid: child.pid,
-          ...(repositoryInstructions === undefined ? {} : { repositoryInstructions }),
         });
         for (const frame of pendingFrames) send(socket, frame);
         if (childClosed) socket.end();

@@ -1,17 +1,54 @@
 import { nodeSpawner } from '@verity/session';
 import { spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  type FileHandle,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readlink,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import {
   agentLaunchSpec,
   materializeManagedAgentHome,
 } from '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
 
+// Records ownership hand-offs: rootless, the agent identity is this process, so
+// the resulting owner alone cannot show which identity a file was given to.
+const handedOver: { path: string; uid: number; gid: number }[] = [];
+beforeAll(async () => {
+  const probe = await open(fileURLToPath(import.meta.url), 'r');
+  const prototype = Object.getPrototypeOf(probe) as FileHandle;
+  await probe.close();
+  const original: FileHandle['chown'] = Reflect.get(prototype, 'chown');
+  vi.spyOn(prototype, 'chown').mockImplementation(async function (
+    this: FileHandle,
+    uid: number,
+    gid: number,
+  ) {
+    handedOver.push({ path: await readlink(`/proc/self/fd/${String(this.fd)}`), uid, gid });
+    return await original.call(this, uid, gid);
+  });
+});
+
+afterAll(() => {
+  vi.restoreAllMocks();
+});
+
 const commands = ['claude-agent-acp', 'codex-acp', 'opencode-acp'] as const;
 let root: string;
 beforeEach(async () => {
+  handedOver.length = 0;
   root = await mkdtemp(join(tmpdir(), 'verity-agent-security-'));
 });
 afterEach(async () => {
@@ -82,11 +119,19 @@ it.each(commands)(
         '.gitconfig',
         'config/git-ignore',
         '.claude.json',
-        'codex/installation_id',
         'config/opencode/.gitignore',
       ])
         expect((await stat(join(isolated.home, name))).mode & 0o777).toBe(0o644);
       expect((await stat(join(isolated.home, 'config/opencode'))).mode & 0o777).toBe(0o755);
+      // Codex 0.163 exits with EACCES at startup unless it can open its installation
+      // id read-write, so a broker-owned copy crashed every Codex turn.
+      const installationId = join(isolated.home, 'codex', 'installation_id');
+      expect(handedOver).toContainEqual({
+        path: await realpath(installationId),
+        uid: options.agentUid,
+        gid: options.agentGid,
+      });
+      expect((await stat(installationId)).mode & 0o777).toBe(0o600);
 
       expect(await readFile(join(poisoned, 'config.toml'), 'utf8')).toContain('attacker');
     } finally {
