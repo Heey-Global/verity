@@ -6,6 +6,10 @@ import type { RunResult, RunTurnOptions } from './backend-contract.js';
 import { runAcpTurn, type AcpBackendProfile } from './acp-backend.js';
 import { ALLOWED_PERMISSION_MODES } from './runner.js';
 
+export const UNREADABLE_AGENTS_MD_DIRECTIVE =
+  'Repository instructions: this worktree has an AGENTS.md that Verity could not import. ' +
+  'Read AGENTS.md at the worktree root before you start and follow it.';
+
 export const CLAUDE_ACP_PROFILE: AcpBackendProfile = {
   defaultCommand: 'claude-agent-acp',
   telemetryBackend: 'claude-acp',
@@ -21,6 +25,20 @@ export const CLAUDE_ACP_PROFILE: AcpBackendProfile = {
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
       ).catch((error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOENT' || error.code === 'ELOOP') return undefined;
+        // This read runs as the Runner uid, which sees worktree files only through
+        // their "other" bits. Agents run under umask 0077, so an AGENTS.md they
+        // rewrote (an edit, a checkout, a merge) is 0600 and owned by the agent.
+        // Failing here crashed every turn of such a session; the agent itself can
+        // still read the file, so point it there instead of importing the text.
+        if (error.code === 'EACCES' || error.code === 'EPERM') {
+          opts = {
+            ...opts,
+            appendSystemPrompt: [opts.appendSystemPrompt, UNREADABLE_AGENTS_MD_DIRECTIVE]
+              .filter(Boolean)
+              .join('\n\n'),
+          };
+          return undefined;
+        }
         throw error;
       });
       if (handle !== undefined) {
