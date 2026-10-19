@@ -31069,13 +31069,22 @@ ${message}`;
 }
 
 // packages/session/dist/acp-claude-backend.js
+var UNREADABLE_AGENTS_MD_DIRECTIVE = "Repository instructions: this worktree has an AGENTS.md that Verity could not import. Read AGENTS.md at the worktree root before you start and follow it.";
 var MAX_REPOSITORY_INSTRUCTIONS_BYTES = 256 * 1024;
+var UNREADABLE = /* @__PURE__ */ Symbol("unreadable AGENTS.md");
 async function readRepositoryInstructions(cwd) {
+  let unreadable = false;
   const handle = await open2(join2(cwd, "AGENTS.md"), constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK).catch((error) => {
-    if (error.code === "ENOENT" || error.code === "ELOOP" || error.code === "EACCES" || error.code === "EPERM")
+    if (error.code === "ENOENT" || error.code === "ELOOP")
       return void 0;
+    if (error.code === "EACCES" || error.code === "EPERM") {
+      unreadable = true;
+      return void 0;
+    }
     throw error;
   });
+  if (unreadable)
+    return UNREADABLE;
   if (handle === void 0)
     return null;
   try {
@@ -31104,7 +31113,7 @@ var CLAUDE_ACP_PROFILE = {
           ...opts,
           appendSystemPrompt: [
             opts.appendSystemPrompt,
-            `Repository instructions (AGENTS.md):
+            text === UNREADABLE ? UNREADABLE_AGENTS_MD_DIRECTIVE : `Repository instructions (AGENTS.md):
 ${text}`
           ].filter(Boolean).join("\n\n")
         };

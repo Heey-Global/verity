@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.74.2](https://github.com/Heey-Global/verity/compare/mobile-v1.74.1...mobile-v1.74.2) (2026-10-19)
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1711](https://github.com/Heey-Global/verity/issues/1711)) ([55547b0](https://github.com/Heey-Global/verity/commit/55547b0f8a21c8d5abd420466c968fda8f847697))
+* **mobile:** remove session settings header menu ([#1714](https://github.com/Heey-Global/verity/issues/1714)) ([8cd1166](https://github.com/Heey-Global/verity/commit/8cd116602dee1804cb8ed61faf513e3193e9ebf0))
+
 ## [1.74.1](https://github.com/Heey-Global/verity/compare/mobile-v1.74.0...mobile-v1.74.1) (2026-10-19)
 
 

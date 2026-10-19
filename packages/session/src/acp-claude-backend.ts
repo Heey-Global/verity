@@ -6,27 +6,34 @@ import type { RunResult, RunTurnOptions } from './backend-contract.js';
 import { runAcpTurn, type AcpBackendProfile } from './acp-backend.js';
 import { ALLOWED_PERMISSION_MODES } from './runner.js';
 
+export const UNREADABLE_AGENTS_MD_DIRECTIVE =
+  'Repository instructions: this worktree has an AGENTS.md that Verity could not import. ' +
+  'Read AGENTS.md at the worktree root before you start and follow it.';
+
 const MAX_REPOSITORY_INSTRUCTIONS_BYTES = 256 * 1024;
+const UNREADABLE = Symbol('unreadable AGENTS.md');
 
 /**
  * Direct read for spawners that do not supply the file themselves. Under the
- * spawn broker the worker runs as a separate identity, and agent-made Git
- * checkouts leave owner-only files it cannot open; that must not end the turn.
+ * spawn broker the worker runs as a separate identity, which sees worktree files
+ * only through their "other" bits. Agents run under umask 0077, so an AGENTS.md
+ * they rewrote (an edit, a checkout, a merge) is 0600 and owned by the agent.
+ * That must not end the turn; the agent itself can still read the file.
  */
-async function readRepositoryInstructions(cwd: string): Promise<string | null> {
+async function readRepositoryInstructions(cwd: string): Promise<string | null | typeof UNREADABLE> {
+  let unreadable = false;
   const handle = await open(
     join(cwd, 'AGENTS.md'),
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
   ).catch((error: NodeJS.ErrnoException) => {
-    if (
-      error.code === 'ENOENT' ||
-      error.code === 'ELOOP' ||
-      error.code === 'EACCES' ||
-      error.code === 'EPERM'
-    )
+    if (error.code === 'ENOENT' || error.code === 'ELOOP') return undefined;
+    if (error.code === 'EACCES' || error.code === 'EPERM') {
+      unreadable = true;
       return undefined;
+    }
     throw error;
   });
+  if (unreadable) return UNREADABLE;
   if (handle === undefined) return null;
   try {
     const metadata = await handle.stat();
@@ -58,7 +65,9 @@ export const CLAUDE_ACP_PROFILE: AcpBackendProfile = {
           ...opts,
           appendSystemPrompt: [
             opts.appendSystemPrompt,
-            `Repository instructions (AGENTS.md):\n${text}`,
+            text === UNREADABLE
+              ? UNREADABLE_AGENTS_MD_DIRECTIVE
+              : `Repository instructions (AGENTS.md):\n${text}`,
           ]
             .filter(Boolean)
             .join('\n\n'),

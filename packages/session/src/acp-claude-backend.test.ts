@@ -1,12 +1,24 @@
-import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import * as fsPromises from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AcpClaudeBackend, CLAUDE_ACP_PROFILE } from './acp-claude-backend.js';
+import {
+  AcpClaudeBackend,
+  CLAUDE_ACP_PROFILE,
+  UNREADABLE_AGENTS_MD_DIRECTIVE,
+} from './acp-claude-backend.js';
 import { PLANNING_PERMISSION_MODE } from './runner.js';
 import { GATEWAY_UNAVAILABLE_DIRECTIVE } from './acp-backend.js';
 import type { SpawnedProcess, Spawner } from './backend-contract.js';
+
+// Delegates to the real implementation; single tests substitute a refusal the
+// Runner uid meets in production but a root test runner never would.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
 
 let ctx: TestDb;
 beforeAll(async () => {
@@ -2153,21 +2165,37 @@ describe('repository instructions under the spawn broker', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+});
 
-  // Root ignores file modes, so the EACCES this guards cannot be produced there.
-  it.skipIf(process.getuid?.() === 0)(
-    'starts the turn without guidance when the worker cannot read AGENTS.md',
-    async () => {
-      const cwd = await mkdtemp(join(tmpdir(), 'verity-claude-private-'));
-      try {
-        await writeFile(join(cwd, 'AGENTS.md'), 'Owner-only guidance', { mode: 0o000 });
-        const metadata = await CLAUDE_ACP_PROFILE.sessionMeta(turn(cwd));
-        expect(metadata).toMatchObject({ systemPrompt: { append: 'Managed policy' } });
-        expect(JSON.stringify(metadata)).not.toContain('Owner-only guidance');
-      } finally {
-        await chmod(join(cwd, 'AGENTS.md'), 0o600);
-        await rm(cwd, { recursive: true, force: true });
-      }
-    },
-  );
+it('starts the turn when the Runner uid cannot read AGENTS.md', async () => {
+  // Agents write under umask 0077, so an AGENTS.md they rewrote is 0600 and
+  // agent-owned while this read runs as the Runner uid. Rethrowing EACCES here
+  // crashed every turn of such a session before the agent ever started.
+  const cwd = await mkdtemp(join(tmpdir(), 'verity-claude-unreadable-'));
+  try {
+    const agentsMd = join(cwd, 'AGENTS.md');
+    await writeFile(agentsMd, 'Agent-owned guidance the Runner cannot read.');
+    vi.mocked(fsPromises.open).mockImplementationOnce((path) => {
+      expect(path).toBe(agentsMd);
+      return Promise.reject(
+        Object.assign(new Error(`EACCES: permission denied, open '${agentsMd}'`), {
+          code: 'EACCES',
+        }),
+      );
+    });
+    const metadata = await CLAUDE_ACP_PROFILE.sessionMeta({
+      store: ctx.store,
+      worktree: cwd,
+      cwd,
+      prompt: 'Read',
+      appendSystemPrompt: 'Managed policy',
+    });
+    // The guidance must still reach the agent, which owns the file and can read it.
+    expect(metadata).toMatchObject({
+      systemPrompt: { append: `Managed policy\n\n${UNREADABLE_AGENTS_MD_DIRECTIVE}` },
+    });
+    expect(JSON.stringify(metadata)).not.toContain('Agent-owned guidance');
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });
