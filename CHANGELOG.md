@@ -6,6 +6,14 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.51.3](https://github.com/Heey-Global/verity/compare/v4.51.2...v4.51.3) (2026-10-19)
+
+
+### Bug Fixes
+
+* **preview:** let pending heartbeat replies win over stalled deadlines ([#1721](https://github.com/Heey-Global/verity/issues/1721)) ([e5a3a57](https://github.com/Heey-Global/verity/commit/e5a3a5770db69bae877b59ba14ce32eeb2748dca))
+* **session:** keep the error above an agent's exit stack in crash details ([#1723](https://github.com/Heey-Global/verity/issues/1723)) ([b4ec21e](https://github.com/Heey-Global/verity/commit/b4ec21e321c7010d68656da6c79642fe546b79ad))
+
 ## [4.51.2](https://github.com/Heey-Global/verity/compare/v4.51.1...v4.51.2) (2026-10-19)
 
 
