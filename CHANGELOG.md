@@ -6,6 +6,14 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.51.1](https://github.com/Heey-Global/verity/compare/v4.51.0...v4.51.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#1711](https://github.com/Heey-Global/verity/issues/1711)) ([55547b0](https://github.com/Heey-Global/verity/commit/55547b0f8a21c8d5abd420466c968fda8f847697))
+* **session:** keep Claude turns running when AGENTS.md is unreadable ([#1718](https://github.com/Heey-Global/verity/issues/1718)) ([b6db4b8](https://github.com/Heey-Global/verity/commit/b6db4b8b6545cddec27ad0b10c8f6e72e563ae35))
+
 ## [4.51.0](https://github.com/Heey-Global/verity/compare/v4.50.1...v4.51.0) (2026-10-18)
 
 
