@@ -51,6 +51,7 @@ it('database archives retain exact original revisions, extraction and previews a
     await source.destroy();
     source = undefined;
     archiveDb = new PGlite(sourcePath);
+    await archiveDb.waitReady;
     const archive = await archiveDb.dumpDataDir();
     await archiveDb.close();
     archiveDb = undefined;
