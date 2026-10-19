@@ -96,6 +96,8 @@ function acpSpawner(
     /** Refuse `session/load` the way the adapter refuses a rollout it cannot
      *  restore: JSON-RPC -32002 naming the requested id. */
     loadNotFound?: boolean;
+    /** Answer `session/load` with this JSON-RPC error instead. */
+    loadError?: { code: number; message: string; data?: unknown };
     /** Answer `session/new` without the `model` config option, as an adapter
      *  build that does not expose it would. */
     withoutModelOption?: boolean;
@@ -228,6 +230,8 @@ function acpSpawner(
                 data: { uri: 'codex-session-existing' },
               },
             });
+          } else if (method === 'session/load' && behavior.loadError !== undefined) {
+            push({ jsonrpc: '2.0', id, error: behavior.loadError });
           } else if (method === 'session/load') {
             push({ jsonrpc: '2.0', id, result: sessionResult('codex-session-existing') });
           } else if (method === 'session/set_mode' && behavior.refusePlanningMode) {
@@ -1429,6 +1433,43 @@ describe('AcpCodexBackend', () => {
     // fails identically — the session wedges instead of recovering cold.
     expect(result).toMatchObject({ sessionId: undefined, exitCode: 1 });
     expect(result.stderr).toContain('Resource not found: codex-session-existing');
+  });
+
+  // codex-acp 2.2.2 refuses the load of a thread Codex never wrote a rollout for —
+  // one whose first turn died before its prompt — with -32603 and the reason only
+  // in `data`. Without recognizing it, every later turn re-resumed the same thread
+  // and failed with a bare "Internal error".
+  it.each([
+    ['no rollout found for thread id codex-session-existing', { staleResume: true }],
+    // The conductor's second rung tries the Verity session id, which need not be a
+    // thread id Codex can even parse.
+    [
+      'invalid session id: invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `v` at 1',
+      { staleResume: true },
+    ],
+    // Any other internal failure is a condition of the moment, not proof that the
+    // conversation is gone; dropping the binding on it would discard one for good.
+    ['state db unavailable', { staleResume: undefined }],
+  ])('classifies a Codex load refused with "%s"', async (details, expected) => {
+    await ctx.store.createSession({
+      sessionId: 'verity-codex-rollout',
+      worktree: '/work/project',
+      model: 'codex/default',
+    });
+    const fake = acpSpawner({
+      loadError: { code: -32603, message: 'Internal error', data: { details } },
+    });
+    const result = await new AcpCodexBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-codex-rollout',
+      resumeSessionId: 'codex-session-existing',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'Continue',
+      spawner: fake.spawner,
+    });
+    expect(result).toMatchObject({ sessionId: undefined, exitCode: 1 });
+    expect(result.staleResume).toBe(expected.staleResume);
   });
 
   it('settles an operator cancel without badging the session crashed', async () => {

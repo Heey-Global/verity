@@ -30738,7 +30738,7 @@ async function runAcpTurn(opts, profile) {
           ...request2,
           sessionId: opts.resumeSessionId
         }).catch((error) => {
-          if (error instanceof RequestError && error.code === RESOURCE_NOT_FOUND) {
+          if (error instanceof RequestError && (error.code === RESOURCE_NOT_FOUND || profile.isMissingSession?.(error) === true)) {
             loadRefused = true;
           }
           throw error;
@@ -31249,6 +31249,10 @@ async function selectModel(setup, opts) {
     (value, current) => `Codex model "${value}" was not applied; this turn runs on "${current}".`
   );
 }
+function isMissingCodexThread(error) {
+  const details = error.data?.details;
+  return typeof details === "string" && /\bno rollout found for thread id\b|^invalid session id\b/i.test(details);
+}
 var CODEX_ACP_PROFILE = {
   defaultCommand: "codex-acp",
   telemetryBackend: "codex-acp",
@@ -31268,7 +31272,8 @@ var CODEX_ACP_PROFILE = {
   // allowlist to bound. The day it starts reading that option, this line has to
   // change with it.
   permissionModes: void 0,
-  configureSession: selectModel
+  configureSession: selectModel,
+  isMissingSession: isMissingCodexThread
 };
 var AcpCodexBackend = class {
   runnerSupervisorBackend = "codex-acp";

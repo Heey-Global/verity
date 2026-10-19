@@ -1266,9 +1266,16 @@ export class Conductor {
     await this.deps.store.deleteSessionBackendState(sessionId, backend);
   }
 
-  private isStaleCodexResume(result: RunResult): boolean {
+  private isStaleCodexResume(result: RunResult, resumeSessionId: string): boolean {
     if (result.exitCode === 0 || result.aborted) return false;
-    return /thread\/resume failed|no rollout found for thread id/i.test(result.stderr);
+    if (result.staleResume === true) return true;
+    if (/thread\/resume failed|no rollout found for thread id/i.test(result.stderr)) return true;
+    // codex-acp can accept the load of a thread it never materialized, from live
+    // app-server state that is gone by the time the prompt starts the turn. Codex
+    // then rejects `turn/start` for that very thread, so no turn ran and nothing
+    // the cold retry repeats has happened yet. Any other thread id is not this.
+    const rejected = `Prompt for session ${resumeSessionId} failed: Error: thread not found: ${resumeSessionId}`;
+    return result.stderr.split(/\r?\n/u).some((line) => line.trimEnd().endsWith(rejected));
   }
 
   private isStaleClaudeResume(result: RunResult, resumeSessionId: string): boolean {
@@ -1613,7 +1620,7 @@ export class Conductor {
     const codexStale =
       backendKey === 'codex' &&
       resumeSessionId !== undefined &&
-      (this.isStaleCodexResume(first.result) || first.result.staleResume === true);
+      this.isStaleCodexResume(first.result, resumeSessionId);
 
     // The backend-neutral stale resume: the agent ANSWERED the resume with an error,
     // so the conversation this session is bound to is not one it can restore. Unlike
@@ -1671,7 +1678,8 @@ export class Conductor {
         opts,
         retryResumeId,
       );
-      if (retryResumeId !== undefined && this.isStaleCodexResume(retry.result)) continue;
+      if (retryResumeId !== undefined && this.isStaleCodexResume(retry.result, retryResumeId))
+        continue;
       await this.persistBackendSessionState(sessionId, backendKey, retry.backendSessionId);
       return retry.result;
     }
