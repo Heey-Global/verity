@@ -95,7 +95,7 @@ export type PreviewConnectorDiagnostic =
   | { event: 'connect.started' }
   | { event: 'connect.established'; elapsedMs: number }
   | { event: 'connect.failed'; cause: string; elapsedMs: number; statusCode?: number }
-  | { event: 'heartbeat.timeout'; phase: 'write' | 'pong' }
+  | { event: 'heartbeat.timeout'; phase: 'write' | 'pong'; lateMs: number }
   | { event: 'connection.closed'; code: number; opened: boolean; elapsedMs: number };
 
 export interface PreviewConnectorOptions {
@@ -1445,12 +1445,25 @@ export class PreviewConnector {
       this.heartbeatDeadline = undefined;
     };
     const deadline = (phase: 'write' | 'pong'): void => {
-      this.heartbeatDeadline = setTimeout(() => {
+      const armedAt = performance.now();
+      const timer = setTimeout(() => {
         if (!active() || !pending) return;
-        this.options.onDiagnostic({ event: 'heartbeat.timeout', phase });
-        socket.terminate();
+        // After a stalled event loop, expired timers run before the I/O that
+        // piled up meanwhile, so a pong or write completion already received
+        // would lose to this deadline. Decide only once that I/O has been
+        // polled; `lateMs` records how long this process itself was stalled.
+        const lateMs = Math.max(
+          0,
+          Math.floor(performance.now() - armedAt - CONNECTOR_HEARTBEAT_MS),
+        );
+        setImmediate(() => {
+          if (!active() || !pending || this.heartbeatDeadline !== timer) return;
+          this.options.onDiagnostic({ event: 'heartbeat.timeout', phase, lateMs });
+          socket.terminate();
+        });
       }, CONNECTOR_HEARTBEAT_MS);
-      this.heartbeatDeadline.unref();
+      timer.unref();
+      this.heartbeatDeadline = timer;
     };
     socket.on('pong', (payload: Buffer) => {
       if (!active() || !pending || !payload.equals(pending)) return;
