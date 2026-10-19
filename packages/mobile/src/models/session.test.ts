@@ -440,7 +440,7 @@ describe('SessionModel — stream', () => {
 });
 
 describe('SessionModel — loadOlderUntil (bookmark jump)', () => {
-  it('fetches the exact span down to the target seq in one request and prepends it', async () => {
+  it('fetches a bounded page toward the target seq and prepends it', async () => {
     const { connect, sockets } = recordingConnect();
     // Bind the mock to a local so assertions don't reference an unbound method (lint).
     const getBoundedHistory = vi
@@ -477,7 +477,7 @@ describe('SessionModel — loadOlderUntil (bookmark jump)', () => {
 
     await model.loadOlderUntil(42);
 
-    // One fetch sized to the whole span (100 − 42), not a fixed 150 page.
+    // The request retains the original snapshot and the older-history cursor.
     expect(getBoundedHistory).toHaveBeenCalledWith(
       's1',
       expect.objectContaining({ beforeSeq: 100, snapshotSeq: 100 }),

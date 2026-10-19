@@ -2458,18 +2458,15 @@ export const SessionChat = memo(function SessionChat({
   // When a jump target isn't in the loaded window yet, page older history toward it
   // until it appears — driven entirely by the effect below (ONE control path, so the
   // async prepends settle across re-renders and the initial call can't race the retry).
-  // `jumpRowsRef` records the row count at the last page request: if a load settles
-  // without adding rows we've made no progress — a flaky fetch, an empty page, or a
-  // target whose id re-keyed away across a coalescing boundary (older text deltas
-  // merging onto an earlier seq when a page prepends) — so we stop instead of
-  // refetching in a tight, unthrottled loop.
+  // Metadata-only pages and coalesced text can advance history without adding rows.
+  // Stop only when the event cursor stalls or a request fails.
   const [pendingJumpId, setPendingJumpId] = useState<string | null>(null);
   const pendingJumpQueryRef = useRef<string | null>(null);
   const highlightMessage = useCallback((messageId: string, searchQuery: string | null = null) => {
     setHighlightedMessageId(messageId);
     setHighlightedSearchQuery(searchQuery);
   }, []);
-  const jumpRowsRef = useRef(-1);
+  const bookmarkCursorRef = useRef<number | undefined>(undefined);
   const jumpToBookmark = useCallback(
     (messageId: string, searchQuery: string | null = null): boolean => {
       const index = rowIndexOfMessage(messageId);
@@ -2491,14 +2488,14 @@ export const SessionChat = memo(function SessionChat({
       // that effect falls through to paging exactly as it would have.
       if (frozenTailRef.current !== null) {
         snapshotLiveTail();
-        jumpRowsRef.current = -1;
+        bookmarkCursorRef.current = undefined;
         pendingJumpQueryRef.current = searchQuery;
         setPendingJumpId(messageId);
         return true;
       }
       // Not loaded — let the effect page toward it. Nothing older → the message is gone.
       if (hasOlder) {
-        jumpRowsRef.current = -1; // fresh jump: no page requested yet
+        bookmarkCursorRef.current = undefined; // fresh jump: no page requested yet
         pendingJumpQueryRef.current = searchQuery;
         setPendingJumpId(messageId);
         return true;
@@ -2562,14 +2559,19 @@ export const SessionChat = memo(function SessionChat({
       return;
     }
     if (loadingOlder) return; // a page is in flight — wait for it to settle
-    // Give up (don't spin) when there's nothing older left, or the last page added no
-    // rows (no progress toward the target).
-    if (!hasOlder || data.length === jumpRowsRef.current) {
+    if (
+      !shouldContinueUserJump(
+        hasOlder,
+        olderLoadStalled,
+        oldestHistorySeq,
+        bookmarkCursorRef.current,
+      )
+    ) {
       setPendingJumpId(null);
       pendingJumpQueryRef.current = null;
       return;
     }
-    jumpRowsRef.current = data.length;
+    bookmarkCursorRef.current = oldestHistorySeq;
     pageTowardMessage(pendingJumpId);
   }, [
     cancelPendingUserScrollSettle,
@@ -2579,6 +2581,8 @@ export const SessionChat = memo(function SessionChat({
     hasOlder,
     loadingOlder,
     pageTowardMessage,
+    oldestHistorySeq,
+    olderLoadStalled,
     highlightMessage,
     syncTailFreeze,
   ]);
