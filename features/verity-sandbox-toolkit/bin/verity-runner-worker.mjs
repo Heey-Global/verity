@@ -31067,6 +31067,7 @@ ${message}`;
 }
 
 // packages/session/dist/acp-claude-backend.js
+var UNREADABLE_AGENTS_MD_DIRECTIVE = "Repository instructions: this worktree has an AGENTS.md that Verity could not import. Read AGENTS.md at the worktree root before you start and follow it.";
 var CLAUDE_ACP_PROFILE = {
   defaultCommand: "claude-agent-acp",
   telemetryBackend: "claude-acp",
@@ -31079,6 +31080,13 @@ var CLAUDE_ACP_PROFILE = {
       const handle = await open2(join2(opts.cwd, "AGENTS.md"), constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK).catch((error) => {
         if (error.code === "ENOENT" || error.code === "ELOOP")
           return void 0;
+        if (error.code === "EACCES" || error.code === "EPERM") {
+          opts = {
+            ...opts,
+            appendSystemPrompt: [opts.appendSystemPrompt, UNREADABLE_AGENTS_MD_DIRECTIVE].filter(Boolean).join("\n\n")
+          };
+          return void 0;
+        }
         throw error;
       });
       if (handle !== void 0) {
