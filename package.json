@@ -46,12 +46,12 @@
     "render:app-screens": "node scripts/render-app-screens.mjs"
   },
   "devDependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.90.0",
+    "@agentclientprotocol/claude-agent-acp": "0.91.0",
     "@agentclientprotocol/codex-acp": "2.2.2",
     "@devcontainers/cli": "0.89.0",
     "@eslint/js": "10.0.1",
     "@modelcontextprotocol/sdk": "1.32.1",
-    "@openai/codex": "0.162.1",
+    "@openai/codex": "0.163.0",
     "@types/node": "26.6.5",
     "@types/semver": "7.8.0",
     "@vitest/coverage-v8": "5.0.5",
