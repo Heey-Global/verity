@@ -7305,6 +7305,119 @@ describe('Conductor — backend session state', () => {
     });
   });
 
+  // A Codex thread whose first turn died before its prompt has no rollout, and
+  // neither does the Verity id the second rung tries. codex-acp reports both only
+  // through `staleResume`; the ladder has to reach the cold start, or the session
+  // stays bound to a thread no turn can ever load.
+  it('cold-starts Codex when the Verity id is just as unknown as the bound thread', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'codex/default' });
+    await ctx.store.upsertSessionBackendState({
+      sessionId: 's1',
+      backend: 'codex',
+      backendSessionId: 'unmaterialized_thread',
+      contextSeq: 5,
+    });
+    const seenResumeIds: Array<string | undefined> = [];
+    const codex: Backend = {
+      run: async (opts) => {
+        seenResumeIds.push(opts.resumeSessionId);
+        if (opts.resumeSessionId !== undefined) {
+          return {
+            sessionId: undefined,
+            exitCode: 1,
+            stderr: 'Internal error',
+            aborted: false,
+            staleResume: true,
+          };
+        }
+        await opts.onSession?.('thread_fresh');
+        return { sessionId: 'thread_fresh', exitCode: 0, stderr: '', aborted: false };
+      },
+    };
+    const conductor = new Conductor({
+      store: ctx.store,
+      codexBackend: codex,
+      worktreeExists: async () => true,
+    });
+
+    const result = await conductor.sendTurn('s1', 'resume');
+
+    expect(result.exitCode).toBe(0);
+    expect(seenResumeIds).toEqual(['unmaterialized_thread', 's1', undefined]);
+    expect(await ctx.store.getSessionBackendState('s1', 'codex')).toMatchObject({
+      backendSessionId: 'thread_fresh',
+    });
+  });
+
+  // codex-acp can accept the load of a thread it never materialized and only fail
+  // when the prompt starts the turn. That rejection names the bound thread, so no
+  // turn ran in it; the same message about another thread is a different failure.
+  it.each([
+    ['the bound thread', 'dead_thread', ['dead_thread', 's1', undefined], 'thread_fresh'],
+    ['another thread', 'other_thread', ['dead_thread'], 'dead_thread'],
+    // A longer id that merely starts with the bound one is still another thread.
+    ['a thread named after it', 'dead_thread_2', ['dead_thread'], 'dead_thread'],
+  ])(
+    'treats a Codex prompt rejected for %s accordingly',
+    async (_label, missing, expectedResumeIds, expectedBinding) => {
+      await ctx.store.createSession({
+        sessionId: 's1',
+        worktree: '/wt/s1',
+        model: 'codex/default',
+      });
+      await ctx.store.upsertSessionBackendState({
+        sessionId: 's1',
+        backend: 'codex',
+        backendSessionId: 'dead_thread',
+        contextSeq: 5,
+      });
+      const seenResumeIds: Array<string | undefined> = [];
+      const codex: Backend = {
+        run: async (opts) => {
+          seenResumeIds.push(opts.resumeSessionId);
+          if (opts.resumeSessionId === 'dead_thread') {
+            await opts.onSession?.('dead_thread');
+            return {
+              sessionId: 'dead_thread',
+              exitCode: 1,
+              stderr: [
+                `[SYSTEM_ERROR] Prompt for session dead_thread failed: Error: thread not found: ${missing}`,
+                `Error: thread not found: ${missing}`,
+                '    at handleResponse (file:///codex-acp/dist/index.js:2409:40)',
+                '',
+                'Internal error',
+              ].join('\n'),
+              aborted: false,
+            };
+          }
+          if (opts.resumeSessionId === 's1') {
+            return {
+              sessionId: undefined,
+              exitCode: 1,
+              stderr: 'Internal error',
+              aborted: false,
+              staleResume: true,
+            };
+          }
+          await opts.onSession?.('thread_fresh');
+          return { sessionId: 'thread_fresh', exitCode: 0, stderr: '', aborted: false };
+        },
+      };
+      const conductor = new Conductor({
+        store: ctx.store,
+        codexBackend: codex,
+        worktreeExists: async () => true,
+      });
+
+      await conductor.sendTurn('s1', 'resume');
+
+      expect(seenResumeIds).toEqual(expectedResumeIds);
+      expect(await ctx.store.getSessionBackendState('s1', 'codex')).toMatchObject({
+        backendSessionId: expectedBinding,
+      });
+    },
+  );
+
   it('clears a stale Claude backend id and cold-starts with DB handoff context', async () => {
     await ctx.store.createSession({
       sessionId: 's1',
