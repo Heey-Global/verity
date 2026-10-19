@@ -1172,7 +1172,22 @@ export async function materializeManagedAgentHome(request, options, connectorUrl
       await mkdir(path, { recursive: true, mode: 0o700 });
       await chown(path, uid, gid);
     };
-    await writeFile(join(home, 'codex', 'installation_id'), randomUUID(), { mode: 0o644 });
+    // Codex opens its installation id read-write at startup and exits with EACCES
+    // when it cannot (codex 0.163). It cannot create one in the broker-owned
+    // CODEX_HOME either, so pre-create it owned by the agent. It is a random
+    // identifier, not policy. Created exclusively and changed through its own
+    // handle, so the broker never writes or hands over a path it did not create.
+    const installationId = await open(
+      join(home, 'codex', 'installation_id'),
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      await installationId.writeFile(randomUUID());
+      await installationId.chown(uid, gid);
+    } finally {
+      await installationId.close();
+    }
     for (const name of ['tmp', '.tmp', 'skills', 'log', 'shell_snapshots'])
       await writable(join(home, 'codex', name));
     for (const name of [
@@ -1216,7 +1231,6 @@ export async function materializeManagedAgentHome(request, options, connectorUrl
       join(home, '.gitconfig'),
       gitIgnore,
       join(home, '.claude.json'),
-      join(home, 'codex', 'installation_id'),
       join(openCodeDir, '.gitignore'),
     ])
       await chmod(path, 0o644);
